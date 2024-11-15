@@ -6,8 +6,8 @@ from graph_generation import generate_graphs
 from inference_making import make_inferences_with_graphs
 
 def main():
-    st.set_page_config(page_title="Automated Data Scientist", layout="wide")
-    st.title("Automated Data Scientist")
+    st.set_page_config(page_title="Data Analyst", layout="wide")
+    st.title("Data Analyst")
     
     # Create two columns for file upload and context
     col1, col2 = st.columns([1, 2])
