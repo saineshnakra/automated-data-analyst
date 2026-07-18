@@ -29,6 +29,16 @@ Most CSV analyzers stop at charts. ADA keeps four layers explicit:
 
 Every evidence card and chat answer exposes its calculation. The deterministic product remains authoritative whether or not a model is configured.
 
+### How ADA compares
+
+| | Chat-with-CSV AI tools | Traditional BI | **ADA** |
+|---|---|---|---|
+| Setup | Upload and prompt | Data modeling, weeks | Upload only |
+| Answers | Plausible prose; reasoning hidden | Exact, but you build every chart | Deterministic calculations with the math shown |
+| Rows sent to a model | Usually | Depends on vendor | Never — optional AI sees schema and evidence only |
+| Anomalies and forecasts | On request, unverifiable | Paid add-ons | Built in, with a backtested error you can read |
+| Cost | Subscription | License | Free and MIT-licensed |
+
 ## From spreadsheet to decision
 
 ```mermaid
@@ -132,11 +142,30 @@ python -m unittest discover -s tests -v
 
 GitHub Actions runs linting, the complete test suite, and bytecode compilation on every push and pull request.
 
+## FAQ
+
+**Does my data leave my machine?**
+No. Cleaning, schema detection, every chart, every evidence card, and every Ask ADA answer are computed locally with pandas. If you opt into the AI layer, only column schema and computed evidence are sent — never rows or cell values.
+
+**Do I need an OpenAI API key?**
+No. ADA is a complete analyst without one. A key only adds the query-planner fallback for unusual questions and the strategic narrative.
+
+**What formats can I analyze?**
+CSV (comma, semicolon, or tab delimited), XLSX, and XLSM — including picking a specific worksheet from a multi-sheet workbook.
+
+**How is this different from pasting a CSV into a chatbot?**
+A chatbot gives you fluent prose you cannot audit and your rows become part of a prompt. ADA turns questions into explicit query plans, executes them with pandas on your machine, and prints the calculation under every answer.
+
+**Can I self-host it?**
+Yes — it is a standard Streamlit app. `pip install -r requirements.txt && streamlit run app.py`, or deploy it to any host that runs Python.
+
 ## Contribute
 
-Contributions are welcome, especially around new deterministic metrics, schema-detection fixtures, chart accessibility, file formats, and adversarial test datasets. Start with [CONTRIBUTING.md](CONTRIBUTING.md), choose an item from the [roadmap](ROADMAP.md), or open a focused proposal.
+Contributions are welcome, especially around new deterministic metrics, question shapes for Ask ADA, schema-detection fixtures, chart accessibility, file formats, and adversarial test datasets. Start with the [good first issues](https://github.com/saineshnakra/automated-data-analyst/labels/good%20first%20issue), read [CONTRIBUTING.md](CONTRIBUTING.md), choose an item from the [roadmap](ROADMAP.md), or open a focused proposal.
 
 Good contributions make an insight more accurate, more explainable, or easier for a non-technical user to act on. Every new recommendation should include a test and the calculation that supports it.
+
+If ADA is useful to you, a star helps other operators find it.
 
 ## Deploy
 
