@@ -12,61 +12,74 @@
 
 ![ADA turns CSV and Excel files into decision-ready business dashboards](assets/ada-social-preview.png)
 
-ADA is an open-source automated data analyst for operators who need answers without configuring a BI tool. Upload a CSV, XLSX, or XLSM file and ADA cleans it, detects its business schema, creates an interactive Plotly dashboard, explains material changes, and recommends what to investigate next.
+ADA is an open-source automated data analyst for operators who need answers without configuring a BI tool. Upload a CSV, XLSX, or XLSM file and ADA cleans it, detects its business schema, creates an interactive Plotly dashboard, flags anomalous periods, projects a guarded baseline forecast, explains material changes, recommends what to investigate next — and answers plain-English questions about the data with the calculation behind every reply.
 
 It is designed for the simple use case analytics software often makes difficult: **even a first-time user should be able to upload a spreadsheet and understand what is happening in the business.**
 
 ## Why ADA is different
 
-Most CSV analyzers stop at charts. ADA keeps three layers explicit:
+Most CSV analyzers stop at charts. ADA keeps four layers explicit:
 
 | Layer | What it does | Trust boundary |
 |---|---|---|
-| **Calculation** | Detects trends, drivers, concentration, relationships, exceptions, and data quality | Deterministic and traceable |
-| **Interpretation** | Turns those calculations into prioritized investigations | Clearly labeled; never causal proof |
-| **Optional AI strategy** | Connects computed evidence into a concise strategic read | Opt-in; raw uploaded rows are not sent |
+| **Calculation** | Detects trends, drivers, anomalies, concentration, relationships, exceptions, and data quality | Deterministic and traceable |
+| **Conversation** | Turns plain-English questions into auditable pandas query plans executed locally | Every answer shows its math |
+| **Interpretation** | Turns calculations into prioritized investigations | Clearly labeled; never causal proof |
+| **Optional AI** | Plans queries the rules cannot read and writes a strategic read over computed evidence | Opt-in; raw uploaded rows are never sent |
 
-Every evidence card exposes its calculation. The deterministic dashboard remains authoritative whether or not the optional strategy model is configured.
+Every evidence card and chat answer exposes its calculation. The deterministic product remains authoritative whether or not a model is configured.
 
 ## From spreadsheet to decision
 
 ```mermaid
 flowchart TD
-    A["Upload CSV or Excel"] --> B["Clean and infer types"]
+    A["Upload CSV or Excel worksheet"] --> B["Clean and infer types"]
     B --> C["Detect metric, date, segment, ID"]
-    C --> D["Calculate business evidence"]
-    D --> E["Dashboard and executive brief"]
+    C --> D["Calculate evidence, anomalies, and forecast"]
+    D --> E["Dashboard, executive brief, and drill-down"]
+    C --> G["Ask ADA: question → QueryPlan → local execution"]
+    G -. "schema + question only, when rules cannot parse" .-> H["Optional AI query planner"]
     D -. "computed evidence only" .-> F["Optional AI strategic read"]
 ```
 
 ADA automatically looks for:
 
 - A primary outcome such as revenue, sales, profit, cost, amount, or units
-- A time field for period movement and current-versus-prior comparisons
+- A time field for period movement, anomaly detection, and the baseline forecast
 - A useful segment such as product, category, channel, region, customer, or status
 - Identifiers, missingness, outliers, concentration, and numeric relationships
 - The strongest evidence-backed next investigation, separated from observed fact
 
-If the source schema is unusual, users can override the detected metric, date, and segment without rebuilding the dashboard.
+If the source schema is unusual, users can override the detected metric, date, and segment without rebuilding the dashboard — and drill the whole analysis into a single segment slice.
 
 ## Product capabilities
 
 - Zero-configuration CSV and Excel analytics with an included synthetic demo
+- **Ask ADA**: plain-English questions (totals, rankings, breakdowns, trends, growth, counts, time and segment filters) answered locally with the calculation shown
+- Anomaly radar: periods outside a robust trendline band are flagged on the chart, in the evidence ledger, and in the recommended actions
+- Guarded baseline forecast with month-of-year seasonality, an uncertainty band, and its backtested error printed next to the chart
+- Drill-down focus: analyze one segment value and automatically regroup by the next useful dimension
+- Movement waterfall reconciling the latest change by segment, plus a segment-by-period intensity heatmap
+- Worksheet picker for multi-sheet Excel workbooks
 - Conservative cleanup, type inference, duplicate removal, and a visible cleaning audit
 - Executive headline, four business KPIs, and plain-English briefing
-- Automatically generated trend, contribution, distribution, and relationship charts
 - Evidence ledger with the calculation behind every displayed signal
 - Prioritized recommendations linked to deterministic evidence
-- Optional structured strategy synthesis using the OpenAI Responses API
+- Optional AI query planner and structured strategy synthesis using the OpenAI Responses API
 - Downloadable Markdown executive brief and cleaned CSV
 - Responsive Streamlit interface built for non-technical users
 - File limit and row cap for predictable hosted performance
 
 ## Privacy and model design
 
-ADA works fully without an API key. In deterministic mode, no model call is made.
+ADA works fully without an API key. In deterministic mode, no model call is made — including every Ask ADA answer the rule-based parser can plan itself.
 
-When the optional strategy layer is enabled, ADA sends only the calculated schema, summaries, evidence cards, recommendations, and user-supplied context. **It does not put uploaded rows into the model prompt.** The response must match a typed Pydantic schema, storage is disabled for the request, and a hashed anonymous session identifier is used for safety controls.
+When a key is present, two narrow model calls become available, both typed and executed against the same local engine:
+
+- **Query planner** — used only when the deterministic parser cannot read a question. It receives the column schema (names, types, roles) and the question itself, emits a typed `QueryPlan`, and ADA executes that plan locally. Unresolvable plans are refused rather than guessed, and AI-planned answers are visibly badged.
+- **Strategic read** — receives only the calculated schema, summaries, evidence cards, recommendations, and user-supplied context.
+
+**Neither call puts uploaded rows or cell values into the model prompt.** Responses must match a typed Pydantic schema, storage is disabled for the request, and a hashed anonymous session identifier is used for safety controls.
 
 The default model is `gpt-5.6-luna` with low reasoning for an efficient strategic read. `gpt-5.6-terra` with medium reasoning is available when the decision is ambiguous enough to justify higher cost. Model calls are button-triggered and cached per evidence payload to avoid accidental spend.
 
@@ -77,12 +90,15 @@ See [SECURITY.md](SECURITY.md) for the complete data-handling and secret-managem
 | Path | Responsibility |
 |---|---|
 | `app.py` | Thin Streamlit orchestration and session state |
-| `pipeline.py` | Bounded preparation, cleaning, schema selection, and audit frames |
+| `pipeline.py` | Bounded preparation, cleaning, schema selection, drill-down, and audit frames |
 | `analysis.py` | Conservative cleaning and data profiling |
 | `business_insights.py` | Schema detection, calculations, evidence, and deterministic recommendations |
-| `ai_insights.py` | Optional typed Responses API synthesis over computed evidence |
+| `nlq.py` | Natural-language questions → auditable query plans → local execution |
+| `anomalies.py` | Robust trendline anomaly detection over period aggregates |
+| `forecasting.py` | Guarded baseline forecast with seasonality and a visible backtest |
+| `ai_insights.py` | Optional typed Responses API query planning and evidence synthesis |
 | `ui.py` | Reusable presentation components and Plotly styling |
-| `file_io.py` | Validated CSV and Excel parsing |
+| `file_io.py` | Validated CSV and Excel parsing with worksheet selection |
 | `tests/` | Unit, privacy-contract, pipeline, business-logic, and rendering tests |
 
 The codebase favors pure analysis functions and dependency injection at the model boundary. That keeps the business engine testable without Streamlit, network access, or API credits.
