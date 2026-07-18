@@ -13,6 +13,7 @@ import streamlit as st
 from ai_insights import AINarrative
 from anomalies import detect_anomalies
 from business_insights import BusinessBrief, ColumnRoles, segment_frame, trend_frame
+from forecasting import build_forecast
 from nlq import QueryAnswer
 
 ACCENT = "#635BFF"
@@ -223,7 +224,38 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                         hovertemplate="%{x|%b %Y}: %{y:,.0f} — outside the expected band<extra>Anomaly</extra>",
                     )
                 )
+            forecast = build_forecast(trend)
+            if forecast:
+                figure.add_trace(
+                    go.Scatter(
+                        x=[*forecast.periods, *reversed(forecast.periods)],
+                        y=[*forecast.upper, *reversed(forecast.lower)],
+                        fill="toself",
+                        fillcolor="rgba(139,92,246,.09)",
+                        line={"width": 0},
+                        hoverinfo="skip",
+                        showlegend=False,
+                    )
+                )
+                figure.add_trace(
+                    go.Scatter(
+                        x=[trend.iloc[-1]["Period"], *forecast.periods],
+                        y=[float(trend.iloc[-1]["Value"]), *forecast.values],
+                        mode="lines",
+                        name="Forecast",
+                        line={"width": 2.5, "dash": "dash", "color": "#8B5CF6"},
+                        hovertemplate="%{x|%b %Y}: %{y:,.0f} — baseline forecast<extra></extra>",
+                    )
+                )
             st.plotly_chart(style_chart(figure), width="stretch", config={"displayModeBar": False})
+            if forecast:
+                error_note = (
+                    f"backtested error ±{forecast.backtest_mape:.1f}% over the last "
+                    f"{forecast.holdout_periods} periods"
+                    if forecast.backtest_mape is not None
+                    else "history is too thin for a backtest"
+                )
+                st.caption(f"Baseline forecast: {forecast.method} · {error_note}.")
         else:
             st.markdown('<div class="empty-state">Select a date column to reveal movement over time.</div>', unsafe_allow_html=True)
 
