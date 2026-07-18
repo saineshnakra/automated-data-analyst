@@ -22,7 +22,7 @@ from ai_insights import (
 from analysis import column_profile
 from business_insights import BusinessBrief, analyze_business, build_business_report
 from demo_data import make_demo_data
-from file_io import read_tabular_file
+from file_io import list_excel_sheets, read_tabular_file
 from nlq import QueryAnswer, answer_question, execute_plan, suggested_questions
 from pipeline import (
     apply_focus,
@@ -67,8 +67,8 @@ st.set_page_config(
 
 
 @st.cache_data(show_spinner=False)
-def read_uploaded_file(contents: bytes, filename: str) -> pd.DataFrame:
-    return read_tabular_file(contents, filename)
+def read_uploaded_file(contents: bytes, filename: str, sheet_name: str | None = None) -> pd.DataFrame:
+    return read_tabular_file(contents, filename, sheet_name)
 
 
 def get_openai_api_key() -> str:
@@ -278,8 +278,19 @@ try:
         if uploaded_file.size > MAX_UPLOAD_BYTES:
             st.error("That file is larger than ADA's 25 MB analysis limit.")
             st.stop()
-        raw_dataframe = read_uploaded_file(uploaded_file.getvalue(), uploaded_file.name)
-        source_name = uploaded_file.name
+        contents = uploaded_file.getvalue()
+        selected_sheet = None
+        worksheets = list_excel_sheets(contents, uploaded_file.name)
+        if len(worksheets) > 1:
+            selected_sheet = st.selectbox(
+                "Worksheet to analyze",
+                worksheets,
+                help="The workbook has several sheets; ADA analyzes one at a time.",
+            )
+        raw_dataframe = read_uploaded_file(contents, uploaded_file.name, selected_sheet)
+        source_name = (
+            f"{uploaded_file.name} · {selected_sheet}" if selected_sheet else uploaded_file.name
+        )
 
     prepared = prepare_analysis(raw_dataframe, row_limit=MAX_ANALYSIS_ROWS)
 except (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError, ValueError, ImportError) as error:

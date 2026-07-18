@@ -4,21 +4,51 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
+from zipfile import BadZipFile
 
 import pandas as pd
 
 SUPPORTED_SUFFIXES = {".csv", ".xlsx", ".xlsm"}
+EXCEL_SUFFIXES = {".xlsx", ".xlsm"}
 
 
-def read_tabular_file(contents: bytes, filename: str) -> pd.DataFrame:
-    """Read CSV or Excel bytes and return the first available table."""
+def _validate(contents: bytes, filename: str) -> str:
     suffix = Path(filename).suffix.lower()
     if suffix not in SUPPORTED_SUFFIXES:
         raise ValueError("ADA supports CSV, XLSX, and XLSM files.")
     if not contents:
         raise ValueError("The uploaded file is empty.")
-    if suffix in {".xlsx", ".xlsm"}:
-        return pd.read_excel(BytesIO(contents), engine="openpyxl")
+    return suffix
+
+
+def list_excel_sheets(contents: bytes, filename: str) -> list[str]:
+    """Worksheet names of a workbook; empty for CSV files."""
+    suffix = _validate(contents, filename)
+    if suffix not in EXCEL_SUFFIXES:
+        return []
+    try:
+        with pd.ExcelFile(BytesIO(contents), engine="openpyxl") as workbook:
+            return [str(name) for name in workbook.sheet_names]
+    except BadZipFile as error:
+        raise ValueError("The file is not a valid Excel workbook.") from error
+
+
+def read_tabular_file(
+    contents: bytes,
+    filename: str,
+    sheet_name: str | None = None,
+) -> pd.DataFrame:
+    """Read CSV bytes, or the chosen (default: first) worksheet of a workbook."""
+    suffix = _validate(contents, filename)
+    if suffix in EXCEL_SUFFIXES:
+        try:
+            return pd.read_excel(
+                BytesIO(contents),
+                engine="openpyxl",
+                sheet_name=sheet_name if sheet_name is not None else 0,
+            )
+        except BadZipFile as error:
+            raise ValueError("The file is not a valid Excel workbook.") from error
 
     parse_errors: list[Exception] = []
     for encoding in ("utf-8-sig", "utf-8", "latin-1"):
