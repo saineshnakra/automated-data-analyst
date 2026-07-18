@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 
+from anomalies import detect_anomalies, format_period
+
 
 @dataclass(frozen=True)
 class ColumnRoles:
@@ -380,6 +382,33 @@ def _change_driver_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evid
     )
 
 
+def _anomaly_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
+    if not roles.date:
+        return None
+    anomalies = detect_anomalies(trend_frame(dataframe, roles))
+    if not anomalies:
+        return None
+    grain = preferred_frequency(dataframe[roles.date])
+    worst = anomalies[0]
+    measure = roles.measure or "Records"
+    label = format_period(worst.period, grain)
+    plural = "periods sit" if len(anomalies) > 1 else "period sits"
+    return Evidence(
+        kind="anomaly",
+        title="Anomalous periods",
+        value=f"{len(anomalies)}",
+        statement=(
+            f"{label} is the sharpest anomaly: {measure.lower()} reached "
+            f"{format_number(worst.value, roles.measure)}, {worst.direction} the expected "
+            f"{format_number(worst.expected_low, roles.measure)}–"
+            f"{format_number(worst.expected_high, roles.measure)} range. "
+            f"{len(anomalies)} {plural} outside the trendline band."
+        ),
+        calculation="Period totals vs median-slope trendline ± 3×MAD",
+        tone="warning",
+    )
+
+
 def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evidence, Evidence] | tuple[()]:
     segments = segment_frame(dataframe, roles, limit=100)
     if segments.empty:
@@ -572,6 +601,20 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
             )
         )
 
+    anomaly = by_kind.get("anomaly")
+    if anomaly:
+        recommendations.append(
+            Recommendation(
+                "Now",
+                "Explain the anomalous periods",
+                (
+                    "Tie each flagged period to a concrete event—promotion, outage, pricing "
+                    "change, or data error—before it distorts forecasts and targets."
+                ),
+                anomaly.statement,
+            )
+        )
+
     relationship = by_kind.get("relationship")
     if relationship:
         recommendations.append(
@@ -642,6 +685,7 @@ def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) 
         evidence.append(change_driver)
     evidence.extend(_segment_evidence(dataframe, roles))
     for optional_evidence in (
+        _anomaly_evidence(dataframe, roles),
         _relationship_evidence(dataframe, roles),
         _outlier_evidence(dataframe, roles),
         _quality_evidence(dataframe),

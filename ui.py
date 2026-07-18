@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from ai_insights import AINarrative
+from anomalies import detect_anomalies
 from business_insights import BusinessBrief, ColumnRoles, segment_frame, trend_frame
 from nlq import QueryAnswer
 
@@ -205,6 +206,23 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 color_discrete_sequence=[ACCENT],
             )
             figure.update_traces(line={"width": 3}, fillcolor="rgba(99,91,255,.11)")
+            anomalies = detect_anomalies(trend)
+            if anomalies:
+                figure.add_trace(
+                    go.Scatter(
+                        x=[anomaly.period for anomaly in anomalies],
+                        y=[anomaly.value for anomaly in anomalies],
+                        mode="markers",
+                        name="Anomaly",
+                        marker={
+                            "symbol": "diamond",
+                            "size": 11,
+                            "color": "#E35D6A",
+                            "line": {"width": 2, "color": "white"},
+                        },
+                        hovertemplate="%{x|%b %Y}: %{y:,.0f} — outside the expected band<extra>Anomaly</extra>",
+                    )
+                )
             st.plotly_chart(style_chart(figure), width="stretch", config={"displayModeBar": False})
         else:
             st.markdown('<div class="empty-state">Select a date column to reveal movement over time.</div>', unsafe_allow_html=True)
