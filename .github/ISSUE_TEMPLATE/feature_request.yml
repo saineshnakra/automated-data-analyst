@@ -1,0 +1,35 @@
+name: Feature request
+description: Propose a focused improvement to ADA's analysis or usability.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: user
+    attributes:
+      label: Who needs this and what decision are they making?
+      description: Start with the user outcome, not the implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Explain what ADA should do from upload to result.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence and calculation
+      description: If this produces an insight, describe the calculation and how a user can verify it.
+  - type: textarea
+    id: tradeoffs
+    attributes:
+      label: Privacy, cost, and failure modes
+      description: Note external calls, persistence, ambiguity, or ways the result could mislead.
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I would be willing to work on this change after the scope is agreed.

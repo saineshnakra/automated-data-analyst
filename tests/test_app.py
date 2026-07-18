@@ -10,7 +10,7 @@ class AppSmokeTests(unittest.TestCase):
         self.assertFalse(app.exception)
         self.assertEqual(
             [tab.label for tab in app.tabs],
-            ["Executive view", "Dashboard", "Evidence", "Data room"],
+            ["Executive brief", "Live dashboard", "Evidence ledger", "Data room"],
         )
         self.assertEqual(len(app.get("plotly_chart")), 4)
         self.assertEqual(len(app.dataframe), 4)

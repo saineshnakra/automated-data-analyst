@@ -1,0 +1,55 @@
+name: Bug report
+description: Report a reproducible failure or misleading analytical result.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for helping make ADA more reliable. Use synthetic data and remove private information.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the behavior and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Open...
+        2. Upload a synthetic file with...
+        3. Select...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Schema detection or cleaning
+        - Business evidence or recommendation
+        - Dashboard or interface
+        - File upload or export
+        - Optional AI strategy layer
+        - Deployment or documentation
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Browser and environment
+      placeholder: Chrome 128, hosted app or local Python 3.11
+  - type: textarea
+    id: sample
+    attributes:
+      label: Minimal synthetic example
+      description: Paste a few non-sensitive rows or link to a small synthetic fixture.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Data safety
+      options:
+        - label: I removed credentials and private, customer, or employer data.
+          required: true

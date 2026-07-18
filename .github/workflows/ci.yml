@@ -24,4 +24,4 @@ jobs:
       - name: Test
         run: python -m unittest discover -s tests -v
       - name: Compile
-        run: python -m compileall -q analysis.py business_insights.py demo_data.py file_io.py app.py tests
+        run: python -m compileall -q analysis.py ai_insights.py business_insights.py demo_data.py file_io.py pipeline.py ui.py app.py tests

@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
+  <title id="title">ADA automated data analyst</title>
+  <desc id="desc">Drop a CSV or Excel file and get a decision-ready business dashboard.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8f8fc"/>
+      <stop offset="1" stop-color="#eeecff"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#171821"/>
+      <stop offset="1" stop-color="#292540"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="640" rx="34" fill="url(#bg)"/>
+  <circle cx="1170" cy="-30" r="250" fill="#c7f36b" opacity=".82"/>
+  <circle cx="1250" cy="560" r="310" fill="#635bff" opacity=".12"/>
+  <g transform="translate(78 66)">
+    <rect width="58" height="58" rx="17" fill="#635bff"/>
+    <text x="29" y="40" text-anchor="middle" font-family="Arial, sans-serif" font-size="30" font-weight="700" fill="white">A</text>
+    <text x="76" y="25" font-family="Arial, sans-serif" font-size="25" font-weight="800" fill="#101114">ADA</text>
+    <text x="76" y="48" font-family="Arial, sans-serif" font-size="14" letter-spacing="2" fill="#667085">AUTOMATED DATA ANALYST</text>
+  </g>
+  <g transform="translate(78 184)">
+    <text font-family="Arial, sans-serif" font-size="60" font-weight="800" fill="#101114">
+      <tspan x="0" y="0">Drop a file.</tspan>
+      <tspan x="0" y="78" fill="#635bff">Get the business story.</tspan>
+    </text>
+    <text x="2" y="143" font-family="Arial, sans-serif" font-size="24" fill="#596174">CSV + Excel → dashboard, evidence, and next actions</text>
+    <g transform="translate(0 194)" font-family="Arial, sans-serif" font-size="16" font-weight="700">
+      <rect width="188" height="46" rx="23" fill="#ffffff" stroke="#dfddea"/>
+      <circle cx="24" cy="23" r="6" fill="#635bff"/>
+      <text x="40" y="29" fill="#303341">Zero configuration</text>
+      <rect x="200" width="188" height="46" rx="23" fill="#ffffff" stroke="#dfddea"/>
+      <circle cx="224" cy="23" r="6" fill="#26a17b"/>
+      <text x="240" y="29" fill="#303341">Traceable evidence</text>
+    </g>
+  </g>
+  <rect x="916" y="178" width="340" height="296" rx="24" fill="#1f1c3b" opacity=".12"/>
+  <g transform="translate(910 160) scale(.86)">
+    <rect width="396" height="344" rx="28" fill="url(#panel)"/>
+    <text x="30" y="42" font-family="Arial, sans-serif" font-size="12" font-weight="700" letter-spacing="2" fill="#c7f36b">EXECUTIVE SIGNAL</text>
+    <text x="30" y="86" font-family="Arial, sans-serif" font-size="26" font-weight="700" fill="white">Revenue is up 18.4%</text>
+    <text x="30" y="118" font-family="Arial, sans-serif" font-size="16" fill="#b9b9c7">Enterprise drove the latest movement.</text>
+    <line x1="30" y1="150" x2="366" y2="150" stroke="#454454"/>
+    <text x="30" y="182" font-family="Arial, sans-serif" font-size="12" fill="#a8a8b5">REVENUE</text>
+    <text x="30" y="222" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="white">$2.8M</text>
+    <path d="M30 287 C75 278 99 293 132 258 S192 272 226 231 S286 251 366 190" fill="none" stroke="#c7f36b" stroke-width="5" stroke-linecap="round"/>
+    <path d="M30 287 C75 278 99 293 132 258 S192 272 226 231 S286 251 366 190 L366 312 L30 312 Z" fill="#c7f36b" opacity=".08"/>
+    <circle cx="366" cy="190" r="7" fill="#c7f36b"/>
+  </g>
+  <text x="78" y="588" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#303341">saineshnakra/automated-data-analyst</text>
+</svg>

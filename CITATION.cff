@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If ADA supports your work, please cite the software using this metadata."
+title: "ADA: Automated Data Analyst"
+type: software
+authors:
+  - family-names: Nakra
+    given-names: Sainesh
+    website: "https://sainesh.com/"
+repository-code: "https://github.com/saineshnakra/automated-data-analyst"
+url: "https://automated-data-analyst.streamlit.app/"
+license: MIT
+keywords:
+  - business intelligence
+  - automated data analysis
+  - data visualization
+  - Streamlit
+  - CSV
+  - Excel

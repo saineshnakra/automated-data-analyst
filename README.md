@@ -1,78 +1,91 @@
-# ADA — a dashboard that explains itself
+# ADA — AI-powered business intelligence from CSV and Excel
 
 [![CI](https://github.com/saineshnakra/automated-data-analyst/actions/workflows/ci.yml/badge.svg)](https://github.com/saineshnakra/automated-data-analyst/actions/workflows/ci.yml)
-[![Streamlit](https://img.shields.io/badge/Streamlit-live_demo-ff4b4b?logo=streamlit&logoColor=white)](https://automated-data-analyst.streamlit.app/)
+[![Streamlit](https://img.shields.io/badge/Streamlit-live_product-ff4b4b?logo=streamlit&logoColor=white)](https://automated-data-analyst.streamlit.app/)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?logo=python&logoColor=white)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-20a779.svg)](LICENSE)
+[![Contributions welcome](https://img.shields.io/badge/contributions-welcome-635bff.svg)](CONTRIBUTING.md)
 
-**One business file in. A decision-ready dashboard out.**
+**Drop in a business file. Get a dashboard, the evidence behind it, and the next action.**
 
-ADA is an automated business analyst for people who do not want to configure a BI tool. Upload a CSV or Excel workbook and ADA cleans the data, detects the likely metric, date, and business segment, builds a dashboard, explains what happened, and recommends what to investigate next.
+[Try the live dashboard](https://automated-data-analyst.streamlit.app/) · [See the roadmap](ROADMAP.md) · [Contribute](CONTRIBUTING.md) · [Report a bug](https://github.com/saineshnakra/automated-data-analyst/issues/new?template=bug_report.yml)
 
-**[Explore the live product](https://automated-data-analyst.streamlit.app/)**
+![ADA turns CSV and Excel files into decision-ready business dashboards](assets/ada-social-preview.png)
 
-## The product principle
+ADA is an open-source automated data analyst for operators who need answers without configuring a BI tool. Upload a CSV, XLSX, or XLSM file and ADA cleans it, detects its business schema, creates an interactive Plotly dashboard, explains material changes, and recommends what to investigate next.
 
-Most analytics tools stop at charts. ADA separates the work into two explicit layers:
+It is designed for the simple use case analytics software often makes difficult: **even a first-time user should be able to upload a spreadsheet and understand what is happening in the business.**
 
-1. **What the data says** — traceable calculations such as period movement, segment contribution, concentration, relationships, exceptions, and completeness.
-2. **What ADA recommends** — rule-based interpretation and prioritized next actions, each linked to its supporting evidence.
+## Why ADA is different
 
-Calculations are never presented as causal proof, and recommendations are never disguised as facts.
+Most CSV analyzers stop at charts. ADA keeps three layers explicit:
 
-## Zero-configuration workflow
+| Layer | What it does | Trust boundary |
+|---|---|---|
+| **Calculation** | Detects trends, drivers, concentration, relationships, exceptions, and data quality | Deterministic and traceable |
+| **Interpretation** | Turns those calculations into prioritized investigations | Clearly labeled; never causal proof |
+| **Optional AI strategy** | Connects computed evidence into a concise strategic read | Opt-in; raw uploaded rows are not sent |
 
-```text
-CSV or Excel upload
-        │
-        ▼
-Automatic cleanup and schema detection
-        │
-        ├──► Executive brief
-        ├──► Business KPI cards
-        ├──► Auto-generated dashboard
-        ├──► Evidence-backed recommendations
-        └──► Cleaned data + downloadable report
+Every evidence card exposes its calculation. The deterministic dashboard remains authoritative whether or not the optional strategy model is configured.
+
+## From spreadsheet to decision
+
+```mermaid
+flowchart TD
+    A["Upload CSV or Excel"] --> B["Clean and infer types"]
+    B --> C["Detect metric, date, segment, ID"]
+    C --> D["Calculate business evidence"]
+    D --> E["Dashboard and executive brief"]
+    D -. "computed evidence only" .-> F["Optional AI strategic read"]
 ```
 
 ADA automatically looks for:
 
 - A primary outcome such as revenue, sales, profit, cost, amount, or units
-- A time field for week-over-week, month-over-month, or quarterly movement
+- A time field for period movement and current-versus-prior comparisons
 - A useful segment such as product, category, channel, region, customer, or status
-- Identifiers, data-quality problems, outliers, concentration, and numeric relationships
+- Identifiers, missingness, outliers, concentration, and numeric relationships
+- The strongest evidence-backed next investigation, separated from observed fact
 
-If the source schema is unusual, the **Tune detection** panel lets the user override the metric, date, and segment without rebuilding charts manually.
+If the source schema is unusual, users can override the detected metric, date, and segment without rebuilding the dashboard.
 
-## Features
+## Product capabilities
 
-- CSV, XLSX, and XLSM uploads up to 25 MB
-- Included synthetic operating-data demo
-- Automatic column cleanup, type inference, duplicate removal, and cleaning audit
-- Executive headline and plain-English briefing
-- Four automatically selected business KPIs
-- Trend, segment, distribution, and relationship visualizations
-- Separate factual evidence and analyst-recommendation layers
-- Transparent calculation shown under every evidence card
-- Downloadable executive Markdown brief and cleaned CSV
-- No API key, generated-code execution, or external model call
+- Zero-configuration CSV and Excel analytics with an included synthetic demo
+- Conservative cleanup, type inference, duplicate removal, and a visible cleaning audit
+- Executive headline, four business KPIs, and plain-English briefing
+- Automatically generated trend, contribution, distribution, and relationship charts
+- Evidence ledger with the calculation behind every displayed signal
+- Prioritized recommendations linked to deterministic evidence
+- Optional structured strategy synthesis using the OpenAI Responses API
+- Downloadable Markdown executive brief and cleaned CSV
+- Responsive Streamlit interface built for non-technical users
+- File limit and row cap for predictable hosted performance
 
-## Privacy and trust model
+## Privacy and model design
 
-ADA processes the file inside the active Streamlit session. It does not send uploaded rows to an LLM API and does not require secrets or API credits.
+ADA works fully without an API key. In deterministic mode, no model call is made.
 
-Recommendations are deterministic interpretations of visible calculations. They are useful prompts for investigation, not guaranteed causal conclusions. Hosted infrastructure still handles request traffic and application memory, so users should only upload data they are authorized to process there.
+When the optional strategy layer is enabled, ADA sends only the calculated schema, summaries, evidence cards, recommendations, and user-supplied context. **It does not put uploaded rows into the model prompt.** The response must match a typed Pydantic schema, storage is disabled for the request, and a hashed anonymous session identifier is used for safety controls.
 
-See [SECURITY.md](SECURITY.md) for the complete security model.
+The default model is `gpt-5.6-luna` with low reasoning for an efficient strategic read. `gpt-5.6-terra` with medium reasoning is available when the decision is ambiguous enough to justify higher cost. Model calls are button-triggered and cached per evidence payload to avoid accidental spend.
 
-## Code structure
+See [SECURITY.md](SECURITY.md) for the complete data-handling and secret-management policy.
 
-- `app.py` — product interface and visualization layer
-- `analysis.py` — conservative cleaning and data profiling
-- `business_insights.py` — schema detection, business calculations, evidence, and recommendations
-- `demo_data.py` — deterministic synthetic business dataset
-- `file_io.py` — validated CSV and Excel parsing
-- `tests/` — cleaning, detection, business-logic, report, and rendering tests
+## Architecture
+
+| Path | Responsibility |
+|---|---|
+| `app.py` | Thin Streamlit orchestration and session state |
+| `pipeline.py` | Bounded preparation, cleaning, schema selection, and audit frames |
+| `analysis.py` | Conservative cleaning and data profiling |
+| `business_insights.py` | Schema detection, calculations, evidence, and deterministic recommendations |
+| `ai_insights.py` | Optional typed Responses API synthesis over computed evidence |
+| `ui.py` | Reusable presentation components and Plotly styling |
+| `file_io.py` | Validated CSV and Excel parsing |
+| `tests/` | Unit, privacy-contract, pipeline, business-logic, and rendering tests |
+
+The codebase favors pure analysis functions and dependency injection at the model boundary. That keeps the business engine testable without Streamlit, network access, or API credits.
 
 ## Run locally
 
@@ -85,9 +98,15 @@ python -m pip install -r requirements.txt
 streamlit run app.py
 ```
 
-No `.env` file is needed.
+No secret is required. A visitor can enter their own API key in the session-only sidebar field. A trusted private deployment can instead set `OPENAI_API_KEY` in the environment or in `.streamlit/secrets.toml`:
 
-## Test
+```toml
+OPENAI_API_KEY = "your-key"
+```
+
+Never commit that file; it is already ignored. Avoid putting an owner-funded key on a public deployment unless you also add authentication and spending controls.
+
+## Test and develop
 
 ```bash
 python -m pip install -r requirements-dev.txt
@@ -95,15 +114,21 @@ ruff check .
 python -m unittest discover -s tests -v
 ```
 
-GitHub Actions runs the same checks on every push and pull request.
+GitHub Actions runs linting, the complete test suite, and bytecode compilation on every push and pull request.
+
+## Contribute
+
+Contributions are welcome, especially around new deterministic metrics, schema-detection fixtures, chart accessibility, file formats, and adversarial test datasets. Start with [CONTRIBUTING.md](CONTRIBUTING.md), choose an item from the [roadmap](ROADMAP.md), or open a focused proposal.
+
+Good contributions make an insight more accurate, more explainable, or easier for a non-technical user to act on. Every new recommendation should include a test and the calculation that supports it.
 
 ## Deploy
 
-Deploy `app.py` on Streamlit Community Cloud. The repository includes its theme, dependency, and upload-limit configuration. No secrets are required.
+Deploy `app.py` on Streamlit Community Cloud. The repository includes its app theme, dependency manifest, server upload limit, and headless configuration. Add `OPENAI_API_KEY` through Streamlit's secret manager only if the optional strategy layer should be available.
 
 ## Author
 
-Built by [Sainesh Nakra](https://sainesh.com/).
+Built and maintained by [Sainesh Nakra](https://sainesh.com/).
 
 ## License
 

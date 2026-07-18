@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://sainesh.com/
+    about: Report vulnerabilities privately; do not post sensitive details in an issue.
+  - name: Live product
+    url: https://automated-data-analyst.streamlit.app/
+    about: Try the current hosted version before reporting a product issue.
