@@ -169,11 +169,7 @@ If ADA is useful to you, a star helps other operators find it.
 
 ## Deploy
 
-Deploy `app.py` on Streamlit Community Cloud. The repository includes its app theme, dependency manifest, server upload limit, and headless configuration. Add `OPENAI_API_KEY` through Streamlit's secret manager only if the optional strategy layer should be available.
-
-## Author
-
-Built and maintained by [Sainesh Nakra](https://sainesh.com/).
+Deploy `app.py` on Streamlit. The repository includes its app theme, dependency manifest, server upload limit, and headless configuration. Add `OPENAI_API_KEY` through Streamlit's secret manager only if the optional strategy layer should be available.
 
 ## License
 
