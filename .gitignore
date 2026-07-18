@@ -6,6 +6,10 @@ __pycache__/
 # C extensions
 *.so
 
+# Local operating-system and app files
+.DS_Store
+.streamlit/secrets.toml
+
 # Distribution / packaging
 .Python
 build/
