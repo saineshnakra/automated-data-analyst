@@ -251,7 +251,16 @@ def _period_frequency(date_series: pd.Series) -> tuple[str, str]:
     return "Q", "quarter"
 
 
-def trend_frame(dataframe: pd.DataFrame, roles: ColumnRoles) -> pd.DataFrame:
+def preferred_frequency(date_series: pd.Series) -> str:
+    """Pick a human-sized period grain for the observed date span."""
+    return _period_frequency(date_series.dropna())[0]
+
+
+def trend_frame(
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles,
+    frequency: str | None = None,
+) -> pd.DataFrame:
     """Aggregate the selected measure over a human-sized time grain."""
     if not roles.date:
         return pd.DataFrame(columns=["Period", "Value"])
@@ -261,7 +270,7 @@ def trend_frame(dataframe: pd.DataFrame, roles: ColumnRoles) -> pd.DataFrame:
     if working.empty:
         return pd.DataFrame(columns=["Period", "Value"])
 
-    frequency, _ = _period_frequency(working[roles.date])
+    frequency = frequency or _period_frequency(working[roles.date])[0]
     working["Period"] = working[roles.date].dt.to_period(frequency).dt.to_timestamp()
     if roles.measure:
         result = working.groupby("Period", as_index=False)[roles.measure].sum()
