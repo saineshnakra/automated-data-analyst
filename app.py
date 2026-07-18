@@ -17,12 +17,13 @@ from ai_insights import (
     build_ai_payload,
     generate_ai_narrative,
     narrative_to_markdown,
+    plan_query_with_ai,
 )
 from analysis import column_profile
 from business_insights import BusinessBrief, build_business_report
 from demo_data import make_demo_data
 from file_io import read_tabular_file
-from nlq import answer_question, suggested_questions
+from nlq import QueryAnswer, answer_question, execute_plan, suggested_questions
 from pipeline import apply_role_selection, cleaning_audit_frame, prepare_analysis, schema_frame
 from ui import (
     inject_styles,
@@ -160,7 +161,37 @@ def maybe_generate_narrative(
     return cached, model
 
 
-def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str) -> None:
+def answer_with_ai_planner(
+    question: str,
+    dataframe: pd.DataFrame,
+    roles,
+    api_key: str,
+) -> QueryAnswer | None:
+    """Plan with the model over schema only, then execute locally."""
+    try:
+        plan = plan_query_with_ai(
+            question,
+            dataframe,
+            roles,
+            api_key=api_key,
+            safety_identifier=get_safety_identifier(),
+        )
+        if plan is None:
+            return None
+        executed = execute_plan(plan, dataframe, roles)
+    except Exception:  # A planner outage must never break the chat.
+        return None
+    return QueryAnswer(
+        question=question,
+        plan=executed.plan,
+        answer=executed.answer,
+        calculation=executed.calculation,
+        table=executed.table,
+        chart=executed.chart,
+    )
+
+
+def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str, api_key: str) -> None:
     """Chat over the analyzed dataset; every answer is a local calculation."""
     fingerprint = f"{source_name}:{len(dataframe)}:{','.join(dataframe.columns)}"
     if st.session_state.get("chat_fingerprint") != fingerprint:
@@ -177,9 +208,11 @@ def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str) -> None:
     typed = st.chat_input("Ask about this data — try “top 5 by revenue” or “which segment grew fastest?”")
     question = typed or question
     if question:
-        st.session_state.chat_history.append(
-            {"question": question, "result": answer_question(question, dataframe, roles)}
-        )
+        result = answer_question(question, dataframe, roles)
+        if result is None and api_key:
+            with st.spinner("Planning the calculation…"):
+                result = answer_with_ai_planner(question, dataframe, roles, api_key)
+        st.session_state.chat_history.append({"question": question, "result": result})
 
     if not st.session_state.chat_history:
         st.markdown(
@@ -351,7 +384,7 @@ with ask_tab:
         "Questions become transparent pandas calculations that run locally. "
         "No question or answer leaves the session, and every reply shows its math.",
     )
-    render_ask_ada(dataframe, roles, source_name)
+    render_ask_ada(dataframe, roles, source_name, api_key)
 
 with dashboard_tab:
     render_section_heading(

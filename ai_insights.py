@@ -6,9 +6,12 @@ import json
 from dataclasses import asdict, dataclass
 from typing import Literal, Protocol
 
+import pandas as pd
+from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 from pydantic import BaseModel, Field
 
-from business_insights import BusinessBrief
+from business_insights import BusinessBrief, ColumnRoles
+from nlq import QueryPlan, ValueFilter
 
 
 class AIAction(BaseModel):
@@ -106,6 +109,161 @@ def generate_ai_narrative(
     if isinstance(narrative, AINarrative):
         return narrative
     return AINarrative.model_validate(narrative)
+
+
+class AIQueryFilter(BaseModel):
+    column: str
+    value: str = Field(max_length=120)
+
+
+class AIQueryPlan(BaseModel):
+    """Typed plan the model must emit; execution always happens locally."""
+
+    answerable: bool
+    intent: Literal["aggregate", "count", "rank", "breakdown", "trend", "growth"] = "aggregate"
+    aggregation: Literal["sum", "mean", "median", "min", "max", "count"] = "sum"
+    measure: str | None = None
+    dimension: str | None = None
+    top_n: int | None = Field(default=None, ge=1, le=50)
+    ascending: bool = False
+    filters: list[AIQueryFilter] = Field(default_factory=list, max_length=4)
+    year: int | None = Field(default=None, ge=1900, le=2100)
+    month: int | None = Field(default=None, ge=1, le=12)
+    grain: Literal["D", "W", "M", "Q", "Y"] | None = None
+
+
+PLANNER_CONFIG = AIConfig("gpt-5.6-luna", "low", "Query planner")
+
+PLANNER_INSTRUCTIONS = """You translate one business question about a single table into a strict query plan.
+Use only the listed column names, exactly as written; never invent a column.
+Filter values may only be phrases quoted from the question itself.
+If the schema cannot answer the question, set answerable to false instead of guessing."""
+
+
+def build_query_schema(dataframe: pd.DataFrame, roles: ColumnRoles) -> list[dict[str, str]]:
+    """Describe columns for the planner without exposing a single cell value."""
+    schema: list[dict[str, str]] = []
+    for column in dataframe.columns:
+        series = dataframe[column]
+        if is_datetime64_any_dtype(series):
+            kind = "datetime"
+        elif is_numeric_dtype(series):
+            kind = "numeric"
+        else:
+            kind = "category"
+        if column == roles.measure:
+            role = "primary measure"
+        elif column == roles.date:
+            role = "date"
+        elif column == roles.dimension:
+            role = "primary dimension"
+        elif column == roles.identifier:
+            role = "identifier"
+        elif column in roles.dimensions:
+            role = "dimension"
+        else:
+            role = "other"
+        schema.append({"column": column, "type": kind, "role": role})
+    return schema
+
+
+def build_planner_payload(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -> str:
+    payload = {
+        "question": question.strip(),
+        "columns": build_query_schema(dataframe, roles),
+        "task": "Emit the single best query plan for this question, or set answerable to false.",
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _resolve_filter(item: AIQueryFilter, dataframe: pd.DataFrame) -> ValueFilter | None:
+    """Map a quoted filter phrase onto real values; refuse rather than guess."""
+    if item.column not in dataframe.columns:
+        return None
+    wanted = item.value.casefold().strip()
+    matched = tuple(
+        str(value)
+        for value in dataframe[item.column].dropna().unique()
+        if str(value).casefold().strip() == wanted
+    )
+    return ValueFilter(column=item.column, values=matched) if matched else None
+
+
+def _to_query_plan(
+    parsed: AIQueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles
+) -> QueryPlan | None:
+    measure = parsed.measure or roles.measure
+    dimension = parsed.dimension
+    for column in (parsed.measure, parsed.dimension):
+        if column is not None and column not in dataframe.columns:
+            return None
+    if parsed.intent in ("trend", "growth") and not roles.date:
+        return None
+    if parsed.intent == "aggregate" and not measure:
+        return None
+    if parsed.intent in ("rank", "breakdown"):
+        dimension = dimension or roles.dimension
+        if not dimension:
+            return None
+    filters: list[ValueFilter] = []
+    for item in parsed.filters:
+        resolved = _resolve_filter(item, dataframe)
+        if resolved is None:
+            return None
+        filters.append(resolved)
+    return QueryPlan(
+        intent=parsed.intent,
+        aggregation=parsed.aggregation,
+        measure=measure,
+        dimension=dimension,
+        top_n=parsed.top_n,
+        ascending=parsed.ascending,
+        filters=tuple(filters),
+        year=parsed.year,
+        month=parsed.month,
+        grain=parsed.grain,
+        source="ai",
+    )
+
+
+def plan_query_with_ai(
+    question: str,
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles,
+    *,
+    api_key: str,
+    safety_identifier: str,
+    config: AIConfig = PLANNER_CONFIG,
+    client: _Client | None = None,
+) -> QueryPlan | None:
+    """Ask the model for a typed plan over the schema; execution stays local."""
+    if not api_key.strip():
+        raise ValueError("An API key is required for the optional AI query planner.")
+    if not question.strip():
+        return None
+    if client is None:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=api_key, timeout=25.0, max_retries=1)
+
+    response = client.responses.parse(
+        model=config.model,
+        instructions=PLANNER_INSTRUCTIONS,
+        input=build_planner_payload(question, dataframe, roles),
+        text_format=AIQueryPlan,
+        reasoning={"effort": config.reasoning_effort},
+        max_output_tokens=500,
+        safety_identifier=safety_identifier,
+        store=False,
+    )
+    parsed = getattr(response, "output_parsed", None)
+    if parsed is None:
+        return None
+    if not isinstance(parsed, AIQueryPlan):
+        parsed = AIQueryPlan.model_validate(parsed)
+    if not parsed.answerable:
+        return None
+    return _to_query_plan(parsed, dataframe, roles)
 
 
 def narrative_to_markdown(narrative: AINarrative, *, model: str) -> str:

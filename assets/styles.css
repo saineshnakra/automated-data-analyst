@@ -362,6 +362,19 @@ div[data-testid="stFileUploaderDropzone"] button { color: white; border: 0; back
   box-shadow: 0 10px 32px rgba(16,17,20,.05);
 }
 .chat-calc { margin-top: .4rem !important; }
+.ai-plan-badge {
+  display: inline-flex;
+  margin-bottom: .3rem;
+  padding: .24rem .5rem;
+  color: #4e43c7;
+  font-size: .6rem;
+  font-weight: 850;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  border: 1px solid rgba(99,91,255,.28);
+  border-radius: .45rem;
+  background: var(--accent-soft);
+}
 .empty-state { padding: 2rem; color: var(--muted); border: 1px dashed #c5c9d2; border-radius: 1rem; background: rgba(255,255,255,.8); }
 
 [data-testid="stPlotlyChart"] { padding: .4rem .45rem .05rem; border: 1px solid var(--line); border-radius: 1.15rem; background: rgba(255,255,255,.9); box-shadow: 0 10px 32px rgba(16,17,20,.035); }

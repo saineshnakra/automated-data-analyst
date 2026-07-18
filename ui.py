@@ -282,6 +282,11 @@ def _chat_answer_figure(result: QueryAnswer) -> go.Figure | None:
 
 def render_chat_answer(result: QueryAnswer) -> None:
     """Render one answered question with its table, chart, and calculation."""
+    if result.plan.source == "ai":
+        st.markdown(
+            '<span class="ai-plan-badge">AI-planned · executed locally · schema only</span>',
+            unsafe_allow_html=True,
+        )
     st.markdown(result.answer)
     figure = _chat_answer_figure(result)
     if figure is not None:

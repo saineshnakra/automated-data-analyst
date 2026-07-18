@@ -6,27 +6,32 @@ from ai_insights import (
     MODEL_PRESETS,
     AIAction,
     AINarrative,
+    AIQueryFilter,
+    AIQueryPlan,
     build_ai_payload,
+    build_planner_payload,
     generate_ai_narrative,
     narrative_to_markdown,
+    plan_query_with_ai,
 )
 from business_insights import analyze_business, detect_roles
 from demo_data import make_demo_data
+from nlq import execute_plan
 
 
 class FakeResponses:
-    def __init__(self, narrative: AINarrative):
-        self.narrative = narrative
+    def __init__(self, parsed):
+        self.parsed = parsed
         self.arguments = None
 
     def parse(self, **kwargs: object) -> object:
         self.arguments = kwargs
-        return SimpleNamespace(output_parsed=self.narrative)
+        return SimpleNamespace(output_parsed=self.parsed)
 
 
 class FakeClient:
-    def __init__(self, narrative: AINarrative):
-        self.responses = FakeResponses(narrative)
+    def __init__(self, parsed):
+        self.responses = FakeResponses(parsed)
 
 
 class AIInsightTests(unittest.TestCase):
@@ -95,6 +100,104 @@ class AIInsightTests(unittest.TestCase):
         self.assertIn("Validate the leading segment", report)
         self.assertIn("gpt-5.6-luna", report)
         self.assertIn("raw rows were not sent", report)
+
+
+class AIQueryPlannerTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.dataframe = make_demo_data(rows=400)
+        cls.roles = detect_roles(cls.dataframe)
+
+    def plan(self, **overrides):
+        defaults = {
+            "answerable": True,
+            "intent": "rank",
+            "aggregation": "sum",
+            "measure": "Revenue",
+            "dimension": "Product",
+            "top_n": 2,
+        }
+        defaults.update(overrides)
+        return AIQueryPlan(**defaults)
+
+    def test_payload_sends_schema_and_question_but_no_cell_values(self):
+        payload = build_planner_payload("top products in the west", self.dataframe, self.roles)
+        parsed = json.loads(payload)
+
+        self.assertEqual(parsed["question"], "top products in the west")
+        columns = {entry["column"] for entry in parsed["columns"]}
+        self.assertIn("Revenue", columns)
+        self.assertIn("Product", columns)
+        for cell_value in ("Core", "Enterprise", "Northeast", "ORD-100000"):
+            self.assertNotIn(cell_value, payload)
+
+    def test_planned_query_executes_locally_with_ai_provenance(self):
+        client = FakeClient(self.plan(filters=[AIQueryFilter(column="Region", value="west")]))
+
+        plan = plan_query_with_ai(
+            "top 2 products by revenue in the west",
+            self.dataframe,
+            self.roles,
+            api_key="test-key",
+            safety_identifier="anonymous-session",
+            client=client,
+        )
+
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(plan.source, "ai")
+        self.assertEqual(plan.filters[0].values, ("West",))
+        result = execute_plan(plan, self.dataframe, self.roles)
+        self.assertIn("Product", result.answer)
+        self.assertEqual(len(result.table), 2)
+
+        arguments = client.responses.arguments
+        self.assertFalse(arguments["store"])
+        self.assertEqual(arguments["safety_identifier"], "anonymous-session")
+        self.assertIs(arguments["text_format"], AIQueryPlan)
+
+    def test_unanswerable_or_invalid_plans_are_refused(self):
+        for parsed in (
+            self.plan(answerable=False),
+            self.plan(measure="Imaginary Column"),
+            self.plan(filters=[AIQueryFilter(column="Region", value="Atlantis")]),
+        ):
+            client = FakeClient(parsed)
+            plan = plan_query_with_ai(
+                "question",
+                self.dataframe,
+                self.roles,
+                api_key="test-key",
+                safety_identifier="anonymous-session",
+                client=client,
+            )
+            self.assertIsNone(plan)
+
+    def test_time_intents_require_a_date_role(self):
+        dateless = self.dataframe.drop(columns=["Order Date"])
+        roles = detect_roles(dateless)
+        client = FakeClient(self.plan(intent="trend", dimension=None))
+
+        plan = plan_query_with_ai(
+            "monthly revenue",
+            dateless,
+            roles,
+            api_key="test-key",
+            safety_identifier="anonymous-session",
+            client=client,
+        )
+
+        self.assertIsNone(plan)
+
+    def test_api_key_is_required(self):
+        with self.assertRaisesRegex(ValueError, "API key"):
+            plan_query_with_ai(
+                "total revenue",
+                self.dataframe,
+                self.roles,
+                api_key=" ",
+                safety_identifier="anonymous-session",
+            )
 
 
 if __name__ == "__main__":
