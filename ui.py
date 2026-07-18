@@ -12,7 +12,14 @@ import streamlit as st
 
 from ai_insights import AINarrative
 from anomalies import detect_anomalies
-from business_insights import BusinessBrief, ColumnRoles, segment_frame, trend_frame
+from business_insights import (
+    BusinessBrief,
+    ColumnRoles,
+    driver_frame,
+    heatmap_frame,
+    segment_frame,
+    trend_frame,
+)
 from forecasting import build_forecast
 from nlq import QueryAnswer
 
@@ -273,6 +280,54 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
             st.plotly_chart(style_chart(figure), width="stretch", config={"displayModeBar": False})
         else:
             st.markdown('<div class="empty-state">Select a segment column to reveal contribution.</div>', unsafe_allow_html=True)
+
+    movement_columns = st.columns(2, gap="medium")
+    with movement_columns[0]:
+        drivers = driver_frame(dataframe, roles)
+        if not drivers.empty:
+            waterfall = go.Figure(
+                go.Waterfall(
+                    x=[*drivers["Segment"], "Net change"],
+                    y=[*drivers["Change"], 0],
+                    measure=[*(["relative"] * len(drivers)), "total"],
+                    connector={"line": {"color": "#E5E7EB"}},
+                    increasing={"marker": {"color": "#26A17B"}},
+                    decreasing={"marker": {"color": "#E35D6A"}},
+                    totals={"marker": {"color": ACCENT}},
+                    hovertemplate="%{x}: %{delta:+,.0f}<extra></extra>",
+                )
+            )
+            waterfall.update_layout(title=f"What moved {roles.measure} — latest vs previous period")
+            st.plotly_chart(style_chart(waterfall), width="stretch", config={"displayModeBar": False})
+        else:
+            st.markdown(
+                '<div class="empty-state">A date, metric, and segment together unlock the movement waterfall.</div>',
+                unsafe_allow_html=True,
+            )
+
+    with movement_columns[1]:
+        heat = heatmap_frame(dataframe, roles)
+        if not heat.empty and len(heat.columns) >= 2:
+            heatmap = go.Figure(
+                go.Heatmap(
+                    z=heat.to_numpy(),
+                    x=[period.strftime("%b %Y") for period in heat.columns],
+                    y=[str(segment) for segment in heat.index],
+                    colorscale=[[0, "#F6F7F9"], [0.5, "#B9B1FF"], [1, "#4E43C7"]],
+                    hovertemplate="%{y} · %{x}: %{z:,.0f}<extra></extra>",
+                    showscale=False,
+                )
+            )
+            heatmap.update_layout(
+                title=f"{roles.measure or 'Records'} intensity by {roles.dimension} and period"
+            )
+            heatmap.update_yaxes(autorange="reversed")
+            st.plotly_chart(style_chart(heatmap), width="stretch", config={"displayModeBar": False})
+        else:
+            st.markdown(
+                '<div class="empty-state">A date and a segment together unlock the intensity heatmap.</div>',
+                unsafe_allow_html=True,
+            )
 
     numeric = [column for column in roles.numeric if dataframe[column].nunique(dropna=True) > 2]
     lower_columns = st.columns(2, gap="medium")

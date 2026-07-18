@@ -330,8 +330,10 @@ def _growth_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | 
     )
 
 
-def _change_driver_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
-    """Identify the segment contributing most to the latest net movement."""
+def _segment_period_change(
+    dataframe: pd.DataFrame, roles: ColumnRoles
+) -> tuple[pd.DataFrame, pd.Timestamp, pd.Timestamp] | None:
+    """Per-segment totals for the latest two periods, or None when unavailable."""
     if not roles.date or not roles.measure or not roles.dimension:
         return None
 
@@ -349,6 +351,52 @@ def _change_driver_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evid
         return None
 
     grouped["Change"] = grouped[current_period] - grouped[previous_period]
+    return grouped, previous_period, current_period
+
+
+def driver_frame(dataframe: pd.DataFrame, roles: ColumnRoles, limit: int = 9) -> pd.DataFrame:
+    """Waterfall-ready per-segment change between the latest two periods."""
+    result = _segment_period_change(dataframe, roles)
+    if result is None:
+        return pd.DataFrame(columns=["Segment", "Change"])
+    grouped, _, _ = result
+    changes = grouped["Change"].sort_values(key=lambda values: values.abs(), ascending=False)
+    top = changes.head(limit)
+    frame = pd.DataFrame({"Segment": top.index.astype(str), "Change": top.to_numpy(dtype=float)})
+    remainder = float(changes.iloc[limit:].sum())
+    if len(changes) > limit and remainder:
+        other = pd.DataFrame({"Segment": ["Other segments"], "Change": [remainder]})
+        frame = pd.concat([frame, other], ignore_index=True)
+    return frame
+
+
+def heatmap_frame(dataframe: pd.DataFrame, roles: ColumnRoles, limit: int = 8) -> pd.DataFrame:
+    """Segment × period matrix of the measure (or row counts) for the top segments."""
+    if not roles.date or not roles.dimension:
+        return pd.DataFrame()
+
+    top_segments = segment_frame(dataframe, roles, limit=limit)["Segment"]
+    columns = [roles.date, roles.dimension] + ([roles.measure] if roles.measure else [])
+    working = dataframe[columns].dropna(subset=[roles.date, roles.dimension]).copy()
+    working = working[working[roles.dimension].isin(top_segments)]
+    if working.empty:
+        return pd.DataFrame()
+
+    frequency, _ = _period_frequency(working[roles.date])
+    working["Period"] = working[roles.date].dt.to_period(frequency).dt.to_timestamp()
+    if roles.measure:
+        pivot = working.groupby([roles.dimension, "Period"])[roles.measure].sum().unstack(fill_value=0)
+    else:
+        pivot = working.groupby([roles.dimension, "Period"]).size().unstack(fill_value=0)
+    return pivot.loc[pivot.sum(axis=1).sort_values(ascending=False).index]
+
+
+def _change_driver_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
+    """Identify the segment contributing most to the latest net movement."""
+    result = _segment_period_change(dataframe, roles)
+    if result is None:
+        return None
+    grouped, previous_period, current_period = result
     net_change = float(grouped["Change"].sum())
     if net_change == 0 or grouped["Change"].abs().max() == 0:
         return None

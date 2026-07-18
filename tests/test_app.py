@@ -12,7 +12,7 @@ class AppSmokeTests(unittest.TestCase):
             [tab.label for tab in app.tabs],
             ["Executive brief", "Ask ADA", "Live dashboard", "Evidence ledger", "Data room"],
         )
-        self.assertEqual(len(app.get("plotly_chart")), 4)
+        self.assertEqual(len(app.get("plotly_chart")), 6)
         self.assertEqual(len(app.dataframe), 4)
 
     def test_ask_ada_answers_a_question(self):
