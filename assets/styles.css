@@ -344,6 +344,24 @@ div[data-testid="stFileUploaderDropzone"] button { color: white; border: 0; back
 .confidence { color: var(--lime); font-size: .58rem; font-weight: 900; text-transform: uppercase; }
 
 .trust-note { margin-top: 1rem; padding: .88rem 1rem; color: #496224; font-size: .75rem; border: 1px solid #dfedc4; border-radius: .9rem; background: #f2f9e6; }
+
+[data-testid="stChatMessage"] {
+  padding: 1rem 1.15rem;
+  border: 1px solid var(--line);
+  border-radius: 1.05rem;
+  background: rgba(255,255,255,.92);
+}
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
+  border-color: rgba(99,91,255,.25);
+  background: var(--accent-soft);
+}
+[data-testid="stChatInput"] {
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  background: rgba(255,255,255,.94);
+  box-shadow: 0 10px 32px rgba(16,17,20,.05);
+}
+.chat-calc { margin-top: .4rem !important; }
 .empty-state { padding: 2rem; color: var(--muted); border: 1px dashed #c5c9d2; border-radius: 1rem; background: rgba(255,255,255,.8); }
 
 [data-testid="stPlotlyChart"] { padding: .4rem .45rem .05rem; border: 1px solid var(--line); border-radius: 1.15rem; background: rgba(255,255,255,.9); box-shadow: 0 10px 32px rgba(16,17,20,.035); }

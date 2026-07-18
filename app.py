@@ -22,11 +22,14 @@ from analysis import column_profile
 from business_insights import BusinessBrief, build_business_report
 from demo_data import make_demo_data
 from file_io import read_tabular_file
+from nlq import answer_question, suggested_questions
 from pipeline import apply_role_selection, cleaning_audit_frame, prepare_analysis, schema_frame
 from ui import (
     inject_styles,
     render_ai_narrative,
     render_brief,
+    render_chat_answer,
+    render_chat_fallback,
     render_dashboard,
     render_dataset_bar,
     render_evidence,
@@ -157,6 +160,43 @@ def maybe_generate_narrative(
     return cached, model
 
 
+def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str) -> None:
+    """Chat over the analyzed dataset; every answer is a local calculation."""
+    fingerprint = f"{source_name}:{len(dataframe)}:{','.join(dataframe.columns)}"
+    if st.session_state.get("chat_fingerprint") != fingerprint:
+        st.session_state.chat_fingerprint = fingerprint
+        st.session_state.chat_history = []
+
+    suggestions = suggested_questions(dataframe, roles)
+    chips = st.columns(len(suggestions))
+    question = None
+    for chip, suggestion in zip(chips, suggestions, strict=True):
+        if chip.button(suggestion, key=f"chip_{suggestion}", width="stretch"):
+            question = suggestion
+
+    typed = st.chat_input("Ask about this data — try “top 5 by revenue” or “which segment grew fastest?”")
+    question = typed or question
+    if question:
+        st.session_state.chat_history.append(
+            {"question": question, "result": answer_question(question, dataframe, roles)}
+        )
+
+    if not st.session_state.chat_history:
+        st.markdown(
+            '<div class="empty-state">Ask anything about the analyzed table. '
+            "Answers are computed locally and every one shows its calculation.</div>",
+            unsafe_allow_html=True,
+        )
+    for entry in st.session_state.chat_history:
+        with st.chat_message("user"):
+            st.markdown(entry["question"])
+        with st.chat_message("assistant"):
+            if entry["result"] is not None:
+                render_chat_answer(entry["result"])
+            else:
+                render_chat_fallback(suggestions)
+
+
 inject_styles()
 render_nav()
 render_landing()
@@ -256,8 +296,8 @@ render_dataset_bar(source_name, dataframe, roles)
 render_brief(brief)
 render_kpis(brief)
 
-executive_tab, dashboard_tab, evidence_tab, data_tab = st.tabs(
-    ["Executive brief", "Live dashboard", "Evidence ledger", "Data room"]
+executive_tab, ask_tab, dashboard_tab, evidence_tab, data_tab = st.tabs(
+    ["Executive brief", "Ask ADA", "Live dashboard", "Evidence ledger", "Data room"]
 )
 
 with executive_tab:
@@ -303,6 +343,15 @@ with executive_tab:
     else:
         narrative = None
         narrative_model = None
+
+with ask_tab:
+    render_section_heading(
+        "Conversational analyst",
+        "Ask this data anything",
+        "Questions become transparent pandas calculations that run locally. "
+        "No question or answer leaves the session, and every reply shows its math.",
+    )
+    render_ask_ada(dataframe, roles, source_name)
 
 with dashboard_tab:
     render_section_heading(

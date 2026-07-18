@@ -12,6 +12,7 @@ import streamlit as st
 
 from ai_insights import AINarrative
 from business_insights import BusinessBrief, ColumnRoles, segment_frame, trend_frame
+from nlq import QueryAnswer
 
 ACCENT = "#635BFF"
 LIME = "#C7F36B"
@@ -248,6 +249,59 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 color_discrete_sequence=[ACCENT, "#26A17B", "#F2B84B", "#EC6F91"],
             )
             st.plotly_chart(style_chart(figure), width="stretch", config={"displayModeBar": False})
+
+
+def _chat_answer_figure(result: QueryAnswer) -> go.Figure | None:
+    table = result.table
+    if table is None or table.empty or result.chart is None:
+        return None
+    if result.chart == "line" and {"Period", "Value"}.issubset(table.columns):
+        figure = px.area(
+            table,
+            x="Period",
+            y="Value",
+            markers=True,
+            title=result.plan.measure or "Records",
+            color_discrete_sequence=[ACCENT],
+        )
+        figure.update_traces(line={"width": 3}, fillcolor="rgba(99,91,255,.11)")
+        return style_chart(figure, height=320)
+    category = table.columns[0]
+    value = "Change %" if "Change %" in table.columns else table.columns[1]
+    figure = px.bar(
+        table.sort_values(value),
+        x=value,
+        y=category,
+        orientation="h",
+        title=f"{value} by {category}",
+        color_discrete_sequence=[LIME if "Change" not in value else ACCENT],
+    )
+    figure.update_traces(marker_line_width=0, hovertemplate="%{y}: %{x:,.2f}<extra></extra>")
+    return style_chart(figure, height=320)
+
+
+def render_chat_answer(result: QueryAnswer) -> None:
+    """Render one answered question with its table, chart, and calculation."""
+    st.markdown(result.answer)
+    figure = _chat_answer_figure(result)
+    if figure is not None:
+        st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
+    if result.table is not None and not result.table.empty:
+        with st.expander("See the numbers"):
+            st.dataframe(result.table, hide_index=True, width="stretch")
+    st.markdown(
+        f'<p class="calculation chat-calc">CALC · {escape(result.calculation)}</p>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_chat_fallback(suggestions: list[str]) -> None:
+    """Shown when a question cannot be mapped to a local calculation."""
+    st.markdown(
+        "I map questions to transparent calculations, and I could not map that one. "
+        "Try naming a metric, a segment, or a time scope — for example:"
+    )
+    st.markdown("\n".join(f"- {suggestion}" for suggestion in suggestions))
 
 
 def render_footer() -> None:
