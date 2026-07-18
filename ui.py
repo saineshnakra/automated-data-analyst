@@ -58,7 +58,7 @@ def render_landing() -> None:
         <section class="hero">
           <div class="hero-copy">
             <div class="eyebrow">Zero-config business intelligence</div>
-            <h1>Drop a file.<br><span>Get the business story.</span></h1>
+            <h1>Drop a file.<br><span class="grad">Get the business story.</span></h1>
             <p>ADA turns CSV and Excel data into an executive dashboard, explains what changed, identifies the driver, and recommends the next move—without making you configure a BI tool.</p>
             <div class="proof-row">
               <span class="proof-pill"><strong>01</strong> Automatic schema detection</span>
@@ -196,7 +196,7 @@ def style_chart(figure: go.Figure, *, height: int = 390) -> go.Figure:
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         font={"family": "Inter, sans-serif", "color": INK, "size": 12},
-        title={"font": {"size": 16, "color": INK}, "x": 0.02},
+        title={"font": {"size": 16, "color": INK, "family": "Space Grotesk, Inter, sans-serif"}, "x": 0.02},
         hoverlabel={"bgcolor": INK, "font_color": "white"},
         legend={"orientation": "h", "y": 1.08, "x": 0},
     )
@@ -243,6 +243,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                     go.Scatter(
                         x=[*forecast.periods, *reversed(forecast.periods)],
                         y=[*forecast.upper, *reversed(forecast.lower)],
+                        mode="lines",
                         fill="toself",
                         fillcolor="rgba(139,92,246,.09)",
                         line={"width": 0},
