@@ -2,7 +2,7 @@
 
 ## Data handling
 
-Automated Data Analyst processes uploaded CSV files in the active Streamlit session. The application does not require an OpenAI key, call an LLM API, execute generated code, or intentionally persist uploaded datasets.
+Automated Data Analyst processes uploaded CSV and Excel files in the active Streamlit session. The application does not require an OpenAI key, call an LLM API, execute generated code, or intentionally persist uploaded datasets.
 
 As with any hosted application, the infrastructure provider still processes network traffic and application memory. Do not upload data that you are not authorized to place on the selected Streamlit deployment.
 
