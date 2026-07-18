@@ -8,13 +8,32 @@
 
 **Drop in a business file. Get a dashboard, the evidence behind it, and the next action.**
 
-[Try the live dashboard](https://automated-data-analyst.streamlit.app/) · [See the roadmap](ROADMAP.md) · [Contribute](CONTRIBUTING.md) · [Report a bug](https://github.com/saineshnakra/automated-data-analyst/issues/new?template=bug_report.yml)
+[Try the live dashboard](https://automated-data-analyst.streamlit.app/) · [Read the engineering story](https://medium.com/@saineshnakra/i-built-an-ai-data-analyst-that-tells-you-when-it-hallucinates-6051609c3f4a) · [See the roadmap](ROADMAP.md) · [Contribute](CONTRIBUTING.md) · [Report a bug](https://github.com/saineshnakra/automated-data-analyst/issues/new?template=bug_report.yml)
 
 ![ADA turns CSV and Excel files into decision-ready business dashboards](assets/ada-social-preview.png)
 
 ADA is an open-source automated data analyst for operators who need answers without configuring a BI tool. Upload a CSV, XLSX, or XLSM file and ADA cleans it, detects its business schema, creates an interactive Plotly dashboard, flags anomalous periods, projects a guarded baseline forecast, explains material changes, recommends what to investigate next — and answers plain-English questions about the data with the calculation behind every reply.
 
 It is designed for the simple use case analytics software often makes difficult: **even a first-time user should be able to upload a spreadsheet and understand what is happening in the business.**
+
+## See ADA in action
+
+### Ask a business question. Get the number and its calculation.
+
+![Ask ADA a plain-English question and receive a pandas-backed answer with its calculation](assets/readme/ask-ada.gif)
+
+### Focus on one segment. Watch the entire analysis regroup itself.
+
+![Drill into one business segment and automatically regroup the dashboard by the next useful dimension](assets/readme/drilldown.gif)
+
+<p align="center">
+  <img src="assets/readme/anomaly-forecast.png" width="49%" alt="ADA dashboard showing anomaly markers, a guarded forecast, movement waterfall, and segment heatmap">
+  <img src="assets/readme/evidence-ledger.png" width="49%" alt="ADA evidence ledger showing calculations, anomalies, concentration, correlation, and detected schema">
+</p>
+
+<p align="center"><sub>Anomalies, forecasts, drivers, and evidence stay inspectable instead of disappearing behind generated prose.</sub></p>
+
+For the architecture, tradeoffs, and failure modes behind the product, read [**I Built an AI Data Analyst That Tells You When It Hallucinates**](https://medium.com/@saineshnakra/i-built-an-ai-data-analyst-that-tells-you-when-it-hallucinates-6051609c3f4a).
 
 ## Why ADA is different
 
