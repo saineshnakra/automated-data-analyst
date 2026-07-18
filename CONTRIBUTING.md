@@ -2,8 +2,11 @@
 
 ADA should make business data understandable to someone who has never used a BI tool. Contributions are welcome when they improve accuracy, explainability, usability, privacy, or maintainability.
 
+First time here? Pick something from the [good first issue](https://github.com/saineshnakra/automated-data-analyst/labels/good%20first%20issue) label — each one carries context, file pointers, and acceptance criteria — or say hello in an issue and we will help you scope one.
+
 ## Good places to start
 
+- Teach Ask ADA a new question shape (comparisons, shares, date ranges) in `nlq.py` with tests
 - Add deterministic business metrics with explicit calculations and tests
 - Expand schema detection using realistic, synthetic fixtures
 - Improve keyboard navigation, contrast, chart descriptions, or mobile behavior
@@ -27,10 +30,10 @@ Run the application with `streamlit run app.py`.
 
 ## Architecture rules
 
-- Put deterministic calculations in `analysis.py` or `business_insights.py`, not in UI callbacks.
+- Put deterministic calculations in `analysis.py`, `business_insights.py`, `nlq.py`, `anomalies.py`, or `forecasting.py`, not in UI callbacks.
 - Keep `app.py` focused on orchestration and session state; reusable presentation belongs in `ui.py`.
-- Keep model behavior optional and isolated in `ai_insights.py`.
-- Never send raw uploaded rows to an external model or execute model-generated code.
+- Keep model behavior optional and isolated in `ai_insights.py`; model-planned queries must execute through the same local engine as rule-parsed ones.
+- Never send raw uploaded rows or cell values to an external model, and never execute model-generated code.
 - Treat evidence as observed calculation and recommendations as interpretation.
 - Add a test for every bug fix and every new analytical rule.
 - Use synthetic data in tests and documentation. Do not commit customer or employer data.
@@ -42,7 +45,7 @@ Before opening a pull request:
 ```bash
 ruff check .
 python -m unittest discover -s tests -v
-python -m compileall -q analysis.py ai_insights.py business_insights.py demo_data.py file_io.py pipeline.py ui.py app.py tests
+python -m compileall -q analysis.py ai_insights.py anomalies.py business_insights.py demo_data.py file_io.py forecasting.py nlq.py pipeline.py ui.py app.py tests
 ```
 
 In the pull request, explain:
