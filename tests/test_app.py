@@ -15,6 +15,16 @@ class AppSmokeTests(unittest.TestCase):
         self.assertEqual(len(app.get("plotly_chart")), 6)
         self.assertEqual(len(app.dataframe), 4)
 
+    def test_drill_down_focuses_the_whole_analysis(self):
+        app = AppTest.from_file("app.py", default_timeout=45).run()
+        focus_box = next(box for box in app.selectbox if box.label.startswith("Drill into"))
+        focus_box.set_value("Enterprise").run()
+
+        self.assertFalse(app.exception)
+        rendered = " ".join(str(block.value) for block in app.markdown)
+        self.assertIn("Focus · Enterprise", rendered)
+        self.assertIn("Segment · Region", rendered)
+
     def test_ask_ada_answers_a_question(self):
         app = AppTest.from_file("app.py", default_timeout=45).run()
         app.chat_input[0].set_value("top 3 products by revenue").run()

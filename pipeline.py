@@ -51,6 +51,46 @@ def apply_role_selection(
     )
 
 
+def focus_options(dataframe: pd.DataFrame, roles: ColumnRoles, limit: int = 40) -> list[str]:
+    """Values of the active segment, most common first, for drill-down."""
+    if not roles.dimension or roles.dimension not in dataframe.columns:
+        return []
+    counts = dataframe[roles.dimension].value_counts(dropna=True)
+    return [str(value) for value in counts.head(limit).index]
+
+
+def apply_focus(
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles,
+    focus: str | None,
+) -> tuple[pd.DataFrame, ColumnRoles]:
+    """Drill into one segment value and regroup by the next useful dimension."""
+    if not focus or not roles.dimension:
+        return dataframe, roles
+    filtered = dataframe[dataframe[roles.dimension].astype(str) == focus]
+    if filtered.empty:
+        return dataframe, roles
+    replacement = next(
+        (
+            column
+            for column in roles.dimensions
+            if column != roles.dimension
+            and column in filtered.columns
+            and filtered[column].nunique(dropna=True) >= 2
+        ),
+        None,
+    )
+    focused_roles = ColumnRoles(
+        date=roles.date,
+        measure=roles.measure,
+        dimension=replacement,
+        identifier=roles.identifier,
+        numeric=roles.numeric,
+        dimensions=roles.dimensions,
+    )
+    return filtered.reset_index(drop=True), focused_roles
+
+
 def cleaning_audit_frame(report: CleaningReport) -> pd.DataFrame:
     return pd.DataFrame(
         [

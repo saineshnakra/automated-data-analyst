@@ -97,10 +97,16 @@ def render_dataset_bar(
     source_name: str,
     dataframe: pd.DataFrame,
     roles: ColumnRoles,
+    focus: str | None = None,
 ) -> None:
     chips = "".join(
         f'<span class="role-chip">{escape(label)} · {escape(value)}</span>'
-        for label, value in (("Metric", roles.measure), ("Segment", roles.dimension), ("Date", roles.date))
+        for label, value in (
+            ("Focus", focus),
+            ("Metric", roles.measure),
+            ("Segment", roles.dimension),
+            ("Date", roles.date),
+        )
         if value
     )
     st.markdown(

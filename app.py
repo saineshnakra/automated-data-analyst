@@ -20,11 +20,18 @@ from ai_insights import (
     plan_query_with_ai,
 )
 from analysis import column_profile
-from business_insights import BusinessBrief, build_business_report
+from business_insights import BusinessBrief, analyze_business, build_business_report
 from demo_data import make_demo_data
 from file_io import read_tabular_file
 from nlq import QueryAnswer, answer_question, execute_plan, suggested_questions
-from pipeline import apply_role_selection, cleaning_audit_frame, prepare_analysis, schema_frame
+from pipeline import (
+    apply_focus,
+    apply_role_selection,
+    cleaning_audit_frame,
+    focus_options,
+    prepare_analysis,
+    schema_frame,
+)
 from ui import (
     inject_styles,
     render_ai_narrative,
@@ -323,9 +330,25 @@ roles = apply_role_selection(
     measure=selected_measure,
     dimension=selected_dimension,
 )
-brief = prepared.analyze(roles)
 
-render_dataset_bar(source_name, dataframe, roles)
+focus_value = None
+focus_values = focus_options(dataframe, roles)
+if focus_values:
+    everything = f"All {roles.dimension} values"
+    focus_columns = st.columns([0.34, 0.66])
+    choice = focus_columns[0].selectbox(
+        f"Drill into one {roles.dimension}",
+        [everything, *focus_values],
+        help="Focus the brief, dashboard, chat, and exports on a single slice. "
+        "ADA regroups the slice by the next useful segment.",
+    )
+    if choice != everything:
+        focus_value = choice
+
+dataframe, roles = apply_focus(dataframe, roles, focus_value)
+brief = analyze_business(dataframe, roles)
+
+render_dataset_bar(source_name, dataframe, roles, focus=focus_value)
 render_brief(brief)
 render_kpis(brief)
 
