@@ -1,4 +1,4 @@
-# ADA — AI-powered business intelligence from CSV and Excel
+# Automated Data Analyst (ADA) — Open-source AI for CSV & Excel
 
 [![CI](https://github.com/saineshnakra/automated-data-analyst/actions/workflows/ci.yml/badge.svg)](https://github.com/saineshnakra/automated-data-analyst/actions/workflows/ci.yml)
 [![Streamlit](https://img.shields.io/badge/Streamlit-live_product-ff4b4b?logo=streamlit&logoColor=white)](https://automated-data-analyst.streamlit.app/)
@@ -6,15 +6,17 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-20a779.svg)](LICENSE)
 [![Contributions welcome](https://img.shields.io/badge/contributions-welcome-635bff.svg)](CONTRIBUTING.md)
 
-**Drop in a business file. Get a dashboard, the evidence behind it, and the next action.**
+**Upload a CSV or Excel file and get automated EDA, an interactive business intelligence dashboard, anomaly detection, forecasts, and evidence-backed recommendations—without configuring a BI tool.**
 
 [Try the live dashboard](https://automated-data-analyst.streamlit.app/) · [Read the engineering story](https://medium.com/@saineshnakra/i-built-an-ai-data-analyst-that-tells-you-when-it-hallucinates-6051609c3f4a) · [See the roadmap](ROADMAP.md) · [Contribute](CONTRIBUTING.md) · [Report a bug](https://github.com/saineshnakra/automated-data-analyst/issues/new?template=bug_report.yml)
 
+> If ADA saves you time, **star the repository**—it helps more analysts and open-source contributors discover the project.
+
 ![ADA turns CSV and Excel files into decision-ready business dashboards](assets/ada-social-preview.png)
 
-ADA is an open-source automated data analyst for operators who need answers without configuring a BI tool. Upload a CSV, XLSX, or XLSM file and ADA cleans it, detects its business schema, creates an interactive Plotly dashboard, flags anomalous periods, projects a guarded baseline forecast, explains material changes, recommends what to investigate next — and answers plain-English questions about the data with the calculation behind every reply.
+ADA is a privacy-conscious, open-source AI data analyst built with Python, Streamlit, pandas, and Plotly. Upload a CSV, XLSX, or XLSM file and it automatically cleans the data, detects the business schema, creates interactive visualizations, flags anomalous periods, projects a guarded baseline forecast, explains material changes, and recommends what to investigate next.
 
-It is designed for the simple use case analytics software often makes difficult: **even a first-time user should be able to upload a spreadsheet and understand what is happening in the business.**
+Ask questions in natural language—effectively **chat with your CSV or Excel data**—and ADA returns a pandas-backed answer with the calculation behind it. The complete deterministic workflow runs without an API key; optional AI features receive computed schema and evidence, never raw rows or cell values.
 
 ## See ADA in action
 
@@ -99,6 +101,15 @@ If the source schema is unusual, users can override the detected metric, date, a
 - Responsive Streamlit interface built for non-technical users
 - File limit and row cap for predictable hosted performance
 
+## Common use cases
+
+- Automated exploratory data analysis (EDA) for CSV and Excel files
+- Natural-language data analysis and chat-with-data workflows
+- KPI and business intelligence dashboards for operators
+- Time-series anomaly detection and guarded forecasting
+- Evidence-backed executive summaries and downloadable reports
+- A transparent, self-hostable alternative to black-box CSV analysis tools
+
 ## Privacy and model design
 
 ADA works fully without an API key. In deterministic mode, no model call is made — including every Ask ADA answer the rule-based parser can plan itself.
@@ -174,6 +185,9 @@ CSV (comma, semicolon, or tab delimited), XLSX, and XLSM — including picking a
 
 **How is this different from pasting a CSV into a chatbot?**
 A chatbot gives you fluent prose you cannot audit and your rows become part of a prompt. ADA turns questions into explicit query plans, executes them with pandas on your machine, and prints the calculation under every answer.
+
+**Is ADA a PandasAI alternative?**
+ADA serves a related chat-with-data use case but takes a different approach: its core uses deterministic pandas calculations rather than model-generated code, and every answer exposes its calculation. ADA is a complete Streamlit application, not a drop-in replacement for the PandasAI library.
 
 **Can I self-host it?**
 Yes — it is a standard Streamlit app. `pip install -r requirements.txt && streamlit run app.py`, or deploy it to any host that runs Python.
