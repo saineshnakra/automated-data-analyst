@@ -9,6 +9,7 @@ import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 
 from anomalies import detect_anomalies, format_period
+from timeseries import robust_scale
 
 
 @dataclass(frozen=True)
@@ -463,29 +464,69 @@ def segment_frame(dataframe: pd.DataFrame, roles: ColumnRoles, limit: int = 12) 
     return result.sort_values("Value", ascending=False).head(limit).reset_index(drop=True)
 
 
+MIN_PERIODS_FOR_VOLATILITY = 5
+
+
+def _period_changes(values: np.ndarray) -> np.ndarray:
+    """Period-over-period percentage changes, skipping divisions by zero."""
+    previous, current = values[:-1], values[1:]
+    usable = previous != 0
+    return (current[usable] - previous[usable]) / np.abs(previous[usable]) * 100
+
+
+def _movement_in_context(values: np.ndarray, change: float) -> str:
+    """Say whether the latest movement is unusual for this particular series.
+
+    A metric that routinely swings 30% has not told you anything by swinging
+    30% again. Without that context every movement reads as a development.
+    """
+    prior = _period_changes(values[:-1])
+    if len(prior) < MIN_PERIODS_FOR_VOLATILITY:
+        return ""
+
+    spread = robust_scale(prior)
+    typical = float(np.median(np.abs(prior)))
+    if spread == 0:
+        return ""
+
+    distance = abs(change - float(np.median(prior))) / spread
+    if distance < 1.0:
+        verdict = "This is within normal period-to-period variation"
+    elif distance < 2.0:
+        verdict = "This is a larger swing than usual"
+    else:
+        verdict = "This is an unusually large swing"
+    return f" {verdict} — this series typically moves about {typical:.1f}% per period."
+
+
 def _growth_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
     trend = trend_frame(dataframe, roles)
     if len(trend) < 2:
         return None
 
-    previous = float(trend.iloc[-2]["Value"])
-    current = float(trend.iloc[-1]["Value"])
+    values = trend["Value"].to_numpy(dtype=float)
+    previous = float(values[-2])
+    current = float(values[-1])
     if previous == 0:
         return None
     change = (current - previous) / abs(previous) * 100
     period = trend.iloc[-1]["Period"].strftime("%b %Y")
     measure = roles.measure or "Records"
     direction = "increased" if change >= 0 else "decreased"
+    context = _movement_in_context(values, change)
     return Evidence(
         kind="trend",
         title=f"Latest {measure.lower()} movement",
         value=f"{change:+.1f}%",
         statement=(
-            f"{measure} {direction} {abs(change):.1f}% in the latest observed period "
+            f"{measure} {direction} {abs(change):.1f}% in the latest complete period "
             f"({period}), from {format_number(previous, roles.measure)} to "
-            f"{format_number(current, roles.measure)}."
+            f"{format_number(current, roles.measure)}.{context}"
         ),
-        calculation="(Latest period − previous period) ÷ |previous period|",
+        calculation=(
+            "(Latest period − previous period) ÷ |previous period|, set against the spread "
+            "of past period-over-period changes"
+        ),
         tone="positive" if change >= 0 else "negative",
     )
 
@@ -685,6 +726,21 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
     )
 
 
+MIN_CORRELATION_PAIRS = 12
+MATERIAL_CORRELATION = 0.45
+RANK_DIVERGENCE = 0.25
+NORMAL_95 = 1.959963985
+
+
+def _correlation_interval(value: float, pairs: int) -> tuple[float, float]:
+    """95% confidence interval for a correlation, via the Fisher transform."""
+    if pairs <= 3 or abs(value) >= 1.0:
+        return value, value
+    centre = np.arctanh(value)
+    margin = NORMAL_95 / np.sqrt(pairs - 3)
+    return float(np.tanh(centre - margin)), float(np.tanh(centre + margin))
+
+
 def _relationship_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
     usable = [
         column
@@ -701,18 +757,47 @@ def _relationship_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evide
         return None
     pair = stacked.abs().idxmax()
     value = float(correlations.loc[pair[0], pair[1]])
-    if abs(value) < 0.45:
+    if abs(value) < MATERIAL_CORRELATION:
         return None
+
+    paired = dataframe[[pair[0], pair[1]]].dropna()
+    pairs = len(paired)
+    if pairs < MIN_CORRELATION_PAIRS:
+        return None
+
+    low, high = _correlation_interval(value, pairs)
     relationship = "move together" if value > 0 else "move in opposite directions"
+    statement = (
+        f"{pair[0]} and {pair[1]} {relationship}; their Pearson correlation is {value:.2f} "
+        f"(95% CI {low:.2f} to {high:.2f}, n = {pairs:,})."
+    )
+
+    # An interval spanning zero means the sample cannot rule out no relationship.
+    if low <= 0.0 <= high:
+        statement += (
+            f" With only {pairs:,} paired values this cannot be told apart from no "
+            "relationship at all."
+        )
+
+    # Pearson measures straight lines and a handful of extreme records can
+    # create one. A rank correlation that disagrees says exactly that.
+    ranked = float(paired.corr(method="spearman").iloc[0, 1])
+    if abs(value - ranked) > RANK_DIVERGENCE:
+        statement += (
+            f" The rank correlation is {ranked:.2f}, so the linear figure is being carried "
+            "by a few extreme records rather than the bulk of the data."
+        )
+
+    statement += " This is an association, not proof of causation."
     return Evidence(
         kind="relationship",
         title="Strongest measurable relationship",
         value=f"r = {value:.2f}",
-        statement=(
-            f"{pair[0]} and {pair[1]} {relationship}; their Pearson correlation is {value:.2f}. "
-            "This is an association, not proof of causation."
+        statement=statement,
+        calculation=(
+            "Pearson correlation across non-missing paired values, with a Fisher-transform "
+            "confidence interval and a Spearman rank check"
         ),
-        calculation="Pearson correlation across non-missing paired values",
     )
 
 
