@@ -20,7 +20,7 @@ from business_insights import (
     segment_frame,
     trend_frame,
 )
-from forecasting import build_forecast
+from forecasting import build_forecast, describe_backtest
 from nlq import QueryAnswer
 
 ACCENT = "#635BFF"
@@ -263,13 +263,9 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 )
             st.plotly_chart(style_chart(figure), width="stretch", config={"displayModeBar": False})
             if forecast:
-                error_note = (
-                    f"backtested error ±{forecast.backtest_mape:.1f}% over the last "
-                    f"{forecast.holdout_periods} periods"
-                    if forecast.backtest_mape is not None
-                    else "history is too thin for a backtest"
+                st.caption(
+                    f"Baseline forecast: {forecast.method} · {describe_backtest(forecast.backtest)}."
                 )
-                st.caption(f"Baseline forecast: {forecast.method} · {error_note}.")
         else:
             st.markdown('<div class="empty-state">Select a date column to reveal movement over time.</div>', unsafe_allow_html=True)
 
