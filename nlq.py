@@ -15,7 +15,7 @@ from typing import Literal
 
 import pandas as pd
 
-from aggregation import preferred_frequency, trend_frame
+from aggregation import TrendSeries, build_trend, preferred_frequency
 from formatting import format_number
 from schema import ColumnRoles
 
@@ -429,7 +429,8 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
             dimensions=roles.dimensions,
         )
         grain = plan.grain or preferred_frequency(working[roles.date])
-        trend = trend_frame(working, scoped_roles, frequency=grain)
+        series = build_trend(working, scoped_roles, frequency=grain)
+        trend = series.frame
         if len(trend) < 2:
             return QueryAnswer(
                 question="",
@@ -449,7 +450,9 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
             question="",
             plan=plan,
             answer=answer,
-            calculation=f"sum({plan.measure or 'rows'}) grouped per {grain_name}{scope}",
+            calculation=_with_notes(
+                f"sum({plan.measure or 'rows'}) grouped per {grain_name}{scope}", series
+            ),
             table=trend,
             chart="line",
         )
@@ -477,7 +480,8 @@ def _execute_growth(
         numeric=roles.numeric,
         dimensions=roles.dimensions,
     )
-    trend = trend_frame(working, scoped_roles, frequency=plan.grain)
+    series = build_trend(working, scoped_roles, frequency=plan.grain)
+    trend = series.frame
     if len(trend) < 2:
         return QueryAnswer(
             question="",
@@ -560,10 +564,19 @@ def _execute_growth(
         question="",
         plan=plan,
         answer=answer,
-        calculation=f"(latest − previous) ÷ |previous| on period sums{scope}",
+        calculation=_with_notes(f"(latest − previous) ÷ |previous| on period sums{scope}", series),
         table=trend,
         chart="line",
     )
+
+
+def _with_notes(calculation: str, series: TrendSeries) -> str:
+    """Carry the timeline adjustments into the answer's calculation trace.
+
+    A chat answer that quietly drops an in-progress period owes the reader
+    the same disclosure the dashboard gives.
+    """
+    return "; ".join([calculation, *series.notes]) if series.notes else calculation
 
 
 def _phrase(applied_filters: list[str]) -> str:

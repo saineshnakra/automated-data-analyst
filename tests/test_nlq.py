@@ -1,5 +1,8 @@
 import unittest
 
+import numpy as np
+import pandas as pd
+
 from demo_data import make_demo_data
 from nlq import QueryPlan, answer_question, execute_plan, parse_question, suggested_questions
 from pipeline import prepare_analysis
@@ -113,6 +116,28 @@ class NLQParsingTests(unittest.TestCase):
         self.assertIsNotNone(result)
         plan = parse_question("monthly revenue trend", frame, roles)
         self.assertNotEqual(plan.intent if plan else None, "trend")
+
+
+class TimelineDisclosureTests(unittest.TestCase):
+    def test_a_chat_trend_answer_discloses_an_excluded_partial_period(self):
+        rng = np.random.default_rng(4)
+        dates = pd.date_range("2024-01-01", "2025-07-12", freq="D")
+        frame = pd.DataFrame({"Date": dates, "Revenue": 100 + rng.normal(0, 4, len(dates))})
+
+        answer = answer_question("revenue over time", frame, detect_roles(frame))
+
+        self.assertIn("still in progress", answer.calculation)
+        self.assertIn("Jul 2025", answer.calculation)
+
+    def test_a_complete_timeline_adds_no_disclosure(self):
+        rng = np.random.default_rng(4)
+        dates = pd.date_range("2024-01-01", "2025-06-30", freq="D")
+        frame = pd.DataFrame({"Date": dates, "Revenue": 100 + rng.normal(0, 4, len(dates))})
+
+        answer = answer_question("revenue over time", frame, detect_roles(frame))
+
+        self.assertNotIn("still in progress", answer.calculation)
+        self.assertNotIn("counted as zero", answer.calculation)
 
 
 if __name__ == "__main__":
