@@ -14,7 +14,6 @@ from ai_insights import AINarrative
 from anomalies import detect_anomalies
 from business_insights import (
     BusinessBrief,
-    ColumnRoles,
     build_trend,
     driver_frame,
     heatmap_frame,
@@ -22,6 +21,7 @@ from business_insights import (
 )
 from forecasting import build_forecast, describe_backtest
 from nlq import QueryAnswer
+from schema import ColumnRoles
 
 ACCENT = "#635BFF"
 LIME = "#C7F36B"

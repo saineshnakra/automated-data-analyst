@@ -5,7 +5,6 @@ import pandas as pd
 from business_insights import (
     analyze_business,
     build_business_report,
-    detect_roles,
     driver_frame,
     heatmap_frame,
     segment_frame,
@@ -13,6 +12,7 @@ from business_insights import (
 )
 from demo_data import make_demo_data
 from formatting import format_number
+from schema import detect_roles
 
 
 class RoleDetectionTests(unittest.TestCase):

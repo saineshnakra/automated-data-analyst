@@ -7,7 +7,8 @@ from dataclasses import dataclass
 import pandas as pd
 
 from analysis import CleaningReport, clean_dataframe
-from business_insights import BusinessBrief, ColumnRoles, analyze_business, detect_roles
+from business_insights import BusinessBrief, analyze_business
+from schema import ColumnRoles, detect_roles
 
 
 @dataclass(frozen=True)

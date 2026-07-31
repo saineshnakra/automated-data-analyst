@@ -5,7 +5,8 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from business_insights import analyze_business, detect_roles
+from business_insights import analyze_business
+from schema import detect_roles
 
 
 def monthly_frame(values, **columns):

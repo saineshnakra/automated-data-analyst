@@ -4,8 +4,9 @@ import numpy as np
 import pandas as pd
 
 from anomalies import CRITICAL_VALUES, FALSE_ALARM_RATE, critical_value, detect_anomalies
-from business_insights import analyze_business, detect_roles
+from business_insights import analyze_business
 from formatting import format_period
+from schema import detect_roles
 
 
 def make_trend(values):

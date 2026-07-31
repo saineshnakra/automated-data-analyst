@@ -26,4 +26,5 @@ jobs:
       - name: Compile
         run: >-
           python -m compileall -q analysis.py ai_insights.py anomalies.py business_insights.py
-          demo_data.py file_io.py forecasting.py nlq.py pipeline.py ui.py app.py tests
+          demo_data.py file_io.py forecasting.py formatting.py nlq.py pipeline.py schema.py
+          timeseries.py ui.py app.py tools tests

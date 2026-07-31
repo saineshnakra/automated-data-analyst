@@ -3,7 +3,8 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from business_insights import build_trend, detect_roles, preferred_frequency, trend_frame
+from business_insights import build_trend, preferred_frequency, trend_frame
+from schema import detect_roles
 
 
 def daily_sales(start, end, *, amount=100.0, seed=5):

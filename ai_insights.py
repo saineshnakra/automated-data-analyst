@@ -10,8 +10,9 @@ import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 from pydantic import BaseModel, Field
 
-from business_insights import BusinessBrief, ColumnRoles
+from business_insights import BusinessBrief
 from nlq import QueryPlan, ValueFilter
+from schema import ColumnRoles
 
 
 class AIAction(BaseModel):

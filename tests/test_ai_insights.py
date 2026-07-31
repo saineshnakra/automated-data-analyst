@@ -14,9 +14,10 @@ from ai_insights import (
     narrative_to_markdown,
     plan_query_with_ai,
 )
-from business_insights import analyze_business, detect_roles
+from business_insights import analyze_business
 from demo_data import make_demo_data
 from nlq import execute_plan
+from schema import detect_roles
 
 
 class FakeResponses:

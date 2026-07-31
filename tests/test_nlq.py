@@ -1,9 +1,9 @@
 import unittest
 
-from business_insights import detect_roles
 from demo_data import make_demo_data
 from nlq import QueryPlan, answer_question, execute_plan, parse_question, suggested_questions
 from pipeline import prepare_analysis
+from schema import detect_roles
 
 
 class NLQParsingTests(unittest.TestCase):

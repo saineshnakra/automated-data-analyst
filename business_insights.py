@@ -6,21 +6,11 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-from pandas.api.types import is_datetime64_any_dtype
 
 from anomalies import detect_anomalies
 from formatting import format_number, format_period, normalized_name
+from schema import TIME_PART_TOKENS, ColumnRoles, detect_roles, looks_like_identifier
 from timeseries import robust_scale
-
-
-@dataclass(frozen=True)
-class ColumnRoles:
-    date: str | None
-    measure: str | None
-    dimension: str | None
-    identifier: str | None
-    numeric: tuple[str, ...]
-    dimensions: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -58,147 +48,6 @@ class BusinessBrief:
     kpis: tuple[KPI, ...]
     evidence: tuple[Evidence, ...]
     recommendations: tuple[Recommendation, ...]
-
-
-MEASURE_KEYWORDS = {
-    "revenue": 14,
-    "sales": 14,
-    "gmv": 14,
-    "profit": 13,
-    "margin": 12,
-    "amount": 11,
-    "value": 10,
-    "income": 10,
-    "spend": 9,
-    "cost": 8,
-    "expense": 8,
-    "price": 7,
-    "quantity": 6,
-    "units": 6,
-    "orders": 6,
-    "volume": 6,
-    "balance": 6,
-    "score": 4,
-}
-
-DIMENSION_KEYWORDS = {
-    "product": 12,
-    "category": 12,
-    "segment": 12,
-    "region": 11,
-    "country": 10,
-    "state": 9,
-    "city": 9,
-    "channel": 10,
-    "customer": 8,
-    "client": 8,
-    "team": 7,
-    "department": 7,
-    "status": 6,
-    "type": 5,
-}
-
-IDENTIFIER_TOKENS = ("id", "uuid", "key", "code", "number", "invoice", "order")
-TIME_PART_TOKENS = ("year", "month", "week", "day", "hour", "minute", "quarter")
-
-
-def _keyword_score(name: str, keywords: dict[str, int]) -> int:
-    normalized = normalized_name(name)
-    return max((score for token, score in keywords.items() if token in normalized), default=0)
-
-
-def _looks_like_identifier(name: str, series: pd.Series) -> bool:
-    normalized = normalized_name(name)
-    token_match = any(token in normalized.split() for token in IDENTIFIER_TOKENS)
-    unique_ratio = series.nunique(dropna=True) / max(int(series.notna().sum()), 1)
-    return token_match and unique_ratio >= 0.8
-
-
-def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
-    """Infer likely business roles from names, types, and cardinality."""
-    numeric = dataframe.select_dtypes(include=np.number).columns.tolist()
-    date_columns = [
-        column for column in dataframe.columns if is_datetime64_any_dtype(dataframe[column])
-    ]
-
-    date = max(
-        date_columns,
-        key=lambda column: (
-            1 if any(token in normalized_name(column) for token in ("date", "time", "created")) else 0,
-            int(dataframe[column].notna().sum()),
-        ),
-        default=None,
-    )
-
-    measure_candidates: list[tuple[int, float, str]] = []
-    for column in numeric:
-        series = dataframe[column]
-        name = normalized_name(column)
-        score = _keyword_score(column, MEASURE_KEYWORDS)
-        if _looks_like_identifier(column, series):
-            score -= 20
-        if any(token == name or name.endswith(f" {token}") for token in TIME_PART_TOKENS):
-            score -= 15
-        non_null_ratio = float(series.notna().mean())
-        measure_candidates.append((score, non_null_ratio, column))
-
-    measure = None
-    if measure_candidates:
-        measure = max(measure_candidates, key=lambda candidate: (candidate[0], candidate[1]))[2]
-
-    dimensions: list[str] = []
-    dimension_candidates: list[tuple[int, int, str]] = []
-    for column in dataframe.columns:
-        if column == date or column in numeric:
-            continue
-        series = dataframe[column]
-        unique = int(series.nunique(dropna=True))
-        non_null = int(series.notna().sum())
-        if unique < 2 or unique > 100 or unique / max(non_null, 1) > 0.65:
-            continue
-        dimensions.append(column)
-        score = _keyword_score(column, DIMENSION_KEYWORDS)
-        preferred_size = -abs(unique - 10)
-        dimension_candidates.append((score, preferred_size, column))
-
-    dimension = (
-        max(dimension_candidates, key=lambda candidate: (candidate[0], candidate[1]))[2]
-        if dimension_candidates
-        else None
-    )
-
-    identifier_candidates = [
-        column
-        for column in dataframe.columns
-        if _looks_like_identifier(column, dataframe[column])
-    ]
-    identifier = identifier_candidates[0] if identifier_candidates else None
-
-    return ColumnRoles(
-        date=date,
-        measure=measure,
-        dimension=dimension,
-        identifier=identifier,
-        numeric=tuple(numeric),
-        dimensions=tuple(dimensions),
-    )
-
-
-def override_roles(
-    roles: ColumnRoles,
-    *,
-    date: str | None = None,
-    measure: str | None = None,
-    dimension: str | None = None,
-) -> ColumnRoles:
-    return ColumnRoles(
-        date=date if date is not None else roles.date,
-        measure=measure if measure is not None else roles.measure,
-        dimension=dimension if dimension is not None else roles.dimension,
-        identifier=roles.identifier,
-        numeric=roles.numeric,
-        dimensions=roles.dimensions,
-    )
 
 
 GRAIN_ORDER = ("W", "M", "Q")
@@ -757,7 +606,7 @@ def _relationship_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evide
     usable = [
         column
         for column in roles.numeric
-        if not _looks_like_identifier(column, dataframe[column])
+        if not looks_like_identifier(column, dataframe[column])
         and not any(token == normalized_name(column) for token in TIME_PART_TOKENS)
     ]
     if len(usable) < 2:

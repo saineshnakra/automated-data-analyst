@@ -15,8 +15,9 @@ from typing import Literal
 
 import pandas as pd
 
-from business_insights import ColumnRoles, preferred_frequency, trend_frame
+from business_insights import preferred_frequency, trend_frame
 from formatting import format_number
+from schema import ColumnRoles
 
 Intent = Literal["aggregate", "count", "rank", "breakdown", "trend", "growth"]
 Aggregation = Literal["sum", "mean", "median", "min", "max", "count"]
