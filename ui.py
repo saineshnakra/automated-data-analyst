@@ -15,10 +15,10 @@ from anomalies import detect_anomalies
 from business_insights import (
     BusinessBrief,
     ColumnRoles,
+    build_trend,
     driver_frame,
     heatmap_frame,
     segment_frame,
-    trend_frame,
 )
 from forecasting import build_forecast, describe_backtest
 from nlq import QueryAnswer
@@ -206,7 +206,8 @@ def style_chart(figure: go.Figure, *, height: int = 390) -> go.Figure:
 
 
 def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
-    trend = trend_frame(dataframe, roles)
+    series = build_trend(dataframe, roles)
+    trend = series.frame
     segments = segment_frame(dataframe, roles)
     chart_columns = st.columns(2, gap="medium")
     with chart_columns[0]:
@@ -266,6 +267,8 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 st.caption(
                     f"Baseline forecast: {forecast.method} · {describe_backtest(forecast.backtest)}."
                 )
+            for note in series.notes:
+                st.caption(f"Timeline: {note}")
         else:
             st.markdown('<div class="empty-state">Select a date column to reveal movement over time.</div>', unsafe_allow_html=True)
 
