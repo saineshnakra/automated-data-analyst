@@ -123,7 +123,25 @@ class BusinessAnalysisTests(unittest.TestCase):
         brief = analyze_business(dataframe)
 
         self.assertEqual(brief.recommendations[0].title, "Start with East")
-        self.assertIn("largest region driver", brief.recommendations[0].rationale)
+        self.assertIn("moved the most of any region", brief.recommendations[0].rationale)
+
+    def test_offsetting_segments_do_not_produce_an_absurd_share(self):
+        """A big rise and a big fall net to almost nothing; a share of that is nonsense."""
+        dataframe = pd.DataFrame(
+            {
+                "Date": pd.to_datetime(["2025-01-15"] * 2 + ["2025-02-15"] * 2 + ["2025-03-15"] * 2),
+                "Revenue": [1_000, 1_000, 1_000, 1_000, 2_000, 20],
+                "Region": ["West", "East"] * 3,
+            }
+        )
+
+        brief = analyze_business(dataframe)
+        driver = next(item for item in brief.evidence if item.kind == "driver")
+
+        self.assertIn("offset each other", driver.statement)
+        self.assertIn("of all movement", driver.statement)
+        self.assertNotIn("of the net movement", driver.statement)
+        self.assertIn("near zero", driver.calculation)
 
     def test_business_number_formatting(self):
         self.assertEqual(format_number(1_250_000, "Revenue"), "$1.2M")

@@ -292,6 +292,7 @@ def preferred_frequency(date_series: pd.Series) -> str:
 
 EMPTY_TREND = pd.DataFrame({"Period": pd.Series(dtype="datetime64[ns]"), "Value": pd.Series(dtype=float)})
 PARTIAL_COVERAGE_MARGIN = 0.2
+OFFSETTING_NET_RATIO = 0.25
 MIN_PERIODS_FOR_PARTIAL_CHECK = 4
 
 
@@ -496,12 +497,16 @@ def _segment_period_change(
     if not roles.date or not roles.measure or not roles.dimension:
         return None
 
-    trend = trend_frame(dataframe, roles)
+    series = build_trend(dataframe, roles)
+    trend = series.frame
     if len(trend) < 2:
         return None
     previous_period = trend.iloc[-2]["Period"]
     current_period = trend.iloc[-1]["Period"]
-    frequency = _period_frequency(dataframe[roles.date])
+    # The grain has to come from the trend itself: deriving it again from a
+    # different subset of rows can land on another grain, and then the two
+    # periods being compared exist in one view and not the other.
+    frequency = series.frequency
     working = dataframe[[roles.date, roles.measure, roles.dimension]].dropna().copy()
     working["Period"] = working[roles.date].dt.to_period(frequency).dt.to_timestamp()
     comparison = working[working["Period"].isin([previous_period, current_period])]
@@ -556,34 +561,55 @@ def _change_driver_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evid
     if result is None:
         return None
     grouped, previous_period, current_period = result
-    net_change = float(grouped["Change"].sum())
-    if net_change == 0 or grouped["Change"].abs().max() == 0:
+    changes = grouped["Change"]
+    net_change = float(changes.sum())
+    gross_change = float(changes.abs().sum())
+    if gross_change == 0:
         return None
 
-    driver_name = (
-        str(grouped["Change"].idxmax()) if net_change > 0 else str(grouped["Change"].idxmin())
-    )
+    driver_name = str(changes.abs().idxmax())
     previous_value = float(grouped.loc[driver_name, previous_period])
     current_value = float(grouped.loc[driver_name, current_period])
     driver_change = float(grouped.loc[driver_name, "Change"])
-    share = abs(driver_change / net_change) * 100
     direction = "increased" if driver_change > 0 else "decreased"
     sign = "+" if driver_change > 0 else "−"
+
+    movement = (
+        f"{driver_name} moved the most of any {roles.dimension.lower()}: "
+        f"{roles.measure} {direction} by {format_number(abs(driver_change), roles.measure)}, "
+        f"from {format_number(previous_value, roles.measure)} to "
+        f"{format_number(current_value, roles.measure)}."
+    )
+
+    # Segments that cancel out leave a tiny net change, and a share of that
+    # net reads as an absurd multiple. Measure against total movement instead
+    # and say plainly that the offsetting is what is really going on.
+    if abs(net_change) < OFFSETTING_NET_RATIO * gross_change:
+        share = abs(driver_change) / gross_change * 100
+        statement = (
+            f"{movement} Segments largely offset each other this period — "
+            f"{format_number(gross_change, roles.measure)} of movement nets to just "
+            f"{format_number(abs(net_change), roles.measure)} — so this is "
+            f"{share:.1f}% of all movement rather than of the net."
+        )
+        calculation = (
+            f"Latest {driver_name} {roles.measure} − previous; ranked by absolute change; "
+            "share taken against total absolute movement because the net is near zero"
+        )
+    else:
+        share = abs(driver_change / net_change) * 100
+        statement = f"{movement} That is equivalent to {share:.1f}% of the net movement."
+        calculation = (
+            f"Latest {driver_name} {roles.measure} − previous {driver_name} {roles.measure}; "
+            "ranked across segments"
+        )
+
     return Evidence(
         kind="driver",
         title="Largest change driver",
         value=f"{sign}{format_number(abs(driver_change), roles.measure)}",
-        statement=(
-            f"{driver_name} was the largest {roles.dimension.lower()} driver: "
-            f"{roles.measure} {direction} by {format_number(abs(driver_change), roles.measure)}, "
-            f"from {format_number(previous_value, roles.measure)} to "
-            f"{format_number(current_value, roles.measure)}. That is equivalent to "
-            f"{share:.1f}% of the net movement."
-        ),
-        calculation=(
-            f"Latest {driver_name} {roles.measure} − previous {driver_name} {roles.measure}; "
-            "ranked across segments"
-        ),
+        statement=statement,
+        calculation=calculation,
         tone="positive" if driver_change > 0 else "negative",
         subject=driver_name,
     )
