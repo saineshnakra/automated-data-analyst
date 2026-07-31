@@ -7,12 +7,12 @@ from business_insights import (
     build_business_report,
     detect_roles,
     driver_frame,
-    format_number,
     heatmap_frame,
     segment_frame,
     trend_frame,
 )
 from demo_data import make_demo_data
+from formatting import format_number
 
 
 class RoleDetectionTests(unittest.TestCase):

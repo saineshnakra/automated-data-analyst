@@ -8,7 +8,8 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 
-from anomalies import detect_anomalies, format_period
+from anomalies import detect_anomalies
+from formatting import format_number, format_period, normalized_name
 from timeseries import robust_scale
 
 
@@ -97,35 +98,17 @@ DIMENSION_KEYWORDS = {
     "type": 5,
 }
 
-CURRENCY_TOKENS = (
-    "revenue",
-    "sales",
-    "gmv",
-    "profit",
-    "amount",
-    "income",
-    "spend",
-    "cost",
-    "expense",
-    "price",
-    "balance",
-)
-
 IDENTIFIER_TOKENS = ("id", "uuid", "key", "code", "number", "invoice", "order")
 TIME_PART_TOKENS = ("year", "month", "week", "day", "hour", "minute", "quarter")
 
 
-def _normalized(name: str) -> str:
-    return " ".join(name.lower().replace("_", " ").replace("-", " ").split())
-
-
 def _keyword_score(name: str, keywords: dict[str, int]) -> int:
-    normalized = _normalized(name)
+    normalized = normalized_name(name)
     return max((score for token, score in keywords.items() if token in normalized), default=0)
 
 
 def _looks_like_identifier(name: str, series: pd.Series) -> bool:
-    normalized = _normalized(name)
+    normalized = normalized_name(name)
     token_match = any(token in normalized.split() for token in IDENTIFIER_TOKENS)
     unique_ratio = series.nunique(dropna=True) / max(int(series.notna().sum()), 1)
     return token_match and unique_ratio >= 0.8
@@ -141,7 +124,7 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
     date = max(
         date_columns,
         key=lambda column: (
-            1 if any(token in _normalized(column) for token in ("date", "time", "created")) else 0,
+            1 if any(token in normalized_name(column) for token in ("date", "time", "created")) else 0,
             int(dataframe[column].notna().sum()),
         ),
         default=None,
@@ -150,7 +133,7 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
     measure_candidates: list[tuple[int, float, str]] = []
     for column in numeric:
         series = dataframe[column]
-        name = _normalized(column)
+        name = normalized_name(column)
         score = _keyword_score(column, MEASURE_KEYWORDS)
         if _looks_like_identifier(column, series):
             score -= 20
@@ -216,33 +199,6 @@ def override_roles(
         numeric=roles.numeric,
         dimensions=roles.dimensions,
     )
-
-
-def _is_currency(column: str | None) -> bool:
-    return bool(column and any(token in _normalized(column) for token in CURRENCY_TOKENS))
-
-
-def format_number(value: float, column: str | None = None, *, compact: bool = True) -> str:
-    """Format a metric according to likely business meaning."""
-    if not np.isfinite(value):
-        return "—"
-
-    absolute = abs(value)
-    prefix = "$" if _is_currency(column) else ""
-    suffix = ""
-    scaled = value
-    if compact and absolute >= 1_000_000_000:
-        scaled, suffix = value / 1_000_000_000, "B"
-    elif compact and absolute >= 1_000_000:
-        scaled, suffix = value / 1_000_000, "M"
-    elif compact and absolute >= 1_000:
-        scaled, suffix = value / 1_000, "K"
-
-    if suffix:
-        return f"{prefix}{scaled:,.1f}{suffix}"
-    if float(value).is_integer() and not _is_currency(column):
-        return f"{int(value):,}"
-    return f"{prefix}{value:,.2f}"
 
 
 GRAIN_ORDER = ("W", "M", "Q")
@@ -802,7 +758,7 @@ def _relationship_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evide
         column
         for column in roles.numeric
         if not _looks_like_identifier(column, dataframe[column])
-        and not any(token == _normalized(column) for token in TIME_PART_TOKENS)
+        and not any(token == normalized_name(column) for token in TIME_PART_TOKENS)
     ]
     if len(usable) < 2:
         return None

@@ -74,16 +74,6 @@ class Anomaly:
     severity: float  # residual in scaled-MAD units
 
 
-def format_period(period: pd.Timestamp, grain: str) -> str:
-    if grain == "Q":
-        return f"Q{period.quarter} {period.year}"
-    if grain in ("W", "D"):
-        return period.strftime("%d %b %Y")
-    if grain == "Y":
-        return period.strftime("%Y")
-    return period.strftime("%b %Y")
-
-
 def detect_anomalies(
     trend: pd.DataFrame,
     *,
