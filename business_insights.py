@@ -452,7 +452,10 @@ def _anomaly_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence |
             f"{format_number(worst.expected_high, roles.measure)} range. "
             f"{len(anomalies)} {plural} outside the trendline band."
         ),
-        calculation="Period totals vs median-slope trendline ± 3×MAD",
+        calculation=(
+            "Period totals vs Theil–Sen trendline ± a band calibrated so that only "
+            "1 stable series in 20 raises a flag"
+        ),
         tone="warning",
     )
 
