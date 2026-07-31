@@ -686,6 +686,27 @@ def _anomaly_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence |
     )
 
 
+CONCENTRATED_EFFECTIVE_SEGMENTS = 3.0
+
+
+def _effective_segments(values: np.ndarray, total: float) -> float | None:
+    """How many equally sized segments the business really rests on.
+
+    The reciprocal of the Herfindahl index. Ten segments where one holds
+    ninety percent of the total behave like barely more than one, which the
+    top-three share cannot express -- and with only four segments in the
+    file, "the top three hold 80%" is nearly a tautology.
+
+    Undefined when any segment is negative, since a share of a total that
+    parts of it subtract from means nothing.
+    """
+    if total <= 0 or (values < 0).any():
+        return None
+    shares = values / total
+    herfindahl = float(np.sum(shares**2))
+    return 1.0 / herfindahl if herfindahl > 0 else None
+
+
 def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evidence, Evidence] | tuple[()]:
     segments = segment_frame(dataframe, roles, limit=100)
     if segments.empty:
@@ -697,6 +718,7 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
     leader = segments.iloc[0]
     leader_share = float(leader["Value"] / total * 100)
     top_three_share = float(segments.head(3)["Value"].sum() / total * 100)
+    effective = _effective_segments(segments["Value"].to_numpy(dtype=float), total)
     measure = roles.measure or "records"
     dimension = roles.dimension or "segment"
     return (
@@ -712,17 +734,51 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
             calculation=f"{leader['Segment']} {measure} ÷ total {measure}",
             tone="positive",
         ),
-        Evidence(
+        _concentration_evidence(
+            dimension=dimension,
+            measure=measure,
+            segment_count=len(segments),
+            top_three_share=top_three_share,
+            effective=effective,
+        ),
+    )
+
+
+def _concentration_evidence(
+    *,
+    dimension: str,
+    measure: str,
+    segment_count: int,
+    top_three_share: float,
+    effective: float | None,
+) -> Evidence:
+    headline = (
+        f"The top three {dimension.lower()} values account for {top_three_share:.1f}% "
+        f"of measured {measure.lower()}."
+    )
+    if effective is None:
+        return Evidence(
             kind="concentration",
             title="Top-three concentration",
             value=f"{top_three_share:.1f}%",
-            statement=(
-                f"The top three {dimension.lower()} values account for {top_three_share:.1f}% "
-                f"of measured {measure.lower()}."
-            ),
+            statement=headline,
             calculation=f"Top three {dimension} {measure} ÷ total {measure}",
             tone="warning" if top_three_share >= 70 else "neutral",
+        )
+
+    return Evidence(
+        kind="concentration",
+        title="Effective segment count",
+        value=f"{effective:.1f} of {segment_count}",
+        statement=(
+            f"{headline} Weighting every {dimension.lower()} by its share, the {segment_count} "
+            f"of them carry as much risk as {effective:.1f} equally sized ones."
         ),
+        calculation=(
+            f"1 ÷ Herfindahl index (sum of squared {dimension} shares of {measure}), "
+            "the number of equal segments that would concentrate risk the same way"
+        ),
+        tone="warning" if effective < CONCENTRATED_EFFECTIVE_SEGMENTS else "neutral",
     )
 
 

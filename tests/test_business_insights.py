@@ -143,6 +143,53 @@ class BusinessAnalysisTests(unittest.TestCase):
         self.assertNotIn("of the net movement", driver.statement)
         self.assertIn("near zero", driver.calculation)
 
+    def test_concentration_reports_an_effective_segment_count(self):
+        frame = pd.DataFrame(
+            {
+                "Date": pd.date_range("2024-01-01", periods=60, freq="D"),
+                "Revenue": [900.0 if index % 12 == 0 else 10.0 for index in range(60)],
+                "Product": [f"SKU {index % 12}" for index in range(60)],
+            }
+        )
+
+        brief = analyze_business(frame)
+        concentration = next(item for item in brief.evidence if item.kind == "concentration")
+
+        self.assertEqual(concentration.tone, "warning")
+        self.assertIn("of 12", concentration.value)
+        self.assertIn("Herfindahl", concentration.calculation)
+
+    def test_an_evenly_spread_business_is_not_called_concentrated(self):
+        frame = pd.DataFrame(
+            {
+                "Date": pd.date_range("2024-01-01", periods=40, freq="D"),
+                "Revenue": [100.0] * 40,
+                "Product": [f"SKU {index % 10}" for index in range(40)],
+            }
+        )
+
+        brief = analyze_business(frame)
+        concentration = next(item for item in brief.evidence if item.kind == "concentration")
+
+        self.assertEqual(concentration.tone, "neutral")
+        self.assertIn("10.0 of 10", concentration.value)
+
+    def test_a_measure_that_can_go_negative_keeps_the_share_reading(self):
+        """Shares of a total that parts of it subtract from are meaningless."""
+        frame = pd.DataFrame(
+            {
+                "Date": pd.date_range("2024-01-01", periods=12, freq="D"),
+                "Profit": [500.0, -300.0, 200.0, 100.0] * 3,
+                "Product": ["A", "B", "C", "D"] * 3,
+            }
+        )
+
+        brief = analyze_business(frame)
+        concentration = next(item for item in brief.evidence if item.kind == "concentration")
+
+        self.assertEqual(concentration.title, "Top-three concentration")
+        self.assertNotIn("Herfindahl", concentration.calculation)
+
     def test_business_number_formatting(self):
         self.assertEqual(format_number(1_250_000, "Revenue"), "$1.2M")
         self.assertEqual(format_number(12_000, "Units"), "12.0K")
