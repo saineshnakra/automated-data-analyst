@@ -15,7 +15,7 @@ from typing import Literal
 
 import pandas as pd
 
-from business_insights import preferred_frequency, trend_frame
+from aggregation import preferred_frequency, trend_frame
 from formatting import format_number
 from schema import ColumnRoles
 

@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from business_insights import build_trend, preferred_frequency, trend_frame
+from aggregation import build_trend, preferred_frequency, trend_frame
 from schema import detect_roles
 
 

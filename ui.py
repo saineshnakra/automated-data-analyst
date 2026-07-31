@@ -10,15 +10,10 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from aggregation import build_trend, driver_frame, heatmap_frame, segment_frame
 from ai_insights import AINarrative
 from anomalies import detect_anomalies
-from business_insights import (
-    BusinessBrief,
-    build_trend,
-    driver_frame,
-    heatmap_frame,
-    segment_frame,
-)
+from business_insights import BusinessBrief
 from forecasting import build_forecast, describe_backtest
 from nlq import QueryAnswer
 from schema import ColumnRoles

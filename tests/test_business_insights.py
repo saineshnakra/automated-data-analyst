@@ -2,14 +2,8 @@ import unittest
 
 import pandas as pd
 
-from business_insights import (
-    analyze_business,
-    build_business_report,
-    driver_frame,
-    heatmap_frame,
-    segment_frame,
-    trend_frame,
-)
+from aggregation import driver_frame, heatmap_frame, segment_frame, trend_frame
+from business_insights import analyze_business, build_business_report
 from demo_data import make_demo_data
 from formatting import format_number
 from schema import detect_roles

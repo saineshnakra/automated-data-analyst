@@ -7,6 +7,12 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from aggregation import (
+    preferred_frequency,
+    segment_frame,
+    segment_period_change,
+    trend_frame,
+)
 from anomalies import detect_anomalies
 from formatting import format_number, format_period, normalized_name
 from schema import TIME_PART_TOKENS, ColumnRoles, detect_roles, looks_like_identifier
@@ -48,225 +54,6 @@ class BusinessBrief:
     kpis: tuple[KPI, ...]
     evidence: tuple[Evidence, ...]
     recommendations: tuple[Recommendation, ...]
-
-
-GRAIN_ORDER = ("W", "M", "Q")
-
-
-def _grain_for_span(span_days: int) -> str:
-    if span_days <= 120:
-        return "W"
-    if span_days <= 900:
-        return "M"
-    return "Q"
-
-
-def _grain_for_cadence(dates: pd.Series) -> str:
-    """The finest grain the data is actually dense enough to fill."""
-    unique = dates.drop_duplicates()
-    if len(unique) < 3:
-        return "W"
-    spacing = np.diff(unique.sort_values().to_numpy()).astype("timedelta64[D]").astype(int)
-    typical = float(np.median(spacing)) if spacing.size else 0.0
-    if typical <= 10:
-        return "W"
-    if typical <= 45:
-        return "M"
-    return "Q"
-
-
-def _period_frequency(date_series: pd.Series) -> str:
-    """Pick a human-sized grain the data can actually populate.
-
-    The observed span suggests a grain, but so does how often the data is
-    recorded. Five monthly readings spanning four months must not be charted
-    as seventeen weeks, twelve of which nobody measured. The coarser of the
-    two answers wins.
-    """
-    dates = date_series.dropna()
-    if dates.empty:
-        return "M"
-
-    span_days = max((dates.max() - dates.min()).days, 0)
-    return max(_grain_for_span(span_days), _grain_for_cadence(dates), key=GRAIN_ORDER.index)
-
-
-def preferred_frequency(date_series: pd.Series) -> str:
-    """Pick a human-sized period grain for the observed dates."""
-    return _period_frequency(date_series)
-
-
-EMPTY_TREND = pd.DataFrame({"Period": pd.Series(dtype="datetime64[ns]"), "Value": pd.Series(dtype=float)})
-PARTIAL_COVERAGE_MARGIN = 0.2
-OFFSETTING_NET_RATIO = 0.25
-MIN_PERIODS_FOR_PARTIAL_CHECK = 4
-
-
-@dataclass(frozen=True)
-class TrendSeries:
-    """Period totals, plus what had to be assumed to line them up.
-
-    Two adjustments happen before any trend, anomaly, or forecast maths sees
-    the numbers, and both are recorded here rather than applied silently.
-    """
-
-    frame: pd.DataFrame
-    frequency: str
-    filled_periods: int = 0
-    partial_period: pd.Timestamp | None = None
-    partial_coverage: str = ""
-
-    @property
-    def notes(self) -> tuple[str, ...]:
-        notes: list[str] = []
-        if self.partial_period is not None:
-            notes.append(
-                f"{format_period(self.partial_period, self.frequency)} is still in progress "
-                f"({self.partial_coverage}) and is excluded, so a half-finished period cannot "
-                "read as a collapse."
-            )
-        if self.filled_periods:
-            plural = "periods" if self.filled_periods > 1 else "period"
-            notes.append(
-                f"{self.filled_periods} {plural} with no rows counted as zero, keeping the "
-                "timeline evenly spaced."
-            )
-        return tuple(notes)
-
-
-def _period_bounds(periods: pd.DatetimeIndex, frequency: str) -> tuple[pd.DatetimeIndex, pd.DatetimeIndex]:
-    index = pd.PeriodIndex(periods, freq=frequency)
-    return index.start_time, index.end_time
-
-
-def _trailing_partial_period(
-    dates: pd.Series, periods: pd.Series, frequency: str
-) -> tuple[pd.Timestamp | None, str]:
-    """Detect a final period the data stops part-way through.
-
-    Compares how much of each period the data actually reaches with how much
-    it typically reaches. An extract cut on the 12th covers a third of its
-    month while every earlier month covers essentially all of one; a quiet
-    final week is nowhere near that different, and is left alone.
-    """
-    last_seen = dates.groupby(periods).max().sort_index()
-    if len(last_seen) < MIN_PERIODS_FOR_PARTIAL_CHECK:
-        return None, ""
-
-    starts, ends = _period_bounds(pd.DatetimeIndex(last_seen.index), frequency)
-    spans = (ends - starts).to_numpy().astype("timedelta64[s]").astype(float)
-    reached = (last_seen.to_numpy() - starts.to_numpy()).astype("timedelta64[s]").astype(float)
-    coverage = np.divide(reached, spans, out=np.zeros_like(reached), where=spans > 0)
-
-    typical = float(np.median(coverage[:-1]))
-    if coverage[-1] >= typical - PARTIAL_COVERAGE_MARGIN:
-        return None, ""
-
-    period_days = max(int(round(spans[-1] / 86_400)), 1)
-    covered_days = max(int(round(reached[-1] / 86_400)) + 1, 1)
-    return pd.Timestamp(last_seen.index[-1]), f"{covered_days} of {period_days} days"
-
-
-def build_trend(
-    dataframe: pd.DataFrame,
-    roles: ColumnRoles,
-    frequency: str | None = None,
-) -> TrendSeries:
-    """Aggregate the measure over a human-sized grain, on an even timeline."""
-    if not roles.date:
-        return TrendSeries(frame=EMPTY_TREND.copy(), frequency=frequency or "M")
-
-    columns = [roles.date] + ([roles.measure] if roles.measure else [])
-    working = dataframe[columns].dropna(subset=[roles.date]).copy()
-    if working.empty:
-        return TrendSeries(frame=EMPTY_TREND.copy(), frequency=frequency or "M")
-
-    frequency = frequency or _period_frequency(working[roles.date])
-    working["Period"] = working[roles.date].dt.to_period(frequency).dt.to_timestamp()
-
-    partial_period, partial_coverage = _trailing_partial_period(
-        working[roles.date], working["Period"], frequency
-    )
-    if partial_period is not None:
-        remaining = working[working["Period"] < partial_period]
-        if remaining["Period"].nunique() >= 2:
-            working = remaining
-        else:
-            partial_period, partial_coverage = None, ""
-
-    if roles.measure:
-        result = working.groupby("Period", as_index=False)[roles.measure].sum()
-        result = result.rename(columns={roles.measure: "Value"})
-    else:
-        result = working.groupby("Period", as_index=False).size().rename(columns={"size": "Value"})
-    result = result.sort_values("Period").reset_index(drop=True)
-
-    result, filled = _fill_empty_periods(result, frequency)
-    return TrendSeries(
-        frame=result,
-        frequency=frequency,
-        filled_periods=filled,
-        partial_period=partial_period,
-        partial_coverage=partial_coverage,
-    )
-
-
-def _fill_empty_periods(trend: pd.DataFrame, frequency: str) -> tuple[pd.DataFrame, int]:
-    """Materialise periods with no rows as zero, so gaps stop bending the fit.
-
-    A month in which nothing was sold is a month of zero sales, not a month
-    that never happened. Dropping it shortens the timeline and flattens every
-    slope fitted through it.
-    """
-    if len(trend) < 2:
-        return trend, 0
-
-    complete = pd.period_range(
-        pd.Period(trend["Period"].iloc[0], freq=frequency),
-        pd.Period(trend["Period"].iloc[-1], freq=frequency),
-        freq=frequency,
-    ).to_timestamp()
-    missing = len(complete) - len(trend)
-    if missing <= 0:
-        return trend, 0
-
-    filled = (
-        trend.set_index("Period")
-        .reindex(complete, fill_value=0.0)
-        .rename_axis("Period")
-        .reset_index()
-    )
-    return filled, missing
-
-
-def trend_frame(
-    dataframe: pd.DataFrame,
-    roles: ColumnRoles,
-    frequency: str | None = None,
-) -> pd.DataFrame:
-    """Period totals only, for callers that do not need the adjustments."""
-    return build_trend(dataframe, roles, frequency).frame
-
-
-def segment_frame(dataframe: pd.DataFrame, roles: ColumnRoles, limit: int = 12) -> pd.DataFrame:
-    """Rank the selected business segment by the selected measure or record count."""
-    if not roles.dimension:
-        return pd.DataFrame(columns=["Segment", "Value"])
-
-    working = dataframe.dropna(subset=[roles.dimension]).copy()
-    if working.empty:
-        return pd.DataFrame(columns=["Segment", "Value"])
-
-    if roles.measure:
-        result = working.groupby(roles.dimension, as_index=False)[roles.measure].sum()
-        result = result.rename(columns={roles.dimension: "Segment", roles.measure: "Value"})
-    else:
-        result = (
-            working.groupby(roles.dimension, as_index=False)
-            .size()
-            .rename(columns={roles.dimension: "Segment", "size": "Value"})
-        )
-    return result.sort_values("Value", ascending=False).head(limit).reset_index(drop=True)
 
 
 MIN_PERIODS_FOR_VOLATILITY = 5
@@ -336,74 +123,9 @@ def _growth_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | 
     )
 
 
-def _segment_period_change(
-    dataframe: pd.DataFrame, roles: ColumnRoles
-) -> tuple[pd.DataFrame, pd.Timestamp, pd.Timestamp] | None:
-    """Per-segment totals for the latest two periods, or None when unavailable."""
-    if not roles.date or not roles.measure or not roles.dimension:
-        return None
-
-    series = build_trend(dataframe, roles)
-    trend = series.frame
-    if len(trend) < 2:
-        return None
-    previous_period = trend.iloc[-2]["Period"]
-    current_period = trend.iloc[-1]["Period"]
-    # The grain has to come from the trend itself: deriving it again from a
-    # different subset of rows can land on another grain, and then the two
-    # periods being compared exist in one view and not the other.
-    frequency = series.frequency
-    working = dataframe[[roles.date, roles.measure, roles.dimension]].dropna().copy()
-    working["Period"] = working[roles.date].dt.to_period(frequency).dt.to_timestamp()
-    comparison = working[working["Period"].isin([previous_period, current_period])]
-    grouped = comparison.groupby([roles.dimension, "Period"])[roles.measure].sum().unstack(fill_value=0)
-    if previous_period not in grouped or current_period not in grouped:
-        return None
-
-    grouped["Change"] = grouped[current_period] - grouped[previous_period]
-    return grouped, previous_period, current_period
-
-
-def driver_frame(dataframe: pd.DataFrame, roles: ColumnRoles, limit: int = 9) -> pd.DataFrame:
-    """Waterfall-ready per-segment change between the latest two periods."""
-    result = _segment_period_change(dataframe, roles)
-    if result is None:
-        return pd.DataFrame(columns=["Segment", "Change"])
-    grouped, _, _ = result
-    changes = grouped["Change"].sort_values(key=lambda values: values.abs(), ascending=False)
-    top = changes.head(limit)
-    frame = pd.DataFrame({"Segment": top.index.astype(str), "Change": top.to_numpy(dtype=float)})
-    remainder = float(changes.iloc[limit:].sum())
-    if len(changes) > limit and remainder:
-        other = pd.DataFrame({"Segment": ["Other segments"], "Change": [remainder]})
-        frame = pd.concat([frame, other], ignore_index=True)
-    return frame
-
-
-def heatmap_frame(dataframe: pd.DataFrame, roles: ColumnRoles, limit: int = 8) -> pd.DataFrame:
-    """Segment × period matrix of the measure (or row counts) for the top segments."""
-    if not roles.date or not roles.dimension:
-        return pd.DataFrame()
-
-    top_segments = segment_frame(dataframe, roles, limit=limit)["Segment"]
-    columns = [roles.date, roles.dimension] + ([roles.measure] if roles.measure else [])
-    working = dataframe[columns].dropna(subset=[roles.date, roles.dimension]).copy()
-    working = working[working[roles.dimension].isin(top_segments)]
-    if working.empty:
-        return pd.DataFrame()
-
-    frequency = _period_frequency(working[roles.date])
-    working["Period"] = working[roles.date].dt.to_period(frequency).dt.to_timestamp()
-    if roles.measure:
-        pivot = working.groupby([roles.dimension, "Period"])[roles.measure].sum().unstack(fill_value=0)
-    else:
-        pivot = working.groupby([roles.dimension, "Period"]).size().unstack(fill_value=0)
-    return pivot.loc[pivot.sum(axis=1).sort_values(ascending=False).index]
-
-
 def _change_driver_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
     """Identify the segment contributing most to the latest net movement."""
-    result = _segment_period_change(dataframe, roles)
+    result = segment_period_change(dataframe, roles)
     if result is None:
         return None
     grouped, previous_period, current_period = result
@@ -587,6 +309,7 @@ def _concentration_evidence(
     )
 
 
+OFFSETTING_NET_RATIO = 0.25
 MIN_CORRELATION_PAIRS = 12
 MATERIAL_CORRELATION = 0.45
 RANK_DIVERGENCE = 0.25
