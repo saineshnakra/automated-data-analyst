@@ -4,6 +4,10 @@ The roadmap favors analytical depth and trust over a larger pile of charts. Item
 
 ## Recently delivered
 
+- **Calibrated anomaly threshold** — the residual band is simulated per history length so a stable series raises a false flag about once in twenty analyses, instead of the one-in-four a fixed three deviations produced
+- **Honest timelines** — an in-progress trailing period is excluded, periods with no rows count as zero, the grain respects how often the data is actually recorded, and every adjustment is stated
+- **Forecast that admits its limits** — a band that widens with the horizon and a scaled error that says outright when the baseline did not beat assuming no change
+- **Qualified evidence** — movement measured against the series' own volatility, and correlations reported with sample size, a confidence interval, and a rank check for outlier-driven relationships
 - **Ask ADA** — plain-English questions parsed into auditable query plans and executed locally, with an optional schema-only AI planner fallback
 - **Anomaly radar** — robust trendline detection with flagged periods on the chart, in evidence, and in recommendations
 - **Forecast guardrails** — a baseline offered only with sufficient history, capped horizon, seasonality, and a backtested error shown beside the chart
@@ -12,6 +16,11 @@ The roadmap favors analytical depth and trust over a larger pile of charts. Item
 - **Worksheet selection** — analyze any sheet of a multi-sheet workbook
 
 ## Near term
+
+- **Rolling-origin backtesting** — score the forecast across several origins rather than one holdout split, which uses short histories far better
+- **Seasonal-naive comparison** — for seasonal series, the bar to clear is last year's same period, not last period
+- **Detection sensitivity control** — let a user trade the calibrated false-alarm rate for sensitivity deliberately, and say what it costs
+- **Heavy-tailed calibration** — the current false-alarm guarantee assumes roughly normal noise; spiky measures need their own calibration or an explicit warning
 
 - **Cohort and retention analysis** — detect customer and event-time fields, produce a cohort matrix, and explain retention changes with visible calculations
 - **Metric semantics** — distinguish additive measures, rates, balances, and identifiers so aggregation choices remain valid

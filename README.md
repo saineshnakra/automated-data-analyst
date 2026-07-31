@@ -57,7 +57,7 @@ Every evidence card and chat answer exposes its calculation. The deterministic p
 | Setup | Upload and prompt | Data modeling, weeks | Upload only |
 | Answers | Plausible prose; reasoning hidden | Exact, but you build every chart | Deterministic calculations with the math shown |
 | Rows sent to a model | Usually | Depends on vendor | Never — optional AI sees schema and evidence only |
-| Anomalies and forecasts | On request, unverifiable | Paid add-ons | Built in, with a backtested error you can read |
+| Anomalies and forecasts | On request, unverifiable | Paid add-ons | Built in, with a calibrated false-alarm rate and a backtest that admits when the forecast is no better than no change |
 | Cost | Subscription | License | Free and MIT-licensed |
 
 ## From spreadsheet to decision
@@ -87,8 +87,9 @@ If the source schema is unusual, users can override the detected metric, date, a
 
 - Zero-configuration CSV and Excel analytics with an included synthetic demo
 - **Ask ADA**: plain-English questions (totals, rankings, breakdowns, trends, growth, counts, time and segment filters) answered locally with the calculation shown
-- Anomaly radar: periods outside a robust trendline band are flagged on the chart, in the evidence ledger, and in the recommended actions
-- Guarded baseline forecast with month-of-year seasonality, an uncertainty band, and its backtested error printed next to the chart
+- Anomaly radar: periods outside a robust trendline band are flagged on the chart, in the evidence ledger, and in the recommended actions — with the band calibrated by simulation so a stable series raises a false flag about once in twenty analyses
+- Guarded baseline forecast with month-of-year seasonality, a band that widens with the horizon, and a backtest that reports whether it actually beat assuming no change
+- Honest timelines: an in-progress final period is excluded rather than read as a collapse, periods with no rows are counted as zero, and both adjustments are stated under the chart
 - Drill-down focus: analyze one segment value and automatically regroup by the next useful dimension
 - Movement waterfall reconciling the latest change by segment, plus a segment-by-period intensity heatmap
 - Worksheet picker for multi-sheet Excel workbooks
@@ -132,10 +133,15 @@ See [SECURITY.md](SECURITY.md) for the complete data-handling and secret-managem
 | `app.py` | Thin Streamlit orchestration and session state |
 | `pipeline.py` | Bounded preparation, cleaning, schema selection, drill-down, and audit frames |
 | `analysis.py` | Conservative cleaning and data profiling |
-| `business_insights.py` | Schema detection, calculations, evidence, and deterministic recommendations |
+| `schema.py` | Business role detection: measure, date, segment, and identifier |
+| `aggregation.py` | The single place that decides what a period is, and the frames built on it |
+| `business_insights.py` | Evidence, deterministic recommendations, and the executive brief |
+| `formatting.py` | How numbers and periods are written down |
+| `timeseries.py` | Theil–Sen trendline and robust scale on calendar positions |
 | `nlq.py` | Natural-language questions → auditable query plans → local execution |
-| `anomalies.py` | Robust trendline anomaly detection over period aggregates |
+| `anomalies.py` | Anomaly detection against a calibrated band |
 | `forecasting.py` | Guarded baseline forecast with seasonality and a visible backtest |
+| `tools/` | Reproducible calibration of the anomaly threshold |
 | `ai_insights.py` | Optional typed Responses API query planning and evidence synthesis |
 | `ui.py` | Reusable presentation components and Plotly styling |
 | `file_io.py` | Validated CSV and Excel parsing with worksheet selection |
