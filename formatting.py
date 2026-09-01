@@ -33,14 +33,44 @@ def normalized_name(name: str) -> str:
 def is_currency(column: str | None) -> bool:
     return bool(column and any(token in normalized_name(column) for token in CURRENCY_TOKENS))
 
+def is_percentage(column: str | None) -> bool:
+    """Return if the column name represents a percentage."""
+    return bool(
+        column
+        and any(
+            token in normalized_name(column)
+            for token in ("%", "rate", "margin", "ratio")
+        )
+    )
+
+def currency_symbol(column: str | None) -> str:
+    """Return the currency symbol as in the column name"""
+    name = normalized_name(column) if column else ""
+
+    if "eur" in name or "€" in name:
+        return "€"
+    if "gbp" in name or "£" in name:
+        return "£"
+    if "usd" in name or "$" in name:
+        return "$"
+    if is_currency(column):
+        return "$"
+
+    return ""
+
 
 def format_number(value: float, column: str | None = None, *, compact: bool = True) -> str:
     """Format a metric according to likely business meaning."""
     if not np.isfinite(value):
         return "—"
 
+    if is_percentage(column):
+        if value >= 0 and value <= 1:
+            value *= 100
+        return f"{value:.1f}%"
+
     absolute = abs(value)
-    prefix = "$" if is_currency(column) else ""
+    prefix = currency_symbol(column)
     suffix = ""
     scaled = value
     if compact and absolute >= 1_000_000_000:

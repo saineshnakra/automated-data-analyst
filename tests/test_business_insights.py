@@ -187,6 +187,12 @@ class BusinessAnalysisTests(unittest.TestCase):
     def test_business_number_formatting(self):
         self.assertEqual(format_number(1_250_000, "Revenue"), "$1.2M")
         self.assertEqual(format_number(12_000, "Units"), "12.0K")
+        self.assertEqual(format_number(0.25, "Margin %"), "25.0%")
+        self.assertEqual(format_number(25, "Conversion Rate"), "25.0%")
+        self.assertEqual(format_number(1250, "Cost (EUR)"), "€1.2K")
+        self.assertEqual(format_number(1250, "Price GBP"), "£1.2K")
+        self.assertEqual(format_number(1250, "Amount USD"), "$1.2K")
+
 
 
 if __name__ == "__main__":
