@@ -107,6 +107,18 @@ class NLQParsingTests(unittest.TestCase):
         self.assertIsNotNone(answer_question("which product", self.dataframe, self.roles))
         self.assertIsNotNone(answer_question("revenue by region", self.dataframe, self.roles))
 
+    def test_supported_grammar_and_contractions_remain_answerable(self):
+        for question in (
+            "what's total revenue",
+            "average revenue per region",
+            "revenue timeline",
+            "revenue history",
+            "revenue trajectory",
+            "total revenue in the West",
+        ):
+            with self.subTest(question=question):
+                self.assertIsNotNone(answer_question(question, self.dataframe, self.roles))
+
     def test_suggestions_are_all_answerable(self):
         for question in suggested_questions(self.dataframe, self.roles):
             self.assertIsNotNone(

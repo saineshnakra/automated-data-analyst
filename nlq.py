@@ -108,9 +108,9 @@ BREAKDOWN_LIMIT = 12
 
 QUERY_STOPWORDS = {
     "a", "about", "across", "all", "and", "are", "by", "can", "do", "does", "each",
-    "for", "from", "have", "how", "in", "is", "it", "me", "many", "my", "of", "on",
-    "or", "our", "please", "show", "tell", "than", "the", "there", "to", "we", "what",
-    "which", "with", "your",
+    "for", "from", "have", "he", "how", "i", "in", "is", "it", "me", "many", "my",
+    "of", "on", "or", "our", "please", "re", "s", "she", "show", "tell", "than", "that",
+    "the", "there", "this", "to", "they", "ve", "we", "what", "which", "with", "you", "your",
 }
 
 
@@ -147,7 +147,9 @@ class QueryAnswer:
 
 
 def _norm(text: str) -> str:
-    cleaned = re.sub(r"[^0-9a-z]+", " ", str(text).lower())
+    lowered = str(text).lower().replace("’", "'")
+    lowered = re.sub(r"\b([a-z]+)'(s|re|ve|ll|d|m|t)\b", r"\1", lowered)
+    cleaned = re.sub(r"[^0-9a-z]+", " ", lowered)
     return " ".join(cleaned.split())
 
 
@@ -239,15 +241,21 @@ def _unrecognized_query_tokens(
         {
             "bottom",
             "count",
+            "breakdown",
             "fastest",
+            "history",
             "number",
+            "per",
             "rows",
             "sells",
+            "split",
             "sold",
             "top",
+            "trajectory",
             "trend",
             "over",
             "time",
+            "timeline",
         }
     )
 
@@ -261,9 +269,9 @@ def _unrecognized_query_tokens(
     for column in roles.dimensions:
         if column not in dataframe.columns:
             continue
-        values = dataframe[column].dropna().astype(str)
-        if len(values) <= MAX_FILTER_CANDIDATES:
-            for value in values.unique():
+        unique_values = dataframe[column].dropna().astype(str).unique()
+        if len(unique_values) <= MAX_FILTER_CANDIDATES:
+            for value in unique_values:
                 allowed.update(_norm(value).split())
 
     return {token for token in question.split() if token.isalpha() and token not in allowed}
