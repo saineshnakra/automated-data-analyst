@@ -11,7 +11,7 @@ from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 from pydantic import BaseModel, Field
 
 from business_insights import BusinessBrief
-from nlq import QueryPlan, ValueFilter
+from nlq import AGGREGATION_LABELS, QueryAnswer, QueryPlan, ValueFilter, execute_plan
 from schema import ColumnRoles
 
 
@@ -272,15 +272,11 @@ def describe_query_plan(plan: QueryPlan) -> str:
     if plan.intent == "count":
         description = "count the matching records"
     else:
-        aggregation = {
-            "sum": "total",
-            "mean": "average",
-            "median": "median",
-            "min": "minimum",
-            "max": "maximum",
-            "count": "count",
-        }[plan.aggregation]
-        description = f"calculate the {aggregation} of {plan.measure or 'records'}"
+        aggregation = AGGREGATION_LABELS[plan.aggregation]
+        if plan.aggregation == "count":
+            description = f"{aggregation} {plan.measure or 'records'}"
+        else:
+            description = f"{aggregation} of {plan.measure or 'records'}"
     if plan.dimension:
         description += f", grouped by {plan.dimension}"
     if plan.top_n:
@@ -293,14 +289,53 @@ def describe_query_plan(plan: QueryPlan) -> str:
     ]
     if filters:
         description += f" for {' and '.join(filters)}"
-    if plan.year is not None:
-        description += f" in {plan.year}"
     if plan.month is not None:
-        description += f" month {plan.month}"
+        month_names = {
+            1: "January",
+            2: "February",
+            3: "March",
+            4: "April",
+            5: "May",
+            6: "June",
+            7: "July",
+            8: "August",
+            9: "September",
+            10: "October",
+            11: "November",
+            12: "December",
+        }
+        month_label = month_names.get(plan.month, str(plan.month))
+        description += f" in {month_label}"
+        if plan.year is not None:
+            description += f" {plan.year}"
+    elif plan.year is not None:
+        description += f" in {plan.year}"
     if plan.grain:
         grain_labels = {"D": "day", "W": "week", "M": "month", "Q": "quarter", "Y": "year"}
         description += f", by {grain_labels.get(plan.grain, plan.grain)}"
     return description[0].upper() + description[1:] + "."
+
+
+def execute_approved_ai_plan(
+    question: str,
+    plan: QueryPlan,
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles,
+    *,
+    approved: bool,
+) -> QueryAnswer | None:
+    """Execute a validated AI plan only after an explicit approval decision."""
+    if not approved:
+        return None
+    executed = execute_plan(plan, dataframe, roles)
+    return QueryAnswer(
+        question=question,
+        plan=executed.plan,
+        answer=executed.answer,
+        calculation=executed.calculation,
+        table=executed.table,
+        chart=executed.chart,
+    )
 
 
 def narrative_to_markdown(narrative: AINarrative, *, model: str) -> str:

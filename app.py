@@ -16,6 +16,7 @@ from ai_insights import (
     AINarrative,
     build_ai_payload,
     describe_query_plan,
+    execute_approved_ai_plan,
     generate_ai_narrative,
     narrative_to_markdown,
     plan_query_with_ai,
@@ -24,7 +25,7 @@ from analysis import column_profile
 from business_insights import BusinessBrief, analyze_business, build_business_report
 from demo_data import make_demo_data
 from file_io import list_excel_sheets, list_sample_datasets, read_tabular_file
-from nlq import QueryAnswer, QueryPlan, answer_question, execute_plan, suggested_questions
+from nlq import QueryPlan, answer_question, suggested_questions
 from pipeline import (
     apply_focus,
     apply_role_selection,
@@ -177,34 +178,6 @@ def maybe_generate_narrative(
     return cached, model
 
 
-def answer_with_ai_planner(
-    question: str,
-    dataframe: pd.DataFrame,
-    roles,
-    api_key: str,
-    *,
-    approved: bool = False,
-) -> QueryAnswer | None:
-    """Plan and execute only when the caller has explicitly approved the plan."""
-    if not approved:
-        return None
-    try:
-        plan = plan_ai_query(question, dataframe, roles, api_key)
-        if plan is None:
-            return None
-        executed = execute_plan(plan, dataframe, roles)
-    except Exception:  # A planner outage must never break the chat.
-        return None
-    return QueryAnswer(
-        question=question,
-        plan=executed.plan,
-        answer=executed.answer,
-        calculation=executed.calculation,
-        table=executed.table,
-        chart=executed.chart,
-    )
-
-
 def plan_ai_query(
     question: str,
     dataframe: pd.DataFrame,
@@ -272,16 +245,17 @@ def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str, api_key: st
         approve, reject = st.columns(2)
         plan_key = hashlib.sha256(pending["question"].encode()).hexdigest()[:12]
         if approve.button("Run calculation", key=f"approve_ai_plan_{plan_key}", type="primary"):
-            executed = execute_plan(plan, dataframe, roles)
-            result = QueryAnswer(
-                question=pending["question"],
-                plan=executed.plan,
-                answer=executed.answer,
-                calculation=executed.calculation,
-                table=executed.table,
-                chart=executed.chart,
+            result = execute_approved_ai_plan(
+                pending["question"],
+                plan,
+                dataframe,
+                roles,
+                approved=True,
             )
-            st.session_state.chat_history.append({"question": pending["question"], "result": result})
+            if result is not None:
+                st.session_state.chat_history.append(
+                    {"question": pending["question"], "result": result}
+                )
             st.session_state.pending_ai_plan = None
         elif reject.button("Reject plan", key=f"reject_ai_plan_{plan_key}"):
             st.session_state.chat_history.append(

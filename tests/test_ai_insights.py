@@ -1,6 +1,7 @@
 import json
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from ai_insights import (
     MODEL_PRESETS,
@@ -11,13 +12,14 @@ from ai_insights import (
     build_ai_payload,
     build_planner_payload,
     describe_query_plan,
+    execute_approved_ai_plan,
     generate_ai_narrative,
     narrative_to_markdown,
     plan_query_with_ai,
 )
 from business_insights import analyze_business
 from demo_data import make_demo_data
-from nlq import execute_plan
+from nlq import QueryPlan, execute_plan
 from schema import detect_roles
 
 
@@ -218,6 +220,32 @@ class AIQueryPlannerTests(unittest.TestCase):
         self.assertIn("Total of Revenue", description)
         self.assertIn("grouped by Product", description)
         self.assertIn("Region = West", description)
+
+    def test_rejected_plan_is_not_executed(self):
+        plan = QueryPlan(intent="aggregate", aggregation="sum", measure="Revenue", source="ai")
+
+        with patch("ai_insights.execute_plan") as execute:
+            self.assertIsNone(
+                execute_approved_ai_plan(
+                    "total revenue",
+                    plan,
+                    self.dataframe,
+                    self.roles,
+                    approved=False,
+                )
+            )
+            execute.assert_not_called()
+
+            execute.return_value = execute_plan(plan, self.dataframe, self.roles)
+            result = execute_approved_ai_plan(
+                "total revenue",
+                plan,
+                self.dataframe,
+                self.roles,
+                approved=True,
+            )
+            self.assertIsNotNone(result)
+            execute.assert_called_once_with(plan, self.dataframe, self.roles)
 
 
 if __name__ == "__main__":
