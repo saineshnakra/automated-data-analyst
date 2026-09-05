@@ -5,7 +5,13 @@ import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 
 from analysis import build_markdown_report, clean_dataframe, column_profile, generate_insights
-from schema import DIMENSION_KEYWORDS, MEASURE_KEYWORDS, _keyword_score, detect_roles
+from schema import (
+    DIMENSION_KEYWORDS,
+    MEASURE_KEYWORDS,
+    _keyword_score,
+    detect_roles,
+    looks_like_identifier,
+)
 
 
 class CleanDataframeTests(unittest.TestCase):
@@ -122,6 +128,37 @@ class KeywordScoreTests(unittest.TestCase):
         )
 
         self.assertNotEqual(detect_roles(frame).dimension, "Product Container")
+
+    def test_a_date_is_never_an_identifier(self):
+        """"Order Date" carries an identifier token and unique values."""
+        dates = pd.Series(pd.date_range("2023-01-01", periods=400))
+
+        self.assertFalse(looks_like_identifier("Order Date", dates))
+        self.assertTrue(looks_like_identifier("Order ID", pd.Series([f"A{n}" for n in range(400)])))
+
+    def test_a_date_column_does_not_take_the_identifier_role(self):
+        frame = pd.DataFrame(
+            {
+                "Order Date": pd.date_range("2023-01-01", periods=40),
+                "Revenue": np.arange(40, dtype=float),
+                "Channel": ["Direct", "Partner"] * 20,
+            }
+        )
+
+        self.assertIsNone(detect_roles(frame).identifier)
+
+    def test_total_reads_as_a_measure(self):
+        """The most common measure name in a business export scored zero."""
+        self.assertGreater(_keyword_score("Total", MEASURE_KEYWORDS), 0)
+        self.assertGreater(_keyword_score("Turnover", MEASURE_KEYWORDS), 0)
+        self.assertGreater(
+            _keyword_score("Total", MEASURE_KEYWORDS),
+            _keyword_score("Passengers", MEASURE_KEYWORDS),
+        )
+        self.assertGreater(
+            _keyword_score("Revenue", MEASURE_KEYWORDS),
+            _keyword_score("Total", MEASURE_KEYWORDS),
+        )
 
 
 if __name__ == "__main__":

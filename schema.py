@@ -42,6 +42,10 @@ MEASURE_KEYWORDS = {
     "cost": 8,
     "expense": 8,
     "price": 7,
+    "turnover": 14,
+    "total": 9,
+    "fee": 7,
+    "fare": 7,
     "quantity": 6,
     "units": 6,
     "orders": 6,
@@ -91,6 +95,10 @@ def _keyword_score(name: str, keywords: dict[str, int]) -> int:
 
 
 def looks_like_identifier(name: str, series: pd.Series) -> bool:
+    if is_datetime64_any_dtype(series):
+        # "Order Date" carries an identifier token and its values are as unique
+        # as any key, but a date names a moment, not a row.
+        return False
     normalized = normalized_name(name)
     token_match = any(token in normalized.split() for token in IDENTIFIER_TOKENS)
     unique_ratio = series.nunique(dropna=True) / max(int(series.notna().sum()), 1)
