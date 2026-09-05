@@ -15,6 +15,7 @@ from ai_insights import (
     MODEL_PRESETS,
     AINarrative,
     build_ai_payload,
+    describe_query_plan,
     generate_ai_narrative,
     narrative_to_markdown,
     plan_query_with_ai,
@@ -23,7 +24,7 @@ from analysis import column_profile
 from business_insights import BusinessBrief, analyze_business, build_business_report
 from demo_data import make_demo_data
 from file_io import list_excel_sheets, list_sample_datasets, read_tabular_file
-from nlq import QueryAnswer, answer_question, execute_plan, suggested_questions
+from nlq import QueryAnswer, QueryPlan, answer_question, execute_plan, suggested_questions
 from pipeline import (
     apply_focus,
     apply_role_selection,
@@ -38,6 +39,7 @@ from ui import (
     render_brief,
     render_chat_answer,
     render_chat_fallback,
+    render_chat_rejected,
     render_dashboard,
     render_dataset_bar,
     render_evidence,
@@ -180,16 +182,14 @@ def answer_with_ai_planner(
     dataframe: pd.DataFrame,
     roles,
     api_key: str,
+    *,
+    approved: bool = False,
 ) -> QueryAnswer | None:
-    """Plan with the model over schema only, then execute locally."""
+    """Plan and execute only when the caller has explicitly approved the plan."""
+    if not approved:
+        return None
     try:
-        plan = plan_query_with_ai(
-            question,
-            dataframe,
-            roles,
-            api_key=api_key,
-            safety_identifier=get_safety_identifier(),
-        )
+        plan = plan_ai_query(question, dataframe, roles, api_key)
         if plan is None:
             return None
         executed = execute_plan(plan, dataframe, roles)
@@ -205,12 +205,32 @@ def answer_with_ai_planner(
     )
 
 
+def plan_ai_query(
+    question: str,
+    dataframe: pd.DataFrame,
+    roles,
+    api_key: str,
+) -> QueryPlan | None:
+    """Ask the optional model for a plan without executing it."""
+    try:
+        return plan_query_with_ai(
+            question,
+            dataframe,
+            roles,
+            api_key=api_key,
+            safety_identifier=get_safety_identifier(),
+        )
+    except Exception:  # A planner outage must never break the chat.
+        return None
+
+
 def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str, api_key: str) -> None:
     """Chat over the analyzed dataset; every answer is a local calculation."""
     fingerprint = f"{source_name}:{len(dataframe)}:{','.join(dataframe.columns)}"
     if st.session_state.get("chat_fingerprint") != fingerprint:
         st.session_state.chat_fingerprint = fingerprint
         st.session_state.chat_history = []
+        st.session_state.pending_ai_plan = None
 
     suggestions = suggested_questions(dataframe, roles)
     chips = st.columns(len(suggestions))
@@ -221,14 +241,55 @@ def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str, api_key: st
 
     typed = st.chat_input("Ask about this data — try “top 5 by revenue” or “which segment grew fastest?”")
     question = typed or question
+    pending = st.session_state.get("pending_ai_plan")
+    if pending is not None and question and question != pending["question"]:
+        st.session_state.pending_ai_plan = None
+        pending = None
     if question:
         result = answer_question(question, dataframe, roles)
-        if result is None and api_key:
+        if result is not None:
+            st.session_state.chat_history.append({"question": question, "result": result})
+        elif api_key and pending is None:
             with st.spinner("Planning the calculation…"):
-                result = answer_with_ai_planner(question, dataframe, roles, api_key)
-        st.session_state.chat_history.append({"question": question, "result": result})
+                plan = plan_ai_query(question, dataframe, roles, api_key)
+            if plan is None:
+                st.session_state.chat_history.append({"question": question, "result": None})
+            else:
+                st.session_state.pending_ai_plan = {
+                    "question": question,
+                    "plan": plan,
+                }
+        elif pending is None:
+            st.session_state.chat_history.append({"question": question, "result": None})
 
-    if not st.session_state.chat_history:
+    pending = st.session_state.get("pending_ai_plan")
+    if pending is not None:
+        plan = pending["plan"]
+        st.info(
+            "I prepared this calculation from the table schema. Review it before ADA runs anything:\n\n"
+            f"**{describe_query_plan(plan)}**"
+        )
+        approve, reject = st.columns(2)
+        plan_key = hashlib.sha256(pending["question"].encode()).hexdigest()[:12]
+        if approve.button("Run calculation", key=f"approve_ai_plan_{plan_key}", type="primary"):
+            executed = execute_plan(plan, dataframe, roles)
+            result = QueryAnswer(
+                question=pending["question"],
+                plan=executed.plan,
+                answer=executed.answer,
+                calculation=executed.calculation,
+                table=executed.table,
+                chart=executed.chart,
+            )
+            st.session_state.chat_history.append({"question": pending["question"], "result": result})
+            st.session_state.pending_ai_plan = None
+        elif reject.button("Reject plan", key=f"reject_ai_plan_{plan_key}"):
+            st.session_state.chat_history.append(
+                {"question": pending["question"], "result": None, "status": "rejected"}
+            )
+            st.session_state.pending_ai_plan = None
+
+    if not st.session_state.chat_history and st.session_state.get("pending_ai_plan") is None:
         st.markdown(
             '<div class="empty-state">Ask anything about the analyzed table. '
             "Answers are computed locally and every one shows its calculation.</div>",
@@ -238,7 +299,9 @@ def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str, api_key: st
         with st.chat_message("user"):
             st.markdown(entry["question"])
         with st.chat_message("assistant"):
-            if entry["result"] is not None:
+            if entry.get("status") == "rejected":
+                render_chat_rejected()
+            elif entry["result"] is not None:
                 render_chat_answer(entry["result"], key=str(position))
             else:
                 render_chat_fallback(suggestions)

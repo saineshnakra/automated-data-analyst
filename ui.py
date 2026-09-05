@@ -552,6 +552,11 @@ def render_explore(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
         st.caption(note)
 
 
+def render_chat_rejected() -> None:
+    """Render the transcript message for a proposed calculation that was declined."""
+    st.markdown("I did not run that calculation. You can ask another question whenever you’re ready.")
+
+
 def render_footer() -> None:
     st.markdown(
         """

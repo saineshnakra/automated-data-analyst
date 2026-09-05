@@ -10,6 +10,7 @@ from ai_insights import (
     AIQueryPlan,
     build_ai_payload,
     build_planner_payload,
+    describe_query_plan,
     generate_ai_narrative,
     narrative_to_markdown,
     plan_query_with_ai,
@@ -199,6 +200,24 @@ class AIQueryPlannerTests(unittest.TestCase):
                 api_key=" ",
                 safety_identifier="anonymous-session",
             )
+
+    def test_plan_description_is_human_readable(self):
+        plan = self.plan(filters=[AIQueryFilter(column="Region", value="west")])
+        plan = plan_query_with_ai(
+            "top 2 products by revenue in the west",
+            self.dataframe,
+            self.roles,
+            api_key="test-key",
+            safety_identifier="anonymous-session",
+            client=FakeClient(plan),
+        )
+
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        description = describe_query_plan(plan)
+        self.assertIn("Total of Revenue", description)
+        self.assertIn("grouped by Product", description)
+        self.assertIn("Region = West", description)
 
 
 if __name__ == "__main__":

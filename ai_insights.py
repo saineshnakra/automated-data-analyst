@@ -267,6 +267,42 @@ def plan_query_with_ai(
     return _to_query_plan(parsed, dataframe, roles)
 
 
+def describe_query_plan(plan: QueryPlan) -> str:
+    """Turn a structured plan into a concise confirmation prompt."""
+    if plan.intent == "count":
+        description = "count the matching records"
+    else:
+        aggregation = {
+            "sum": "total",
+            "mean": "average",
+            "median": "median",
+            "min": "minimum",
+            "max": "maximum",
+            "count": "count",
+        }[plan.aggregation]
+        description = f"calculate the {aggregation} of {plan.measure or 'records'}"
+    if plan.dimension:
+        description += f", grouped by {plan.dimension}"
+    if plan.top_n:
+        direction = "lowest" if plan.ascending else "highest"
+        description += f", showing the {plan.top_n} {direction} results"
+    filters = [
+        f"{item.column} = {', '.join(item.values)}"
+        for item in plan.filters
+        if item.values
+    ]
+    if filters:
+        description += f" for {' and '.join(filters)}"
+    if plan.year is not None:
+        description += f" in {plan.year}"
+    if plan.month is not None:
+        description += f" month {plan.month}"
+    if plan.grain:
+        grain_labels = {"D": "day", "W": "week", "M": "month", "Q": "quarter", "Y": "year"}
+        description += f", by {grain_labels.get(plan.grain, plan.grain)}"
+    return description[0].upper() + description[1:] + "."
+
+
 def narrative_to_markdown(narrative: AINarrative, *, model: str) -> str:
     lines = [
         "## Optional AI strategic read",
