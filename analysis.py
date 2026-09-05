@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -33,6 +34,18 @@ class Insight:
     title: str
     detail: str
     level: str = "info"
+
+
+def _speculative_dates(values: pd.Series) -> pd.Series:
+    """Parse values as dates without complaining about the ones that are not.
+
+    Every call here is a guess about a column whose format is unknown and
+    which is usually not dates at all, so pandas' "could not infer format"
+    warning is the expected case rather than something to report.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        return pd.to_datetime(values, errors="coerce")
 
 
 def _make_unique_columns(columns: pd.Index) -> list[str]:
@@ -87,6 +100,8 @@ def clean_dataframe(dataframe: pd.DataFrame) -> tuple[pd.DataFrame, CleaningRepo
 
     protected_numeric_tokens = ("id", "code", "zip", "postal", "phone")
     date_tokens = ("date", "time", "timestamp", "created", "updated")
+    named_date_ratio, numeric_ratio, unnamed_date_ratio = 0.8, 0.95, 0.95
+    date_sample_size = 50
 
     for column in cleaned.select_dtypes(include=["object", "string"]).columns:
         series = cleaned[column]
@@ -99,18 +114,34 @@ def clean_dataframe(dataframe: pd.DataFrame) -> tuple[pd.DataFrame, CleaningRepo
             continue
 
         normalized_name = column.lower()
-        if any(token in normalized_name for token in date_tokens):
-            parsed_dates = pd.to_datetime(cleaned[column], errors="coerce")
-            if parsed_dates.notna().sum() / non_null_before >= 0.8:
+        named_like_a_date = any(token in normalized_name for token in date_tokens)
+        if named_like_a_date:
+            parsed_dates = _speculative_dates(cleaned[column])
+            if parsed_dates.notna().sum() / non_null_before >= named_date_ratio:
                 cleaned[column] = parsed_dates
                 datetime_columns_inferred += 1
                 continue
 
         if not any(token in normalized_name for token in protected_numeric_tokens):
             parsed_numeric = pd.to_numeric(cleaned[column], errors="coerce")
-            if parsed_numeric.notna().sum() / non_null_before >= 0.95:
+            if parsed_numeric.notna().sum() / non_null_before >= numeric_ratio:
                 cleaned[column] = parsed_numeric
                 numeric_columns_inferred += 1
+                continue
+
+        if not named_like_a_date:
+            # A column holds dates whatever it happens to be called -- "Month",
+            # "Period", "FY". Numbers were tried first, so a column of bare years
+            # stays numeric instead of becoming the 1st of January in each of
+            # them. A sample decides whether the full parse is worth attempting,
+            # because most text columns are not dates and this runs over all of
+            # them.
+            sample = cleaned[column].dropna().head(date_sample_size)
+            if len(sample) and _speculative_dates(sample).notna().mean() >= unnamed_date_ratio:
+                parsed_dates = _speculative_dates(cleaned[column])
+                if parsed_dates.notna().sum() / non_null_before >= unnamed_date_ratio:
+                    cleaned[column] = parsed_dates
+                    datetime_columns_inferred += 1
 
     duplicate_rows = int(cleaned.duplicated().sum())
     cleaned = cleaned.drop_duplicates().reset_index(drop=True)

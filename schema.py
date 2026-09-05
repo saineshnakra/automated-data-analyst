@@ -67,13 +67,27 @@ DIMENSION_KEYWORDS = {
     "type": 5,
 }
 
+# What a keyword earlier in the name is worth against one at the end.
+MODIFIER_WEIGHT = 2 / 3
+
 IDENTIFIER_TOKENS = ("id", "uuid", "key", "code", "number", "invoice", "order")
 TIME_PART_TOKENS = ("year", "month", "week", "day", "hour", "minute", "quarter")
 
 
 def _keyword_score(name: str, keywords: dict[str, int]) -> int:
-    normalized = normalized_name(name)
-    return max((score for token, score in keywords.items() if token in normalized), default=0)
+    """Score a column name, trusting its last word most.
+
+    The last word says what a column *is*; earlier words only qualify it.
+    "Product Category" is a category, but "Product Container" is a container --
+    a packaging attribute that scored just as high as the real product
+    dimension while both merely contained the word "product".
+    """
+    words = normalized_name(name).split()
+    if not words:
+        return 0
+    head_score = keywords.get(words[-1], 0)
+    anywhere = (score for token, score in keywords.items() if token in " ".join(words))
+    return max(head_score, int(max(anywhere, default=0) * MODIFIER_WEIGHT))
 
 
 def looks_like_identifier(name: str, series: pd.Series) -> bool:
