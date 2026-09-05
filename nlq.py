@@ -106,6 +106,13 @@ MONTH_NAMES = {
 MAX_FILTER_CANDIDATES = 200
 BREAKDOWN_LIMIT = 12
 
+QUERY_STOPWORDS = {
+    "a", "about", "across", "all", "and", "are", "by", "can", "do", "does", "each",
+    "for", "from", "have", "how", "in", "is", "it", "me", "many", "my", "of", "on",
+    "or", "our", "please", "show", "tell", "than", "the", "there", "to", "we", "what",
+    "which", "with", "your",
+}
+
 
 @dataclass(frozen=True)
 class ValueFilter:
@@ -216,6 +223,52 @@ def _detect_grain(question: str) -> str | None:
     return None
 
 
+def _unrecognized_query_tokens(
+    question: str, dataframe: pd.DataFrame, roles: ColumnRoles
+) -> set[str]:
+    """Return content words that cannot refer to this dataset or query grammar."""
+    allowed = set(QUERY_STOPWORDS)
+    allowed.update(AGGREGATION_WORDS)
+    allowed.update(ASCENDING_WORDS)
+    allowed.update(SUPERLATIVE_WORDS)
+    allowed.update(DECLINE_WORDS)
+    allowed.update(GROWTH_WORDS)
+    allowed.update(GRAIN_WORDS)
+    allowed.update(MONTH_NAMES)
+    allowed.update(
+        {
+            "bottom",
+            "count",
+            "fastest",
+            "number",
+            "rows",
+            "sells",
+            "sold",
+            "top",
+            "trend",
+            "over",
+            "time",
+        }
+    )
+
+    for column in dataframe.columns:
+        normalized = _norm(column)
+        allowed.update(normalized.split())
+        allowed.update(_word_variants(normalized))
+        first_word = normalized.split(" ", 1)[0]
+        allowed.update(_word_variants(first_word))
+
+    for column in roles.dimensions:
+        if column not in dataframe.columns:
+            continue
+        values = dataframe[column].dropna().astype(str)
+        if len(values) <= MAX_FILTER_CANDIDATES:
+            for value in values.unique():
+                allowed.update(_norm(value).split())
+
+    return {token for token in question.split() if token.isalpha() and token not in allowed}
+
+
 def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -> QueryPlan | None:
     """Turn a plain-English question into an explicit plan, or None if unsupported."""
     q = _norm(question)
@@ -227,6 +280,8 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
 
     measure = _match_column(q, numeric_columns)
     dimension = _match_column(q, dimension_columns)
+    if _unrecognized_query_tokens(q, dataframe, roles):
+        return None
     year, month = _detect_time_filter(q)
     grain = _detect_grain(q)
     filters = _detect_value_filters(q, dataframe, roles, exclude=(dimension,))
