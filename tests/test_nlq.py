@@ -116,6 +116,24 @@ class NLQParsingTests(unittest.TestCase):
         self.assertIsNotNone(result)
         plan = parse_question("monthly revenue trend", frame, roles)
         self.assertNotEqual(plan.intent if plan else None, "trend")
+    def test_asking_for_the_bottom_of_a_ranking_ranks_ascending(self):
+        """"Least" and "fewest" ask for the bottom, not the top."""
+        leader = self.ask("top product by revenue").answer
+
+        for question in ("what is the least sold product", "which product sells the fewest"):
+            with self.subTest(question=question):
+                result = self.ask(question)
+                self.assertEqual(result.plan.intent, "rank")
+                self.assertTrue(result.plan.ascending)
+                self.assertIn("lowest", result.answer)
+                self.assertNotEqual(result.answer, leader)
+
+    def test_every_ascending_word_is_also_a_superlative(self):
+        """A word in only one list would rank from the wrong end."""
+        from nlq import ASCENDING_WORDS, SUPERLATIVE_WORDS
+
+        self.assertTrue(set(ASCENDING_WORDS).issubset(SUPERLATIVE_WORDS))
+
 
 
 class TimelineDisclosureTests(unittest.TestCase):
@@ -138,7 +156,6 @@ class TimelineDisclosureTests(unittest.TestCase):
 
         self.assertNotIn("still in progress", answer.calculation)
         self.assertNotIn("counted as zero", answer.calculation)
-
 
 if __name__ == "__main__":
     unittest.main()
