@@ -52,6 +52,15 @@ class AppSmokeTests(unittest.TestCase):
         self.assertEqual(len(app.file_uploader), 1)
         self.assertEqual(len(app.tabs), 0)
 
+    def test_repeating_a_question_does_not_break_the_transcript(self):
+        """Two answers that render the same chart need distinct element ids."""
+        app = AppTest.from_file("app.py", default_timeout=45).run()
+        app.chat_input[0].set_value("top 3 products by revenue").run()
+        app.chat_input[0].set_value("top 3 products by revenue").run()
+
+        self.assertFalse(app.exception)
+        self.assertEqual(len(app.session_state["chat_history"]), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

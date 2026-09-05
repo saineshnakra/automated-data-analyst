@@ -386,8 +386,14 @@ def _chat_answer_figure(result: QueryAnswer) -> go.Figure | None:
     return style_chart(figure, height=320)
 
 
-def render_chat_answer(result: QueryAnswer) -> None:
-    """Render one answered question with its table, chart, and calculation."""
+def render_chat_answer(result: QueryAnswer, *, key: str) -> None:
+    """Render one answered question with its table, chart, and calculation.
+
+    ``key`` identifies this answer within the transcript. Two questions can
+    resolve to the same plan and therefore render an identical chart and
+    table, and Streamlit refuses to give two identical elements the same
+    auto-generated id, so each answer names its own.
+    """
     if result.plan.source == "ai":
         st.markdown(
             '<span class="ai-plan-badge">AI-planned · executed locally · schema only</span>',
@@ -396,10 +402,15 @@ def render_chat_answer(result: QueryAnswer) -> None:
     st.markdown(result.answer)
     figure = _chat_answer_figure(result)
     if figure is not None:
-        st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
+        st.plotly_chart(
+            figure,
+            width="stretch",
+            config={"displayModeBar": False},
+            key=f"chat_chart_{key}",
+        )
     if result.table is not None and not result.table.empty:
         with st.expander("See the numbers"):
-            st.dataframe(result.table, hide_index=True, width="stretch")
+            st.dataframe(result.table, hide_index=True, width="stretch", key=f"chat_table_{key}")
     st.markdown(
         f'<p class="calculation chat-calc">CALC · {escape(result.calculation)}</p>',
         unsafe_allow_html=True,

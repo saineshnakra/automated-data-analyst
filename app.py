@@ -227,12 +227,12 @@ def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str, api_key: st
             "Answers are computed locally and every one shows its calculation.</div>",
             unsafe_allow_html=True,
         )
-    for entry in st.session_state.chat_history:
+    for position, entry in enumerate(st.session_state.chat_history):
         with st.chat_message("user"):
             st.markdown(entry["question"])
         with st.chat_message("assistant"):
             if entry["result"] is not None:
-                render_chat_answer(entry["result"])
+                render_chat_answer(entry["result"], key=str(position))
             else:
                 render_chat_fallback(suggestions)
 
