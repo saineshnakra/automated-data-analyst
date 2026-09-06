@@ -57,8 +57,11 @@ Everything in the second list is already on your screen before the call is made.
 ## What is never sent
 
 - Uploaded rows
-- Cell values
-- Column contents in any form — no samples, no previews, no "first five rows"
+- Your rows — not a sample, not a preview, not the first five
+- Cell values, with one exception stated above: the segment labels an
+  evidence sentence names, such as a customer or product name
+- The question you type stays local unless the rule parser cannot read it and
+  you have supplied a key; then the question itself goes to the planner
 - Your file, its name, or its bytes
 
 The payload builders (`build_query_schema`, `build_ai_payload` in

@@ -212,6 +212,10 @@ def _backtest(periods: pd.DatetimeIndex, values: np.ndarray, *, monthly: bool) -
     predicted = line.at(horizon_positions) + _seasonal_adjustment(
         holdout_periods.month.to_numpy(), seasonal
     )
+    if float(train_values.min()) >= 0:
+        # Score the forecast that is actually shown: production clips a
+        # non-negative series at zero, so the backtest must too.
+        predicted = np.maximum(predicted, 0.0)
     actual = values[-holdout:]
     errors = np.abs(predicted - actual)
 

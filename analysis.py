@@ -52,6 +52,14 @@ def _speculative_dates(values: pd.Series) -> pd.Series:
         return pd.to_datetime(values, errors="coerce")
 
 
+def _is_blank(series: pd.Series) -> pd.Series:
+    """Missing, or text that is nothing but whitespace -- an empty cell either way."""
+    blank = series.isna()
+    if series.dtype == object or str(series.dtype) == "string":
+        blank = blank | series.astype("string").str.strip().eq("").fillna(False)
+    return blank
+
+
 def _drop_timezone(series: pd.Series) -> pd.Series:
     """Return the same instants as naive local time.
 
@@ -187,8 +195,15 @@ _DAY_OR_MONTH_FIRST = re.compile(r"^\s*\d{1,2}[/-]\d{1,2}[/-]\d{2,4}")
 
 def _dated(values: pd.Series, *, dayfirst: bool) -> pd.Series:
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", UserWarning)
-        return pd.to_datetime(values, errors="coerce", dayfirst=dayfirst)
+        warnings.simplefilter("ignore", (UserWarning, FutureWarning))
+        parsed = pd.to_datetime(values, errors="coerce", dayfirst=dayfirst)
+        if parsed.dtype == object:
+            # Mixed offsets -- a file spanning a daylight-saving change --
+            # come back as objects, which no downstream step can use. There
+            # is no single wall clock to keep, so UTC is the honest choice.
+            parsed = pd.to_datetime(values, errors="coerce", dayfirst=dayfirst, utc=True)
+            parsed = parsed.dt.tz_localize(None)
+        return parsed
 
 
 def _read_dates(values: pd.Series) -> tuple[pd.Series, str]:
@@ -289,10 +304,10 @@ def clean_dataframe(
     original_rows, original_columns = cleaned.shape
     cleaned.columns = _make_unique_columns(cleaned.columns)
 
-    empty_columns = [column for column in cleaned.columns if cleaned[column].isna().all()]
+    empty_columns = [column for column in cleaned.columns if _is_blank(cleaned[column]).all()]
     cleaned = cleaned.drop(columns=empty_columns)
 
-    empty_row_mask = cleaned.isna().all(axis=1)
+    empty_row_mask = cleaned.apply(_is_blank).all(axis=1)
     empty_rows_removed = int(empty_row_mask.sum())
     cleaned = cleaned.loc[~empty_row_mask].copy()
 

@@ -15,7 +15,7 @@ from typing import Literal
 
 import pandas as pd
 
-from aggregation import TrendSeries, build_trend, preferred_frequency, unlabelled_label
+from aggregation import TrendSeries, build_trend, measure_aggregation, preferred_frequency, unlabelled_label
 from formatting import format_number
 from schema import ColumnRoles
 
@@ -277,10 +277,44 @@ def _unrecognized_query_tokens(
     return {token for token in question.split() if token.isalpha() and token not in allowed}
 
 
+# Phrasings the grammar cannot represent. Answering them with the nearest
+# supported question -- "revenue > 200" as the total of everything, "January
+# and February" as January -- is a precise answer to a question nobody asked.
+# Refusing hands them to the optional planner, or to the suggestion chips.
+# Comparison operators are checked on the raw text, because _norm strips them.
+UNSUPPORTED_OPERATORS = re.compile(r"[<>=\u2265\u2264\u2260]")
+UNSUPPORTED_PHRASES = re.compile(
+    r"\b(?:"
+    r"greater than|less than|more than \d+|fewer than|at least \d+|at most \d+|"
+    r"above \d+|below \d+|over \d+|under \d+|between \d+|exceeds?|exceeding|"
+    r"this (?:year|month|quarter|week)|last (?:year|month|quarter|week|\d+ (?:days|weeks|months|years))|"
+    r"next (?:year|month|quarter|week)|previous (?:year|month|quarter|week)|"
+    r"year to date|ytd|today|yesterday|past \d+|"
+    r"or"
+    r")\b"
+)
+
+
+def _asks_for_several_periods(q: str) -> bool:
+    """Two months or two years in one question is a set the plan cannot hold."""
+    months = {MONTH_NAMES[name] for name in MONTH_NAMES if re.search(rf"\b{name}\b", q)}
+    years = set(re.findall(r"\b(?:19|20)\d{2}\b", q))
+    return len(months) >= 2 or len(years) >= 2
+
+
+def unsupported_phrasing(question: str) -> bool:
+    q = _norm(question)
+    return bool(
+        UNSUPPORTED_OPERATORS.search(str(question))
+        or UNSUPPORTED_PHRASES.search(q)
+        or _asks_for_several_periods(q)
+    )
+
+
 def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -> QueryPlan | None:
     """Turn a plain-English question into an explicit plan, or None if unsupported."""
     q = _norm(question)
-    if not q:
+    if not q or unsupported_phrasing(question):
         return None
 
     numeric_columns = [column for column in roles.numeric if column in dataframe.columns]
@@ -292,13 +326,25 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
         return None
     year, month = _detect_time_filter(q)
     grain = _detect_grain(q)
+    # For a grouped answer the matched dimension is the thing being grouped,
+    # so its values are not read as filters. For a plain total they are:
+    # "revenue for Region West" is a filter, and naming the column must not
+    # steal the value from it -- that answered with the all-region total.
     filters = _detect_value_filters(q, dataframe, roles, exclude=(dimension,))
+    filters_including_dimension = _detect_value_filters(q, dataframe, roles)
 
     aggregation: Aggregation | None = next(
         (AGGREGATION_WORDS[word] for word in AGGREGATION_WORDS if re.search(rf"\b{word}\b", q)),
         None,
     )
     top_match = re.search(r"\b(top|bottom)\s+(\d{1,3})\b", q)
+    if top_match and int(top_match.group(2)) < 1:
+        # "top 0" is not a ranking; it was showing the fallback twelve.
+        return None
+    # "highest" and "largest" rank; only the literal words ask for an extreme
+    # per group. Both live in AGGREGATION_WORDS as max, so they are told apart
+    # here rather than by silently downgrading every min/max to a sum.
+    explicit_extreme = bool(re.search(r"\b(min|minimum|max|maximum)\b", q))
     superlative = any(re.search(rf"\b{word}\b", q) for word in SUPERLATIVE_WORDS)
     wants_breakdown = bool(re.search(r"\b(by|per|across|breakdown|split|each)\b", q))
     wants_count = bool(re.search(r"\b(how many|count|number of)\b", q))
@@ -313,17 +359,25 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
         "grain": grain,
     }
 
+    ungrouped = {**base, "filters": filters_including_dimension}
+    # Chat combines a measure the way the dashboard does: rates average,
+    # amounts add. Saying "total" or "sum" out loud still gets a sum.
+    default_aggregation = measure_aggregation(base["measure"])
+
     if wants_count and not wants_growth:
         if dimension and wants_breakdown:
             return QueryPlan(intent="breakdown", aggregation="count", dimension=dimension, **base)
         countable = _match_countable(q, roles)
-        return QueryPlan(intent="count", aggregation="count", count_column=countable, **base)
+        return QueryPlan(intent="count", aggregation="count", count_column=countable, **ungrouped)
 
     if wants_growth and roles.date:
         wants_ranked_growth = superlative or any(word in q for word in ("which", "fastest", "slowest"))
         rank_dimension = dimension or (roles.dimension if wants_ranked_growth else None)
         ascending = bool(re.search(ASCENDING_PATTERN, q))
-        return QueryPlan(intent="growth", dimension=rank_dimension, ascending=ascending, **base)
+        top_n = int(top_match.group(2)) if top_match else None
+        return QueryPlan(
+            intent="growth", dimension=rank_dimension, ascending=ascending, top_n=top_n, **base
+        )
 
     if (top_match or superlative) and dimension:
         if top_match:
@@ -334,7 +388,7 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
             ascending = bool(re.search(ASCENDING_PATTERN, q))
         return QueryPlan(
             intent="rank",
-            aggregation=aggregation if aggregation in ("mean", "median") else "sum",
+            aggregation=_grouped_aggregation(aggregation, explicit_extreme, default_aggregation),
             dimension=dimension,
             top_n=top_n,
             ascending=ascending,
@@ -342,20 +396,37 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
         )
 
     if wants_trend and roles.date:
-        return QueryPlan(intent="trend", aggregation="sum", **base)
+        if aggregation not in (None, default_aggregation):
+            # The trend executor combines each period the way the measure
+            # combines. "Average revenue monthly" would be answered with sums,
+            # so it is not answered here; "average conversion rate monthly"
+            # is exactly what the executor does, so it is.
+            return None
+        return QueryPlan(intent="trend", aggregation=default_aggregation, **ungrouped)
 
     if dimension and (wants_breakdown or not measure):
         return QueryPlan(
             intent="breakdown",
-            aggregation=aggregation if aggregation in ("mean", "median") else "sum",
+            aggregation=_grouped_aggregation(aggregation, explicit_extreme, default_aggregation),
             dimension=dimension,
             **base,
         )
 
     if base["measure"] and (aggregation or measure):
-        return QueryPlan(intent="aggregate", aggregation=aggregation or "sum", **base)
+        return QueryPlan(intent="aggregate", aggregation=aggregation or default_aggregation, **ungrouped)
 
     return None
+
+
+def _grouped_aggregation(
+    aggregation: Aggregation | None, explicit_extreme: bool, default: Aggregation
+) -> Aggregation:
+    """What a rank or breakdown computes per group."""
+    if aggregation in ("mean", "median"):
+        return aggregation
+    if aggregation in ("min", "max") and explicit_extreme:
+        return aggregation
+    return default
 
 
 class TimeScopeUnavailable(Exception):
@@ -586,7 +657,7 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
             plan=plan,
             answer=answer,
             calculation=_with_notes(
-                f"sum({plan.measure or 'rows'}) grouped per {grain_name}{scope}", series
+                f"{plan.aggregation}({plan.measure or 'rows'}) grouped per {grain_name}{scope}", series
             ),
             table=trend,
             chart="line",
@@ -631,12 +702,12 @@ def _execute_growth(
         frame = working[[roles.date, plan.dimension] + ([measure] if measure else [])].dropna(
             subset=[roles.date, plan.dimension]
         )
-        frame = frame.assign(Period=frame[roles.date].dt.to_period(grain).dt.to_timestamp())
-        frame = frame[frame["Period"].isin([previous_period, current_period])]
+        frame = frame.assign(__period=frame[roles.date].dt.to_period(grain).dt.to_timestamp())
+        frame = frame[frame["__period"].isin([previous_period, current_period])]
         if measure:
-            pivot = frame.groupby([plan.dimension, "Period"])[measure].sum().unstack(fill_value=0.0)
+            pivot = frame.groupby([plan.dimension, "__period"])[measure].sum().unstack(fill_value=0.0)
         else:
-            pivot = frame.groupby([plan.dimension, "Period"]).size().unstack(fill_value=0)
+            pivot = frame.groupby([plan.dimension, "__period"]).size().unstack(fill_value=0)
         if previous_period not in pivot.columns or current_period not in pivot.columns:
             return QueryAnswer(
                 question="",
@@ -682,6 +753,8 @@ def _execute_growth(
         change = (result["Latest"] - result["Previous"]) / result["Previous"].abs() * 100
         result["Change %"] = change.round(1)
         result = result.sort_values("Change %", ascending=plan.ascending).reset_index(drop=True)
+        if plan.top_n:
+            result = result.head(plan.top_n)
         leader = result.iloc[0]
         direction = "slowest" if plan.ascending else "fastest"
         answer = (

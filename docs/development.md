@@ -51,6 +51,7 @@ python -m unittest discover -s tests -p "test_nlq.py" -v
 | `test_nlq.py` | Question parsing and plan execution |
 | `test_ai_insights.py` | Typed output and the privacy contract |
 | `test_autovis.py` | Chart-form choice and series folding |
+| `test_bug_bash.py` | Behaviours pinned after walking every customer journey |
 | `test_app.py` | Rendering smoke tests, and that the app survives without the AI layer |
 
 Tests use fake clients for anything model-related, so the suite needs no network

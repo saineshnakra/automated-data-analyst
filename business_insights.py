@@ -9,6 +9,7 @@ import pandas as pd
 
 from aggregation import (
     build_trend,
+    measure_aggregation,
     preferred_frequency,
     segment_frame,
     segment_period_change,
@@ -74,6 +75,29 @@ def _period_changes(values: np.ndarray) -> np.ndarray:
     return (current[usable] - previous[usable]) / np.abs(previous[usable]) * 100
 
 
+# A measure where going up is bad. Whole-word, head-noun style: "Cost" and
+# "Refund Amount" count, "Cost Savings" does not.
+ADVERSE_MEASURE_TOKENS = frozenset({
+    "cost", "costs", "expense", "expenses", "spend", "churn", "refund", "refunds",
+    "returns", "loss", "losses", "overdue", "delay", "delays", "hours", "tickets",
+    "complaints", "defects", "errors", "bounce", "debt", "outstanding",
+})
+FAVOURABLE_OVERRIDES = frozenset({"savings", "saved", "recovered"})
+
+
+def increase_is_welcome(measure: str | None) -> bool:
+    """Whether a rise in this measure is good news."""
+    if not measure:
+        return True
+    words = normalized_name(measure).split()
+    if not words or any(word in FAVOURABLE_OVERRIDES for word in words):
+        return True
+    # The head noun decides, and so does a leading one: "Refund Amount" is a
+    # refund before it is an amount. A word in the middle -- "Revenue After
+    # Returns" -- is a qualifier and does not flip the reading.
+    return words[-1] not in ADVERSE_MEASURE_TOKENS and words[0] not in ADVERSE_MEASURE_TOKENS
+
+
 def _movement_in_context(values: np.ndarray, change: float) -> str:
     """Say whether the latest movement is unusual for this particular series.
 
@@ -129,6 +153,9 @@ def _growth_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | 
     measure = roles.measure or "Records"
     measure_values = dataframe[roles.measure].dropna() if roles.measure else None
     direction = "increased" if change >= 0 else "decreased"
+    # A rising cost is not good news. Tone follows what the movement means
+    # for the business, and recommendations follow tone.
+    welcome = increase_is_welcome(roles.measure)
     context = _movement_in_context(values, change)
     if series.short_coverage:
         context += (
@@ -148,7 +175,7 @@ def _growth_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | 
             "(Latest period − previous period) ÷ |previous period|, set against the spread "
             "of past period-over-period changes"
         ),
-        tone="positive" if change >= 0 else "negative",
+        tone="positive" if (change >= 0) == welcome else "negative",
     )
 
 
@@ -459,7 +486,10 @@ def _relationship_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evide
             "by a few extreme records rather than the bulk of the data."
         )
 
-    statement += " This is an association, not proof of causation."
+    statement += (
+        " This is an association, not proof of causation, and it was picked as the strongest "
+        "of several pairs -- a search that makes a chance result likelier than the interval suggests."
+    )
     return Evidence(
         kind="relationship",
         title="Strongest measurable relationship",
@@ -467,7 +497,9 @@ def _relationship_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evide
         statement=statement,
         calculation=(
             "Pearson correlation across non-missing paired values, with a Fisher-transform "
-            "confidence interval and a Spearman rank check"
+            "confidence interval and a Spearman rank check. Chosen as the strongest of every "
+            "numeric pair, and the interval is not adjusted for that search -- read it as a "
+            "lead to test, not a result"
         ),
     )
 
@@ -520,12 +552,32 @@ def _quality_evidence(dataframe: pd.DataFrame) -> Evidence | None:
     )
 
 
+def _shown_evidence(evidence: list[Evidence], limit: int = 6) -> list[Evidence]:
+    """The executive preview, with a data-quality card never squeezed out.
+
+    Six cards is the reading budget. A quality warning past the sixth slot
+    was silently gone -- the one card that says the other five may be built
+    on incomplete data.
+    """
+    shown = list(evidence[:limit])
+    quality = next((item for item in evidence[limit:] if item.kind == "quality"), None)
+    if quality is not None:
+        shown = shown[: limit - 1] + [quality]
+    return shown
+
+
 def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Recommendation, ...]:
     recommendations: list[Recommendation] = []
     by_kind = {item.kind: item for item in evidence}
 
     trend = by_kind.get("trend")
     driver = by_kind.get("driver")
+    # A segment that grew while the total fell did not cause the fall, so it
+    # is not named as the thing to reconcile. "Reconcile the Alpha decline"
+    # beside a card saying Alpha rose 110 is a contradiction on one page.
+    if driver and trend and driver.tone != trend.tone:
+        driver = None
+    adverse = "decline" if increase_is_welcome(roles.measure) else "increase"
     if trend and trend.tone == "negative":
         recommendations.append(
             Recommendation(
@@ -533,10 +585,10 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
                 (
                     f"Start with {driver.subject}"
                     if driver and driver.subject
-                    else "Find where the decline started"
+                    else f"Find where the {adverse} started"
                 ),
                 (
-                    f"Reconcile the {driver.subject} decline by customer, channel, and transaction; "
+                    f"Reconcile the {driver.subject} {adverse} by customer, channel, and transaction; "
                     "separate lost volume from pricing or mix."
                     if driver and driver.subject
                     else "Break the latest period down by "
@@ -551,9 +603,9 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
             Recommendation(
                 "Now",
                 (
-                    f"Make {driver.subject}'s growth repeatable"
+                    f"Make {driver.subject}'s improvement repeatable"
                     if driver and driver.subject
-                    else "Protect the growth driver"
+                    else "Protect what improved"
                 ),
                 (
                     f"Break {driver.subject}'s lift into volume, pricing, and mix; preserve the "
@@ -762,12 +814,16 @@ def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) 
         headline = leader.statement
     elif roles.measure:
         measure_values = dataframe[roles.measure].dropna()
+        combined = (
+            measure_values.mean() if measure_aggregation(roles.measure) == "mean" else measure_values.sum()
+        )
         total_measure = format_number(
-            float(measure_values.sum()),
+            float(combined),
             roles.measure,
             column_values=measure_values,
         )
-        headline = f"{roles.measure} totals {total_measure} across the analyzed data."
+        verb = "averages" if measure_aggregation(roles.measure) == "mean" else "totals"
+        headline = f"{roles.measure} {verb} {total_measure} across the analyzed data."
     else:
         headline = f"{len(dataframe):,} records are ready for operational review."
 
@@ -787,7 +843,7 @@ def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) 
         summary=" ".join(summary_parts),
         roles=roles,
         kpis=tuple(kpis),
-        evidence=tuple(evidence[:6]),
+        evidence=tuple(_shown_evidence(evidence)),
         recommendations=recommendations,
     )
 

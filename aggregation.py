@@ -15,10 +15,10 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from formatting import format_period
+from formatting import format_period, is_percentage, percentage_outranks_currency
 from schema import ColumnRoles
 
-GRAIN_ORDER = ("W", "M", "Q")
+GRAIN_ORDER = ("W", "M", "Q", "Y")
 
 
 def _grain_for_span(span_days: int) -> str:
@@ -40,7 +40,23 @@ def _grain_for_cadence(dates: pd.Series) -> str:
         return "W"
     if typical <= 45:
         return "M"
-    return "Q"
+    if typical <= 140:
+        return "Q"
+    # Four annual figures are four years, not sixteen quarters twelve of
+    # which nobody measured and which were being filled with zero.
+    return "Y"
+
+
+def measure_aggregation(measure: str | None) -> str:
+    """How a measure combines across rows: rates average, amounts add.
+
+    Adding two months of conversion rate produces a number with no meaning,
+    and every surface built on period totals was doing exactly that. The
+    decision lives here so trend, segment and headline agree.
+    """
+    if measure and is_percentage(measure) and percentage_outranks_currency(measure):
+        return "mean"
+    return "sum"
 
 
 def _period_frequency(date_series: pd.Series) -> str:
@@ -168,12 +184,15 @@ def build_trend(
     working = dataframe[columns].dropna(subset=[roles.date]).copy()
     if working.empty:
         return TrendSeries(frame=EMPTY_TREND.copy(), frequency=frequency or "M")
+    # Internal names from here on. A measure the file calls "Period" was being
+    # overwritten by the period buckets built below, then summed as datetimes.
+    working.columns = ["__date"] + (["__measure"] if roles.measure else [])
 
-    frequency = frequency or _period_frequency(working[roles.date])
-    working["Period"] = working[roles.date].dt.to_period(frequency).dt.to_timestamp()
+    frequency = frequency or _period_frequency(working["__date"])
+    working["Period"] = working["__date"].dt.to_period(frequency).dt.to_timestamp()
 
     partial_period, partial_coverage, short_coverage, completeness_checked = (
-        _trailing_partial_period(working[roles.date], working["Period"], frequency)
+        _trailing_partial_period(working["__date"], working["Period"], frequency)
     )
     if partial_period is not None:
         remaining = working[working["Period"] < partial_period]
@@ -183,8 +202,10 @@ def build_trend(
             partial_period, partial_coverage = None, ""
 
     if roles.measure:
-        result = working.groupby("Period", as_index=False)[roles.measure].sum()
-        result = result.rename(columns={roles.measure: "Value"})
+        result = working.groupby("Period", as_index=False)["__measure"].agg(
+            measure_aggregation(roles.measure)
+        )
+        result = result.rename(columns={"__measure": "Value"})
     else:
         result = working.groupby("Period", as_index=False).size().rename(columns={"size": "Value"})
     result = result.sort_values("Period").reset_index(drop=True)
@@ -243,18 +264,26 @@ def segment_frame(dataframe: pd.DataFrame, roles: ColumnRoles, limit: int = 12) 
     if not roles.dimension:
         return pd.DataFrame(columns=["Segment", "Value"])
 
-    working = dataframe.dropna(subset=[roles.dimension]).copy()
+    working = dataframe[[roles.dimension] + ([roles.measure] if roles.measure else [])].copy()
+    working.columns = ["__segment"] + (["__measure"] if roles.measure else [])
+    # Rows with no label still hold the measure. Dropping them made every
+    # share on the page a share of the labelled rows only, and a file that was
+    # mostly unlabelled produced no segment evidence at all.
+    label = unlabelled_label(working["__segment"].dropna().unique())
+    working["__segment"] = working["__segment"].astype(object).where(working["__segment"].notna(), label)
     if working.empty:
         return pd.DataFrame(columns=["Segment", "Value"])
 
     if roles.measure:
-        result = working.groupby(roles.dimension, as_index=False)[roles.measure].sum()
-        result = result.rename(columns={roles.dimension: "Segment", roles.measure: "Value"})
+        result = working.groupby("__segment", as_index=False)["__measure"].agg(
+            measure_aggregation(roles.measure)
+        )
+        result = result.rename(columns={"__segment": "Segment", "__measure": "Value"})
     else:
         result = (
-            working.groupby(roles.dimension, as_index=False)
+            working.groupby("__segment", as_index=False)
             .size()
-            .rename(columns={roles.dimension: "Segment", "size": "Value"})
+            .rename(columns={"__segment": "Segment", "size": "Value"})
         )
     return result.sort_values("Value", ascending=False).head(limit).reset_index(drop=True)
 
@@ -296,16 +325,22 @@ def segment_period_change(
     # periods being compared exist in one view and not the other.
     frequency = series.frequency
     working = dataframe[[roles.date, roles.measure, roles.dimension]].copy()
-    working = working.dropna(subset=[roles.date, roles.measure])
+    working.columns = ["__date", "__measure", "__segment"]
+    working = working.dropna(subset=["__date", "__measure"])
     # A row with no segment label still carries measure value. Dropping it
     # here and keeping it in the trend meant the drivers were shares of a
     # movement they did not add up to.
-    working[roles.dimension] = working[roles.dimension].astype(object).where(
-        working[roles.dimension].notna(), unlabelled_label(working[roles.dimension].dropna().unique())
+    working["__segment"] = working["__segment"].astype(object).where(
+        working["__segment"].notna(), unlabelled_label(working["__segment"].dropna().unique())
     )
-    working["Period"] = working[roles.date].dt.to_period(frequency).dt.to_timestamp()
+    working["Period"] = working["__date"].dt.to_period(frequency).dt.to_timestamp()
     comparison = working[working["Period"].isin([previous_period, current_period])]
-    grouped = comparison.groupby([roles.dimension, "Period"])[roles.measure].sum().unstack(fill_value=0)
+    grouped = (
+        comparison.groupby(["__segment", "Period"])["__measure"]
+        .agg(measure_aggregation(roles.measure))
+        .unstack(fill_value=0)
+    )
+    grouped.index.name = roles.dimension
     if previous_period not in grouped or current_period not in grouped:
         return None
 
@@ -347,15 +382,24 @@ def heatmap_frame(
 
     top_segments = segment_frame(dataframe, roles, limit=limit)["Segment"]
     columns = [roles.date, roles.dimension] + ([roles.measure] if roles.measure else [])
-    working = dataframe[columns].dropna(subset=[roles.date, roles.dimension]).copy()
-    working = working[working[roles.dimension].isin(top_segments)]
+    working = dataframe[columns].dropna(subset=[roles.date]).copy()
+    working.columns = ["__date", "__segment"] + (["__measure"] if roles.measure else [])
+    working["__segment"] = working["__segment"].astype(object).where(
+        working["__segment"].notna(), unlabelled_label(working["__segment"].dropna().unique())
+    )
+    working = working[working["__segment"].isin(top_segments)]
     if working.empty:
         return pd.DataFrame()
 
-    frequency = frequency or _period_frequency(working[roles.date])
-    working["Period"] = working[roles.date].dt.to_period(frequency).dt.to_timestamp()
+    frequency = frequency or _period_frequency(working["__date"])
+    working["Period"] = working["__date"].dt.to_period(frequency).dt.to_timestamp()
     if roles.measure:
-        pivot = working.groupby([roles.dimension, "Period"])[roles.measure].sum().unstack(fill_value=0)
+        pivot = (
+            working.groupby(["__segment", "Period"])["__measure"]
+            .agg(measure_aggregation(roles.measure))
+            .unstack(fill_value=0)
+        )
     else:
-        pivot = working.groupby([roles.dimension, "Period"]).size().unstack(fill_value=0)
+        pivot = working.groupby(["__segment", "Period"]).size().unstack(fill_value=0)
+    pivot.index.name = roles.dimension
     return pivot.loc[pivot.sum(axis=1).sort_values(ascending=False).index]
