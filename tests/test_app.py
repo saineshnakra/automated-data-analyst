@@ -1,5 +1,11 @@
+import os
+import shutil
+import subprocess
 import sys
+import tempfile
+import textwrap
 import unittest
+from pathlib import Path
 
 import pandas as pd
 from streamlit.testing.v1 import AppTest
@@ -90,6 +96,60 @@ class SourceSelectionTests(unittest.TestCase):
 
         self.assertFalse(app.exception)
         self.assertEqual(len(app.tabs), 6)
+
+
+class StaleModuleTests(unittest.TestCase):
+    """A deploy that adds a symbol must not strand a long-lived server process.
+
+    Streamlit re-executes app.py on every rerun but keeps already-imported
+    modules cached. The public app was down for a day because file_io.py
+    gained a function the cached copy did not have. This reproduces that in a
+    subprocess -- one process, two runs, source changed between them.
+    """
+
+    SIM = textwrap.dedent(
+        r"""
+        import sys, runpy, warnings, logging, io, contextlib
+        warnings.filterwarnings("ignore"); logging.disable(logging.CRITICAL)
+        def run():
+            try:
+                with contextlib.redirect_stderr(io.StringIO()):
+                    runpy.run_path("app.py", run_name="__main__")
+            except SystemExit:
+                pass
+        run()
+        with open("file_io.py", "a") as handle:
+            handle.write("\n\ndef brand_new_export(frame):\n    return 'fresh'\n")
+        src = open("app.py").read().replace(
+            "from file_io import list_excel_sheets,",
+            "from file_io import brand_new_export, list_excel_sheets,",
+        )
+        open("app.py", "w").write(src)
+        run()
+        import file_io
+        print("FRESH" if hasattr(file_io, "brand_new_export") else "STALE")
+        """
+    )
+
+    def test_a_symbol_added_by_a_deploy_is_importable_without_a_restart(self):
+        root = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory() as scratch:
+            for path in root.glob("*.py"):
+                shutil.copy(path, scratch)
+            for folder in ("samples", ".streamlit", "assets"):
+                if (root / folder).exists():
+                    shutil.copytree(root / folder, Path(scratch) / folder)
+            result = subprocess.run(
+                [sys.executable, "-c", self.SIM],
+                cwd=scratch,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                env={**os.environ, "PYTHONPATH": scratch},
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+        self.assertIn("FRESH", result.stdout, result.stdout[-2000:])
 
 
 class OptionalAiLayerTests(unittest.TestCase):

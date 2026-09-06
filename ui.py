@@ -599,11 +599,14 @@ def render_chat_rejected() -> None:
     st.markdown("I did not run that calculation. You can ask another question whenever you’re ready.")
 
 
-def render_footer() -> None:
+def render_footer(*, build: str = "") -> None:
+    # The build tag is what lets a mixed or stale deployment be recognised
+    # from the page itself, instead of from a redacted traceback.
+    tag = f' &nbsp;·&nbsp; <span class="build">build {escape(build)}</span>' if build else ""
     st.markdown(
-        """
+        f"""
         <footer class="footer"><span>ADA · Automated Data Analyst · Built by Sainesh Nakra</span>
-        <span><a href="https://sainesh.com/" target="_blank">Portfolio ↗</a> &nbsp;·&nbsp; <a href="https://github.com/saineshnakra/automated-data-analyst" target="_blank">Contribute ↗</a></span></footer>
+        <span><a href="https://sainesh.com/" target="_blank">Portfolio ↗</a> &nbsp;·&nbsp; <a href="https://github.com/saineshnakra/automated-data-analyst" target="_blank">Contribute ↗</a>{tag}</span></footer>
         """,
         unsafe_allow_html=True,
     )
