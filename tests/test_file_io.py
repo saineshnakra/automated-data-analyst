@@ -5,7 +5,7 @@ from io import BytesIO
 
 import pandas as pd
 
-from file_io import list_excel_sheets, read_tabular_file
+from file_io import list_excel_sheets, list_sample_datasets, read_tabular_file
 
 
 class FileParsingTests(unittest.TestCase):
@@ -68,6 +68,17 @@ class FileParsingTests(unittest.TestCase):
             read_tabular_file(b"", "sales.csv")
         with self.assertRaisesRegex(ValueError, "supports"):
             read_tabular_file(b"content", "sales.json")
+
+    def test_bundled_samples_are_listed_and_readable(self):
+        samples = list_sample_datasets()
+
+        self.assertGreaterEqual(len(samples), 3)
+        self.assertIn("SaaS Subscriptions", samples)
+        for name, path in samples.items():
+            with self.subTest(sample=name):
+                frame = read_tabular_file(path.read_bytes(), path.name)
+                self.assertGreater(len(frame), 0)
+                self.assertGreater(len(frame.columns), 1)
 
 
 if __name__ == "__main__":

@@ -22,7 +22,7 @@ from ai_insights import (
 from analysis import column_profile
 from business_insights import BusinessBrief, analyze_business, build_business_report
 from demo_data import make_demo_data
-from file_io import list_excel_sheets, read_tabular_file
+from file_io import list_excel_sheets, list_sample_datasets, read_tabular_file
 from nlq import QueryAnswer, answer_question, execute_plan, suggested_questions
 from pipeline import (
     apply_focus,
@@ -49,6 +49,12 @@ from ui import (
     render_recommendations,
     render_section_heading,
 )
+
+SAMPLE_NOTES = {
+    "SaaS Subscriptions": "Monthly recurring revenue by plan and region. Contains a real drop in April 2025 for the anomaly radar to find.",
+    "Support Tickets": "Operational tickets by team and priority. No revenue column, and the forecast admits it cannot beat assuming no change.",
+    "Ecommerce Orders": "Orders by category and channel, with returns as negative rows so totals have to handle mixed signs.",
+}
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 MAX_ANALYSIS_ROWS = 250_000
@@ -243,15 +249,28 @@ render_landing()
 
 api_key = render_sidebar(server_api_key=get_openai_api_key())
 
+sample_datasets = list_sample_datasets()
+source_options = ["Explore the live demo", "Upload your file"]
+if sample_datasets:
+    source_options.insert(1, "Try a sample dataset")
+
 source_mode = st.segmented_control(
     "Choose a source",
-    ["Explore the live demo", "Upload your file"],
+    source_options,
     default="Explore the live demo",
     label_visibility="collapsed",
 )
 
 uploaded_file = None
 business_context = ""
+selected_sample = None
+if source_mode == "Try a sample dataset":
+    selected_sample = st.selectbox(
+        "Sample dataset",
+        list(sample_datasets),
+        help="Synthetic files, safe to explore. Each one exercises a different part of the analysis.",
+    )
+    st.caption(SAMPLE_NOTES.get(selected_sample, "A synthetic dataset for trying ADA."))
 if source_mode == "Upload your file":
     uploaded_file = st.file_uploader(
         "Upload a CSV or Excel workbook",
@@ -273,6 +292,12 @@ try:
         raw_dataframe = make_demo_data()
         source_name = "Acme operating data · demo"
         business_context = "Two years of orders across products, regions, and sales channels."
+    elif source_mode == "Try a sample dataset":
+        assert selected_sample is not None
+        sample_path = sample_datasets[selected_sample]
+        raw_dataframe = read_uploaded_file(sample_path.read_bytes(), sample_path.name)
+        source_name = f"{selected_sample} · sample"
+        business_context = SAMPLE_NOTES.get(selected_sample, "")
     else:
         assert uploaded_file is not None
         if uploaded_file.size > MAX_UPLOAD_BYTES:

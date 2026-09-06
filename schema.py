@@ -31,6 +31,8 @@ class ColumnRoles:
 
 MEASURE_KEYWORDS = {
     "revenue": 14,
+    "mrr": 14,
+    "arr": 14,
     "sales": 14,
     "gmv": 14,
     "profit": 13,

@@ -29,6 +29,18 @@ and which is the segment, then builds the analysis around that.
 
 Limits: 25 MB per file, 250,000 rows analyzed. Formats: `.csv`, `.xlsx`, `.xlsm`.
 
+### Nothing to upload? Try a sample
+
+Pick **Try a sample dataset** in the app, or download one from [`samples/`](samples/):
+
+| Sample | What it shows |
+|---|---|
+| [SaaS subscriptions](samples/saas-subscriptions.csv) | A real revenue drop the anomaly radar finds, and a forecast that beats no-change |
+| [Support tickets](samples/support-tickets.csv) | No revenue column, and a forecast honest enough to say it is useless |
+| [Ecommerce orders](samples/ecommerce-orders.csv) | Returns as negative rows, so totals cope with mixed signs |
+
+All three are synthetic, so they carry no privacy or licensing baggage.
+
 ### Ask a business question. Get the number and its calculation.
 
 ![Ask ADA a plain-English question and receive a pandas-backed answer with its calculation](assets/readme/ask-ada.gif)

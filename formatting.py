@@ -14,6 +14,9 @@ import pandas as pd
 
 CURRENCY_TOKENS = (
     "revenue",
+    "mrr",
+    "arr",
+    "turnover",
     "sales",
     "gmv",
     "profit",
@@ -161,6 +164,18 @@ def format_number(
         return f"{int(value):,}"
 
     return f"{value:,.2f}"
+
+
+def format_percentage(value: float, *, signed: bool = False) -> str:
+    """Write a percentage down, or an em dash when there is no number to write.
+
+    Percentages are built by division, so an empty or infinite input produces
+    a non-finite result. Rendering that with an f-string prints "nan%", which
+    reads as a real measurement rather than a missing one.
+    """
+    if not np.isfinite(value):
+        return "—"
+    return f"{value:+.1f}%" if signed else f"{value:.1f}%"
 
 
 def format_period(period: pd.Timestamp, grain: str) -> str:

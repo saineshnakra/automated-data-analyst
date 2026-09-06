@@ -1,5 +1,6 @@
 import unittest
 
+import numpy as np
 import pandas as pd
 
 from aggregation import driver_frame, heatmap_frame, segment_frame, trend_frame
@@ -279,6 +280,37 @@ class BusinessAnalysisTests(unittest.TestCase):
         """"Gross Margin" is as often an amount as a ratio."""
         self.assertEqual(format_number(1_250_000, "Gross Margin"), "1.2M")
         self.assertEqual(format_number(45.0, "Gross Margin"), "45.0%")
+
+    def test_the_headline_is_not_cut_at_a_decimal_point(self):
+        """"Revenue increased 18.5%" used to be truncated to "Revenue increased 18."."""
+        frame = pd.DataFrame(
+            {
+                "Date": pd.date_range("2024-01-01", periods=200),
+                "Revenue": range(200),
+                "Region": [f"r{index}" for index in range(200)],
+            }
+        )
+
+        headline = analyze_business(frame).headline
+
+        self.assertNotRegex(headline, r"\d+\.$")
+        self.assertIn("%", headline)
+
+    def test_non_finite_values_never_print_as_nan(self):
+        """A percentage is a division, and division can fail."""
+        frame = pd.DataFrame(
+            {
+                "Date": pd.date_range("2024-01-01", periods=20),
+                "Revenue": [np.inf] * 10 + [1.0] * 10,
+                "Region": ["A", "B"] * 10,
+            }
+        )
+
+        brief = analyze_business(frame)
+
+        self.assertNotIn("nan", brief.headline.lower())
+        for kpi in brief.kpis:
+            self.assertNotIn("nan", kpi.value.lower())
 
 
 if __name__ == "__main__":

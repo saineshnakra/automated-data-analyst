@@ -61,6 +61,20 @@ class AppSmokeTests(unittest.TestCase):
         self.assertFalse(app.exception)
         self.assertEqual(len(app.session_state["chat_history"]), 2)
 
+    def test_a_sample_dataset_can_be_analyzed_without_uploading(self):
+        app = AppTest.from_file("app.py", default_timeout=45).run()
+        app.segmented_control[0].set_value("Try a sample dataset").run()
+
+        picker = next(box for box in app.selectbox if box.label == "Sample dataset")
+        self.assertIn("SaaS Subscriptions", picker.options)
+
+        picker.set_value("SaaS Subscriptions").run()
+
+        self.assertFalse(app.exception)
+        self.assertEqual(len(app.tabs), 5)
+        rendered = " ".join(str(block.value) for block in app.markdown)
+        self.assertIn("SaaS Subscriptions · sample", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()
