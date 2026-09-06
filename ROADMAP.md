@@ -89,8 +89,7 @@ those issues, not a follow-up to them.
 
 ## Exploration
 
-Where a reader drives instead of reading. Tracked against RATH, whose bet is a
-wide automated search and hands-on manipulation.
+Where a reader drives instead of reading, rather than only being read to.
 
 - **Explore tab** *(shipped)* — pick any columns, ADA chooses the chart form and
   prints why, with the colour rules in [docs/reference/autovis.md](docs/reference/autovis.md)
@@ -101,9 +100,9 @@ wide automated search and hands-on manipulation.
 
 ### Not on this roadmap
 
-**Causal discovery, editable causal graphs, and what-if simulation.** RATH ships
-all three, and they are the clearest single reason to choose it over ADA. They
-are also the one thing this project has decided not to build.
+**Causal discovery, editable causal graphs, and what-if simulation.** These are
+a common ask, and they are the one thing this project has decided not to
+build.
 
 Every recommendation ADA makes is labelled interpretation, every evidence card
 is an observed calculation, and [CONTRIBUTING.md](CONTRIBUTING.md) requires that
