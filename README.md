@@ -2,18 +2,20 @@
 
 [![CI](https://github.com/saineshnakra/automated-data-analyst/actions/workflows/ci.yml/badge.svg)](https://github.com/saineshnakra/automated-data-analyst/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?logo=python&logoColor=white)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-20a779.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-20a779.svg)](https://github.com/saineshnakra/automated-data-analyst/blob/main/LICENSE)
 
 **Upload a CSV or Excel file. Get a dashboard, an executive brief, anomaly
 flags, a forecast, and answers to plain-English questions — with the calculation
 shown under every number.**
 
 [Live demo](https://automated-data-analyst.streamlit.app/) ·
-[Documentation](docs/README.md) ·
-[Roadmap](ROADMAP.md) ·
-[Contributing](CONTRIBUTING.md)
+[Documentation](https://github.com/saineshnakra/automated-data-analyst/tree/main/docs) ·
+[Roadmap](https://github.com/saineshnakra/automated-data-analyst/blob/main/ROADMAP.md) ·
+[Contributing](https://github.com/saineshnakra/automated-data-analyst/blob/main/CONTRIBUTING.md)
 
-![ADA turns CSV and Excel files into decision-ready business dashboards](assets/ada-social-preview.png)
+**Source:** [github.com/saineshnakra/automated-data-analyst](https://github.com/saineshnakra/automated-data-analyst)
+
+![ADA turns CSV and Excel files into decision-ready business dashboards](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/ada-social-preview.png)
 
 ## What it does
 
@@ -31,27 +33,27 @@ Limits: 25 MB per file, 250,000 rows analyzed. Formats: `.csv`, `.xlsx`, `.xlsm`
 
 ### Nothing to upload? Try a sample
 
-Pick **Try a sample dataset** in the app, or download one from [`samples/`](samples/):
+Pick **Try a sample dataset** in the app, or download one from [`samples/`](https://github.com/saineshnakra/automated-data-analyst/tree/main/samples):
 
 | Sample | What it shows |
 |---|---|
-| [SaaS subscriptions](samples/saas-subscriptions.csv) | A real revenue drop the anomaly radar finds, and a forecast that beats no-change |
-| [Support tickets](samples/support-tickets.csv) | No revenue column, and a forecast honest enough to say it is useless |
-| [Ecommerce orders](samples/ecommerce-orders.csv) | Returns as negative rows, so totals cope with mixed signs |
+| [SaaS subscriptions](https://github.com/saineshnakra/automated-data-analyst/blob/main/samples/saas-subscriptions.csv) | A real revenue drop the anomaly radar finds, and a forecast that beats no-change |
+| [Support tickets](https://github.com/saineshnakra/automated-data-analyst/blob/main/samples/support-tickets.csv) | No revenue column, and a forecast honest enough to say it is useless |
+| [Ecommerce orders](https://github.com/saineshnakra/automated-data-analyst/blob/main/samples/ecommerce-orders.csv) | Returns as negative rows, so totals cope with mixed signs |
 
 All three are synthetic, so they carry no privacy or licensing baggage.
 
 ### Ask a business question. Get the number and its calculation.
 
-![Ask ADA a plain-English question and receive a pandas-backed answer with its calculation](assets/readme/ask-ada.gif)
+![Ask ADA a plain-English question and receive a pandas-backed answer with its calculation](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/ask-ada.gif)
 
 ### Focus on one segment. The whole analysis regroups.
 
-![Drill into one business segment and automatically regroup the dashboard by the next useful dimension](assets/readme/drilldown.gif)
+![Drill into one business segment and automatically regroup the dashboard by the next useful dimension](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/drilldown.gif)
 
 <p align="center">
-  <img src="assets/readme/anomaly-forecast.png" width="49%" alt="ADA dashboard showing anomaly markers, a guarded forecast, movement waterfall, and segment heatmap">
-  <img src="assets/readme/evidence-ledger.png" width="49%" alt="ADA evidence ledger showing calculations, anomalies, concentration, correlation, and detected schema">
+  <img src="https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/anomaly-forecast.png" width="49%" alt="ADA dashboard showing anomaly markers, a guarded forecast, movement waterfall, and segment heatmap">
+  <img src="https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/evidence-ledger.png" width="49%" alt="ADA evidence ledger showing calculations, anomalies, concentration, correlation, and detected schema">
 </p>
 
 ## Run it
@@ -79,18 +81,18 @@ locally. Both features receive column names, types, and already-computed
 evidence. **Neither receives your rows or cell values.** Model-generated code is
 never executed.
 
-Full details: [Privacy](docs/privacy.md) · [SECURITY.md](SECURITY.md)
+Full details: [Privacy](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/privacy.md) · [SECURITY.md](https://github.com/saineshnakra/automated-data-analyst/blob/main/SECURITY.md)
 
 ## Documentation
 
 | Page | What you get |
 |---|---|
-| [Concepts](docs/concepts.md) | The words ADA uses: measure, segment, period, evidence, plan |
-| [How it works](docs/how-it-works.md) | Upload to dashboard, step by step |
-| [Architecture](docs/architecture.md) | Which file does what, and why |
-| [Reference](docs/README.md#reference) | One page per pipeline step |
-| [Development](docs/development.md) | Setup, tests, CI, conventions |
-| [FAQ](docs/faq.md) | Short answers to common questions |
+| [Concepts](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/concepts.md) | The words ADA uses: measure, segment, period, evidence, plan |
+| [How it works](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/how-it-works.md) | Upload to dashboard, step by step |
+| [Architecture](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/architecture.md) | Which file does what, and why |
+| [Reference](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/README.md#reference) | One page per pipeline step |
+| [Development](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/development.md) | Setup, tests, CI, conventions |
+| [FAQ](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/faq.md) | Short answers to common questions |
 
 For the design story behind the project, read
 [I Built an AI Data Analyst That Tells You When It Hallucinates](https://medium.com/@saineshnakra/i-built-an-ai-data-analyst-that-tells-you-when-it-hallucinates-6051609c3f4a).
@@ -100,12 +102,27 @@ For the design story behind the project, read
 Good places to start: a new question shape for Ask ADA, a new deterministic
 metric, schema-detection fixtures, chart accessibility, adversarial test data.
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md), browse the
+Read [CONTRIBUTING.md](https://github.com/saineshnakra/automated-data-analyst/blob/main/CONTRIBUTING.md), browse the
 [good first issues](https://github.com/saineshnakra/automated-data-analyst/labels/good%20first%20issue),
-or pick something from the [roadmap](ROADMAP.md).
+or pick something from the [roadmap](https://github.com/saineshnakra/automated-data-analyst/blob/main/ROADMAP.md).
 
 Every new recommendation needs a test and the calculation that supports it.
 
+## Building on ADA?
+
+A link back to this repo is appreciated. If you've shipped something with it,
+[open an issue](https://github.com/saineshnakra/automated-data-analyst/issues/new) and I'll list it here.
+
+ADA is MIT licensed, so you are free to use, change and ship it — commercially
+too. The only thing the licence asks is that the copyright notice travels with
+the code.
+
+**Built with ADA**
+
+- *Yours could be here.*
+
 ## License
 
-[MIT](LICENSE)
+[MIT](https://github.com/saineshnakra/automated-data-analyst/blob/main/LICENSE) · Copyright (c) 2024 Sainesh Nakra
+
+Originally built at [github.com/saineshnakra/automated-data-analyst](https://github.com/saineshnakra/automated-data-analyst).
