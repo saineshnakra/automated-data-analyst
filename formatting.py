@@ -14,6 +14,9 @@ import pandas as pd
 
 CURRENCY_TOKENS = (
     "revenue",
+    "mrr",
+    "arr",
+    "turnover",
     "sales",
     "gmv",
     "profit",
@@ -33,6 +36,11 @@ CURRENCY_CODES = {
 }
 
 PERCENTAGE_TOKENS = {"rate", "margin", "ratio"}
+
+# Above this magnitude a value is not a percentage, whatever the column is
+# called. "Gross Margin" holding 1,250,000 is money that happens to be named
+# like a ratio, and reading it as 1250000.0% is worse than leaving it plain.
+MAX_PLAUSIBLE_PERCENTAGE = 1_000.0
 
 
 def normalized_name(name: str) -> str:
@@ -132,9 +140,11 @@ def format_number(
 
     if is_percentage(column):
         if _percentage_uses_fraction_scale(value, column_values):
-            value *= 100
-
-        return f"{value:.1f}%"
+            return f"{value * 100:.1f}%"
+        if abs(value) <= MAX_PLAUSIBLE_PERCENTAGE:
+            return f"{value:.1f}%"
+        # Falls through: a ratio-named column holding a currency-sized number
+        # is reported as a plain number rather than an absurd percentage.
 
     absolute = abs(value)
     scaled = value
@@ -154,6 +164,18 @@ def format_number(
         return f"{int(value):,}"
 
     return f"{value:,.2f}"
+
+
+def format_percentage(value: float, *, signed: bool = False) -> str:
+    """Write a percentage down, or an em dash when there is no number to write.
+
+    Percentages are built by division, so an empty or infinite input produces
+    a non-finite result. Rendering that with an f-string prints "nan%", which
+    reads as a real measurement rather than a missing one.
+    """
+    if not np.isfinite(value):
+        return "—"
+    return f"{value:+.1f}%" if signed else f"{value:.1f}%"
 
 
 def format_period(period: pd.Timestamp, grain: str) -> str:

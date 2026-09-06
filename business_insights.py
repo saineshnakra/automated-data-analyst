@@ -14,7 +14,7 @@ from aggregation import (
     trend_frame,
 )
 from anomalies import detect_anomalies
-from formatting import format_number, format_period, normalized_name
+from formatting import format_number, format_percentage, format_period, normalized_name
 from schema import TIME_PART_TOKENS, ColumnRoles, detect_roles, looks_like_identifier
 from timeseries import robust_scale
 
@@ -88,7 +88,7 @@ def _movement_in_context(values: np.ndarray, change: float) -> str:
         verdict = "This is a larger swing than usual"
     else:
         verdict = "This is an unusually large swing"
-    return f" {verdict} — this series typically moves about {typical:.1f}% per period."
+    return f" {verdict} — this series typically moves about {format_percentage(typical)} per period."
 
 
 def _growth_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
@@ -110,9 +110,9 @@ def _growth_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | 
     return Evidence(
         kind="trend",
         title=f"Latest {measure.lower()} movement",
-        value=f"{change:+.1f}%",
+        value=format_percentage(change, signed=True),
         statement=(
-            f"{measure} {direction} {abs(change):.1f}% in the latest complete period "
+            f"{measure} {direction} {format_percentage(abs(change))} in the latest complete period "
             f"({period}), from {format_number(previous, roles.measure, column_values=measure_values)} to "
             f"{format_number(current, roles.measure, column_values=measure_values)}.{context}"
         ),
@@ -162,7 +162,7 @@ def _change_driver_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evid
             f"{format_number(gross_change, roles.measure, column_values=measure_values)} "
             f"of movement nets to just "
             f"{format_number(abs(net_change), roles.measure, column_values=measure_values)} — so this is "
-            f"{share:.1f}% of all movement rather than of the net."
+            f"{format_percentage(share)} of all movement rather than of the net."
         )
         calculation = (
             f"Latest {driver_name} {roles.measure} − previous; ranked by absolute change; "
@@ -170,7 +170,7 @@ def _change_driver_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evid
         )
     else:
         share = abs(driver_change / net_change) * 100
-        statement = f"{movement} That is equivalent to {share:.1f}% of the net movement."
+        statement = f"{movement} That is equivalent to {format_percentage(share)} of the net movement."
         calculation = (
             f"Latest {driver_name} {roles.measure} − previous {driver_name} {roles.measure}; "
             "ranked across segments"
@@ -259,10 +259,10 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
         Evidence(
             kind="leader",
             title=f"Leading {dimension.lower()}",
-            value=f"{leader_share:.1f}%",
+            value=format_percentage(leader_share),
             statement=(
                 f"{leader['Segment']} is the largest {dimension.lower()}, contributing "
-                f"{leader_share:.1f}% of {measure.lower()} "
+                f"{format_percentage(leader_share)} of {measure.lower()} "
                 f"({format_number(float(leader['Value']), roles.measure, column_values=measure_values)})."
             ),
             calculation=f"{leader['Segment']} {measure} ÷ total {measure}",
@@ -287,14 +287,14 @@ def _concentration_evidence(
     effective: float | None,
 ) -> Evidence:
     headline = (
-        f"The top three {dimension.lower()} values account for {top_three_share:.1f}% "
+        f"The top three {dimension.lower()} values account for {format_percentage(top_three_share)} "
         f"of measured {measure.lower()}."
     )
     if effective is None:
         return Evidence(
             kind="concentration",
             title="Top-three concentration",
-            value=f"{top_three_share:.1f}%",
+            value=format_percentage(top_three_share),
             statement=headline,
             calculation=f"Top three {dimension} {measure} ÷ total {measure}",
             tone="warning" if top_three_share >= 70 else "neutral",
@@ -413,7 +413,7 @@ def _outlier_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence |
         title="Exceptional records",
         value=f"{outlier_count:,}",
         statement=(
-            f"{outlier_count:,} {roles.measure} values ({rate:.1f}% of non-missing records) "
+            f"{outlier_count:,} {roles.measure} values ({format_percentage(rate)} of non-missing records) "
             "sit outside the standard 1.5×IQR range."
         ),
         calculation="Values below Q1 − 1.5×IQR or above Q3 + 1.5×IQR",
@@ -430,10 +430,10 @@ def _quality_evidence(dataframe: pd.DataFrame) -> Evidence | None:
     return Evidence(
         kind="quality",
         title="Data completeness",
-        value=f"{100 - rate:.1f}%",
+        value=format_percentage(100 - rate),
         statement=(
             f"{missing_cells:,} cells are missing, leaving the analyzed dataset "
-            f"{100 - rate:.1f}% complete."
+            f"{format_percentage(100 - rate)} complete."
         ),
         calculation="Non-missing cells ÷ all cells",
         tone="warning" if rate >= 5 else "neutral",
@@ -651,7 +651,13 @@ def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) 
             kpis.append(KPI("Records analyzed", f"{len(dataframe):,}", "After conservative cleaning"))
         else:
             completeness = 1 - dataframe.isna().sum().sum() / max(dataframe.size, 1)
-            kpis.append(KPI("Data completeness", f"{completeness * 100:.1f}%", "Share of populated cells"))
+            kpis.append(
+                KPI(
+                    "Data completeness",
+                    format_percentage(completeness * 100),
+                    "Share of populated cells",
+                )
+            )
     kpis = kpis[:4]
 
     recommendations = _recommendations(evidence, roles)
@@ -663,7 +669,8 @@ def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) 
             f"{roles.dimension.lower()}."
         )
     elif growth:
-        headline = growth.statement.split(".")[0] + "."
+        # Cut at a sentence end, not at the decimal point inside "18.5%".
+        headline = growth.statement.split(". ")[0].rstrip(".") + "."
     elif leader:
         headline = leader.statement
     elif roles.measure:

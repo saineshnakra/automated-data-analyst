@@ -52,10 +52,16 @@ AGGREGATION_LABELS: dict[Aggregation, str] = {
     "count": "Count of",
 }
 
+# Words asking for the bottom of a ranking. Every one of them is also a
+# superlative, so the two tuples are composed rather than typed out twice --
+# a word listed in only one of them reads as a request for the opposite end.
+ASCENDING_WORDS = ("worst", "bottom", "lowest", "smallest", "least", "fewest")
 SUPERLATIVE_WORDS = (
-    "best", "worst", "top", "bottom", "leading",
-    "highest", "lowest", "largest", "biggest", "smallest",
+    "best", "top", "leading", "highest", "largest", "biggest",
+    *ASCENDING_WORDS,
 )
+DECLINE_WORDS = ("slowest", "declined", "decreased", "dropped", "fell", "shrank")
+ASCENDING_PATTERN = rf"\b({'|'.join((*ASCENDING_WORDS, *DECLINE_WORDS))})\b"
 GROWTH_WORDS = (
     "grew", "grow", "growing", "growth", "changed", "change",
     "increase", "increased", "decrease", "decreased",
@@ -253,7 +259,7 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
     if wants_growth and roles.date:
         wants_ranked_growth = superlative or any(word in q for word in ("which", "fastest", "slowest"))
         rank_dimension = dimension or (roles.dimension if wants_ranked_growth else None)
-        ascending = bool(re.search(r"\b(slowest|least|declined|decreased|dropped|fell|shrank|worst)\b", q))
+        ascending = bool(re.search(ASCENDING_PATTERN, q))
         return QueryPlan(intent="growth", dimension=rank_dimension, ascending=ascending, **base)
 
     if (top_match or superlative) and dimension:
@@ -262,7 +268,7 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
             ascending = top_match.group(1) == "bottom"
         else:
             top_n = 1
-            ascending = bool(re.search(r"\b(worst|lowest|smallest|bottom)\b", q))
+            ascending = bool(re.search(ASCENDING_PATTERN, q))
         return QueryPlan(
             intent="rank",
             aggregation=aggregation if aggregation in ("mean", "median") else "sum",

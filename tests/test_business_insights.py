@@ -1,5 +1,6 @@
 import unittest
 
+import numpy as np
 import pandas as pd
 
 from aggregation import driver_frame, heatmap_frame, segment_frame, trend_frame
@@ -102,6 +103,34 @@ class BusinessAnalysisTests(unittest.TestCase):
         self.assertIn("## What ADA recommends", report)
         self.assertIn("Calculation:", report)
         self.assertIn("not causal proof", report)
+
+    def test_semantic_percentage_formatting_flows_through_kpi_and_report(self):
+        dataframe = pd.DataFrame(
+            {
+                "Date": pd.to_datetime(
+                    ["2025-01-01", "2025-02-01", "2025-03-01", "2025-04-01"]
+                ),
+                "Gross Margin": [0.35, 0.42, 0.28, 0.31],
+                "Region": ["West", "East", "West", "East"],
+            }
+        )
+
+        roles = detect_roles(dataframe)
+        self.assertEqual(roles.measure, "Gross Margin")
+
+        brief = analyze_business(dataframe, roles)
+        report = build_business_report(
+            dataframe,
+            brief,
+            source_name="formatting_test.csv",
+        )
+
+        kpi_values = [item.value for item in brief.kpis]
+
+        self.assertIn("136.0%", kpi_values)
+        self.assertIn("34.0%", kpi_values)
+        self.assertIn("Gross Margin increased 10.7%", report)
+        self.assertIn("from 28.0% to 31.0%", report)
 
     def test_negative_latest_period_prioritizes_diagnosis(self):
         dataframe = pd.DataFrame(
@@ -246,6 +275,42 @@ class BusinessAnalysisTests(unittest.TestCase):
             format_number(30_000, "Europe Sales"),
             "$30.0K",
         )
+
+    def test_a_ratio_named_column_holding_money_is_not_a_percentage(self):
+        """"Gross Margin" is as often an amount as a ratio."""
+        self.assertEqual(format_number(1_250_000, "Gross Margin"), "1.2M")
+        self.assertEqual(format_number(45.0, "Gross Margin"), "45.0%")
+
+    def test_the_headline_is_not_cut_at_a_decimal_point(self):
+        """"Revenue increased 18.5%" used to be truncated to "Revenue increased 18."."""
+        frame = pd.DataFrame(
+            {
+                "Date": pd.date_range("2024-01-01", periods=200),
+                "Revenue": range(200),
+                "Region": [f"r{index}" for index in range(200)],
+            }
+        )
+
+        headline = analyze_business(frame).headline
+
+        self.assertNotRegex(headline, r"\d+\.$")
+        self.assertIn("%", headline)
+
+    def test_non_finite_values_never_print_as_nan(self):
+        """A percentage is a division, and division can fail."""
+        frame = pd.DataFrame(
+            {
+                "Date": pd.date_range("2024-01-01", periods=20),
+                "Revenue": [np.inf] * 10 + [1.0] * 10,
+                "Region": ["A", "B"] * 10,
+            }
+        )
+
+        brief = analyze_business(frame)
+
+        self.assertNotIn("nan", brief.headline.lower())
+        for kpi in brief.kpis:
+            self.assertNotIn("nan", kpi.value.lower())
 
 
 if __name__ == "__main__":

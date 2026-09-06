@@ -9,7 +9,21 @@ from zipfile import BadZipFile
 import pandas as pd
 
 SUPPORTED_SUFFIXES = {".csv", ".xlsx", ".xlsm"}
+SAMPLES_DIRECTORY = Path(__file__).parent / "samples"
+# Title-casing a filename gets "Saas" and "Mrr" wrong; these keep their shape.
+SAMPLE_ACRONYMS = {"Saas": "SaaS", "Mrr": "MRR", "Arr": "ARR", "Ar": "AR", "Kpi": "KPI"}
 EXCEL_SUFFIXES = {".xlsx", ".xlsm"}
+
+
+def list_sample_datasets() -> dict[str, Path]:
+    """Bundled files a visitor can analyze without uploading anything."""
+    if not SAMPLES_DIRECTORY.is_dir():
+        return {}
+    def label(stem: str) -> str:
+        words = stem.replace("-", " ").title().split()
+        return " ".join(SAMPLE_ACRONYMS.get(word, word) for word in words)
+
+    return {label(path.stem): path for path in sorted(SAMPLES_DIRECTORY.glob("*.csv"))}
 
 
 def _validate(contents: bytes, filename: str) -> str:

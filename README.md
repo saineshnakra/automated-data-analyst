@@ -1,30 +1,51 @@
-# Automated Data Analyst (ADA) — Open-source AI for CSV & Excel
+# ADA — Automated Data Analyst
 
 [![CI](https://github.com/saineshnakra/automated-data-analyst/actions/workflows/ci.yml/badge.svg)](https://github.com/saineshnakra/automated-data-analyst/actions/workflows/ci.yml)
-[![Streamlit](https://img.shields.io/badge/Streamlit-live_product-ff4b4b?logo=streamlit&logoColor=white)](https://automated-data-analyst.streamlit.app/)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-20a779.svg)](LICENSE)
-[![Contributions welcome](https://img.shields.io/badge/contributions-welcome-635bff.svg)](CONTRIBUTING.md)
 
-**Upload a CSV or Excel file and get automated EDA, an interactive business intelligence dashboard, anomaly detection, forecasts, and evidence-backed recommendations—without configuring a BI tool.**
+**Upload a CSV or Excel file. Get a dashboard, an executive brief, anomaly
+flags, a forecast, and answers to plain-English questions — with the calculation
+shown under every number.**
 
-[Try the live dashboard](https://automated-data-analyst.streamlit.app/) · [Read the engineering story](https://medium.com/@saineshnakra/i-built-an-ai-data-analyst-that-tells-you-when-it-hallucinates-6051609c3f4a) · [See the roadmap](ROADMAP.md) · [Contribute](CONTRIBUTING.md) · [Report a bug](https://github.com/saineshnakra/automated-data-analyst/issues/new?template=bug_report.yml)
-
-> If ADA saves you time, **star the repository**—it helps more analysts and open-source contributors discover the project.
+[Live demo](https://automated-data-analyst.streamlit.app/) ·
+[Documentation](docs/README.md) ·
+[Roadmap](ROADMAP.md) ·
+[Contributing](CONTRIBUTING.md)
 
 ![ADA turns CSV and Excel files into decision-ready business dashboards](assets/ada-social-preview.png)
 
-ADA is a privacy-conscious, open-source AI data analyst built with Python, Streamlit, pandas, and Plotly. Upload a CSV, XLSX, or XLSM file and it automatically cleans the data, detects the business schema, creates interactive visualizations, flags anomalous periods, projects a guarded baseline forecast, explains material changes, and recommends what to investigate next.
+## What it does
 
-Ask questions in natural language—effectively **chat with your CSV or Excel data**—and ADA returns a pandas-backed answer with the calculation behind it. The complete deterministic workflow runs without an API key; optional AI features receive computed schema and evidence, never raw rows or cell values.
+ADA reads your file, works out which column is the metric, which is the date,
+and which is the segment, then builds the analysis around that.
 
-## See ADA in action
+- **Dashboard** — trend, segment breakdown, movement waterfall, segment × period heatmap
+- **Ask ADA** — plain-English questions answered locally with pandas, calculation shown
+- **Anomaly flags** — periods outside a calibrated band, sized so a stable series false-alarms about once in twenty analyses
+- **Forecast** — a guarded baseline that refuses to run on thin history and reports when it was no better than assuming no change
+- **Evidence and next steps** — every finding carries its calculation; recommendations are labelled as interpretation, never as cause
+- **Downloads** — Markdown executive brief and cleaned CSV
+
+Limits: 25 MB per file, 250,000 rows analyzed. Formats: `.csv`, `.xlsx`, `.xlsm`.
+
+### Nothing to upload? Try a sample
+
+Pick **Try a sample dataset** in the app, or download one from [`samples/`](samples/):
+
+| Sample | What it shows |
+|---|---|
+| [SaaS subscriptions](samples/saas-subscriptions.csv) | A real revenue drop the anomaly radar finds, and a forecast that beats no-change |
+| [Support tickets](samples/support-tickets.csv) | No revenue column, and a forecast honest enough to say it is useless |
+| [Ecommerce orders](samples/ecommerce-orders.csv) | Returns as negative rows, so totals cope with mixed signs |
+
+All three are synthetic, so they carry no privacy or licensing baggage.
 
 ### Ask a business question. Get the number and its calculation.
 
 ![Ask ADA a plain-English question and receive a pandas-backed answer with its calculation](assets/readme/ask-ada.gif)
 
-### Focus on one segment. Watch the entire analysis regroup itself.
+### Focus on one segment. The whole analysis regroups.
 
 ![Drill into one business segment and automatically regroup the dashboard by the next useful dimension](assets/readme/drilldown.gif)
 
@@ -33,182 +54,55 @@ Ask questions in natural language—effectively **chat with your CSV or Excel da
   <img src="assets/readme/evidence-ledger.png" width="49%" alt="ADA evidence ledger showing calculations, anomalies, concentration, correlation, and detected schema">
 </p>
 
-<p align="center"><sub>Anomalies, forecasts, drivers, and evidence stay inspectable instead of disappearing behind generated prose.</sub></p>
-
-For the architecture, tradeoffs, and failure modes behind the product, read [**I Built an AI Data Analyst That Tells You When It Hallucinates**](https://medium.com/@saineshnakra/i-built-an-ai-data-analyst-that-tells-you-when-it-hallucinates-6051609c3f4a).
-
-## Why ADA is different
-
-Most CSV analyzers stop at charts. ADA keeps four layers explicit:
-
-| Layer | What it does | Trust boundary |
-|---|---|---|
-| **Calculation** | Detects trends, drivers, anomalies, concentration, relationships, exceptions, and data quality | Deterministic and traceable |
-| **Conversation** | Turns plain-English questions into auditable pandas query plans executed locally | Every answer shows its math |
-| **Interpretation** | Turns calculations into prioritized investigations | Clearly labeled; never causal proof |
-| **Optional AI** | Plans queries the rules cannot read and writes a strategic read over computed evidence | Opt-in; raw uploaded rows are never sent |
-
-Every evidence card and chat answer exposes its calculation. The deterministic product remains authoritative whether or not a model is configured.
-
-### How ADA compares
-
-| | Chat-with-CSV AI tools | Traditional BI | **ADA** |
-|---|---|---|---|
-| Setup | Upload and prompt | Data modeling, weeks | Upload only |
-| Answers | Plausible prose; reasoning hidden | Exact, but you build every chart | Deterministic calculations with the math shown |
-| Rows sent to a model | Usually | Depends on vendor | Never — optional AI sees schema and evidence only |
-| Anomalies and forecasts | On request, unverifiable | Paid add-ons | Built in, with a calibrated false-alarm rate and a backtest that admits when the forecast is no better than no change |
-| Cost | Subscription | License | Free and MIT-licensed |
-
-## From spreadsheet to decision
-
-```mermaid
-flowchart TD
-    A["Upload CSV or Excel worksheet"] --> B["Clean and infer types"]
-    B --> C["Detect metric, date, segment, ID"]
-    C --> D["Calculate evidence, anomalies, and forecast"]
-    D --> E["Dashboard, executive brief, and drill-down"]
-    C --> G["Ask ADA: question → QueryPlan → local execution"]
-    G -. "schema + question only, when rules cannot parse" .-> H["Optional AI query planner"]
-    D -. "computed evidence only" .-> F["Optional AI strategic read"]
-```
-
-ADA automatically looks for:
-
-- A primary outcome such as revenue, sales, profit, cost, amount, or units
-- A time field for period movement, anomaly detection, and the baseline forecast
-- A useful segment such as product, category, channel, region, customer, or status
-- Identifiers, missingness, outliers, concentration, and numeric relationships
-- The strongest evidence-backed next investigation, separated from observed fact
-
-If the source schema is unusual, users can override the detected metric, date, and segment without rebuilding the dashboard — and drill the whole analysis into a single segment slice.
-
-## Product capabilities
-
-- Zero-configuration CSV and Excel analytics with an included synthetic demo
-- **Ask ADA**: plain-English questions (totals, rankings, breakdowns, trends, growth, counts, time and segment filters) answered locally with the calculation shown
-- Anomaly radar: periods outside a robust trendline band are flagged on the chart, in the evidence ledger, and in the recommended actions — with the band calibrated by simulation so a stable series raises a false flag about once in twenty analyses
-- Guarded baseline forecast with month-of-year seasonality, a band that widens with the horizon, and a backtest that reports whether it actually beat assuming no change
-- Honest timelines: an in-progress final period is excluded rather than read as a collapse, periods with no rows are counted as zero, and both adjustments are stated under the chart
-- Drill-down focus: analyze one segment value and automatically regroup by the next useful dimension
-- Movement waterfall reconciling the latest change by segment, plus a segment-by-period intensity heatmap
-- Worksheet picker for multi-sheet Excel workbooks
-- Conservative cleanup, type inference, duplicate removal, and a visible cleaning audit
-- Executive headline, four business KPIs, and plain-English briefing
-- Evidence ledger with the calculation behind every displayed signal
-- Prioritized recommendations linked to deterministic evidence
-- Optional AI query planner and structured strategy synthesis using the OpenAI Responses API
-- Downloadable Markdown executive brief and cleaned CSV
-- Responsive Streamlit interface built for non-technical users
-- File limit and row cap for predictable hosted performance
-
-## Common use cases
-
-- Automated exploratory data analysis (EDA) for CSV and Excel files
-- Natural-language data analysis and chat-with-data workflows
-- KPI and business intelligence dashboards for operators
-- Time-series anomaly detection and guarded forecasting
-- Evidence-backed executive summaries and downloadable reports
-- A transparent, self-hostable alternative to black-box CSV analysis tools
-
-## Privacy and model design
-
-ADA works fully without an API key. In deterministic mode, no model call is made — including every Ask ADA answer the rule-based parser can plan itself.
-
-When a key is present, two narrow model calls become available, both typed and executed against the same local engine:
-
-- **Query planner** — used only when the deterministic parser cannot read a question. It receives the column schema (names, types, roles) and the question itself, emits a typed `QueryPlan`, and ADA executes that plan locally. Unresolvable plans are refused rather than guessed, and AI-planned answers are visibly badged.
-- **Strategic read** — receives only the calculated schema, summaries, evidence cards, recommendations, and user-supplied context.
-
-**Neither call puts uploaded rows or cell values into the model prompt.** Responses must match a typed Pydantic schema, storage is disabled for the request, and a hashed anonymous session identifier is used for safety controls.
-
-The default model is `gpt-5.6-luna` with low reasoning for an efficient strategic read. `gpt-5.6-terra` with medium reasoning is available when the decision is ambiguous enough to justify higher cost. Model calls are button-triggered and cached per evidence payload to avoid accidental spend.
-
-See [SECURITY.md](SECURITY.md) for the complete data-handling and secret-management policy.
-
-## Architecture
-
-| Path | Responsibility |
-|---|---|
-| `app.py` | Thin Streamlit orchestration and session state |
-| `pipeline.py` | Bounded preparation, cleaning, schema selection, drill-down, and audit frames |
-| `analysis.py` | Conservative cleaning and data profiling |
-| `schema.py` | Business role detection: measure, date, segment, and identifier |
-| `aggregation.py` | The single place that decides what a period is, and the frames built on it |
-| `business_insights.py` | Evidence, deterministic recommendations, and the executive brief |
-| `formatting.py` | How numbers and periods are written down |
-| `timeseries.py` | Theil–Sen trendline and robust scale on calendar positions |
-| `nlq.py` | Natural-language questions → auditable query plans → local execution |
-| `anomalies.py` | Anomaly detection against a calibrated band |
-| `forecasting.py` | Guarded baseline forecast with seasonality and a visible backtest |
-| `tools/` | Reproducible calibration of the anomaly threshold |
-| `ai_insights.py` | Optional typed Responses API query planning and evidence synthesis |
-| `ui.py` | Reusable presentation components and Plotly styling |
-| `file_io.py` | Validated CSV and Excel parsing with worksheet selection |
-| `tests/` | Unit, privacy-contract, pipeline, business-logic, and rendering tests |
-
-The codebase favors pure analysis functions and dependency injection at the model boundary. That keeps the business engine testable without Streamlit, network access, or API credits.
-
-## Run locally
+## Run it
 
 ```bash
 git clone https://github.com/saineshnakra/automated-data-analyst.git
 cd automated-data-analyst
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 python -m pip install -r requirements.txt
 streamlit run app.py
 ```
 
-No secret is required. A visitor can enter their own API key in the session-only sidebar field. A trusted private deployment can instead set `OPENAI_API_KEY` in the environment or in `.streamlit/secrets.toml`:
+No API key required. The app opens with a built-in demo dataset.
 
-```toml
-OPENAI_API_KEY = "your-key"
-```
+## Does my data leave my machine?
 
-Never commit that file; it is already ignored. Avoid putting an owner-funded key on a public deployment unless you also add authentication and spending controls.
+No. Cleaning, schema detection, every chart, and every Ask ADA answer are
+computed locally with pandas.
 
-## Test and develop
+An optional AI layer adds two things when you supply a key: a query planner for
+questions the rules cannot parse, and a strategic narrative. Both receive column
+names, types, and already-computed evidence. **Neither receives your rows or
+cell values.** Model-generated code is never executed.
 
-```bash
-python -m pip install -r requirements-dev.txt
-ruff check .
-python -m unittest discover -s tests -v
-```
+Full details: [Privacy](docs/privacy.md) · [SECURITY.md](SECURITY.md)
 
-GitHub Actions runs linting, the complete test suite, and bytecode compilation on every push and pull request.
+## Documentation
 
-## FAQ
+| Page | What you get |
+|---|---|
+| [Concepts](docs/concepts.md) | The words ADA uses: measure, segment, period, evidence, plan |
+| [How it works](docs/how-it-works.md) | Upload to dashboard, step by step |
+| [Architecture](docs/architecture.md) | Which file does what, and why |
+| [Reference](docs/README.md#reference) | One page per pipeline step |
+| [Development](docs/development.md) | Setup, tests, CI, conventions |
+| [FAQ](docs/faq.md) | Short answers to common questions |
 
-**Does my data leave my machine?**
-No. Cleaning, schema detection, every chart, every evidence card, and every Ask ADA answer are computed locally with pandas. If you opt into the AI layer, only column schema and computed evidence are sent — never rows or cell values.
+For the design story behind the project, read
+[I Built an AI Data Analyst That Tells You When It Hallucinates](https://medium.com/@saineshnakra/i-built-an-ai-data-analyst-that-tells-you-when-it-hallucinates-6051609c3f4a).
 
-**Do I need an OpenAI API key?**
-No. ADA is a complete analyst without one. A key only adds the query-planner fallback for unusual questions and the strategic narrative.
+## Contributing
 
-**What formats can I analyze?**
-CSV (comma, semicolon, or tab delimited), XLSX, and XLSM — including picking a specific worksheet from a multi-sheet workbook.
+Good places to start: a new question shape for Ask ADA, a new deterministic
+metric, schema-detection fixtures, chart accessibility, adversarial test data.
 
-**How is this different from pasting a CSV into a chatbot?**
-A chatbot gives you fluent prose you cannot audit and your rows become part of a prompt. ADA turns questions into explicit query plans, executes them with pandas on your machine, and prints the calculation under every answer.
+Read [CONTRIBUTING.md](CONTRIBUTING.md), browse the
+[good first issues](https://github.com/saineshnakra/automated-data-analyst/labels/good%20first%20issue),
+or pick something from the [roadmap](ROADMAP.md).
 
-**Is ADA a PandasAI alternative?**
-ADA serves a related chat-with-data use case but takes a different approach: its core uses deterministic pandas calculations rather than model-generated code, and every answer exposes its calculation. ADA is a complete Streamlit application, not a drop-in replacement for the PandasAI library.
-
-**Can I self-host it?**
-Yes — it is a standard Streamlit app. `pip install -r requirements.txt && streamlit run app.py`, or deploy it to any host that runs Python.
-
-## Contribute
-
-Contributions are welcome, especially around new deterministic metrics, question shapes for Ask ADA, schema-detection fixtures, chart accessibility, file formats, and adversarial test datasets. Start with the [good first issues](https://github.com/saineshnakra/automated-data-analyst/labels/good%20first%20issue), read [CONTRIBUTING.md](CONTRIBUTING.md), choose an item from the [roadmap](ROADMAP.md), or open a focused proposal.
-
-Good contributions make an insight more accurate, more explainable, or easier for a non-technical user to act on. Every new recommendation should include a test and the calculation that supports it.
-
-If ADA is useful to you, a star helps other operators find it.
-
-## Deploy
-
-Deploy `app.py` on Streamlit. The repository includes its app theme, dependency manifest, server upload limit, and headless configuration. Add `OPENAI_API_KEY` through Streamlit's secret manager only if the optional strategy layer should be available.
+Every new recommendation needs a test and the calculation that supports it.
 
 ## License
 

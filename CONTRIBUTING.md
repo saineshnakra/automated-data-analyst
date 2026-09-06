@@ -1,67 +1,87 @@
 # Contributing to ADA
 
-ADA should make business data understandable to someone who has never used a BI tool. Contributions are welcome when they improve accuracy, explainability, usability, privacy, or maintainability.
+ADA should make business data understandable to someone who has never used a BI
+tool. Contributions are welcome when they improve accuracy, explainability,
+usability, privacy, or maintainability.
 
-First time here? Pick something from the [good first issue](https://github.com/saineshnakra/automated-data-analyst/labels/good%20first%20issue) label — each one carries context, file pointers, and acceptance criteria — or say hello in an issue and we will help you scope one.
+New here? Pick a [good first issue](https://github.com/saineshnakra/automated-data-analyst/labels/good%20first%20issue)
+— each one has context, file pointers, and acceptance criteria. Or open an issue
+and we will help you scope one.
+
+## Before you start
+
+| Read | For |
+|---|---|
+| [docs/concepts.md](docs/concepts.md) | The vocabulary — measure, segment, period, evidence, plan |
+| [docs/how-it-works.md](docs/how-it-works.md) | What happens between upload and dashboard |
+| [docs/architecture.md](docs/architecture.md) | Which file owns what, and the rules that keep it that way |
+| [docs/development.md](docs/development.md) | Setup, tests, linting, CI, conventions |
+
+Then the [reference page](docs/README.md#reference) for the module you are
+touching. Each one ends with a "Changing this" section.
 
 ## Good places to start
 
-- Teach Ask ADA a new question shape (comparisons, shares, date ranges) in `nlq.py` with tests
-- Add deterministic business metrics with explicit calculations and tests
-- Expand schema detection using realistic, synthetic fixtures
+- Teach Ask ADA a new question shape — comparisons, shares, date ranges
+  ([reference](docs/reference/ask-ada.md))
+- Add a deterministic metric with an explicit calculation
+  ([reference](docs/reference/evidence.md))
+- Expand schema detection with realistic synthetic fixtures
+  ([reference](docs/reference/schema-detection.md))
 - Improve keyboard navigation, contrast, chart descriptions, or mobile behavior
 - Add safe tabular formats without weakening upload validation
+  ([reference](docs/reference/reading-files.md))
 - Add adversarial datasets for sparse, messy, or misleading business data
-- Improve report exports or contributor documentation
 
-See [ROADMAP.md](ROADMAP.md) for scoped ideas. For a larger change, open a feature request before investing heavily so the product and trust boundaries are clear.
+See [ROADMAP.md](ROADMAP.md) for scoped ideas. For a larger change, open a
+feature request first so the product and trust boundaries are agreed before you
+invest heavily.
 
-## Development setup
+## The rules that are not negotiable
 
-```bash
-git clone https://github.com/saineshnakra/automated-data-analyst.git
-cd automated-data-analyst
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-python -m pip install -r requirements-dev.txt
-```
+These protect the thing that makes ADA worth using. Full reasoning in
+[docs/architecture.md](docs/architecture.md#rules-that-hold-the-design-together).
 
-Run the application with `streamlit run app.py`.
+1. Calculations go in the engine modules, never in a UI callback.
+2. `aggregation.py` is the only place that decides what a period is.
+3. Formatting changes how a value looks, never what it is.
+4. Evidence is calculated; recommendations are interpretation. Keep them apart,
+   and never claim cause.
+5. Raw rows and cell values never reach a model, and model-generated code is
+   never executed.
+6. Every analytical rule gets a test, including how it degrades on thin data.
+7. The product works with no API key.
 
-## Architecture rules
-
-- Put deterministic calculations in `analysis.py`, `business_insights.py`, `nlq.py`, `anomalies.py`, or `forecasting.py`, not in UI callbacks.
-- Keep `app.py` focused on orchestration and session state; reusable presentation belongs in `ui.py`.
-- Keep model behavior optional and isolated in `ai_insights.py`; model-planned queries must execute through the same local engine as rule-parsed ones.
-- Never send raw uploaded rows or cell values to an external model, and never execute model-generated code.
-- Treat evidence as observed calculation and recommendations as interpretation.
-- Add a test for every bug fix and every new analytical rule.
-- Use synthetic data in tests and documentation. Do not commit customer or employer data.
-
-## Pull request checklist
-
-Before opening a pull request:
+## Before opening a pull request
 
 ```bash
 ruff check .
 python -m unittest discover -s tests -v
-python -m compileall -q analysis.py ai_insights.py anomalies.py business_insights.py demo_data.py file_io.py forecasting.py nlq.py pipeline.py ui.py app.py tests
 ```
 
-In the pull request, explain:
+In the pull request body, explain:
 
 1. The user problem and why it matters
-2. The behavior before and after the change
+2. The behavior before and after
 3. The calculation or trust boundary affected
-4. How the change was tested
+4. How you tested it
 5. Screenshots for visible UI changes
 
-Keep pull requests focused. Avoid unrelated formatting churn or dependency additions without a concrete product need.
+Keep pull requests focused. Avoid unrelated formatting churn, and do not add a
+dependency without a concrete product need.
 
 ## Analytical standard
 
-A useful insight is reproducible from visible evidence. New recommendations must name their supporting calculation, avoid invented causality, and degrade honestly when the data is insufficient. If a heuristic can produce a misleading result, add the edge case to the tests and state the limitation in the interface.
+A useful insight is reproducible from visible evidence. New recommendations must
+name their supporting calculation, avoid invented causality, and degrade
+honestly when the data is insufficient. If a heuristic can produce a misleading
+result, add the edge case to the tests and state the limitation in the
+interface.
+
+Use synthetic data in tests and documentation. Never commit customer or employer
+data.
 
 ## Conduct and security
 
-Participation is governed by [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Report vulnerabilities privately according to [SECURITY.md](SECURITY.md).
+Participation is governed by [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Report
+vulnerabilities privately per [SECURITY.md](SECURITY.md).
