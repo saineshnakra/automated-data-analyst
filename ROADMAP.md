@@ -87,6 +87,35 @@ source and a scheduled refresh both weaken it. Neither ships before the claim
 is rewritten to say precisely what is true instead — that is a condition of
 those issues, not a follow-up to them.
 
+## Exploration
+
+Where a reader drives instead of reading. Tracked against RATH, whose bet is a
+wide automated search and hands-on manipulation.
+
+- **Explore tab** *(shipped)* — pick any columns, ADA chooses the chart form and
+  prints why, with the colour rules in [docs/reference/autovis.md](docs/reference/autovis.md)
+- [Manual pivot builder](https://github.com/saineshnakra/automated-data-analyst/issues/27) — shelves for x, y, colour and filter, with the recommendation as the starting point rather than the only option
+- [Search the space of column pairs](https://github.com/saineshnakra/automated-data-analyst/issues/28) — findings ADA does not currently look for, scored with a correction for how many candidates were examined
+- [Suggest cleaning steps](https://github.com/saineshnakra/automated-data-analyst/issues/29) — offer the transform that would make a column usable, preview it, apply only on confirmation
+- [Select points and analyze the slice](https://github.com/saineshnakra/automated-data-analyst/issues/30) — drill into what a reader can see rather than only into a dropdown value
+
+### Not on this roadmap
+
+**Causal discovery, editable causal graphs, and what-if simulation.** RATH ships
+all three, and they are the clearest single reason to choose it over ADA. They
+are also the one thing this project has decided not to build.
+
+Every recommendation ADA makes is labelled interpretation, every evidence card
+is an observed calculation, and [CONTRIBUTING.md](CONTRIBUTING.md) requires that
+new rules "avoid invented causality". A causal graph inferred from observational
+business data is a hypothesis wearing the clothes of a finding — and it would
+arrive in the one product whose argument is that you can check the work.
+
+If it is ever built, it belongs behind its own labelling: a stated assumption
+set, a stated identification strategy, and language separating "these move
+together" from "this causes that". That is a different product decision, not a
+feature to add quietly.
+
 ## Longer horizon
 
 - User-defined metric contracts without SQL
