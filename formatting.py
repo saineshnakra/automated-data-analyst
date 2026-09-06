@@ -34,6 +34,11 @@ CURRENCY_CODES = {
 
 PERCENTAGE_TOKENS = {"rate", "margin", "ratio"}
 
+# Above this magnitude a value is not a percentage, whatever the column is
+# called. "Gross Margin" holding 1,250,000 is money that happens to be named
+# like a ratio, and reading it as 1250000.0% is worse than leaving it plain.
+MAX_PLAUSIBLE_PERCENTAGE = 1_000.0
+
 
 def normalized_name(name: str) -> str:
     """Column names compared on meaning rather than punctuation."""
@@ -132,9 +137,11 @@ def format_number(
 
     if is_percentage(column):
         if _percentage_uses_fraction_scale(value, column_values):
-            value *= 100
-
-        return f"{value:.1f}%"
+            return f"{value * 100:.1f}%"
+        if abs(value) <= MAX_PLAUSIBLE_PERCENTAGE:
+            return f"{value:.1f}%"
+        # Falls through: a ratio-named column holding a currency-sized number
+        # is reported as a plain number rather than an absurd percentage.
 
     absolute = abs(value)
     scaled = value

@@ -275,6 +275,11 @@ class BusinessAnalysisTests(unittest.TestCase):
             "$30.0K",
         )
 
+    def test_a_ratio_named_column_holding_money_is_not_a_percentage(self):
+        """"Gross Margin" is as often an amount as a ratio."""
+        self.assertEqual(format_number(1_250_000, "Gross Margin"), "1.2M")
+        self.assertEqual(format_number(45.0, "Gross Margin"), "45.0%")
+
 
 if __name__ == "__main__":
     unittest.main()
