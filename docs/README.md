@@ -32,6 +32,7 @@ code lives, the rules it follows, and what happens at the edges.
 | [Evidence and recommendations](reference/evidence.md) | `business_insights.py` | How findings and next steps are produced |
 | [Ask ADA](reference/ask-ada.md) | `nlq.py` | How a question becomes a pandas calculation |
 | [Formatting](reference/formatting.md) | `formatting.py` | How numbers and dates are written down |
+| [Choosing the chart](reference/autovis.md) | `autovis.py` | How Explore picks a chart form, and the colour rules |
 | [The optional AI layer](reference/ai-layer.md) | `ai_insights.py` | What the model does, and what it is never given |
 
 ## Working on ADA

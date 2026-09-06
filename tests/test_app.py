@@ -10,9 +10,10 @@ class AppSmokeTests(unittest.TestCase):
         self.assertFalse(app.exception)
         self.assertEqual(
             [tab.label for tab in app.tabs],
-            ["Executive brief", "Ask ADA", "Live dashboard", "Evidence ledger", "Data room"],
+            ["Executive brief", "Ask ADA", "Live dashboard", "Explore", "Evidence ledger", "Data room"],
         )
-        self.assertEqual(len(app.get("plotly_chart")), 6)
+        # Six dashboard charts, plus the one Explore draws for its default columns.
+        self.assertEqual(len(app.get("plotly_chart")), 7)
         self.assertEqual(len(app.dataframe), 4)
 
     def test_drill_down_focuses_the_whole_analysis(self):
@@ -71,9 +72,33 @@ class AppSmokeTests(unittest.TestCase):
         picker.set_value("SaaS Subscriptions").run()
 
         self.assertFalse(app.exception)
-        self.assertEqual(len(app.tabs), 5)
+        self.assertEqual(len(app.tabs), 6)
         rendered = " ".join(str(block.value) for block in app.markdown)
         self.assertIn("SaaS Subscriptions · sample", rendered)
+
+    def test_explore_charts_any_columns_and_says_why(self):
+        app = AppTest.from_file("app.py", default_timeout=45).run()
+        picker = next(box for box in app.multiselect if box.label == "Columns to chart")
+
+        picker.set_value(["Product", "Revenue"]).run()
+
+        self.assertFalse(app.exception)
+        rendered = " ".join(str(block.value) for block in app.markdown)
+        self.assertIn("WHY THIS CHART", rendered)
+
+    def test_explore_handles_every_recommended_form(self):
+        app = AppTest.from_file("app.py", default_timeout=45).run()
+        for columns in (
+            ["Order Date", "Revenue"],
+            ["Order Date", "Revenue", "Product"],
+            ["Product", "Region", "Revenue"],
+            ["Revenue", "Units"],
+            ["Product"],
+        ):
+            with self.subTest(columns=columns):
+                picker = next(box for box in app.multiselect if box.label == "Columns to chart")
+                picker.set_value(columns).run()
+                self.assertFalse(app.exception)
 
 
 if __name__ == "__main__":

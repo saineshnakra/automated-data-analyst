@@ -13,13 +13,26 @@ import streamlit as st
 from aggregation import build_trend, driver_frame, heatmap_frame, segment_frame
 from ai_insights import AINarrative
 from anomalies import detect_anomalies
+from autovis import fold_small_series, recommend_chart
 from business_insights import BusinessBrief
 from forecasting import build_forecast, describe_backtest
+from formatting import format_number
 from nlq import QueryAnswer
 from schema import ColumnRoles
 
 ACCENT = "#635BFF"
-LIME = "#C7F36B"
+LIME = "#C7F36B"  # Brand accent for surfaces and text. Too light to be a data mark.
+
+# Data-mark colours, checked against the light chart surface for the lightness
+# band, chroma floor, colour-vision separation and 3:1 contrast. Assigned in
+# this order and never cycled -- a generated fifth hue reads as one of these
+# four to a colour-blind reader, so series past the fourth fold into "Other".
+SERIES_COLORS = ("#635BFF", "#0E8F6E", "#B5761B", "#D64A73")
+LEAF = "#5C8A1B"  # single-hue magnitude, replacing LIME which sat at 1.24:1
+OTHER_GRAY = "#98A2B3"
+# Polarity, for up-versus-down. Green/red is the one pair a deuteranope cannot
+# read -- the previous #26A17B/#E35D6A sat at 5.4 separation against a 8 floor.
+RISE, FALL = "#1B6FB5", "#B5761B"
 INK = "#101114"
 MUTED = "#667085"
 
@@ -275,7 +288,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 y="Segment",
                 orientation="h",
                 title=f"{roles.measure or 'Records'} by {roles.dimension}",
-                color_discrete_sequence=[LIME],
+                color_discrete_sequence=[LEAF],
             )
             figure.update_traces(marker_line_width=0, hovertemplate="%{y}: %{x:,.2f}<extra></extra>")
             st.plotly_chart(style_chart(figure), width="stretch", config={"displayModeBar": False})
@@ -292,8 +305,8 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                     y=[*drivers["Change"], 0],
                     measure=[*(["relative"] * len(drivers)), "total"],
                     connector={"line": {"color": "#E5E7EB"}},
-                    increasing={"marker": {"color": "#26A17B"}},
-                    decreasing={"marker": {"color": "#E35D6A"}},
+                    increasing={"marker": {"color": RISE}},
+                    decreasing={"marker": {"color": FALL}},
                     totals={"marker": {"color": ACCENT}},
                     hovertemplate="%{x}: %{delta:+,.0f}<extra></extra>",
                 )
@@ -339,7 +352,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 x=roles.measure,
                 nbins=35,
                 title=f"Distribution of {roles.measure}",
-                color_discrete_sequence=["#26A17B"],
+                color_discrete_sequence=["#0E8F6E"],
             )
             st.plotly_chart(style_chart(figure), width="stretch", config={"displayModeBar": False})
     with lower_columns[1]:
@@ -352,7 +365,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 color=roles.dimension if roles.dimension else None,
                 opacity=0.62,
                 title=f"{roles.measure} vs {partner}",
-                color_discrete_sequence=[ACCENT, "#26A17B", "#F2B84B", "#EC6F91"],
+                color_discrete_sequence=list(SERIES_COLORS),
             )
             st.plotly_chart(style_chart(figure), width="stretch", config={"displayModeBar": False})
 
@@ -380,7 +393,7 @@ def _chat_answer_figure(result: QueryAnswer) -> go.Figure | None:
         y=category,
         orientation="h",
         title=f"{value} by {category}",
-        color_discrete_sequence=[LIME if "Change" not in value else ACCENT],
+        color_discrete_sequence=[LEAF if "Change" not in value else ACCENT],
     )
     figure.update_traces(marker_line_width=0, hovertemplate="%{y}: %{x:,.2f}<extra></extra>")
     return style_chart(figure, height=320)
@@ -424,6 +437,119 @@ def render_chat_fallback(suggestions: list[str]) -> None:
         "Try naming a metric, a segment, or a time scope — for example:"
     )
     st.markdown("\n".join(f"- {suggestion}" for suggestion in suggestions))
+
+
+def _explore_frame(
+    dataframe: pd.DataFrame, spec, *, limit: int = 400
+) -> pd.DataFrame:
+    """Aggregate the raw rows into what the recommended chart plots."""
+    if spec.form == "scatter":
+        return dataframe[[spec.x, spec.y]].dropna().head(5_000)
+
+    grouping = [column for column in (spec.x, spec.y, spec.color) if column]
+    if spec.form == "heatmap":
+        keys = [spec.y, spec.x]
+        return dataframe.groupby(keys, dropna=True)[spec.color].sum().reset_index()
+
+    keys = [column for column in (spec.x, spec.color) if column]
+    if not keys:
+        return dataframe[grouping].dropna()
+
+    if spec.aggregation == "count" or not spec.y:
+        frame = dataframe.groupby(keys, dropna=True).size().reset_index(name="Records")
+        value = "Records"
+    else:
+        frame = dataframe.groupby(keys, dropna=True)[spec.y].sum().reset_index()
+        value = spec.y
+
+    if spec.color and spec.color in frame.columns:
+        frame = fold_small_series(frame, spec.color, value)
+        frame = frame.groupby(keys, dropna=True)[value].sum().reset_index()
+    return frame.head(limit)
+
+
+def _explore_figure(frame: pd.DataFrame, spec) -> go.Figure | None:
+    """Draw exactly the form the recommendation asked for."""
+    value = spec.y if (spec.y and spec.y in frame.columns) else "Records"
+
+    if spec.form in ("line", "area"):
+        if spec.color:
+            figure = px.line(
+                frame, x=spec.x, y=value, color=spec.color, markers=True,
+                color_discrete_sequence=list(SERIES_COLORS),
+            )
+            figure.update_traces(line={"width": 2})
+        else:
+            figure = px.area(frame, x=spec.x, y=value, color_discrete_sequence=[ACCENT])
+            figure.update_traces(line={"width": 2}, fillcolor="rgba(99,91,255,.11)")
+    elif spec.form == "column":
+        figure = px.bar(frame, x=spec.x, y=value, color_discrete_sequence=[LEAF])
+    elif spec.form == "bar":
+        figure = px.bar(
+            frame.sort_values(value), x=value, y=spec.x, orientation="h",
+            color_discrete_sequence=[LEAF],
+        )
+    elif spec.form == "scatter":
+        figure = px.scatter(frame, x=spec.x, y=spec.y, color_discrete_sequence=[ACCENT])
+        figure.update_traces(marker={"size": 8, "opacity": 0.7})
+    elif spec.form == "heatmap":
+        grid = frame.pivot_table(index=spec.y, columns=spec.x, values=spec.color, aggfunc="sum")
+        figure = px.imshow(grid, color_continuous_scale="Purples", aspect="auto")
+    else:
+        return None
+
+    figure.update_layout(title=f"{value} by {spec.x}" if spec.x else value)
+    if spec.form in ("column", "bar"):
+        figure.update_traces(marker_line_width=0)
+    return style_chart(figure, height=380)
+
+
+def render_explore(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
+    """Pick any columns; ADA picks the chart and says why it picked it."""
+    render_section_heading(
+        "Explore",
+        "Chart any columns you like",
+        "Choose columns and ADA works out which chart form the data calls for. "
+        "The reasoning is printed under every chart, the same way calculations are.",
+    )
+
+    default = [column for column in (roles.date, roles.measure) if column][:2]
+    chosen = st.multiselect(
+        "Columns to chart",
+        list(dataframe.columns),
+        default=default,
+        help="A date and a measure make a trend. A category and a measure make a comparison. "
+        "Two measures make a relationship.",
+    )
+    if not chosen:
+        st.markdown(
+            '<div class="empty-state">Pick one or more columns above and ADA will '
+            "choose a chart for them.</div>",
+            unsafe_allow_html=True,
+        )
+        return
+
+    spec = recommend_chart(dataframe, chosen)
+    if spec.form == "none":
+        st.info(spec.rationale)
+        return
+
+    frame = _explore_frame(dataframe, spec)
+    if spec.form == "stat":
+        st.metric(spec.y or "Value", format_number(float(dataframe[spec.y].dropna().iloc[0]), spec.y))
+    elif spec.form == "table":
+        st.dataframe(frame, hide_index=True, width="stretch")
+    else:
+        figure = _explore_figure(frame, spec)
+        if figure is not None:
+            st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
+
+    st.markdown(
+        f'<p class="calculation">WHY THIS CHART · {escape(spec.rationale)}</p>',
+        unsafe_allow_html=True,
+    )
+    for note in spec.notes:
+        st.caption(note)
 
 
 def render_footer() -> None:

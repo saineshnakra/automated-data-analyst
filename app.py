@@ -41,6 +41,7 @@ from ui import (
     render_dashboard,
     render_dataset_bar,
     render_evidence,
+    render_explore,
     render_footer,
     render_how_it_works,
     render_kpis,
@@ -388,8 +389,8 @@ render_dataset_bar(source_name, dataframe, roles, focus=focus_value)
 render_brief(brief)
 render_kpis(brief)
 
-executive_tab, ask_tab, dashboard_tab, evidence_tab, data_tab = st.tabs(
-    ["Executive brief", "Ask ADA", "Live dashboard", "Evidence ledger", "Data room"]
+executive_tab, ask_tab, dashboard_tab, explore_tab, evidence_tab, data_tab = st.tabs(
+    ["Executive brief", "Ask ADA", "Live dashboard", "Explore", "Evidence ledger", "Data room"]
 )
 
 with executive_tab:
@@ -452,6 +453,9 @@ with dashboard_tab:
         "Trend, contribution, distribution, and the strongest measurable relationship—generated without chart configuration.",
     )
     render_dashboard(dataframe, roles)
+
+with explore_tab:
+    render_explore(dataframe, roles)
 
 with evidence_tab:
     render_section_heading(
