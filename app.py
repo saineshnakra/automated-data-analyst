@@ -88,7 +88,7 @@ st.set_page_config(
 )
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=8, ttl=3600)
 def read_uploaded_file(contents: bytes, filename: str, sheet_name: str | None = None) -> pd.DataFrame:
     return read_tabular_file(contents, filename, sheet_name)
 
@@ -224,9 +224,25 @@ def plan_ai_query(
         return None
 
 
+def dataset_fingerprint(dataframe: pd.DataFrame, roles, source_name: str) -> str:
+    """Identify the exact table an answer was computed from.
+
+    Name, row count and column names do not identify a dataset. Two months of
+    the same export share all three, and so does the same file drilled into a
+    different segment -- and an answer, or a pending model plan, carried across
+    that boundary is a wrong number with a confident sentence under it. The
+    content is hashed, and the roles with it, because changing which column is
+    the measure changes what every answer means.
+    """
+    content = int(pd.util.hash_pandas_object(dataframe, index=False).sum())
+    parts = (source_name, str(dataframe.shape), ",".join(map(str, dataframe.columns)),
+             str(content), repr(roles))
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()
+
+
 def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str, api_key: str) -> None:
     """Chat over the analyzed dataset; every answer is a local calculation."""
-    fingerprint = f"{source_name}:{len(dataframe)}:{','.join(dataframe.columns)}"
+    fingerprint = dataset_fingerprint(dataframe, roles, source_name)
     if st.session_state.get("chat_fingerprint") != fingerprint:
         st.session_state.chat_fingerprint = fingerprint
         st.session_state.chat_history = []
@@ -325,6 +341,10 @@ source_mode = st.segmented_control(
     default="Explore the live demo",
     label_visibility="collapsed",
 )
+# A segmented control returns None when the selected option is clicked again.
+# Falling through with None used to reach a bare assert and render a traceback.
+if source_mode is None:
+    source_mode = "Explore the live demo"
 
 uploaded_file = None
 business_context = ""
@@ -357,14 +377,12 @@ try:
         raw_dataframe = make_demo_data()
         source_name = "Acme operating data · demo"
         business_context = "Two years of orders across products, regions, and sales channels."
-    elif source_mode == "Try a sample dataset":
-        assert selected_sample is not None
+    elif source_mode == "Try a sample dataset" and selected_sample is not None:
         sample_path = sample_datasets[selected_sample]
         raw_dataframe = read_uploaded_file(sample_path.read_bytes(), sample_path.name)
         source_name = f"{selected_sample} · sample"
         business_context = SAMPLE_NOTES.get(selected_sample, "")
-    else:
-        assert uploaded_file is not None
+    elif uploaded_file is not None:
         if uploaded_file.size > MAX_UPLOAD_BYTES:
             st.error("That file is larger than ADA's 25 MB analysis limit.")
             st.stop()
@@ -381,6 +399,12 @@ try:
         source_name = (
             f"{uploaded_file.name} · {selected_sheet}" if selected_sheet else uploaded_file.name
         )
+
+    else:
+        # No usable source: show the explainer rather than a traceback.
+        render_how_it_works()
+        render_footer()
+        st.stop()
 
     prepared = prepare_analysis(raw_dataframe, row_limit=MAX_ANALYSIS_ROWS)
 except (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError, ValueError, ImportError) as error:

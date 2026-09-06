@@ -1,7 +1,10 @@
 import sys
 import unittest
 
+import pandas as pd
 from streamlit.testing.v1 import AppTest
+
+from schema import ColumnRoles
 
 
 class _BlockImport:
@@ -30,6 +33,63 @@ class _BlockImport:
     def __exit__(self, *_):
         sys.meta_path.remove(self)
         sys.modules.update(self.dropped)
+
+
+class DatasetIdentityTests(unittest.TestCase):
+    """An answer must not outlive the table it was computed from."""
+
+    def setUp(self):
+        import app  # noqa: PLC0415 - importing runs the page once, in bare mode
+
+        self.fingerprint = app.dataset_fingerprint
+        self.roles = ColumnRoles(
+            date=None, measure="revenue", dimension="region",
+            identifier=None, numeric=("revenue",), dimensions=("region",),
+        )
+        self.frame = pd.DataFrame({"region": ["N", "S"], "revenue": [1.0, 2.0]})
+
+    def test_same_shape_and_name_but_different_numbers_is_a_different_dataset(self):
+        other = self.frame.assign(revenue=[10.0, 20.0])
+
+        self.assertNotEqual(
+            self.fingerprint(self.frame, self.roles, "q.csv"),
+            self.fingerprint(other, self.roles, "q.csv"),
+        )
+
+    def test_drilling_into_a_segment_is_a_different_dataset(self):
+        slice_ = self.frame[self.frame["region"] == "S"]
+
+        self.assertNotEqual(
+            self.fingerprint(self.frame, self.roles, "q.csv"),
+            self.fingerprint(slice_, self.roles, "q.csv"),
+        )
+
+    def test_changing_which_column_is_the_measure_is_a_different_dataset(self):
+        rerolled = ColumnRoles(
+            date=None, measure=None, dimension="region",
+            identifier=None, numeric=("revenue",), dimensions=("region",),
+        )
+
+        self.assertNotEqual(
+            self.fingerprint(self.frame, self.roles, "q.csv"),
+            self.fingerprint(self.frame, rerolled, "q.csv"),
+        )
+
+    def test_the_same_table_is_the_same_dataset(self):
+        self.assertEqual(
+            self.fingerprint(self.frame, self.roles, "q.csv"),
+            self.fingerprint(self.frame.copy(), self.roles, "q.csv"),
+        )
+
+
+class SourceSelectionTests(unittest.TestCase):
+    def test_clearing_the_source_control_falls_back_instead_of_crashing(self):
+        app = AppTest.from_file("app.py", default_timeout=90).run()
+
+        app.segmented_control[0].set_value(None).run()
+
+        self.assertFalse(app.exception)
+        self.assertEqual(len(app.tabs), 6)
 
 
 class OptionalAiLayerTests(unittest.TestCase):
