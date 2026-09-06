@@ -37,16 +37,32 @@ Considers only numeric columns. Each gets a score:
 | Looks like an identifier | −20 |
 | Name is a time part (`year`, `month`, `week`, `day`, `hour`, `minute`, `quarter`) | −15 |
 
-Ties break on the proportion of non-missing values.
+**Ties break on the data, then on the name** — in that order: whether the
+column carries fractions (amounts do, postal codes and counters do not), then
+the proportion of non-missing values, then the column name alphabetically.
+The last step exists so that two exports of one table, written with the
+columns in different orders, cannot detect different measures. Nothing here
+may depend on column order.
 
-**Keyword weights** (`MEASURE_KEYWORDS`): `revenue` 14, `sales` 14, `gmv` 14,
-`profit` 13, `margin` 12, `amount` 11, `value` 10, `income` 10, `spend` 9,
-`cost` 8, `expense` 8, `price` 7, `quantity` 6, `units` 6, `orders` 6,
-`volume` 6, `balance` 6, `score` 4.
+**Keyword weights** (`MEASURE_KEYWORDS`): `revenue` 14, `mrr` 14, `arr` 14,
+`sales` 14, `gmv` 14, `turnover` 14, `profit` 13, `margin` 12, `amount` 11,
+`value` 10, `income` 10, `spend` 9, `total` 9, `cost` 8, `expense` 8,
+`price` 7, `fee` 7, `fare` 7, `quantity` 6, `units` 6, `orders` 6, `volume` 6,
+`balance` 6, `score` 4. Read `MEASURE_KEYWORDS` in `schema.py` for the
+authoritative list.
 
-The two penalties are what stop the obvious failures: `Invoice ID` outscoring
-`Revenue` because both are numeric, and a `Month` column being treated as the
-thing to measure.
+**How a name is scored.** The last word decides. `Product Category` is a
+category; `Product Container` is a container. A word found anywhere else in
+the name scores two thirds of its weight, so it can still win when nothing
+better is present. Before scoring, a trailing parenthesised annotation is
+removed — `Revenue (USD)` is revenue, not "usd" — and camelCase is split on
+the case boundary, so `netRevenue` scores like `net_revenue`.
+
+The two penalties stop the obvious failures: `Invoice ID` outscoring `Revenue`
+because both are numeric, and a `Month` column being treated as the thing to
+measure. The identifier penalty is itself head-word gated — `Invoice Amount`
+is an amount that happens to sit beside an invoice, so it keeps its score
+while `Invoice Number` does not.
 
 ## Picking the segment
 
