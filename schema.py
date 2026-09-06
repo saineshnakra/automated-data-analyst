@@ -86,6 +86,13 @@ TIME_PART_TOKENS = ("year", "month", "week", "day", "hour", "minute", "quarter")
 _ANNOTATION = re.compile(r"\s*[(\[][^)\]]*[)\]]\s*$")
 
 
+DATE_NAME_TOKENS = ("date", "time", "timestamp", "created", "updated")
+
+
+def _named_like_a_date(name: str) -> bool:
+    return any(token in normalized_name(name).split() for token in DATE_NAME_TOKENS)
+
+
 def _head_words(name: str) -> list[str]:
     """Words of a column name, with any trailing annotation removed."""
     return normalized_name(_ANNOTATION.sub("", str(name))).split()
@@ -170,6 +177,11 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
     dimension_candidates: list[tuple[int, int, str]] = []
     for column in dataframe.columns:
         if column == date or column in numeric:
+            continue
+        if _named_like_a_date(column):
+            # ADA tried to parse this as a date and could not. Promoting it to
+            # "business segment" produced evidence reading "2024-06-11 is the
+            # largest date", which is not a finding about the business.
             continue
         series = dataframe[column]
         unique = int(series.nunique(dropna=True))

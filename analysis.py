@@ -196,14 +196,28 @@ def _make_unique_columns(columns: pd.Index) -> list[str]:
 
 
 def _looks_like_exported_index(series: pd.Series, name: str) -> bool:
+    """A stray row-number column left behind by someone's to_csv(index=True).
+
+    Gaps are allowed. Blank rows are dropped before this runs, and each one
+    takes a number out of the sequence -- a single blank line was enough to
+    leave the row numbers in place and let them become the file's headline
+    metric. The "unnamed" prefix is what makes this safe to be lenient about;
+    a counter with a real name is never touched.
+    """
     if not name.lower().startswith("unnamed"):
         return False
 
     numeric = pd.to_numeric(series, errors="coerce")
-    if numeric.isna().any():
+    if numeric.isna().any() or not (numeric % 1 == 0).all():
         return False
 
-    return np.array_equal(numeric.to_numpy(), np.arange(len(series)))
+    values = numeric.to_numpy()
+    if values.size == 0 or values[0] not in (0, 1):
+        return False
+    ascending = bool(np.all(np.diff(values) > 0))
+    # Still has to look like row numbers rather than sparse identifiers.
+    dense = values[-1] - values[0] < 2 * len(values)
+    return ascending and dense
 
 
 def clean_dataframe(

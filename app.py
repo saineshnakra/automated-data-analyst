@@ -13,7 +13,7 @@ from streamlit.errors import StreamlitSecretNotFoundError
 from analysis import column_profile
 from business_insights import BusinessBrief, analyze_business, build_business_report
 from demo_data import make_demo_data
-from file_io import list_excel_sheets, list_sample_datasets, read_tabular_file
+from file_io import list_excel_sheets, list_sample_datasets, read_tabular_file, safe_csv
 from nlq import QueryPlan, answer_question, suggested_questions
 from pipeline import (
     apply_focus,
@@ -590,7 +590,7 @@ with data_tab:
     )
     downloads[1].download_button(
         "Download cleaned data",
-        data=dataframe.to_csv(index=False).encode("utf-8"),
+        data=safe_csv(dataframe).encode("utf-8"),
         file_name="ada_cleaned_data.csv",
         mime="text/csv",
         width="stretch",

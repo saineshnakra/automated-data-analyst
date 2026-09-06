@@ -5,7 +5,7 @@ from io import BytesIO
 
 import pandas as pd
 
-from file_io import list_excel_sheets, list_sample_datasets, read_tabular_file
+from file_io import list_excel_sheets, list_sample_datasets, read_tabular_file, safe_csv
 
 
 class FileParsingTests(unittest.TestCase):
@@ -117,6 +117,34 @@ class DelimiterRescueTests(unittest.TestCase):
         frame = read_tabular_file(raw, "powershell.csv")
 
         self.assertEqual(list(frame.columns), ["Date", "Region", "Revenue"])
+
+
+
+class CsvExportSafetyTests(unittest.TestCase):
+    """A downloaded file gets forwarded, and the reader did not choose to run anything."""
+
+    def test_text_that_looks_like_a_formula_is_neutralised(self):
+        frame = pd.DataFrame({"Note": ["=cmd|' /C calc'!A0", "+1+1", "@SUM(A1)", "-5 apples"]})
+
+        exported = safe_csv(frame)
+
+        for line in exported.splitlines()[1:]:
+            self.assertTrue(line.startswith("'"), line)
+
+    def test_ordinary_text_and_numbers_are_untouched(self):
+        frame = pd.DataFrame({"Region": ["North", "South"], "Revenue": [-2.5, 3.0]})
+
+        exported = safe_csv(frame)
+
+        self.assertIn("North", exported)
+        self.assertIn("-2.5", exported)
+        self.assertNotIn("'North", exported)
+        self.assertNotIn("'-2.5", exported)
+
+    def test_a_column_name_that_looks_like_a_formula_is_neutralised(self):
+        frame = pd.DataFrame({"=1+1": [1]})
+
+        self.assertTrue(safe_csv(frame).startswith("'=1+1"))
 
 if __name__ == "__main__":
     unittest.main()

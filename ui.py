@@ -17,7 +17,7 @@ from anomalies import detect_anomalies
 from autovis import fold_small_series, recommend_chart
 from business_insights import BusinessBrief
 from forecasting import build_forecast, describe_backtest
-from formatting import format_number
+from formatting import format_number, format_period
 from nlq import QueryAnswer
 from schema import ColumnRoles
 
@@ -324,12 +324,12 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
             )
 
     with movement_columns[1]:
-        heat = heatmap_frame(dataframe, roles)
+        heat = heatmap_frame(dataframe, roles, frequency=series.frequency)
         if not heat.empty and len(heat.columns) >= 2:
             heatmap = go.Figure(
                 go.Heatmap(
                     z=heat.to_numpy(),
-                    x=[period.strftime("%b %Y") for period in heat.columns],
+                    x=[format_period(period, series.frequency) for period in heat.columns],
                     y=[str(segment) for segment in heat.index],
                     colorscale=[[0, "#F6F7F9"], [0.5, "#B9B1FF"], [1, "#4E43C7"]],
                     hovertemplate="%{y} · %{x}: %{z:,.0f}<extra></extra>",

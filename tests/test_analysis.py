@@ -330,5 +330,43 @@ class RoleDeterminismTests(unittest.TestCase):
 
         self.assertEqual(detect_roles(frame).measure, "netRevenue")
 
+
+
+class ExportedIndexTests(unittest.TestCase):
+    def test_a_blank_row_does_not_save_the_row_numbers(self):
+        frame = pd.DataFrame(
+            {
+                "Unnamed: 0": [0, 1, None, 3, 4, 5],
+                "Region": ["N", "S", None, "N", "S", "N"],
+                "Headcount": [10, 20, None, 30, 40, 50],
+            }
+        )
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertNotIn("Unnamed: 0", cleaned.columns)
+        self.assertEqual(report.index_columns_removed, 1)
+
+    def test_a_named_counter_column_is_never_dropped(self):
+        frame = pd.DataFrame({"Sequence": [0, 1, 2, 3], "Region": ["N", "S", "N", "S"]})
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertIn("Sequence", cleaned.columns)
+
+
+class UnreadableDateColumnTests(unittest.TestCase):
+    def test_a_column_that_failed_to_parse_as_a_date_is_not_a_segment(self):
+        frame = pd.DataFrame(
+            {
+                "Date": [f"2024-06-{day:02d} maybe" for day in range(1, 13)],
+                "Revenue": [100.0 + index for index in range(12)],
+            }
+        )
+
+        roles = detect_roles(clean_dataframe(frame)[0])
+
+        self.assertNotEqual(roles.dimension, "Date")
+
 if __name__ == "__main__":
     unittest.main()

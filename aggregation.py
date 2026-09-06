@@ -313,8 +313,19 @@ def driver_frame(dataframe: pd.DataFrame, roles: ColumnRoles, limit: int = 9) ->
     return frame
 
 
-def heatmap_frame(dataframe: pd.DataFrame, roles: ColumnRoles, limit: int = 8) -> pd.DataFrame:
-    """Segment × period matrix of the measure (or row counts) for the top segments."""
+def heatmap_frame(
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles,
+    limit: int = 8,
+    frequency: str | None = None,
+) -> pd.DataFrame:
+    """Segment × period matrix of the measure (or row counts) for the top segments.
+
+    The grain is taken from the caller so the heatmap shares a time axis with
+    the trend beside it. Re-deriving it from this filtered subset landed on a
+    different grain, and the two charts on one page then disagreed about what
+    a column meant.
+    """
     if not roles.date or not roles.dimension:
         return pd.DataFrame()
 
@@ -325,7 +336,7 @@ def heatmap_frame(dataframe: pd.DataFrame, roles: ColumnRoles, limit: int = 8) -
     if working.empty:
         return pd.DataFrame()
 
-    frequency = _period_frequency(working[roles.date])
+    frequency = frequency or _period_frequency(working[roles.date])
     working["Period"] = working[roles.date].dt.to_period(frequency).dt.to_timestamp()
     if roles.measure:
         pivot = working.groupby([roles.dimension, "Period"])[roles.measure].sum().unstack(fill_value=0)

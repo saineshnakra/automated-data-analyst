@@ -26,6 +26,31 @@ def list_sample_datasets() -> dict[str, Path]:
     return {label(path.stem): path for path in sorted(SAMPLES_DIRECTORY.glob("*.csv"))}
 
 
+# A spreadsheet reads a cell starting with any of these as a formula, so a
+# value carried out of an uploaded file can execute when the download is
+# opened. Only text is affected; numbers are written by pandas as numbers.
+FORMULA_LEADERS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def safe_csv(dataframe: pd.DataFrame) -> str:
+    """Serialize to CSV without handing a spreadsheet a formula to run.
+
+    Text cells that begin like a formula are prefixed with an apostrophe,
+    which spreadsheets read as "this is text". The values are the user's own,
+    but a downloaded file gets forwarded, and the person who opens it did not
+    choose to run anything.
+    """
+    export = dataframe.copy()
+    for column in export.select_dtypes(include=["object", "string"]).columns:
+        values = export[column].astype("string")
+        risky = values.str.startswith(FORMULA_LEADERS, na=False)
+        export[column] = values.mask(risky, "'" + values.fillna(""))
+    export.columns = [
+        f"'{name}" if str(name).startswith(FORMULA_LEADERS) else name for name in export.columns
+    ]
+    return export.to_csv(index=False)
+
+
 def _validate(contents: bytes, filename: str) -> str:
     suffix = Path(filename).suffix.lower()
     if suffix not in SUPPORTED_SUFFIXES:
