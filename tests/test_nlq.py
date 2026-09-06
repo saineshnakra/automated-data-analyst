@@ -119,6 +119,27 @@ class NLQParsingTests(unittest.TestCase):
             with self.subTest(question=question):
                 self.assertIsNotNone(answer_question(question, self.dataframe, self.roles))
 
+    def test_common_query_phrasings_remain_answerable(self):
+        for question in (
+            "which region grew the most",
+            "how much revenue did we make",
+            "what were total revenue last quarter",
+            "give me revenue by channel",
+            "whats the total revenue",
+        ):
+            with self.subTest(question=question):
+                self.assertIsNotNone(answer_question(question, self.dataframe, self.roles))
+
+    def test_unrelated_questions_remain_refused(self):
+        for question in (
+            "tell me a joke",
+            "what is the craziest product we sell",
+            "what is the weather",
+            "show me the vibe of this data",
+        ):
+            with self.subTest(question=question):
+                self.assertIsNone(answer_question(question, self.dataframe, self.roles))
+
     def test_suggestions_are_all_answerable(self):
         for question in suggested_questions(self.dataframe, self.roles):
             self.assertIsNotNone(

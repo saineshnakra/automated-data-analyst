@@ -107,10 +107,12 @@ MAX_FILTER_CANDIDATES = 200
 BREAKDOWN_LIMIT = 12
 
 QUERY_STOPWORDS = {
-    "a", "about", "across", "all", "and", "are", "by", "can", "do", "does", "each",
-    "for", "from", "have", "he", "how", "i", "in", "is", "it", "me", "many", "my",
-    "of", "on", "or", "our", "please", "re", "s", "she", "show", "tell", "than", "that",
-    "the", "there", "this", "to", "they", "ve", "we", "what", "which", "with", "you", "your",
+    "a", "about", "across", "all", "also", "and", "any", "are", "been", "by", "can",
+    "did", "do", "does", "done", "each", "for", "from", "get", "give", "got", "have",
+    "he", "how", "hows", "i", "in", "is", "it", "just", "last", "least", "made", "make",
+    "many", "me", "most", "much", "my", "next", "of", "on", "only", "or", "our", "please",
+    "re", "s", "she", "show", "tell", "than", "that", "the", "then", "there", "this", "to",
+    "they", "us", "ve", "was", "we", "were", "what", "whats", "which", "with", "you", "your",
 }
 
 

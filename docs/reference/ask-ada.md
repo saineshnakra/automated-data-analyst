@@ -81,6 +81,13 @@ If none match, `parse_question` returns `None` — and returning `None` is the
 correct behavior, not a failure. It is what triggers the AI fallback or the
 suggestion list, rather than ADA guessing.
 
+The parser currently refuses questions containing words outside an allowlist
+built from supported query grammar, column names, and low-cardinality dimension
+values. Common function words live in `QUERY_STOPWORDS`. This bounds unsupported
+input safely, but the natural-language allowlist is temporary: ordinary phrasing
+can expose gaps, while schema and intent signals provide a finite basis for a
+future refusal check.
+
 ## Execution
 
 `execute_plan` applies filters, aggregates, and returns a `QueryAnswer`:
