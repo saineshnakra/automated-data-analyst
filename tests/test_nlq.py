@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from demo_data import make_demo_data
+from formatting import format_number
 from nlq import QueryPlan, answer_question, execute_plan, parse_question, suggested_questions
 from pipeline import prepare_analysis
 from schema import detect_roles
@@ -138,6 +139,31 @@ class TimelineDisclosureTests(unittest.TestCase):
 
         self.assertNotIn("still in progress", answer.calculation)
         self.assertNotIn("counted as zero", answer.calculation)
+
+    def test_chat_uses_column_level_percentage_formatting(self):
+        frame = pd.DataFrame(
+            {
+                "Date": pd.date_range("2025-01-01", periods=4, freq="MS"),
+                "Churn Rate": [0.9, 1.0, 1.1, 25.0],
+            }
+        )
+        roles = detect_roles(frame)
+
+        dashboard_first = format_number(
+            frame["Churn Rate"].iloc[0],
+            "Churn Rate",
+            column_values=frame["Churn Rate"],
+        )
+        dashboard_last = format_number(
+            frame["Churn Rate"].iloc[-1],
+            "Churn Rate",
+            column_values=frame["Churn Rate"],
+        )
+
+        answer = answer_question("churn rate over time", frame, roles)
+
+        self.assertIn(dashboard_first, answer.answer)
+        self.assertIn(dashboard_last, answer.answer)
 
 
 if __name__ == "__main__":

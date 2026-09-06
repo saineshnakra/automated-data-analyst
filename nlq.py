@@ -385,7 +385,8 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
             plan=plan,
             answer=(
                 f"{label} {plan.measure}{_phrase(applied)} is "
-                f"{format_number(value, plan.measure)}, calculated from {rows:,} rows."
+                f"{format_number(value, plan.measure, column_values=working[plan.measure])}, "
+                f"calculated from {rows:,} rows."
             ),
             calculation=f"{plan.aggregation}({plan.measure}){scope}",
         )
@@ -401,9 +402,14 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
         leader_value = float(leader[value_label])
         direction = "lowest" if plan.ascending else "leading"
         share_note = f" ({leader['Share %']:.1f}% of the total)" if "Share %" in table.columns else ""
+        formatted_leader_value = format_number(
+            leader_value,
+            plan.measure,
+            column_values=working[plan.measure] if plan.measure else None,
+        )
         answer = (
             f"{leader[plan.dimension]} is the {direction} {plan.dimension} by {value_label.lower()}"
-            f"{_phrase(applied)} at {format_number(leader_value, plan.measure)}{share_note}."
+            f"{_phrase(applied)} at {formatted_leader_value}{share_note}."
         )
         order = "ascending" if plan.ascending else "descending"
         return QueryAnswer(
@@ -441,9 +447,19 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
         first, last = float(trend.iloc[0]["Value"]), float(trend.iloc[-1]["Value"])
         change = (last - first) / abs(first) * 100 if first else 0.0
         grain_name = {"D": "day", "W": "week", "M": "month", "Q": "quarter", "Y": "year"}.get(grain, "period")
+        formatted_first = format_number(
+            first,
+            plan.measure,
+            column_values=working[plan.measure],
+        )
+        formatted_last = format_number(
+            last,
+            plan.measure,
+            column_values=working[plan.measure],
+        )
         answer = (
             f"{plan.measure or 'Records'} per {grain_name}{_phrase(applied)} moved from "
-            f"{format_number(first, plan.measure)} to {format_number(last, plan.measure)} "
+            f"{formatted_first} to {formatted_last} "
             f"({change:+.1f}% across {len(trend)} {grain_name}s)."
         )
         return QueryAnswer(
@@ -529,10 +545,20 @@ def _execute_growth(
         result = result.sort_values("Change %", ascending=plan.ascending).reset_index(drop=True)
         leader = result.iloc[0]
         direction = "slowest" if plan.ascending else "fastest"
+        formatted_previous = format_number(
+            float(leader["Previous"]),
+            measure,
+            column_values=working[measure] if measure else None,
+        )
+        formatted_latest = format_number(
+            float(leader["Latest"]),
+            measure,
+            column_values=working[measure] if measure else None,
+        )
+
         answer = (
             f"{leader[plan.dimension]} moved {direction}{_phrase(applied)}: {leader['Change %']:+.1f}% "
-            f"({format_number(float(leader['Previous']), measure)} → "
-            f"{format_number(float(leader['Latest']), measure)}) in the latest period."
+            f"({formatted_previous} → {formatted_latest}) in the latest period."
         )
         return QueryAnswer(
             question="",
@@ -556,9 +582,20 @@ def _execute_growth(
         )
     change = (current - previous) / abs(previous) * 100
     direction = "up" if change >= 0 else "down"
+    formatted_previous = format_number(
+        previous,
+        measure,
+        column_values=working[measure] if measure else None,
+    )
+    formatted_current = format_number(
+        current,
+        measure,
+        column_values=working[measure] if measure else None,
+    )
+
     answer = (
         f"{measure or 'Records'}{_phrase(applied)} is {direction} {abs(change):.1f}% versus the prior "
-        f"period ({format_number(previous, measure)} → {format_number(current, measure)})."
+        f"period ({formatted_previous} → {formatted_current})."
     )
     return QueryAnswer(
         question="",
