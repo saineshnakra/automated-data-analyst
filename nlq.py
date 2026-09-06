@@ -111,6 +111,8 @@ QUERY_STOPWORDS = {
     "for", "from", "have", "he", "how", "i", "in", "is", "it", "me", "many", "my",
     "of", "on", "or", "our", "please", "re", "s", "she", "show", "tell", "than", "that",
     "the", "there", "this", "to", "they", "ve", "we", "what", "which", "with", "you", "your",
+    "also", "any", "been", "did", "done", "get", "give", "got", "hows", "just", "last",
+    "least", "made", "make", "most", "much", "next", "only", "then", "us", "was", "were", "whats",
 }
 
 

@@ -81,6 +81,12 @@ If none match, `parse_question` returns `None` — and returning `None` is the
 correct behavior, not a failure. It is what triggers the AI fallback or the
 suggestion list, rather than ADA guessing.
 
+Today, refusal also checks every word against a bounded allowlist of query
+terms, dataset names and values, and common conversational words. This protects
+against unsupported requests, but ordinary phrasing can expose gaps in the
+allowlist. It is a temporary guard until refusal can rely on the finite dataset
+schema and recognized query signals instead of the open-ended English language.
+
 ## Execution
 
 `execute_plan` applies filters, aggregates, and returns a `QueryAnswer`:
