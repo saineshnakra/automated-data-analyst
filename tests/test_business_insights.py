@@ -193,6 +193,59 @@ class BusinessAnalysisTests(unittest.TestCase):
         self.assertEqual(format_number(1250, "Price GBP"), "£1.2K")
         self.assertEqual(format_number(1250, "Amount USD"), "$1.2K")
 
+        # Currency semantics must take precedence over rate/margin words.
+        self.assertEqual(format_number(350_000, "Corporate Revenue"), "$350.0K")
+        self.assertEqual(format_number(500, "Total EUR"), "€500.00")
+
+        # Currency codes must match whole words, not substrings.
+        self.assertEqual(format_number(30_000, "Europe Sales"), "$30.0K")
+
+        # Percentage detection/scaling must be consistent for negative values.
+        self.assertEqual(format_number(-0.3, "Negative Rate"), "-0.3%")
+
+
+    def test_percentage_formatting_uses_column_level_range(self):
+        negative_values = pd.Series([-0.3, -0.1, 0.1, 0.3])
+        mixed_values = pd.Series([0.9, 1.0, 1.1, 25.0])
+        fraction_values = pd.Series([0.12, 0.18, 0.25, 0.30])
+
+        self.assertEqual(
+            format_number(-0.3, "Negative Rate", column_values=negative_values),
+            "-0.3%",
+        )
+        self.assertEqual(
+            format_number(0.9, "Mixed Rate", column_values=mixed_values),
+            "0.9%",
+        )
+        self.assertEqual(
+            format_number(25.0, "Mixed Rate", column_values=mixed_values),
+            "25.0%",
+        )
+        self.assertEqual(
+            format_number(0.25, "Margin %", column_values=fraction_values),
+            "25.0%",
+        )
+
+
+    def test_currency_detection_precedes_percentage_detection(self):
+        self.assertEqual(
+            format_number(350_000, "Corporate Revenue"),
+            "$350.0K",
+        )
+
+
+    def test_integer_currency_is_formatted_as_currency(self):
+        self.assertEqual(
+            format_number(500, "Total EUR"),
+            "€500.00",
+        )
+
+
+    def test_currency_code_requires_a_whole_token(self):
+        self.assertEqual(
+            format_number(30_000, "Europe Sales"),
+            "$30.0K",
+        )
 
 
 if __name__ == "__main__":
