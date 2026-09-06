@@ -197,8 +197,13 @@ class BusinessAnalysisTests(unittest.TestCase):
         self.assertEqual(concentration.tone, "neutral")
         self.assertIn("10.0 of 10", concentration.value)
 
-    def test_a_measure_that_can_go_negative_keeps_the_share_reading(self):
-        """Shares of a total that parts of it subtract from are meaningless."""
+    def test_a_mixed_sign_measure_quotes_no_share_at_all(self):
+        """Shares of a total that parts of it subtract from are meaningless.
+
+        Not "degraded to a simpler share" -- absent. A percentage taken against
+        a net figure the parts do not sum into is how a segment ends up
+        contributing 2,000,000% of profit.
+        """
         frame = pd.DataFrame(
             {
                 "Date": pd.date_range("2024-01-01", periods=12, freq="D"),
@@ -208,10 +213,29 @@ class BusinessAnalysisTests(unittest.TestCase):
         )
 
         brief = analyze_business(frame)
-        concentration = next(item for item in brief.evidence if item.kind == "concentration")
 
-        self.assertEqual(concentration.title, "Top-three concentration")
-        self.assertNotIn("Herfindahl", concentration.calculation)
+        self.assertFalse([item for item in brief.evidence if item.kind == "concentration"])
+        leader = next(item for item in brief.evidence if item.kind == "leader")
+        self.assertIn("no share of the total can be quoted", leader.statement)
+        self.assertNotIn("%", leader.statement)
+
+    def test_an_all_negative_measure_ranks_by_size_of_the_loss(self):
+        """A cost column has a usable share: -14.4k of -24k really is 60%."""
+        frame = pd.DataFrame(
+            {
+                "Date": list(pd.date_range("2024-01-01", periods=6, freq="D")) * 3,
+                "Profit": [-2400.0] * 6 + [-7200.0] * 6 + [-14400.0] * 6,
+                "Region": ["North"] * 6 + ["South"] * 6 + ["East"] * 6,
+            }
+        )
+
+        brief = analyze_business(frame)
+        leader = next(item for item in brief.evidence if item.kind == "leader")
+
+        # East carries the largest loss, so East is the leader -- not North,
+        # which is merely the number closest to zero.
+        self.assertIn("East", leader.statement)
+        self.assertIn("60.0%", leader.statement)
 
     def test_business_number_formatting(self):
         self.assertEqual(format_number(1_250_000, "Revenue"), "$1.2M")

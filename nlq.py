@@ -105,6 +105,9 @@ MONTH_NAMES = {
 
 MAX_FILTER_CANDIDATES = 200
 BREAKDOWN_LIMIT = 12
+# Rows whose segment is blank still hold measure values, so they are shown
+# under a label rather than deleted out of the denominator.
+UNLABELLED = "(not recorded)"
 
 QUERY_STOPWORDS = {
     "a", "about", "across", "all", "and", "are", "by", "can", "do", "does", "each",
@@ -416,7 +419,14 @@ def _grouped_frame(
     dataframe: pd.DataFrame, plan: QueryPlan, value_label: str
 ) -> pd.DataFrame:
     assert plan.dimension is not None
-    working = dataframe.dropna(subset=[plan.dimension])
+    # Rows with no label are a group, not a rounding error. Dropping them and
+    # then taking percentages against what is left reports a share of a total
+    # the reader never saw.
+    labelled = dataframe.copy()
+    labelled[plan.dimension] = labelled[plan.dimension].astype(object).where(
+        labelled[plan.dimension].notna(), UNLABELLED
+    )
+    working = labelled
     if plan.aggregation == "count" or not plan.measure:
         grouped = working.groupby(plan.dimension, as_index=False).size()
         grouped.columns = [plan.dimension, value_label]
@@ -425,8 +435,12 @@ def _grouped_frame(
         grouped.columns = [plan.dimension, value_label]
     grouped = grouped.sort_values(value_label, ascending=plan.ascending)
     if plan.aggregation in ("sum", "count"):
-        total = float(grouped[value_label].sum())
-        if total:
+        values = grouped[value_label].to_numpy(dtype=float)
+        total = float(values.sum())
+        # A share is only a share when every part carries the same sign as the
+        # whole. Mixed signs give 500% and -250% from arithmetic that is
+        # working exactly as written.
+        if total and ((values >= 0).all() or (values <= 0).all()):
             grouped["Share %"] = (grouped[value_label] / total * 100).round(1)
     return grouped.reset_index(drop=True)
 

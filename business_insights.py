@@ -240,40 +240,89 @@ def _effective_segments(values: np.ndarray, total: float) -> float | None:
     return 1.0 / herfindahl if herfindahl > 0 else None
 
 
-def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evidence, Evidence] | tuple[()]:
+def _shares_are_meaningful(values: np.ndarray) -> bool:
+    """A share of a total that parts of it subtract from is not a share.
+
+    All-positive is the ordinary case. All-negative is a cost or loss column,
+    where -6k of -20k is honestly 30%. Mixed signs are the case with no answer:
+    the denominator is a net figure the parts do not sum into, which is how a
+    segment ends up "contributing 2,000,000% of profit".
+    """
+    if not values.size:
+        return False
+    return bool((values >= 0).all() or (values <= 0).all())
+
+
+def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evidence, ...]:
     segments = segment_frame(dataframe, roles, limit=100)
     if segments.empty:
         return ()
 
     total = float(segments["Value"].sum())
-    if total == 0:
+    if total == 0 or not np.isfinite(total):
         return ()
+    values = segments["Value"].to_numpy(dtype=float)
+    shares_hold = _shares_are_meaningful(values)
+    if not shares_hold:
+        # Without a usable denominator the only honest ordering is by size of
+        # the number itself, and no percentage may be quoted from it.
+        segments = segments.reindex(
+            segments["Value"].abs().sort_values(ascending=False).index
+        ).reset_index(drop=True)
+    elif total < 0:
+        # A cost column: the biggest contributor is the most negative one, not
+        # the one nearest zero that a descending sort puts on top.
+        segments = segments.sort_values("Value").reset_index(drop=True)
     leader = segments.iloc[0]
-    leader_share = float(leader["Value"] / total * 100)
-    top_three_share = float(segments.head(3)["Value"].sum() / total * 100)
+    leader_share = float(leader["Value"] / total * 100) if shares_hold else float("nan")
+    top_three_share = (
+        float(segments.head(3)["Value"].sum() / total * 100) if shares_hold else float("nan")
+    )
     effective = _effective_segments(segments["Value"].to_numpy(dtype=float), total)
     measure = roles.measure or "records"
     measure_values = dataframe[roles.measure].dropna() if roles.measure else None
     dimension = roles.dimension or "segment"
+    leader_amount = format_number(
+        float(leader["Value"]), roles.measure, column_values=measure_values
+    )
     return (
         Evidence(
             kind="leader",
             title=f"Leading {dimension.lower()}",
-            value=format_percentage(leader_share),
+            value=format_percentage(leader_share) if shares_hold else leader_amount,
             statement=(
-                f"{leader['Segment']} is the largest {dimension.lower()}, contributing "
-                f"{format_percentage(leader_share)} of {measure.lower()} "
-                f"({format_number(float(leader['Value']), roles.measure, column_values=measure_values)})."
+                (
+                    f"{leader['Segment']} is the largest {dimension.lower()}, contributing "
+                    f"{format_percentage(leader_share)} of {measure.lower()} ({leader_amount})."
+                )
+                if shares_hold
+                else (
+                    f"{leader['Segment']} is the largest {dimension.lower()} by size at "
+                    f"{leader_amount}. {measure} runs both positive and negative here, so no "
+                    f"share of the total can be quoted -- the parts do not add up to it."
+                )
             ),
-            calculation=f"{leader['Segment']} {measure} ÷ total {measure}",
-            tone="positive",
+            calculation=(
+                f"{leader['Segment']} {measure} ÷ total {measure}"
+                if shares_hold
+                else f"largest |{measure}| by {dimension}; share undefined on mixed signs"
+            ),
+            tone="positive" if shares_hold else "warning",
         ),
-        _concentration_evidence(
-            dimension=dimension,
-            measure=measure,
-            segment_count=len(segments),
-            top_three_share=top_three_share,
-            effective=effective,
+        # Concentration is a statement about shares. Without shares there is
+        # nothing to say, so the card is left out rather than printed as nan%.
+        *(
+            (
+                _concentration_evidence(
+                    dimension=dimension,
+                    measure=measure,
+                    segment_count=len(segments),
+                    top_three_share=top_three_share,
+                    effective=effective,
+                ),
+            )
+            if shares_hold
+            else ()
         ),
     )
 

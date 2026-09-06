@@ -6,7 +6,7 @@ import pandas as pd
 from demo_data import make_demo_data
 from nlq import QueryPlan, answer_question, execute_plan, parse_question, suggested_questions
 from pipeline import prepare_analysis
-from schema import detect_roles
+from schema import ColumnRoles, detect_roles
 
 
 class NLQParsingTests(unittest.TestCase):
@@ -226,6 +226,70 @@ class TimeScopeTests(unittest.TestCase):
         answer = execute_plan(plan, self.dated, self.dated_roles)
 
         self.assertIn("Order Date in May 2025", answer.answer)
+
+
+
+class ShareOfTotalTests(unittest.TestCase):
+    """A share is only a share when the parts add up to the whole."""
+
+    def _roles(self, frame):
+        return ColumnRoles(
+            date=None, measure="Revenue", dimension="Region",
+            identifier=None, numeric=("Revenue",), dimensions=("Region",),
+        )
+
+    def test_mixed_signs_produce_no_share_column(self):
+        frame = pd.DataFrame(
+            {"Region": ["A", "B", "C"], "Revenue": [100.0, -50.0, -30.0]}
+        )
+        plan = QueryPlan(
+            intent="breakdown", aggregation="sum", measure="Revenue", dimension="Region"
+        )
+
+        answer = execute_plan(plan, frame, self._roles(frame))
+
+        self.assertNotIn("Share %", answer.table.columns)
+        self.assertNotIn("%", answer.answer)
+
+    def test_an_all_negative_measure_keeps_its_share(self):
+        frame = pd.DataFrame({"Region": ["A", "B"], "Revenue": [-75.0, -25.0]})
+        plan = QueryPlan(
+            intent="breakdown", aggregation="sum", measure="Revenue", dimension="Region"
+        )
+
+        answer = execute_plan(plan, frame, self._roles(frame))
+
+        # Uniform signs, so the shares are real and sum to 100.
+        self.assertIn("Share %", answer.table.columns)
+        self.assertAlmostEqual(float(answer.table["Share %"].sum()), 100.0)
+        self.assertEqual(
+            dict(zip(answer.table["Region"], answer.table["Share %"], strict=True)),
+            {"A": 75.0, "B": 25.0},
+        )
+
+    def test_unlabelled_rows_are_a_group_not_a_deletion(self):
+        frame = pd.DataFrame(
+            {"Region": ["South", None, "North", None], "Revenue": [200.0, 400.0, 150.0, 300.0]}
+        )
+        plan = QueryPlan(
+            intent="breakdown", aggregation="sum", measure="Revenue", dimension="Region"
+        )
+
+        answer = execute_plan(plan, frame, self._roles(frame))
+
+        # The denominator is the real total, not the total of the labelled rows.
+        self.assertAlmostEqual(float(answer.table["Total Revenue"].sum()), 1050.0)
+        self.assertIn("(not recorded)", list(answer.table["Region"]))
+
+    def test_a_dimension_that_is_entirely_blank_does_not_crash(self):
+        frame = pd.DataFrame({"Region": [None, None], "Revenue": [1.0, 2.0]})
+        plan = QueryPlan(
+            intent="rank", aggregation="sum", measure="Revenue", dimension="Region", top_n=5
+        )
+
+        answer = execute_plan(plan, frame, self._roles(frame))
+
+        self.assertTrue(answer.answer)
 
 if __name__ == "__main__":
     unittest.main()
