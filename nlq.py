@@ -358,6 +358,25 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
     return None
 
 
+class TimeScopeUnavailable(Exception):
+    """A year or month was asked for in a file that has no date column."""
+
+
+# Full names by number. Deriving these by searching MONTH_NAMES backwards used
+# to drop May, whose only spelling is three letters long, leaving the scope
+# label empty in the answer sentence.
+MONTH_LABELS = {
+    1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June",
+    7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December",
+}
+
+
+def _when_label(plan: QueryPlan) -> str:
+    month = MONTH_LABELS.get(plan.month) if plan.month else None
+    year = str(plan.year) if plan.year else None
+    return " ".join(part for part in (month, year) if part)
+
+
 def _apply_filters(
     dataframe: pd.DataFrame, plan: QueryPlan, roles: ColumnRoles
 ) -> tuple[pd.DataFrame, list[str]]:
@@ -369,19 +388,19 @@ def _apply_filters(
         mask = working[value_filter.column].astype(str).isin(value_filter.values)
         working = working.loc[mask]
         applied.append(f"{value_filter.column} in ({', '.join(value_filter.values)})")
-    if roles.date and roles.date in working.columns and (plan.year or plan.month):
+    if plan.year or plan.month:
+        if not roles.date or roles.date not in working.columns:
+            # Returning the all-time figure under a sentence that names a year
+            # is the worst available answer, so the scope is reported as
+            # impossible instead of dropped.
+            raise TimeScopeUnavailable(_when_label(plan))
         dates = working[roles.date]
         if plan.year:
             working = working.loc[dates.dt.year == plan.year]
             dates = working[roles.date]
         if plan.month:
             working = working.loc[dates.dt.month == plan.month]
-        month_name = next(
-            (name.title() for name, number in MONTH_NAMES.items() if number == plan.month and len(name) > 3),
-            None,
-        )
-        when = " ".join(part for part in (month_name, str(plan.year) if plan.year else None) if part)
-        applied.append(f"{roles.date} in {when}")
+        applied.append(f"{roles.date} in {_when_label(plan)}")
     return working, applied
 
 
@@ -418,7 +437,18 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
         if column is not None and column not in dataframe.columns:
             raise ValueError(f"Unknown column in plan: {column}")
 
-    working, applied = _apply_filters(dataframe, plan, roles)
+    try:
+        working, applied = _apply_filters(dataframe, plan, roles)
+    except TimeScopeUnavailable as unavailable:
+        return QueryAnswer(
+            question="",
+            plan=plan,
+            answer=(
+                f"This file has no date column, so I cannot narrow the answer to "
+                f"{unavailable}. Set a date in ADA's schema detection and ask again."
+            ),
+            calculation=f"no date column available to scope to {unavailable}",
+        )
     scope = _scoped(applied)
     if working.empty:
         return QueryAnswer(

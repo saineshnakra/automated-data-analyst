@@ -179,5 +179,53 @@ class TimelineDisclosureTests(unittest.TestCase):
         self.assertNotIn("still in progress", answer.calculation)
         self.assertNotIn("counted as zero", answer.calculation)
 
+
+
+class TimeScopeTests(unittest.TestCase):
+    """A question about a year must not be answered with the all-time number."""
+
+    def setUp(self):
+        self.dated = pd.DataFrame(
+            {
+                "Order Date": pd.date_range("2025-01-01", periods=365, freq="D"),
+                "Revenue": [100.0] * 365,
+            }
+        )
+        self.dated_roles = detect_roles(self.dated)
+        self.undated = pd.DataFrame(
+            {"Period Label": ["FY2024 Q1", "FY2024 Q2"], "Revenue": [100.0, 200.0]}
+        )
+        self.undated_roles = detect_roles(self.undated)
+
+    def test_a_year_scope_without_a_date_column_is_refused_not_ignored(self):
+        plan = QueryPlan(intent="aggregate", aggregation="sum", measure="Revenue", year=2024)
+
+        answer = execute_plan(plan, self.undated, self.undated_roles)
+
+        self.assertIn("no date column", answer.answer)
+        # The all-time total must not be presented as the 2024 total.
+        self.assertNotIn("300", answer.answer)
+
+    def test_may_is_named_in_the_answer_like_every_other_month(self):
+        for month, label in ((3, "March"), (5, "May"), (7, "July"), (12, "December")):
+            with self.subTest(month=label):
+                plan = QueryPlan(
+                    intent="aggregate", aggregation="sum", measure="Revenue", month=month
+                )
+
+                answer = execute_plan(plan, self.dated, self.dated_roles)
+
+                self.assertIn(f"Order Date in {label}", answer.answer)
+                self.assertIn(f"Order Date in {label}", answer.calculation)
+
+    def test_a_month_and_year_together_name_both(self):
+        plan = QueryPlan(
+            intent="aggregate", aggregation="sum", measure="Revenue", month=5, year=2025
+        )
+
+        answer = execute_plan(plan, self.dated, self.dated_roles)
+
+        self.assertIn("Order Date in May 2025", answer.answer)
+
 if __name__ == "__main__":
     unittest.main()
