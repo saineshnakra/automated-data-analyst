@@ -6,7 +6,7 @@ import pandas as pd
 from demo_data import make_demo_data
 from nlq import QueryPlan, answer_question, execute_plan, parse_question, suggested_questions
 from pipeline import prepare_analysis
-from schema import detect_roles
+from schema import ColumnRoles, detect_roles
 
 
 class NLQParsingTests(unittest.TestCase):
@@ -178,6 +178,181 @@ class TimelineDisclosureTests(unittest.TestCase):
 
         self.assertNotIn("still in progress", answer.calculation)
         self.assertNotIn("counted as zero", answer.calculation)
+
+
+
+class TimeScopeTests(unittest.TestCase):
+    """A question about a year must not be answered with the all-time number."""
+
+    def setUp(self):
+        self.dated = pd.DataFrame(
+            {
+                "Order Date": pd.date_range("2025-01-01", periods=365, freq="D"),
+                "Revenue": [100.0] * 365,
+            }
+        )
+        self.dated_roles = detect_roles(self.dated)
+        self.undated = pd.DataFrame(
+            {"Period Label": ["FY2024 Q1", "FY2024 Q2"], "Revenue": [100.0, 200.0]}
+        )
+        self.undated_roles = detect_roles(self.undated)
+
+    def test_a_year_scope_without_a_date_column_is_refused_not_ignored(self):
+        plan = QueryPlan(intent="aggregate", aggregation="sum", measure="Revenue", year=2024)
+
+        answer = execute_plan(plan, self.undated, self.undated_roles)
+
+        self.assertIn("no date column", answer.answer)
+        # The all-time total must not be presented as the 2024 total.
+        self.assertNotIn("300", answer.answer)
+
+    def test_may_is_named_in_the_answer_like_every_other_month(self):
+        for month, label in ((3, "March"), (5, "May"), (7, "July"), (12, "December")):
+            with self.subTest(month=label):
+                plan = QueryPlan(
+                    intent="aggregate", aggregation="sum", measure="Revenue", month=month
+                )
+
+                answer = execute_plan(plan, self.dated, self.dated_roles)
+
+                self.assertIn(f"Order Date in {label}", answer.answer)
+                self.assertIn(f"Order Date in {label}", answer.calculation)
+
+    def test_a_month_and_year_together_name_both(self):
+        plan = QueryPlan(
+            intent="aggregate", aggregation="sum", measure="Revenue", month=5, year=2025
+        )
+
+        answer = execute_plan(plan, self.dated, self.dated_roles)
+
+        self.assertIn("Order Date in May 2025", answer.answer)
+
+
+
+class ShareOfTotalTests(unittest.TestCase):
+    """A share is only a share when the parts add up to the whole."""
+
+    def _roles(self, frame):
+        return ColumnRoles(
+            date=None, measure="Revenue", dimension="Region",
+            identifier=None, numeric=("Revenue",), dimensions=("Region",),
+        )
+
+    def test_mixed_signs_produce_no_share_column(self):
+        frame = pd.DataFrame(
+            {"Region": ["A", "B", "C"], "Revenue": [100.0, -50.0, -30.0]}
+        )
+        plan = QueryPlan(
+            intent="breakdown", aggregation="sum", measure="Revenue", dimension="Region"
+        )
+
+        answer = execute_plan(plan, frame, self._roles(frame))
+
+        self.assertNotIn("Share %", answer.table.columns)
+        self.assertNotIn("%", answer.answer)
+
+    def test_an_all_negative_measure_keeps_its_share(self):
+        frame = pd.DataFrame({"Region": ["A", "B"], "Revenue": [-75.0, -25.0]})
+        plan = QueryPlan(
+            intent="breakdown", aggregation="sum", measure="Revenue", dimension="Region"
+        )
+
+        answer = execute_plan(plan, frame, self._roles(frame))
+
+        # Uniform signs, so the shares are real and sum to 100.
+        self.assertIn("Share %", answer.table.columns)
+        self.assertAlmostEqual(float(answer.table["Share %"].sum()), 100.0)
+        self.assertEqual(
+            dict(zip(answer.table["Region"], answer.table["Share %"], strict=True)),
+            {"A": 75.0, "B": 25.0},
+        )
+
+    def test_unlabelled_rows_are_a_group_not_a_deletion(self):
+        frame = pd.DataFrame(
+            {"Region": ["South", None, "North", None], "Revenue": [200.0, 400.0, 150.0, 300.0]}
+        )
+        plan = QueryPlan(
+            intent="breakdown", aggregation="sum", measure="Revenue", dimension="Region"
+        )
+
+        answer = execute_plan(plan, frame, self._roles(frame))
+
+        # The denominator is the real total, not the total of the labelled rows.
+        self.assertAlmostEqual(float(answer.table["Total Revenue"].sum()), 1050.0)
+        self.assertIn("(not recorded)", list(answer.table["Region"]))
+
+    def test_a_dimension_that_is_entirely_blank_does_not_crash(self):
+        frame = pd.DataFrame({"Region": [None, None], "Revenue": [1.0, 2.0]})
+        plan = QueryPlan(
+            intent="rank", aggregation="sum", measure="Revenue", dimension="Region", top_n=5
+        )
+
+        answer = execute_plan(plan, frame, self._roles(frame))
+
+        self.assertTrue(answer.answer)
+
+
+
+class AnswerHonestyTests(unittest.TestCase):
+    """Every sentence has to match the arithmetic that produced it."""
+
+    def _roles(self, dated=True):
+        return ColumnRoles(
+            date="Month" if dated else None, measure="Revenue", dimension="Region",
+            identifier=None, numeric=("Revenue",), dimensions=("Region",),
+        )
+
+    def test_a_row_count_is_described_as_a_row_count(self):
+        frame = pd.DataFrame({"Region": ["N"] * 6 + ["S"] * 6, "Revenue": [1.0] * 12})
+        plan = QueryPlan(
+            intent="breakdown", aggregation="count", measure="Revenue", dimension="Region"
+        )
+
+        answer = execute_plan(plan, frame, self._roles(dated=False))
+
+        self.assertIn("row count", answer.calculation)
+        self.assertNotIn("count(Revenue)", answer.calculation)
+        # A count of rows is not money.
+        self.assertNotIn("$", answer.answer)
+
+    def test_a_trend_from_zero_quotes_no_percentage(self):
+        frame = pd.DataFrame(
+            {"Month": pd.date_range("2024-01-01", periods=6, freq="MS"),
+             "Revenue": [0.0, 100.0, 400.0, 800.0, 1200.0, 1600.0],
+             "Region": ["N"] * 6}
+        )
+        plan = QueryPlan(intent="trend", aggregation="sum", measure="Revenue", grain="M")
+
+        answer = execute_plan(plan, frame, self._roles())
+
+        self.assertNotIn("+0.0%", answer.answer)
+        self.assertIn("starting period of zero", answer.answer)
+
+    def test_a_scope_with_no_values_is_not_a_total_of_zero(self):
+        frame = pd.DataFrame({"Region": ["N", "S"], "Revenue": [float("nan")] * 2})
+        plan = QueryPlan(intent="aggregate", aggregation="sum", measure="Revenue")
+
+        answer = execute_plan(plan, frame, self._roles(dated=False))
+
+        self.assertIn("no values", answer.answer)
+        self.assertNotIn("$0.00", answer.answer)
+
+    def test_a_segment_growing_from_zero_is_named_not_deleted(self):
+        frame = pd.DataFrame(
+            {
+                "Month": list(pd.date_range("2024-03-01", periods=2, freq="MS")) * 2,
+                "Region": ["Alpha", "Alpha", "Beta", "Beta"],
+                "Revenue": [300.0, 400.0, 0.0, 5_000.0],
+            }
+        )
+        plan = QueryPlan(
+            intent="growth", aggregation="sum", measure="Revenue", dimension="Region", grain="M"
+        )
+
+        answer = execute_plan(plan, frame, self._roles())
+
+        self.assertIn("Beta", answer.answer)
+        self.assertIn("started from zero", answer.answer)
 
 if __name__ == "__main__":
     unittest.main()

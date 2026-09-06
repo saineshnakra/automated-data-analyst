@@ -70,6 +70,109 @@ class CleanDataframeTests(unittest.TestCase):
 
 
 
+class RepeatRowTests(unittest.TestCase):
+    """Two identical sales are a busy till, not a data defect."""
+
+    def _till(self):
+        return pd.DataFrame(
+            {
+                "Date": ["2024-01-01"] * 4,
+                "Product": ["Coffee"] * 4,
+                "Revenue": [3.5, 3.5, 3.5, 3.5],
+            }
+        )
+
+    def test_identical_rows_are_kept_and_the_total_survives(self):
+        cleaned, report = clean_dataframe(self._till())
+
+        self.assertEqual(len(cleaned), 4)
+        self.assertAlmostEqual(cleaned["Revenue"].sum(), 14.0)
+        self.assertEqual(report.duplicate_rows_removed, 0)
+        self.assertEqual(report.duplicate_rows_found, 3)
+        self.assertTrue(any("identical rows were kept" in note for note in report.notes))
+
+    def test_a_caller_that_knows_better_can_still_opt_in(self):
+        cleaned, report = clean_dataframe(self._till(), drop_duplicates=True)
+
+        self.assertEqual(len(cleaned), 1)
+        self.assertEqual(report.duplicate_rows_removed, 3)
+
+
+class DateOrderingTests(unittest.TestCase):
+    def test_a_day_over_twelve_settles_the_ordering(self):
+        frame = pd.DataFrame({"Posting Date": [f"{d:02d}/03/2024" for d in range(1, 26)]})
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["Posting Date"].min(), pd.Timestamp("2024-03-01"))
+        self.assertEqual(cleaned["Posting Date"].max(), pd.Timestamp("2024-03-25"))
+        self.assertTrue(any("day-first" in note for note in report.notes))
+
+    def test_an_unsettleable_column_says_which_way_it_was_read(self):
+        frame = pd.DataFrame({"Month": [f"01/{m:02d}/2024" for m in range(1, 13)]})
+
+        _, report = clean_dataframe(frame)
+
+        self.assertTrue(any("either way round" in note for note in report.notes))
+
+    def test_iso_dates_are_never_called_ambiguous(self):
+        frame = pd.DataFrame({"Date": pd.date_range("2024-01-01", periods=10).astype(str)})
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["Date"].max(), pd.Timestamp("2024-01-10"))
+        self.assertEqual(report.notes, ())
+
+
+class TimezoneTests(unittest.TestCase):
+    def test_an_offset_aware_column_is_analyzable(self):
+        frame = pd.DataFrame(
+            {
+                "created_at": pd.date_range("2024-01-01", periods=30, tz="Asia/Kolkata"),
+                "Revenue": range(30),
+            }
+        )
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertFalse(isinstance(cleaned["created_at"].dtype, pd.DatetimeTZDtype))
+        # The wall clock the file was written in is what a report is about.
+        self.assertEqual(cleaned["created_at"].iloc[0], pd.Timestamp("2024-01-01 00:00:00"))
+        self.assertTrue(any("Timezone" in note for note in report.notes))
+
+
+class BusinessFormattedNumberTests(unittest.TestCase):
+    def test_thousands_separators_do_not_delete_the_largest_values(self):
+        frame = pd.DataFrame({"Revenue": ["950.00", "1,203.55", "12,400.10", "88.20"]})
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertAlmostEqual(cleaned["Revenue"].sum(), 14641.85)
+
+    def test_currency_symbols_and_accounting_negatives_are_read(self):
+        frame = pd.DataFrame({"Amount": ["$1,200.50", "$300.00", "(48.10)", "$0.00"]})
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertAlmostEqual(cleaned["Amount"].sum(), 1452.40)
+
+    def test_a_slashed_date_is_never_read_as_a_number(self):
+        frame = pd.DataFrame({"Month": [f"01/{m:02d}/2024" for m in range(1, 13)]})
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertTrue(pd.api.types.is_datetime64_any_dtype(cleaned["Month"]))
+
+
+class UniqueColumnNameTests(unittest.TestCase):
+    def test_a_name_the_suffix_would_collide_with_is_stepped_over(self):
+        frame = pd.DataFrame([[1, 2, 3]], columns=["Amount", "Amount ", "Amount_2"])
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(len(set(cleaned.columns)), 3)
+
+
 class AnalysisTests(unittest.TestCase):
     def setUp(self):
         self.dataframe = pd.DataFrame(
@@ -160,6 +263,110 @@ class KeywordScoreTests(unittest.TestCase):
             _keyword_score("Total", MEASURE_KEYWORDS),
         )
 
+
+
+
+class RoleDeterminismTests(unittest.TestCase):
+    """A role is a property of the data, not of the order the columns arrive in."""
+
+    def _hr_file(self, order):
+        frame = pd.DataFrame(
+            {
+                "Employee ID": [f"E{index:03d}" for index in range(24)],
+                "Postal Code": [10_000 + index * 37 for index in range(24)],
+                "Annual Salary": [60_000.5 + index * 1_500 for index in range(24)],
+                "Tenure Months": [index % 60 for index in range(24)],
+                "Department": ["Eng", "Sales", "Ops"] * 8,
+            }
+        )
+        return frame[order]
+
+    def test_column_order_does_not_change_the_headline_metric(self):
+        orders = (
+            ["Employee ID", "Postal Code", "Annual Salary", "Tenure Months", "Department"],
+            ["Employee ID", "Annual Salary", "Tenure Months", "Postal Code", "Department"],
+            ["Tenure Months", "Employee ID", "Department", "Annual Salary", "Postal Code"],
+        )
+
+        detected = {detect_roles(self._hr_file(order)).measure for order in orders}
+
+        self.assertEqual(len(detected), 1, f"measure depended on column order: {detected}")
+        self.assertEqual(detected.pop(), "Annual Salary")
+
+    def test_a_money_column_beside_an_invoice_is_not_a_row_identifier(self):
+        frame = pd.DataFrame(
+            {
+                "Invoice Number": [f"INV-{index:05d}" for index in range(30)],
+                "Invoice Amount": [1_000.0 + index * 13.5 for index in range(30)],
+                "Days Overdue": list(range(30)),
+                "Customer": ["A", "B", "C"] * 10,
+            }
+        )
+
+        roles = detect_roles(frame)
+
+        self.assertEqual(roles.measure, "Invoice Amount")
+        self.assertEqual(roles.identifier, "Invoice Number")
+
+    def test_a_parenthesised_unit_does_not_demote_the_head_noun(self):
+        frame = pd.DataFrame(
+            {
+                "Revenue (USD)": [100.0 + index for index in range(20)],
+                "Discount Amount": [1.0 + index for index in range(20)],
+                "Channel": ["a", "b"] * 10,
+            }
+        )
+
+        self.assertEqual(detect_roles(frame).measure, "Revenue (USD)")
+
+    def test_camel_case_names_score_like_snake_case_ones(self):
+        frame = pd.DataFrame(
+            {
+                "netRevenue": [100.0 + index for index in range(20)],
+                "Discount Amount": [1.0 + index for index in range(20)],
+                "Channel": ["a", "b"] * 10,
+            }
+        )
+
+        self.assertEqual(detect_roles(frame).measure, "netRevenue")
+
+
+
+class ExportedIndexTests(unittest.TestCase):
+    def test_a_blank_row_does_not_save_the_row_numbers(self):
+        frame = pd.DataFrame(
+            {
+                "Unnamed: 0": [0, 1, None, 3, 4, 5],
+                "Region": ["N", "S", None, "N", "S", "N"],
+                "Headcount": [10, 20, None, 30, 40, 50],
+            }
+        )
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertNotIn("Unnamed: 0", cleaned.columns)
+        self.assertEqual(report.index_columns_removed, 1)
+
+    def test_a_named_counter_column_is_never_dropped(self):
+        frame = pd.DataFrame({"Sequence": [0, 1, 2, 3], "Region": ["N", "S", "N", "S"]})
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertIn("Sequence", cleaned.columns)
+
+
+class UnreadableDateColumnTests(unittest.TestCase):
+    def test_a_column_that_failed_to_parse_as_a_date_is_not_a_segment(self):
+        frame = pd.DataFrame(
+            {
+                "Date": [f"2024-06-{day:02d} maybe" for day in range(1, 13)],
+                "Revenue": [100.0 + index for index in range(12)],
+            }
+        )
+
+        roles = detect_roles(clean_dataframe(frame)[0])
+
+        self.assertNotEqual(roles.dimension, "Date")
 
 if __name__ == "__main__":
     unittest.main()

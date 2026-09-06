@@ -12,8 +12,13 @@ optional; ADA is a complete analyst with no API key.
 | **Query planner** | Only when the rule parser cannot read a question | Column names, types, roles, and the question | A typed `AIQueryPlan` |
 | **Strategic read** | Only when the user presses the button | The computed brief — schema, evidence, recommendations | A typed `AINarrative` |
 
-Neither receives uploaded rows or cell values. Not a sample, not a preview, not
-the first five rows.
+Neither receives uploaded rows. Not a sample, not a preview, not the first five
+rows. What does travel is the text of the computed evidence, and an evidence
+sentence names the segment it is about — "Northwind is the largest customer" —
+so segment labels reach the model. Column names and types do too. No other cell
+value is serialized. `tests/test_ai_insights.py` pins this by putting a
+distinctive value in a non-segment column and asserting it never appears in
+either payload.
 
 ## What is actually sent
 

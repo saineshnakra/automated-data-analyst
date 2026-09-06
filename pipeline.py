@@ -17,21 +17,51 @@ class PreparedAnalysis:
     cleaning_report: CleaningReport
     detected_roles: ColumnRoles
     truncated_rows: int
+    analyzed_from: pd.Timestamp | None = None
+    analyzed_to: pd.Timestamp | None = None
 
     def analyze(self, roles: ColumnRoles | None = None) -> BusinessBrief:
         return analyze_business(self.dataframe, roles or self.detected_roles)
 
 
+def _most_recent(dataframe: pd.DataFrame, date_column: str | None, row_limit: int) -> pd.DataFrame:
+    """Keep the newest rows, not the first ones.
+
+    Exports are usually written oldest-first, so taking the head of a long
+    file analyzes the periods nobody is asking about and drops the ones they
+    are -- and then forecasts months the file already contains. When a date
+    column is available the newest rows are selected by date; otherwise the
+    end of the file is the best available proxy for the recent end of it.
+    """
+    if len(dataframe) <= row_limit:
+        return dataframe
+    if date_column and date_column in dataframe.columns:
+        order = dataframe[date_column].rank(method="first", ascending=False, na_option="bottom")
+        return dataframe.loc[order <= row_limit]
+    return dataframe.tail(row_limit)
+
+
 def prepare_analysis(raw_dataframe: pd.DataFrame, *, row_limit: int) -> PreparedAnalysis:
-    """Bound work, clean data, and detect its likely business schema."""
-    original_rows = len(raw_dataframe)
-    bounded = raw_dataframe.head(row_limit).copy() if original_rows > row_limit else raw_dataframe
-    dataframe, cleaning_report = clean_dataframe(bounded)
+    """Clean the data, keep the most recent slice of it, and detect its schema."""
+    dataframe, cleaning_report = clean_dataframe(raw_dataframe)
+    roles = detect_roles(dataframe)
+
+    available = len(dataframe)
+    dataframe = _most_recent(dataframe, roles.date, row_limit).reset_index(drop=True)
+    if len(dataframe) < available:
+        # Roles are detected on everything, but the numeric and dimension
+        # candidates have to describe the rows actually being analyzed.
+        roles = detect_roles(dataframe)
+
+    dated = roles.date is not None and roles.date in dataframe.columns
+    span = dataframe[roles.date].dropna() if dated else pd.Series(dtype="datetime64[ns]")
     return PreparedAnalysis(
         dataframe=dataframe,
         cleaning_report=cleaning_report,
-        detected_roles=detect_roles(dataframe),
-        truncated_rows=max(original_rows - row_limit, 0),
+        detected_roles=roles,
+        truncated_rows=available - len(dataframe),
+        analyzed_from=span.min() if not span.empty else None,
+        analyzed_to=span.max() if not span.empty else None,
     )
 
 
@@ -99,8 +129,10 @@ def cleaning_audit_frame(report: CleaningReport) -> pd.DataFrame:
             ["Empty columns removed", report.empty_columns_removed],
             ["Exported index columns removed", report.index_columns_removed],
             ["Duplicate rows removed", report.duplicate_rows_removed],
+            ["Identical rows kept", report.duplicate_rows_found - report.duplicate_rows_removed],
             ["Numeric columns inferred", report.numeric_columns_inferred],
             ["Datetime columns inferred", report.datetime_columns_inferred],
+            ["Date values that could not be read", report.unparsed_date_cells],
         ],
         columns=["Operation", "Count"],
     )

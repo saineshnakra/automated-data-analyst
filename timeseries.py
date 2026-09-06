@@ -23,6 +23,10 @@ import numpy as np
 import pandas as pd
 
 MAD_SCALE = 1.4826  # MAD -> standard-deviation equivalent for normal data
+# The mean absolute deviation is sqrt(2/pi) standard deviations for normal
+# data; the reciprocal puts the fallback on the same scale as MAD_SCALE, so
+# switching estimators does not change how surprising a period looks.
+MEAN_ABS_DEV_SCALE = 1.2533
 MAX_PAIRWISE_POINTS = 800  # keeps the O(n^2) slope search bounded
 
 
@@ -134,6 +138,12 @@ def robust_scale(residuals: np.ndarray) -> float:
     residuals are identical, which drives the median absolute deviation to
     zero and would otherwise make every remaining period look infinitely
     surprising.
+
+    Both estimators are put on the same footing. For normal residuals the mean
+    absolute deviation is about 0.798 standard deviations, so using it raw
+    made the fallback scale roughly a fifth too small -- inflating every
+    z-score computed from it and quietly destroying the false-alarm rate the
+    anomaly thresholds are calibrated to.
     """
     values = np.asarray(residuals, dtype=float)
     if values.size == 0:
@@ -144,5 +154,6 @@ def robust_scale(residuals: np.ndarray) -> float:
     scale = float(np.median(deviations)) * MAD_SCALE
     if scale > 0:
         return scale
-    fallback = float(np.mean(deviations))
+
+    fallback = float(np.mean(deviations)) * MEAN_ABS_DEV_SCALE
     return fallback if fallback > 0 else 0.0

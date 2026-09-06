@@ -3,12 +3,15 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pandas as pd
+
 from ai_insights import (
     MODEL_PRESETS,
     AIAction,
     AINarrative,
     AIQueryFilter,
     AIQueryPlan,
+    _to_query_plan,
     build_ai_payload,
     build_planner_payload,
     describe_query_plan,
@@ -104,6 +107,154 @@ class AIInsightTests(unittest.TestCase):
         self.assertIn("Validate the leading segment", report)
         self.assertIn("gpt-5.6-luna", report)
         self.assertIn("raw rows were not sent", report)
+
+
+class PlanValidationTests(unittest.TestCase):
+    """A plan the user approves must be a plan ADA will run exactly as described."""
+
+    def setUp(self):
+        self.frame = pd.DataFrame(
+            {
+                "Order Date": pd.date_range("2024-01-01", periods=40, freq="D"),
+                "Region": ["West", "East"] * 20,
+                "Ticket": [f"T-{index:04d}" for index in range(40)],
+                "Revenue": [100.0 + index for index in range(40)],
+            }
+        )
+        self.roles = detect_roles(self.frame)
+        self.undated = self.frame.drop(columns=["Order Date"])
+        self.undated_roles = detect_roles(self.undated)
+
+    def _plan(self, **fields):
+        return _to_query_plan(AIQueryPlan(answerable=True, **fields), self.frame, self.roles)
+
+    def test_a_text_column_is_refused_as_a_measure(self):
+        for aggregation in ("sum", "mean", "median", "min", "max"):
+            with self.subTest(aggregation=aggregation):
+                self.assertIsNone(
+                    self._plan(intent="aggregate", aggregation=aggregation, measure="Region")
+                )
+
+    def test_a_date_column_is_refused_as_a_measure(self):
+        self.assertIsNone(self._plan(intent="aggregate", aggregation="sum", measure="Order Date"))
+
+    def test_counting_a_text_column_is_still_allowed(self):
+        self.assertIsNotNone(self._plan(intent="count", aggregation="count", measure="Region"))
+
+    def test_a_column_cannot_be_grouped_by_itself(self):
+        self.assertIsNone(
+            self._plan(intent="rank", aggregation="sum", measure="Revenue", dimension="Revenue")
+        )
+
+    def test_a_date_is_refused_as_a_grouping_dimension(self):
+        self.assertIsNone(
+            self._plan(intent="breakdown", aggregation="sum", measure="Revenue", dimension="Order Date")
+        )
+
+    def test_a_row_identifier_is_refused_as_a_grouping_dimension(self):
+        self.assertIsNone(
+            self._plan(intent="breakdown", aggregation="sum", measure="Revenue", dimension="Ticket")
+        )
+
+    def test_a_time_filter_without_a_date_column_is_refused(self):
+        parsed = AIQueryPlan(answerable=True, intent="aggregate", aggregation="sum",
+                             measure="Revenue", year=2024)
+
+        self.assertIsNone(_to_query_plan(parsed, self.undated, self.undated_roles))
+
+    def test_an_average_over_time_is_refused_rather_than_answered_as_a_sum(self):
+        self.assertIsNone(
+            self._plan(intent="trend", aggregation="mean", measure="Revenue")
+        )
+
+    def test_modifiers_the_intent_ignores_are_stripped(self):
+        plan = self._plan(
+            intent="aggregate", aggregation="sum", measure="Revenue",
+            dimension="Region", top_n=3, grain="M",
+        )
+
+        assert plan is not None
+        self.assertIsNone(plan.dimension)
+        self.assertIsNone(plan.top_n)
+        self.assertIsNone(plan.grain)
+        self.assertNotIn("Region", describe_query_plan(plan))
+
+    def test_growth_keeps_the_dimension_and_grain_its_executor_uses(self):
+        plan = self._plan(intent="growth", aggregation="sum", measure="Revenue",
+                          dimension="Region", grain="M")
+
+        assert plan is not None
+        self.assertEqual(plan.dimension, "Region")
+        self.assertEqual(plan.grain, "M")
+
+    def test_every_approved_plan_executes_without_raising(self):
+        """Nothing that survives validation may blow up in the executor."""
+        for intent in ("aggregate", "count", "rank", "breakdown", "trend", "growth"):
+            for measure in (None, "Revenue", "Region", "Order Date", "Ticket"):
+                for dimension in (None, "Region", "Revenue", "Order Date", "Ticket"):
+                    plan = self._plan(
+                        intent=intent, aggregation="sum", measure=measure, dimension=dimension
+                    )
+                    if plan is None:
+                        continue
+                    with self.subTest(intent=intent, measure=measure, dimension=dimension):
+                        answer = execute_plan(plan, self.frame, self.roles)
+                        self.assertTrue(answer.answer)
+
+
+class PayloadContentTests(unittest.TestCase):
+    """The privacy claim is only as good as a test that could falsify it.
+
+    Asserting on key names cannot catch a leak, because a leak arrives inside
+    a value. These put distinctive markers in the data and search the payload
+    text for them.
+    """
+
+    def _frame(self):
+        return pd.DataFrame(
+            {
+                "Order Date": pd.date_range("2024-01-01", periods=24, freq="MS"),
+                "Customer": ["Northwind Ltd", "Barclays plc"] * 12,
+                "Notes": [f"SECRET-NOTE-{index}" for index in range(24)],
+                "Account": [f"ACCT-{index:04d}" for index in range(24)],
+                "Revenue": [100 + index * 10 for index in range(24)],
+            }
+        )
+
+    def test_no_value_from_a_non_segment_column_reaches_the_narrative_payload(self):
+        frame = self._frame()
+        brief = analyze_business(frame, detect_roles(frame))
+
+        payload = build_ai_payload(brief, context="review")
+
+        self.assertNotIn("SECRET-NOTE", payload)
+        self.assertNotIn("ACCT-", payload)
+
+    def test_no_value_from_a_non_segment_column_reaches_the_planner_payload(self):
+        frame = self._frame()
+
+        payload = build_planner_payload("what is total revenue", frame, detect_roles(frame))
+
+        self.assertNotIn("SECRET-NOTE", payload)
+        self.assertNotIn("ACCT-", payload)
+
+    def test_the_segment_names_that_do_travel_are_documented_as_travelling(self):
+        """Evidence sentences name the segment they describe, and that is stated.
+
+        This is not a leak to be fixed silently -- it is the documented
+        boundary. The test exists so the boundary cannot move without someone
+        noticing, in either direction.
+        """
+        frame = self._frame()
+        brief = analyze_business(frame, detect_roles(frame))
+
+        payload = build_ai_payload(brief, context="review")
+
+        self.assertTrue(
+            "Northwind Ltd" in payload or "Barclays plc" in payload,
+            "an evidence sentence names the segment it describes; if that stopped "
+            "being true the privacy documentation should be widened, not narrowed",
+        )
 
 
 class AIQueryPlannerTests(unittest.TestCase):
@@ -217,8 +368,11 @@ class AIQueryPlannerTests(unittest.TestCase):
         self.assertIsNotNone(plan)
         assert plan is not None
         description = describe_query_plan(plan)
-        self.assertIn("Total of Revenue", description)
-        self.assertIn("grouped by Product", description)
+        # The sentence has to describe the ranking that actually runs, not the
+        # aggregate the plan's fields would suggest on their own.
+        self.assertIn("Rank Product", description)
+        self.assertIn("total Revenue", description)
+        self.assertIn("2 highest", description)
         self.assertIn("Region = West", description)
 
     def test_rejected_plan_is_not_executed(self):

@@ -30,6 +30,7 @@ Each one is shaped to exercise a different part of the analysis.
 
 ## Regenerating
 
-These files are committed so they can be downloaded straight from GitHub.
-They are produced from fixed seeds, so regenerating gives byte-identical
-output. See `demo_data.py` for the same approach used by the built-in demo.
+These files are committed so they can be downloaded straight from GitHub, and
+they are the version of record — there is no generator script in the repository
+to reproduce them from. `demo_data.py` shows the fixed-seed approach the
+built-in demo uses, if you want to build a sample of your own the same way.

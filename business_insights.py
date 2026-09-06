@@ -8,13 +8,21 @@ import numpy as np
 import pandas as pd
 
 from aggregation import (
+    build_trend,
     preferred_frequency,
     segment_frame,
     segment_period_change,
     trend_frame,
 )
 from anomalies import detect_anomalies
-from formatting import format_number, format_percentage, format_period, normalized_name
+from formatting import (
+    format_number,
+    format_percentage,
+    format_period,
+    is_percentage,
+    normalized_name,
+    percentage_outranks_currency,
+)
 from schema import TIME_PART_TOKENS, ColumnRoles, detect_roles, looks_like_identifier
 from timeseries import robust_scale
 
@@ -82,37 +90,57 @@ def _movement_in_context(values: np.ndarray, change: float) -> str:
         return ""
 
     distance = abs(change - float(np.median(prior))) / spread
+    # The measurement is distance from the norm, not size. A flat month in a
+    # series that always moves 5% is unusual, but calling 0.0% "an unusually
+    # large swing" describes the opposite of what happened.
+    moved_more = abs(change) > typical
     if distance < 1.0:
         verdict = "This is within normal period-to-period variation"
     elif distance < 2.0:
-        verdict = "This is a larger swing than usual"
+        verdict = "This is a larger swing than usual" if moved_more else "This is quieter than usual"
     else:
-        verdict = "This is an unusually large swing"
+        verdict = (
+            "This is an unusually large swing"
+            if moved_more
+            else "This is an unusually quiet period for this series"
+        )
     return f" {verdict} — this series typically moves about {format_percentage(typical)} per period."
 
 
 def _growth_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
-    trend = trend_frame(dataframe, roles)
+    series = build_trend(dataframe, roles)
+    trend = series.frame
     if len(trend) < 2:
         return None
 
     values = trend["Value"].to_numpy(dtype=float)
     previous = float(values[-2])
     current = float(values[-1])
-    if previous == 0:
+    if previous == 0 or not np.isfinite(previous) or not np.isfinite(current):
         return None
     change = (current - previous) / abs(previous) * 100
-    period = trend.iloc[-1]["Period"].strftime("%b %Y")
+    # A quarter is "Q4 2023", not "Oct 2023" -- which the anomaly card and the
+    # chart axis already knew, so the brief was contradicting its own page.
+    period = format_period(trend.iloc[-1]["Period"], series.frequency)
+    # With too few periods to judge completeness, the last one cannot be
+    # called complete -- a three-month file whose third month is half over
+    # was reporting a 50% collapse as settled fact.
+    completeness = "complete period" if series.completeness_checked else "period so far"
     measure = roles.measure or "Records"
     measure_values = dataframe[roles.measure].dropna() if roles.measure else None
     direction = "increased" if change >= 0 else "decreased"
     context = _movement_in_context(values, change)
+    if series.short_coverage:
+        context += (
+            f" The last period only reaches {series.short_coverage}, so part of this may be "
+            "missing data rather than a real move."
+        )
     return Evidence(
         kind="trend",
         title=f"Latest {measure.lower()} movement",
         value=format_percentage(change, signed=True),
         statement=(
-            f"{measure} {direction} {format_percentage(abs(change))} in the latest complete period "
+            f"{measure} {direction} {format_percentage(abs(change))} in the latest {completeness} "
             f"({period}), from {format_number(previous, roles.measure, column_values=measure_values)} to "
             f"{format_number(current, roles.measure, column_values=measure_values)}.{context}"
         ),
@@ -137,10 +165,13 @@ def _change_driver_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evid
     if gross_change == 0:
         return None
 
-    driver_name = str(changes.abs().idxmax())
-    previous_value = float(grouped.loc[driver_name, previous_period])
-    current_value = float(grouped.loc[driver_name, current_period])
-    driver_change = float(grouped.loc[driver_name, "Change"])
+    # Look the row up by its real index value; a boolean segment column has an
+    # index of True/False, and str() turned that into a KeyError.
+    driver_key = changes.abs().idxmax()
+    driver_name = str(driver_key)
+    previous_value = float(grouped.loc[driver_key, previous_period])
+    current_value = float(grouped.loc[driver_key, current_period])
+    driver_change = float(grouped.loc[driver_key, "Change"])
     direction = "increased" if driver_change > 0 else "decreased"
     sign = "+" if driver_change > 0 else "−"
 
@@ -240,40 +271,89 @@ def _effective_segments(values: np.ndarray, total: float) -> float | None:
     return 1.0 / herfindahl if herfindahl > 0 else None
 
 
-def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evidence, Evidence] | tuple[()]:
+def _shares_are_meaningful(values: np.ndarray) -> bool:
+    """A share of a total that parts of it subtract from is not a share.
+
+    All-positive is the ordinary case. All-negative is a cost or loss column,
+    where -6k of -20k is honestly 30%. Mixed signs are the case with no answer:
+    the denominator is a net figure the parts do not sum into, which is how a
+    segment ends up "contributing 2,000,000% of profit".
+    """
+    if not values.size:
+        return False
+    return bool((values >= 0).all() or (values <= 0).all())
+
+
+def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evidence, ...]:
     segments = segment_frame(dataframe, roles, limit=100)
     if segments.empty:
         return ()
 
     total = float(segments["Value"].sum())
-    if total == 0:
+    if total == 0 or not np.isfinite(total):
         return ()
+    values = segments["Value"].to_numpy(dtype=float)
+    shares_hold = _shares_are_meaningful(values)
+    if not shares_hold:
+        # Without a usable denominator the only honest ordering is by size of
+        # the number itself, and no percentage may be quoted from it.
+        segments = segments.reindex(
+            segments["Value"].abs().sort_values(ascending=False).index
+        ).reset_index(drop=True)
+    elif total < 0:
+        # A cost column: the biggest contributor is the most negative one, not
+        # the one nearest zero that a descending sort puts on top.
+        segments = segments.sort_values("Value").reset_index(drop=True)
     leader = segments.iloc[0]
-    leader_share = float(leader["Value"] / total * 100)
-    top_three_share = float(segments.head(3)["Value"].sum() / total * 100)
+    leader_share = float(leader["Value"] / total * 100) if shares_hold else float("nan")
+    top_three_share = (
+        float(segments.head(3)["Value"].sum() / total * 100) if shares_hold else float("nan")
+    )
     effective = _effective_segments(segments["Value"].to_numpy(dtype=float), total)
     measure = roles.measure or "records"
     measure_values = dataframe[roles.measure].dropna() if roles.measure else None
     dimension = roles.dimension or "segment"
+    leader_amount = format_number(
+        float(leader["Value"]), roles.measure, column_values=measure_values
+    )
     return (
         Evidence(
             kind="leader",
             title=f"Leading {dimension.lower()}",
-            value=format_percentage(leader_share),
+            value=format_percentage(leader_share) if shares_hold else leader_amount,
             statement=(
-                f"{leader['Segment']} is the largest {dimension.lower()}, contributing "
-                f"{format_percentage(leader_share)} of {measure.lower()} "
-                f"({format_number(float(leader['Value']), roles.measure, column_values=measure_values)})."
+                (
+                    f"{leader['Segment']} is the largest {dimension.lower()}, contributing "
+                    f"{format_percentage(leader_share)} of {measure.lower()} ({leader_amount})."
+                )
+                if shares_hold
+                else (
+                    f"{leader['Segment']} is the largest {dimension.lower()} by size at "
+                    f"{leader_amount}. {measure} runs both positive and negative here, so no "
+                    f"share of the total can be quoted -- the parts do not add up to it."
+                )
             ),
-            calculation=f"{leader['Segment']} {measure} ÷ total {measure}",
-            tone="positive",
+            calculation=(
+                f"{leader['Segment']} {measure} ÷ total {measure}"
+                if shares_hold
+                else f"largest |{measure}| by {dimension}; share undefined on mixed signs"
+            ),
+            tone="positive" if shares_hold else "warning",
         ),
-        _concentration_evidence(
-            dimension=dimension,
-            measure=measure,
-            segment_count=len(segments),
-            top_three_share=top_three_share,
-            effective=effective,
+        # Concentration is a statement about shares. Without shares there is
+        # nothing to say, so the card is left out rather than printed as nan%.
+        *(
+            (
+                _concentration_evidence(
+                    dimension=dimension,
+                    measure=measure,
+                    segment_count=len(segments),
+                    top_three_share=top_three_share,
+                    effective=effective,
+                ),
+            )
+            if shares_hold
+            else ()
         ),
     )
 
@@ -610,19 +690,23 @@ def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) 
         measure_values = dataframe[roles.measure].dropna()
         total = float(measure_values.sum())
         average = float(measure_values.mean())
-        kpis.extend(
-            [
+        # Adding percentages up produces a number with no meaning: eleven
+        # months of margin do not total 1,189% of anything.
+        rate_like = is_percentage(roles.measure) and percentage_outranks_currency(roles.measure)
+        if not rate_like:
+            kpis.append(
                 KPI(
                     f"Total {roles.measure}",
                     format_number(total, roles.measure, column_values=measure_values),
                     "Across all analyzed records",
-                ),
-                KPI(
-                    f"Average {roles.measure}",
-                    format_number(average, roles.measure, column_values=measure_values),
-                    "Per non-missing record",
-                ),
-            ]
+                )
+            )
+        kpis.append(
+            KPI(
+                f"Average {roles.measure}",
+                format_number(average, roles.measure, column_values=measure_values),
+                "Per non-missing record",
+            )
         )
 
     if growth:
@@ -638,26 +722,29 @@ def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) 
         if leader := evidence_by_kind.get("leader"):
             kpis.append(KPI(f"Top {roles.dimension}", leader.value, "Share contributed by the leader"))
 
-    while len(kpis) < 4:
-        if roles.identifier and not any(item.label == f"Distinct {roles.identifier}" for item in kpis):
-            kpis.append(
-                KPI(
-                    f"Distinct {roles.identifier}",
-                    f"{dataframe[roles.identifier].nunique(dropna=True):,}",
-                    "Unique entities in the dataset",
-                )
+    # Back-fill towards four tiles from a finite list of fallbacks. The old
+    # loop ran until it had four and its last branch had no already-added
+    # guard, so a thin file rendered "Data completeness" three times and read
+    # as a broken page. Three real tiles beats four with two copies.
+    completeness = 1 - dataframe.isna().sum().sum() / max(dataframe.size, 1)
+    fallbacks = []
+    if roles.identifier:
+        fallbacks.append(
+            KPI(
+                f"Distinct {roles.identifier}",
+                f"{dataframe[roles.identifier].nunique(dropna=True):,}",
+                "Unique entities in the dataset",
             )
-        elif not any(item.label == "Records analyzed" for item in kpis):
-            kpis.append(KPI("Records analyzed", f"{len(dataframe):,}", "After conservative cleaning"))
-        else:
-            completeness = 1 - dataframe.isna().sum().sum() / max(dataframe.size, 1)
-            kpis.append(
-                KPI(
-                    "Data completeness",
-                    format_percentage(completeness * 100),
-                    "Share of populated cells",
-                )
-            )
+        )
+    fallbacks.append(KPI("Records analyzed", f"{len(dataframe):,}", "After conservative cleaning"))
+    fallbacks.append(
+        KPI("Data completeness", format_percentage(completeness * 100), "Share of populated cells")
+    )
+    for candidate in fallbacks:
+        if len(kpis) >= 4:
+            break
+        if not any(item.label == candidate.label for item in kpis):
+            kpis.append(candidate)
     kpis = kpis[:4]
 
     recommendations = _recommendations(evidence, roles)
@@ -754,7 +841,7 @@ def build_business_report(
         [
             "---",
             "Recommendations are deterministic interpretations of the calculations above, not causal proof.",
-            "Uploaded data was not sent to an external AI service.",
+            "Every figure above was computed locally with pandas.",
         ]
     )
     return "\n".join(lines)

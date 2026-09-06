@@ -105,6 +105,9 @@ MONTH_NAMES = {
 
 MAX_FILTER_CANDIDATES = 200
 BREAKDOWN_LIMIT = 12
+# Rows whose segment is blank still hold measure values, so they are shown
+# under a label rather than deleted out of the denominator.
+UNLABELLED = "(not recorded)"
 
 QUERY_STOPWORDS = {
     "a", "about", "across", "all", "and", "are", "by", "can", "do", "does", "each",
@@ -358,6 +361,25 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
     return None
 
 
+class TimeScopeUnavailable(Exception):
+    """A year or month was asked for in a file that has no date column."""
+
+
+# Full names by number. Deriving these by searching MONTH_NAMES backwards used
+# to drop May, whose only spelling is three letters long, leaving the scope
+# label empty in the answer sentence.
+MONTH_LABELS = {
+    1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June",
+    7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December",
+}
+
+
+def _when_label(plan: QueryPlan) -> str:
+    month = MONTH_LABELS.get(plan.month) if plan.month else None
+    year = str(plan.year) if plan.year else None
+    return " ".join(part for part in (month, year) if part)
+
+
 def _apply_filters(
     dataframe: pd.DataFrame, plan: QueryPlan, roles: ColumnRoles
 ) -> tuple[pd.DataFrame, list[str]]:
@@ -369,19 +391,19 @@ def _apply_filters(
         mask = working[value_filter.column].astype(str).isin(value_filter.values)
         working = working.loc[mask]
         applied.append(f"{value_filter.column} in ({', '.join(value_filter.values)})")
-    if roles.date and roles.date in working.columns and (plan.year or plan.month):
+    if plan.year or plan.month:
+        if not roles.date or roles.date not in working.columns:
+            # Returning the all-time figure under a sentence that names a year
+            # is the worst available answer, so the scope is reported as
+            # impossible instead of dropped.
+            raise TimeScopeUnavailable(_when_label(plan))
         dates = working[roles.date]
         if plan.year:
             working = working.loc[dates.dt.year == plan.year]
             dates = working[roles.date]
         if plan.month:
             working = working.loc[dates.dt.month == plan.month]
-        month_name = next(
-            (name.title() for name, number in MONTH_NAMES.items() if number == plan.month and len(name) > 3),
-            None,
-        )
-        when = " ".join(part for part in (month_name, str(plan.year) if plan.year else None) if part)
-        applied.append(f"{roles.date} in {when}")
+        applied.append(f"{roles.date} in {_when_label(plan)}")
     return working, applied
 
 
@@ -397,7 +419,14 @@ def _grouped_frame(
     dataframe: pd.DataFrame, plan: QueryPlan, value_label: str
 ) -> pd.DataFrame:
     assert plan.dimension is not None
-    working = dataframe.dropna(subset=[plan.dimension])
+    # Rows with no label are a group, not a rounding error. Dropping them and
+    # then taking percentages against what is left reports a share of a total
+    # the reader never saw.
+    labelled = dataframe.copy()
+    labelled[plan.dimension] = labelled[plan.dimension].astype(object).where(
+        labelled[plan.dimension].notna(), UNLABELLED
+    )
+    working = labelled
     if plan.aggregation == "count" or not plan.measure:
         grouped = working.groupby(plan.dimension, as_index=False).size()
         grouped.columns = [plan.dimension, value_label]
@@ -406,8 +435,12 @@ def _grouped_frame(
         grouped.columns = [plan.dimension, value_label]
     grouped = grouped.sort_values(value_label, ascending=plan.ascending)
     if plan.aggregation in ("sum", "count"):
-        total = float(grouped[value_label].sum())
-        if total:
+        values = grouped[value_label].to_numpy(dtype=float)
+        total = float(values.sum())
+        # A share is only a share when every part carries the same sign as the
+        # whole. Mixed signs give 500% and -250% from arithmetic that is
+        # working exactly as written.
+        if total and ((values >= 0).all() or (values <= 0).all()):
             grouped["Share %"] = (grouped[value_label] / total * 100).round(1)
     return grouped.reset_index(drop=True)
 
@@ -418,7 +451,18 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
         if column is not None and column not in dataframe.columns:
             raise ValueError(f"Unknown column in plan: {column}")
 
-    working, applied = _apply_filters(dataframe, plan, roles)
+    try:
+        working, applied = _apply_filters(dataframe, plan, roles)
+    except TimeScopeUnavailable as unavailable:
+        return QueryAnswer(
+            question="",
+            plan=plan,
+            answer=(
+                f"This file has no date column, so I cannot narrow the answer to "
+                f"{unavailable}. Set a date in ADA's schema detection and ask again."
+            ),
+            calculation=f"no date column available to scope to {unavailable}",
+        )
     scope = _scoped(applied)
     if working.empty:
         return QueryAnswer(
@@ -449,6 +493,18 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
         value = _aggregate_series(working[plan.measure], plan.aggregation)
         label = AGGREGATION_LABELS[plan.aggregation]
         rows = int(working[plan.measure].notna().sum())
+        if rows == 0:
+            # Summing nothing gives 0, which reads as a measured zero rather
+            # than as an absence.
+            return QueryAnswer(
+                question="",
+                plan=plan,
+                answer=(
+                    f"{plan.measure} has no values{_phrase(applied)}, so there is "
+                    "nothing to total."
+                ),
+                calculation=f"0 non-missing {plan.measure} values{scope}",
+            )
         return QueryAnswer(
             question="",
             plan=plan,
@@ -470,9 +526,12 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
         leader_value = float(leader[value_label])
         direction = "lowest" if plan.ascending else "leading"
         share_note = f" ({leader['Share %']:.1f}% of the total)" if "Share %" in table.columns else ""
+        # A row count is not money, whatever the measure column is called.
+        counted = value_label == "Rows"
         answer = (
             f"{leader[plan.dimension]} is the {direction} {plan.dimension} by {value_label.lower()}"
-            f"{_phrase(applied)} at {format_number(leader_value, plan.measure)}{share_note}."
+            f"{_phrase(applied)} at "
+            f"{format_number(leader_value, None if counted else plan.measure)}{share_note}."
         )
         order = "ascending" if plan.ascending else "descending"
         return QueryAnswer(
@@ -480,8 +539,11 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
             plan=plan,
             answer=answer,
             calculation=(
-                f"{plan.aggregation}({plan.measure or 'rows'}) by {plan.dimension}, "
-                f"{order}, showing {len(table)}{scope}"
+                # value_label already records whether rows or the measure were
+                # aggregated; naming count(<measure>) when .size() ran flipped
+                # which group won.
+                f"{'row count' if value_label == 'Rows' else f'{plan.aggregation}({plan.measure})'}"
+                f" by {plan.dimension}, {order}, showing {len(table)}{scope}"
             ),
             table=table,
             chart="bar",
@@ -508,12 +570,18 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
                 calculation=f"trend needs at least 2 periods{scope}",
             )
         first, last = float(trend.iloc[0]["Value"]), float(trend.iloc[-1]["Value"])
-        change = (last - first) / abs(first) * 100 if first else 0.0
         grain_name = {"D": "day", "W": "week", "M": "month", "Q": "quarter", "Y": "year"}.get(grain, "period")
+        # Growing from nothing has no percentage. Printing +0.0% beside two
+        # different numbers contradicts the rest of the sentence.
+        movement = (
+            f"{(last - first) / abs(first) * 100:+.1f}% across {len(trend)} {grain_name}s"
+            if first
+            else f"across {len(trend)} {grain_name}s, from a starting period of zero"
+        )
         answer = (
             f"{plan.measure or 'Records'} per {grain_name}{_phrase(applied)} moved from "
             f"{format_number(first, plan.measure)} to {format_number(last, plan.measure)} "
-            f"({change:+.1f}% across {len(trend)} {grain_name}s)."
+            f"({movement})."
         )
         return QueryAnswer(
             question="",
@@ -585,7 +653,27 @@ def _execute_growth(
                 "Latest": pivot[current_period].to_numpy(dtype=float),
             }
         )
+        # A percentage from zero is undefined, but a segment that went from
+        # nothing to something is usually the most newsworthy row in the file.
+        # It leaves the ranking and keeps its sentence.
+        from_nothing = result[(result["Previous"] == 0) & (result["Latest"] != 0)]
         result = result[result["Previous"] != 0]
+        if result.empty and not from_nothing.empty:
+            newest = from_nothing.loc[from_nothing["Latest"].abs().idxmax()]
+            return QueryAnswer(
+                question="",
+                plan=plan,
+                answer=(
+                    f"No {plan.dimension} has a growth rate this period, because every one "
+                    f"of them started from zero. The largest new arrival is "
+                    f"{newest[plan.dimension]} at "
+                    f"{format_number(float(newest['Latest']), measure)}."
+                ),
+                calculation=(
+                    f"per-{plan.dimension} growth undefined from a zero base; "
+                    f"{len(from_nothing)} segment(s) started at zero{scope}"
+                ),
+            )
         if result.empty:
             return QueryAnswer(
                 question="",
@@ -603,6 +691,14 @@ def _execute_growth(
             f"({format_number(float(leader['Previous']), measure)} → "
             f"{format_number(float(leader['Latest']), measure)}) in the latest period."
         )
+        if not from_nothing.empty:
+            newest = from_nothing.loc[from_nothing["Latest"].abs().idxmax()]
+            names = ", ".join(str(name) for name in from_nothing[plan.dimension])
+            answer += (
+                f" {len(from_nothing)} segment(s) are left out of the ranking because they "
+                f"started from zero ({names}); the largest is {newest[plan.dimension]} at "
+                f"{format_number(float(newest['Latest']), measure)}."
+            )
         return QueryAnswer(
             question="",
             plan=plan,

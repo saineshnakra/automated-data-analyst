@@ -16,15 +16,23 @@ Every module that displays a number — the dashboard, the evidence cards, the
 chat answers, the Markdown report — calls the same two functions, so a figure
 reads identically everywhere it appears.
 
-## `format_number(value, column=None, compact=True)`
+## `format_number(value, column=None, *, compact=True, column_values=None)`
+
+`column_values` is the whole column the figure came from. It is what settles
+questions that cannot be answered one value at a time — whether a percentage
+column stores `0.25` or `25`, and whether a column named like a rate is really
+holding money.
 
 | Input | Output |
 |---|---|
 | `1_250_000, "Revenue"` | `$1.2M` |
+| `1.5e12, "Revenue"` | `$1.5T` |
+| `-1_200, "Expense Amount"` | `-$1.2K` |
 | `12_000, "Units"` | `12.0K` |
 | `1_250, "Orders"` | `1.2K` |
 | `45, "Units"` | `45` |
 | `45.5, "Score"` | `45.50` |
+| `0.33, "Profit Margin %"` | `33.0%` |
 | `float("nan")` | `—` |
 
 What it does:
@@ -61,23 +69,29 @@ are the same column name.
 
 Periods are named the way a reader would say them out loud.
 
+## Percentages and currencies
+
+Both are implemented, and both were harder than they looked.
+
+**Which reading wins.** A name can carry both signals: `Profit Margin %` holds
+a currency word and a percentage one. An explicit `%`, or a percentage word in
+the **head** position, settles it — so `Profit Margin` is a margin and
+`Margin Amount` is an amount. Matching is on whole words, so `rate` does not
+match `Corporate Revenue` and `eur` does not match `Europe Sales`.
+
+**0–1 versus 0–100** is settled **once per column** from `column_values`, never
+per value. Deciding per value rendered one column as `551.3%` on one row and
+`1.4K` on the next. The same column-level rule catches a column named like a
+ratio that is really holding money: above `MAX_PLAUSIBLE_PERCENTAGE` the whole
+column falls through to plain numbers rather than printing `1250000.0%`.
+
+**Sign placement.** A debt is `-$1.2M`, not `$-1.2M` — the minus belongs to the
+amount, not the currency.
+
 ## Known gaps
 
-Two things this module does **not** do yet:
-
-- **Percentages.** A column called `Margin %` or `Conversion Rate` prints as a
-  plain number. There is no unit, and no detection of whether the column stores
-  `0.25` or `25`.
-- **Currencies other than dollars.** `Cost (EUR)` and `Price GBP` both print
-  with a `$`.
-
-Tracked in [issue #7](https://github.com/saineshnakra/automated-data-analyst/issues/7).
-
-Both are harder than they look. Substring matching on `rate` also matches
-`Corporate Revenue`; substring matching on `eur` also matches `Europe Sales`.
-And the 0–1 versus 0–100 question has to be settled **once per column** from the
-value range, not per value — otherwise one series renders `0.9` as `90%` and
-`1.1` as `1.1%`.
+- A rate column gets no *total* KPI, because adding percentages up means
+  nothing. Its average still appears.
 
 ## Changing this
 

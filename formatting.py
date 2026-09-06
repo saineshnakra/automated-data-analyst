@@ -43,9 +43,16 @@ PERCENTAGE_TOKENS = {"rate", "margin", "ratio"}
 MAX_PLAUSIBLE_PERCENTAGE = 1_000.0
 
 
+# "netRevenue" and "NetRevenue" are one word to str.lower() and two to a
+# reader. Splitting on the case boundary makes camelCase exports score the
+# same as snake_case ones.
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
 def normalized_name(name: str) -> str:
     """Column names compared on meaning rather than punctuation."""
-    return " ".join(name.lower().replace("_", " ").replace("-", " ").split())
+    spaced = _CAMEL_BOUNDARY.sub(" ", str(name))
+    return " ".join(spaced.lower().replace("_", " ").replace("-", " ").split())
 
 
 def _name_tokens(name: str) -> set[str]:
@@ -71,6 +78,36 @@ def is_percentage(column: str | None) -> bool:
     tokens = _name_tokens(column)
 
     return "%" in name or bool(tokens & PERCENTAGE_TOKENS)
+
+
+def percentage_outranks_currency(column: str | None) -> bool:
+    """Decide which reading wins when a name carries signals for both.
+
+    "Profit Margin %" holds both a currency word and a percentage one. The
+    explicit sign, or a percentage word in the head position, settles it: the
+    last word says what the column is and the earlier ones only qualify it, so
+    "Profit Margin" is a margin and "Margin Amount" is an amount.
+    """
+    if not column:
+        return False
+    name = normalized_name(column)
+    if "%" in name:
+        return True
+    words = name.split()
+    return bool(words) and words[-1] in PERCENTAGE_TOKENS
+
+
+def _column_reads_as_percentage(value: float, column_values: pd.Series | None) -> bool:
+    """Judge plausibility once for the column, not once per value.
+
+    Deciding per value rendered the same column as "551.3%" on one row and
+    "1.4K" on the next, which is not a unit anybody can read.
+    """
+    if column_values is not None:
+        values = pd.to_numeric(column_values, errors="coerce").dropna()
+        if not values.empty:
+            return bool(values.abs().max() <= MAX_PLAUSIBLE_PERCENTAGE)
+    return abs(value) <= MAX_PLAUSIBLE_PERCENTAGE
 
 
 def currency_symbol(column: str | None) -> str:
@@ -108,6 +145,24 @@ def _percentage_uses_fraction_scale(
     return bool(values.min() >= 0 and values.max() <= 1)
 
 
+# Beyond a quadrillion no reader is counting the commas, and a total like
+# 3.6e20 rendered as "360,000,000,000.0B" says less than the exponent does.
+SCALES = ((1_000_000_000_000_000, "e15"), (1_000_000_000_000, "T"),
+          (1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K"))
+
+
+def _compact_magnitude(absolute: float, *, compact: bool) -> str:
+    """Render a positive magnitude on the largest scale that fits, or "" ."""
+    if not compact:
+        return ""
+    if absolute >= 1_000_000_000_000_000:
+        return f"{absolute:.3g}"
+    for threshold, suffix in SCALES[1:]:
+        if absolute >= threshold:
+            return f"{absolute / threshold:,.1f}{suffix}"
+    return ""
+
+
 def format_number(
     value: float,
     column: str | None = None,
@@ -119,46 +174,33 @@ def format_number(
     if not np.isfinite(value):
         return "—"
 
-    # Currency semantics always take precedence over percentage semantics.
+    if is_percentage(column) and percentage_outranks_currency(column):
+        if _percentage_uses_fraction_scale(value, column_values):
+            return f"{value * 100:.1f}%"
+        if _column_reads_as_percentage(value, column_values):
+            return f"{value:.1f}%"
+
+    # Otherwise currency semantics take precedence over percentage semantics.
     if is_currency(column):
-        absolute = abs(value)
+        sign = "-" if value < 0 else ""
         prefix = currency_symbol(column)
-        suffix = ""
-        scaled = value
-
-        if compact and absolute >= 1_000_000_000:
-            scaled, suffix = value / 1_000_000_000, "B"
-        elif compact and absolute >= 1_000_000:
-            scaled, suffix = value / 1_000_000, "M"
-        elif compact and absolute >= 1_000:
-            scaled, suffix = value / 1_000, "K"
-
-        if suffix:
-            return f"{prefix}{scaled:,.1f}{suffix}"
-
-        return f"{prefix}{value:,.2f}"
+        body = _compact_magnitude(abs(value), compact=compact)
+        # The minus sign belongs to the amount, not to the currency: a debt is
+        # -$1.2M, never $-1.2M.
+        return f"{sign}{prefix}{body}" if body else f"{sign}{prefix}{abs(value):,.2f}"
 
     if is_percentage(column):
         if _percentage_uses_fraction_scale(value, column_values):
             return f"{value * 100:.1f}%"
-        if abs(value) <= MAX_PLAUSIBLE_PERCENTAGE:
+        if _column_reads_as_percentage(value, column_values):
             return f"{value:.1f}%"
         # Falls through: a ratio-named column holding a currency-sized number
         # is reported as a plain number rather than an absurd percentage.
 
-    absolute = abs(value)
-    scaled = value
-    suffix = ""
-
-    if compact and absolute >= 1_000_000_000:
-        scaled, suffix = value / 1_000_000_000, "B"
-    elif compact and absolute >= 1_000_000:
-        scaled, suffix = value / 1_000_000, "M"
-    elif compact and absolute >= 1_000:
-        scaled, suffix = value / 1_000, "K"
-
-    if suffix:
-        return f"{scaled:,.1f}{suffix}"
+    sign = "-" if value < 0 else ""
+    body = _compact_magnitude(abs(value), compact=compact)
+    if body:
+        return f"{sign}{body}"
 
     if float(value).is_integer():
         return f"{int(value):,}"

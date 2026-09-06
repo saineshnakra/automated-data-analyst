@@ -39,7 +39,8 @@ it. Order below is the order they are assembled.
 | `trend` | Latest period-over-period movement, in context of the series' own volatility | No date or measure |
 | `driver` | Which segment moved the measure most, and whether gross movement offsets | No segment |
 | `leader` | Largest segment and its share | No segment |
-| `concentration` | How concentrated the measure is across segments | Values negative or total ≤ 0 |
+| `concentration` | How concentrated the measure is across segments | Total is zero, or the segment values are mixed-sign (a share of a signed total is not a share) |
+| `leader` | *(mixed signs)* Largest segment by size, with no share quoted | — |
 | `anomaly` | The most severe flagged period | Under 8 periods, or nothing flagged |
 | `relationship` | Strongest numeric correlation, with a confidence interval | See thresholds below |
 | `outliers` | Share of extreme measure values | No measure |

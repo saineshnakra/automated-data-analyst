@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 from typing import Literal, Protocol
 
 import pandas as pd
-from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
+from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_dtype
 from pydantic import BaseModel, Field
 
 from business_insights import BusinessBrief
@@ -190,22 +190,79 @@ def _resolve_filter(item: AIQueryFilter, dataframe: pd.DataFrame) -> ValueFilter
     return ValueFilter(column=item.column, values=matched) if matched else None
 
 
+# Intents that group, and so cannot run without a dimension to group by.
+GROUPING_INTENTS = ("rank", "breakdown")
+# Intents whose executor reads plan.dimension at all. Growth ranks segments by
+# their change, so it uses one; a plain aggregate never does.
+DIMENSION_INTENTS = ("rank", "breakdown", "growth")
+# Intents that resample onto a period grain.
+GRAIN_INTENTS = ("trend", "growth")
+# Intents whose executor works on period sums and ignores plan.aggregation.
+PERIOD_INTENTS = ("trend", "growth")
+# Above this share of distinct values a column identifies rows rather than
+# grouping them, and a "breakdown" by it is one row per record.
+IDENTIFIER_UNIQUENESS = 0.9
+
+
+def _usable_measure(dataframe: pd.DataFrame, column: str, aggregation: str) -> bool:
+    """Counting works on anything; arithmetic does not."""
+    if aggregation == "count":
+        return True
+    return is_numeric_dtype(dataframe[column])
+
+
+def _usable_dimension(dataframe: pd.DataFrame, column: str) -> bool:
+    """A segment groups records together. A timestamp or an id does not."""
+    series = dataframe[column]
+    if is_datetime64_any_dtype(series):
+        return False
+    present = int(series.notna().sum())
+    if not present:
+        return False
+    if is_numeric_dtype(series) and not is_bool_dtype(series):
+        # A continuous measure is not a segment, and grouping by it produces a
+        # row per distinct value.
+        if series.dropna().nunique() > present * IDENTIFIER_UNIQUENESS:
+            return False
+    return series.nunique(dropna=True) <= present * IDENTIFIER_UNIQUENESS
+
+
 def _to_query_plan(
     parsed: AIQueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles
 ) -> QueryPlan | None:
+    """Turn a model's proposal into a plan ADA will execute exactly as described.
+
+    Everything the executor would ignore is refused or stripped here rather
+    than shown to the user for approval. An approval gate that describes a
+    calculation which is not the one that runs is worse than no gate at all,
+    because it buys confidence without earning it.
+    """
     measure = parsed.measure or roles.measure
     dimension = parsed.dimension
     for column in (parsed.measure, parsed.dimension):
         if column is not None and column not in dataframe.columns:
             return None
-    if parsed.intent in ("trend", "growth") and not roles.date:
+    if parsed.intent in PERIOD_INTENTS and not roles.date:
+        return None
+    # The executor sums periods whatever the plan says, so a plan promising an
+    # average over time would answer a different question than the one approved.
+    if parsed.intent in PERIOD_INTENTS and parsed.aggregation != "sum":
         return None
     if parsed.intent == "aggregate" and not measure:
         return None
-    if parsed.intent in ("rank", "breakdown"):
+    if measure is not None and not _usable_measure(dataframe, measure, parsed.aggregation):
+        return None
+    if parsed.intent in GROUPING_INTENTS:
         dimension = dimension or roles.dimension
         if not dimension:
             return None
+    if dimension is not None:
+        if dimension == measure or not _usable_dimension(dataframe, dimension):
+            return None
+    # A time filter needs a column to apply it to; without one the executor
+    # quietly returns the all-time figure under a scoped-looking sentence.
+    if (parsed.year is not None or parsed.month is not None) and not roles.date:
+        return None
     filters: list[ValueFilter] = []
     for item in parsed.filters:
         resolved = _resolve_filter(item, dataframe)
@@ -215,14 +272,16 @@ def _to_query_plan(
     return QueryPlan(
         intent=parsed.intent,
         aggregation=parsed.aggregation,
-        measure=measure,
-        dimension=dimension,
-        top_n=parsed.top_n,
+        measure=measure if parsed.intent != "count" else None,
+        # Every modifier the chosen intent's executor would ignore is dropped
+        # here, so the approval sentence cannot advertise one.
+        dimension=dimension if parsed.intent in DIMENSION_INTENTS else None,
+        top_n=parsed.top_n if parsed.intent == "rank" else None,
         ascending=parsed.ascending,
         filters=tuple(filters),
         year=parsed.year,
         month=parsed.month,
-        grain=parsed.grain,
+        grain=parsed.grain if parsed.intent in GRAIN_INTENTS else None,
         source="ai",
     )
 
@@ -267,52 +326,67 @@ def plan_query_with_ai(
     return _to_query_plan(parsed, dataframe, roles)
 
 
-def describe_query_plan(plan: QueryPlan) -> str:
-    """Turn a structured plan into a concise confirmation prompt."""
-    if plan.intent == "count":
-        description = "count the matching records"
-    else:
-        aggregation = AGGREGATION_LABELS[plan.aggregation]
-        if plan.aggregation == "count":
-            description = f"{aggregation} {plan.measure or 'records'}"
-        else:
-            description = f"{aggregation} of {plan.measure or 'records'}"
-    if plan.dimension:
-        description += f", grouped by {plan.dimension}"
-    if plan.top_n:
-        direction = "lowest" if plan.ascending else "highest"
-        description += f", showing the {plan.top_n} {direction} results"
-    filters = [
-        f"{item.column} = {', '.join(item.values)}"
-        for item in plan.filters
-        if item.values
+MONTH_NAMES = {
+    1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June",
+    7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December",
+}
+GRAIN_LABELS = {"D": "day", "W": "week", "M": "month", "Q": "quarter", "Y": "year"}
+
+
+def _scope_clause(plan: QueryPlan) -> str:
+    parts = [
+        f"{item.column} = {', '.join(item.values)}" for item in plan.filters if item.values
     ]
-    if filters:
-        description += f" for {' and '.join(filters)}"
+    clause = f" for {' and '.join(parts)}" if parts else ""
     if plan.month is not None:
-        month_names = {
-            1: "January",
-            2: "February",
-            3: "March",
-            4: "April",
-            5: "May",
-            6: "June",
-            7: "July",
-            8: "August",
-            9: "September",
-            10: "October",
-            11: "November",
-            12: "December",
-        }
-        month_label = month_names.get(plan.month, str(plan.month))
-        description += f" in {month_label}"
-        if plan.year is not None:
-            description += f" {plan.year}"
+        label = MONTH_NAMES.get(plan.month, str(plan.month))
+        clause += f" in {label} {plan.year}" if plan.year is not None else f" in {label}"
     elif plan.year is not None:
-        description += f" in {plan.year}"
-    if plan.grain:
-        grain_labels = {"D": "day", "W": "week", "M": "month", "Q": "quarter", "Y": "year"}
-        description += f", by {grain_labels.get(plan.grain, plan.grain)}"
+        clause += f" in {plan.year}"
+    return clause
+
+
+def describe_query_plan(plan: QueryPlan) -> str:
+    """Say, in a sentence, exactly what execute_plan will do with this plan.
+
+    The sentence is the whole value of the approval step, so it is built per
+    intent rather than from whichever fields happen to be set. A description
+    that mentions a grouping or a ranking the executor ignores teaches the
+    reader to trust a gate that is not checking anything.
+    """
+    measure = plan.measure or "records"
+    aggregation = AGGREGATION_LABELS[plan.aggregation]
+    grain = GRAIN_LABELS.get(plan.grain or "", "period")
+
+    if plan.intent == "count":
+        if plan.count_column:
+            description = f"count the distinct {plan.count_column} values"
+        else:
+            description = "count the matching records"
+    elif plan.intent == "trend":
+        description = f"track total {measure} per {grain} over time"
+    elif plan.intent == "growth":
+        if plan.dimension:
+            description = (
+                f"rank each {plan.dimension} by how much its total {measure} changed "
+                f"from the previous {grain} to the latest one"
+            )
+        else:
+            description = (
+                f"compare total {measure} in the latest {grain} with the previous one"
+            )
+    elif plan.intent == "rank":
+        direction = "lowest" if plan.ascending else "highest"
+        showing = f"the {plan.top_n} {direction}" if plan.top_n else f"every one, {direction} first"
+        described = "rows" if plan.aggregation == "count" else f"{aggregation.lower()} {measure}"
+        description = f"rank {plan.dimension} by {described}, showing {showing}"
+    elif plan.intent == "breakdown":
+        described = "rows" if plan.aggregation == "count" else f"total {measure}"
+        description = f"break {described} down by {plan.dimension}"
+    else:
+        description = f"{aggregation.lower()} of {measure}"
+
+    description += _scope_clause(plan)
     return description[0].upper() + description[1:] + "."
 
 

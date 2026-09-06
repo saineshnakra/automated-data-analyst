@@ -102,5 +102,74 @@ class SeriesFoldingTests(unittest.TestCase):
         self.assertEqual(set(fold_small_series(small, "Product", "Revenue")["Product"]), {"A", "B"})
 
 
+
+
+class ChartSizeTests(unittest.TestCase):
+    def test_two_high_cardinality_categories_do_not_become_a_heatmap(self):
+        rows = 4_000
+        frame = pd.DataFrame(
+            {
+                "Customer ID": [f"c{index % 900}" for index in range(rows)],
+                "SKU": [f"s{index % 400}" for index in range(rows)],
+                "Revenue": [1.0] * rows,
+            }
+        )
+
+        spec = recommend_chart(frame, ["Customer ID", "SKU", "Revenue"])
+
+        # 360,000 cells is not a picture, and it exceeds the websocket limit
+        # before it reaches a screen.
+        self.assertEqual(spec.form, "table")
+        self.assertIn("cell grid", spec.rationale)
+
+    def test_a_small_grid_is_still_a_heatmap(self):
+        frame = pd.DataFrame(
+            {
+                "Region": ["N", "S"] * 20,
+                "Product": ["a", "b", "c", "d"] * 10,
+                "Revenue": [1.0] * 40,
+            }
+        )
+
+        spec = recommend_chart(frame, ["Region", "Product", "Revenue"])
+
+        self.assertEqual(spec.form, "heatmap")
+
+    def test_a_lone_continuous_measure_is_binned_not_counted_per_value(self):
+        frame = pd.DataFrame({"Revenue": [float(index) / 7 for index in range(500)]})
+
+        spec = recommend_chart(frame, ["Revenue"])
+
+        self.assertEqual(spec.form, "histogram")
+
+
+class FoldSmallSeriesTests(unittest.TestCase):
+    def test_a_real_other_category_is_not_absorbed_by_the_folded_tail(self):
+        frame = pd.DataFrame(
+            {
+                "Region": ["Other", "N", "S", "E", "W", "X", "Y"],
+                "Revenue": [20_000.0, 1_200.0, 1_000.0, 800.0, 400.0, 300.0, 100.0],
+            }
+        )
+
+        folded = fold_small_series(frame, "Region", "Revenue")
+        totals = folded.groupby("Region", observed=True)["Revenue"].sum()
+
+        # The real "Other" segment keeps its own money.
+        self.assertEqual(totals["Other"], 20_000.0)
+        self.assertIn("Other (2)", totals.index)
+
+    def test_a_categorical_column_can_be_folded(self):
+        frame = pd.DataFrame(
+            {
+                "Product": pd.Categorical([f"p{index}" for index in range(8)]),
+                "Revenue": [float(8 - index) for index in range(8)],
+            }
+        )
+
+        folded = fold_small_series(frame, "Product", "Revenue")
+
+        self.assertIn("Other", set(folded["Product"]))
+
 if __name__ == "__main__":
     unittest.main()

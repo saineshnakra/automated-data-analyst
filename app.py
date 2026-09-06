@@ -10,21 +10,10 @@ import pandas as pd
 import streamlit as st
 from streamlit.errors import StreamlitSecretNotFoundError
 
-from ai_insights import (
-    DEFAULT_PRESET,
-    MODEL_PRESETS,
-    AINarrative,
-    build_ai_payload,
-    describe_query_plan,
-    execute_approved_ai_plan,
-    generate_ai_narrative,
-    narrative_to_markdown,
-    plan_query_with_ai,
-)
 from analysis import column_profile
 from business_insights import BusinessBrief, analyze_business, build_business_report
 from demo_data import make_demo_data
-from file_io import list_excel_sheets, list_sample_datasets, read_tabular_file
+from file_io import list_excel_sheets, list_sample_datasets, read_tabular_file, safe_csv
 from nlq import QueryPlan, answer_question, suggested_questions
 from pipeline import (
     apply_focus,
@@ -34,6 +23,29 @@ from pipeline import (
     prepare_analysis,
     schema_frame,
 )
+
+# The AI layer is optional, and so is everything it depends on. Importing it
+# at module scope meant one missing package took down the whole product --
+# including the deterministic analysis that is the reason to open ADA without
+# a key at all. A failure here disables the two optional calls and nothing else.
+try:
+    from ai_insights import (
+        DEFAULT_PRESET,
+        MODEL_PRESETS,
+        AINarrative,
+        build_ai_payload,
+        describe_query_plan,
+        execute_approved_ai_plan,
+        generate_ai_narrative,
+        narrative_to_markdown,
+        plan_query_with_ai,
+    )
+
+    AI_LAYER_ERROR = ""
+except Exception as error:  # noqa: BLE001 - any import failure must degrade, not crash
+    AI_LAYER_ERROR = f"{type(error).__name__}: {error}"
+    DEFAULT_PRESET, MODEL_PRESETS, AINarrative = "", {}, ()
+
 from ui import (
     inject_styles,
     render_ai_narrative,
@@ -76,7 +88,7 @@ st.set_page_config(
 )
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=8, ttl=3600)
 def read_uploaded_file(contents: bytes, filename: str, sheet_name: str | None = None) -> pd.DataFrame:
     return read_tabular_file(contents, filename, sheet_name)
 
@@ -107,10 +119,23 @@ def render_sidebar(*, server_api_key: str) -> str:
         st.markdown(
             "- Calculations happen locally\n"
             "- Evidence is shown before interpretation\n"
-            "- Raw rows are never sent to the strategy model\n"
+            "- Your rows are never sent to the strategy model\n"
             "- Recommendations are not causal proof"
         )
         st.markdown("---")
+        if AI_LAYER_ERROR:
+            st.warning(
+                "The optional AI layer could not be loaded on this deployment, so the "
+                "strategic read and the AI query planner are unavailable. Every analysis, "
+                "chart and Ask ADA answer below is unaffected — none of them uses a model."
+            )
+            st.caption(AI_LAYER_ERROR)
+            st.link_button(
+                "Contribute on GitHub",
+                "https://github.com/saineshnakra/automated-data-analyst",
+                width="stretch",
+            )
+            return ""
         if server_api_key:
             st.success("Optional strategy agent is available on this deployment.")
             api_key = server_api_key
@@ -138,8 +163,8 @@ def maybe_generate_narrative(
     api_key: str,
     brief: BusinessBrief,
     business_context: str,
-) -> tuple[AINarrative | None, str | None]:
-    if not api_key:
+):
+    if not api_key or AI_LAYER_ERROR:
         return None, None
 
     payload = build_ai_payload(brief, context=business_context)
@@ -185,6 +210,8 @@ def plan_ai_query(
     api_key: str,
 ) -> QueryPlan | None:
     """Ask the optional model for a plan without executing it."""
+    if AI_LAYER_ERROR:
+        return None
     try:
         return plan_query_with_ai(
             question,
@@ -197,9 +224,25 @@ def plan_ai_query(
         return None
 
 
+def dataset_fingerprint(dataframe: pd.DataFrame, roles, source_name: str) -> str:
+    """Identify the exact table an answer was computed from.
+
+    Name, row count and column names do not identify a dataset. Two months of
+    the same export share all three, and so does the same file drilled into a
+    different segment -- and an answer, or a pending model plan, carried across
+    that boundary is a wrong number with a confident sentence under it. The
+    content is hashed, and the roles with it, because changing which column is
+    the measure changes what every answer means.
+    """
+    content = int(pd.util.hash_pandas_object(dataframe, index=False).sum())
+    parts = (source_name, str(dataframe.shape), ",".join(map(str, dataframe.columns)),
+             str(content), repr(roles))
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()
+
+
 def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str, api_key: str) -> None:
     """Chat over the analyzed dataset; every answer is a local calculation."""
-    fingerprint = f"{source_name}:{len(dataframe)}:{','.join(dataframe.columns)}"
+    fingerprint = dataset_fingerprint(dataframe, roles, source_name)
     if st.session_state.get("chat_fingerprint") != fingerprint:
         st.session_state.chat_fingerprint = fingerprint
         st.session_state.chat_history = []
@@ -298,6 +341,10 @@ source_mode = st.segmented_control(
     default="Explore the live demo",
     label_visibility="collapsed",
 )
+# A segmented control returns None when the selected option is clicked again.
+# Falling through with None used to reach a bare assert and render a traceback.
+if source_mode is None:
+    source_mode = "Explore the live demo"
 
 uploaded_file = None
 business_context = ""
@@ -313,7 +360,7 @@ if source_mode == "Upload your file":
     uploaded_file = st.file_uploader(
         "Upload a CSV or Excel workbook",
         type=["csv", "xlsx", "xlsm"],
-        help="Maximum file size: 25 MB. ADA analyzes the first worksheet.",
+        help="Maximum file size: 25 MB. A workbook with several sheets lets you pick one.",
     )
     business_context = st.text_input(
         "Optional business context",
@@ -330,14 +377,12 @@ try:
         raw_dataframe = make_demo_data()
         source_name = "Acme operating data · demo"
         business_context = "Two years of orders across products, regions, and sales channels."
-    elif source_mode == "Try a sample dataset":
-        assert selected_sample is not None
+    elif source_mode == "Try a sample dataset" and selected_sample is not None:
         sample_path = sample_datasets[selected_sample]
         raw_dataframe = read_uploaded_file(sample_path.read_bytes(), sample_path.name)
         source_name = f"{selected_sample} · sample"
         business_context = SAMPLE_NOTES.get(selected_sample, "")
-    else:
-        assert uploaded_file is not None
+    elif uploaded_file is not None:
         if uploaded_file.size > MAX_UPLOAD_BYTES:
             st.error("That file is larger than ADA's 25 MB analysis limit.")
             st.stop()
@@ -355,16 +400,30 @@ try:
             f"{uploaded_file.name} · {selected_sheet}" if selected_sheet else uploaded_file.name
         )
 
+    else:
+        # No usable source: show the explainer rather than a traceback.
+        render_how_it_works()
+        render_footer()
+        st.stop()
+
     prepared = prepare_analysis(raw_dataframe, row_limit=MAX_ANALYSIS_ROWS)
 except (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError, ValueError, ImportError) as error:
     st.error(f"ADA could not read this file: {error}")
     st.stop()
 
 if prepared.truncated_rows:
+    covered = ""
+    if prepared.analyzed_from is not None and prepared.analyzed_to is not None:
+        covered = (
+            f", covering {prepared.analyzed_from:%d %b %Y} to {prepared.analyzed_to:%d %b %Y}"
+        )
     st.warning(
-        f"ADA analyzed the first {MAX_ANALYSIS_ROWS:,} rows for predictable performance "
-        f"and skipped {prepared.truncated_rows:,}."
+        f"ADA analyzed the {MAX_ANALYSIS_ROWS:,} most recent rows for predictable performance "
+        f"and skipped {prepared.truncated_rows:,} older ones{covered}."
     )
+
+for note in prepared.cleaning_report.notes:
+    st.info(note)
 
 dataframe = prepared.dataframe
 detected = prepared.detected_roles
@@ -454,7 +513,7 @@ with executive_tab:
         render_section_heading(
             "Optional strategy agent",
             "Connect the signals into a strategic read",
-            "Only the computed evidence and supplied business context are sent. Raw uploaded rows stay out of the model prompt.",
+            "Only the computed evidence and supplied business context are sent. Your rows stay out of the model prompt, though the segment names inside an evidence sentence travel with it.",
         )
         control_column, note_column = st.columns([.42, .58], gap="large")
         with control_column:
@@ -478,8 +537,10 @@ with ask_tab:
     render_section_heading(
         "Conversational analyst",
         "Ask this data anything",
-        "Questions become transparent pandas calculations that run locally. "
-        "No question or answer leaves the session, and every reply shows its math.",
+        "Questions become transparent pandas calculations that run locally, and every "
+        "reply shows its math. Only when the rules cannot read a question, and only if you "
+        "supplied a key, is the question itself sent to the planner — which returns a plan "
+        "for you to approve, never an answer.",
     )
     render_ask_ada(dataframe, roles, source_name, api_key)
 
@@ -529,7 +590,7 @@ with data_tab:
     )
     downloads[1].download_button(
         "Download cleaned data",
-        data=dataframe.to_csv(index=False).encode("utf-8"),
+        data=safe_csv(dataframe).encode("utf-8"),
         file_name="ada_cleaned_data.csv",
         mime="text/csv",
         width="stretch",

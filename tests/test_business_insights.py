@@ -126,9 +126,13 @@ class BusinessAnalysisTests(unittest.TestCase):
         )
 
         kpi_values = [item.value for item in brief.kpis]
+        kpi_labels = [item.label for item in brief.kpis]
 
-        self.assertIn("136.0%", kpi_values)
         self.assertIn("34.0%", kpi_values)
+        # Four monthly margins do not add up to a 136% margin, so no total is
+        # offered for a rate -- only the average, which means something.
+        self.assertNotIn("Total Gross Margin", kpi_labels)
+        self.assertIn("Average Gross Margin", kpi_labels)
         self.assertIn("Gross Margin increased 10.7%", report)
         self.assertIn("from 28.0% to 31.0%", report)
 
@@ -197,8 +201,13 @@ class BusinessAnalysisTests(unittest.TestCase):
         self.assertEqual(concentration.tone, "neutral")
         self.assertIn("10.0 of 10", concentration.value)
 
-    def test_a_measure_that_can_go_negative_keeps_the_share_reading(self):
-        """Shares of a total that parts of it subtract from are meaningless."""
+    def test_a_mixed_sign_measure_quotes_no_share_at_all(self):
+        """Shares of a total that parts of it subtract from are meaningless.
+
+        Not "degraded to a simpler share" -- absent. A percentage taken against
+        a net figure the parts do not sum into is how a segment ends up
+        contributing 2,000,000% of profit.
+        """
         frame = pd.DataFrame(
             {
                 "Date": pd.date_range("2024-01-01", periods=12, freq="D"),
@@ -208,10 +217,29 @@ class BusinessAnalysisTests(unittest.TestCase):
         )
 
         brief = analyze_business(frame)
-        concentration = next(item for item in brief.evidence if item.kind == "concentration")
 
-        self.assertEqual(concentration.title, "Top-three concentration")
-        self.assertNotIn("Herfindahl", concentration.calculation)
+        self.assertFalse([item for item in brief.evidence if item.kind == "concentration"])
+        leader = next(item for item in brief.evidence if item.kind == "leader")
+        self.assertIn("no share of the total can be quoted", leader.statement)
+        self.assertNotIn("%", leader.statement)
+
+    def test_an_all_negative_measure_ranks_by_size_of_the_loss(self):
+        """A cost column has a usable share: -14.4k of -24k really is 60%."""
+        frame = pd.DataFrame(
+            {
+                "Date": list(pd.date_range("2024-01-01", periods=6, freq="D")) * 3,
+                "Profit": [-2400.0] * 6 + [-7200.0] * 6 + [-14400.0] * 6,
+                "Region": ["North"] * 6 + ["South"] * 6 + ["East"] * 6,
+            }
+        )
+
+        brief = analyze_business(frame)
+        leader = next(item for item in brief.evidence if item.kind == "leader")
+
+        # East carries the largest loss, so East is the leader -- not North,
+        # which is merely the number closest to zero.
+        self.assertIn("East", leader.statement)
+        self.assertIn("60.0%", leader.statement)
 
     def test_business_number_formatting(self):
         self.assertEqual(format_number(1_250_000, "Revenue"), "$1.2M")
@@ -312,6 +340,86 @@ class BusinessAnalysisTests(unittest.TestCase):
         for kpi in brief.kpis:
             self.assertNotIn("nan", kpi.value.lower())
 
+
+
+
+class NumberRenderingTests(unittest.TestCase):
+    def test_the_minus_sign_belongs_to_the_amount_not_the_currency(self):
+        self.assertEqual(format_number(-1_200.0, "Expense Amount"), "-$1.2K")
+        self.assertEqual(format_number(-1_500_000.0, "Cost"), "-$1.5M")
+        self.assertEqual(format_number(-12.0, "Cost"), "-$12.00")
+
+    def test_negative_zero_is_just_zero(self):
+        self.assertEqual(format_number(-0.0, "Cost"), "$0.00")
+
+    def test_totals_larger_than_a_billion_keep_a_readable_scale(self):
+        self.assertEqual(format_number(1.5e12, "Revenue"), "$1.5T")
+        # Past a quadrillion the exponent says more than the commas do.
+        self.assertEqual(format_number(3.6e20, "amount"), "$3.6e+20")
+
+
+class KpiStripTests(unittest.TestCase):
+    def test_a_thin_file_shows_fewer_tiles_rather_than_repeating_one(self):
+        frame = pd.DataFrame({"Note": ["a", "b", "c"] * 4})
+
+        brief = analyze_business(frame)
+        labels = [item.label for item in brief.kpis]
+
+        self.assertEqual(len(labels), len(set(labels)))
+
+
+class MovementWordingTests(unittest.TestCase):
+    def test_a_flat_period_is_not_called_a_large_swing(self):
+        values = [1000.0, 1050.0, 1100.0, 1155.0, 1210.0, 1270.0, 1330.0, 1400.0, 1470.0,
+                  1540.0, 1540.0]
+        frame = pd.DataFrame(
+            {"Month": pd.date_range("2023-01-01", periods=len(values), freq="MS"),
+             "Revenue": values}
+        )
+
+        brief = analyze_business(frame)
+        trend = next(item for item in brief.evidence if item.kind == "trend")
+
+        self.assertIn("0.0%", trend.value)
+        self.assertNotIn("large swing", trend.statement)
+        self.assertIn("quiet", trend.statement)
+
+    def test_a_quarter_is_named_as_a_quarter(self):
+        frame = pd.DataFrame(
+            {"Date": pd.date_range("2021-01-01", periods=140, freq="W"),
+             "Revenue": [100.0] * 130 + [400.0] * 10}
+        )
+
+        brief = analyze_business(frame)
+        trend = next(item for item in brief.evidence if item.kind == "trend")
+
+        # Whatever grain was chosen, the label must not name a month for a
+        # period that is not one -- the anomaly card and the axis already agree.
+        self.assertNotRegex(trend.statement, r"\((Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4}\)")
+
+
+
+class PercentageVersusCurrencyTests(unittest.TestCase):
+    def test_an_explicit_percent_sign_beats_a_currency_word(self):
+        values = pd.Series([0.31, 0.33, 0.35])
+
+        self.assertEqual(
+            format_number(0.33, "Profit Margin %", column_values=values), "33.0%"
+        )
+
+    def test_a_percentage_word_in_the_head_position_wins(self):
+        self.assertEqual(format_number(0.42, "Discount Rate"), "42.0%")
+
+    def test_a_currency_word_in_the_head_position_wins(self):
+        self.assertEqual(format_number(1_200.0, "Margin Amount"), "$1.2K")
+
+    def test_a_column_gets_one_unit_for_every_row(self):
+        """Judging plausibility per value gave 551.3% and 1.4K in one column."""
+        values = pd.Series([1000.0, 551.26, 201.79, 1400.0, 558.08])
+
+        rendered = [format_number(value, "Gross Margin", column_values=values) for value in values]
+
+        self.assertFalse(any(text.endswith("%") for text in rendered))
 
 if __name__ == "__main__":
     unittest.main()

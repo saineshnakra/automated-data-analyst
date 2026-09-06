@@ -5,12 +5,19 @@ see [SECURITY.md](../SECURITY.md).
 
 ## The short version
 
-**Without an API key, nothing leaves your machine.** Cleaning, schema detection,
-every chart, every evidence card, and every Ask ADA answer are computed locally
-with pandas.
+**Where "local" means depends on where ADA is running.** Run it on your own
+machine and nothing leaves it: cleaning, schema detection, every chart, every
+evidence card and every Ask ADA answer are computed in-process with pandas, and
+without an API key ADA makes no network call at all.
+
+**On the hosted demo, your upload reaches a Streamlit server.** That is what
+uploading to a website is. It lives in memory for the session and is never
+written to a database. Run ADA locally if that matters for your data.
 
 **With an API key, two optional calls become available.** Both send column
-schema and already-computed evidence. Neither sends your rows.
+schema and already-computed evidence. **Neither sends your rows.** An evidence
+sentence names the segment it describes, so a segment label — a customer name,
+a product name — can travel inside it. No other cell value does.
 
 ## What stays local, always
 
@@ -86,7 +93,7 @@ See [The optional AI layer](reference/ai-layer.md) for the full validation list.
 
 | Method | Scope |
 |---|---|
-| Sidebar field | That browser session only; never written to disk |
+| Sidebar field | Typed in the browser, posted to the server running ADA, and held in that session's memory — never written to disk. On the hosted demo, that server is Streamlit's |
 | `OPENAI_API_KEY` env var | The deployment |
 | `.streamlit/secrets.toml` | The deployment — gitignored, never commit it |
 
@@ -95,6 +102,13 @@ owner-funded key on a public app needs authentication and spending controls.
 
 ## Self-hosting
 
-ADA is a standard Streamlit app with no database and no persistence. Uploaded
-files live in memory for the session. Running it yourself means the deterministic
-path involves no third party at all.
+ADA is a standard Streamlit app with no database. Nothing is written to disk.
+
+Parsed uploads are held in a bounded in-memory cache — at most eight files, for
+up to an hour — so that re-running the page does not re-parse the same file.
+That cache belongs to the server process, not to your browser session, and it
+is why "nothing is persisted" is worth stating precisely rather than loosely.
+Restarting the app clears it.
+
+Running ADA yourself means the deterministic path involves no third party at
+all, and that cache lives on your own machine.
