@@ -70,6 +70,109 @@ class CleanDataframeTests(unittest.TestCase):
 
 
 
+class RepeatRowTests(unittest.TestCase):
+    """Two identical sales are a busy till, not a data defect."""
+
+    def _till(self):
+        return pd.DataFrame(
+            {
+                "Date": ["2024-01-01"] * 4,
+                "Product": ["Coffee"] * 4,
+                "Revenue": [3.5, 3.5, 3.5, 3.5],
+            }
+        )
+
+    def test_identical_rows_are_kept_and_the_total_survives(self):
+        cleaned, report = clean_dataframe(self._till())
+
+        self.assertEqual(len(cleaned), 4)
+        self.assertAlmostEqual(cleaned["Revenue"].sum(), 14.0)
+        self.assertEqual(report.duplicate_rows_removed, 0)
+        self.assertEqual(report.duplicate_rows_found, 3)
+        self.assertTrue(any("identical rows were kept" in note for note in report.notes))
+
+    def test_a_caller_that_knows_better_can_still_opt_in(self):
+        cleaned, report = clean_dataframe(self._till(), drop_duplicates=True)
+
+        self.assertEqual(len(cleaned), 1)
+        self.assertEqual(report.duplicate_rows_removed, 3)
+
+
+class DateOrderingTests(unittest.TestCase):
+    def test_a_day_over_twelve_settles_the_ordering(self):
+        frame = pd.DataFrame({"Posting Date": [f"{d:02d}/03/2024" for d in range(1, 26)]})
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["Posting Date"].min(), pd.Timestamp("2024-03-01"))
+        self.assertEqual(cleaned["Posting Date"].max(), pd.Timestamp("2024-03-25"))
+        self.assertTrue(any("day-first" in note for note in report.notes))
+
+    def test_an_unsettleable_column_says_which_way_it_was_read(self):
+        frame = pd.DataFrame({"Month": [f"01/{m:02d}/2024" for m in range(1, 13)]})
+
+        _, report = clean_dataframe(frame)
+
+        self.assertTrue(any("either way round" in note for note in report.notes))
+
+    def test_iso_dates_are_never_called_ambiguous(self):
+        frame = pd.DataFrame({"Date": pd.date_range("2024-01-01", periods=10).astype(str)})
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["Date"].max(), pd.Timestamp("2024-01-10"))
+        self.assertEqual(report.notes, ())
+
+
+class TimezoneTests(unittest.TestCase):
+    def test_an_offset_aware_column_is_analyzable(self):
+        frame = pd.DataFrame(
+            {
+                "created_at": pd.date_range("2024-01-01", periods=30, tz="Asia/Kolkata"),
+                "Revenue": range(30),
+            }
+        )
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertFalse(isinstance(cleaned["created_at"].dtype, pd.DatetimeTZDtype))
+        # The wall clock the file was written in is what a report is about.
+        self.assertEqual(cleaned["created_at"].iloc[0], pd.Timestamp("2024-01-01 00:00:00"))
+        self.assertTrue(any("Timezone" in note for note in report.notes))
+
+
+class BusinessFormattedNumberTests(unittest.TestCase):
+    def test_thousands_separators_do_not_delete_the_largest_values(self):
+        frame = pd.DataFrame({"Revenue": ["950.00", "1,203.55", "12,400.10", "88.20"]})
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertAlmostEqual(cleaned["Revenue"].sum(), 14641.85)
+
+    def test_currency_symbols_and_accounting_negatives_are_read(self):
+        frame = pd.DataFrame({"Amount": ["$1,200.50", "$300.00", "(48.10)", "$0.00"]})
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertAlmostEqual(cleaned["Amount"].sum(), 1452.40)
+
+    def test_a_slashed_date_is_never_read_as_a_number(self):
+        frame = pd.DataFrame({"Month": [f"01/{m:02d}/2024" for m in range(1, 13)]})
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertTrue(pd.api.types.is_datetime64_any_dtype(cleaned["Month"]))
+
+
+class UniqueColumnNameTests(unittest.TestCase):
+    def test_a_name_the_suffix_would_collide_with_is_stepped_over(self):
+        frame = pd.DataFrame([[1, 2, 3]], columns=["Amount", "Amount ", "Amount_2"])
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(len(set(cleaned.columns)), 3)
+
+
 class AnalysisTests(unittest.TestCase):
     def setUp(self):
         self.dataframe = pd.DataFrame(

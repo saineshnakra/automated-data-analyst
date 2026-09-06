@@ -361,10 +361,18 @@ except (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError, Val
     st.stop()
 
 if prepared.truncated_rows:
+    covered = ""
+    if prepared.analyzed_from is not None and prepared.analyzed_to is not None:
+        covered = (
+            f", covering {prepared.analyzed_from:%d %b %Y} to {prepared.analyzed_to:%d %b %Y}"
+        )
     st.warning(
-        f"ADA analyzed the first {MAX_ANALYSIS_ROWS:,} rows for predictable performance "
-        f"and skipped {prepared.truncated_rows:,}."
+        f"ADA analyzed the {MAX_ANALYSIS_ROWS:,} most recent rows for predictable performance "
+        f"and skipped {prepared.truncated_rows:,} older ones{covered}."
     )
+
+for note in prepared.cleaning_report.notes:
+    st.info(note)
 
 dataframe = prepared.dataframe
 detected = prepared.detected_roles

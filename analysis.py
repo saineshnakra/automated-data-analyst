@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import warnings
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -24,8 +25,11 @@ class CleaningReport:
     trimmed_text_columns: int
     numeric_columns_inferred: int
     datetime_columns_inferred: int
+    duplicate_rows_found: int = 0
+    unparsed_date_cells: int = 0
+    notes: tuple[str, ...] = ()
 
-    def to_dict(self) -> dict[str, int]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -48,16 +52,124 @@ def _speculative_dates(values: pd.Series) -> pd.Series:
         return pd.to_datetime(values, errors="coerce")
 
 
+def _drop_timezone(series: pd.Series) -> pd.Series:
+    """Return the same instants as naive local time.
+
+    Every downstream calculation compares a date against a period boundary,
+    and pandas builds those boundaries without a timezone. Converting to UTC
+    first would move a row into the previous calendar day for anyone east of
+    Greenwich, so the wall clock the file was written in is what is kept.
+    """
+    if isinstance(series.dtype, pd.DatetimeTZDtype):
+        return series.dt.tz_localize(None)
+    return series
+
+
+def _normalize_datetime_columns(frame: pd.DataFrame) -> int:
+    """Strip timezones from every date column, whatever put them there."""
+    changed = 0
+    for column in frame.columns:
+        series = frame[column]
+        if isinstance(series.dtype, pd.DatetimeTZDtype):
+            frame[column] = _drop_timezone(series)
+            changed += 1
+    return changed
+
+
+# A business-formatted number: an optional sign or accounting parentheses, an
+# optional currency symbol, then digits with grouping punctuation. Anything
+# holding a slash or a letter is not this -- notably a date, which would
+# otherwise survive as a very large integer.
+_MONEY = re.compile(r"^[+-]?\(?\s*[-+]?\s*[$\u20ac\u00a3\u00a5\u20b9]?\s*\d[\d,.\s']*\)?$")
+
+
+def _numeric_from_text(values: pd.Series) -> pd.Series:
+    """Read business-formatted numbers: "$1,203.55", "(48.10)", "1 234,50".
+
+    A thousands separator is punctuation, not data, and an amount in
+    parentheses is how every accounting export writes a negative. Reading
+    them as text loses the largest values in the file, which are exactly the
+    ones with a separator in them.
+    """
+    text = values.astype("string").str.strip()
+    money = text.str.match(_MONEY, na=False)
+    text = text.where(money)
+    negative = text.str.contains(r"\(", na=False)
+    text = text.str.replace(r"[^\d,.]", "", regex=True)
+    # "1.234,50" is European; "1,234.50" is not. Whichever separator comes
+    # last is the decimal point.
+    european = text.str.contains(r",\d{1,2}$", na=False) & ~text.str.contains(r"\.\d", na=False)
+    text = text.mask(
+        european, text.str.replace(".", "", regex=False).str.replace(",", ".", regex=False)
+    )
+    text = text.mask(~european, text.str.replace(",", "", regex=False))
+    parsed = pd.to_numeric(text, errors="coerce")
+    return parsed.mask(negative & parsed.notna(), -parsed)
+
+
+# A date written day-or-month first: "3/1/2024", "03-01-24". A year-leading
+# value is ISO and cannot be read two ways.
+_DAY_OR_MONTH_FIRST = re.compile(r"^\s*\d{1,2}[/-]\d{1,2}[/-]\d{2,4}")
+
+
+def _dated(values: pd.Series, *, dayfirst: bool) -> pd.Series:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        return pd.to_datetime(values, errors="coerce", dayfirst=dayfirst)
+
+
+def _read_dates(values: pd.Series) -> tuple[pd.Series, str]:
+    """Parse a date column, and say so when the ordering had to be guessed.
+
+    "01/03/2024" is 1 March in most of the world and 3 January in the United
+    States. When some row in the column settles it -- a 13 or higher in the
+    first position -- that reading wins outright. When nothing settles it,
+    month-first is assumed and the assumption is reported, because silently
+    turning a year of monthly figures into twelve days of January is the one
+    outcome nobody can detect downstream.
+    """
+    month_first = _dated(values, dayfirst=False)
+    # Only a value that leads with a day or a month can be read two ways.
+    # 2024-03-01 is ISO and settled; 01/03/2024 is not.
+    two_ways = values.astype("string").str.match(_DAY_OR_MONTH_FIRST, na=False)
+    if not bool(two_ways.any()):
+        return month_first, ""
+
+    day_first = _dated(values, dayfirst=True)
+    if day_first.notna().sum() > month_first.notna().sum():
+        return day_first, "day-first"
+    if month_first.notna().sum() > day_first.notna().sum():
+        return month_first, ""
+    disagree = two_ways & month_first.notna() & day_first.notna() & month_first.ne(day_first)
+    return month_first, "ambiguous" if bool(disagree.any()) else ""
+
+
+def _ordering_note(column: str, ordering: str) -> str:
+    if ordering == "day-first":
+        return f"{column} was read day-first (25/12/2024 is 25 December)."
+    return (
+        f"{column} could be read either way round; month-first was assumed "
+        f"(01/03/2024 is 3 January). Rename the column or use ISO dates to be sure."
+    )
+
+
 def _make_unique_columns(columns: pd.Index) -> list[str]:
     """Return readable, unique column names without changing their meaning."""
     counts: dict[str, int] = {}
+    taken: set[str] = set()
     result: list[str] = []
 
     for position, raw_name in enumerate(columns, start=1):
         base = " ".join(str(raw_name).strip().split()) or f"column_{position}"
         counts[base] = counts.get(base, 0) + 1
-        suffix = f"_{counts[base]}" if counts[base] > 1 else ""
-        result.append(f"{base}{suffix}")
+        candidate = base if counts[base] == 1 else f"{base}_{counts[base]}"
+        # A file can already contain the name the suffix would produce, so
+        # keep counting until the result is genuinely unused.
+        while candidate in taken:
+            counts[base] += 1
+            candidate = f"{base}_{counts[base]}"
+        taken.add(candidate)
+        result.append(candidate)
 
     return result
 
@@ -73,8 +185,16 @@ def _looks_like_exported_index(series: pd.Series, name: str) -> bool:
     return np.array_equal(numeric.to_numpy(), np.arange(len(series)))
 
 
-def clean_dataframe(dataframe: pd.DataFrame) -> tuple[pd.DataFrame, CleaningReport]:
-    """Apply conservative, explainable cleaning and return an audit report."""
+def clean_dataframe(
+    dataframe: pd.DataFrame, *, drop_duplicates: bool = False
+) -> tuple[pd.DataFrame, CleaningReport]:
+    """Apply conservative, explainable cleaning and return an audit report.
+
+    Identical rows are counted but kept. Two sales of the same item, for the
+    same amount, on the same day are an ordinary Tuesday at a till, not a
+    defect, and deleting them silently removes real revenue from every number
+    on the page. Callers that know their rows carry a key can opt in.
+    """
     if dataframe.empty or len(dataframe.columns) == 0:
         raise ValueError("The CSV does not contain any rows and columns to analyze.")
 
@@ -96,7 +216,13 @@ def clean_dataframe(dataframe: pd.DataFrame) -> tuple[pd.DataFrame, CleaningRepo
 
     trimmed_text_columns = 0
     numeric_columns_inferred = 0
-    datetime_columns_inferred = 0
+    datetime_columns_inferred = _normalize_datetime_columns(cleaned)
+    unparsed_date_cells = 0
+    notes: list[str] = []
+    if datetime_columns_inferred:
+        notes.append(
+            "Timezone offsets were dropped; dates are read as the local time they were written in."
+        )
 
     protected_numeric_tokens = ("id", "code", "zip", "postal", "phone")
     date_tokens = ("date", "time", "timestamp", "created", "updated")
@@ -116,14 +242,29 @@ def clean_dataframe(dataframe: pd.DataFrame) -> tuple[pd.DataFrame, CleaningRepo
         normalized_name = column.lower()
         named_like_a_date = any(token in normalized_name for token in date_tokens)
         if named_like_a_date:
-            parsed_dates = _speculative_dates(cleaned[column])
+            parsed_dates, ordering = _read_dates(cleaned[column])
             if parsed_dates.notna().sum() / non_null_before >= named_date_ratio:
-                cleaned[column] = parsed_dates
+                unreadable = int(non_null_before - parsed_dates.notna().sum())
+                if unreadable:
+                    unparsed_date_cells += unreadable
+                    notes.append(f"{unreadable} {column} values could not be read as dates.")
+                if ordering:
+                    notes.append(_ordering_note(column, ordering))
+                cleaned[column] = _drop_timezone(parsed_dates)
                 datetime_columns_inferred += 1
                 continue
 
         if not any(token in normalized_name for token in protected_numeric_tokens):
             parsed_numeric = pd.to_numeric(cleaned[column], errors="coerce")
+            if parsed_numeric.notna().sum() < non_null_before:
+                # Whatever plain parsing could not read, try again allowing the
+                # punctuation a finance export writes: grouping separators, a
+                # currency symbol, parentheses for a negative. The values that
+                # need it are the large ones, so leaving them out biases every
+                # total downwards.
+                formatted = _numeric_from_text(cleaned[column])
+                if formatted.notna().sum() > parsed_numeric.notna().sum():
+                    parsed_numeric = formatted
             if parsed_numeric.notna().sum() / non_null_before >= numeric_ratio:
                 cleaned[column] = parsed_numeric
                 numeric_columns_inferred += 1
@@ -138,13 +279,22 @@ def clean_dataframe(dataframe: pd.DataFrame) -> tuple[pd.DataFrame, CleaningRepo
             # them.
             sample = cleaned[column].dropna().head(date_sample_size)
             if len(sample) and _speculative_dates(sample).notna().mean() >= unnamed_date_ratio:
-                parsed_dates = _speculative_dates(cleaned[column])
+                parsed_dates, ordering = _read_dates(cleaned[column])
                 if parsed_dates.notna().sum() / non_null_before >= unnamed_date_ratio:
-                    cleaned[column] = parsed_dates
+                    if ordering:
+                        notes.append(_ordering_note(column, ordering))
+                    cleaned[column] = _drop_timezone(parsed_dates)
                     datetime_columns_inferred += 1
 
     duplicate_rows = int(cleaned.duplicated().sum())
-    cleaned = cleaned.drop_duplicates().reset_index(drop=True)
+    if drop_duplicates:
+        cleaned = cleaned.drop_duplicates()
+    cleaned = cleaned.reset_index(drop=True)
+    if duplicate_rows and not drop_duplicates:
+        notes.append(
+            f"{duplicate_rows:,} identical rows were kept; repeat transactions are not "
+            "assumed to be mistakes."
+        )
 
     if cleaned.empty or len(cleaned.columns) == 0:
         raise ValueError("No analyzable data remained after removing empty rows and columns.")
@@ -154,13 +304,16 @@ def clean_dataframe(dataframe: pd.DataFrame) -> tuple[pd.DataFrame, CleaningRepo
         original_columns=original_columns,
         final_rows=len(cleaned),
         final_columns=len(cleaned.columns),
-        duplicate_rows_removed=duplicate_rows,
+        duplicate_rows_removed=duplicate_rows if drop_duplicates else 0,
         empty_rows_removed=empty_rows_removed,
         empty_columns_removed=len(empty_columns),
         index_columns_removed=len(index_columns),
         trimmed_text_columns=trimmed_text_columns,
         numeric_columns_inferred=numeric_columns_inferred,
         datetime_columns_inferred=datetime_columns_inferred,
+        duplicate_rows_found=duplicate_rows,
+        unparsed_date_cells=unparsed_date_cells,
+        notes=tuple(dict.fromkeys(notes)),
     )
     return cleaned, report
 

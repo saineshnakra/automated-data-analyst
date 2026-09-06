@@ -81,5 +81,42 @@ class FileParsingTests(unittest.TestCase):
                 self.assertGreater(len(frame.columns), 1)
 
 
+
+class DelimiterRescueTests(unittest.TestCase):
+    """The rescue for European CSVs must not shred ordinary one-column files."""
+
+    def test_a_semicolon_delimited_file_is_still_split(self):
+        frame = read_tabular_file(b"Datum;Region;Umsatz\n2024-01-01;Nord;100\n", "eu.csv")
+
+        self.assertEqual(list(frame.columns), ["Datum", "Region", "Umsatz"])
+
+    def test_a_separator_in_the_body_alone_does_not_split_the_file(self):
+        raw = b"Feedback\nGreat; really good\nSlow; but fine\n"
+
+        frame = read_tabular_file(raw, "notes.csv")
+
+        self.assertEqual(list(frame.columns), ["Feedback"])
+        self.assertEqual(len(frame), 2)
+
+    def test_a_tab_in_one_cell_does_not_split_the_file(self):
+        frame = read_tabular_file(b"Revenue\n100\n200\n500\tX\n", "one.csv")
+
+        self.assertEqual(list(frame.columns), ["Revenue"])
+
+    def test_a_report_title_above_the_header_is_skipped(self):
+        raw = b"Q3 Sales Report\nDate,Region,Revenue\n2024-01-01,North,100\n2024-02-01,South,200\n"
+
+        frame = read_tabular_file(raw, "report.csv")
+
+        self.assertEqual(list(frame.columns), ["Date", "Region", "Revenue"])
+        self.assertEqual(len(frame), 2)
+
+    def test_a_utf16_export_is_decoded_by_its_byte_order_mark(self):
+        raw = "Date,Region,Revenue\n2024-01-01,North,100\n".encode("utf-16")
+
+        frame = read_tabular_file(raw, "powershell.csv")
+
+        self.assertEqual(list(frame.columns), ["Date", "Region", "Revenue"])
+
 if __name__ == "__main__":
     unittest.main()
