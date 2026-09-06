@@ -104,6 +104,7 @@ def _growth_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | 
     change = (current - previous) / abs(previous) * 100
     period = trend.iloc[-1]["Period"].strftime("%b %Y")
     measure = roles.measure or "Records"
+    measure_values = dataframe[roles.measure].dropna() if roles.measure else None
     direction = "increased" if change >= 0 else "decreased"
     context = _movement_in_context(values, change)
     return Evidence(
@@ -112,8 +113,8 @@ def _growth_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | 
         value=f"{change:+.1f}%",
         statement=(
             f"{measure} {direction} {abs(change):.1f}% in the latest complete period "
-            f"({period}), from {format_number(previous, roles.measure)} to "
-            f"{format_number(current, roles.measure)}.{context}"
+            f"({period}), from {format_number(previous, roles.measure, column_values=measure_values)} to "
+            f"{format_number(current, roles.measure, column_values=measure_values)}.{context}"
         ),
         calculation=(
             "(Latest period − previous period) ÷ |previous period|, set against the spread "
@@ -129,6 +130,7 @@ def _change_driver_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evid
     if result is None:
         return None
     grouped, previous_period, current_period = result
+    measure_values = dataframe[roles.measure].dropna() if roles.measure else None
     changes = grouped["Change"]
     net_change = float(changes.sum())
     gross_change = float(changes.abs().sum())
@@ -144,9 +146,10 @@ def _change_driver_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evid
 
     movement = (
         f"{driver_name} moved the most of any {roles.dimension.lower()}: "
-        f"{roles.measure} {direction} by {format_number(abs(driver_change), roles.measure)}, "
-        f"from {format_number(previous_value, roles.measure)} to "
-        f"{format_number(current_value, roles.measure)}."
+        f"{roles.measure} {direction} by "
+        f"{format_number(abs(driver_change), roles.measure, column_values=measure_values)}, "
+        f"from {format_number(previous_value, roles.measure, column_values=measure_values)} to "
+        f"{format_number(current_value, roles.measure, column_values=measure_values)}."
     )
 
     # Segments that cancel out leave a tiny net change, and a share of that
@@ -156,8 +159,9 @@ def _change_driver_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evid
         share = abs(driver_change) / gross_change * 100
         statement = (
             f"{movement} Segments largely offset each other this period — "
-            f"{format_number(gross_change, roles.measure)} of movement nets to just "
-            f"{format_number(abs(net_change), roles.measure)} — so this is "
+            f"{format_number(gross_change, roles.measure, column_values=measure_values)} "
+            f"of movement nets to just "
+            f"{format_number(abs(net_change), roles.measure, column_values=measure_values)} — so this is "
             f"{share:.1f}% of all movement rather than of the net."
         )
         calculation = (
@@ -175,7 +179,7 @@ def _change_driver_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evid
     return Evidence(
         kind="driver",
         title="Largest change driver",
-        value=f"{sign}{format_number(abs(driver_change), roles.measure)}",
+        value=f"{sign}{format_number(abs(driver_change), roles.measure, column_values=measure_values)}",
         statement=statement,
         calculation=calculation,
         tone="positive" if driver_change > 0 else "negative",
@@ -192,6 +196,7 @@ def _anomaly_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence |
     grain = preferred_frequency(dataframe[roles.date])
     worst = anomalies[0]
     measure = roles.measure or "Records"
+    measure_values = dataframe[roles.measure].dropna() if roles.measure else None
     label = format_period(worst.period, grain)
     plural = "periods sit" if len(anomalies) > 1 else "period sits"
     return Evidence(
@@ -200,9 +205,10 @@ def _anomaly_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence |
         value=f"{len(anomalies)}",
         statement=(
             f"{label} is the sharpest anomaly: {measure.lower()} reached "
-            f"{format_number(worst.value, roles.measure)}, {worst.direction} the expected "
-            f"{format_number(worst.expected_low, roles.measure)}–"
-            f"{format_number(worst.expected_high, roles.measure)} range. "
+            f"{format_number(worst.value, roles.measure, column_values=measure_values)}, "
+            f"{worst.direction} the expected "
+            f"{format_number(worst.expected_low, roles.measure, column_values=measure_values)}–"
+            f"{format_number(worst.expected_high, roles.measure, column_values=measure_values)} range. "
             f"{len(anomalies)} {plural} outside the trendline band."
         ),
         calculation=(
@@ -247,6 +253,7 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
     top_three_share = float(segments.head(3)["Value"].sum() / total * 100)
     effective = _effective_segments(segments["Value"].to_numpy(dtype=float), total)
     measure = roles.measure or "records"
+    measure_values = dataframe[roles.measure].dropna() if roles.measure else None
     dimension = roles.dimension or "segment"
     return (
         Evidence(
@@ -256,7 +263,7 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
             statement=(
                 f"{leader['Segment']} is the largest {dimension.lower()}, contributing "
                 f"{leader_share:.1f}% of {measure.lower()} "
-                f"({format_number(float(leader['Value']), roles.measure)})."
+                f"({format_number(float(leader['Value']), roles.measure, column_values=measure_values)})."
             ),
             calculation=f"{leader['Segment']} {measure} ÷ total {measure}",
             tone="positive",
@@ -607,12 +614,12 @@ def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) 
             [
                 KPI(
                     f"Total {roles.measure}",
-                    format_number(total, roles.measure),
+                    format_number(total, roles.measure, column_values=measure_values),
                     "Across all analyzed records",
                 ),
                 KPI(
                     f"Average {roles.measure}",
-                    format_number(average, roles.measure),
+                    format_number(average, roles.measure, column_values=measure_values),
                     "Per non-missing record",
                 ),
             ]
@@ -660,7 +667,12 @@ def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) 
     elif leader:
         headline = leader.statement
     elif roles.measure:
-        total_measure = format_number(float(dataframe[roles.measure].sum()), roles.measure)
+        measure_values = dataframe[roles.measure].dropna()
+        total_measure = format_number(
+            float(measure_values.sum()),
+            roles.measure,
+            column_values=measure_values,
+        )
         headline = f"{roles.measure} totals {total_measure} across the analyzed data."
     else:
         headline = f"{len(dataframe):,} records are ready for operational review."

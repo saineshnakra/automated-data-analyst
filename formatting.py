@@ -7,6 +7,8 @@ engine reach for the same rendering rather than growing their own.
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pandas as pd
 
@@ -24,25 +26,120 @@ CURRENCY_TOKENS = (
     "balance",
 )
 
+CURRENCY_CODES = {
+    "eur": "€",
+    "gbp": "£",
+    "usd": "$",
+}
+
+PERCENTAGE_TOKENS = {"rate", "margin", "ratio"}
+
 
 def normalized_name(name: str) -> str:
     """Column names compared on meaning rather than punctuation."""
     return " ".join(name.lower().replace("_", " ").replace("-", " ").split())
 
 
+def _name_tokens(name: str) -> set[str]:
+    """Return whole-word tokens from a column name."""
+    return set(re.findall(r"[a-z0-9]+", normalized_name(name)))
+
+
 def is_currency(column: str | None) -> bool:
-    return bool(column and any(token in normalized_name(column) for token in CURRENCY_TOKENS))
+    """Return whether the column name represents currency."""
+    if not column:
+        return False
+
+    tokens = _name_tokens(column)
+    return bool(tokens & set(CURRENCY_TOKENS)) or bool(tokens & set(CURRENCY_CODES))
 
 
-def format_number(value: float, column: str | None = None, *, compact: bool = True) -> str:
+def is_percentage(column: str | None) -> bool:
+    """Return whether the column name represents a percentage."""
+    if not column:
+        return False
+
+    name = normalized_name(column)
+    tokens = _name_tokens(column)
+
+    return "%" in name or bool(tokens & PERCENTAGE_TOKENS)
+
+
+def currency_symbol(column: str | None) -> str:
+    """Return the currency symbol indicated by the column name."""
+    if not column:
+        return ""
+
+    name = normalized_name(column)
+    tokens = _name_tokens(column)
+
+    for code, symbol in CURRENCY_CODES.items():
+        if code in tokens or symbol in name:
+            return symbol
+
+    if is_currency(column):
+        return "$"
+
+    return ""
+
+
+def _percentage_uses_fraction_scale(
+    value: float,
+    column_values: pd.Series | None,
+) -> bool:
+    """Determine the percentage convention once for the available column."""
+    if column_values is None:
+        return 0 <= value <= 1
+
+    values = pd.to_numeric(column_values, errors="coerce").dropna()
+    if values.empty:
+        return False
+
+    # A column is treated as fractions only when every observed value is
+    # within [0, 1]. Negative or >1 values therefore use percentage points.
+    return bool(values.min() >= 0 and values.max() <= 1)
+
+
+def format_number(
+    value: float,
+    column: str | None = None,
+    *,
+    compact: bool = True,
+    column_values: pd.Series | None = None,
+) -> str:
     """Format a metric according to likely business meaning."""
     if not np.isfinite(value):
         return "—"
 
+    # Currency semantics always take precedence over percentage semantics.
+    if is_currency(column):
+        absolute = abs(value)
+        prefix = currency_symbol(column)
+        suffix = ""
+        scaled = value
+
+        if compact and absolute >= 1_000_000_000:
+            scaled, suffix = value / 1_000_000_000, "B"
+        elif compact and absolute >= 1_000_000:
+            scaled, suffix = value / 1_000_000, "M"
+        elif compact and absolute >= 1_000:
+            scaled, suffix = value / 1_000, "K"
+
+        if suffix:
+            return f"{prefix}{scaled:,.1f}{suffix}"
+
+        return f"{prefix}{value:,.2f}"
+
+    if is_percentage(column):
+        if _percentage_uses_fraction_scale(value, column_values):
+            value *= 100
+
+        return f"{value:.1f}%"
+
     absolute = abs(value)
-    prefix = "$" if is_currency(column) else ""
-    suffix = ""
     scaled = value
+    suffix = ""
+
     if compact and absolute >= 1_000_000_000:
         scaled, suffix = value / 1_000_000_000, "B"
     elif compact and absolute >= 1_000_000:
@@ -51,10 +148,12 @@ def format_number(value: float, column: str | None = None, *, compact: bool = Tr
         scaled, suffix = value / 1_000, "K"
 
     if suffix:
-        return f"{prefix}{scaled:,.1f}{suffix}"
-    if float(value).is_integer() and not is_currency(column):
+        return f"{scaled:,.1f}{suffix}"
+
+    if float(value).is_integer():
         return f"{int(value):,}"
-    return f"{prefix}{value:,.2f}"
+
+    return f"{value:,.2f}"
 
 
 def format_period(period: pd.Timestamp, grain: str) -> str:
