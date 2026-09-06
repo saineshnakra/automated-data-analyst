@@ -149,10 +149,13 @@ def _change_driver_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evid
     if gross_change == 0:
         return None
 
-    driver_name = str(changes.abs().idxmax())
-    previous_value = float(grouped.loc[driver_name, previous_period])
-    current_value = float(grouped.loc[driver_name, current_period])
-    driver_change = float(grouped.loc[driver_name, "Change"])
+    # Look the row up by its real index value; a boolean segment column has an
+    # index of True/False, and str() turned that into a KeyError.
+    driver_key = changes.abs().idxmax()
+    driver_name = str(driver_key)
+    previous_value = float(grouped.loc[driver_key, previous_period])
+    current_value = float(grouped.loc[driver_key, current_period])
+    driver_change = float(grouped.loc[driver_key, "Change"])
     direction = "increased" if driver_change > 0 else "decreased"
     sign = "+" if driver_change > 0 else "−"
 

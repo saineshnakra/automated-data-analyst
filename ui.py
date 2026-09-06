@@ -10,6 +10,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from pandas.api.types import is_datetime64_any_dtype
 
 from aggregation import build_trend, driver_frame, heatmap_frame, segment_frame
 from anomalies import detect_anomalies
@@ -442,33 +443,53 @@ def render_chat_fallback(suggestions: list[str]) -> None:
     st.markdown("\n".join(f"- {suggestion}" for suggestion in suggestions))
 
 
+def _cap(frame: pd.DataFrame, spec, value: str, limit: int) -> pd.DataFrame:
+    """Trim to a drawable size by dropping the least interesting rows.
+
+    Taking the first N groups drops the newest periods off a trend and the
+    biggest categories off a ranking -- exactly the rows the reader opened the
+    chart for. Time keeps its most recent end; anything else keeps its largest.
+    """
+    if len(frame) <= limit:
+        return frame
+    if spec.x and spec.x in frame.columns and is_datetime64_any_dtype(frame[spec.x]):
+        return frame.nlargest(limit, spec.x).sort_values(spec.x).reset_index(drop=True)
+    return frame.nlargest(limit, value).reset_index(drop=True)
+
+
 def _explore_frame(
     dataframe: pd.DataFrame, spec, *, limit: int = 400
 ) -> pd.DataFrame:
     """Aggregate the raw rows into what the recommended chart plots."""
-    if spec.form == "scatter":
-        return dataframe[[spec.x, spec.y]].dropna().head(5_000)
+    if spec.form in ("scatter", "histogram"):
+        columns = [column for column in (spec.x, spec.y) if column]
+        return dataframe[columns].dropna().head(20_000)
 
     grouping = [column for column in (spec.x, spec.y, spec.color) if column]
-    if spec.form == "heatmap":
+    # A heatmap, and the table it falls back to when the grid is too large,
+    # are both "measure across two categories".
+    if spec.color and spec.x and spec.y and spec.form in ("heatmap", "table"):
         keys = [spec.y, spec.x]
-        return dataframe.groupby(keys, dropna=True)[spec.color].sum().reset_index()
+        grid = dataframe.groupby(keys, dropna=True, observed=True)[spec.color].sum().reset_index()
+        if spec.form == "table":
+            return grid.nlargest(limit, spec.color).reset_index(drop=True)
+        return grid
 
     keys = [column for column in (spec.x, spec.color) if column]
     if not keys:
         return dataframe[grouping].dropna()
 
     if spec.aggregation == "count" or not spec.y:
-        frame = dataframe.groupby(keys, dropna=True).size().reset_index(name="Records")
+        frame = dataframe.groupby(keys, dropna=True, observed=True).size().reset_index(name="Records")
         value = "Records"
     else:
-        frame = dataframe.groupby(keys, dropna=True)[spec.y].sum().reset_index()
+        frame = dataframe.groupby(keys, dropna=True, observed=True)[spec.y].sum().reset_index()
         value = spec.y
 
     if spec.color and spec.color in frame.columns:
         frame = fold_small_series(frame, spec.color, value)
-        frame = frame.groupby(keys, dropna=True)[value].sum().reset_index()
-    return frame.head(limit)
+        frame = frame.groupby(keys, dropna=True, observed=True)[value].sum().reset_index()
+    return _cap(frame, spec, value, limit)
 
 
 def _explore_figure(frame: pd.DataFrame, spec) -> go.Figure | None:
@@ -492,6 +513,8 @@ def _explore_figure(frame: pd.DataFrame, spec) -> go.Figure | None:
             frame.sort_values(value), x=value, y=spec.x, orientation="h",
             color_discrete_sequence=[LEAF],
         )
+    elif spec.form == "histogram":
+        figure = px.histogram(frame, x=spec.x, nbins=35, color_discrete_sequence=[ACCENT])
     elif spec.form == "scatter":
         figure = px.scatter(frame, x=spec.x, y=spec.y, color_discrete_sequence=[ACCENT])
         figure.update_traces(marker={"size": 8, "opacity": 0.7})
@@ -501,7 +524,15 @@ def _explore_figure(frame: pd.DataFrame, spec) -> go.Figure | None:
     else:
         return None
 
-    figure.update_layout(title=f"{value} by {spec.x}" if spec.x else value)
+    if spec.form == "heatmap":
+        # The colour is the measurement; naming only the two axes describes the
+        # grid and not what is in it.
+        title = f"{spec.color} by {spec.y} and {spec.x}"
+    elif spec.form == "histogram":
+        title = f"Distribution of {spec.x}"
+    else:
+        title = f"{value} by {spec.x}" if spec.x else value
+    figure.update_layout(title=title)
     if spec.form in ("column", "bar"):
         figure.update_traces(marker_line_width=0)
     return style_chart(figure, height=380)
@@ -539,7 +570,15 @@ def render_explore(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
 
     frame = _explore_frame(dataframe, spec)
     if spec.form == "stat":
-        st.metric(spec.y or "Value", format_number(float(dataframe[spec.y].dropna().iloc[0]), spec.y))
+        present = dataframe[spec.y].dropna() if spec.y else pd.Series(dtype="float64")
+        if present.empty:
+            st.markdown(
+                f'<div class="empty-state">{escape(str(spec.y))} has no values in this '
+                "view, so there is nothing to chart.</div>",
+                unsafe_allow_html=True,
+            )
+            return
+        st.metric(spec.y or "Value", format_number(float(present.iloc[0]), spec.y))
     elif spec.form == "table":
         st.dataframe(frame, hide_index=True, width="stretch")
     else:

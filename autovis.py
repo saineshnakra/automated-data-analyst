@@ -19,6 +19,10 @@ from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 # Past this many classes a legend stops helping and a table reads better.
 MAX_SERIES = 4
 MAX_BARS = 25
+# A heatmap is a rectangle of cells and the browser is sent every one of them.
+# Two identifier-ish columns produce millions, which exceeds Streamlit's own
+# websocket message limit before it ever reaches a screen.
+MAX_HEATMAP_CELLS = 4_000
 # Beyond this a vertical axis cannot hold the labels.
 HORIZONTAL_BAR_THRESHOLD = 6
 LONG_LABEL_CHARACTERS = 12
@@ -30,7 +34,7 @@ Form = str
 class ChartSpec:
     """What to draw, and the reasoning that picked it."""
 
-    form: Form  # stat | line | area | bar | column | scatter | heatmap | table | none
+    form: Form  # stat | line | area | bar | column | histogram | scatter | heatmap | table | none
     rationale: str
     x: str | None = None
     y: str | None = None
@@ -140,6 +144,21 @@ def recommend_chart(
     # than any number of side-by-side bars.
     if len(categories) >= 2 and numbers:
         rows, columns_axis, measure = categories[0], categories[1], numbers[0]
+        cells = _distinct(dataframe, rows) * _distinct(dataframe, columns_axis)
+        if cells > MAX_HEATMAP_CELLS:
+            return ChartSpec(
+                form="table",
+                x=columns_axis,
+                y=rows,
+                color=measure,
+                aggregation=aggregation,
+                rationale=(
+                    f"{rows} and {columns_axis} would make a {cells:,}-cell grid. Past about "
+                    f"{MAX_HEATMAP_CELLS:,} cells a heatmap is unreadable and too large to "
+                    "send, so the numbers are shown as a table instead."
+                ),
+                notes=tuple(notes),
+            )
         return ChartSpec(
             form="heatmap",
             x=columns_axis,
@@ -219,13 +238,14 @@ def recommend_chart(
                 ),
             )
         return ChartSpec(
-            form="column",
+            form="histogram",
             x=measure,
             y=None,
             aggregation="count",
             rationale=(
-                f"The distribution of {measure}, because one measure on its own asks "
-                "how its values are spread rather than how they compare."
+                f"The distribution of {measure} in equal-width bins, because one measure "
+                "on its own asks how its values are spread rather than how they compare. "
+                "Counting each distinct value instead would draw one bar per row."
             ),
             notes=tuple(notes),
         )
@@ -262,10 +282,29 @@ def fold_small_series(
     """
     if frame.empty or column not in frame.columns:
         return frame
-    totals = frame.groupby(column, dropna=True)[value].sum().sort_values(ascending=False)
+    totals = (
+        frame.groupby(column, dropna=True, observed=True)[value].sum().sort_values(ascending=False)
+    )
     if len(totals) <= limit:
         return frame
     keep = set(totals.head(limit).index)
     folded = frame.copy()
-    folded[column] = folded[column].where(folded[column].isin(keep), "Other")
+    # A Categorical rejects a label that is not already one of its categories,
+    # and a column that genuinely contains "Other" would have the folded tail
+    # silently added to a real segment. Both are avoided by choosing a label
+    # the column does not already use and dropping the categorical dtype.
+    folded[column] = folded[column].astype(object)
+    label = _fold_label(set(totals.index))
+    folded[column] = folded[column].where(folded[column].isin(keep), label)
     return folded
+
+
+def _fold_label(existing: set) -> str:
+    """A name for the folded tail that is not already a real category."""
+    label = "Other"
+    suffix = 2
+    present = {str(value) for value in existing}
+    while label in present:
+        label = f"Other ({suffix})"
+        suffix += 1
+    return label

@@ -236,6 +236,9 @@ def segment_frame(dataframe: pd.DataFrame, roles: ColumnRoles, limit: int = 12) 
     return result.sort_values("Value", ascending=False).head(limit).reset_index(drop=True)
 
 
+UNLABELLED_SEGMENT = "(not recorded)"
+
+
 def segment_period_change(
     dataframe: pd.DataFrame, roles: ColumnRoles
 ) -> tuple[pd.DataFrame, pd.Timestamp, pd.Timestamp] | None:
@@ -253,7 +256,14 @@ def segment_period_change(
     # different subset of rows can land on another grain, and then the two
     # periods being compared exist in one view and not the other.
     frequency = series.frequency
-    working = dataframe[[roles.date, roles.measure, roles.dimension]].dropna().copy()
+    working = dataframe[[roles.date, roles.measure, roles.dimension]].copy()
+    working = working.dropna(subset=[roles.date, roles.measure])
+    # A row with no segment label still carries measure value. Dropping it
+    # here and keeping it in the trend meant the drivers were shares of a
+    # movement they did not add up to.
+    working[roles.dimension] = working[roles.dimension].astype(object).where(
+        working[roles.dimension].notna(), UNLABELLED_SEGMENT
+    )
     working["Period"] = working[roles.date].dt.to_period(frequency).dt.to_timestamp()
     comparison = working[working["Period"].isin([previous_period, current_period])]
     grouped = comparison.groupby([roles.dimension, "Period"])[roles.measure].sum().unstack(fill_value=0)
