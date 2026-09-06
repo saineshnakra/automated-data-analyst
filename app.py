@@ -10,17 +10,6 @@ import pandas as pd
 import streamlit as st
 from streamlit.errors import StreamlitSecretNotFoundError
 
-from ai_insights import (
-    DEFAULT_PRESET,
-    MODEL_PRESETS,
-    AINarrative,
-    build_ai_payload,
-    describe_query_plan,
-    execute_approved_ai_plan,
-    generate_ai_narrative,
-    narrative_to_markdown,
-    plan_query_with_ai,
-)
 from analysis import column_profile
 from business_insights import BusinessBrief, analyze_business, build_business_report
 from demo_data import make_demo_data
@@ -34,6 +23,29 @@ from pipeline import (
     prepare_analysis,
     schema_frame,
 )
+
+# The AI layer is optional, and so is everything it depends on. Importing it
+# at module scope meant one missing package took down the whole product --
+# including the deterministic analysis that is the reason to open ADA without
+# a key at all. A failure here disables the two optional calls and nothing else.
+try:
+    from ai_insights import (
+        DEFAULT_PRESET,
+        MODEL_PRESETS,
+        AINarrative,
+        build_ai_payload,
+        describe_query_plan,
+        execute_approved_ai_plan,
+        generate_ai_narrative,
+        narrative_to_markdown,
+        plan_query_with_ai,
+    )
+
+    AI_LAYER_ERROR = ""
+except Exception as error:  # noqa: BLE001 - any import failure must degrade, not crash
+    AI_LAYER_ERROR = f"{type(error).__name__}: {error}"
+    DEFAULT_PRESET, MODEL_PRESETS, AINarrative = "", {}, ()
+
 from ui import (
     inject_styles,
     render_ai_narrative,
@@ -111,6 +123,19 @@ def render_sidebar(*, server_api_key: str) -> str:
             "- Recommendations are not causal proof"
         )
         st.markdown("---")
+        if AI_LAYER_ERROR:
+            st.warning(
+                "The optional AI layer could not be loaded on this deployment, so the "
+                "strategic read and the AI query planner are unavailable. Every analysis, "
+                "chart and Ask ADA answer below is unaffected — none of them uses a model."
+            )
+            st.caption(AI_LAYER_ERROR)
+            st.link_button(
+                "Contribute on GitHub",
+                "https://github.com/saineshnakra/automated-data-analyst",
+                width="stretch",
+            )
+            return ""
         if server_api_key:
             st.success("Optional strategy agent is available on this deployment.")
             api_key = server_api_key
@@ -138,8 +163,8 @@ def maybe_generate_narrative(
     api_key: str,
     brief: BusinessBrief,
     business_context: str,
-) -> tuple[AINarrative | None, str | None]:
-    if not api_key:
+):
+    if not api_key or AI_LAYER_ERROR:
         return None, None
 
     payload = build_ai_payload(brief, context=business_context)
@@ -185,6 +210,8 @@ def plan_ai_query(
     api_key: str,
 ) -> QueryPlan | None:
     """Ask the optional model for a plan without executing it."""
+    if AI_LAYER_ERROR:
+        return None
     try:
         return plan_query_with_ai(
             question,

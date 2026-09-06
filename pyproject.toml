@@ -1,3 +1,11 @@
+[project]
+name = "automated-data-analyst"
+version = "0.1.0"
+description = "ADA: an AI data analyst for spreadsheets, where every number shows its calculation."
+requires-python = ">=3.11"
+readme = "README.md"
+license = { file = "LICENSE" }
+
 [tool.ruff]
 line-length = 110
 target-version = "py311"

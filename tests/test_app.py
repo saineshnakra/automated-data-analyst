@@ -1,6 +1,52 @@
+import sys
 import unittest
 
 from streamlit.testing.v1 import AppTest
+
+
+class _BlockImport:
+    """Make a package unimportable, the way a broken deployment does."""
+
+    def __init__(self, *names: str, evict: tuple[str, ...] = ()) -> None:
+        self.names = set(names)
+        # A module that already imported the blocked package is cached and
+        # would import again quite happily, so it has to be evicted too.
+        self.evict = set(evict)
+
+    def find_spec(self, name, path=None, target=None):
+        if name.split(".")[0] in self.names:
+            raise ImportError(f"No module named {name!r} (simulated)")
+        return None
+
+    def __enter__(self):
+        sys.meta_path.insert(0, self)
+        self.dropped = {
+            key: sys.modules.pop(key)
+            for key in list(sys.modules)
+            if key.split(".")[0] in self.names | self.evict
+        }
+        return self
+
+    def __exit__(self, *_):
+        sys.meta_path.remove(self)
+        sys.modules.update(self.dropped)
+
+
+class OptionalAiLayerTests(unittest.TestCase):
+    """Without a key ADA is a complete product, so it must load without the AI stack."""
+
+    def test_the_app_is_whole_when_the_ai_layer_cannot_be_imported(self):
+        with _BlockImport("pydantic", "openai", evict=("ai_insights",)):
+            app = AppTest.from_file("app.py", default_timeout=90).run()
+
+        self.assertFalse(app.exception)
+        # The deterministic product is untouched: every tab, every KPI, every chart.
+        self.assertEqual(len(app.tabs), 6)
+        self.assertEqual(len(app.metric), 4)
+        self.assertEqual(len(app.get("plotly_chart")), 7)
+        self.assertTrue(
+            any("optional AI layer could not be loaded" in str(w.value) for w in app.warning)
+        )
 
 
 class AppSmokeTests(unittest.TestCase):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from html import escape
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pandas as pd
 import plotly.express as px
@@ -11,7 +12,6 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from aggregation import build_trend, driver_frame, heatmap_frame, segment_frame
-from ai_insights import AINarrative
 from anomalies import detect_anomalies
 from autovis import fold_small_series, recommend_chart
 from business_insights import BusinessBrief
@@ -19,6 +19,9 @@ from forecasting import build_forecast, describe_backtest
 from formatting import format_number
 from nlq import QueryAnswer
 from schema import ColumnRoles
+
+if TYPE_CHECKING:  # The AI layer is optional; ui must import without it.
+    from ai_insights import AINarrative
 
 ACCENT = "#635BFF"
 LIME = "#C7F36B"  # Brand accent for surfaces and text. Too light to be a data mark.
