@@ -15,7 +15,7 @@ from typing import Literal
 
 import pandas as pd
 
-from aggregation import TrendSeries, build_trend, preferred_frequency
+from aggregation import TrendSeries, build_trend, preferred_frequency, unlabelled_label
 from formatting import format_number
 from schema import ColumnRoles
 
@@ -105,9 +105,6 @@ MONTH_NAMES = {
 
 MAX_FILTER_CANDIDATES = 200
 BREAKDOWN_LIMIT = 12
-# Rows whose segment is blank still hold measure values, so they are shown
-# under a label rather than deleted out of the denominator.
-UNLABELLED = "(not recorded)"
 
 QUERY_STOPWORDS = {
     "a", "about", "across", "all", "and", "are", "by", "can", "do", "does", "each",
@@ -424,7 +421,8 @@ def _grouped_frame(
     # the reader never saw.
     labelled = dataframe.copy()
     labelled[plan.dimension] = labelled[plan.dimension].astype(object).where(
-        labelled[plan.dimension].notna(), UNLABELLED
+        labelled[plan.dimension].notna(),
+        unlabelled_label(labelled[plan.dimension].dropna().unique()),
     )
     working = labelled
     if plan.aggregation == "count" or not plan.measure:
