@@ -170,7 +170,13 @@ def build_forecast(
     method = "Theil–Sen trendline"
     if seasonal:
         method += " + month-of-year seasonality"
-    method += f" · band = ±{BAND_DEVIATIONS:g} robust deviations, widening with horizon"
+    if scale > 0:
+        method += f" · band = ±{BAND_DEVIATIONS:g} robust deviations, widening with horizon"
+    else:
+        # A history with no variation gives a zero-width band. Drawing that as
+        # a line and captioning it as a widening interval claims a certainty
+        # nothing here supports.
+        method += " · history shows no variation, so no uncertainty band could be estimated"
 
     return Forecast(
         periods=tuple(pd.Timestamp(period) for period in future_periods),
@@ -186,7 +192,9 @@ def _backtest(periods: pd.DatetimeIndex, values: np.ndarray, *, monthly: bool) -
     """Refit on a training split and score the held-out tail honestly."""
     count = len(values)
     holdout = min(max(3, count // 5), count - MIN_PERIODS + 3)
-    if count - holdout < 5:
+    # periods[:-0] is the whole array, not "everything but nothing", so a
+    # holdout that resolves to zero or less trained on an empty split.
+    if holdout < 1 or count - holdout < 5:
         return Backtest(mape=None, mase=None, holdout_periods=0, periods_without_mape=0)
 
     train_periods, train_values = periods[:-holdout], values[:-holdout]

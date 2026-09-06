@@ -66,6 +66,8 @@ def preferred_frequency(date_series: pd.Series) -> str:
 
 EMPTY_TREND = pd.DataFrame({"Period": pd.Series(dtype="datetime64[ns]"), "Value": pd.Series(dtype=float)})
 PARTIAL_COVERAGE_MARGIN = 0.2
+# Below typical by this much, but not enough to exclude: worth saying out loud.
+SHORT_COVERAGE_MARGIN = 0.05
 MIN_PERIODS_FOR_PARTIAL_CHECK = 4
 
 
@@ -82,10 +84,22 @@ class TrendSeries:
     filled_periods: int = 0
     partial_period: pd.Timestamp | None = None
     partial_coverage: str = ""
+    # A period the data stops part-way through, but not far enough through for
+    # exclusion to be safe -- "no orders for three days" looks the same from
+    # here. Saying so beats guessing either way.
+    short_coverage: str = ""
+    # False when there were too few periods to judge completeness at all, so
+    # nothing downstream may call the last one complete.
+    completeness_checked: bool = True
 
     @property
     def notes(self) -> tuple[str, ...]:
         notes: list[str] = []
+        if self.short_coverage:
+            notes.append(
+                f"The last period only reaches {self.short_coverage}, so part of its "
+                "shortfall may be missing data rather than a real fall."
+            )
         if self.partial_period is not None:
             notes.append(
                 f"{format_period(self.partial_period, self.frequency)} is still in progress "
@@ -108,7 +122,7 @@ def _period_bounds(periods: pd.DatetimeIndex, frequency: str) -> tuple[pd.Dateti
 
 def _trailing_partial_period(
     dates: pd.Series, periods: pd.Series, frequency: str
-) -> tuple[pd.Timestamp | None, str]:
+) -> tuple[pd.Timestamp | None, str, str, bool]:
     """Detect a final period the data stops part-way through.
 
     Compares how much of each period the data actually reaches with how much
@@ -118,20 +132,27 @@ def _trailing_partial_period(
     """
     last_seen = dates.groupby(periods).max().sort_index()
     if len(last_seen) < MIN_PERIODS_FOR_PARTIAL_CHECK:
-        return None, ""
+        # Too few periods to know what "typical coverage" looks like here.
+        return None, "", "", False
 
     starts, ends = _period_bounds(pd.DatetimeIndex(last_seen.index), frequency)
     spans = (ends - starts).to_numpy().astype("timedelta64[s]").astype(float)
     reached = (last_seen.to_numpy() - starts.to_numpy()).astype("timedelta64[s]").astype(float)
     coverage = np.divide(reached, spans, out=np.zeros_like(reached), where=spans > 0)
 
-    typical = float(np.median(coverage[:-1]))
-    if coverage[-1] >= typical - PARTIAL_COVERAGE_MARGIN:
-        return None, ""
-
     period_days = max(int(round(spans[-1] / 86_400)), 1)
     covered_days = max(int(round(reached[-1] / 86_400)) + 1, 1)
-    return pd.Timestamp(last_seen.index[-1]), f"{covered_days} of {period_days} days"
+    reach = f"{covered_days} of {period_days} days"
+
+    typical = float(np.median(coverage[:-1]))
+    if coverage[-1] >= typical - PARTIAL_COVERAGE_MARGIN:
+        # Not short enough to exclude safely: an extract cut on the 26th and a
+        # quiet last week look identical from here. Report the shortfall rather
+        # than silently presenting the drop as a real one.
+        short = reach if coverage[-1] < typical - SHORT_COVERAGE_MARGIN else ""
+        return None, "", short, True
+
+    return pd.Timestamp(last_seen.index[-1]), reach, "", True
 
 
 def build_trend(
@@ -151,8 +172,8 @@ def build_trend(
     frequency = frequency or _period_frequency(working[roles.date])
     working["Period"] = working[roles.date].dt.to_period(frequency).dt.to_timestamp()
 
-    partial_period, partial_coverage = _trailing_partial_period(
-        working[roles.date], working["Period"], frequency
+    partial_period, partial_coverage, short_coverage, completeness_checked = (
+        _trailing_partial_period(working[roles.date], working["Period"], frequency)
     )
     if partial_period is not None:
         remaining = working[working["Period"] < partial_period]
@@ -175,6 +196,8 @@ def build_trend(
         filled_periods=filled,
         partial_period=partial_period,
         partial_coverage=partial_coverage,
+        short_coverage=short_coverage,
+        completeness_checked=completeness_checked,
     )
 
 

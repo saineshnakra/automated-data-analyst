@@ -4,6 +4,8 @@ import numpy as np
 import pandas as pd
 
 from timeseries import (
+    MAD_SCALE,
+    MEAN_ABS_DEV_SCALE,
     fit_trendline,
     period_grain,
     period_positions,
@@ -150,6 +152,33 @@ class RobustScaleTests(unittest.TestCase):
         self.assertEqual(robust_scale(np.zeros(6)), 0.0)
         self.assertEqual(robust_scale(np.zeros(0)), 0.0)
 
+
+
+
+class ScaleEstimatorAgreementTests(unittest.TestCase):
+    """Switching estimators must not change how surprising a period looks."""
+
+    def test_the_fallback_recovers_the_same_sigma_as_the_median_path(self):
+        sample = np.random.default_rng(3).normal(0.0, 1.0, 200_000)
+        deviations = np.abs(sample - np.median(sample))
+
+        median_estimate = float(np.median(deviations)) * MAD_SCALE
+        fallback_estimate = float(np.mean(deviations)) * MEAN_ABS_DEV_SCALE
+
+        self.assertAlmostEqual(median_estimate, 1.0, places=2)
+        self.assertAlmostEqual(fallback_estimate, 1.0, places=2)
+
+    def test_the_fallback_is_used_when_most_residuals_are_identical(self):
+        residuals = np.array([0.0] * 12 + [1.0, -1.0, 2.0, -2.0, 1.5, -1.5, 0.5, -0.5])
+
+        # The median absolute deviation is zero here, so the mean path runs.
+        self.assertEqual(float(np.median(np.abs(residuals - np.median(residuals)))), 0.0)
+        self.assertAlmostEqual(
+            robust_scale(residuals), float(np.mean(np.abs(residuals))) * MEAN_ABS_DEV_SCALE
+        )
+
+    def test_a_series_with_no_variation_has_no_scale(self):
+        self.assertEqual(robust_scale(np.zeros(10)), 0.0)
 
 if __name__ == "__main__":
     unittest.main()

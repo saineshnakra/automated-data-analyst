@@ -122,16 +122,25 @@ def _growth_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | 
     # A quarter is "Q4 2023", not "Oct 2023" -- which the anomaly card and the
     # chart axis already knew, so the brief was contradicting its own page.
     period = format_period(trend.iloc[-1]["Period"], series.frequency)
+    # With too few periods to judge completeness, the last one cannot be
+    # called complete -- a three-month file whose third month is half over
+    # was reporting a 50% collapse as settled fact.
+    completeness = "complete period" if series.completeness_checked else "period so far"
     measure = roles.measure or "Records"
     measure_values = dataframe[roles.measure].dropna() if roles.measure else None
     direction = "increased" if change >= 0 else "decreased"
     context = _movement_in_context(values, change)
+    if series.short_coverage:
+        context += (
+            f" The last period only reaches {series.short_coverage}, so part of this may be "
+            "missing data rather than a real move."
+        )
     return Evidence(
         kind="trend",
         title=f"Latest {measure.lower()} movement",
         value=format_percentage(change, signed=True),
         statement=(
-            f"{measure} {direction} {format_percentage(abs(change))} in the latest complete period "
+            f"{measure} {direction} {format_percentage(abs(change))} in the latest {completeness} "
             f"({period}), from {format_number(previous, roles.measure, column_values=measure_values)} to "
             f"{format_number(current, roles.measure, column_values=measure_values)}.{context}"
         ),
