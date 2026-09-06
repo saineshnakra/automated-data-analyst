@@ -264,5 +264,71 @@ class KeywordScoreTests(unittest.TestCase):
         )
 
 
+
+
+class RoleDeterminismTests(unittest.TestCase):
+    """A role is a property of the data, not of the order the columns arrive in."""
+
+    def _hr_file(self, order):
+        frame = pd.DataFrame(
+            {
+                "Employee ID": [f"E{index:03d}" for index in range(24)],
+                "Postal Code": [10_000 + index * 37 for index in range(24)],
+                "Annual Salary": [60_000.5 + index * 1_500 for index in range(24)],
+                "Tenure Months": [index % 60 for index in range(24)],
+                "Department": ["Eng", "Sales", "Ops"] * 8,
+            }
+        )
+        return frame[order]
+
+    def test_column_order_does_not_change_the_headline_metric(self):
+        orders = (
+            ["Employee ID", "Postal Code", "Annual Salary", "Tenure Months", "Department"],
+            ["Employee ID", "Annual Salary", "Tenure Months", "Postal Code", "Department"],
+            ["Tenure Months", "Employee ID", "Department", "Annual Salary", "Postal Code"],
+        )
+
+        detected = {detect_roles(self._hr_file(order)).measure for order in orders}
+
+        self.assertEqual(len(detected), 1, f"measure depended on column order: {detected}")
+        self.assertEqual(detected.pop(), "Annual Salary")
+
+    def test_a_money_column_beside_an_invoice_is_not_a_row_identifier(self):
+        frame = pd.DataFrame(
+            {
+                "Invoice Number": [f"INV-{index:05d}" for index in range(30)],
+                "Invoice Amount": [1_000.0 + index * 13.5 for index in range(30)],
+                "Days Overdue": list(range(30)),
+                "Customer": ["A", "B", "C"] * 10,
+            }
+        )
+
+        roles = detect_roles(frame)
+
+        self.assertEqual(roles.measure, "Invoice Amount")
+        self.assertEqual(roles.identifier, "Invoice Number")
+
+    def test_a_parenthesised_unit_does_not_demote_the_head_noun(self):
+        frame = pd.DataFrame(
+            {
+                "Revenue (USD)": [100.0 + index for index in range(20)],
+                "Discount Amount": [1.0 + index for index in range(20)],
+                "Channel": ["a", "b"] * 10,
+            }
+        )
+
+        self.assertEqual(detect_roles(frame).measure, "Revenue (USD)")
+
+    def test_camel_case_names_score_like_snake_case_ones(self):
+        frame = pd.DataFrame(
+            {
+                "netRevenue": [100.0 + index for index in range(20)],
+                "Discount Amount": [1.0 + index for index in range(20)],
+                "Channel": ["a", "b"] * 10,
+            }
+        )
+
+        self.assertEqual(detect_roles(frame).measure, "netRevenue")
+
 if __name__ == "__main__":
     unittest.main()

@@ -126,9 +126,13 @@ class BusinessAnalysisTests(unittest.TestCase):
         )
 
         kpi_values = [item.value for item in brief.kpis]
+        kpi_labels = [item.label for item in brief.kpis]
 
-        self.assertIn("136.0%", kpi_values)
         self.assertIn("34.0%", kpi_values)
+        # Four monthly margins do not add up to a 136% margin, so no total is
+        # offered for a rate -- only the average, which means something.
+        self.assertNotIn("Total Gross Margin", kpi_labels)
+        self.assertIn("Average Gross Margin", kpi_labels)
         self.assertIn("Gross Margin increased 10.7%", report)
         self.assertIn("from 28.0% to 31.0%", report)
 
@@ -392,6 +396,30 @@ class MovementWordingTests(unittest.TestCase):
         # Whatever grain was chosen, the label must not name a month for a
         # period that is not one -- the anomaly card and the axis already agree.
         self.assertNotRegex(trend.statement, r"\((Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4}\)")
+
+
+
+class PercentageVersusCurrencyTests(unittest.TestCase):
+    def test_an_explicit_percent_sign_beats_a_currency_word(self):
+        values = pd.Series([0.31, 0.33, 0.35])
+
+        self.assertEqual(
+            format_number(0.33, "Profit Margin %", column_values=values), "33.0%"
+        )
+
+    def test_a_percentage_word_in_the_head_position_wins(self):
+        self.assertEqual(format_number(0.42, "Discount Rate"), "42.0%")
+
+    def test_a_currency_word_in_the_head_position_wins(self):
+        self.assertEqual(format_number(1_200.0, "Margin Amount"), "$1.2K")
+
+    def test_a_column_gets_one_unit_for_every_row(self):
+        """Judging plausibility per value gave 551.3% and 1.4K in one column."""
+        values = pd.Series([1000.0, 551.26, 201.79, 1400.0, 558.08])
+
+        rendered = [format_number(value, "Gross Margin", column_values=values) for value in values]
+
+        self.assertFalse(any(text.endswith("%") for text in rendered))
 
 if __name__ == "__main__":
     unittest.main()

@@ -15,7 +15,14 @@ from aggregation import (
     trend_frame,
 )
 from anomalies import detect_anomalies
-from formatting import format_number, format_percentage, format_period, normalized_name
+from formatting import (
+    format_number,
+    format_percentage,
+    format_period,
+    is_percentage,
+    normalized_name,
+    percentage_outranks_currency,
+)
 from schema import TIME_PART_TOKENS, ColumnRoles, detect_roles, looks_like_identifier
 from timeseries import robust_scale
 
@@ -674,19 +681,23 @@ def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) 
         measure_values = dataframe[roles.measure].dropna()
         total = float(measure_values.sum())
         average = float(measure_values.mean())
-        kpis.extend(
-            [
+        # Adding percentages up produces a number with no meaning: eleven
+        # months of margin do not total 1,189% of anything.
+        rate_like = is_percentage(roles.measure) and percentage_outranks_currency(roles.measure)
+        if not rate_like:
+            kpis.append(
                 KPI(
                     f"Total {roles.measure}",
                     format_number(total, roles.measure, column_values=measure_values),
                     "Across all analyzed records",
-                ),
-                KPI(
-                    f"Average {roles.measure}",
-                    format_number(average, roles.measure, column_values=measure_values),
-                    "Per non-missing record",
-                ),
-            ]
+                )
+            )
+        kpis.append(
+            KPI(
+                f"Average {roles.measure}",
+                format_number(average, roles.measure, column_values=measure_values),
+                "Per non-missing record",
+            )
         )
 
     if growth:

@@ -10,11 +10,12 @@ a measure, and a column called "Value" may be either.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-from pandas.api.types import is_datetime64_any_dtype
+from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype
 
 from formatting import normalized_name
 
@@ -80,6 +81,16 @@ IDENTIFIER_TOKENS = ("id", "uuid", "key", "code", "number", "invoice", "order")
 TIME_PART_TOKENS = ("year", "month", "week", "day", "hour", "minute", "quarter")
 
 
+# A trailing unit or annotation is not the head noun. "Revenue (USD)" is
+# revenue; scoring it on "usd" let an unrelated column take the measure role.
+_ANNOTATION = re.compile(r"\s*[(\[][^)\]]*[)\]]\s*$")
+
+
+def _head_words(name: str) -> list[str]:
+    """Words of a column name, with any trailing annotation removed."""
+    return normalized_name(_ANNOTATION.sub("", str(name))).split()
+
+
 def _keyword_score(name: str, keywords: dict[str, int]) -> int:
     """Score a column name, trusting its last word most.
 
@@ -88,7 +99,7 @@ def _keyword_score(name: str, keywords: dict[str, int]) -> int:
     a packaging attribute that scored just as high as the real product
     dimension while both merely contained the word "product".
     """
-    words = normalized_name(name).split()
+    words = _head_words(name)
     if not words:
         return 0
     head_score = keywords.get(words[-1], 0)
@@ -101,8 +112,13 @@ def looks_like_identifier(name: str, series: pd.Series) -> bool:
         # "Order Date" carries an identifier token and its values are as unique
         # as any key, but a date names a moment, not a row.
         return False
-    normalized = normalized_name(name)
-    token_match = any(token in normalized.split() for token in IDENTIFIER_TOKENS)
+    words = _head_words(name)
+    if words and words[-1] in MEASURE_KEYWORDS:
+        # The last word decides here for the same reason it decides a measure
+        # score: "Invoice Amount" is an amount that happens to sit beside an
+        # invoice, and reading it as a key costs the file its real metric.
+        return False
+    token_match = any(token in words for token in IDENTIFIER_TOKENS)
     unique_ratio = series.nunique(dropna=True) / max(int(series.notna().sum()), 1)
     return token_match and unique_ratio >= 0.8
 
@@ -133,11 +149,22 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
         if any(token == name or name.endswith(f" {token}") for token in TIME_PART_TOKENS):
             score -= 15
         non_null_ratio = float(series.notna().mean())
-        measure_candidates.append((score, non_null_ratio, column))
+        # Amounts carry fractions; postal codes and counters do not. It is a
+        # weak signal, so it only breaks ties -- but it breaks them on the
+        # data, where the fallback was breaking them on column order.
+        continuous = float(
+            not is_bool_dtype(series) and bool((series.dropna() % 1 != 0).any())
+        )
+        measure_candidates.append((score, continuous, non_null_ratio, column))
 
     measure = None
     if measure_candidates:
-        measure = max(measure_candidates, key=lambda candidate: (candidate[0], candidate[1]))[2]
+        # The column name is the final tiebreak so that two exports of one
+        # table, written in different column orders, detect the same measure.
+        measure = min(
+            measure_candidates,
+            key=lambda candidate: (-candidate[0], -candidate[1], -candidate[2], candidate[3]),
+        )[3]
 
     dimensions: list[str] = []
     dimension_candidates: list[tuple[int, int, str]] = []
