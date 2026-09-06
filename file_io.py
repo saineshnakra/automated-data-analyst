@@ -7,6 +7,9 @@ from pathlib import Path
 from zipfile import BadZipFile
 
 import pandas as pd
+from pandas.io.parsers.readers import STR_NA_VALUES
+
+from formatting import normalized_name
 
 SUPPORTED_SUFFIXES = {".csv", ".xlsx", ".xlsm"}
 SAMPLES_DIRECTORY = Path(__file__).parent / "samples"
@@ -68,8 +71,42 @@ def list_excel_sheets(contents: bytes, filename: str) -> list[str]:
     try:
         with pd.ExcelFile(BytesIO(contents), engine="openpyxl") as workbook:
             return [str(name) for name in workbook.sheet_names]
-    except BadZipFile as error:
+    except (BadZipFile, KeyError) as error:
+        # A zip that is not a workbook -- no [Content_Types].xml -- surfaces
+        # from openpyxl as a KeyError, which the app did not catch.
         raise ValueError("The file is not a valid Excel workbook.") from error
+
+
+# pandas reads "NA" as missing by default. In business data it is North
+# America, and a region code was being turned into a blank before cleaning
+# ever saw it. Every other default marker is kept.
+NA_VALUES = sorted(STR_NA_VALUES - {"NA"})
+# A column whose last word says it holds a key is read as text, so an
+# account number written 00042 keeps its zeros instead of becoming 42.
+TEXT_HEAD_WORDS = frozenset({"id", "ids", "code", "codes", "zip", "postal", "phone", "sku", "number", "no"})
+
+
+def _kept_as_text(columns) -> dict[str, type]:
+    kept = {}
+    for column in columns:
+        words = normalized_name(str(column)).split()
+        if words and (words[-1] in TEXT_HEAD_WORDS or words == ["id"]):
+            kept[column] = str
+    return kept
+
+
+def _read_csv(contents: bytes, encoding: str, **options) -> pd.DataFrame:
+    """read_csv with the header peeked first, so id columns stay text."""
+    header = pd.read_csv(BytesIO(contents), encoding=encoding, nrows=0, **options)
+    return pd.read_csv(
+        BytesIO(contents),
+        encoding=encoding,
+        dtype=_kept_as_text(header.columns),
+        keep_default_na=False,
+        na_values=NA_VALUES,
+        low_memory=False,
+        **options,
+    )
 
 
 def _candidate_encodings(contents: bytes) -> tuple[str, ...]:
@@ -105,7 +142,7 @@ def _resplit_single_column(parsed: pd.DataFrame, contents: bytes, encoding: str)
     for separator in (";", "\t", "|"):
         if separator not in header:
             continue
-        candidate = pd.read_csv(BytesIO(contents), encoding=encoding, sep=separator, low_memory=False)
+        candidate = _read_csv(contents, encoding, sep=separator)
         if len(candidate.columns) > 1:
             return candidate
     return parsed
@@ -128,7 +165,7 @@ def _skip_title_row(parsed: pd.DataFrame, contents: bytes, encoding: str) -> pd.
     # table would shred it -- the mistake this rescue is meant to prevent.
     if "," in title or not header.count(",") or header.count(",") != first_row.count(","):
         return parsed
-    candidate = pd.read_csv(BytesIO(contents), encoding=encoding, header=1, low_memory=False)
+    candidate = _read_csv(contents, encoding, header=1)
     return candidate if len(candidate.columns) > 1 else parsed
 
 
@@ -141,18 +178,23 @@ def read_tabular_file(
     suffix = _validate(contents, filename)
     if suffix in EXCEL_SUFFIXES:
         try:
+            sheet = sheet_name if sheet_name is not None else 0
+            header = pd.read_excel(BytesIO(contents), engine="openpyxl", sheet_name=sheet, nrows=0)
             return pd.read_excel(
                 BytesIO(contents),
                 engine="openpyxl",
-                sheet_name=sheet_name if sheet_name is not None else 0,
+                sheet_name=sheet,
+                dtype=_kept_as_text(header.columns),
+                keep_default_na=False,
+                na_values=NA_VALUES,
             )
-        except BadZipFile as error:
+        except (BadZipFile, KeyError) as error:
             raise ValueError("The file is not a valid Excel workbook.") from error
 
     parse_errors: list[Exception] = []
     for encoding in _candidate_encodings(contents):
         try:
-            parsed = pd.read_csv(BytesIO(contents), encoding=encoding, low_memory=False)
+            parsed = _read_csv(contents, encoding)
             parsed = _resplit_single_column(parsed, contents, encoding)
             return _skip_title_row(parsed, contents, encoding)
         except (UnicodeDecodeError, pd.errors.ParserError) as error:

@@ -89,6 +89,24 @@ _ANNOTATION = re.compile(r"\s*[(\[][^)\]]*[)\]]\s*$")
 DATE_NAME_TOKENS = ("date", "time", "timestamp", "created", "updated")
 
 
+EVENT_DATE_TOKENS = ("order", "transaction", "sale", "invoice", "posting", "created", "booking")
+FOLLOW_UP_DATE_TOKENS = ("ship", "delivery", "delivered", "due", "updated", "modified", "closed")
+
+
+def _date_preference(name: str) -> int:
+    words = normalized_name(name).split()
+    if any(token in words for token in EVENT_DATE_TOKENS):
+        return 2
+    if any(token in words for token in FOLLOW_UP_DATE_TOKENS):
+        return 0
+    return 1
+
+
+def _ordinal(text: str) -> int:
+    """A stable number for a string, so it can serve as a max() tiebreak."""
+    return int.from_bytes(text.encode()[:8].ljust(8, b"\0"), "big")
+
+
 def _named_like_a_date(name: str) -> bool:
     return any(token in normalized_name(name).split() for token in DATE_NAME_TOKENS)
 
@@ -141,7 +159,13 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
         date_columns,
         key=lambda column: (
             1 if any(token in normalized_name(column) for token in ("date", "time", "created")) else 0,
+            # The event that produced the row outranks what happened to it
+            # afterwards: an order dates a sale, a shipment dates a delivery.
+            _date_preference(column),
             int(dataframe[column].notna().sum()),
+            # Name last, so two exports of one table in different column
+            # orders cannot land on different dates.
+            -_ordinal(normalized_name(column)),
         ),
         default=None,
     )

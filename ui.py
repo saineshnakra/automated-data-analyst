@@ -183,10 +183,19 @@ def render_evidence(brief: BusinessBrief, *, limit: int | None = None) -> None:
 
 
 def render_ai_narrative(narrative: AINarrative, *, model: str) -> None:
+    # Each action names the evidence it rests on, and the model's own caveats
+    # are shown rather than dropped: both were in the typed response and
+    # neither reached the page, which left the confident parts of the read
+    # standing without the parts that qualified them.
     actions = "".join(
         f'<article class="ai-action"><span class="confidence">{escape(item.confidence)} confidence</span>'
-        f'<strong>{escape(item.title)}</strong><p>{escape(item.recommendation)}</p></article>'
+        f'<strong>{escape(item.title)}</strong><p>{escape(item.recommendation)}</p>'
+        f'<p class="ai-evidence"><em>Evidence:</em> {escape(item.evidence)}</p></article>'
         for item in narrative.actions
+    )
+    watchouts = "".join(f"<li>{escape(item)}</li>" for item in narrative.watchouts)
+    watchout_block = (
+        f'<div class="ai-watchouts"><strong>Watch-outs</strong><ul>{watchouts}</ul></div>' if watchouts else ""
     )
     st.markdown(
         f"""
@@ -195,6 +204,8 @@ def render_ai_narrative(narrative: AINarrative, *, model: str) -> None:
           <h2>{escape(narrative.executive_summary)}</h2>
           <p>{escape(narrative.strategic_read)}</p>
           <div class="ai-actions">{actions}</div>
+          {watchout_block}
+          <p class="ai-caveat">Written by a model from the computed evidence above. It can misread that evidence; the calculations are authoritative, the read is not.</p>
         </section>
         """,
         unsafe_allow_html=True,
@@ -480,8 +491,10 @@ def _explore_frame(
         return dataframe[grouping].dropna()
 
     if spec.aggregation == "count" or not spec.y:
-        frame = dataframe.groupby(keys, dropna=True, observed=True).size().reset_index(name="Records")
-        value = "Records"
+        # A column the file calls "Records" collides with the count column
+        # built here, so the count takes a name the frame is not using.
+        value = next(name for name in ("Records", "Record count", "Rows") if name not in dataframe.columns)
+        frame = dataframe.groupby(keys, dropna=True, observed=True).size().reset_index(name=value)
     else:
         frame = dataframe.groupby(keys, dropna=True, observed=True)[spec.y].sum().reset_index()
         value = spec.y
@@ -494,7 +507,9 @@ def _explore_frame(
 
 def _explore_figure(frame: pd.DataFrame, spec) -> go.Figure | None:
     """Draw exactly the form the recommendation asked for."""
-    value = spec.y if (spec.y and spec.y in frame.columns) else "Records"
+    # The grouped frame's last column is always the value being plotted,
+    # whatever it had to be called.
+    value = spec.y if (spec.y and spec.y in frame.columns) else str(frame.columns[-1])
 
     if spec.form in ("line", "area"):
         if spec.color:
