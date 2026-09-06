@@ -103,6 +103,34 @@ class BusinessAnalysisTests(unittest.TestCase):
         self.assertIn("Calculation:", report)
         self.assertIn("not causal proof", report)
 
+    def test_semantic_percentage_formatting_flows_through_kpi_and_report(self):
+        dataframe = pd.DataFrame(
+            {
+                "Date": pd.to_datetime(
+                    ["2025-01-01", "2025-02-01", "2025-03-01", "2025-04-01"]
+                ),
+                "Gross Margin": [0.35, 0.42, 0.28, 0.31],
+                "Region": ["West", "East", "West", "East"],
+            }
+        )
+
+        roles = detect_roles(dataframe)
+        self.assertEqual(roles.measure, "Gross Margin")
+
+        brief = analyze_business(dataframe, roles)
+        report = build_business_report(
+            dataframe,
+            brief,
+            source_name="formatting_test.csv",
+        )
+
+        kpi_values = [item.value for item in brief.kpis]
+
+        self.assertIn("136.0%", kpi_values)
+        self.assertIn("34.0%", kpi_values)
+        self.assertIn("Gross Margin increased 10.7%", report)
+        self.assertIn("from 28.0% to 31.0%", report)
+
     def test_negative_latest_period_prioritizes_diagnosis(self):
         dataframe = pd.DataFrame(
             {
