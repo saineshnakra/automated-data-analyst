@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from analysis import CleaningReport, CleaningSuggestion, clean_dataframe
 
 import pandas as pd
 
@@ -122,7 +123,29 @@ def apply_focus(
     return filtered.reset_index(drop=True), focused_roles
 
 
-def cleaning_audit_frame(report: CleaningReport) -> pd.DataFrame:
+def cleaning_audit_frame(
+    report: CleaningReport,
+    applied_suggestions: list[CleaningSuggestion] | None = None,
+) -> pd.DataFrame:
+    rows = [
+        ["Empty rows removed", report.empty_rows_removed],
+        ["Empty columns removed", report.empty_columns_removed],
+        ["Exported index columns removed", report.index_columns_removed],
+        ["Duplicate rows removed", report.duplicate_rows_removed],
+        ["Numeric columns inferred", report.numeric_columns_inferred],
+        ["Datetime columns inferred", report.datetime_columns_inferred],
+    ]
+
+    for suggestion in applied_suggestions or []:
+        operation_name = suggestion.operation.replace("_", " ").capitalize()
+
+        rows.append(
+            [
+                f"Suggested: {operation_name} {suggestion.column}",
+                1,
+            ]
+        )
+
     return pd.DataFrame(
         [
             ["Empty rows removed", report.empty_rows_removed],
@@ -133,6 +156,13 @@ def cleaning_audit_frame(report: CleaningReport) -> pd.DataFrame:
             ["Numeric columns inferred", report.numeric_columns_inferred],
             ["Datetime columns inferred", report.datetime_columns_inferred],
             ["Date values that could not be read", report.unparsed_date_cells],
+        ]
+        + [
+            [
+                f"Suggested: {suggestion.operation.replace('_', ' ').capitalize()} {suggestion.column}",
+                1,
+            ]
+            for suggestion in applied_suggestions or []
         ],
         columns=["Operation", "Count"],
     )

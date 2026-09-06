@@ -1,4 +1,4 @@
-import os
+﻿import os
 import shutil
 import subprocess
 import sys
@@ -120,11 +120,11 @@ class StaleModuleTests(unittest.TestCase):
         run()
         with open("file_io.py", "a") as handle:
             handle.write("\n\ndef brand_new_export(frame):\n    return 'fresh'\n")
-        src = open("app.py").read().replace(
+        src = open("app.py", encoding="utf-8").read().replace(
             "from file_io import list_excel_sheets,",
             "from file_io import brand_new_export, list_excel_sheets,",
         )
-        open("app.py", "w").write(src)
+        open("app.py", "w", encoding="utf-8").write(src)
         run()
         import file_io
         print("FRESH" if hasattr(file_io, "brand_new_export") else "STALE")
