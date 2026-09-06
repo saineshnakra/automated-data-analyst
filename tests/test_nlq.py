@@ -291,5 +291,68 @@ class ShareOfTotalTests(unittest.TestCase):
 
         self.assertTrue(answer.answer)
 
+
+
+class AnswerHonestyTests(unittest.TestCase):
+    """Every sentence has to match the arithmetic that produced it."""
+
+    def _roles(self, dated=True):
+        return ColumnRoles(
+            date="Month" if dated else None, measure="Revenue", dimension="Region",
+            identifier=None, numeric=("Revenue",), dimensions=("Region",),
+        )
+
+    def test_a_row_count_is_described_as_a_row_count(self):
+        frame = pd.DataFrame({"Region": ["N"] * 6 + ["S"] * 6, "Revenue": [1.0] * 12})
+        plan = QueryPlan(
+            intent="breakdown", aggregation="count", measure="Revenue", dimension="Region"
+        )
+
+        answer = execute_plan(plan, frame, self._roles(dated=False))
+
+        self.assertIn("row count", answer.calculation)
+        self.assertNotIn("count(Revenue)", answer.calculation)
+        # A count of rows is not money.
+        self.assertNotIn("$", answer.answer)
+
+    def test_a_trend_from_zero_quotes_no_percentage(self):
+        frame = pd.DataFrame(
+            {"Month": pd.date_range("2024-01-01", periods=6, freq="MS"),
+             "Revenue": [0.0, 100.0, 400.0, 800.0, 1200.0, 1600.0],
+             "Region": ["N"] * 6}
+        )
+        plan = QueryPlan(intent="trend", aggregation="sum", measure="Revenue", grain="M")
+
+        answer = execute_plan(plan, frame, self._roles())
+
+        self.assertNotIn("+0.0%", answer.answer)
+        self.assertIn("starting period of zero", answer.answer)
+
+    def test_a_scope_with_no_values_is_not_a_total_of_zero(self):
+        frame = pd.DataFrame({"Region": ["N", "S"], "Revenue": [float("nan")] * 2})
+        plan = QueryPlan(intent="aggregate", aggregation="sum", measure="Revenue")
+
+        answer = execute_plan(plan, frame, self._roles(dated=False))
+
+        self.assertIn("no values", answer.answer)
+        self.assertNotIn("$0.00", answer.answer)
+
+    def test_a_segment_growing_from_zero_is_named_not_deleted(self):
+        frame = pd.DataFrame(
+            {
+                "Month": list(pd.date_range("2024-03-01", periods=2, freq="MS")) * 2,
+                "Region": ["Alpha", "Alpha", "Beta", "Beta"],
+                "Revenue": [300.0, 400.0, 0.0, 5_000.0],
+            }
+        )
+        plan = QueryPlan(
+            intent="growth", aggregation="sum", measure="Revenue", dimension="Region", grain="M"
+        )
+
+        answer = execute_plan(plan, frame, self._roles())
+
+        self.assertIn("Beta", answer.answer)
+        self.assertIn("started from zero", answer.answer)
+
 if __name__ == "__main__":
     unittest.main()
