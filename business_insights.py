@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from aggregation import (
+    build_trend,
     preferred_frequency,
     segment_frame,
     segment_period_change,
@@ -82,27 +83,38 @@ def _movement_in_context(values: np.ndarray, change: float) -> str:
         return ""
 
     distance = abs(change - float(np.median(prior))) / spread
+    # The measurement is distance from the norm, not size. A flat month in a
+    # series that always moves 5% is unusual, but calling 0.0% "an unusually
+    # large swing" describes the opposite of what happened.
+    moved_more = abs(change) > typical
     if distance < 1.0:
         verdict = "This is within normal period-to-period variation"
     elif distance < 2.0:
-        verdict = "This is a larger swing than usual"
+        verdict = "This is a larger swing than usual" if moved_more else "This is quieter than usual"
     else:
-        verdict = "This is an unusually large swing"
+        verdict = (
+            "This is an unusually large swing"
+            if moved_more
+            else "This is an unusually quiet period for this series"
+        )
     return f" {verdict} — this series typically moves about {format_percentage(typical)} per period."
 
 
 def _growth_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
-    trend = trend_frame(dataframe, roles)
+    series = build_trend(dataframe, roles)
+    trend = series.frame
     if len(trend) < 2:
         return None
 
     values = trend["Value"].to_numpy(dtype=float)
     previous = float(values[-2])
     current = float(values[-1])
-    if previous == 0:
+    if previous == 0 or not np.isfinite(previous) or not np.isfinite(current):
         return None
     change = (current - previous) / abs(previous) * 100
-    period = trend.iloc[-1]["Period"].strftime("%b %Y")
+    # A quarter is "Q4 2023", not "Oct 2023" -- which the anomaly card and the
+    # chart axis already knew, so the brief was contradicting its own page.
+    period = format_period(trend.iloc[-1]["Period"], series.frequency)
     measure = roles.measure or "Records"
     measure_values = dataframe[roles.measure].dropna() if roles.measure else None
     direction = "increased" if change >= 0 else "decreased"
@@ -687,26 +699,29 @@ def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) 
         if leader := evidence_by_kind.get("leader"):
             kpis.append(KPI(f"Top {roles.dimension}", leader.value, "Share contributed by the leader"))
 
-    while len(kpis) < 4:
-        if roles.identifier and not any(item.label == f"Distinct {roles.identifier}" for item in kpis):
-            kpis.append(
-                KPI(
-                    f"Distinct {roles.identifier}",
-                    f"{dataframe[roles.identifier].nunique(dropna=True):,}",
-                    "Unique entities in the dataset",
-                )
+    # Back-fill towards four tiles from a finite list of fallbacks. The old
+    # loop ran until it had four and its last branch had no already-added
+    # guard, so a thin file rendered "Data completeness" three times and read
+    # as a broken page. Three real tiles beats four with two copies.
+    completeness = 1 - dataframe.isna().sum().sum() / max(dataframe.size, 1)
+    fallbacks = []
+    if roles.identifier:
+        fallbacks.append(
+            KPI(
+                f"Distinct {roles.identifier}",
+                f"{dataframe[roles.identifier].nunique(dropna=True):,}",
+                "Unique entities in the dataset",
             )
-        elif not any(item.label == "Records analyzed" for item in kpis):
-            kpis.append(KPI("Records analyzed", f"{len(dataframe):,}", "After conservative cleaning"))
-        else:
-            completeness = 1 - dataframe.isna().sum().sum() / max(dataframe.size, 1)
-            kpis.append(
-                KPI(
-                    "Data completeness",
-                    format_percentage(completeness * 100),
-                    "Share of populated cells",
-                )
-            )
+        )
+    fallbacks.append(KPI("Records analyzed", f"{len(dataframe):,}", "After conservative cleaning"))
+    fallbacks.append(
+        KPI("Data completeness", format_percentage(completeness * 100), "Share of populated cells")
+    )
+    for candidate in fallbacks:
+        if len(kpis) >= 4:
+            break
+        if not any(item.label == candidate.label for item in kpis):
+            kpis.append(candidate)
     kpis = kpis[:4]
 
     recommendations = _recommendations(evidence, roles)

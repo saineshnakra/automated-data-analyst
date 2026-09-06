@@ -65,6 +65,27 @@ def _drop_timezone(series: pd.Series) -> pd.Series:
     return series
 
 
+INT64_LIMIT = float(np.iinfo(np.int64).max)
+
+
+def _widen_columns_that_would_overflow(frame: pd.DataFrame) -> int:
+    """Move an integer column to float when its own total will not fit.
+
+    numpy sums int64 in int64, so a strictly positive ledger whose total
+    passes 9.2e18 wraps round to a negative number and every figure built on
+    it is nonsense. Float loses precision in the last few digits; wrapping
+    loses the sign. Only columns that would actually overflow are touched, so
+    ordinary integers keep their type.
+    """
+    widened = 0
+    for column in frame.select_dtypes(include=["int64", "int32", "uint64"]).columns:
+        magnitude = float(frame[column].astype("float64").abs().sum())
+        if magnitude > INT64_LIMIT:
+            frame[column] = frame[column].astype("float64")
+            widened += 1
+    return widened
+
+
 def _normalize_datetime_columns(frame: pd.DataFrame) -> int:
     """Strip timezones from every date column, whatever put them there."""
     changed = 0
@@ -219,6 +240,11 @@ def clean_dataframe(
     datetime_columns_inferred = _normalize_datetime_columns(cleaned)
     unparsed_date_cells = 0
     notes: list[str] = []
+    if _widen_columns_that_would_overflow(cleaned):
+        notes.append(
+            "A column's values are large enough that their total would not fit in a whole "
+            "number, so it is measured as a decimal; the last few digits are approximate."
+        )
     if datetime_columns_inferred:
         notes.append(
             "Timezone offsets were dropped; dates are read as the local time they were written in."

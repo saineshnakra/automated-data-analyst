@@ -108,6 +108,24 @@ def _percentage_uses_fraction_scale(
     return bool(values.min() >= 0 and values.max() <= 1)
 
 
+# Beyond a quadrillion no reader is counting the commas, and a total like
+# 3.6e20 rendered as "360,000,000,000.0B" says less than the exponent does.
+SCALES = ((1_000_000_000_000_000, "e15"), (1_000_000_000_000, "T"),
+          (1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K"))
+
+
+def _compact_magnitude(absolute: float, *, compact: bool) -> str:
+    """Render a positive magnitude on the largest scale that fits, or "" ."""
+    if not compact:
+        return ""
+    if absolute >= 1_000_000_000_000_000:
+        return f"{absolute:.3g}"
+    for threshold, suffix in SCALES[1:]:
+        if absolute >= threshold:
+            return f"{absolute / threshold:,.1f}{suffix}"
+    return ""
+
+
 def format_number(
     value: float,
     column: str | None = None,
@@ -121,22 +139,12 @@ def format_number(
 
     # Currency semantics always take precedence over percentage semantics.
     if is_currency(column):
-        absolute = abs(value)
+        sign = "-" if value < 0 else ""
         prefix = currency_symbol(column)
-        suffix = ""
-        scaled = value
-
-        if compact and absolute >= 1_000_000_000:
-            scaled, suffix = value / 1_000_000_000, "B"
-        elif compact and absolute >= 1_000_000:
-            scaled, suffix = value / 1_000_000, "M"
-        elif compact and absolute >= 1_000:
-            scaled, suffix = value / 1_000, "K"
-
-        if suffix:
-            return f"{prefix}{scaled:,.1f}{suffix}"
-
-        return f"{prefix}{value:,.2f}"
+        body = _compact_magnitude(abs(value), compact=compact)
+        # The minus sign belongs to the amount, not to the currency: a debt is
+        # -$1.2M, never $-1.2M.
+        return f"{sign}{prefix}{body}" if body else f"{sign}{prefix}{abs(value):,.2f}"
 
     if is_percentage(column):
         if _percentage_uses_fraction_scale(value, column_values):
@@ -146,19 +154,10 @@ def format_number(
         # Falls through: a ratio-named column holding a currency-sized number
         # is reported as a plain number rather than an absurd percentage.
 
-    absolute = abs(value)
-    scaled = value
-    suffix = ""
-
-    if compact and absolute >= 1_000_000_000:
-        scaled, suffix = value / 1_000_000_000, "B"
-    elif compact and absolute >= 1_000_000:
-        scaled, suffix = value / 1_000_000, "M"
-    elif compact and absolute >= 1_000:
-        scaled, suffix = value / 1_000, "K"
-
-    if suffix:
-        return f"{scaled:,.1f}{suffix}"
+    sign = "-" if value < 0 else ""
+    body = _compact_magnitude(abs(value), compact=compact)
+    if body:
+        return f"{sign}{body}"
 
     if float(value).is_integer():
         return f"{int(value):,}"

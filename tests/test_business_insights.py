@@ -337,5 +337,61 @@ class BusinessAnalysisTests(unittest.TestCase):
             self.assertNotIn("nan", kpi.value.lower())
 
 
+
+
+class NumberRenderingTests(unittest.TestCase):
+    def test_the_minus_sign_belongs_to_the_amount_not_the_currency(self):
+        self.assertEqual(format_number(-1_200.0, "Expense Amount"), "-$1.2K")
+        self.assertEqual(format_number(-1_500_000.0, "Cost"), "-$1.5M")
+        self.assertEqual(format_number(-12.0, "Cost"), "-$12.00")
+
+    def test_negative_zero_is_just_zero(self):
+        self.assertEqual(format_number(-0.0, "Cost"), "$0.00")
+
+    def test_totals_larger_than_a_billion_keep_a_readable_scale(self):
+        self.assertEqual(format_number(1.5e12, "Revenue"), "$1.5T")
+        # Past a quadrillion the exponent says more than the commas do.
+        self.assertEqual(format_number(3.6e20, "amount"), "$3.6e+20")
+
+
+class KpiStripTests(unittest.TestCase):
+    def test_a_thin_file_shows_fewer_tiles_rather_than_repeating_one(self):
+        frame = pd.DataFrame({"Note": ["a", "b", "c"] * 4})
+
+        brief = analyze_business(frame)
+        labels = [item.label for item in brief.kpis]
+
+        self.assertEqual(len(labels), len(set(labels)))
+
+
+class MovementWordingTests(unittest.TestCase):
+    def test_a_flat_period_is_not_called_a_large_swing(self):
+        values = [1000.0, 1050.0, 1100.0, 1155.0, 1210.0, 1270.0, 1330.0, 1400.0, 1470.0,
+                  1540.0, 1540.0]
+        frame = pd.DataFrame(
+            {"Month": pd.date_range("2023-01-01", periods=len(values), freq="MS"),
+             "Revenue": values}
+        )
+
+        brief = analyze_business(frame)
+        trend = next(item for item in brief.evidence if item.kind == "trend")
+
+        self.assertIn("0.0%", trend.value)
+        self.assertNotIn("large swing", trend.statement)
+        self.assertIn("quiet", trend.statement)
+
+    def test_a_quarter_is_named_as_a_quarter(self):
+        frame = pd.DataFrame(
+            {"Date": pd.date_range("2021-01-01", periods=140, freq="W"),
+             "Revenue": [100.0] * 130 + [400.0] * 10}
+        )
+
+        brief = analyze_business(frame)
+        trend = next(item for item in brief.evidence if item.kind == "trend")
+
+        # Whatever grain was chosen, the label must not name a month for a
+        # period that is not one -- the anomaly card and the axis already agree.
+        self.assertNotRegex(trend.statement, r"\((Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4}\)")
+
 if __name__ == "__main__":
     unittest.main()
