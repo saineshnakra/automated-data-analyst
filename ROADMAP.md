@@ -39,11 +39,10 @@ The roadmap favors analytical depth and trust over a larger pile of charts. Item
 
 ## Decision intelligence
 
-A deliberate push toward what mid-market finance and operations teams expect
-from a decision-intelligence platform, tracked against HeronAI as the
-reference point. The order matters: templates are useful immediately, and
-everything under "connected data" depends on ADA being able to reach a source
-at all.
+What mid-market finance and operations teams expect from a decision tool, and
+what ADA still owes them. The order matters: templates are useful immediately,
+and everything under "connected data" depends on ADA being able to reach a
+source at all.
 
 **Templates** — a file gets the dashboard its shape deserves rather than the
 generic one.
@@ -69,8 +68,8 @@ generic one.
 
 ### Where this stops
 
-Two things a platform like HeronAI offers are not roadmap items here, and
-saying so keeps the rest honest:
+Two things a commercial platform in this space typically offers are not
+roadmap items here, and saying so keeps the rest honest:
 
 - **A catalogue of vendor integrations.** Hundreds of maintained connectors is
   an operating commitment, not a feature. One good generic source that a
