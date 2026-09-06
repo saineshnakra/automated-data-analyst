@@ -119,7 +119,7 @@ def render_sidebar(*, server_api_key: str) -> str:
         st.markdown(
             "- Calculations happen locally\n"
             "- Evidence is shown before interpretation\n"
-            "- Raw rows are never sent to the strategy model\n"
+            "- Your rows are never sent to the strategy model\n"
             "- Recommendations are not causal proof"
         )
         st.markdown("---")
@@ -340,7 +340,7 @@ if source_mode == "Upload your file":
     uploaded_file = st.file_uploader(
         "Upload a CSV or Excel workbook",
         type=["csv", "xlsx", "xlsm"],
-        help="Maximum file size: 25 MB. ADA analyzes the first worksheet.",
+        help="Maximum file size: 25 MB. A workbook with several sheets lets you pick one.",
     )
     business_context = st.text_input(
         "Optional business context",
@@ -489,7 +489,7 @@ with executive_tab:
         render_section_heading(
             "Optional strategy agent",
             "Connect the signals into a strategic read",
-            "Only the computed evidence and supplied business context are sent. Raw uploaded rows stay out of the model prompt.",
+            "Only the computed evidence and supplied business context are sent. Your rows stay out of the model prompt, though the segment names inside an evidence sentence travel with it.",
         )
         control_column, note_column = st.columns([.42, .58], gap="large")
         with control_column:
@@ -513,8 +513,10 @@ with ask_tab:
     render_section_heading(
         "Conversational analyst",
         "Ask this data anything",
-        "Questions become transparent pandas calculations that run locally. "
-        "No question or answer leaves the session, and every reply shows its math.",
+        "Questions become transparent pandas calculations that run locally, and every "
+        "reply shows its math. Only when the rules cannot read a question, and only if you "
+        "supplied a key, is the question itself sent to the planner — which returns a plan "
+        "for you to approve, never an answer.",
     )
     render_ask_ada(dataframe, roles, source_name, api_key)
 

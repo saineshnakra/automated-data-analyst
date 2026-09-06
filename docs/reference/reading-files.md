@@ -20,10 +20,17 @@ empty file is rejected too.
 | Limit | Value | Where | What happens |
 |---|---|---|---|
 | File size | 25 MB | `MAX_UPLOAD_BYTES` in `app.py` | Upload refused with a message |
-| Rows analyzed | 250,000 | `MAX_ANALYSIS_ROWS` in `app.py` | First 250,000 kept, and the app says how many were skipped |
+| Rows analyzed | 250,000 | `MAX_ANALYSIS_ROWS` in `app.py` | The **most recent** 250,000 kept, and the app says how many older rows were skipped and what date range it analyzed |
 
 Both exist so a hosted deployment stays predictable. Change them if you run ADA
 yourself on bigger machines.
+
+Recency matters more than order of appearance. Exports are usually written
+oldest-first, so keeping the head of a long file analyzes the periods nobody is
+asking about — and then forecasts months the file already contains. Rows are
+selected by the detected date column where there is one, and from the end of
+the file where there is not. Cleaning runs before the cut, so the skipped count
+is the real number of rows dropped.
 
 ## How CSV parsing works
 

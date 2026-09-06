@@ -754,7 +754,7 @@ def build_business_report(
         [
             "---",
             "Recommendations are deterministic interpretations of the calculations above, not causal proof.",
-            "Uploaded data was not sent to an external AI service.",
+            "Every figure above was computed locally with pandas.",
         ]
     )
     return "\n".join(lines)

@@ -1,9 +1,11 @@
 # FAQ
 
 **Does my data leave my machine?**
-No. Cleaning, schema detection, every chart, every evidence card, and every Ask
-ADA answer are computed locally with pandas. If you opt into the AI layer, only
-column schema and computed evidence are sent — never rows or cell values. See
+Not if you run ADA yourself — every calculation happens in-process with pandas
+and, without an API key, there is no network call. On the hosted demo your file
+is uploaded to a Streamlit server and held in memory for the session. If you opt
+into the AI layer, column schema and computed evidence are sent; your rows never
+are, though a segment name can appear inside an evidence sentence. See
 [Privacy](privacy.md).
 
 **Do I need an OpenAI API key?**

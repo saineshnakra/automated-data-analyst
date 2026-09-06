@@ -71,15 +71,22 @@ No API key required. The app opens with a built-in demo dataset.
 
 ## Does my data leave my machine?
 
-No. Cleaning, schema detection, every chart, and every Ask ADA answer are
-computed locally with pandas.
+**Running ADA yourself: no.** Cleaning, schema detection, every chart, and every
+Ask ADA answer are computed locally with pandas, with no network call at all.
+
+**Using the hosted demo: your file is uploaded to a Streamlit server**, because
+that is what uploading a file to a website means. It is held in memory for the
+session and never written to a database. If that matters for your data, run ADA
+locally — it is four commands above and needs no key.
 
 An optional AI layer adds two things when you supply a key: a query planner for
 questions the rules cannot parse, and a strategic narrative. The planner shows
 its proposed calculation and waits for your confirmation before ADA executes it
-locally. Both features receive column names, types, and already-computed
-evidence. **Neither receives your rows or cell values.** Model-generated code is
-never executed.
+locally. **Neither ever receives your rows.** They receive column names, types,
+and already-computed evidence — and because an evidence sentence names the
+segment it is about, a segment label such as a customer or product name can
+appear in it. Nothing else from a cell does. Model-generated code is never
+executed.
 
 Full details: [Privacy](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/privacy.md) · [SECURITY.md](https://github.com/saineshnakra/automated-data-analyst/blob/main/SECURITY.md)
 

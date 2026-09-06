@@ -5,12 +5,19 @@ see [SECURITY.md](../SECURITY.md).
 
 ## The short version
 
-**Without an API key, nothing leaves your machine.** Cleaning, schema detection,
-every chart, every evidence card, and every Ask ADA answer are computed locally
-with pandas.
+**Where "local" means depends on where ADA is running.** Run it on your own
+machine and nothing leaves it: cleaning, schema detection, every chart, every
+evidence card and every Ask ADA answer are computed in-process with pandas, and
+without an API key ADA makes no network call at all.
+
+**On the hosted demo, your upload reaches a Streamlit server.** That is what
+uploading to a website is. It lives in memory for the session and is never
+written to a database. Run ADA locally if that matters for your data.
 
 **With an API key, two optional calls become available.** Both send column
-schema and already-computed evidence. Neither sends your rows.
+schema and already-computed evidence. **Neither sends your rows.** An evidence
+sentence names the segment it describes, so a segment label — a customer name,
+a product name — can travel inside it. No other cell value does.
 
 ## What stays local, always
 

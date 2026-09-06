@@ -3,6 +3,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pandas as pd
+
 from ai_insights import (
     MODEL_PRESETS,
     AIAction,
@@ -104,6 +106,61 @@ class AIInsightTests(unittest.TestCase):
         self.assertIn("Validate the leading segment", report)
         self.assertIn("gpt-5.6-luna", report)
         self.assertIn("raw rows were not sent", report)
+
+
+class PayloadContentTests(unittest.TestCase):
+    """The privacy claim is only as good as a test that could falsify it.
+
+    Asserting on key names cannot catch a leak, because a leak arrives inside
+    a value. These put distinctive markers in the data and search the payload
+    text for them.
+    """
+
+    def _frame(self):
+        return pd.DataFrame(
+            {
+                "Order Date": pd.date_range("2024-01-01", periods=24, freq="MS"),
+                "Customer": ["Northwind Ltd", "Barclays plc"] * 12,
+                "Notes": [f"SECRET-NOTE-{index}" for index in range(24)],
+                "Account": [f"ACCT-{index:04d}" for index in range(24)],
+                "Revenue": [100 + index * 10 for index in range(24)],
+            }
+        )
+
+    def test_no_value_from_a_non_segment_column_reaches_the_narrative_payload(self):
+        frame = self._frame()
+        brief = analyze_business(frame, detect_roles(frame))
+
+        payload = build_ai_payload(brief, context="review")
+
+        self.assertNotIn("SECRET-NOTE", payload)
+        self.assertNotIn("ACCT-", payload)
+
+    def test_no_value_from_a_non_segment_column_reaches_the_planner_payload(self):
+        frame = self._frame()
+
+        payload = build_planner_payload("what is total revenue", frame, detect_roles(frame))
+
+        self.assertNotIn("SECRET-NOTE", payload)
+        self.assertNotIn("ACCT-", payload)
+
+    def test_the_segment_names_that_do_travel_are_documented_as_travelling(self):
+        """Evidence sentences name the segment they describe, and that is stated.
+
+        This is not a leak to be fixed silently -- it is the documented
+        boundary. The test exists so the boundary cannot move without someone
+        noticing, in either direction.
+        """
+        frame = self._frame()
+        brief = analyze_business(frame, detect_roles(frame))
+
+        payload = build_ai_payload(brief, context="review")
+
+        self.assertTrue(
+            "Northwind Ltd" in payload or "Barclays plc" in payload,
+            "an evidence sentence names the segment it describes; if that stopped "
+            "being true the privacy documentation should be widened, not narrowed",
+        )
 
 
 class AIQueryPlannerTests(unittest.TestCase):

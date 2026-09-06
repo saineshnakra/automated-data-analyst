@@ -19,10 +19,34 @@ in the cleaning audit table.
 | 5 | Trim text | Leading/trailing whitespace removed; empty strings become missing |
 | 6 | Infer dates | See below |
 | 7 | Infer numbers | See below |
-| 8 | Drop duplicate rows | Exact duplicates across all columns |
+| 8 | Count duplicate rows | Exact duplicates across all columns are **counted and kept** |
 
 If nothing analyzable survives, `clean_dataframe` raises `ValueError` rather
 than returning an empty frame.
+
+## Why duplicate rows are kept
+
+Two sales of the same item, for the same amount, on the same day are an
+ordinary Tuesday at a till — not a defect. Deleting them removes real revenue
+from every number on the page, silently, and on a point-of-sale file that can
+be half the total. So they are counted, reported in the cleaning audit as
+"Identical rows kept", and left alone.
+
+`clean_dataframe(frame, drop_duplicates=True)` opts in, for a caller that knows
+its rows carry a key.
+
+## Dates that could be read two ways
+
+`01/03/2024` is 1 March in most of the world and 3 January in the United States.
+When some value in the column settles it — anything above 12 in the first
+position — that reading wins outright. When nothing settles it, month-first is
+assumed **and the assumption is reported**, because a year of monthly figures
+collapsing into twelve days of January is the one error no later step can
+detect.
+
+Timezone offsets are dropped at this point, keeping the wall clock the file was
+written in. Converting to UTC first would move rows east of Greenwich into the
+previous calendar day, changing which period they belong to.
 
 ## The exported-index rule
 
@@ -41,13 +65,21 @@ might be a genuine counter.
 
 Inference happens per column, and only on text columns.
 
-**Dates** — attempted only when the column name contains `date`, `time`,
-`timestamp`, `created`, or `updated`. Converted when **at least 80%** of
-non-missing values parse as dates.
+**Dates** — a column named `date`, `time`, `timestamp`, `created` or `updated`
+is converted when **at least 80%** of non-missing values parse. A column with
+any other name is also tried, because dates arrive in columns called `Month`,
+`Period` and `FY`: a 50-value sample has to parse first, and then **at least
+95%** of the column. Numbers are tried before that second pass, so a column of
+bare years stays numeric instead of becoming the 1st of January in each.
 
-**Numbers** — converted when **at least 95%** of non-missing values parse as
-numbers. Skipped entirely when the name contains `id`, `code`, `zip`, `postal`,
-or `phone`.
+**Numbers** — converted when **at least 95%** of non-missing values parse.
+Whatever plain parsing cannot read is retried allowing the punctuation a
+finance export writes: thousands separators, a currency symbol, and
+parentheses for a negative. `$1,203.55` and `(48.10)` are numbers; the values
+that need this are the large ones, so leaving them out biases every total
+downwards. A value holding a slash is never read this way, so a date cannot
+become a very large integer. Skipped entirely when the name contains `id`,
+`code`, `zip`, `postal`, or `phone`.
 
 Why the difference in thresholds? Dates arrive in mixed formats and a stricter
 bar would reject real date columns. Numbers are unambiguous, so a column that is

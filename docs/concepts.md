@@ -84,9 +84,11 @@ answer shows the calculation. See [Ask ADA](reference/ask-ada.md).
 
 ## Deterministic vs optional AI
 
-- **Deterministic** — everything computed with pandas on your machine. No
-  network, no API key. This is the whole product.
+- **Deterministic** — everything computed with pandas in-process. No network,
+  no API key. This is the whole product. (On the hosted demo the upload itself
+  reaches a Streamlit server; the analysis still runs there and nowhere else.)
 - **Optional AI** — two narrow extras that need an API key. They receive column
-  names, types, and already-computed evidence. They never receive your rows.
+  names, types, and already-computed evidence — including the segment names an
+  evidence sentence mentions. They never receive your rows.
 
 See [The optional AI layer](reference/ai-layer.md) and [Privacy](privacy.md).
