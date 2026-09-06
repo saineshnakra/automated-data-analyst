@@ -97,6 +97,28 @@ class NLQParsingTests(unittest.TestCase):
     def test_unreadable_question_returns_none(self):
         self.assertIsNone(answer_question("tell me a joke", self.dataframe, self.roles))
 
+    def test_questions_about_unknown_columns_return_none(self):
+        self.assertIsNone(
+            answer_question("what is the craziest product we sell", self.dataframe, self.roles)
+        )
+        self.assertIsNone(answer_question("total sales by region", self.dataframe, self.roles))
+
+    def test_known_bare_dimension_questions_remain_answerable(self):
+        self.assertIsNotNone(answer_question("which product", self.dataframe, self.roles))
+        self.assertIsNotNone(answer_question("revenue by region", self.dataframe, self.roles))
+
+    def test_supported_grammar_and_contractions_remain_answerable(self):
+        for question in (
+            "what's total revenue",
+            "average revenue per region",
+            "revenue timeline",
+            "revenue history",
+            "revenue trajectory",
+            "total revenue in the West",
+        ):
+            with self.subTest(question=question):
+                self.assertIsNotNone(answer_question(question, self.dataframe, self.roles))
+
     def test_suggestions_are_all_answerable(self):
         for question in suggested_questions(self.dataframe, self.roles):
             self.assertIsNotNone(
