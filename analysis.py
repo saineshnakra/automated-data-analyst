@@ -101,31 +101,83 @@ def _normalize_datetime_columns(frame: pd.DataFrame) -> int:
 # optional currency symbol, then digits with grouping punctuation. Anything
 # holding a slash or a letter is not this -- notably a date, which would
 # otherwise survive as a very large integer.
+# A business-formatted number: an optional sign or accounting parentheses, an
+# optional currency symbol, then digits with grouping punctuation. Anything
+# holding a slash or a letter is not this -- notably a date, which would
+# otherwise survive as a very large integer.
 _MONEY = re.compile(r"^[+-]?\(?\s*[-+]?\s*[$\u20ac\u00a3\u00a5\u20b9]?\s*\d[\d,.\s']*\)?$")
+_CURRENCY_CHARS = "$\u20ac\u00a3\u00a5\u20b9"
+
+
+def _read_formatted_number(text: str) -> float | None:
+    """Read one business-formatted number, or refuse it.
+
+    The sign is settled first and never touched again: a leading minus, a
+    leading plus, or accounting parentheses. An earlier version of this
+    stripped "everything that is not a digit" and took the minus sign with it,
+    so refunds became revenue. That is the one mistake this function must not
+    be able to make again, whatever else it gets wrong.
+
+    Then the separators. When both "," and "." appear, the one that comes
+    last is the decimal point and the other is grouping. When only one
+    appears, three digits after it is grouping ("1,000") and one or two is a
+    decimal ("1234,50"); "1,234" alone reads as a thousand, which is what
+    pandas and every US export mean by it.
+    """
+    raw = text.strip()
+    if not raw or not _MONEY.match(raw):
+        return None
+    negative = raw.startswith("-") or (raw.startswith("(") and raw.endswith(")"))
+    body = raw.strip("()+-").strip()
+    if body.startswith("-") or body.startswith("+"):
+        # A second sign after the currency symbol, "$-100", or a redundant one
+        # inside accounting parentheses, "-(100)": both say negative once more.
+        negative = negative or body.startswith("-")
+        body = body[1:].strip()
+    body = "".join(ch for ch in body if ch not in _CURRENCY_CHARS and not ch.isspace() and ch != "'")
+    if not body or not body[0].isdigit():
+        return None
+
+    last_comma, last_dot = body.rfind(","), body.rfind(".")
+    if last_comma >= 0 and last_dot >= 0:
+        decimal = "," if last_comma > last_dot else "."
+    elif last_comma >= 0:
+        digits_after = len(body) - last_comma - 1
+        decimal = "," if body.count(",") == 1 and digits_after in (1, 2) else None
+    elif last_dot >= 0:
+        digits_after = len(body) - last_dot - 1
+        # "1.234.567" is grouped; "1.234" is a decimal; "12.5" is a decimal.
+        decimal = None if body.count(".") > 1 else "."
+        if decimal == "." and body.count(".") == 1 and digits_after == 3 and len(body) > 4:
+            # "1.234" with nothing to disambiguate stays a decimal, matching
+            # pd.to_numeric; only the multi-dot form is treated as grouping.
+            decimal = "."
+    else:
+        decimal = None
+
+    grouping = {",", "."} - ({decimal} if decimal else set())
+    for mark in grouping:
+        body = body.replace(mark, "")
+    if decimal and decimal != ".":
+        body = body.replace(decimal, ".")
+    try:
+        value = float(body)
+    except ValueError:
+        return None
+    return -value if negative else value
 
 
 def _numeric_from_text(values: pd.Series) -> pd.Series:
-    """Read business-formatted numbers: "$1,203.55", "(48.10)", "1 234,50".
+    """Read business-formatted numbers cell by cell: "$1,203.55", "(48.10)", "1 234,50".
 
     A thousands separator is punctuation, not data, and an amount in
     parentheses is how every accounting export writes a negative. Reading
     them as text loses the largest values in the file, which are exactly the
     ones with a separator in them.
     """
-    text = values.astype("string").str.strip()
-    money = text.str.match(_MONEY, na=False)
-    text = text.where(money)
-    negative = text.str.contains(r"\(", na=False)
-    text = text.str.replace(r"[^\d,.]", "", regex=True)
-    # "1.234,50" is European; "1,234.50" is not. Whichever separator comes
-    # last is the decimal point.
-    european = text.str.contains(r",\d{1,2}$", na=False) & ~text.str.contains(r"\.\d", na=False)
-    text = text.mask(
-        european, text.str.replace(".", "", regex=False).str.replace(",", ".", regex=False)
-    )
-    text = text.mask(~european, text.str.replace(",", "", regex=False))
-    parsed = pd.to_numeric(text, errors="coerce")
-    return parsed.mask(negative & parsed.notna(), -parsed)
+    return values.map(
+        lambda value: _read_formatted_number(value) if isinstance(value, str) else None
+    ).astype("float64")
 
 
 # A date written day-or-month first: "3/1/2024", "03-01-24". A year-leading
@@ -254,11 +306,7 @@ def clean_dataframe(
     datetime_columns_inferred = _normalize_datetime_columns(cleaned)
     unparsed_date_cells = 0
     notes: list[str] = []
-    if _widen_columns_that_would_overflow(cleaned):
-        notes.append(
-            "A column's values are large enough that their total would not fit in a whole "
-            "number, so it is measured as a decimal; the last few digits are approximate."
-        )
+
     if datetime_columns_inferred:
         notes.append(
             "Timezone offsets were dropped; dates are read as the local time they were written in."
@@ -301,10 +349,12 @@ def clean_dataframe(
                 # punctuation a finance export writes: grouping separators, a
                 # currency symbol, parentheses for a negative. The values that
                 # need it are the large ones, so leaving them out biases every
-                # total downwards.
-                formatted = _numeric_from_text(cleaned[column])
-                if formatted.notna().sum() > parsed_numeric.notna().sum():
-                    parsed_numeric = formatted
+                # total downwards. Only the gaps are filled -- a value plain
+                # parsing already read ("1e3") is never replaced.
+                gaps = parsed_numeric.isna() & cleaned[column].notna()
+                if gaps.any():
+                    formatted = _numeric_from_text(cleaned[column].where(gaps))
+                    parsed_numeric = parsed_numeric.astype("float64").fillna(formatted)
             if parsed_numeric.notna().sum() / non_null_before >= numeric_ratio:
                 cleaned[column] = parsed_numeric
                 numeric_columns_inferred += 1
@@ -325,6 +375,14 @@ def clean_dataframe(
                         notes.append(_ordering_note(column, ordering))
                     cleaned[column] = _drop_timezone(parsed_dates)
                     datetime_columns_inferred += 1
+
+    # Inference can produce a new int64 column, so the overflow check runs
+    # once everything that will be numeric already is.
+    if _widen_columns_that_would_overflow(cleaned):
+        notes.append(
+            "A column's values are large enough that their total would not fit in a whole "
+            "number, so it is measured as a decimal; the last few digits are approximate."
+        )
 
     duplicate_rows = int(cleaned.duplicated().sum())
     if drop_duplicates:

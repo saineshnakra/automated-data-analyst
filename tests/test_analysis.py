@@ -142,6 +142,40 @@ class TimezoneTests(unittest.TestCase):
 
 
 class BusinessFormattedNumberTests(unittest.TestCase):
+    def test_a_leading_minus_sign_is_never_lost(self):
+        """The one mistake this parser must not be able to make: a refund
+        becoming revenue because the sign was stripped with the punctuation."""
+        frame = pd.DataFrame({"Amount": ["-100", "1,000", "-$1,000.00", "$2,000.00", "(48.10)"]})
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["Amount"].tolist(), [-100.0, 1000.0, -1000.0, 2000.0, -48.10])
+
+    def test_european_decimals_keep_their_magnitude(self):
+        frame = pd.DataFrame({"Amount": ["1.234,50", "2.345,60", "1 234,50", "1'234.50"]})
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["Amount"].tolist(), [1234.5, 2345.6, 1234.5, 1234.5])
+
+    def test_a_value_plain_parsing_already_read_is_never_replaced(self):
+        frame = pd.DataFrame({"Amount": ["1e3"] + ["1,000"] * 19})
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(int(cleaned["Amount"].isna().sum()), 0)
+        self.assertEqual(cleaned["Amount"].iloc[0], 1000.0)
+
+    def test_overflow_widening_sees_columns_that_inference_produced(self):
+        frame = pd.DataFrame({"Amount": ["5000000000000000000"] * 2})
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertGreater(float(cleaned["Amount"].sum()), 0)
+        self.assertAlmostEqual(float(cleaned["Amount"].sum()), 1e19, delta=1e4)
+        self.assertTrue(any("would not fit" in note for note in report.notes))
+
+
     def test_thousands_separators_do_not_delete_the_largest_values(self):
         frame = pd.DataFrame({"Revenue": ["950.00", "1,203.55", "12,400.10", "88.20"]})
 

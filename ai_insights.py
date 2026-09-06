@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from business_insights import BusinessBrief
 from nlq import AGGREGATION_LABELS, QueryAnswer, QueryPlan, ValueFilter, execute_plan
-from schema import ColumnRoles
+from schema import ColumnRoles, looks_like_identifier
 
 
 class AIAction(BaseModel):
@@ -211,20 +211,37 @@ def _usable_measure(dataframe: pd.DataFrame, column: str, aggregation: str) -> b
     return is_numeric_dtype(dataframe[column])
 
 
+# Below this many rows, every value being distinct says nothing: a two-row
+# regional summary has two distinct regions and is exactly what a breakdown
+# is for.
+IDENTIFIER_EVIDENCE_ROWS = 25
+
+
 def _usable_dimension(dataframe: pd.DataFrame, column: str) -> bool:
-    """A segment groups records together. A timestamp or an id does not."""
+    """A segment groups records together. A timestamp or an id does not.
+
+    Uniqueness on its own is not evidence of an identifier -- a pre-aggregated
+    table is unique by construction. So a column is refused when its name
+    says it is a key, when it is a timestamp, when it is a continuous number,
+    or when it is unique across enough rows for that to mean something.
+    """
     series = dataframe[column]
     if is_datetime64_any_dtype(series):
         return False
     present = int(series.notna().sum())
     if not present:
         return False
+    if looks_like_identifier(column, series):
+        return False
+    distinct = int(series.nunique(dropna=True))
     if is_numeric_dtype(series) and not is_bool_dtype(series):
         # A continuous measure is not a segment, and grouping by it produces a
         # row per distinct value.
-        if series.dropna().nunique() > present * IDENTIFIER_UNIQUENESS:
+        if (series.dropna() % 1 != 0).any() or distinct > present * IDENTIFIER_UNIQUENESS:
             return False
-    return series.nunique(dropna=True) <= present * IDENTIFIER_UNIQUENESS
+    if present >= IDENTIFIER_EVIDENCE_ROWS and distinct > present * IDENTIFIER_UNIQUENESS:
+        return False
+    return True
 
 
 def _to_query_plan(
@@ -381,7 +398,10 @@ def describe_query_plan(plan: QueryPlan) -> str:
         described = "rows" if plan.aggregation == "count" else f"{aggregation.lower()} {measure}"
         description = f"rank {plan.dimension} by {described}, showing {showing}"
     elif plan.intent == "breakdown":
-        described = "rows" if plan.aggregation == "count" else f"total {measure}"
+        # The executor honours every aggregation here, so the sentence must
+        # name the one chosen. Hard-coding "total" once described a mean as a
+        # sum, which is the exact lie the approval step exists to prevent.
+        described = "rows" if plan.aggregation == "count" else f"{aggregation.lower()} {measure}"
         description = f"break {described} down by {plan.dimension}"
     else:
         description = f"{aggregation.lower()} of {measure}"

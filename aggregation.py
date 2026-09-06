@@ -262,6 +262,22 @@ def segment_frame(dataframe: pd.DataFrame, roles: ColumnRoles, limit: int = 12) 
 UNLABELLED_SEGMENT = "(not recorded)"
 
 
+def unlabelled_label(existing) -> str:
+    """The name shown for rows with no segment, chosen not to be a real one.
+
+    The file can already contain the literal "(not recorded)" -- some exports
+    write exactly that -- and folding genuinely blank rows into it merged two
+    different populations into one number. Step the label until it is unused.
+    """
+    present = {str(value) for value in existing if value is not None}
+    label = UNLABELLED_SEGMENT
+    suffix = 2
+    while label in present:
+        label = f"{UNLABELLED_SEGMENT[:-1]}, {suffix})"
+        suffix += 1
+    return label
+
+
 def segment_period_change(
     dataframe: pd.DataFrame, roles: ColumnRoles
 ) -> tuple[pd.DataFrame, pd.Timestamp, pd.Timestamp] | None:
@@ -285,7 +301,7 @@ def segment_period_change(
     # here and keeping it in the trend meant the drivers were shares of a
     # movement they did not add up to.
     working[roles.dimension] = working[roles.dimension].astype(object).where(
-        working[roles.dimension].notna(), UNLABELLED_SEGMENT
+        working[roles.dimension].notna(), unlabelled_label(working[roles.dimension].dropna().unique())
     )
     working["Period"] = working[roles.date].dt.to_period(frequency).dt.to_timestamp()
     comparison = working[working["Period"].isin([previous_period, current_period])]

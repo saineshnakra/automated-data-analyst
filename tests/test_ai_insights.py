@@ -187,6 +187,28 @@ class PlanValidationTests(unittest.TestCase):
         self.assertEqual(plan.dimension, "Region")
         self.assertEqual(plan.grain, "M")
 
+    def test_the_breakdown_sentence_names_the_aggregation_that_runs(self):
+        """A mean described as "total" is the exact lie the gate exists to stop."""
+        for aggregation, word in (("sum", "total"), ("mean", "average"), ("median", "median"),
+                                  ("min", "minimum"), ("max", "maximum")):
+            with self.subTest(aggregation=aggregation):
+                plan = self._plan(intent="breakdown", aggregation=aggregation,
+                                  measure="Revenue", dimension="Region")
+                assert plan is not None
+                self.assertIn(f"{word} Revenue", describe_query_plan(plan))
+
+    def test_a_small_pre_aggregated_table_can_be_broken_down(self):
+        """Two regions in a two-row summary are unique by construction, not an id."""
+        summary = pd.DataFrame({"Region": ["West", "East"], "Revenue": [100.0, 200.0]})
+
+        plan = _to_query_plan(
+            AIQueryPlan(answerable=True, intent="breakdown", aggregation="sum",
+                        measure="Revenue", dimension="Region"),
+            summary, detect_roles(summary),
+        )
+
+        self.assertIsNotNone(plan)
+
     def test_every_approved_plan_executes_without_raising(self):
         """Nothing that survives validation may blow up in the executor."""
         for intent in ("aggregate", "count", "rank", "breakdown", "trend", "growth"):

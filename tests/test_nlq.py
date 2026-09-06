@@ -281,6 +281,20 @@ class ShareOfTotalTests(unittest.TestCase):
         self.assertAlmostEqual(float(answer.table["Total Revenue"].sum()), 1050.0)
         self.assertIn("(not recorded)", list(answer.table["Region"]))
 
+    def test_a_real_not_recorded_value_is_not_merged_with_blanks(self):
+        frame = pd.DataFrame(
+            {"Region": [None, "(not recorded)", None, "(not recorded)"], "Revenue": [300.0] * 4}
+        )
+        plan = QueryPlan(
+            intent="breakdown", aggregation="sum", measure="Revenue", dimension="Region"
+        )
+
+        answer = execute_plan(plan, frame, self._roles(frame))
+
+        # Two populations, two rows, each with its own 600.
+        self.assertEqual(len(answer.table), 2)
+        self.assertEqual(set(answer.table["Total Revenue"]), {600.0})
+
     def test_a_dimension_that_is_entirely_blank_does_not_crash(self):
         frame = pd.DataFrame({"Region": [None, None], "Revenue": [1.0, 2.0]})
         plan = QueryPlan(

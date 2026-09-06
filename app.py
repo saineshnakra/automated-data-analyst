@@ -3,19 +3,96 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import os
 import secrets
+import sys
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 from streamlit.errors import StreamlitSecretNotFoundError
 
-from analysis import column_profile
-from business_insights import BusinessBrief, analyze_business, build_business_report
-from demo_data import make_demo_data
-from file_io import list_excel_sheets, list_sample_datasets, read_tabular_file, safe_csv
-from nlq import QueryPlan, answer_question, suggested_questions
-from pipeline import (
+# ---------------------------------------------------------------------------
+# Keep ADA's own modules current across deploys.
+#
+# Streamlit re-executes this file on every rerun, but a module it has already
+# imported stays in sys.modules until the process restarts -- and a hosted
+# process can outlive many deploys. When file_io.py gained a function and this
+# file started importing it, the host was still holding July's file_io and
+# raised "cannot import name" until someone rebooted it by hand. So before any
+# local import, every local module whose source on disk no longer matches what
+# was loaded is reloaded, leaves first so dependants rebind to fresh code.
+# ---------------------------------------------------------------------------
+_HERE = Path(__file__).resolve().parent
+_LOCAL_MODULES = (  # dependency order: a module lists only modules above it
+    "formatting", "schema", "timeseries", "anomalies", "forecasting", "aggregation",
+    "analysis", "autovis", "file_io", "demo_data", "business_insights", "nlq",
+    "pipeline", "ai_insights", "ui",
+)
+
+
+def _source_digest(name: str) -> str:
+    path = _HERE / f"{name}.py"
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else ""
+
+
+@st.cache_resource(show_spinner=False)
+def _loaded_digests() -> dict[str, str]:
+    """What each local module looked like when this process first loaded it."""
+    return {}
+
+
+def _refresh_stale_modules() -> None:
+    loaded = _loaded_digests()
+    stale = [
+        name
+        for name in _LOCAL_MODULES
+        if name in sys.modules and loaded.get(name) not in ("", None, _source_digest(name))
+    ]
+    if stale:
+        # Reload the whole chain from the first stale module onwards, so a
+        # module that imported a name from it is rebound rather than left
+        # holding the old object.
+        first = min(_LOCAL_MODULES.index(name) for name in stale)
+        for name in _LOCAL_MODULES[first:]:
+            if name in sys.modules:
+                importlib.reload(sys.modules[name])
+    for name in _LOCAL_MODULES:
+        loaded[name] = _source_digest(name)
+
+
+_refresh_stale_modules()
+
+
+@st.cache_resource(show_spinner=False)
+def build_identifier() -> str:
+    """The revision this process is serving, so a mixed deploy is visible.
+
+    Prefers the git commit; falls back to a digest of the source files, which
+    also changes if any one of them differs from the rest of the checkout.
+    """
+    head = _HERE / ".git" / "HEAD"
+    try:
+        ref = head.read_text().strip()
+        if ref.startswith("ref: "):
+            ref = (_HERE / ".git" / ref[5:]).read_text().strip()
+        if len(ref) >= 7:
+            return ref[:7]
+    except OSError:
+        pass
+    digest = hashlib.sha256()
+    for name in _LOCAL_MODULES + ("app",):
+        digest.update(_source_digest(name).encode())
+    return "src-" + digest.hexdigest()[:7]
+
+
+from analysis import column_profile  # noqa: E402 - the refresh above must run first
+from business_insights import BusinessBrief, analyze_business, build_business_report  # noqa: E402
+from demo_data import make_demo_data  # noqa: E402
+from file_io import list_excel_sheets, list_sample_datasets, read_tabular_file, safe_csv  # noqa: E402
+from nlq import QueryPlan, answer_question, suggested_questions  # noqa: E402
+from pipeline import (  # noqa: E402
     apply_focus,
     apply_role_selection,
     cleaning_audit_frame,
@@ -28,7 +105,7 @@ from pipeline import (
 # at module scope meant one missing package took down the whole product --
 # including the deterministic analysis that is the reason to open ADA without
 # a key at all. A failure here disables the two optional calls and nothing else.
-try:
+try:  # noqa: E402
     from ai_insights import (
         DEFAULT_PRESET,
         MODEL_PRESETS,
@@ -46,7 +123,7 @@ except Exception as error:  # noqa: BLE001 - any import failure must degrade, no
     AI_LAYER_ERROR = f"{type(error).__name__}: {error}"
     DEFAULT_PRESET, MODEL_PRESETS, AINarrative = "", {}, ()
 
-from ui import (
+from ui import (  # noqa: E402
     inject_styles,
     render_ai_narrative,
     render_brief,
@@ -369,7 +446,7 @@ if source_mode == "Upload your file":
     )
     if uploaded_file is None:
         render_how_it_works()
-        render_footer()
+        render_footer(build=build_identifier())
         st.stop()
 
 try:
@@ -403,7 +480,7 @@ try:
     else:
         # No usable source: show the explainer rather than a traceback.
         render_how_it_works()
-        render_footer()
+        render_footer(build=build_identifier())
         st.stop()
 
     prepared = prepare_analysis(raw_dataframe, row_limit=MAX_ANALYSIS_ROWS)
@@ -618,4 +695,4 @@ with data_tab:
     st.subheader("Data dictionary")
     st.dataframe(column_profile(dataframe), hide_index=True, width="stretch")
 
-render_footer()
+render_footer(build=build_identifier())
