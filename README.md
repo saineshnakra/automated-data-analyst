@@ -73,9 +73,11 @@ No. Cleaning, schema detection, every chart, and every Ask ADA answer are
 computed locally with pandas.
 
 An optional AI layer adds two things when you supply a key: a query planner for
-questions the rules cannot parse, and a strategic narrative. Both receive column
-names, types, and already-computed evidence. **Neither receives your rows or
-cell values.** Model-generated code is never executed.
+questions the rules cannot parse, and a strategic narrative. The planner shows
+its proposed calculation and waits for your confirmation before ADA executes it
+locally. Both features receive column names, types, and already-computed
+evidence. **Neither receives your rows or cell values.** Model-generated code is
+never executed.
 
 Full details: [Privacy](docs/privacy.md) · [SECURITY.md](SECURITY.md)
 
