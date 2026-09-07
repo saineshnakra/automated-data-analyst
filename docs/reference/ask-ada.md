@@ -81,6 +81,22 @@ If none match, `parse_question` returns `None` — and returning `None` is the
 correct behavior, not a failure. It is what triggers the AI fallback or the
 suggestion list, rather than ADA guessing.
 
+### Refusing unreadable questions
+
+Before a plan is built, every word in the question must be either a known
+column/value, part of the query grammar (aggregation, ranking, growth, time,
+grain words), or one of `QUERY_STOPWORDS` — a fixed allowlist of function
+words ("the", "by", "how", "give", "were", ...). Any other word — a column
+that doesn't exist, a typo, an off-topic request — refuses the question
+(`None`) instead of guessing. This is why "tell me a joke" and "total sales by
+region" (no `sales` column) return `None`.
+
+`QUERY_STOPWORDS` is a temporary, allowlist-based approach: ordinary phrasing
+("how much revenue did we make") can fail until its function words are added
+to the list. The [long-term fix](https://github.com/saineshnakra/automated-data-analyst/issues/32)
+is schema-based validation — refuse only when a question names a column or
+measure that genuinely doesn't exist, rather than maintaining a word list.
+
 ## Execution
 
 `execute_plan` applies filters, aggregates, and returns a `QueryAnswer`:
