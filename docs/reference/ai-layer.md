@@ -86,16 +86,25 @@ Tests pass a fake client and assert on the exact payload. That is how the
 privacy contract is enforced by the test suite rather than by good intentions:
 
 ```python
-def test_payload_contains_no_row_values():
-    fake = FakeClient()
-    generate_ai_narrative(brief, api_key="test", config=..., client=fake, ...)
-    assert "some-customer-name" not in fake.last_input
+def test_no_value_from_a_non_segment_column_reaches_the_narrative_payload(self):
+    frame = self._frame()          # a Notes column holding "SECRET-NOTE-<n>"
+    brief = analyze_business(frame, detect_roles(frame))
+    payload = build_ai_payload(brief, context="review")
+    self.assertNotIn("SECRET-NOTE", payload)
 ```
+
+A companion test asserts the opposite for the segment column — that a customer
+name *does* appear in the payload — so the documented exception is pinned from
+both sides.
 
 ## Changing this
 
-Any change here needs a privacy test proving no cell values enter the payload.
-The invariants are:
+Any change here needs a privacy test of the same shape as the one above: put
+a distinctive value in a non-segment column and prove it reaches neither
+payload, and keep the segment-label exception exactly as documented — an
+evidence sentence still names the segment it describes, and a test asserts
+that it does, so the boundary cannot move silently in either direction. The
+invariants are:
 
 1. Payloads are built from schema and computed evidence only
 2. Output is parsed into a typed schema

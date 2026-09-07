@@ -41,7 +41,13 @@ stable series. That is a detector nobody trusts by the third dashboard.
 So ADA measures the multiplier instead. `tools/calibrate_anomalies.py` simulates
 stable series — a straight line plus normal noise, containing nothing to find —
 at each history length, and records the multiplier that keeps the false-alarm
-rate at **5%** (`FALSE_ALARM_RATE`). One stable series in twenty raises a flag.
+rate at **5%** (`FALSE_ALARM_RATE`). On a series like the ones simulated, one
+stable series in twenty raises a flag.
+
+That qualifier matters. The 5% is a calibration against a stated model of
+noise, not a property of every file; the section on
+[what it assumes](#what-the-5-assumes) says where it holds and where it is
+known not to.
 
 ## The calibrated table
 
@@ -75,20 +81,37 @@ rate. Paste the output back into `CRITICAL_VALUES`. The script is not imported
 by the app — it exists so the numbers in the table are reproducible rather than
 folklore.
 
-## Known limitation: heavy tails
+## What the 5% assumes
 
-The 5% guarantee assumes roughly normal noise. A spiky measure — one where a
-couple of large deals genuinely dominate a month — will exceed the band more
-often than one series in twenty, because for that measure those periods are
-ordinary rather than anomalous.
+The calibration simulates residuals that are **roughly normal** and
+**continuous** — real-valued noise around a straight line, with no two periods
+sharing a value. The multipliers hold the false-alarm rate at 5% for series of
+that kind, and only for series of that kind. ADA does not promise a universal
+one-in-twenty rate, and the two ways a real measure departs from the model are
+known:
 
+**Heavy tails.** A spiky measure — one where a couple of large deals genuinely
+dominate a month — will exceed the band more often than one series in twenty,
+because for that measure those periods are ordinary rather than anomalous.
 Calibration for heavy-tailed measures is on the [roadmap](../../ROADMAP.md).
 
-## Trading the guarantee for sensitivity
+**Near-two-valued series.** A measure that mostly reads one of two values — a
+count that sits at 20 or 21 every period, say — breaks the continuity
+assumption. Most residuals are identical, the median absolute deviation
+collapses to zero, and `robust_scale` falls back to the mean absolute
+deviation. Putting that fallback on the same footing as the median estimator
+(see the history of `timeseries.robust_scale`) brought a stable 20-or-21
+series down from being flagged 84% of the time to 72%, which is a real
+improvement and not a fix: such a series still over-flags well beyond 5%. An
+abstention rule was tried and rejected because it also silenced a genuine
+four-fold spike, a worse trade, so the limitation stands and is stated here
+rather than papered over.
+
+## Trading the calibration for sensitivity
 
 `detect_anomalies(trend, threshold=3.0)` overrides the calibrated multiplier.
-That is occasionally the right call, but it gives up the false-alarm guarantee,
-so it should be a deliberate decision rather than a default.
+That is occasionally the right call, but it gives up the calibrated false-alarm
+rate, so it should be a deliberate decision rather than a default.
 
 ## Edge cases
 

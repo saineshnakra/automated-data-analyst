@@ -47,8 +47,11 @@ These protect the thing that makes ADA worth using. Full reasoning in
 3. Formatting changes how a value looks, never what it is.
 4. Evidence is calculated; recommendations are interpretation. Keep them apart,
    and never claim cause.
-5. Raw rows and cell values never reach a model, and model-generated code is
-   never executed.
+5. Raw rows never reach a model, and no cell value does either, with one
+   documented exception: an evidence sentence names the segment it describes,
+   so a segment label can travel inside the strategic read
+   ([docs/privacy.md](docs/privacy.md)). Model-generated code is never
+   executed.
 6. Every analytical rule gets a test, including how it degrades on thin data.
 7. The product works with no API key.
 
