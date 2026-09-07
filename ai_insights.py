@@ -13,7 +13,15 @@ from pydantic import BaseModel, Field
 
 from business_insights import BusinessBrief
 from metrics import resolve_metric
-from nlq import AGGREGATION_LABELS, QueryAnswer, QueryPlan, ValueFilter, execute_plan
+from nlq import (
+    AGGREGATION_LABELS,
+    QueryAnswer,
+    QueryPlan,
+    ValueFilter,
+    execute_plan,
+    plan_accounts_for_numbers,
+    question_is_representable,
+)
 from schema import ColumnRoles, looks_like_identifier
 
 
@@ -130,8 +138,11 @@ class AIQueryPlan(BaseModel):
     top_n: int | None = Field(default=None, ge=1, le=50)
     ascending: bool = False
     filters: list[AIQueryFilter] = Field(default_factory=list, max_length=4)
-    year: int | None = Field(default=None, ge=1900, le=2100)
+    year: int | None = Field(default=None, ge=1800, le=2299)
     month: int | None = Field(default=None, ge=1, le=12)
+    # A single day ("2024-01-31", "January 15") or a calendar quarter ("Q1").
+    day: int | None = Field(default=None, ge=1, le=31)
+    quarter: int | None = Field(default=None, ge=1, le=4)
     grain: Literal["D", "W", "M", "Q", "Y"] | None = None
     # Distinct entities rather than rows: "how many customers" counts this column's unique values.
     count_column: str | None = None
@@ -144,6 +155,9 @@ Use only the listed column names, exactly as written; never invent a column.
 Filter values may only be phrases quoted from the question itself.
 For "how many <entities>", set intent="count" and count_column to the column that identifies
 one entity; leave it unset to count rows.
+A single date sets year, month and day; a quarter sets quarter (1-4) and never month.
+Every number in the question must appear in the plan (year, month, day, quarter, top_n or a
+filter value); if one cannot, the question is not answerable.
 If the schema cannot answer the question, set answerable to false instead of guessing."""
 
 
@@ -306,7 +320,13 @@ def _to_query_plan(
             return None
     # A time filter needs a column to apply it to; without one the executor
     # quietly returns the all-time figure under a scoped-looking sentence.
-    if (parsed.year is not None or parsed.month is not None) and not roles.date:
+    scoped_in_time = any(part is not None for part in (parsed.year, parsed.month, parsed.day, parsed.quarter))
+    if scoped_in_time and not roles.date:
+        return None
+    # A day without a month, or a quarter alongside a month, is not one scope.
+    if parsed.day is not None and parsed.month is None:
+        return None
+    if parsed.quarter is not None and parsed.month is not None:
         return None
     filters: list[ValueFilter] = []
     for item in parsed.filters:
@@ -327,6 +347,8 @@ def _to_query_plan(
         filters=tuple(filters),
         year=parsed.year,
         month=parsed.month,
+        day=parsed.day,
+        quarter=parsed.quarter,
         grain=parsed.grain if parsed.intent in GRAIN_INTENTS else None,
         source="ai",
     )
@@ -346,6 +368,13 @@ def plan_query_with_ai(
     if not api_key.strip():
         raise ValueError("An API key is required for the optional AI query planner.")
     if not question.strip():
+        return None
+    # The planner emits the same plan shape the rules do, so a question no
+    # plan can hold -- two metrics, an arithmetic expression, two months, a
+    # comparison operator -- is refused here as well. Asking the model would
+    # only get back the nearest question the plan can hold, presented for
+    # approval as though it were the one asked.
+    if not question_is_representable(question, dataframe, roles):
         return None
     if client is None:
         from openai import OpenAI
@@ -369,7 +398,12 @@ def plan_query_with_ai(
         parsed = AIQueryPlan.model_validate(parsed)
     if not parsed.answerable:
         return None
-    return _to_query_plan(parsed, dataframe, roles)
+    plan = _to_query_plan(parsed, dataframe, roles)
+    if plan is not None and not plan_accounts_for_numbers(question, plan):
+        # "Revenue 2024-01-31" planned as January 2024 dropped the 31, and
+        # with it the question.
+        return None
+    return plan
 
 
 MONTH_NAMES = {
@@ -386,7 +420,13 @@ def _scope_clause(plan: QueryPlan) -> str:
     clause = f" for {' and '.join(parts)}" if parts else ""
     if plan.month is not None:
         label = MONTH_NAMES.get(plan.month, str(plan.month))
-        clause += f" in {label} {plan.year}" if plan.year is not None else f" in {label}"
+        if plan.day is not None:
+            label = f"{label} {plan.day}"
+        clause += f" {'on' if plan.day else 'in'} {label} {plan.year}" if plan.year is not None else (
+            f" {'on' if plan.day else 'in'} {label}"
+        )
+    elif plan.quarter is not None:
+        clause += f" in Q{plan.quarter} {plan.year}" if plan.year is not None else f" in Q{plan.quarter}"
     elif plan.year is not None:
         clause += f" in {plan.year}"
     return clause

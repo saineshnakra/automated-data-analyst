@@ -169,18 +169,24 @@ def build_trend(
     dataframe: pd.DataFrame,
     roles: ColumnRoles,
     frequency: str | None = None,
+    count_column: str | None = None,
 ) -> TrendSeries:
-    """Aggregate the measure over a human-sized grain, on an even timeline."""
+    """Aggregate the measure over a human-sized grain, on an even timeline.
+
+    With ``count_column`` and no measure, each period holds the number of
+    distinct values in that column: customers per month, not rows per month.
+    """
     if not roles.date:
         return TrendSeries(frame=EMPTY_TREND.copy(), frequency=frequency or "M")
 
-    columns = [roles.date] + ([roles.measure] if roles.measure else [])
+    counted = count_column if count_column and not roles.measure and count_column != roles.date else None
+    columns = [roles.date] + ([roles.measure] if roles.measure else []) + ([counted] if counted else [])
     working = dataframe[columns].dropna(subset=[roles.date]).copy()
     if working.empty:
         return TrendSeries(frame=EMPTY_TREND.copy(), frequency=frequency or "M")
     # Internal names from here on. A measure the file calls "Period" was being
     # overwritten by the period buckets built below, then summed as datetimes.
-    working.columns = ["__date"] + (["__measure"] if roles.measure else [])
+    working.columns = ["__date"] + (["__measure"] if roles.measure else []) + (["__count"] if counted else [])
 
     frequency = frequency or _period_frequency(working["__date"])
     working["Period"] = working["__date"].dt.to_period(frequency).dt.to_timestamp()
@@ -196,7 +202,9 @@ def build_trend(
             partial_period, partial_coverage = None, ""
 
     metric = resolve_metric(roles.measure)
-    if roles.measure:
+    if counted:
+        result = working.groupby("Period")["__count"].nunique().rename("Value").reset_index()
+    elif roles.measure:
         grouped = working.groupby("Period")["__measure"]
         # A period whose every value is missing is a missing period, not a
         # period that measured zero: sum(min_count=1) keeps it NaN.
