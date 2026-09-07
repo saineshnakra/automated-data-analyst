@@ -81,6 +81,12 @@ It ships with a 95% confidence interval via the Fisher transform and the sample
 size. If the interval spans zero, the card says the sample cannot rule out no
 relationship at all.
 
+The pair shown is the **largest of a search** across every eligible numeric
+pair, and the interval is **not adjusted for that search**. Picking the biggest
+of many correlations makes a chance result likelier than a single interval
+suggests, so the card says so in its own text and its calculation string, and
+asks to be read as a lead to test rather than a result.
+
 There is also a rank check: when Pearson and rank correlation diverge by more
 than **0.25** (`RANK_DIVERGENCE`), the relationship is likely driven by a few
 outliers, and the card says so.
