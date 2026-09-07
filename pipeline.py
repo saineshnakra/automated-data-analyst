@@ -83,7 +83,9 @@ NO_SELECTION = "(none)"
 
 
 def _selected(value: str | None) -> str | None:
-    return None if value in (None, NO_SELECTION, "None") else value
+    # Only the sentinel means "no column": a column the file calls "None"
+    # is a column, and choosing it selects it.
+    return None if value in (None, NO_SELECTION) else value
 
 
 def apply_role_selection(
@@ -154,6 +156,8 @@ def cleaning_audit_frame(report: CleaningReport) -> pd.DataFrame:
             ["Numeric columns inferred", report.numeric_columns_inferred],
             ["Datetime columns inferred", report.datetime_columns_inferred],
             ["Date values that could not be read", report.unparsed_date_cells],
+            ["Number values that could not be read", report.numeric_cells_unreadable],
+            ["Infinite values made missing", report.non_finite_cells],
         ],
         columns=["Operation", "Count"],
     )

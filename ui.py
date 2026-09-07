@@ -16,7 +16,7 @@ from pandas.api.types import is_datetime64_any_dtype
 from aggregation import build_trend, driver_frame, heatmap_frame, segment_frame
 from anomalies import detect_anomalies
 from autovis import fold_small_series, recommend_chart
-from business_insights import BusinessBrief
+from business_insights import BusinessBrief, preview_evidence
 from forecasting import build_forecast, describe_backtest
 from formatting import format_number, format_period, rate_scale
 from metrics import resolve_metric
@@ -168,7 +168,7 @@ def render_recommendations(brief: BusinessBrief) -> None:
 
 
 def render_evidence(brief: BusinessBrief, *, limit: int | None = None) -> None:
-    evidence = brief.evidence[:limit] if limit else brief.evidence
+    evidence = preview_evidence(brief.evidence, limit) if limit else list(brief.evidence)
     if not evidence:
         st.markdown(
             '<div class="empty-state">No strong signal yet. Open “Tune detection” and select a date, metric, and segment.</div>',

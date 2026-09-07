@@ -4,7 +4,7 @@ The roadmap favors analytical depth and trust over a larger pile of charts. Item
 
 ## Recently delivered
 
-- **Calibrated anomaly threshold** — the residual band is simulated per history length so a stable series raises a false flag about once in twenty analyses, instead of the one-in-four a fixed three deviations produced
+- **Calibrated anomaly threshold** — the residual band is simulated per history length so a stable series with continuous, roughly normal noise raises a false flag about once in twenty analyses ([what that assumes](docs/reference/anomalies.md#what-the-5-assumes)), instead of the one-in-four a fixed three deviations produced
 - **Honest timelines** — an in-progress trailing period is excluded, periods with no rows count as zero, the grain respects how often the data is actually recorded, and every adjustment is stated
 - **Forecast that admits its limits** — a band that widens with the horizon and a scaled error that says outright when the baseline did not beat assuming no change
 - **Qualified evidence** — movement measured against the series' own volatility, and correlations reported with sample size, a confidence interval, and a rank check for outlier-driven relationships

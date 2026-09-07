@@ -139,6 +139,7 @@ from demo_data import make_demo_data  # noqa: E402
 from file_io import list_excel_sheets, list_sample_datasets, read_tabular_file, safe_csv  # noqa: E402
 from nlq import QueryPlan, answer_question, suggested_questions  # noqa: E402
 from pipeline import (  # noqa: E402
+    NO_SELECTION,
     apply_focus,
     apply_role_selection,
     cleaning_audit_frame,
@@ -559,16 +560,18 @@ for note in prepared.cleaning_report.notes:
 
 dataframe = prepared.dataframe
 detected = prepared.detected_roles
+# A column can be called "None"; the choice of no column is a string no
+# export produces, so the two can never be confused.
 date_options = [
-    "None",
+    NO_SELECTION,
     *[
         column
         for column in dataframe.columns
         if pd.api.types.is_datetime64_any_dtype(dataframe[column])
     ],
 ]
-measure_options = ["None", *detected.numeric]
-dimension_options = ["None", *detected.dimensions]
+measure_options = [NO_SELECTION, *detected.numeric]
+dimension_options = [NO_SELECTION, *detected.dimensions]
 
 with st.expander("Tune ADA's schema detection", expanded=False):
     st.caption("ADA selected these roles automatically. Override them only when the source schema needs context.")
@@ -634,6 +637,11 @@ with executive_tab:
     with executive_columns[1]:
         st.markdown('<div class="section-label">What the data says</div>', unsafe_allow_html=True)
         render_evidence(brief, limit=4)
+        if len(brief.evidence) > 4:
+            st.caption(
+                f"Showing 4 of {len(brief.evidence)} findings. The Evidence tab has every one, "
+                "and the export carries them all."
+            )
         st.markdown(
             '<div class="trust-note"><strong>Trust contract:</strong> evidence cards are calculations. Recommendations are interpretations—not causal proof.</div>',
             unsafe_allow_html=True,

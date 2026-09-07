@@ -674,17 +674,19 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
             )
         )
     elif trend and trend.tone == "positive":
-        improvement = "increase" if increase_is_welcome(roles.measure) else "reduction"
+        favourable = increase_is_welcome(roles.measure)
+        improvement = "increase" if favourable else "reduction"
+        levers = "volume, pricing, and mix" if favourable else "volume, unit cost, and mix"
         recommendations.append(
             Recommendation(
                 "Now",
                 (
-                    f"Make {driver.subject}'s improvement repeatable"
+                    f"Make {driver.subject}'s {improvement} repeatable"
                     if driver and driver.subject
                     else "Protect what improved"
                 ),
                 (
-                    f"Break {driver.subject}'s improvement into volume, pricing, and mix; preserve the "
+                    f"Break {driver.subject}'s {improvement} into {levers}; preserve the "
                     "repeatable driver and test it in the next-best segment."
                     if driver and driver.subject
                     else f"Identify which {roles.dimension or 'operating segment'} created the "
@@ -696,14 +698,23 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
 
     concentration = by_kind.get("concentration")
     leader = by_kind.get("leader")
+    segment = roles.dimension or "segment"
+    # The largest slice of revenue is a leader to learn from; the largest
+    # slice of cost is where a reduction starts. "Build a growth plan for
+    # the next two cost segments" was revenue wording on a cost metric.
+    favourable = increase_is_welcome(roles.measure)
     if concentration and concentration.tone == "warning":
         recommendations.append(
             Recommendation(
                 "Next",
-                "Reduce concentration risk",
+                "Reduce concentration risk" if favourable else "Check where the cost concentrates",
                 (
-                    f"Stress-test the business if the leading {roles.dimension or 'segment'} "
+                    f"Stress-test the business if the leading {segment} "
                     "falls 10–20%, and build a growth plan for the next two segments."
+                    if favourable
+                    else f"Confirm the concentration in the largest {segment} is intended -- one "
+                    "supplier, site or team -- and whether the next two segments can take on the "
+                    "same work at a lower unit cost."
                 ),
                 concentration.statement,
             )
@@ -712,10 +723,13 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
         recommendations.append(
             Recommendation(
                 "Next",
-                "Replicate the leader's playbook",
+                "Replicate the leader's playbook" if favourable else "Start with the largest segment",
                 (
-                    f"Compare the leading {roles.dimension or 'segment'} with the median on "
+                    f"Compare the leading {segment} with the median on "
                     "pricing, volume, and mix; scale the difference that is operationally controllable."
+                    if favourable
+                    else f"Compare the largest {segment} with the median on volume, unit cost, and "
+                    "mix; the controllable difference is where a reduction starts."
                 ),
                 leader.statement,
             )

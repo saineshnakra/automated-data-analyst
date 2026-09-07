@@ -19,7 +19,7 @@ import pandas as pd
 from aggregation import TrendSeries, build_trend, measure_aggregation, preferred_frequency, unlabelled_label
 from formatting import format_number, format_period, rate_scale
 from metrics import resolve_metric
-from schema import ColumnRoles
+from schema import IDENTIFIER_NAME_WORDS, ColumnRoles, is_identifier_name
 
 Intent = Literal["aggregate", "count", "rank", "breakdown", "trend", "growth"]
 Aggregation = Literal["sum", "mean", "median", "min", "max", "count"]
@@ -107,9 +107,6 @@ MONTH_NAMES = {
 
 MAX_FILTER_CANDIDATES = 200
 BREAKDOWN_LIMIT = 12
-KEY_WORDS = frozenset({
-    "id", "ids", "code", "codes", "zip", "postal", "phone", "sku", "number", "no", "key", "uuid",
-})
 
 QUERY_STOPWORDS = {
     "a", "about", "across", "all", "and", "are", "by", "can", "do", "does", "each",
@@ -179,11 +176,6 @@ def _mentioned(normalized_name: str, question: str) -> bool:
     )
 
 
-def _named_like_a_key(name: str) -> bool:
-    words = _norm(name).split()
-    return bool(words) and (words[-1] in KEY_WORDS or words == ["id"])
-
-
 class _Spans:
     """The stretches of a normalized question that something has claimed.
 
@@ -201,11 +193,12 @@ class _Spans:
     def _free(self, start: int, end: int) -> bool:
         return all(end <= taken_start or start >= taken_end for taken_start, taken_end in self.taken)
 
-    def take(self, pattern: str) -> re.Match[str] | None:
-        """Claim the first free match of the pattern, or None."""
+    def take(self, pattern: str, group: int = 0) -> re.Match[str] | None:
+        """Claim the first free match of the pattern (or of one group), or None."""
         for match in re.finditer(pattern, self.text):
-            if match.end() > match.start() and self._free(*match.span()):
-                self.taken.append(match.span())
+            start, end = match.span(group)
+            if end > start and self._free(start, end):
+                self.taken.append((start, end))
                 return match
         return None
 
@@ -215,11 +208,23 @@ class _Spans:
             found.append(match)
         return found
 
-    def leftover(self) -> str:
+    def release(self, start: int, end: int) -> None:
+        self.taken = [span for span in self.taken if span != (start, end)]
+
+    def blanked(self) -> str:
+        """The text with every claimed span blanked out, positions kept.
+
+        Grammar is read from this: a dimension the file calls "Change (pp)"
+        has claimed its word, so "revenue by change" is a breakdown and not a
+        request for growth.
+        """
         characters = list(self.text)
         for start, end in self.taken:
             characters[start:end] = " " * (end - start)
-        return " ".join("".join(characters).split())
+        return "".join(characters)
+
+    def leftover(self) -> str:
+        return " ".join(self.blanked().split())
 
 
 BREAKDOWN_PATTERN = r"\b(by|per|across|breakdown|split|each)\b"
@@ -331,13 +336,13 @@ def _take_countable(spans: _Spans, roles: ColumnRoles, dataframe: pd.DataFrame) 
     A Customer ID that repeats is not unique enough to be the identifier
     role, but "how many customers" still means distinct customers.
     """
-    keyed = [column for column in dataframe.columns if _named_like_a_key(str(column))]
+    keyed = [column for column in dataframe.columns if is_identifier_name(str(column))]
     candidates = [column for column in (roles.identifier, *keyed, *roles.dimensions) if column]
     for column in candidates:
         normalized = _norm(column)
         first_word = normalized.split(" ")[0]
         for token in (normalized, first_word):
-            if not token or token in KEY_WORDS:
+            if not token or token in IDENTIFIER_NAME_WORDS:
                 continue
             for variant in sorted(_word_variants(token), key=len, reverse=True):
                 if spans.take(rf"\b{re.escape(variant)}\b"):
@@ -347,7 +352,7 @@ def _take_countable(spans: _Spans, roles: ColumnRoles, dataframe: pd.DataFrame) 
 
 def _take_mentions(
     spans: _Spans, dataframe: pd.DataFrame, roles: ColumnRoles
-) -> tuple[list[tuple[str, int]], tuple[ValueFilter, ...] | None]:
+) -> tuple[list[tuple[str, int, int]], tuple[ValueFilter, ...] | None]:
     """Claim every column name and dimension value, longest span first.
 
     "New York" is claimed before "York" can be, and "West Region" before
@@ -376,7 +381,7 @@ def _take_mentions(
     # last, so they only claim the word when nothing else in the question does.
     candidates.sort(key=lambda item: (item[1] == "column" and item[0] in GRAMMAR_WORDS, -len(item[0])))
 
-    columns: list[tuple[str, int]] = []
+    columns: list[tuple[str, int, int]] = []
     seen: set[str] = set()
     values: dict[str, list[str]] = {}
     claimed_values: dict[str, str] = {}
@@ -390,13 +395,24 @@ def _take_mentions(
             if re.search(pattern, spans.text):
                 return columns, None
             continue
-        matches = spans.take_all(pattern)
-        if not matches:
+        if kind == "column" and normalized in GRAMMAR_WORDS:
+            # "how many rows by Rows": the column called Rows is the one
+            # after "by"; the other "rows" is the grammar's. A grammar-named
+            # column claims one occurrence, the grounded one first.
+            lead_in = "|".join((*GROUNDING_WORDS, "by", "per", "across", "each"))
+            grounded = rf"\b(?:{lead_in}) ({re.escape(normalized)})\b"
+            found = spans.take(grounded, group=1)
+            spans_found = [found.span(1)] if found else []
+            if not found and (found := spans.take(pattern)):
+                spans_found = [found.span()]
+        else:
+            spans_found = [match.span() for match in spans.take_all(pattern)]
+        if not spans_found:
             continue
         if kind == "column":
             if column not in seen:
                 seen.add(column)
-                columns.append((column, matches[0].start()))
+                columns.append((column, *spans_found[0]))
         else:
             claimed_values[normalized] = column
             values.setdefault(column, []).append(value)  # type: ignore[arg-type]
@@ -413,7 +429,6 @@ def _resolve_mentions(
     metrics, two grouping columns, two months -- and must not be answered
     as though it named one.
     """
-    q = spans.text
     columns, filters = _take_mentions(spans, dataframe, roles)
     if filters is None:
         return None
@@ -423,25 +438,30 @@ def _resolve_mentions(
 
     numeric_columns = set(roles.numeric)
     dimension_columns = set(roles.dimensions)
-    measures = [column for column, _ in columns if column in numeric_columns]
+    measures = [column for column, _, _ in columns if column in numeric_columns]
     if len(measures) > 1:
-        # "total Revenue" in a file with a Total column: the grammar word wins.
+        # "total Revenue" in a file with a Total column: the grammar word
+        # wins, and gets its span back so the grammar can read it.
+        for column, start, end in columns:
+            if column in measures and _norm(column) in GRAMMAR_WORDS:
+                spans.release(start, end)
         measures = [column for column in measures if _norm(column) not in GRAMMAR_WORDS]
     if len(measures) > 1:
         return None
     measure = measures[0] if measures else None
-    date_mentioned = any(column == roles.date for column, _ in columns)
+    date_mentioned = any(column == roles.date for column, _, _ in columns)
 
-    breakdown = re.search(BREAKDOWN_PATTERN, q)
+    grammar = spans.blanked()
+    breakdown = re.search(BREAKDOWN_PATTERN, grammar)
     grouped = [
-        column for column, start in columns
+        column for column, start, _ in columns
         if column in dimension_columns and breakdown is not None and start > breakdown.start()
     ]
     leading = [
-        column for column, start in columns
+        column for column, start, _ in columns
         if column in dimension_columns and (breakdown is None or start < breakdown.start())
     ]
-    wants_count = bool(re.search(COUNT_PATTERN, q))
+    wants_count = bool(re.search(COUNT_PATTERN, grammar))
     if not wants_count and leading and grouped and measure is None:
         # "customers by region" with no metric is a count of one by the other.
         wants_count = True
@@ -469,16 +489,6 @@ def _resolve_mentions(
         date_mentioned=date_mentioned,
         wants_count=wants_count,
     )
-
-
-def _scope_grain(when: TimeScope) -> str | None:
-    if when.quarter is not None:
-        return "quarter"
-    if when.month is not None:
-        return "month"
-    if when.year is not None:
-        return "year"
-    return None
 
 
 def _detect_grain(question: str) -> str | None:
@@ -581,25 +591,25 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
     if dimension is None and top_match and mentions.entity:
         # "top 5 customers by revenue" ranks one row per customer.
         dimension = mentions.entity
-    grain = _detect_grain(q)
-    if grain is not None and grain == {"quarter": "Q", "month": "M", "year": "Y"}.get(_scope_grain(when)):
-        # "first quarter" names a period to look inside, not a grain to
-        # draw a timeline at.
-        grain = None
+    # The grammar is read from what no column, value or date has claimed:
+    # "first quarter" is a period to look inside, not a grain, and a
+    # dimension called "Change (pp)" is not a request for growth.
+    grammar = spans.blanked()
+    grain = _detect_grain(grammar)
     aggregation: Aggregation | None = next(
-        (AGGREGATION_WORDS[word] for word in AGGREGATION_WORDS if re.search(rf"\b{word}\b", q)),
+        (AGGREGATION_WORDS[word] for word in AGGREGATION_WORDS if re.search(rf"\b{word}\b", grammar)),
         None,
     )
     # "highest" and "largest" rank; only the literal words ask for an extreme
     # per group. Both live in AGGREGATION_WORDS as max, so they are told apart
     # here rather than by silently downgrading every min/max to a sum.
-    explicit_extreme = bool(re.search(r"\b(min|minimum|max|maximum)\b", q))
-    superlative = any(re.search(rf"\b{word}\b", q) for word in SUPERLATIVE_WORDS)
-    wants_breakdown = bool(re.search(BREAKDOWN_PATTERN, q))
-    wants_growth = any(re.search(rf"\b{word}\b", q) for word in GROWTH_WORDS)
+    explicit_extreme = bool(re.search(r"\b(min|minimum|max|maximum)\b", grammar))
+    superlative = any(re.search(rf"\b{word}\b", grammar) for word in SUPERLATIVE_WORDS)
+    wants_breakdown = bool(re.search(BREAKDOWN_PATTERN, grammar))
+    wants_growth = any(re.search(rf"\b{word}\b", grammar) for word in GROWTH_WORDS)
     wants_trend = (
         grain is not None
-        or any(phrase in q for phrase in TREND_WORDS)
+        or any(phrase in grammar for phrase in TREND_WORDS)
         or (mentions.date_mentioned and wants_breakdown and dimension is None)
     )
     if dimension is not None and dimension == measure:
@@ -646,9 +656,9 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
             # Growth is measured on periods combined the way the measure
             # combines. "Average revenue growth" would be growth of sums.
             return None
-        wants_ranked_growth = superlative or any(word in q for word in ("which", "fastest", "slowest"))
+        wants_ranked_growth = superlative or any(word in grammar for word in ("which", "fastest", "slowest"))
         rank_dimension = dimension or (roles.dimension if wants_ranked_growth else None)
-        ascending = bool(re.search(ASCENDING_PATTERN, q))
+        ascending = bool(re.search(ASCENDING_PATTERN, grammar))
         top_n = int(top_match.group(2)) if top_match else None
         return QueryPlan(
             intent="growth", aggregation=default_aggregation, dimension=rank_dimension,
@@ -666,7 +676,7 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
             ascending = top_match.group(1) == "bottom"
         else:
             top_n = 1
-            ascending = bool(re.search(ASCENDING_PATTERN, q))
+            ascending = bool(re.search(ASCENDING_PATTERN, grammar))
         return QueryPlan(
             intent="rank",
             aggregation=_grouped_aggregation(aggregation, explicit_extreme, default_aggregation),
@@ -943,10 +953,13 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
         counted = plan.aggregation == "count" or not plan.measure
         if counted and plan.count_column:
             value_label = f"Distinct {plan.count_column}"
+            counted_as = f"count distinct {plan.count_column}"
         elif counted:
             value_label = "Rows"
+            counted_as = "row count"
         else:
             value_label = f"{label} {plan.measure}"
+            counted_as = f"{plan.aggregation}({plan.measure})"
         grouped, value_name, share_name = _grouped_frame(working, plan, value_label)
         limit = plan.top_n if plan.intent == "rank" else BREAKDOWN_LIMIT
         table = grouped.head(limit or BREAKDOWN_LIMIT)
@@ -970,8 +983,7 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
                 # value_label already records whether rows or the measure were
                 # aggregated; naming count(<measure>) when .size() ran flipped
                 # which group won.
-                f"{'row count' if value_label == 'Rows' else f'{plan.aggregation}({plan.measure})'}"
-                f" by {plan.dimension}, {order}, showing {len(table)}{scope}"
+                f"{counted_as} by {plan.dimension}, {order}, showing {len(table)}{scope}"
             ),
             table=table,
             chart="bar",
