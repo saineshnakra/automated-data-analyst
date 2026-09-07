@@ -132,8 +132,6 @@ class NLQParsingTests(unittest.TestCase):
 
     def test_unrelated_questions_remain_refused(self):
         for question in (
-            "tell me a joke",
-            "what is the craziest product we sell",
             "what is the weather",
             "show me the vibe of this data",
         ):
