@@ -7,6 +7,7 @@ import importlib
 import os
 import secrets
 import sys
+import threading
 from pathlib import Path
 
 import pandas as pd
@@ -30,6 +31,9 @@ _LOCAL_MODULES = (  # dependency order: a module lists only modules above it
     "analysis", "autovis", "file_io", "demo_data", "business_insights", "nlq",
     "pipeline", "ai_insights", "ui",
 )
+# The product is whole without these. A deploy that breaks one must degrade
+# the page the way a cold start without it does, not take the page down.
+_OPTIONAL_MODULES = ("ai_insights",)
 
 
 def _source_digest(name: str) -> str:
@@ -37,54 +41,96 @@ def _source_digest(name: str) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else ""
 
 
+def _git_short_sha(root: Path = _HERE) -> str:
+    """The checked-out commit, or "" where there is no checkout to read."""
+    try:
+        ref = (root / ".git" / "HEAD").read_text().strip()
+        if ref.startswith("ref: "):
+            ref = (root / ".git" / ref[5:]).read_text().strip()
+    except OSError:
+        return ""
+    return ref[:7] if len(ref) >= 7 else ""
+
+
 @st.cache_resource(show_spinner=False)
 def _loaded_digests() -> dict[str, str]:
-    """What each local module looked like when this process first loaded it."""
+    """What each local module looked like when this process last loaded it."""
     return {}
 
 
-def _refresh_stale_modules() -> None:
-    loaded = _loaded_digests()
-    stale = [
-        name
-        for name in _LOCAL_MODULES
-        if name in sys.modules and loaded.get(name) not in ("", None, _source_digest(name))
-    ]
-    if stale:
-        # Reload the whole chain from the first stale module onwards, so a
-        # module that imported a name from it is rebound rather than left
-        # holding the old object.
-        first = min(_LOCAL_MODULES.index(name) for name in stale)
-        for name in _LOCAL_MODULES[first:]:
-            if name in sys.modules:
-                importlib.reload(sys.modules[name])
-    for name in _LOCAL_MODULES:
-        loaded[name] = _source_digest(name)
-
-
-_refresh_stale_modules()
+@st.cache_resource(show_spinner=False)
+def _refresh_lock() -> threading.Lock:
+    # Every session reruns this file in its own thread against the one
+    # sys.modules. The lock lives in the cache so it is the same object for
+    # all of them, and only one session performs a reload; the rest wait and
+    # find nothing stale.
+    return threading.Lock()
 
 
 @st.cache_resource(show_spinner=False)
 def build_identifier() -> str:
-    """The revision this process is serving, so a mixed deploy is visible.
+    """The revision this process is serving, so a mixed or stale deploy is visible.
 
-    Prefers the git commit; falls back to a digest of the source files, which
-    also changes if any one of them differs from the rest of the checkout.
+    The label is a digest of the source files, because that is what actually
+    runs: it changes the moment any one of them is out of step with the rest,
+    and it is cleared below whenever a file changes under a live process. The
+    git commit, where there is a checkout to read it from, is appended so the
+    label can be matched to history -- but never stands in for the digest,
+    since a checkout can be ahead of what a long-lived process has loaded.
     """
-    head = _HERE / ".git" / "HEAD"
-    try:
-        ref = head.read_text().strip()
-        if ref.startswith("ref: "):
-            ref = (_HERE / ".git" / ref[5:]).read_text().strip()
-        if len(ref) >= 7:
-            return ref[:7]
-    except OSError:
-        pass
     digest = hashlib.sha256()
     for name in _LOCAL_MODULES + ("app",):
         digest.update(_source_digest(name).encode())
-    return "src-" + digest.hexdigest()[:7]
+    label = digest.hexdigest()[:7]
+    sha = _git_short_sha()
+    return f"{label}@{sha}" if sha else label
+
+
+def _reload_module(name: str) -> None:
+    try:
+        importlib.reload(sys.modules[name])
+    except Exception as error:  # noqa: BLE001 - a deploy can break a module in any way
+        if name in _OPTIONAL_MODULES:
+            # Drop it so the guarded import below meets the failure afresh and
+            # records it, instead of this reload raising ahead of that guard.
+            sys.modules.pop(name, None)
+            return
+        # The hosted browser redacts tracebacks, so name the module and the
+        # failure on the page; then let it propagate, because a page served
+        # from a half-reloaded module would be wrong without saying so.
+        st.error(
+            f"ADA could not load the deployed {name}.py into the running server: "
+            f"{type(error).__name__}: {error}. The page will not render until the "
+            "file is fixed or the server is restarted."
+        )
+        raise
+
+
+def _refresh_stale_modules() -> None:
+    with _refresh_lock():
+        loaded = _loaded_digests()
+        # app.py is tracked too: it is re-executed on every rerun, so it is
+        # never reloaded here, but it is part of the build label.
+        on_disk = {name: _source_digest(name) for name in _LOCAL_MODULES + ("app",)}
+        changed = [name for name, digest in on_disk.items() if loaded.get(name) not in ("", None, digest)]
+        stale = [name for name in changed if name in sys.modules and name in _LOCAL_MODULES]
+        if stale:
+            # Reload the whole chain from the first stale module onwards, so a
+            # module that imported a name from it is rebound rather than left
+            # holding the old object.
+            first = min(_LOCAL_MODULES.index(name) for name in stale)
+            for name in _LOCAL_MODULES[first:]:
+                if name in sys.modules:
+                    _reload_module(name)
+        if changed:
+            # The label describes what is served, and what is served just changed.
+            build_identifier.clear()
+        # A reload that raised never reaches this line, so the next rerun
+        # tries again rather than recording code it does not run.
+        loaded.update(on_disk)
+
+
+_refresh_stale_modules()
 
 
 from analysis import column_profile  # noqa: E402 - the refresh above must run first
@@ -166,7 +212,14 @@ st.set_page_config(
 
 
 @st.cache_data(show_spinner=False, max_entries=8, ttl=3600)
-def read_uploaded_file(contents: bytes, filename: str, sheet_name: str | None = None) -> pd.DataFrame:
+def read_uploaded_file(
+    contents: bytes, filename: str, sheet_name: str | None, revision: str
+) -> pd.DataFrame:
+    # The cache outlives a module refresh, and a reader reloaded by one must
+    # not be answered from the old reader's results. The revision is not read;
+    # it is part of the key, so a new build is a miss. Callers pass
+    # build_identifier() rather than the function reading it, so the key is
+    # visible at the call site.
     return read_tabular_file(contents, filename, sheet_name)
 
 
@@ -309,11 +362,13 @@ def dataset_fingerprint(dataframe: pd.DataFrame, roles, source_name: str) -> str
     different segment -- and an answer, or a pending model plan, carried across
     that boundary is a wrong number with a confident sentence under it. The
     content is hashed, and the roles with it, because changing which column is
-    the measure changes what every answer means.
+    the measure changes what every answer means. So is the build: a code
+    revision changes what a question computes, and an answer or pending plan
+    made by the previous revision must not survive it.
     """
     content = int(pd.util.hash_pandas_object(dataframe, index=False).sum())
     parts = (source_name, str(dataframe.shape), ",".join(map(str, dataframe.columns)),
-             str(content), repr(roles))
+             str(content), repr(roles), build_identifier())
     return hashlib.sha256("|".join(parts).encode()).hexdigest()
 
 
@@ -456,7 +511,7 @@ try:
         business_context = "Two years of orders across products, regions, and sales channels."
     elif source_mode == "Try a sample dataset" and selected_sample is not None:
         sample_path = sample_datasets[selected_sample]
-        raw_dataframe = read_uploaded_file(sample_path.read_bytes(), sample_path.name)
+        raw_dataframe = read_uploaded_file(sample_path.read_bytes(), sample_path.name, None, build_identifier())
         source_name = f"{selected_sample} · sample"
         business_context = SAMPLE_NOTES.get(selected_sample, "")
     elif uploaded_file is not None:
@@ -472,7 +527,7 @@ try:
                 worksheets,
                 help="The workbook has several sheets; ADA analyzes one at a time.",
             )
-        raw_dataframe = read_uploaded_file(contents, uploaded_file.name, selected_sheet)
+        raw_dataframe = read_uploaded_file(contents, uploaded_file.name, selected_sheet, build_identifier())
         source_name = (
             f"{uploaded_file.name} · {selected_sheet}" if selected_sheet else uploaded_file.name
         )
