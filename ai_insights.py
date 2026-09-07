@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass
 from typing import Literal, Protocol
 
@@ -11,6 +12,7 @@ from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_
 from pydantic import BaseModel, Field
 
 from business_insights import BusinessBrief
+from metrics import resolve_metric
 from nlq import AGGREGATION_LABELS, QueryAnswer, QueryPlan, ValueFilter, execute_plan
 from schema import ColumnRoles, looks_like_identifier
 
@@ -131,6 +133,8 @@ class AIQueryPlan(BaseModel):
     year: int | None = Field(default=None, ge=1900, le=2100)
     month: int | None = Field(default=None, ge=1, le=12)
     grain: Literal["D", "W", "M", "Q", "Y"] | None = None
+    # Distinct entities rather than rows: "how many customers" counts this column's unique values.
+    count_column: str | None = None
 
 
 PLANNER_CONFIG = AIConfig("gpt-5.6-luna", "low", "Query planner")
@@ -138,6 +142,8 @@ PLANNER_CONFIG = AIConfig("gpt-5.6-luna", "low", "Query planner")
 PLANNER_INSTRUCTIONS = """You translate one business question about a single table into a strict query plan.
 Use only the listed column names, exactly as written; never invent a column.
 Filter values may only be phrases quoted from the question itself.
+For "how many <entities>", set intent="count" and count_column to the column that identifies
+one entity; leave it unset to count rows.
 If the schema cannot answer the question, set answerable to false instead of guessing."""
 
 
@@ -239,9 +245,27 @@ def _usable_dimension(dataframe: pd.DataFrame, column: str) -> bool:
         # row per distinct value.
         if (series.dropna() % 1 != 0).any() or distinct > present * IDENTIFIER_UNIQUENESS:
             return False
-    if present >= IDENTIFIER_EVIDENCE_ROWS and distinct > present * IDENTIFIER_UNIQUENESS:
+    # Uniqueness alone does not make a text column a key: a pre-aggregated
+    # table with thirty labelled rows is unique by construction. Uniqueness
+    # across enough rows AND values shaped like codes -- "T-0042", "INV0007"
+    # -- does.
+    if (
+        present >= IDENTIFIER_EVIDENCE_ROWS
+        and distinct > present * IDENTIFIER_UNIQUENESS
+        and _values_look_like_codes(series)
+    ):
         return False
     return True
+
+
+_CODE_SHAPE = re.compile(r"^[A-Za-z]{0,6}[-_ ]?\d{2,}[A-Za-z0-9-]*$")
+
+
+def _values_look_like_codes(series: pd.Series, sample: int = 200) -> bool:
+    values = series.dropna().astype(str).head(sample)
+    if values.empty:
+        return False
+    return bool(values.str.match(_CODE_SHAPE).mean() >= 0.8)
 
 
 def _to_query_plan(
@@ -256,14 +280,18 @@ def _to_query_plan(
     """
     measure = parsed.measure or roles.measure
     dimension = parsed.dimension
-    for column in (parsed.measure, parsed.dimension):
+    for column in (parsed.measure, parsed.dimension, parsed.count_column):
         if column is not None and column not in dataframe.columns:
             return None
+    if parsed.count_column is not None and parsed.intent != "count":
+        return None
     if parsed.intent in PERIOD_INTENTS and not roles.date:
         return None
-    # The executor sums periods whatever the plan says, so a plan promising an
-    # average over time would answer a different question than the one approved.
-    if parsed.intent in PERIOD_INTENTS and parsed.aggregation != "sum":
+    # The period executors combine each period the way the measure combines:
+    # amounts are summed, rates are averaged. A plan asking for the other
+    # operation would be approved with one sentence and executed with another,
+    # so it is refused rather than silently corrected.
+    if parsed.intent in PERIOD_INTENTS and parsed.aggregation != resolve_metric(measure).aggregation:
         return None
     if parsed.intent == "aggregate" and not measure:
         return None
@@ -290,6 +318,7 @@ def _to_query_plan(
         intent=parsed.intent,
         aggregation=parsed.aggregation,
         measure=measure if parsed.intent != "count" else None,
+        count_column=parsed.count_column if parsed.intent == "count" else None,
         # Every modifier the chosen intent's executor would ignore is dropped
         # here, so the approval sentence cannot advertise one.
         dimension=dimension if parsed.intent in DIMENSION_INTENTS else None,
@@ -381,16 +410,18 @@ def describe_query_plan(plan: QueryPlan) -> str:
         else:
             description = "count the matching records"
     elif plan.intent == "trend":
-        description = f"track total {measure} per {grain} over time"
+        combined = resolve_metric(plan.measure).combines_as if plan.measure else "count"
+        description = f"track {combined} {measure} per {grain} over time"
     elif plan.intent == "growth":
+        combined = resolve_metric(plan.measure).combines_as if plan.measure else "count"
         if plan.dimension:
             description = (
-                f"rank each {plan.dimension} by how much its total {measure} changed "
+                f"rank each {plan.dimension} by how much its {combined} {measure} changed "
                 f"from the previous {grain} to the latest one"
             )
         else:
             description = (
-                f"compare total {measure} in the latest {grain} with the previous one"
+                f"compare {combined} {measure} in the latest {grain} with the previous one"
             )
     elif plan.intent == "rank":
         direction = "lowest" if plan.ascending else "highest"

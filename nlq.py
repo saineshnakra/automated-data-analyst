@@ -105,6 +105,9 @@ MONTH_NAMES = {
 
 MAX_FILTER_CANDIDATES = 200
 BREAKDOWN_LIMIT = 12
+KEY_WORDS = frozenset({
+    "id", "ids", "code", "codes", "zip", "postal", "phone", "sku", "number", "no", "key", "uuid",
+})
 
 QUERY_STOPWORDS = {
     "a", "about", "across", "all", "and", "are", "by", "can", "do", "does", "each",
@@ -174,9 +177,22 @@ def _match_column(question: str, columns: list[str]) -> str | None:
     return max(matches, key=lambda column: len(_norm(column))) if matches else None
 
 
-def _match_countable(question: str, roles: ColumnRoles) -> str | None:
-    """Match 'how many <entities>' to an identifier or dimension column."""
-    candidates = [column for column in (roles.identifier, *roles.dimensions) if column]
+def _named_like_a_key(name: str) -> bool:
+    words = _norm(name).split()
+    return bool(words) and (words[-1] in KEY_WORDS or words == ["id"])
+
+
+def _match_countable(question: str, roles: ColumnRoles, dataframe: pd.DataFrame | None = None) -> str | None:
+    """Match 'how many <entities>' to an identifier, key-named or dimension column.
+
+    A Customer ID that repeats is not unique enough to be the identifier
+    role, but "how many customers" still means distinct customers.
+    """
+    keyed = [
+        column for column in (dataframe.columns if dataframe is not None else ())
+        if _named_like_a_key(str(column))
+    ]
+    candidates = [column for column in (roles.identifier, *keyed, *roles.dimensions) if column]
     for column in candidates:
         tokens = {_norm(column), _norm(column).split(" ")[0]}
         if any(_mentioned(token, question) for token in tokens if token):
@@ -365,9 +381,12 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
     default_aggregation = measure_aggregation(base["measure"])
 
     if wants_count and not wants_growth:
+        countable = _match_countable(q, roles, dataframe)
         if dimension and wants_breakdown:
-            return QueryPlan(intent="breakdown", aggregation="count", dimension=dimension, **base)
-        countable = _match_countable(q, roles)
+            return QueryPlan(
+                intent="breakdown", aggregation="count", dimension=dimension,
+                count_column=countable if countable != dimension else None, **base,
+            )
         return QueryPlan(intent="count", aggregation="count", count_column=countable, **ungrouped)
 
     if wants_growth and roles.date:
@@ -422,7 +441,9 @@ def _grouped_aggregation(
     aggregation: Aggregation | None, explicit_extreme: bool, default: Aggregation
 ) -> Aggregation:
     """What a rank or breakdown computes per group."""
-    if aggregation in ("mean", "median"):
+    if aggregation in ("sum", "mean", "median"):
+        # Said out loud, so honoured -- including a sum of a rate, which the
+        # ungrouped path already allows; the two must agree.
         return aggregation
     if aggregation in ("min", "max") and explicit_extreme:
         return aggregation
@@ -483,35 +504,77 @@ def _aggregate_series(series: pd.Series, aggregation: Aggregation) -> float:
     return float(getattr(series.dropna(), aggregation)())
 
 
+def distinct_label(wanted: str, taken) -> str:
+    """A display column name that is not already one of the user's columns."""
+    present = {str(name) for name in taken}
+    label, suffix = wanted, 2
+    while label in present:
+        label = f"{wanted} ({suffix})"
+        suffix += 1
+    return label
+
+
 def _grouped_frame(
     dataframe: pd.DataFrame, plan: QueryPlan, value_label: str
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, str, str | None]:
+    """Group, and return the frame with the display names it actually used.
+
+    Everything is computed on private column names, so a dimension the file
+    calls "Share %" or "Rows" cannot be overwritten by the columns built here.
+    The display names are then chosen not to collide with the dimension's own.
+    """
     assert plan.dimension is not None
+    dimension, measure = plan.dimension, plan.measure
+    columns = [dimension]
+    if measure and measure != dimension:
+        columns.append(measure)
+    if plan.count_column and plan.count_column not in columns:
+        columns.append(plan.count_column)
+    working = dataframe[columns].copy()
+    private = {name: f"__{index}" for index, name in enumerate(columns)}
+    working.columns = [private[name] for name in columns]
+    segment = private[dimension]
     # Rows with no label are a group, not a rounding error. Dropping them and
     # then taking percentages against what is left reports a share of a total
     # the reader never saw.
-    labelled = dataframe.copy()
-    labelled[plan.dimension] = labelled[plan.dimension].astype(object).where(
-        labelled[plan.dimension].notna(),
-        unlabelled_label(labelled[plan.dimension].dropna().unique()),
+    working[segment] = working[segment].astype(object).where(
+        working[segment].notna(), unlabelled_label(working[segment].dropna().unique())
     )
-    working = labelled
-    if plan.aggregation == "count" or not plan.measure:
-        grouped = working.groupby(plan.dimension, as_index=False).size()
-        grouped.columns = [plan.dimension, value_label]
+    if plan.aggregation == "count" and plan.count_column:
+        # "How many customers by region" counts customers, not rows.
+        grouped = working.groupby(segment, as_index=False)[private[plan.count_column]].nunique()
+    elif plan.aggregation == "count" or not measure:
+        grouped = working.groupby(segment, as_index=False).size()
     else:
-        grouped = working.groupby(plan.dimension, as_index=False)[plan.measure].agg(plan.aggregation)
-        grouped.columns = [plan.dimension, value_label]
-    grouped = grouped.sort_values(value_label, ascending=plan.ascending)
+        grouped = working.groupby(segment, as_index=False)[private[measure]].agg(plan.aggregation)
+    grouped.columns = [segment, "__value"]
+    grouped = grouped.sort_values("__value", ascending=plan.ascending)
+    share_name = None
     if plan.aggregation in ("sum", "count"):
-        values = grouped[value_label].to_numpy(dtype=float)
+        values = grouped["__value"].to_numpy(dtype=float)
         total = float(values.sum())
         # A share is only a share when every part carries the same sign as the
         # whole. Mixed signs give 500% and -250% from arithmetic that is
         # working exactly as written.
         if total and ((values >= 0).all() or (values <= 0).all()):
-            grouped["Share %"] = (grouped[value_label] / total * 100).round(1)
-    return grouped.reset_index(drop=True)
+            grouped["__share"] = (grouped["__value"] / total * 100).round(1)
+    value_name = distinct_label(value_label, {dimension})
+    names = {segment: dimension, "__value": value_name}
+    if "__share" in grouped.columns:
+        share_name = distinct_label("Share %", {dimension, value_name})
+        names["__share"] = share_name
+    return grouped.rename(columns=names).reset_index(drop=True), value_name, share_name
+
+
+def _shown(value: float, measure: str | None, frame: pd.DataFrame) -> str:
+    """Format a chat figure against the whole column it came from.
+
+    A rate column of [0.5, 2.0] is in percentage points; formatting the scalar
+    0.5 on its own reads it as a fraction and prints 50.0% where the brief
+    beside it prints 0.5%. The column settles the scale, once.
+    """
+    values = frame[measure].dropna() if measure and measure in frame.columns else None
+    return format_number(value, measure, column_values=values)
 
 
 def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -> QueryAnswer:
@@ -579,7 +642,7 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
             plan=plan,
             answer=(
                 f"{label} {plan.measure}{_phrase(applied)} is "
-                f"{format_number(value, plan.measure)}, calculated from {rows:,} rows."
+                f"{_shown(value, plan.measure, dataframe)}, calculated from {rows:,} rows."
             ),
             calculation=f"{plan.aggregation}({plan.measure}){scope}",
         )
@@ -587,20 +650,26 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
     if plan.intent in ("rank", "breakdown"):
         assert plan.dimension is not None
         label = AGGREGATION_LABELS[plan.aggregation]
-        value_label = f"{label} {plan.measure}" if plan.measure and plan.aggregation != "count" else "Rows"
-        grouped = _grouped_frame(working, plan, value_label)
+        counted = plan.aggregation == "count" or not plan.measure
+        if counted and plan.count_column:
+            value_label = f"Distinct {plan.count_column}"
+        elif counted:
+            value_label = "Rows"
+        else:
+            value_label = f"{label} {plan.measure}"
+        grouped, value_name, share_name = _grouped_frame(working, plan, value_label)
         limit = plan.top_n if plan.intent == "rank" else BREAKDOWN_LIMIT
         table = grouped.head(limit or BREAKDOWN_LIMIT)
         leader = table.iloc[0]
-        leader_value = float(leader[value_label])
+        leader_value = float(leader[value_name])
         direction = "lowest" if plan.ascending else "leading"
-        share_note = f" ({leader['Share %']:.1f}% of the total)" if "Share %" in table.columns else ""
+        share_note = f" ({leader[share_name]:.1f}% of the total)" if share_name else ""
         # A row count is not money, whatever the measure column is called.
         counted = value_label == "Rows"
         answer = (
             f"{leader[plan.dimension]} is the {direction} {plan.dimension} by {value_label.lower()}"
             f"{_phrase(applied)} at "
-            f"{format_number(leader_value, None if counted else plan.measure)}{share_note}."
+            f"{_shown(leader_value, None if counted else plan.measure, dataframe)}{share_note}."
         )
         order = "ascending" if plan.ascending else "descending"
         return QueryAnswer(
@@ -649,7 +718,7 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
         )
         answer = (
             f"{plan.measure or 'Records'} per {grain_name}{_phrase(applied)} moved from "
-            f"{format_number(first, plan.measure)} to {format_number(last, plan.measure)} "
+            f"{_shown(first, plan.measure, dataframe)} to {_shown(last, plan.measure, dataframe)} "
             f"({movement})."
         )
         return QueryAnswer(
@@ -699,15 +768,21 @@ def _execute_growth(
 
     if plan.dimension:
         grain = plan.grain or preferred_frequency(working[roles.date])
-        frame = working[[roles.date, plan.dimension] + ([measure] if measure else [])].dropna(
-            subset=[roles.date, plan.dimension]
-        )
-        frame = frame.assign(__period=frame[roles.date].dt.to_period(grain).dt.to_timestamp())
+        picked = [roles.date, plan.dimension] + ([measure] if measure and measure != plan.dimension else [])
+        frame = working[picked].dropna(subset=[roles.date, plan.dimension]).copy()
+        # Private names from here on: a measure or dimension the file calls
+        # "__period" was being overwritten by the buckets built next.
+        frame.columns = ["__date", "__segment"] + (["__measure"] if len(picked) == 3 else [])
+        frame = frame.assign(__period=frame["__date"].dt.to_period(grain).dt.to_timestamp())
         frame = frame[frame["__period"].isin([previous_period, current_period])]
         if measure:
-            pivot = frame.groupby([plan.dimension, "__period"])[measure].sum().unstack(fill_value=0.0)
+            pivot = (
+                frame.groupby(["__segment", "__period"])["__measure"]
+                .agg(measure_aggregation(measure))
+                .unstack(fill_value=0.0)
+            )
         else:
-            pivot = frame.groupby([plan.dimension, "__period"]).size().unstack(fill_value=0)
+            pivot = frame.groupby(["__segment", "__period"]).size().unstack(fill_value=0)
         if previous_period not in pivot.columns or current_period not in pivot.columns:
             return QueryAnswer(
                 question="",
@@ -736,7 +811,7 @@ def _execute_growth(
                     f"No {plan.dimension} has a growth rate this period, because every one "
                     f"of them started from zero. The largest new arrival is "
                     f"{newest[plan.dimension]} at "
-                    f"{format_number(float(newest['Latest']), measure)}."
+                    f"{_shown(float(newest['Latest']), measure, working)}."
                 ),
                 calculation=(
                     f"per-{plan.dimension} growth undefined from a zero base; "
@@ -759,8 +834,8 @@ def _execute_growth(
         direction = "slowest" if plan.ascending else "fastest"
         answer = (
             f"{leader[plan.dimension]} moved {direction}{_phrase(applied)}: {leader['Change %']:+.1f}% "
-            f"({format_number(float(leader['Previous']), measure)} → "
-            f"{format_number(float(leader['Latest']), measure)}) in the latest period."
+            f"({_shown(float(leader['Previous']), measure, working)} → "
+            f"{_shown(float(leader['Latest']), measure, working)}) in the latest period."
         )
         if not from_nothing.empty:
             newest = from_nothing.loc[from_nothing["Latest"].abs().idxmax()]
@@ -768,7 +843,7 @@ def _execute_growth(
             answer += (
                 f" {len(from_nothing)} segment(s) are left out of the ranking because they "
                 f"started from zero ({names}); the largest is {newest[plan.dimension]} at "
-                f"{format_number(float(newest['Latest']), measure)}."
+                f"{_shown(float(newest['Latest']), measure, working)}."
             )
         return QueryAnswer(
             question="",
@@ -794,7 +869,7 @@ def _execute_growth(
     direction = "up" if change >= 0 else "down"
     answer = (
         f"{measure or 'Records'}{_phrase(applied)} is {direction} {abs(change):.1f}% versus the prior "
-        f"period ({format_number(previous, measure)} → {format_number(current, measure)})."
+        f"period ({_shown(previous, measure, working)} → {_shown(current, measure, working)})."
     )
     return QueryAnswer(
         question="",

@@ -6,6 +6,7 @@ from html import escape
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -17,8 +18,9 @@ from anomalies import detect_anomalies
 from autovis import fold_small_series, recommend_chart
 from business_insights import BusinessBrief
 from forecasting import build_forecast, describe_backtest
-from formatting import format_number, format_period
-from nlq import QueryAnswer
+from formatting import format_number, format_period, rate_scale
+from metrics import resolve_metric
+from nlq import QueryAnswer, distinct_label
 from schema import ColumnRoles
 
 if TYPE_CHECKING:  # The AI layer is optional; ui must import without it.
@@ -313,7 +315,29 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
     movement_columns = st.columns(2, gap="medium")
     with movement_columns[0]:
         drivers = driver_frame(dataframe, roles)
-        if not drivers.empty:
+        if not drivers.empty and not resolve_metric(roles.measure).additive:
+            # Changes in segment averages do not add up to the change in the
+            # overall average, so a waterfall (which draws exactly that sum)
+            # would be a picture of an arithmetic that does not hold. Points
+            # per segment, side by side, is what can honestly be shown.
+            fraction = rate_scale(dataframe[roles.measure].dropna()) == "fraction"
+            points = drivers.assign(Change=drivers["Change"] * (100.0 if fraction else 1.0))
+            movement = px.bar(
+                points.sort_values("Change"),
+                x="Change",
+                y="Segment",
+                orientation="h",
+                title=f"Change in average {roles.measure} by {roles.dimension} — latest vs previous period",
+                color=points.sort_values("Change")["Change"].ge(0).map({True: "up", False: "down"}),
+                color_discrete_map={"up": RISE, "down": FALL},
+            )
+            movement.update_layout(showlegend=False, xaxis_title="percentage points")
+            movement.update_traces(
+                marker_line_width=0, hovertemplate="%{y}: %{x:+.1f} pp<extra></extra>"
+            )
+            st.plotly_chart(style_chart(movement), width="stretch", config={"displayModeBar": False})
+            st.caption("Segment averages do not add up to the overall average, so there is no net bar.")
+        elif not drivers.empty:
             waterfall = go.Figure(
                 go.Waterfall(
                     x=[*drivers["Segment"], "Net change"],
@@ -459,29 +483,61 @@ def _cap(frame: pd.DataFrame, spec, value: str, limit: int) -> pd.DataFrame:
 
     Taking the first N groups drops the newest periods off a trend and the
     biggest categories off a ranking -- exactly the rows the reader opened the
-    chart for. Time keeps its most recent end; anything else keeps its largest.
+    chart for. Time keeps its most recent end, in whole periods so that no
+    date is left with some of its series and not others; anything else keeps
+    its largest. Whatever was dropped is written into the frame's note.
     """
     if len(frame) <= limit:
         return frame
     if spec.x and spec.x in frame.columns and is_datetime64_any_dtype(frame[spec.x]):
-        return frame.nlargest(limit, spec.x).sort_values(spec.x).reset_index(drop=True)
-    return frame.nlargest(limit, value).reset_index(drop=True)
+        per_bucket = frame.groupby(spec.x).size().sort_index(ascending=False)
+        kept_buckets = per_bucket.index[per_bucket.cumsum() <= limit]
+        trimmed = frame[frame[spec.x].isin(kept_buckets)].sort_values(spec.x).reset_index(drop=True)
+        trimmed.attrs["note"] = (
+            f"Showing the most recent {len(kept_buckets):,} of {len(per_bucket):,} periods."
+        )
+        return trimmed
+    trimmed = frame.nlargest(limit, value).reset_index(drop=True)
+    trimmed.attrs["note"] = f"Showing the {limit:,} largest of {len(frame):,} rows."
+    return trimmed
 
 
 def _explore_frame(
     dataframe: pd.DataFrame, spec, *, limit: int = 400
 ) -> pd.DataFrame:
     """Aggregate the raw rows into what the recommended chart plots."""
-    if spec.form in ("scatter", "histogram"):
+    if spec.form == "histogram":
+        # Binned on the server over every row: a first-N sample of a
+        # distribution hides whatever arrives late in the file, and 20,000
+        # values of 1 followed by 1,000 of 10,000 showed no tail at all.
+        values = pd.to_numeric(dataframe[spec.x], errors="coerce").dropna()
+        counts, edges = np.histogram(values, bins=35)
+        binned = pd.DataFrame({spec.x: edges[:-1], "__width": np.diff(edges), "Records": counts})
+        binned.attrs["note"] = f"All {len(values):,} values, in 35 equal-width bins."
+        return binned
+    if spec.form == "scatter":
         columns = [column for column in (spec.x, spec.y) if column]
-        return dataframe[columns].dropna().head(20_000)
+        points = dataframe[columns].dropna()
+        if len(points) > 20_000:
+            # Every k-th point rather than the first 20,000, and say so.
+            step = int(np.ceil(len(points) / 20_000))
+            sampled = points.iloc[::step].reset_index(drop=True)
+            sampled.attrs["note"] = (
+                f"Showing every {step}th point: {len(sampled):,} of {len(points):,}."
+            )
+            return sampled
+        return points
 
     grouping = [column for column in (spec.x, spec.y, spec.color) if column]
     # A heatmap, and the table it falls back to when the grid is too large,
     # are both "measure across two categories".
     if spec.color and spec.x and spec.y and spec.form in ("heatmap", "table"):
         keys = [spec.y, spec.x]
-        grid = dataframe.groupby(keys, dropna=True, observed=True)[spec.color].sum().reset_index()
+        grid = (
+            dataframe.groupby(keys, dropna=True, observed=True)[spec.color]
+            .agg(resolve_metric(spec.color).aggregation)
+            .reset_index()
+        )
         if spec.form == "table":
             return grid.nlargest(limit, spec.color).reset_index(drop=True)
         return grid
@@ -493,15 +549,23 @@ def _explore_frame(
     if spec.aggregation == "count" or not spec.y:
         # A column the file calls "Records" collides with the count column
         # built here, so the count takes a name the frame is not using.
-        value = next(name for name in ("Records", "Record count", "Rows") if name not in dataframe.columns)
+        value = distinct_label("Records", dataframe.columns)
         frame = dataframe.groupby(keys, dropna=True, observed=True).size().reset_index(name=value)
     else:
-        frame = dataframe.groupby(keys, dropna=True, observed=True)[spec.y].sum().reset_index()
+        frame = (
+            dataframe.groupby(keys, dropna=True, observed=True)[spec.y]
+            .agg(resolve_metric(spec.y).aggregation)
+            .reset_index()
+        )
         value = spec.y
 
     if spec.color and spec.color in frame.columns:
         frame = fold_small_series(frame, spec.color, value)
-        frame = frame.groupby(keys, dropna=True, observed=True)[value].sum().reset_index()
+        frame = (
+            frame.groupby(keys, dropna=True, observed=True)[value]
+            .agg(resolve_metric(spec.y).aggregation if spec.y else "sum")
+            .reset_index()
+        )
     return _cap(frame, spec, value, limit)
 
 
@@ -529,7 +593,9 @@ def _explore_figure(frame: pd.DataFrame, spec) -> go.Figure | None:
             color_discrete_sequence=[LEAF],
         )
     elif spec.form == "histogram":
-        figure = px.histogram(frame, x=spec.x, nbins=35, color_discrete_sequence=[ACCENT])
+        figure = px.bar(frame, x=spec.x, y="Records", color_discrete_sequence=[ACCENT])
+        if "__width" in frame.columns:
+            figure.update_traces(width=frame["__width"].to_numpy(), offset=0)
     elif spec.form == "scatter":
         figure = px.scatter(frame, x=spec.x, y=spec.y, color_discrete_sequence=[ACCENT])
         figure.update_traces(marker={"size": 8, "opacity": 0.7})
@@ -600,6 +666,8 @@ def render_explore(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
         figure = _explore_figure(frame, spec)
         if figure is not None:
             st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
+    if frame.attrs.get("note"):
+        st.caption(frame.attrs["note"])
 
     st.markdown(
         f'<p class="calculation">WHY THIS CHART · {escape(spec.rationale)}</p>',

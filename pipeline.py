@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from aggregation import preferred_frequency
 from analysis import CleaningReport, clean_dataframe
 from business_insights import BusinessBrief, analyze_business
 from schema import ColumnRoles, detect_roles
@@ -37,7 +38,18 @@ def _most_recent(dataframe: pd.DataFrame, date_column: str | None, row_limit: in
         return dataframe
     if date_column and date_column in dataframe.columns:
         order = dataframe[date_column].rank(method="first", ascending=False, na_option="bottom")
-        return dataframe.loc[order <= row_limit]
+        kept = dataframe.loc[order <= row_limit]
+        # A cut that lands inside a period leaves that period half-present,
+        # and a half-present first period reads as growth into the next one.
+        # The oldest kept period is dropped whenever any row of it was cut.
+        dates = kept[date_column].dropna()
+        if not dates.empty:
+            grain = preferred_frequency(dates)
+            buckets = dataframe[date_column].dt.to_period(grain)
+            oldest = dates.min().to_period(grain)
+            if (buckets[~dataframe.index.isin(kept.index)] == oldest).any():
+                kept = kept[buckets.loc[kept.index] != oldest]
+        return kept
     return dataframe.tail(row_limit)
 
 
@@ -65,6 +77,15 @@ def prepare_analysis(raw_dataframe: pd.DataFrame, *, row_limit: int) -> Prepared
     )
 
 
+# The option a role selector shows for "no column". A real column can be
+# called "None", so the sentinel is a string no export produces.
+NO_SELECTION = "(none)"
+
+
+def _selected(value: str | None) -> str | None:
+    return None if value in (None, NO_SELECTION, "None") else value
+
+
 def apply_role_selection(
     detected: ColumnRoles,
     *,
@@ -73,9 +94,9 @@ def apply_role_selection(
     dimension: str,
 ) -> ColumnRoles:
     return ColumnRoles(
-        date=None if date == "None" else date,
-        measure=None if measure == "None" else measure,
-        dimension=None if dimension == "None" else dimension,
+        date=_selected(date),
+        measure=_selected(measure),
+        dimension=_selected(dimension),
         identifier=detected.identifier,
         numeric=detected.numeric,
         dimensions=detected.dimensions,

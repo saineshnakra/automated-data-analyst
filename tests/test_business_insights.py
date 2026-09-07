@@ -133,8 +133,14 @@ class BusinessAnalysisTests(unittest.TestCase):
         # offered for a rate -- only the average, which means something.
         self.assertNotIn("Total Gross Margin", kpi_labels)
         self.assertIn("Average Gross Margin", kpi_labels)
-        self.assertIn("Gross Margin increased 10.7%", report)
+        # A margin that goes from 28% to 31% has moved three points. "Increased
+        # 10.7%" was the relative figure, which reads as a margin of 38.7%.
+        self.assertIn("Gross Margin increased by 3.0 percentage points", report)
         self.assertIn("from 28.0% to 31.0%", report)
+        self.assertNotIn("10.7%", report)
+        # East had no rows in March, so it has no March average to have moved from.
+        self.assertNotIn("from 0.0%", report)
+        self.assertNotIn("coming from the leading", report)
 
     def test_negative_latest_period_prioritizes_diagnosis(self):
         dataframe = pd.DataFrame(
