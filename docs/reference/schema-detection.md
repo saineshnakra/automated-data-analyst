@@ -25,7 +25,32 @@ Considers only real datetime columns (after cleaning has done its inference).
 Ranks them by:
 
 1. Name contains `date`, `time`, or `created` — this wins
-2. Then: most non-missing values
+2. Then: the event that produced the row outranks what happened to it
+   afterwards. `order`, `transaction`, `sale`, `invoice`, `posting`,
+   `created`, `booking` beat a plain date, which beats `ship`, `delivery`,
+   `due`, `updated`, `modified`, `closed`
+3. Then: most non-missing values
+4. Then: the **full normalized name**, alphabetically first
+
+The last step is what makes the choice independent of column order. The
+candidates are sorted by their whole name before ranking, and `max()` returns
+the first of equal elements, so `Transaction Date A` beats `Transaction Date
+B` whichever the file wrote first. An earlier tiebreak compared only the
+first eight bytes of the name, which is not enough to separate two long names
+that share a prefix, and the two columns swapped when the file's column order
+was reversed.
+
+## Identifier names
+
+`is_identifier_name(name)` is the one function that says a column *name*
+denotes a key: its last word, or the whole name, is one of `id`, `ids`,
+`code`, `codes`, `zip`, `postal`, `phone`, `sku`, `number`, `no`, `key`,
+`uuid`, matched as a whole word on the normalized name. `Order No` and `id`
+are keys; `Paid Amount` is not. `file_io` uses it to read such columns as
+text, and `analysis.clean_dataframe` uses it to skip them in both the numeric
+and the unnamed-date pass, so an identifier is preserved from upload to chart
+by one rule rather than by two lists that drift apart. It looks at the name
+alone; `looks_like_identifier` below adds the data.
 
 ## Picking the measure
 

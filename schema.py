@@ -80,6 +80,14 @@ MODIFIER_WEIGHT = 2 / 3
 IDENTIFIER_TOKENS = ("id", "uuid", "key", "code", "number", "invoice", "order")
 TIME_PART_TOKENS = ("year", "month", "week", "day", "hour", "minute", "quarter")
 
+# Head words that say a column holds a key rather than a quantity. The reader
+# keeps such a column as text and the cleaner leaves it alone, so an account
+# number written 00042 stays 00042 from upload to chart. Matched as a whole
+# word: "Paid Amount" is not an id because it contains one.
+IDENTIFIER_NAME_WORDS = frozenset(
+    {"id", "ids", "code", "codes", "zip", "postal", "phone", "sku", "number", "no", "key", "uuid"}
+)
+
 
 # A trailing unit or annotation is not the head noun. "Revenue (USD)" is
 # revenue; scoring it on "usd" let an unrelated column take the measure role.
@@ -102,9 +110,16 @@ def _date_preference(name: str) -> int:
     return 1
 
 
-def _ordinal(text: str) -> int:
-    """A stable number for a string, so it can serve as a max() tiebreak."""
-    return int.from_bytes(text.encode()[:8].ljust(8, b"\0"), "big")
+def is_identifier_name(name: str) -> bool:
+    """Whether a column's name says it holds a key: its last word is one of
+    IDENTIFIER_NAME_WORDS, or the whole name is.
+
+    This is the one place that decides, so the reader that keeps "Order No"
+    as text and the cleaner that must not turn it back into a number cannot
+    disagree about which columns those are.
+    """
+    words = _head_words(name)
+    return bool(words) and words[-1] in IDENTIFIER_NAME_WORDS
 
 
 def _named_like_a_date(name: str) -> bool:
@@ -155,17 +170,20 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
         column for column in dataframe.columns if is_datetime64_any_dtype(dataframe[column])
     ]
 
+    # Candidates are sorted by their full name before ranking. max() returns
+    # the first of equal elements, so a tie between "Transaction Date A" and
+    # "Transaction Date B" resolves to the alphabetically first name whatever
+    # order the file wrote them in. An earlier tiebreak compared only the
+    # first eight bytes, which is not enough to separate two long names that
+    # share a prefix.
     date = max(
-        date_columns,
+        sorted(date_columns, key=lambda column: (normalized_name(column), str(column))),
         key=lambda column: (
             1 if any(token in normalized_name(column) for token in ("date", "time", "created")) else 0,
             # The event that produced the row outranks what happened to it
             # afterwards: an order dates a sale, a shipment dates a delivery.
             _date_preference(column),
             int(dataframe[column].notna().sum()),
-            # Name last, so two exports of one table in different column
-            # orders cannot land on different dates.
-            -_ordinal(normalized_name(column)),
         ),
         default=None,
     )
