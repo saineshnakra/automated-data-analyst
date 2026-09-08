@@ -9,6 +9,7 @@ from pipeline import (
     prepare_analysis,
     schema_frame,
 )
+from analysis import CleaningReport, CleaningSuggestion
 
 
 class PipelineTests(unittest.TestCase):
@@ -74,6 +75,43 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(audit.columns.tolist(), ["Operation", "Count"])
         self.assertEqual(schema.columns.tolist(), ["Role", "Column"])
         self.assertIn("Primary metric", schema["Role"].tolist())
+
+    def test_cleaning_audit_records_applied_suggestion(self):
+        report = CleaningReport(
+            original_rows=3,
+            original_columns=1,
+            final_rows=3,
+            final_columns=1,
+            duplicate_rows_removed=0,
+            empty_rows_removed=0,
+            empty_columns_removed=0,
+            index_columns_removed=0,
+            trimmed_text_columns=0,
+            numeric_columns_inferred=0,
+            datetime_columns_inferred=0,
+        )
+
+        audit = cleaning_audit_frame(
+            report,
+            applied_suggestions=[
+                CleaningSuggestion(
+                    column="Revenue",
+                    operation="parse_numeric",
+                    description="Parse numeric text",
+                )
+            ],
+        )
+
+        self.assertIn(
+            "Suggested: Parse numeric Revenue",
+            audit["Operation"].tolist(),
+        )
+
+        row = audit[
+            audit["Operation"] == "Suggested: Parse numeric Revenue"
+        ].iloc[0]
+
+        self.assertEqual(row["Count"], 1)
 
 
 if __name__ == "__main__":

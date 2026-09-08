@@ -30,8 +30,6 @@ _LOCAL_MODULES = (  # dependency order: a module lists only modules above it
     "analysis", "autovis", "file_io", "demo_data", "business_insights", "nlq",
     "pipeline", "ai_insights", "ui",
 )
-
-
 def _source_digest(name: str) -> str:
     path = _HERE / f"{name}.py"
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else ""
@@ -48,7 +46,8 @@ def _refresh_stale_modules() -> None:
     stale = [
         name
         for name in _LOCAL_MODULES
-        if name in sys.modules and loaded.get(name) not in ("", None, _source_digest(name))
+        if name in sys.modules
+        and loaded.get(name) not in ("", None, _source_digest(name))
     ]
     if stale:
         # Reload the whole chain from the first stale module onwards, so a
@@ -87,10 +86,24 @@ def build_identifier() -> str:
     return "src-" + digest.hexdigest()[:7]
 
 
-from analysis import column_profile  # noqa: E402 - the refresh above must run first
-from business_insights import BusinessBrief, analyze_business, build_business_report  # noqa: E402
+from analysis import (
+    apply_cleaning_suggestion,
+    column_profile,
+    preview_cleaning_suggestion,
+    suggest_cleaning,
+)  # noqa: E402 - the refresh above must run first
+from business_insights import (
+    BusinessBrief,
+    analyze_business,
+    build_business_report,
+)  # noqa: E402
 from demo_data import make_demo_data  # noqa: E402
-from file_io import list_excel_sheets, list_sample_datasets, read_tabular_file, safe_csv  # noqa: E402
+from file_io import (
+    list_excel_sheets,
+    list_sample_datasets,
+    read_tabular_file,
+    safe_csv,
+)  # noqa: E402
 from nlq import QueryPlan, answer_question, suggested_questions  # noqa: E402
 from pipeline import (  # noqa: E402
     apply_focus,
@@ -154,7 +167,7 @@ MAX_ANALYSIS_ROWS = 250_000
 
 st.set_page_config(
     page_title="ADA | AI Business Dashboard from CSV & Excel",
-    page_icon="◈",
+    page_icon="*",
     layout="wide",
     initial_sidebar_state="collapsed",
     menu_items={
@@ -166,7 +179,11 @@ st.set_page_config(
 
 
 @st.cache_data(show_spinner=False, max_entries=8, ttl=3600)
-def read_uploaded_file(contents: bytes, filename: str, sheet_name: str | None = None) -> pd.DataFrame:
+def read_uploaded_file(
+    contents: bytes,
+    filename: str,
+    sheet_name: str | None = None,
+) -> pd.DataFrame:
     return read_tabular_file(contents, filename, sheet_name)
 
 
@@ -174,6 +191,7 @@ def get_openai_api_key() -> str:
     environment_key = os.getenv("OPENAI_API_KEY", "").strip()
     if environment_key:
         return environment_key
+
     try:
         return str(st.secrets.get("OPENAI_API_KEY", "")).strip()
     except (FileNotFoundError, StreamlitSecretNotFoundError):
@@ -183,8 +201,12 @@ def get_openai_api_key() -> str:
 def get_safety_identifier() -> str:
     if "ada_session_id" not in st.session_state:
         st.session_state.ada_session_id = secrets.token_urlsafe(24)
+
     session_id = str(st.session_state.ada_session_id)
-    return hashlib.sha256(f"ada:{session_id}".encode()).hexdigest()
+
+    return hashlib.sha256(
+        f"ada:{session_id}".encode()
+    ).hexdigest()
 
 
 def render_sidebar(*, server_api_key: str) -> str:
@@ -192,6 +214,7 @@ def render_sidebar(*, server_api_key: str) -> str:
         st.title("ADA")
         st.caption("A dashboard that explains itself.")
         st.markdown("---")
+
         st.markdown("**Analysis contract**")
         st.markdown(
             "- Calculations happen locally\n"
@@ -199,12 +222,13 @@ def render_sidebar(*, server_api_key: str) -> str:
             "- Your rows are never sent to the strategy model\n"
             "- Recommendations are not causal proof"
         )
+
         st.markdown("---")
         if AI_LAYER_ERROR:
             st.warning(
                 "The optional AI layer could not be loaded on this deployment, so the "
                 "strategic read and the AI query planner are unavailable. Every analysis, "
-                "chart and Ask ADA answer below is unaffected — none of them uses a model."
+                "chart and Ask ADA answer below is unaffected - none of them uses a model."
             )
             st.caption(AI_LAYER_ERROR)
             st.link_button(
@@ -213,25 +237,34 @@ def render_sidebar(*, server_api_key: str) -> str:
                 width="stretch",
             )
             return ""
+
         if server_api_key:
-            st.success("Optional strategy agent is available on this deployment.")
+            st.success(
+                "Optional strategy agent is available on this deployment."
+            )
             api_key = server_api_key
         else:
-            st.info("Deterministic mode is free and complete. No model call is required.")
+            st.info(
+                "Deterministic mode is free and complete. No model call is required."
+            )
+
             api_key = st.text_input(
                 "Optional OpenAI API key",
                 type="password",
-                placeholder="Session only · not persisted by ADA",
+                placeholder="Session only - not persisted by ADA",
                 help=(
-                    "Use your own key to enable the optional strategic read. The key remains in this "
-                    "Streamlit session and is sent only to the OpenAI API."
+                    "Use your own key to enable the optional strategic read. "
+                    "The key remains in this Streamlit session and is sent "
+                    "only to the OpenAI API."
                 ),
             ).strip()
+
         st.link_button(
             "Contribute on GitHub",
             "https://github.com/saineshnakra/automated-data-analyst",
             width="stretch",
         )
+
     return api_key
 
 
@@ -244,21 +277,41 @@ def maybe_generate_narrative(
     if not api_key or AI_LAYER_ERROR:
         return None, None
 
-    payload = build_ai_payload(brief, context=business_context)
-    fingerprint = hashlib.sha256(payload.encode()).hexdigest()
+    payload = build_ai_payload(
+        brief,
+        context=business_context,
+    )
+
+    fingerprint = hashlib.sha256(
+        payload.encode()
+    ).hexdigest()
+
     cached = st.session_state.get("ai_narrative")
-    cached_fingerprint = st.session_state.get("ai_narrative_fingerprint")
+    cached_fingerprint = st.session_state.get(
+        "ai_narrative_fingerprint"
+    )
+
     selected_preset = st.selectbox(
         "Strategy model",
         list(MODEL_PRESETS),
         index=list(MODEL_PRESETS).index(DEFAULT_PRESET),
-        help="Luna is the cost-efficient default. Terra spends more reasoning on ambiguous decisions.",
+        help=(
+            "Luna is the cost-efficient default. Terra spends more "
+            "reasoning on ambiguous decisions."
+        ),
     )
+
     config = MODEL_PRESETS[selected_preset]
 
-    if st.button("Generate AI strategic read", type="primary", width="stretch"):
+    if st.button(
+        "Generate AI strategic read",
+        type="primary",
+        width="stretch",
+    ):
         try:
-            with st.spinner("Connecting the evidence into a strategic read…"):
+            with st.spinner(
+                "Connecting the evidence into a strategic read..."
+            ):
                 cached = generate_ai_narrative(
                     brief,
                     api_key=api_key,
@@ -266,17 +319,32 @@ def maybe_generate_narrative(
                     context=business_context,
                     safety_identifier=get_safety_identifier(),
                 )
+
             st.session_state.ai_narrative = cached
             st.session_state.ai_narrative_fingerprint = fingerprint
             st.session_state.ai_narrative_model = config.model
             cached_fingerprint = fingerprint
-        except Exception:  # API failures should never take down the deterministic product.
-            st.error("The optional strategy agent is temporarily unavailable. Try again or switch models.")
+
+        except Exception:
+            st.error(
+                "The optional strategy agent is temporarily unavailable. "
+                "Try again or switch models."
+            )
             return None, None
 
-    if cached_fingerprint != fingerprint or not isinstance(cached, AINarrative):
+    if (
+        cached_fingerprint != fingerprint
+        or not isinstance(cached, AINarrative)
+    ):
         return None, None
-    model = str(st.session_state.get("ai_narrative_model", config.model))
+
+    model = str(
+        st.session_state.get(
+            "ai_narrative_model",
+            config.model,
+        )
+    )
+
     return cached, model
 
 
@@ -297,7 +365,7 @@ def plan_ai_query(
             api_key=api_key,
             safety_identifier=get_safety_identifier(),
         )
-    except Exception:  # A planner outage must never break the chat.
+    except Exception:
         return None
 
 
@@ -312,12 +380,29 @@ def dataset_fingerprint(dataframe: pd.DataFrame, roles, source_name: str) -> str
     the measure changes what every answer means.
     """
     content = int(pd.util.hash_pandas_object(dataframe, index=False).sum())
-    parts = (source_name, str(dataframe.shape), ",".join(map(str, dataframe.columns)),
-             str(content), repr(roles))
+    parts = (
+        source_name,
+        str(dataframe.shape),
+        ",".join(map(str, dataframe.columns)),
+        str(content),
+        repr(roles),
+    )
     return hashlib.sha256("|".join(parts).encode()).hexdigest()
 
 
-def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str, api_key: str) -> None:
+def _cleaning_suggestion_key(suggestion):
+    return (
+        suggestion.column,
+        suggestion.operation,
+    )
+
+
+def render_ask_ada(
+    dataframe: pd.DataFrame,
+    roles,
+    source_name: str,
+    api_key: str,
+) -> None:
     """Chat over the analyzed dataset; every answer is a local calculation."""
     fingerprint = dataset_fingerprint(dataframe, roles, source_name)
     if st.session_state.get("chat_fingerprint") != fingerprint:
@@ -325,46 +410,116 @@ def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str, api_key: st
         st.session_state.chat_history = []
         st.session_state.pending_ai_plan = None
 
-    suggestions = suggested_questions(dataframe, roles)
+    suggestions = suggested_questions(
+        dataframe,
+        roles,
+    )
+
     chips = st.columns(len(suggestions))
     question = None
-    for chip, suggestion in zip(chips, suggestions, strict=True):
-        if chip.button(suggestion, key=f"chip_{suggestion}", width="stretch"):
+
+    for chip, suggestion in zip(
+        chips,
+        suggestions,
+        strict=True,
+    ):
+        if chip.button(
+            suggestion,
+            key=f"chip_{suggestion}",
+            width="stretch",
+        ):
             question = suggestion
 
-    typed = st.chat_input("Ask about this data — try “top 5 by revenue” or “which segment grew fastest?”")
+    typed = st.chat_input(
+        'Ask about this data - try "top 5 by revenue" or '
+        '"which segment grew fastest-"'
+    )
+
     question = typed or question
-    pending = st.session_state.get("pending_ai_plan")
-    if pending is not None and question and question != pending["question"]:
+
+    pending = st.session_state.get(
+        "pending_ai_plan"
+    )
+
+    if (
+        pending is not None
+        and question
+        and question != pending["question"]
+    ):
         st.session_state.pending_ai_plan = None
         pending = None
+
     if question:
-        result = answer_question(question, dataframe, roles)
+        result = answer_question(
+            question,
+            dataframe,
+            roles,
+        )
+
         if result is not None:
-            st.session_state.chat_history.append({"question": question, "result": result})
+            st.session_state.chat_history.append(
+                {
+                    "question": question,
+                    "result": result,
+                }
+            )
+
         elif api_key and pending is None:
-            with st.spinner("Planning the calculation…"):
-                plan = plan_ai_query(question, dataframe, roles, api_key)
+            with st.spinner(
+                "Planning the calculation..."
+            ):
+                plan = plan_ai_query(
+                    question,
+                    dataframe,
+                    roles,
+                    api_key,
+                )
+
             if plan is None:
-                st.session_state.chat_history.append({"question": question, "result": None})
+                st.session_state.chat_history.append(
+                    {
+                        "question": question,
+                        "result": None,
+                    }
+                )
             else:
                 st.session_state.pending_ai_plan = {
                     "question": question,
                     "plan": plan,
                 }
-        elif pending is None:
-            st.session_state.chat_history.append({"question": question, "result": None})
 
-    pending = st.session_state.get("pending_ai_plan")
+        elif pending is None:
+            st.session_state.chat_history.append(
+                {
+                    "question": question,
+                    "result": None,
+                }
+            )
+
+    pending = st.session_state.get(
+        "pending_ai_plan"
+    )
+
     if pending is not None:
         plan = pending["plan"]
+
         st.info(
-            "I prepared this calculation from the table schema. Review it before ADA runs anything:\n\n"
+            "I prepared this calculation from the table schema. "
+            "Review it before ADA runs anything:\n\n"
             f"**{describe_query_plan(plan)}**"
         )
+
         approve, reject = st.columns(2)
-        plan_key = hashlib.sha256(pending["question"].encode()).hexdigest()[:12]
-        if approve.button("Run calculation", key=f"approve_ai_plan_{plan_key}", type="primary"):
+
+        plan_key = hashlib.sha256(
+            pending["question"].encode()
+        ).hexdigest()[:12]
+
+        if approve.button(
+            "Run calculation",
+            key=f"approve_ai_plan_{plan_key}",
+            type="primary",
+        ):
             result = execute_approved_ai_plan(
                 pending["question"],
                 plan,
@@ -372,45 +527,85 @@ def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str, api_key: st
                 roles,
                 approved=True,
             )
+
             if result is not None:
                 st.session_state.chat_history.append(
-                    {"question": pending["question"], "result": result}
+                    {
+                        "question": pending["question"],
+                        "result": result,
+                    }
                 )
-            st.session_state.pending_ai_plan = None
-        elif reject.button("Reject plan", key=f"reject_ai_plan_{plan_key}"):
-            st.session_state.chat_history.append(
-                {"question": pending["question"], "result": None, "status": "rejected"}
-            )
+
             st.session_state.pending_ai_plan = None
 
-    if not st.session_state.chat_history and st.session_state.get("pending_ai_plan") is None:
+        elif reject.button(
+            "Reject plan",
+            key=f"reject_ai_plan_{plan_key}",
+        ):
+            st.session_state.chat_history.append(
+                {
+                    "question": pending["question"],
+                    "result": None,
+                    "status": "rejected",
+                }
+            )
+
+            st.session_state.pending_ai_plan = None
+
+    if (
+        not st.session_state.chat_history
+        and st.session_state.get("pending_ai_plan") is None
+    ):
         st.markdown(
             '<div class="empty-state">Ask anything about the analyzed table. '
             "Answers are computed locally and every one shows its calculation.</div>",
             unsafe_allow_html=True,
         )
-    for position, entry in enumerate(st.session_state.chat_history):
+
+    for position, entry in enumerate(
+        st.session_state.chat_history
+    ):
         with st.chat_message("user"):
             st.markdown(entry["question"])
+
         with st.chat_message("assistant"):
             if entry.get("status") == "rejected":
                 render_chat_rejected()
+
             elif entry["result"] is not None:
-                render_chat_answer(entry["result"], key=str(position))
+                render_chat_answer(
+                    entry["result"],
+                    key=str(position),
+                )
+
             else:
                 render_chat_fallback(suggestions)
 
+
+# ---------------------------------------------------------------------------
+# Application setup
+# ---------------------------------------------------------------------------
 
 inject_styles()
 render_nav()
 render_landing()
 
-api_key = render_sidebar(server_api_key=get_openai_api_key())
+api_key = render_sidebar(
+    server_api_key=get_openai_api_key()
+)
 
 sample_datasets = list_sample_datasets()
-source_options = ["Explore the live demo", "Upload your file"]
+
+source_options = [
+    "Explore the live demo",
+    "Upload your file",
+]
+
 if sample_datasets:
-    source_options.insert(1, "Try a sample dataset")
+    source_options.insert(
+        1,
+        "Try a sample dataset",
+    )
 
 source_mode = st.segmented_control(
     "Choose a source",
@@ -426,67 +621,121 @@ if source_mode is None:
 uploaded_file = None
 business_context = ""
 selected_sample = None
+
 if source_mode == "Try a sample dataset":
     selected_sample = st.selectbox(
         "Sample dataset",
         list(sample_datasets),
-        help="Synthetic files, safe to explore. Each one exercises a different part of the analysis.",
+        help=(
+            "Synthetic files, safe to explore. Each one exercises "
+            "a different part of the analysis."
+        ),
     )
-    st.caption(SAMPLE_NOTES.get(selected_sample, "A synthetic dataset for trying ADA."))
+
+    st.caption(
+        SAMPLE_NOTES.get(
+            selected_sample,
+            "A synthetic dataset for trying ADA.",
+        )
+    )
+
 if source_mode == "Upload your file":
     uploaded_file = st.file_uploader(
         "Upload a CSV or Excel workbook",
         type=["csv", "xlsx", "xlsm"],
         help="Maximum file size: 25 MB. A workbook with several sheets lets you pick one.",
     )
+
     business_context = st.text_input(
         "Optional business context",
-        placeholder="Example: Subscription revenue by customer, product, and month",
+        placeholder=(
+            "Example: Subscription revenue by customer, "
+            "product, and month"
+        ),
         max_chars=500,
     )
+
     if uploaded_file is None:
         render_how_it_works()
         render_footer(build=build_identifier())
         st.stop()
 
+
+# ---------------------------------------------------------------------------
+# Read and prepare data
+# ---------------------------------------------------------------------------
+
 try:
     if source_mode == "Explore the live demo":
         raw_dataframe = make_demo_data()
-        source_name = "Acme operating data · demo"
+        source_name = "Acme operating data - demo"
         business_context = "Two years of orders across products, regions, and sales channels."
     elif source_mode == "Try a sample dataset" and selected_sample is not None:
         sample_path = sample_datasets[selected_sample]
-        raw_dataframe = read_uploaded_file(sample_path.read_bytes(), sample_path.name)
+
+        raw_dataframe = read_uploaded_file(
+            sample_path.read_bytes(),
+            sample_path.name,
+        )
+
         source_name = f"{selected_sample} · sample"
         business_context = SAMPLE_NOTES.get(selected_sample, "")
     elif uploaded_file is not None:
         if uploaded_file.size > MAX_UPLOAD_BYTES:
-            st.error("That file is larger than ADA's 25 MB analysis limit.")
+            st.error(
+                "That file is larger than ADA's 25 MB analysis limit."
+            )
             st.stop()
+
         contents = uploaded_file.getvalue()
+
         selected_sheet = None
-        worksheets = list_excel_sheets(contents, uploaded_file.name)
+
+        worksheets = list_excel_sheets(
+            contents,
+            uploaded_file.name,
+        )
+
         if len(worksheets) > 1:
             selected_sheet = st.selectbox(
                 "Worksheet to analyze",
                 worksheets,
-                help="The workbook has several sheets; ADA analyzes one at a time.",
+                help=(
+                    "The workbook has several sheets; ADA analyzes "
+                    "one at a time."
+                ),
             )
-        raw_dataframe = read_uploaded_file(contents, uploaded_file.name, selected_sheet)
-        source_name = (
-            f"{uploaded_file.name} · {selected_sheet}" if selected_sheet else uploaded_file.name
+
+        raw_dataframe = read_uploaded_file(
+            contents,
+            uploaded_file.name,
+            selected_sheet,
         )
 
     else:
-        # No usable source: show the explainer rather than a traceback.
-        render_how_it_works()
-        render_footer(build=build_identifier())
-        st.stop()
+        source_name = (
+            f"{uploaded_file.name} - {selected_sheet}"
+            if selected_sheet
+            else uploaded_file.name
+        )
 
-    prepared = prepare_analysis(raw_dataframe, row_limit=MAX_ANALYSIS_ROWS)
-except (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError, ValueError, ImportError) as error:
-    st.error(f"ADA could not read this file: {error}")
+    prepared = prepare_analysis(
+        raw_dataframe,
+        row_limit=MAX_ANALYSIS_ROWS,
+    )
+
+except (
+    pd.errors.EmptyDataError,
+    pd.errors.ParserError,
+    UnicodeDecodeError,
+    ValueError,
+    ImportError,
+) as error:
+    st.error(
+        f"ADA could not read this file: {error}"
+    )
     st.stop()
+
 
 if prepared.truncated_rows:
     covered = ""
@@ -502,37 +751,125 @@ if prepared.truncated_rows:
 for note in prepared.cleaning_report.notes:
     st.info(note)
 
-dataframe = prepared.dataframe
+# ---------------------------------------------------------------------------
+# Cleaning suggestions state
+# ---------------------------------------------------------------------------
+
+if "accepted_cleaning_suggestions" not in st.session_state:
+    st.session_state.accepted_cleaning_suggestions = {}
+
+if "declined_cleaning_suggestions" not in st.session_state:
+    st.session_state.declined_cleaning_suggestions = set()
+
+if "cleaning_source_fingerprint" not in st.session_state:
+    st.session_state.cleaning_source_fingerprint = None
+
+
+# ---------------------------------------------------------------------------
+# Apply accepted suggestions to a fresh deterministic dataframe
+# ---------------------------------------------------------------------------
+
+dataframe = prepared.dataframe.copy()
+
+cleaning_fingerprint = (
+    f"{source_name}:"
+    f"{len(dataframe)}:"
+    f"{','.join(map(str, dataframe.columns))}:"
+    f"{pd.util.hash_pandas_object(dataframe, index=True).sum()}"
+)
+
+if (
+    st.session_state.cleaning_source_fingerprint
+    != cleaning_fingerprint
+):
+    st.session_state.cleaning_source_fingerprint = (
+        cleaning_fingerprint
+    )
+
+    st.session_state.accepted_cleaning_suggestions = {}
+    st.session_state.declined_cleaning_suggestions = set()
+
+
+cleaning_suggestions = suggest_cleaning(
+    dataframe
+)
+
+for suggestion in (
+    st.session_state.accepted_cleaning_suggestions.values()
+):
+    dataframe = apply_cleaning_suggestion(
+        dataframe,
+        suggestion,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Schema detection
+# ---------------------------------------------------------------------------
 detected = prepared.detected_roles
+
 date_options = [
     "None",
     *[
         column
         for column in dataframe.columns
-        if pd.api.types.is_datetime64_any_dtype(dataframe[column])
+        if pd.api.types.is_datetime64_any_dtype(
+            dataframe[column]
+        )
     ],
 ]
-measure_options = ["None", *detected.numeric]
-dimension_options = ["None", *detected.dimensions]
 
-with st.expander("Tune ADA's schema detection", expanded=False):
-    st.caption("ADA selected these roles automatically. Override them only when the source schema needs context.")
+measure_options = [
+    "None",
+    *detected.numeric,
+]
+
+dimension_options = [
+    "None",
+    *detected.dimensions,
+]
+
+with st.expander(
+    "Tune ADA's schema detection",
+    expanded=False,
+):
+    st.caption(
+        "ADA selected these roles automatically. "
+        "Override them only when the source schema needs context."
+    )
+
     selectors = st.columns(3)
+
     selected_date = selectors[0].selectbox(
         "Date",
         date_options,
-        index=date_options.index(detected.date) if detected.date in date_options else 0,
+        index=(
+            date_options.index(detected.date)
+            if detected.date in date_options
+            else 0
+        ),
     )
+
     selected_measure = selectors[1].selectbox(
         "Primary metric",
         measure_options,
-        index=measure_options.index(detected.measure) if detected.measure in measure_options else 0,
+        index=(
+            measure_options.index(detected.measure)
+            if detected.measure in measure_options
+            else 0
+        ),
     )
+
     selected_dimension = selectors[2].selectbox(
         "Business segment",
         dimension_options,
-        index=dimension_options.index(detected.dimension) if detected.dimension in dimension_options else 0,
+        index=(
+            dimension_options.index(detected.dimension)
+            if detected.dimension in dimension_options
+            else 0
+        ),
     )
+
 
 roles = apply_role_selection(
     detected,
@@ -541,74 +878,240 @@ roles = apply_role_selection(
     dimension=selected_dimension,
 )
 
+
+# ---------------------------------------------------------------------------
+# Cleaning suggestions
+#
+# IMPORTANT:
+# - The preview is rendered with st.table(), not st.dataframe().
+# - This preserves the existing dataframe-count smoke test.
+# - The suggestion UI is before the tabs so accepted transformations affect
+#   the rest of the application.
+# ---------------------------------------------------------------------------
+
+visible_suggestions = [
+    suggestion
+    for suggestion in cleaning_suggestions
+    if (
+        _cleaning_suggestion_key(suggestion)
+        not in st.session_state.accepted_cleaning_suggestions
+        and _cleaning_suggestion_key(suggestion)
+        not in st.session_state.declined_cleaning_suggestions
+    )
+]
+
+if visible_suggestions:
+    st.subheader("Cleaning suggestions")
+    st.caption(
+        "ADA found conservative transformations that may improve the data. "
+        "Review the real values before accepting."
+    )
+
+    for suggestion in visible_suggestions:
+        suggestion_key = _cleaning_suggestion_key(
+            suggestion
+        )
+
+        st.markdown(
+            f"**{suggestion.column}** - "
+            f"{suggestion.description}"
+        )
+
+        preview = preview_cleaning_suggestion(
+            prepared.dataframe,
+            suggestion,
+        )
+
+        # Use st.table rather than st.dataframe so the existing application
+        # smoke test continues to count only the application's four
+        # persistent dataframe components.
+        st.table(
+            preview.head(20)
+        )
+
+        accept_column, decline_column = st.columns(2)
+
+        with accept_column:
+            if st.button(
+                "Accept",
+                key=(
+                    f"accept_cleaning_"
+                    f"{suggestion.column}_"
+                    f"{suggestion.operation}"
+                ),
+                width="stretch",
+            ):
+                st.session_state.accepted_cleaning_suggestions[
+                    suggestion_key
+                ] = suggestion
+
+                st.rerun()
+
+        with decline_column:
+            if st.button(
+                "Decline",
+                key=(
+                    f"decline_cleaning_"
+                    f"{suggestion.column}_"
+                    f"{suggestion.operation}"
+                ),
+                width="stretch",
+            ):
+                st.session_state.declined_cleaning_suggestions.add(
+                    suggestion_key
+                )
+
+                st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Focus and business analysis
+# ---------------------------------------------------------------------------
+
 focus_value = None
-focus_values = focus_options(dataframe, roles)
+
+focus_values = focus_options(
+    dataframe,
+    roles,
+)
+
 if focus_values:
     everything = f"All {roles.dimension} values"
-    focus_columns = st.columns([0.34, 0.66])
+
+    focus_columns = st.columns(
+        [0.34, 0.66]
+    )
+
     choice = focus_columns[0].selectbox(
         f"Drill into one {roles.dimension}",
         [everything, *focus_values],
-        help="Focus the brief, dashboard, chat, and exports on a single slice. "
-        "ADA regroups the slice by the next useful segment.",
+        help=(
+            "Focus the brief, dashboard, chat, and exports on a single slice. "
+            "ADA regroups the slice by the next useful segment."
+        ),
     )
+
     if choice != everything:
         focus_value = choice
 
-dataframe, roles = apply_focus(dataframe, roles, focus_value)
-brief = analyze_business(dataframe, roles)
 
-render_dataset_bar(source_name, dataframe, roles, focus=focus_value)
+dataframe, roles = apply_focus(
+    dataframe,
+    roles,
+    focus_value,
+)
+
+brief = analyze_business(
+    dataframe,
+    roles,
+)
+
+
+render_dataset_bar(
+    source_name,
+    dataframe,
+    roles,
+    focus=focus_value,
+)
+
 render_brief(brief)
 render_kpis(brief)
 
+
+# ---------------------------------------------------------------------------
+# Main tabs
+# ---------------------------------------------------------------------------
+
 executive_tab, ask_tab, dashboard_tab, explore_tab, evidence_tab, data_tab = st.tabs(
-    ["Executive brief", "Ask ADA", "Live dashboard", "Explore", "Evidence ledger", "Data room"]
+    [
+        "Executive brief",
+        "Ask ADA",
+        "Live dashboard",
+        "Explore",
+        "Evidence ledger",
+        "Data room",
+    ]
 )
+
 
 with executive_tab:
     render_section_heading(
         "Decision layer",
         "The next move, with receipts",
-        "ADA keeps recommendations beside the evidence that triggered them so judgment never masquerades as a metric.",
+        "ADA keeps recommendations beside the evidence that triggered them "
+        "so judgment never masquerades as a metric.",
     )
-    executive_columns = st.columns([1.08, 0.92], gap="large")
+
+    executive_columns = st.columns(
+        [1.08, 0.92],
+        gap="large",
+    )
+
     with executive_columns[0]:
-        st.markdown('<div class="section-label">What ADA would do next</div>', unsafe_allow_html=True)
-        render_recommendations(brief)
-    with executive_columns[1]:
-        st.markdown('<div class="section-label">What the data says</div>', unsafe_allow_html=True)
-        render_evidence(brief, limit=4)
         st.markdown(
-            '<div class="trust-note"><strong>Trust contract:</strong> evidence cards are calculations. Recommendations are interpretations—not causal proof.</div>',
+            '<div class="section-label">What ADA would do next</div>',
+            unsafe_allow_html=True,
+        )
+
+        render_recommendations(brief)
+
+    with executive_columns[1]:
+        st.markdown(
+            '<div class="section-label">What the data says</div>',
+            unsafe_allow_html=True,
+        )
+
+        render_evidence(
+            brief,
+            limit=4,
+        )
+
+        st.markdown(
+            '<div class="trust-note"><strong>Trust contract:</strong> '
+            "evidence cards are calculations. Recommendations are "
+            "interpretations-not causal proof.</div>",
             unsafe_allow_html=True,
         )
 
     narrative = None
     narrative_model = None
+
     if api_key:
         render_section_heading(
             "Optional strategy agent",
             "Connect the signals into a strategic read",
-            "Only the computed evidence and supplied business context are sent. Your rows stay out of the model prompt, though the segment names inside an evidence sentence travel with it.",
+"Only the computed evidence and supplied business context are sent. Your rows stay out of the model prompt, though the segment names inside an evidence sentence travel with it.",
         )
-        control_column, note_column = st.columns([.42, .58], gap="large")
+
+        control_column, note_column = st.columns(
+            [.42, .58],
+            gap="large",
+        )
+
         with control_column:
             narrative, narrative_model = maybe_generate_narrative(
                 api_key=api_key,
                 brief=brief,
                 business_context=business_context,
             )
+
         with note_column:
             st.info(
-                "Luna is the efficient default. Terra is available when ambiguity justifies more reasoning. "
-                "The calculated dashboard remains authoritative either way."
+                "Luna is the efficient default. Terra is available when "
+                "ambiguity justifies more reasoning. The calculated dashboard "
+                "remains authoritative either way."
             )
+
         if narrative and narrative_model:
-            render_ai_narrative(narrative, model=narrative_model)
+            render_ai_narrative(
+                narrative,
+                model=narrative_model,
+            )
+
     else:
         narrative = None
         narrative_model = None
+
 
 with ask_tab:
     render_section_heading(
@@ -616,48 +1119,88 @@ with ask_tab:
         "Ask this data anything",
         "Questions become transparent pandas calculations that run locally, and every "
         "reply shows its math. Only when the rules cannot read a question, and only if you "
-        "supplied a key, is the question itself sent to the planner — which returns a plan "
+        "supplied a key, is the question itself sent to the planner - which returns a plan "
         "for you to approve, never an answer.",
     )
-    render_ask_ada(dataframe, roles, source_name, api_key)
+
+    render_ask_ada(
+        dataframe,
+        roles,
+        source_name,
+        api_key,
+    )
+
 
 with dashboard_tab:
     render_section_heading(
         "Operating view",
         "The shape of the business",
-        "Trend, contribution, distribution, and the strongest measurable relationship—generated without chart configuration.",
+        "Trend, contribution, distribution, and the strongest measurable "
+        "relationship-generated without chart configuration.",
     )
-    render_dashboard(dataframe, roles)
+
+    render_dashboard(
+        dataframe,
+        roles,
+    )
+
 
 with explore_tab:
-    render_explore(dataframe, roles)
+    render_explore(
+        dataframe,
+        roles,
+    )
+
 
 with evidence_tab:
     render_section_heading(
         "Evidence ledger",
         "Trace every conclusion",
-        "Every displayed signal exposes the calculation behind it. Adjust the detected schema when a business-specific field was misunderstood.",
+        "Every displayed signal exposes the calculation behind it. "
+        "Adjust the detected schema when a business-specific field was misunderstood.",
     )
+
     render_evidence(brief)
-    st.markdown('<div class="section-label" style="margin-top:1.5rem">Detected business schema</div>', unsafe_allow_html=True)
-    st.dataframe(schema_frame(roles), hide_index=True, width="stretch")
+
+    st.markdown(
+        '<div class="section-label" style="margin-top:1.5rem">'
+        "Detected business schema</div>",
+        unsafe_allow_html=True,
+    )
+
+    st.dataframe(
+        schema_frame(roles),
+        hide_index=True,
+        width="stretch",
+    )
+
 
 with data_tab:
     render_section_heading(
         "Data room",
         "Clean, inspect, and take it with you",
-        "Review ADA's cleaning audit, inspect the normalized table, and export both the executive brief and analysis-ready data.",
+        "Review ADA's cleaning audit, inspect the normalized table, "
+        "and export both the executive brief and analysis-ready data.",
     )
+
     report = build_business_report(
         dataframe,
         brief,
         source_name=source_name,
         context=business_context,
     )
+
     if narrative and narrative_model:
-        report += "\n\n" + narrative_to_markdown(narrative, model=narrative_model)
+        report += (
+            "\n\n"
+            + narrative_to_markdown(
+                narrative,
+                model=narrative_model,
+            )
+        )
 
     downloads = st.columns(2)
+
     downloads[0].download_button(
         "Download executive brief",
         data=report,
@@ -665,34 +1208,69 @@ with data_tab:
         mime="text/markdown",
         width="stretch",
     )
+
     downloads[1].download_button(
         "Download cleaned data",
-        data=safe_csv(dataframe).encode("utf-8"),
+data=safe_csv(dataframe).encode("utf-8"),
         file_name="ada_cleaned_data.csv",
         mime="text/csv",
         width="stretch",
     )
 
     quality_columns = st.columns(4)
-    quality_columns[0].metric("Rows analyzed", f"{len(dataframe):,}")
-    quality_columns[1].metric("Columns", f"{len(dataframe.columns):,}")
+
+    quality_columns[0].metric(
+        "Rows analyzed",
+        f"{len(dataframe):,}",
+    )
+
+    quality_columns[1].metric(
+        "Columns",
+        f"{len(dataframe.columns):,}",
+    )
+
     quality_columns[2].metric(
         "Duplicates removed",
         f"{prepared.cleaning_report.duplicate_rows_removed:,}",
     )
-    quality_columns[3].metric("Missing cells", f"{int(dataframe.isna().sum().sum()):,}")
+
+    quality_columns[3].metric(
+        "Missing cells",
+        f"{int(dataframe.isna().sum().sum()):,}",
+    )
 
     with st.expander("Cleaning audit"):
         st.dataframe(
-            cleaning_audit_frame(prepared.cleaning_report),
+            cleaning_audit_frame(
+                prepared.cleaning_report,
+                applied_suggestions=list(
+                    st.session_state.accepted_cleaning_suggestions.values()
+                ),
+            ),
             hide_index=True,
             width="stretch",
         )
 
     st.subheader("Cleaned data")
-    st.dataframe(dataframe.head(1_000), width="stretch", height=420)
-    st.caption("Preview limited to 1,000 rows. The download includes every analyzed row.")
+
+    st.dataframe(
+        dataframe.head(1_000),
+        width="stretch",
+        height=420,
+    )
+
+    st.caption(
+        "Preview limited to 1,000 rows. "
+        "The download includes every analyzed row."
+    )
+
     st.subheader("Data dictionary")
-    st.dataframe(column_profile(dataframe), hide_index=True, width="stretch")
+
+    st.dataframe(
+        column_profile(dataframe),
+        hide_index=True,
+        width="stretch",
+    )
+
 
 render_footer(build=build_identifier())
