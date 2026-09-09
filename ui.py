@@ -20,6 +20,14 @@ from forecasting import build_forecast, describe_backtest
 from formatting import format_number, format_period
 from nlq import QueryAnswer
 from schema import ColumnRoles
+from chart_summaries import (
+    summarize_categories,
+    summarize_distribution,
+    summarize_heatmap,
+    summarize_movement,
+    summarize_relationship,
+    summarize_trend,
+)
 
 if TYPE_CHECKING:  # The AI layer is optional; ui must import without it.
     from ai_insights import AINarrative
@@ -227,12 +235,13 @@ def style_chart(figure: go.Figure, *, height: int = 390) -> go.Figure:
     figure.update_yaxes(gridcolor="#EEF0F3", zeroline=False, tickfont={"color": MUTED})
     return figure
 
-
 def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
     series = build_trend(dataframe, roles)
     trend = series.frame
     segments = segment_frame(dataframe, roles)
+
     chart_columns = st.columns(2, gap="medium")
+
     with chart_columns[0]:
         if not trend.empty:
             figure = px.area(
@@ -243,8 +252,14 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 title=f"{roles.measure or 'Records'} over time",
                 color_discrete_sequence=[ACCENT],
             )
-            figure.update_traces(line={"width": 3}, fillcolor="rgba(99,91,255,.11)")
+
+            figure.update_traces(
+                line={"width": 3},
+                fillcolor="rgba(99,91,255,.11)",
+            )
+
             anomalies = detect_anomalies(trend)
+
             if anomalies:
                 figure.add_trace(
                     go.Scatter(
@@ -258,15 +273,27 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                             "color": "#E35D6A",
                             "line": {"width": 2, "color": "white"},
                         },
-                        hovertemplate="%{x|%b %Y}: %{y:,.0f} — outside the expected band<extra>Anomaly</extra>",
+                        hovertemplate=(
+                            "%{x|%b %Y}: %{y:,.0f} "
+                            "— outside the expected band"
+                            "<extra>Anomaly</extra>"
+                        ),
                     )
                 )
+
             forecast = build_forecast(trend)
+
             if forecast:
                 figure.add_trace(
                     go.Scatter(
-                        x=[*forecast.periods, *reversed(forecast.periods)],
-                        y=[*forecast.upper, *reversed(forecast.lower)],
+                        x=[
+                            *forecast.periods,
+                            *reversed(forecast.periods),
+                        ],
+                        y=[
+                            *forecast.upper,
+                            *reversed(forecast.lower),
+                        ],
                         mode="lines",
                         fill="toself",
                         fillcolor="rgba(139,92,246,.09)",
@@ -275,25 +302,62 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                         showlegend=False,
                     )
                 )
+
                 figure.add_trace(
                     go.Scatter(
-                        x=[trend.iloc[-1]["Period"], *forecast.periods],
-                        y=[float(trend.iloc[-1]["Value"]), *forecast.values],
+                        x=[
+                            trend.iloc[-1]["Period"],
+                            *forecast.periods,
+                        ],
+                        y=[
+                            float(trend.iloc[-1]["Value"]),
+                            *forecast.values,
+                        ],
                         mode="lines",
                         name="Forecast",
-                        line={"width": 2.5, "dash": "dash", "color": "#8B5CF6"},
-                        hovertemplate="%{x|%b %Y}: %{y:,.0f} — baseline forecast<extra></extra>",
+                        line={
+                            "width": 2.5,
+                            "dash": "dash",
+                            "color": "#8B5CF6",
+                        },
+                        hovertemplate=(
+                            "%{x|%b %Y}: %{y:,.0f} "
+                            "— baseline forecast<extra></extra>"
+                        ),
                     )
                 )
-            st.plotly_chart(style_chart(figure), width="stretch", config={"displayModeBar": False})
+
+            st.plotly_chart(
+                style_chart(figure),
+                width="stretch",
+                config={"displayModeBar": False},
+            )
+
+            st.caption(
+                "Chart summary: "
+                + summarize_trend(
+                    trend,
+                    "Period",
+                    "Value",
+                )
+            )
+
             if forecast:
                 st.caption(
-                    f"Baseline forecast: {forecast.method} · {describe_backtest(forecast.backtest)}."
+                    f"Baseline forecast: {forecast.method} · "
+                    f"{describe_backtest(forecast.backtest)}."
                 )
+
             for note in series.notes:
                 st.caption(f"Timeline: {note}")
+
         else:
-            st.markdown('<div class="empty-state">Select a date column to reveal movement over time.</div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div class="empty-state">'
+                "Select a date column to reveal movement over time."
+                "</div>",
+                unsafe_allow_html=True,
+            )
 
     with chart_columns[1]:
         if not segments.empty:
@@ -305,61 +369,202 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 title=f"{roles.measure or 'Records'} by {roles.dimension}",
                 color_discrete_sequence=[LEAF],
             )
-            figure.update_traces(marker_line_width=0, hovertemplate="%{y}: %{x:,.2f}<extra></extra>")
-            st.plotly_chart(style_chart(figure), width="stretch", config={"displayModeBar": False})
+
+            figure.update_traces(
+                marker_line_width=0,
+                hovertemplate="%{y}: %{x:,.2f}<extra></extra>",
+            )
+
+            st.plotly_chart(
+                style_chart(figure),
+                width="stretch",
+                config={"displayModeBar": False},
+            )
+
+            st.caption(
+                "Chart summary: "
+                + summarize_categories(
+                    segments,
+                    "Segment",
+                    "Value",
+                )
+            )
+
         else:
-            st.markdown('<div class="empty-state">Select a segment column to reveal contribution.</div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div class="empty-state">'
+                "Select a segment column to reveal contribution."
+                "</div>",
+                unsafe_allow_html=True,
+            )
 
     movement_columns = st.columns(2, gap="medium")
+
     with movement_columns[0]:
         drivers = driver_frame(dataframe, roles)
+
         if not drivers.empty:
             waterfall = go.Figure(
                 go.Waterfall(
-                    x=[*drivers["Segment"], "Net change"],
-                    y=[*drivers["Change"], 0],
-                    measure=[*(["relative"] * len(drivers)), "total"],
-                    connector={"line": {"color": "#E5E7EB"}},
-                    increasing={"marker": {"color": RISE}},
-                    decreasing={"marker": {"color": FALL}},
-                    totals={"marker": {"color": ACCENT}},
-                    hovertemplate="%{x}: %{delta:+,.0f}<extra></extra>",
+                    x=[
+                        *drivers["Segment"],
+                        "Net change",
+                    ],
+                    y=[
+                        *drivers["Change"],
+                        0,
+                    ],
+                    measure=[
+                        *(["relative"] * len(drivers)),
+                        "total",
+                    ],
+                    connector={
+                        "line": {
+                            "color": "#E5E7EB",
+                        }
+                    },
+                    increasing={
+                        "marker": {
+                            "color": RISE,
+                        }
+                    },
+                    decreasing={
+                        "marker": {
+                            "color": FALL,
+                        }
+                    },
+                    totals={
+                        "marker": {
+                            "color": ACCENT,
+                        }
+                    },
+                    hovertemplate=(
+                        "%{x}: %{delta:+,.0f}"
+                        "<extra></extra>"
+                    ),
                 )
             )
-            waterfall.update_layout(title=f"What moved {roles.measure} — latest vs previous period")
-            st.plotly_chart(style_chart(waterfall), width="stretch", config={"displayModeBar": False})
+
+            waterfall.update_layout(
+                title=(
+                    f"What moved {roles.measure} — "
+                    "latest vs previous period"
+                )
+            )
+
+            st.plotly_chart(
+                style_chart(waterfall),
+                width="stretch",
+                config={"displayModeBar": False},
+            )
+
+            st.caption(
+                "Chart summary: "
+                + summarize_movement(
+                    drivers,
+                    "Segment",
+                    "Change",
+                )
+            )
+
         else:
             st.markdown(
-                '<div class="empty-state">A date, metric, and segment together unlock the movement waterfall.</div>',
+                '<div class="empty-state">'
+                "A date, metric, and segment together unlock "
+                "the movement waterfall."
+                "</div>",
                 unsafe_allow_html=True,
             )
 
     with movement_columns[1]:
-        heat = heatmap_frame(dataframe, roles, frequency=series.frequency)
+        heat = heatmap_frame(
+            dataframe,
+            roles,
+            frequency=series.frequency,
+        )
+
         if not heat.empty and len(heat.columns) >= 2:
             heatmap = go.Figure(
                 go.Heatmap(
                     z=heat.to_numpy(),
-                    x=[format_period(period, series.frequency) for period in heat.columns],
-                    y=[str(segment) for segment in heat.index],
-                    colorscale=[[0, "#F6F7F9"], [0.5, "#B9B1FF"], [1, "#4E43C7"]],
-                    hovertemplate="%{y} · %{x}: %{z:,.0f}<extra></extra>",
+                    x=[
+                        format_period(
+                            period,
+                            series.frequency,
+                        )
+                        for period in heat.columns
+                    ],
+                    y=[
+                        str(segment)
+                        for segment in heat.index
+                    ],
+                    colorscale=[
+                        [0, "#F6F7F9"],
+                        [0.5, "#B9B1FF"],
+                        [1, "#4E43C7"],
+                    ],
+                    hovertemplate=(
+                        "%{y} · %{x}: %{z:,.0f}"
+                        "<extra></extra>"
+                    ),
                     showscale=False,
                 )
             )
+
             heatmap.update_layout(
-                title=f"{roles.measure or 'Records'} intensity by {roles.dimension} and period"
+                title=(
+                    f"{roles.measure or 'Records'} intensity "
+                    f"by {roles.dimension} and period"
+                )
             )
-            heatmap.update_yaxes(autorange="reversed")
-            st.plotly_chart(style_chart(heatmap), width="stretch", config={"displayModeBar": False})
+
+            heatmap.update_yaxes(
+                autorange="reversed"
+            )
+
+            st.plotly_chart(
+                style_chart(heatmap),
+                width="stretch",
+                config={"displayModeBar": False},
+            )
+
+            heat_summary = (
+                heat.rename_axis("Segment")
+                .reset_index()
+                .melt(
+                    id_vars="Segment",
+                    var_name="Period",
+                    value_name="Value",
+                )
+            )
+
+            st.caption(
+                "Chart summary: "
+                + summarize_heatmap(
+                    heat_summary,
+                    "Segment",
+                    "Period",
+                    "Value",
+                )
+            )
+
         else:
             st.markdown(
-                '<div class="empty-state">A date and a segment together unlock the intensity heatmap.</div>',
+                '<div class="empty-state">'
+                "A date and a segment together unlock "
+                "the intensity heatmap."
+                "</div>",
                 unsafe_allow_html=True,
             )
 
-    numeric = [column for column in roles.numeric if dataframe[column].nunique(dropna=True) > 2]
+    numeric = [
+        column
+        for column in roles.numeric
+        if dataframe[column].nunique(dropna=True) > 2
+    ]
+
     lower_columns = st.columns(2, gap="medium")
+
     with lower_columns[0]:
         if roles.measure:
             figure = px.histogram(
@@ -369,20 +574,60 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 title=f"Distribution of {roles.measure}",
                 color_discrete_sequence=["#0E8F6E"],
             )
-            st.plotly_chart(style_chart(figure), width="stretch", config={"displayModeBar": False})
+
+            st.plotly_chart(
+                style_chart(figure),
+                width="stretch",
+                config={"displayModeBar": False},
+            )
+
+            st.caption(
+                "Chart summary: "
+                + summarize_distribution(
+                    dataframe,
+                    roles.measure,
+                )
+            )
+
     with lower_columns[1]:
-        partner = next((column for column in numeric if column != roles.measure), None)
+        partner = next(
+            (
+                column
+                for column in numeric
+                if column != roles.measure
+            ),
+            None,
+        )
+
         if roles.measure and partner:
             figure = px.scatter(
                 dataframe,
                 x=partner,
                 y=roles.measure,
-                color=roles.dimension if roles.dimension else None,
+                color=(
+                    roles.dimension
+                    if roles.dimension
+                    else None
+                ),
                 opacity=0.62,
                 title=f"{roles.measure} vs {partner}",
                 color_discrete_sequence=list(SERIES_COLORS),
             )
-            st.plotly_chart(style_chart(figure), width="stretch", config={"displayModeBar": False})
+
+            st.plotly_chart(
+                style_chart(figure),
+                width="stretch",
+                config={"displayModeBar": False},
+            )
+
+            st.caption(
+                "Chart summary: "
+                + summarize_relationship(
+                    dataframe,
+                    partner,
+                    roles.measure,
+                )
+            )
 
 
 def _chat_answer_figure(result: QueryAnswer) -> go.Figure | None:
