@@ -97,6 +97,24 @@ def percentage_outranks_currency(column: str | None) -> bool:
     return bool(words) and words[-1] in PERCENTAGE_TOKENS
 
 
+def rate_scale(column_values: pd.Series | None, value: float = 0.0) -> str:
+    """Whether a rate column stores fractions (0.25) or points (25)."""
+    return "fraction" if _percentage_uses_fraction_scale(value, column_values) else "points"
+
+
+def format_rate_change(delta: float, column_values: pd.Series | None) -> str:
+    """A change in a rate is a number of percentage points, not a percentage.
+
+    20% to 40% is twenty points, or a hundred percent relative. Saying
+    "increased by 20%" for that is ambiguous at best and wrong on the relative
+    reading, so the unit is always spelt out.
+    """
+    if not np.isfinite(delta):
+        return "an unmeasurable amount"
+    points = delta * 100 if rate_scale(column_values, delta) == "fraction" else delta
+    return f"{abs(points):.1f} percentage points"
+
+
 def _column_reads_as_percentage(value: float, column_values: pd.Series | None) -> bool:
     """Judge plausibility once for the column, not once per value.
 
