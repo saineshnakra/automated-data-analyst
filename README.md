@@ -1,8 +1,9 @@
 # ADA: Automated Data Analyst
 
 [![CI](https://github.com/saineshnakra/automated-data-analyst/actions/workflows/ci.yml/badge.svg)](https://github.com/saineshnakra/automated-data-analyst/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?logo=python&logoColor=white)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.13-3776ab?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-20a779.svg)](https://github.com/saineshnakra/automated-data-analyst/blob/main/LICENSE)
+[![Stars](https://img.shields.io/github/stars/saineshnakra/automated-data-analyst?style=flat&logo=github&color=f5b731&label=Star%20this%20repo)](https://github.com/saineshnakra/automated-data-analyst/stargazers)
 
 **Upload a CSV or Excel file. Get a dashboard, an executive brief, anomaly
 flags, a forecast, and answers to plain-English questions — with the calculation
@@ -15,6 +16,11 @@ shown under every number.**
 
 **Source:** [github.com/saineshnakra/automated-data-analyst](https://github.com/saineshnakra/automated-data-analyst)
 
+> **⭐ If ADA saved you an afternoon, [star the repo](https://github.com/saineshnakra/automated-data-analyst).**
+> It is the whole marketing budget: stars are what put this in front of the next
+> person looking for a tool that shows its arithmetic. One click, and it costs
+> you nothing.
+
 ![ADA turns CSV and Excel files into decision-ready business dashboards](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/ada-social-preview.png)
 
 ## What it does
@@ -24,7 +30,7 @@ and which is the segment, then builds the analysis around that.
 
 - **Dashboard** — trend, segment breakdown, movement waterfall, segment × period heatmap
 - **Ask ADA** — plain-English questions answered locally with pandas, calculation shown
-- **Anomaly flags** — periods outside a calibrated band, sized so a stable series false-alarms about once in twenty analyses
+- **Anomaly flags** — periods outside a calibrated band, sized so a stable series with continuous, roughly normal noise false-alarms about once in twenty analyses ([what that assumes](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/reference/anomalies.md#what-the-5-assumes))
 - **Forecast** — a guarded baseline that refuses to run on thin history and reports when it was no better than assuming no change
 - **Evidence and next steps** — every finding carries its calculation; recommendations are labelled as interpretation, never as cause
 - **Downloads** — Markdown executive brief and cleaned CSV
@@ -69,21 +75,28 @@ streamlit run app.py
 
 No API key required. The app opens with a built-in demo dataset.
 
+Python: tested on 3.11, 3.12 and 3.13 (the CI matrix); `requires-python` is
+`>=3.11`. To install the exact package versions CI tests against, add
+`-c constraints.txt` to the `pip install` line.
+
 ## Does my data leave my machine?
 
 **Running ADA yourself: no.** Cleaning, schema detection, every chart, and every
 Ask ADA answer are computed locally with pandas, with no network call at all.
 
 **Using the hosted demo: your file is uploaded to a Streamlit server**, because
-that is what uploading a file to a website means. It is held in memory for the
-session and never written to a database. If that matters for your data, run ADA
-locally — it is four commands above and needs no key.
+that is what uploading a file to a website means. The parsed file is held in
+that server process's memory — a bounded cache of at most eight files for up to
+an hour, which outlives your browser session — and is never written to disk or
+to a database. If that matters for your data, run ADA locally — it is four
+commands above and needs no key.
 
 An optional AI layer adds two things when you supply a key: a query planner for
 questions the rules cannot parse, and a strategic narrative. The planner shows
 its proposed calculation and waits for your confirmation before ADA executes it
-locally. **Neither ever receives your rows.** They receive column names, types,
-and already-computed evidence — and because an evidence sentence names the
+locally. **Neither ever receives your rows.** The planner receives your question
+and the column names, types and roles; the narrative receives the schema and
+the already-computed evidence — and because an evidence sentence names the
 segment it is about, a segment label such as a customer or product name can
 appear in it. Nothing else from a cell does. Model-generated code is never
 executed.
@@ -127,6 +140,14 @@ the code.
 **Built with ADA**
 
 - *Yours could be here.*
+
+## Star it
+
+You read the whole thing — [that is worth a star](https://github.com/saineshnakra/automated-data-analyst/stargazers).
+ADA has no ads, no launch budget and no growth team; it gets found because
+people who liked it clicked the button. If you are shipping something with it,
+[say so in an issue](https://github.com/saineshnakra/automated-data-analyst/issues/new)
+and it goes in the list above.
 
 ## License
 

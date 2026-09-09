@@ -20,10 +20,13 @@ from formatting import (
     format_number,
     format_percentage,
     format_period,
+    format_rate_change,
     is_percentage,
     normalized_name,
     percentage_outranks_currency,
+    rate_scale,
 )
+from metrics import increase_is_welcome, resolve_metric
 from schema import TIME_PART_TOKENS, ColumnRoles, detect_roles, looks_like_identifier
 from timeseries import robust_scale
 
@@ -68,43 +71,27 @@ class BusinessBrief:
 MIN_PERIODS_FOR_VOLATILITY = 5
 
 
-def _period_changes(values: np.ndarray) -> np.ndarray:
-    """Period-over-period percentage changes, skipping divisions by zero."""
+def _period_changes(values: np.ndarray, *, points: bool = False) -> np.ndarray:
+    """Period-over-period changes: relative %, or point differences for a rate.
+
+    Division by zero is skipped in the relative case.
+    """
     previous, current = values[:-1], values[1:]
+    if points:
+        return current - previous
     usable = previous != 0
     return (current[usable] - previous[usable]) / np.abs(previous[usable]) * 100
 
 
-# A measure where going up is bad. Whole-word, head-noun style: "Cost" and
-# "Refund Amount" count, "Cost Savings" does not.
-ADVERSE_MEASURE_TOKENS = frozenset({
-    "cost", "costs", "expense", "expenses", "spend", "churn", "refund", "refunds",
-    "returns", "loss", "losses", "overdue", "delay", "delays", "hours", "tickets",
-    "complaints", "defects", "errors", "bounce", "debt", "outstanding",
-})
-FAVOURABLE_OVERRIDES = frozenset({"savings", "saved", "recovered"})
-
-
-def increase_is_welcome(measure: str | None) -> bool:
-    """Whether a rise in this measure is good news."""
-    if not measure:
-        return True
-    words = normalized_name(measure).split()
-    if not words or any(word in FAVOURABLE_OVERRIDES for word in words):
-        return True
-    # The head noun decides, and so does a leading one: "Refund Amount" is a
-    # refund before it is an amount. A word in the middle -- "Revenue After
-    # Returns" -- is a qualifier and does not flip the reading.
-    return words[-1] not in ADVERSE_MEASURE_TOKENS and words[0] not in ADVERSE_MEASURE_TOKENS
-
-
-def _movement_in_context(values: np.ndarray, change: float) -> str:
+def _movement_in_context(values: np.ndarray, change: float, *, points: bool = False) -> str:
     """Say whether the latest movement is unusual for this particular series.
 
     A metric that routinely swings 30% has not told you anything by swinging
     30% again. Without that context every movement reads as a development.
+    For a rate the series and the change are in percentage points, and so is
+    the "typically moves" figure -- a rate's own history is in points.
     """
-    prior = _period_changes(values[:-1])
+    prior = _period_changes(values[:-1], points=points)
     if len(prior) < MIN_PERIODS_FOR_VOLATILITY:
         return ""
 
@@ -128,7 +115,8 @@ def _movement_in_context(values: np.ndarray, change: float) -> str:
             if moved_more
             else "This is an unusually quiet period for this series"
         )
-    return f" {verdict} — this series typically moves about {format_percentage(typical)} per period."
+    unit = f"{typical:.1f} percentage points" if points else format_percentage(typical)
+    return f" {verdict} — this series typically moves about {unit} per period."
 
 
 def _growth_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
@@ -142,7 +130,17 @@ def _growth_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | 
     current = float(values[-1])
     if previous == 0 or not np.isfinite(previous) or not np.isfinite(current):
         return None
-    change = (current - previous) / abs(previous) * 100
+    metric = resolve_metric(roles.measure)
+    measure_values = dataframe[roles.measure].dropna() if roles.measure else None
+    if metric.unit == "rate":
+        # A rate moves in percentage points. 10% to 20% is ten points; the
+        # "100% increase" reading is what the relative formula would say.
+        scale = 100.0 if rate_scale(measure_values, current) == "fraction" else 1.0
+        values = values * scale
+        previous, current = previous * scale, current * scale
+        change = current - previous
+    else:
+        change = (current - previous) / abs(previous) * 100
     # A quarter is "Q4 2023", not "Oct 2023" -- which the anomaly card and the
     # chart axis already knew, so the brief was contradicting its own page.
     period = format_period(trend.iloc[-1]["Period"], series.frequency)
@@ -151,31 +149,48 @@ def _growth_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | 
     # was reporting a 50% collapse as settled fact.
     completeness = "complete period" if series.completeness_checked else "period so far"
     measure = roles.measure or "Records"
-    measure_values = dataframe[roles.measure].dropna() if roles.measure else None
-    direction = "increased" if change >= 0 else "decreased"
+    direction = "was unchanged" if change == 0 else ("increased" if change > 0 else "decreased")
+    is_rate = metric.unit == "rate"
+    if change == 0:
+        moved = ""
+    elif is_rate:
+        moved = f" by {abs(change):.1f} percentage points"
+    else:
+        moved = " " + format_percentage(abs(change))
     # A rising cost is not good news. Tone follows what the movement means
     # for the business, and recommendations follow tone.
     welcome = increase_is_welcome(roles.measure)
-    context = _movement_in_context(values, change)
+    context = _movement_in_context(values, change, points=is_rate)
     if series.short_coverage:
         context += (
             f" The last period only reaches {series.short_coverage}, so part of this may be "
             "missing data rather than a real move."
         )
+    if is_rate:
+        shown_previous, shown_current = f"{previous:.1f}%", f"{current:.1f}%"
+        value = f"{'+' if change > 0 else ('−' if change < 0 else '')}{abs(change):.1f} pp"
+        calculation = (
+            "Latest period average − previous period average, in percentage points, set "
+            "against the spread of past period-over-period point changes"
+        )
+    else:
+        shown_previous = format_number(previous, roles.measure, column_values=measure_values)
+        shown_current = format_number(current, roles.measure, column_values=measure_values)
+        value = format_percentage(change, signed=True)
+        calculation = (
+            "(Latest period − previous period) ÷ |previous period|, set against the spread "
+            "of past period-over-period changes"
+        )
     return Evidence(
         kind="trend",
         title=f"Latest {measure.lower()} movement",
-        value=format_percentage(change, signed=True),
+        value=value,
         statement=(
-            f"{measure} {direction} {format_percentage(abs(change))} in the latest {completeness} "
-            f"({period}), from {format_number(previous, roles.measure, column_values=measure_values)} to "
-            f"{format_number(current, roles.measure, column_values=measure_values)}.{context}"
+            f"{measure} {direction}{moved} in the latest {completeness} "
+            f"({period}), from {shown_previous} to {shown_current}.{context}"
         ),
-        calculation=(
-            "(Latest period − previous period) ÷ |previous period|, set against the spread "
-            "of past period-over-period changes"
-        ),
-        tone="positive" if (change >= 0) == welcome else "negative",
+        calculation=calculation,
+        tone="neutral" if change == 0 else ("positive" if (change > 0) == welcome else "negative"),
     )
 
 
@@ -201,6 +216,35 @@ def _change_driver_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evid
     driver_change = float(grouped.loc[driver_key, "Change"])
     direction = "increased" if driver_change > 0 else "decreased"
     sign = "+" if driver_change > 0 else "−"
+    metric = resolve_metric(roles.measure)
+    welcome = metric.increase_is_welcome
+    tone = "positive" if (driver_change > 0) == welcome else "negative"
+
+    if not metric.additive:
+        # Changes in segment averages do not add up to the change in the
+        # overall average -- a shift in mix moves the whole with no segment
+        # moving at all -- so no share of "the net movement" may be quoted.
+        # The change itself is in percentage points, which is not the same
+        # thing as a percentage.
+        return Evidence(
+            kind="driver",
+            title="Largest change by segment",
+            value=f"{sign}{format_rate_change(driver_change, measure_values)}",
+            statement=(
+                f"{driver_name} moved the most of any {roles.dimension.lower()}: average "
+                f"{roles.measure} {direction} by {format_rate_change(driver_change, measure_values)}, "
+                f"from {format_number(previous_value, roles.measure, column_values=measure_values)} to "
+                f"{format_number(current_value, roles.measure, column_values=measure_values)}. "
+                "Segment averages do not add up to the overall average, so no share of the "
+                "movement is quoted."
+            ),
+            calculation=(
+                f"latest mean {roles.measure} − previous mean, per {roles.dimension}; ranked by "
+                "absolute change in percentage points; not decomposable into a total"
+            ),
+            tone=tone,
+            subject=driver_name,
+        )
 
     movement = (
         f"{driver_name} moved the most of any {roles.dimension.lower()}: "
@@ -240,7 +284,7 @@ def _change_driver_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evid
         value=f"{sign}{format_number(abs(driver_change), roles.measure, column_values=measure_values)}",
         statement=statement,
         calculation=calculation,
-        tone="positive" if driver_change > 0 else "negative",
+        tone=tone,
         subject=driver_name,
     )
 
@@ -248,7 +292,9 @@ def _change_driver_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evid
 def _anomaly_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
     if not roles.date:
         return None
-    anomalies = detect_anomalies(trend_frame(dataframe, roles))
+    # Every anomaly is counted; only the sharpest few are shown. The card
+    # used to report the display limit as the total.
+    anomalies = detect_anomalies(trend_frame(dataframe, roles), limit=10_000)
     if not anomalies:
         return None
     grain = preferred_frequency(dataframe[roles.date])
@@ -267,7 +313,8 @@ def _anomaly_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence |
             f"{worst.direction} the expected "
             f"{format_number(worst.expected_low, roles.measure, column_values=measure_values)}–"
             f"{format_number(worst.expected_high, roles.measure, column_values=measure_values)} range. "
-            f"{len(anomalies)} {plural} outside the trendline band."
+            f"{len(anomalies)} {plural} outside the trendline band"
+            + (f" (showing the sharpest {min(5, len(anomalies))})." if len(anomalies) > 5 else ".")
         ),
         calculation=(
             "Period totals vs Theil–Sen trendline ± a band calibrated so that only "
@@ -316,6 +363,30 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
     if segments.empty:
         return ()
 
+    metric = resolve_metric(roles.measure)
+    measure_values = dataframe[roles.measure].dropna() if roles.measure else None
+    if not metric.additive:
+        # Segment averages are ranked, not shared out: 22% of "total
+        # conversion rate" is a share of a number that does not exist.
+        segments = segments.sort_values("Value", ascending=False).reset_index(drop=True)
+        leader = segments.iloc[0]
+        dimension = roles.dimension or "segment"
+        amount = format_number(float(leader["Value"]), roles.measure, column_values=measure_values)
+        return (
+            Evidence(
+                kind="leader",
+                title=f"Highest average {(roles.measure or 'value').lower()}",
+                value=amount,
+                statement=(
+                    f"{leader['Segment']} has the highest average {(roles.measure or 'value').lower()} "
+                    f"of any {dimension.lower()}, at {amount}. A rate is an average, so no segment "
+                    "holds a share of it and no concentration can be measured."
+                ),
+                calculation=f"mean({roles.measure}) by {dimension}, ranked",
+                tone="neutral",
+                subject=str(leader["Segment"]),
+            ),
+        )
     total = float(segments["Value"].sum())
     if total == 0 or not np.isfinite(total):
         return ()
@@ -338,7 +409,6 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
     )
     effective = _effective_segments(segments["Value"].to_numpy(dtype=float), total)
     measure = roles.measure or "records"
-    measure_values = dataframe[roles.measure].dropna() if roles.measure else None
     dimension = roles.dimension or "segment"
     leader_amount = format_number(
         float(leader["Value"]), roles.measure, column_values=measure_values
@@ -366,6 +436,7 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
                 else f"largest |{measure}| by {dimension}; share undefined on mixed signs"
             ),
             tone="positive" if shares_hold else "warning",
+            subject=str(leader["Segment"]),
         ),
         # Concentration is a statement about shares. Without shares there is
         # nothing to say, so the card is left out rather than printed as nan%.
@@ -552,18 +623,22 @@ def _quality_evidence(dataframe: pd.DataFrame) -> Evidence | None:
     )
 
 
-def _shown_evidence(evidence: list[Evidence], limit: int = 6) -> list[Evidence]:
-    """The executive preview, with a data-quality card never squeezed out.
+def preview_evidence(evidence, limit: int = 6) -> list[Evidence]:
+    """A reading-budget preview that never squeezes out a data-quality card.
 
-    Six cards is the reading budget. A quality warning past the sixth slot
-    was silently gone -- the one card that says the other five may be built
-    on incomplete data.
+    The brief keeps every finding; this chooses what a pane shows. A quality
+    warning past the last slot is the one card saying the others may rest on
+    incomplete data, so it always makes the cut.
     """
-    shown = list(evidence[:limit])
+    evidence = list(evidence)
+    shown = evidence[:limit]
     quality = next((item for item in evidence[limit:] if item.kind == "quality"), None)
     if quality is not None:
         shown = shown[: limit - 1] + [quality]
     return shown
+
+
+_shown_evidence = preview_evidence
 
 
 def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Recommendation, ...]:
@@ -598,21 +673,24 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
                 f"{trend.statement} {driver.statement}" if driver else trend.statement,
             )
         )
-    elif trend:
+    elif trend and trend.tone == "positive":
+        favourable = increase_is_welcome(roles.measure)
+        improvement = "increase" if favourable else "reduction"
+        levers = "volume, pricing, and mix" if favourable else "volume, unit cost, and mix"
         recommendations.append(
             Recommendation(
                 "Now",
                 (
-                    f"Make {driver.subject}'s improvement repeatable"
+                    f"Make {driver.subject}'s {improvement} repeatable"
                     if driver and driver.subject
                     else "Protect what improved"
                 ),
                 (
-                    f"Break {driver.subject}'s lift into volume, pricing, and mix; preserve the "
+                    f"Break {driver.subject}'s {improvement} into {levers}; preserve the "
                     "repeatable driver and test it in the next-best segment."
                     if driver and driver.subject
                     else f"Identify which {roles.dimension or 'operating segment'} created the "
-                    "latest increase, then test whether that lift is repeatable rather than one-off."
+                    f"latest {improvement}, then test whether it is repeatable rather than one-off."
                 ),
                 f"{trend.statement} {driver.statement}" if driver else trend.statement,
             )
@@ -620,14 +698,23 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
 
     concentration = by_kind.get("concentration")
     leader = by_kind.get("leader")
+    segment = roles.dimension or "segment"
+    # The largest slice of revenue is a leader to learn from; the largest
+    # slice of cost is where a reduction starts. "Build a growth plan for
+    # the next two cost segments" was revenue wording on a cost metric.
+    favourable = increase_is_welcome(roles.measure)
     if concentration and concentration.tone == "warning":
         recommendations.append(
             Recommendation(
                 "Next",
-                "Reduce concentration risk",
+                "Reduce concentration risk" if favourable else "Check where the cost concentrates",
                 (
-                    f"Stress-test the business if the leading {roles.dimension or 'segment'} "
+                    f"Stress-test the business if the leading {segment} "
                     "falls 10–20%, and build a growth plan for the next two segments."
+                    if favourable
+                    else f"Confirm the concentration in the largest {segment} is intended -- one "
+                    "supplier, site or team -- and whether the next two segments can take on the "
+                    "same work at a lower unit cost."
                 ),
                 concentration.statement,
             )
@@ -636,10 +723,13 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
         recommendations.append(
             Recommendation(
                 "Next",
-                "Replicate the leader's playbook",
+                "Replicate the leader's playbook" if favourable else "Start with the largest segment",
                 (
-                    f"Compare the leading {roles.dimension or 'segment'} with the median on "
+                    f"Compare the leading {segment} with the median on "
                     "pricing, volume, and mix; scale the difference that is operationally controllable."
+                    if favourable
+                    else f"Compare the largest {segment} with the median on volume, unit cost, and "
+                    "mix; the controllable difference is where a reduction starts."
                 ),
                 leader.statement,
             )
@@ -713,7 +803,14 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
                 "The current schema does not expose enough business structure for a specific recommendation.",
             )
         )
-    return tuple(recommendations[:4])
+    # Four is the reading budget, but a measurement-gap action past the
+    # fourth slot is the one saying the other three may be built on missing
+    # data, so it always makes the cut.
+    shown = recommendations[:4]
+    gap = next((item for item in recommendations[4:] if "measurement gap" in item.title.lower()), None)
+    if gap is not None:
+        shown = shown[:3] + [gap]
+    return tuple(shown)
 
 
 def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) -> BusinessBrief:
@@ -802,7 +899,20 @@ def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) 
     recommendations = _recommendations(evidence, roles)
     growth_text = growth.statement if growth else None
     leader = next((item for item in evidence if item.kind == "leader"), None)
-    if growth and leader:
+    if growth and leader and leader.kind == "leader" and not resolve_metric(roles.measure).additive:
+        # The leader card for a rate carries an average, not a share, so
+        # "36.5% coming from the leading region" would be a share of nothing.
+        headline = (
+            f"{growth.value} latest movement; {leader.subject} has the highest average "
+            f"{(roles.measure or 'value').lower()} at {leader.value}."
+        )
+    elif growth and leader and leader.tone == "warning":
+        # Mixed-sign segments: the leader's value is an amount, not a share.
+        headline = (
+            f"{growth.value} latest movement; {leader.subject} is the largest "
+            f"{roles.dimension.lower()} at {leader.value}."
+        )
+    elif growth and leader:
         headline = (
             f"{growth.value} latest movement, with {leader.value} coming from the leading "
             f"{roles.dimension.lower()}."
@@ -843,7 +953,7 @@ def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) 
         summary=" ".join(summary_parts),
         roles=roles,
         kpis=tuple(kpis),
-        evidence=tuple(_shown_evidence(evidence)),
+        evidence=tuple(evidence),
         recommendations=recommendations,
     )
 

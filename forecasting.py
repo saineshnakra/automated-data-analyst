@@ -14,9 +14,14 @@ prediction-interval shape with a robust scale, which is an approximation
 for a median-based fit -- close enough to keep the shape honest, which is
 why the backtest, not the band, is the number to trust.
 
-The backtest reports a scaled error next to the percentage one. A MAPE of
-12% means nothing on its own; a MASE below 1 means the forecast beat simply
-assuming next period looks like this one, and above 1 means it did not.
+The backtest reports two comparisons next to the percentage error. A MAPE
+of 12% means nothing on its own. MASE scales the holdout error by how much
+the series moved from one period to the next over the training history --
+the textbook denominator, a one-step no-change baseline measured on the
+periods the fit saw. It is not a race on the holdout, so the backtest also
+runs that race: the last training value is carried across the held-out
+periods and scored on exactly the same periods as the model, and only that
+contest can say whether the model beat assuming no change.
 """
 
 from __future__ import annotations
@@ -26,7 +31,13 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from timeseries import fit_trendline, period_grain, robust_scale
+from timeseries import (
+    fit_trendline,
+    observed_periods,
+    period_grain,
+    period_positions,
+    robust_scale,
+)
 
 MIN_PERIODS = 8
 MIN_SEASONAL_PERIODS = 18
@@ -38,13 +49,19 @@ class Backtest:
     """Honest error, measured on periods the fit never saw."""
 
     mape: float | None  # mean absolute % error on the holdout
-    mase: float | None  # holdout error ÷ error of a no-change forecast
+    mase: float | None  # holdout error ÷ one-step no-change error on the training history
     holdout_periods: int
     periods_without_mape: int  # holdout periods too near zero for a percentage
+    # The same percentage error for carrying the last training value across
+    # the holdout. This is the only number that compares the model with a
+    # no-change forecast on the same periods; MASE does not.
+    holdout_naive_mape: float | None = None
 
     @property
-    def beats_no_change(self) -> bool | None:
-        return None if self.mase is None else self.mase < 1.0
+    def beats_naive_on_holdout(self) -> bool | None:
+        if self.mape is None or self.holdout_naive_mape is None:
+            return None
+        return self.mape < self.holdout_naive_mape
 
 
 @dataclass(frozen=True)
@@ -62,19 +79,33 @@ def describe_backtest(backtest: Backtest) -> str:
     if not backtest.holdout_periods:
         return "history is too thin for a backtest"
 
-    parts = [f"held out the last {backtest.holdout_periods} periods"]
+    # MAPE is an average of past misses, not an interval, so it is never
+    # written with a plus-minus sign; the band on the chart carries its own
+    # description in the method string.
+    count = backtest.holdout_periods
+    parts: list[str] = []
     if backtest.mape is not None:
-        note = f"±{backtest.mape:.1f}% average error"
+        note = f"average error of {backtest.mape:.1f}% on the last {count} held-out periods"
         if backtest.periods_without_mape:
-            measurable = backtest.holdout_periods - backtest.periods_without_mape
-            note += f" across the {measurable} of them above zero"
+            measurable = count - backtest.periods_without_mape
+            note += f" (the {measurable} of them above zero)"
         parts.append(note)
-    elif backtest.periods_without_mape:
-        parts.append("every held-out period was zero, so a percentage error says nothing")
+        if backtest.holdout_naive_mape is not None:
+            verdict = "beat it" if backtest.beats_naive_on_holdout else "did not beat it"
+            parts.append(
+                f"assuming no change would have erred {backtest.holdout_naive_mape:.1f}%"
+                f" on the same periods, so the model {verdict}"
+            )
+    else:
+        parts.append(f"held out the last {count} periods")
+        if backtest.periods_without_mape:
+            parts.append("every held-out period was zero, so a percentage error says nothing")
 
     if backtest.mase is not None:
-        verdict = "better" if backtest.beats_no_change else "no better"
-        parts.append(f"MASE {backtest.mase:.2f}, {verdict} than assuming no change")
+        parts.append(
+            f"MASE {backtest.mase:.2f}"
+            " (error relative to a one-step no-change baseline on the training history)"
+        )
 
     return ", ".join(parts)
 
@@ -129,7 +160,13 @@ def build_forecast(
     min_periods: int = MIN_PERIODS,
 ) -> Forecast | None:
     """Forecast the next periods, or return None when history is too thin."""
-    if trend.empty or not {"Period", "Value"}.issubset(trend.columns) or len(trend) < min_periods:
+    if trend.empty or not {"Period", "Value"}.issubset(trend.columns):
+        return None
+    # Unobserved periods are NaN by design (see aggregation's calendar rules).
+    # Dropped BEFORE the length check, so "enough history" counts periods that
+    # were actually measured rather than blanks the fit cannot use anyway.
+    trend = observed_periods(trend)
+    if len(trend) < min_periods:
         return None
 
     periods = pd.DatetimeIndex(pd.to_datetime(trend["Period"]))
@@ -208,8 +245,12 @@ def _backtest(periods: pd.DatetimeIndex, values: np.ndarray, *, monthly: bool) -
     )
 
     holdout_periods = periods[-holdout:]
-    horizon_positions = line.future_positions(holdout)
-    predicted = line.at(horizon_positions) + _seasonal_adjustment(
+    # The held-out periods sit where the calendar puts them, not at the next
+    # consecutive slots after training: a missing month inside the holdout
+    # would otherwise shift every later prediction one period early. The
+    # positions share the training origin because both start at periods[0].
+    holdout_positions = period_positions(periods)[-holdout:]
+    predicted = line.at(holdout_positions) + _seasonal_adjustment(
         holdout_periods.month.to_numpy(), seasonal
     )
     if float(train_values.min()) >= 0:
@@ -220,19 +261,31 @@ def _backtest(periods: pd.DatetimeIndex, values: np.ndarray, *, monthly: bool) -
     errors = np.abs(predicted - actual)
 
     measurable = np.abs(actual) > 1e-9
-    mape = (
-        round(float(np.mean(errors[measurable] / np.abs(actual[measurable])) * 100), 1)
-        if measurable.any()
-        else None
-    )
+    mape = _percentage_error(errors, actual, measurable)
 
-    # A no-change forecast is the bar any baseline has to clear.
+    # The textbook MASE denominator: how far the series moved between
+    # consecutive periods over the training history. It says how large the
+    # holdout error is in the series' own units of movement, not whether a
+    # no-change forecast would have done better on these particular periods.
     no_change_error = float(np.mean(np.abs(np.diff(train_values))))
     mase = round(float(np.mean(errors) / no_change_error), 2) if no_change_error > 0 else None
+
+    # The contest MASE is often mistaken for: carry the last training value
+    # across the holdout and score it on exactly the same periods.
+    naive_errors = np.abs(np.full(holdout, train_values[-1]) - actual)
+    holdout_naive_mape = _percentage_error(naive_errors, actual, measurable)
 
     return Backtest(
         mape=mape,
         mase=mase,
         holdout_periods=holdout,
         periods_without_mape=int((~measurable).sum()),
+        holdout_naive_mape=holdout_naive_mape,
     )
+
+
+def _percentage_error(errors: np.ndarray, actual: np.ndarray, measurable: np.ndarray) -> float | None:
+    """Mean absolute percentage error over the periods far enough from zero to have one."""
+    if not measurable.any():
+        return None
+    return round(float(np.mean(errors[measurable] / np.abs(actual[measurable])) * 100), 1)
