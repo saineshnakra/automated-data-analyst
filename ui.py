@@ -24,6 +24,7 @@ from chart_summaries import (
     summarize_categories,
     summarize_distribution,
     summarize_heatmap,
+    summarize_movement,
     summarize_relationship,
     summarize_trend,
 )
