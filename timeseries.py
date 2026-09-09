@@ -157,3 +157,34 @@ def robust_scale(residuals: np.ndarray) -> float:
 
     fallback = float(np.mean(deviations)) * MEAN_ABS_DEV_SCALE
     return fallback if fallback > 0 else 0.0
+
+
+def observed_periods(trend: pd.DataFrame) -> pd.DataFrame:
+    """A trend with its unobserved periods removed.
+
+    A period whose every value was missing is held as NaN rather than zero -
+    that distinction is the whole point of the calendar rules in aggregation,
+    and it is right. But NaN is not a number the arithmetic downstream can
+    carry: ``to_numpy(dtype=float)`` hands it to Theil-Sen, one NaN makes the
+    slope NaN, and from there every forecast value, every band edge and every
+    residual is NaN. The visible damage was a forecast card reading "nan" and
+    the backtest caption saying the model "did not beat" a naive one it was
+    never scored against, plus anomaly detection returning nothing at all for
+    a series with an obvious spike in it.
+
+    So the gap is preserved where it means something - the chart, the caption,
+    the filled-period count - and dropped here, where a period with no
+    observation is simply not evidence about the trend. Fitting a line through
+    the periods that WERE observed is the honest reading of a series with a
+    hole in it; the alternative is refusing to forecast at all because one
+    month of a three-year history was blank.
+
+    Returns the frame unchanged when nothing is missing, so the common path
+    pays one ``isna`` and no copy.
+    """
+    if trend.empty or "Value" not in trend.columns:
+        return trend
+    missing = trend["Value"].isna()
+    if not missing.any():
+        return trend
+    return trend.loc[~missing]
