@@ -20,6 +20,13 @@ from forecasting import build_forecast, describe_backtest
 from formatting import format_number, format_period
 from nlq import QueryAnswer
 from schema import ColumnRoles
+from chart_summaries import (
+    summarize_categories,
+    summarize_distribution,
+    summarize_heatmap,
+    summarize_relationship,
+    summarize_trend,
+)
 
 if TYPE_CHECKING:  # The AI layer is optional; ui must import without it.
     from ai_insights import AINarrative
