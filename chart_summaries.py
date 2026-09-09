@@ -6,14 +6,13 @@ def summarize_trend(
     x_col: str,
     y_col: str,
 ) -> str:
-    """Create a short text summary for a trend chart."""
     data = frame[[x_col, y_col]].dropna()
 
     if data.empty:
         return "No data is available for this trend chart."
 
-    first_value = data[y_col].iloc[0]
-    last_value = data[y_col].iloc[-1]
+    first_value = float(data[y_col].iloc[0])
+    last_value = float(data[y_col].iloc[-1])
 
     if first_value == 0:
         change_text = "with no percentage change available"
@@ -39,7 +38,6 @@ def summarize_categories(
     category_col: str,
     value_col: str,
 ) -> str:
-    """Create a short text summary for a category/segment chart."""
     data = frame[[category_col, value_col]].dropna()
 
     if data.empty:
@@ -69,7 +67,6 @@ def summarize_distribution(
     frame: pd.DataFrame,
     value_col: str,
 ) -> str:
-    """Create a short text summary for a distribution chart."""
     data = pd.to_numeric(frame[value_col], errors="coerce").dropna()
 
     if data.empty:
@@ -87,7 +84,6 @@ def summarize_relationship(
     x_col: str,
     y_col: str,
 ) -> str:
-    """Create a short text summary for a relationship/scatter chart."""
     data = frame[[x_col, y_col]].copy()
     data[x_col] = pd.to_numeric(data[x_col], errors="coerce")
     data[y_col] = pd.to_numeric(data[y_col], errors="coerce")
@@ -120,7 +116,6 @@ def summarize_heatmap(
     col_col: str,
     value_col: str,
 ) -> str:
-    """Create a short text summary for a heatmap."""
     data = frame[[row_col, col_col, value_col]].dropna()
 
     if data.empty:
@@ -134,4 +129,39 @@ def summarize_heatmap(
         f"for {row_col}={highest[row_col]} and {col_col}={highest[col_col]}. "
         f"The lowest value is {lowest[value_col]:,.2f} "
         f"for {row_col}={lowest[row_col]} and {col_col}={lowest[col_col]}."
-  )
+    )
+
+
+def summarize_movement(
+    frame: pd.DataFrame,
+    category_col: str,
+    value_col: str,
+) -> str:
+    data = frame[[category_col, value_col]].dropna()
+
+    if data.empty:
+        return "No movement data is available."
+
+    positive = data[data[value_col] > 0]
+    negative = data[data[value_col] < 0]
+
+    parts = []
+
+    if not positive.empty:
+        item = positive.loc[positive[value_col].idxmax()]
+        parts.append(
+            f"largest increase was {item[category_col]} "
+            f"({item[value_col]:+,.2f})"
+        )
+
+    if not negative.empty:
+        item = negative.loc[negative[value_col].idxmin()]
+        parts.append(
+            f"largest decrease was {item[category_col]} "
+            f"({item[value_col]:+,.2f})"
+        )
+
+    net_change = data[value_col].sum()
+    parts.append(f"net change was {net_change:+,.2f}")
+
+    return "The " + ", ".join(parts) + "."
