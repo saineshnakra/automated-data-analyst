@@ -26,7 +26,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from timeseries import fit_trendline, period_grain, robust_scale
+from timeseries import fit_trendline, observed_periods, period_grain, robust_scale
 
 MIN_PERIODS = 8
 MIN_SEASONAL_PERIODS = 18
@@ -129,7 +129,13 @@ def build_forecast(
     min_periods: int = MIN_PERIODS,
 ) -> Forecast | None:
     """Forecast the next periods, or return None when history is too thin."""
-    if trend.empty or not {"Period", "Value"}.issubset(trend.columns) or len(trend) < min_periods:
+    if trend.empty or not {"Period", "Value"}.issubset(trend.columns):
+        return None
+    # Unobserved periods are NaN by design (see aggregation's calendar rules).
+    # Dropped BEFORE the length check, so "enough history" counts periods that
+    # were actually measured rather than blanks the fit cannot use anyway.
+    trend = observed_periods(trend)
+    if len(trend) < min_periods:
         return None
 
     periods = pd.DatetimeIndex(pd.to_datetime(trend["Period"]))
