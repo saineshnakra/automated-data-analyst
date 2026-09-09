@@ -92,6 +92,9 @@ class TrendSeries:
     frame: pd.DataFrame
     frequency: str
     filled_periods: int = 0
+    #: True when those periods were filled with zero (an additive measure),
+    #: False when they were left empty (a rate has no observation to average).
+    filled_as_zero: bool = True
     partial_period: pd.Timestamp | None = None
     partial_coverage: str = ""
     # A period the data stops part-way through, but not far enough through for
@@ -118,8 +121,15 @@ class TrendSeries:
             )
         if self.filled_periods:
             plural = "periods" if self.filled_periods > 1 else "period"
+            # A rate's gaps are NOT zeroes - nobody converted at 0%, nobody
+            # measured at all - so the caption cannot say they were counted as
+            # zero while the chart shows a break in the line.
+            settled = (
+                "counted as zero" if self.filled_as_zero else "left empty, since an average "
+                "needs an observation"
+            )
             notes.append(
-                f"{self.filled_periods} {plural} with no rows counted as zero, keeping the "
+                f"{self.filled_periods} {plural} with no rows {settled}, keeping the "
                 "timeline evenly spaced."
             )
         return tuple(notes)
@@ -228,6 +238,7 @@ def build_trend(
         frame=result,
         frequency=frequency,
         filled_periods=filled,
+        filled_as_zero=metric.additive,
         partial_period=partial_period,
         partial_coverage=partial_coverage,
         short_coverage=short_coverage,

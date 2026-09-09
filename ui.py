@@ -512,8 +512,13 @@ def _explore_frame(
         # values of 1 followed by 1,000 of 10,000 showed no tail at all.
         values = pd.to_numeric(dataframe[spec.x], errors="coerce").dropna()
         counts, edges = np.histogram(values, bins=35)
-        binned = pd.DataFrame({spec.x: edges[:-1], "__width": np.diff(edges), "Records": counts})
+        # distinct_label, as the count path below already does: a column
+        # literally called "Records" is otherwise overwritten by the counts in
+        # this dict literal, and the chart plots counts against counts.
+        records = distinct_label("Records", [spec.x])
+        binned = pd.DataFrame({spec.x: edges[:-1], "__width": np.diff(edges), records: counts})
         binned.attrs["note"] = f"All {len(values):,} values, in 35 equal-width bins."
+        binned.attrs["count_column"] = records
         return binned
     if spec.form == "scatter":
         columns = [column for column in (spec.x, spec.y) if column]

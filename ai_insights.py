@@ -263,11 +263,14 @@ def _usable_dimension(dataframe: pd.DataFrame, column: str) -> bool:
     # table with thirty labelled rows is unique by construction. Uniqueness
     # across enough rows AND values shaped like codes -- "T-0042", "INV0007"
     # -- does.
-    if (
-        present >= IDENTIFIER_EVIDENCE_ROWS
-        and distinct > present * IDENTIFIER_UNIQUENESS
-        and _values_look_like_codes(series)
-    ):
+    if present >= IDENTIFIER_EVIDENCE_ROWS and distinct > present * IDENTIFIER_UNIQUENESS:
+        # Code-shaped values ("T-0042", "INV0007") are a key beyond argument.
+        # But a column that is unique across enough rows is not a segment
+        # whatever its values look like: grouping sixty distinct email
+        # addresses gives sixty groups of one, which is the table again with a
+        # chart drawn on it. The code test decides how confident the refusal
+        # is, not whether to refuse - requiring it let every unique free-text
+        # column through, which is the failure this guard exists to stop.
         return False
     return True
 

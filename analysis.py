@@ -249,7 +249,11 @@ def _read_formatted_number(text: str) -> float | None:
         if raw[0] in "+-":
             if sign_seen:
                 return None
-            sign_seen, negative = True, raw[0] == "-"
+            # `or`, not `=`: a leading parenthesis has already said negative,
+            # and "(+100)" must not be read back as a positive hundred. Each
+            # marker may appear once; either one of them means owed.
+            sign_seen = True
+            negative = negative or raw[0] == "-"
             raw = raw[1:].lstrip()
         elif raw[0] in _CURRENCY_CHARS:
             if currency_seen:

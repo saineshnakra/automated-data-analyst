@@ -48,7 +48,17 @@ def _most_recent(dataframe: pd.DataFrame, date_column: str | None, row_limit: in
             buckets = dataframe[date_column].dt.to_period(grain)
             oldest = dates.min().to_period(grain)
             if (buckets[~dataframe.index.isin(kept.index)] == oldest).any():
-                kept = kept[buckets.loc[kept.index] != oldest]
+                whole = kept[buckets.loc[kept.index] != oldest]
+                # Only when something survives it. Every kept row sitting in
+                # one truncated period is the ordinary shape of a big export
+                # from a busy week: dropping it left ZERO rows, and the app
+                # then reported an empty dataset and a $0.00 headline for a
+                # file with a quarter of a million rows in it. A partial
+                # period that is the whole slice is still the only evidence
+                # there is, and `partial_period` in the trend already tells
+                # the reader it is partial.
+                if not whole.empty:
+                    kept = whole
         return kept
     return dataframe.tail(row_limit)
 

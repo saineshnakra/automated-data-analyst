@@ -3,6 +3,7 @@
 [![CI](https://github.com/saineshnakra/automated-data-analyst/actions/workflows/ci.yml/badge.svg)](https://github.com/saineshnakra/automated-data-analyst/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.13-3776ab?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-20a779.svg)](https://github.com/saineshnakra/automated-data-analyst/blob/main/LICENSE)
+[![Stars](https://img.shields.io/github/stars/saineshnakra/automated-data-analyst?style=flat&logo=github&color=f5b731&label=Star%20this%20repo)](https://github.com/saineshnakra/automated-data-analyst/stargazers)
 
 **Upload a CSV or Excel file. Get a dashboard, an executive brief, anomaly
 flags, a forecast, and answers to plain-English questions — with the calculation
@@ -14,6 +15,11 @@ shown under every number.**
 [Contributing](https://github.com/saineshnakra/automated-data-analyst/blob/main/CONTRIBUTING.md)
 
 **Source:** [github.com/saineshnakra/automated-data-analyst](https://github.com/saineshnakra/automated-data-analyst)
+
+> **⭐ If ADA saved you an afternoon, [star the repo](https://github.com/saineshnakra/automated-data-analyst).**
+> It is the whole marketing budget: stars are what put this in front of the next
+> person looking for a tool that shows its arithmetic. One click, and it costs
+> you nothing.
 
 ![ADA turns CSV and Excel files into decision-ready business dashboards](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/ada-social-preview.png)
 
@@ -134,6 +140,14 @@ the code.
 **Built with ADA**
 
 - *Yours could be here.*
+
+## Star it
+
+You read the whole thing — [that is worth a star](https://github.com/saineshnakra/automated-data-analyst/stargazers).
+ADA has no ads, no launch budget and no growth team; it gets found because
+people who liked it clicked the button. If you are shipping something with it,
+[say so in an issue](https://github.com/saineshnakra/automated-data-analyst/issues/new)
+and it goes in the list above.
 
 ## License
 

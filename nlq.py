@@ -389,11 +389,21 @@ def _take_mentions(
         pattern = rf"\b{re.escape(normalized)}\b"
         if kind == "value" and len(normalized) < SHORT_VALUE:
             pattern = rf"\b(?:{'|'.join(GROUNDING_WORDS)}) {re.escape(normalized)}\b"
-        if kind == "value" and normalized in claimed_values and claimed_values[normalized] != column:
-            # The same label lives in two columns; whichever this question
-            # means, filtering the other is wrong, and both is wrong too.
-            if re.search(pattern, spans.text):
-                return columns, None
+        if kind == "value" and normalized in claimed_values:
+            if claimed_values[normalized] != column:
+                # The same label lives in two columns; whichever this question
+                # means, filtering the other is wrong, and both is wrong too.
+                if re.search(pattern, spans.text):
+                    return columns, None
+                continue
+            # SAME column, different raw spelling: "West" and "west" are two
+            # values that normalize to one word. The first took the span, so
+            # the second finds nothing left to claim and used to be dropped -
+            # which filtered half the matching rows and reported the answer as
+            # though it were the whole. The word was already claimed FOR this
+            # column, so every raw spelling behind it belongs in the filter.
+            if column in values and value is not None and value not in values[column]:
+                values[column].append(value)
             continue
         if kind == "column" and normalized in GRAMMAR_WORDS:
             # "how many rows by Rows": the column called Rows is the one

@@ -73,6 +73,40 @@ In the pull request body, explain:
 Keep pull requests focused. Avoid unrelated formatting churn, and do not add a
 dependency without a concrete product need.
 
+## Size: about 100 lines of code
+
+**A pull request should change at most ~100 lines of executable code.** Prose,
+tests and fixtures do not count against it — a 40-line fix with 300 lines of
+tests and a long explanation is exactly right, and a 400-line refactor with no
+tests is exactly wrong.
+
+This is not tidiness. Review quality falls off a cliff somewhere around a
+hundred lines: past that, a reviewer reads for *plausibility* rather than for
+*bugs*, and approves things nobody actually checked. That failure has already
+happened in this repository — a large change here shipped with a green suite of
+385 tests and still carried eight defects, including a forecast that printed
+`nan` and a row cap that could reduce a 250,000-row upload to nothing. Every one
+of them was obvious in a fifty-line diff and invisible in a four-thousand-line
+one.
+
+So if your change is bigger than that, split it. In order of preference:
+
+1. **By behaviour.** One user-visible change per pull request, with the tests
+   that prove it. "Rates are averaged, not summed" is one; "a rate moves in
+   percentage points" is another, even though they touch the same file.
+2. **Groundwork first.** A new module, a shared helper or a renamed function
+   with no behaviour change is its own pull request, and it is a *small* one to
+   review because nothing should move. The change that uses it comes next.
+3. **As a stack.** Open them in order, each based on the last, and say so in the
+   body: `Stacked on #123 — review that first`. Merge from the bottom up.
+
+Two things that do **not** count as splitting: shipping a large change as
+several commits in one pull request (a reviewer still faces the whole diff), and
+holding tests back for a follow-up (a change and its tests are one unit).
+
+Generated or vendored files, lockfiles, and mechanical renames applied by a tool
+are exempt — say which in the body so a reviewer can skip them with confidence.
+
 ## Analytical standard
 
 A useful insight is reproducible from visible evidence. New recommendations must

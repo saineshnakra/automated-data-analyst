@@ -28,7 +28,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from timeseries import fit_trendline, robust_scale
+from timeseries import fit_trendline, observed_periods, robust_scale
 
 MIN_PERIODS = 8
 FALSE_ALARM_RATE = 0.05
@@ -88,7 +88,12 @@ def detect_anomalies(
     sensitivity, which is occasionally the right call but should be a
     deliberate one.
     """
-    if trend.empty or not {"Period", "Value"}.issubset(trend.columns) or len(trend) < min_periods:
+    if trend.empty or not {"Period", "Value"}.issubset(trend.columns):
+        return ()
+    # As in build_forecast: a period with no observation is not evidence, and
+    # one NaN makes the residual scale NaN, which silently flags nothing.
+    trend = observed_periods(trend)
+    if len(trend) < min_periods:
         return ()
 
     periods = pd.DatetimeIndex(pd.to_datetime(trend["Period"]))
