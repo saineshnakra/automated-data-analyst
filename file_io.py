@@ -197,6 +197,14 @@ def _resplit_single_column(parsed: pd.DataFrame, contents: bytes, encoding: str)
     return parsed
 
 
+def _comma_fields(line: str) -> int:
+    """How many comma-delimited fields a line holds, respecting quoting."""
+    try:
+        return len(next(csv.reader([line]), []))
+    except csv.Error:
+        return 0
+
+
 def _skip_title_row(contents: bytes, encoding: str) -> pd.DataFrame | None:
     """Use the second line as the header when the first is a report title.
 
@@ -212,7 +220,15 @@ def _skip_title_row(contents: bytes, encoding: str) -> pd.DataFrame | None:
     # Only a comma is treated as the delimiter here. A one-column file of
     # sentences containing semicolons is a real file, and re-reading it as a
     # table would shred it -- the mistake this rescue is meant to prevent.
-    if "," in title or not header.count(",") or header.count(",") != first_row.count(","):
+    #
+    # The fields are counted by the csv reader, not by counting commas. A
+    # quoted "1,234.50" holds a comma that is not a delimiter, and counting
+    # raw commas made the header and its first row disagree -- so the rescue
+    # gave up on the single most ordinary export there is: a report title
+    # above a table of amounts with thousands separators.
+    if _comma_fields(title) != 1 or _comma_fields(header) < 2:
+        return None
+    if _comma_fields(header) != _comma_fields(first_row):
         return None
     candidate = _read_csv(contents, encoding, header=1)
     return candidate if len(candidate.columns) > 1 else None
