@@ -40,9 +40,10 @@ chart says so. See [Periods](reference/periods.md).
 
 **Why is nothing flagged as an anomaly?**
 Either you have fewer than 8 periods, or nothing is far enough from the
-trendline. The band is calibrated so a stable series raises a false alarm about
-once in twenty analyses — quiet is the intended behavior. See
-[Anomalies](reference/anomalies.md).
+trendline. The band is calibrated so a stable series with continuous, roughly
+normal noise raises a false alarm about once in twenty analyses — quiet is the
+intended behavior. See [Anomalies](reference/anomalies.md) and
+[what that rate assumes](reference/anomalies.md#what-the-5-assumes).
 
 **Can I self-host it?**
 Yes. It is a standard Streamlit app:

@@ -58,8 +58,10 @@ drag it around the way an ordinary best-fit line can.
 A period whose distance from the trendline is bigger than a calibrated band.
 
 "Calibrated" means the band width was *measured* by simulation, not picked by
-hand, so that a genuinely stable series raises a false alarm about once in
-twenty analyses. See [Anomalies](reference/anomalies.md).
+hand, so that a genuinely stable series with continuous, roughly normal noise
+raises a false alarm about once in twenty analyses. See
+[Anomalies](reference/anomalies.md) and
+[what that rate assumes](reference/anomalies.md#what-the-5-assumes).
 
 ## Evidence vs recommendation
 

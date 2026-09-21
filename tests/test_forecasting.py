@@ -88,7 +88,7 @@ class ForecastTests(unittest.TestCase):
         assert forecast is not None
         self.assertIsNotNone(forecast.backtest.mase)
         self.assertLess(forecast.backtest.mase, 1.0)
-        self.assertIs(forecast.backtest.beats_no_change, True)
+        self.assertIs(forecast.backtest.beats_naive_on_holdout, True)
 
     def test_an_unforecastable_series_admits_it_did_not_beat_no_change(self):
         """A random walk has no trend to extrapolate; the scaled error says so."""
@@ -100,7 +100,7 @@ class ForecastTests(unittest.TestCase):
         assert forecast is not None
         self.assertIsNotNone(forecast.backtest.mase)
         self.assertGreater(forecast.backtest.mase, 1.0)
-        self.assertIs(forecast.backtest.beats_no_change, False)
+        self.assertIs(forecast.backtest.beats_naive_on_holdout, False)
 
     def test_seasonal_adjustments_do_not_shift_the_level(self):
         rng = np.random.default_rng(31)
@@ -129,9 +129,9 @@ class ForecastTests(unittest.TestCase):
 
         assert forecast is not None
         note = describe_backtest(forecast.backtest)
-        self.assertIn("held out the last", note)
-        self.assertIn("better than assuming no change", note)
-        self.assertNotIn("no better", note)
+        self.assertIn("on the last 4 held-out periods", note)
+        self.assertIn("would have erred 4.9% on the same periods, so the model beat it", note)
+        self.assertNotIn("did not beat", note)
 
     def test_the_error_note_is_honest_when_there_is_no_backtest(self):
         self.assertEqual(

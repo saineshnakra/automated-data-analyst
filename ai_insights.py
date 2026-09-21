@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass
 from typing import Literal, Protocol
 
@@ -11,7 +12,16 @@ from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_
 from pydantic import BaseModel, Field
 
 from business_insights import BusinessBrief
-from nlq import AGGREGATION_LABELS, QueryAnswer, QueryPlan, ValueFilter, execute_plan
+from metrics import resolve_metric
+from nlq import (
+    AGGREGATION_LABELS,
+    QueryAnswer,
+    QueryPlan,
+    ValueFilter,
+    execute_plan,
+    plan_accounts_for_numbers,
+    question_is_representable,
+)
 from schema import ColumnRoles, looks_like_identifier
 
 
@@ -128,9 +138,14 @@ class AIQueryPlan(BaseModel):
     top_n: int | None = Field(default=None, ge=1, le=50)
     ascending: bool = False
     filters: list[AIQueryFilter] = Field(default_factory=list, max_length=4)
-    year: int | None = Field(default=None, ge=1900, le=2100)
+    year: int | None = Field(default=None, ge=1800, le=2299)
     month: int | None = Field(default=None, ge=1, le=12)
+    # A single day ("2024-01-31", "January 15") or a calendar quarter ("Q1").
+    day: int | None = Field(default=None, ge=1, le=31)
+    quarter: int | None = Field(default=None, ge=1, le=4)
     grain: Literal["D", "W", "M", "Q", "Y"] | None = None
+    # Distinct entities rather than rows: "how many customers" counts this column's unique values.
+    count_column: str | None = None
 
 
 PLANNER_CONFIG = AIConfig("gpt-5.6-luna", "low", "Query planner")
@@ -138,6 +153,11 @@ PLANNER_CONFIG = AIConfig("gpt-5.6-luna", "low", "Query planner")
 PLANNER_INSTRUCTIONS = """You translate one business question about a single table into a strict query plan.
 Use only the listed column names, exactly as written; never invent a column.
 Filter values may only be phrases quoted from the question itself.
+For "how many <entities>", set intent="count" and count_column to the column that identifies
+one entity; leave it unset to count rows.
+A single date sets year, month and day; a quarter sets quarter (1-4) and never month.
+Every number in the question must appear in the plan (year, month, day, quarter, top_n or a
+filter value); if one cannot, the question is not answerable.
 If the schema cannot answer the question, set answerable to false instead of guessing."""
 
 
@@ -239,9 +259,30 @@ def _usable_dimension(dataframe: pd.DataFrame, column: str) -> bool:
         # row per distinct value.
         if (series.dropna() % 1 != 0).any() or distinct > present * IDENTIFIER_UNIQUENESS:
             return False
+    # Uniqueness alone does not make a text column a key: a pre-aggregated
+    # table with thirty labelled rows is unique by construction. Uniqueness
+    # across enough rows AND values shaped like codes -- "T-0042", "INV0007"
+    # -- does.
     if present >= IDENTIFIER_EVIDENCE_ROWS and distinct > present * IDENTIFIER_UNIQUENESS:
+        # Code-shaped values ("T-0042", "INV0007") are a key beyond argument.
+        # But a column that is unique across enough rows is not a segment
+        # whatever its values look like: grouping sixty distinct email
+        # addresses gives sixty groups of one, which is the table again with a
+        # chart drawn on it. The code test decides how confident the refusal
+        # is, not whether to refuse - requiring it let every unique free-text
+        # column through, which is the failure this guard exists to stop.
         return False
     return True
+
+
+_CODE_SHAPE = re.compile(r"^[A-Za-z]{0,6}[-_ ]?\d{2,}[A-Za-z0-9-]*$")
+
+
+def _values_look_like_codes(series: pd.Series, sample: int = 200) -> bool:
+    values = series.dropna().astype(str).head(sample)
+    if values.empty:
+        return False
+    return bool(values.str.match(_CODE_SHAPE).mean() >= 0.8)
 
 
 def _to_query_plan(
@@ -256,14 +297,18 @@ def _to_query_plan(
     """
     measure = parsed.measure or roles.measure
     dimension = parsed.dimension
-    for column in (parsed.measure, parsed.dimension):
+    for column in (parsed.measure, parsed.dimension, parsed.count_column):
         if column is not None and column not in dataframe.columns:
             return None
+    if parsed.count_column is not None and parsed.intent != "count":
+        return None
     if parsed.intent in PERIOD_INTENTS and not roles.date:
         return None
-    # The executor sums periods whatever the plan says, so a plan promising an
-    # average over time would answer a different question than the one approved.
-    if parsed.intent in PERIOD_INTENTS and parsed.aggregation != "sum":
+    # The period executors combine each period the way the measure combines:
+    # amounts are summed, rates are averaged. A plan asking for the other
+    # operation would be approved with one sentence and executed with another,
+    # so it is refused rather than silently corrected.
+    if parsed.intent in PERIOD_INTENTS and parsed.aggregation != resolve_metric(measure).aggregation:
         return None
     if parsed.intent == "aggregate" and not measure:
         return None
@@ -278,7 +323,13 @@ def _to_query_plan(
             return None
     # A time filter needs a column to apply it to; without one the executor
     # quietly returns the all-time figure under a scoped-looking sentence.
-    if (parsed.year is not None or parsed.month is not None) and not roles.date:
+    scoped_in_time = any(part is not None for part in (parsed.year, parsed.month, parsed.day, parsed.quarter))
+    if scoped_in_time and not roles.date:
+        return None
+    # A day without a month, or a quarter alongside a month, is not one scope.
+    if parsed.day is not None and parsed.month is None:
+        return None
+    if parsed.quarter is not None and parsed.month is not None:
         return None
     filters: list[ValueFilter] = []
     for item in parsed.filters:
@@ -290,6 +341,7 @@ def _to_query_plan(
         intent=parsed.intent,
         aggregation=parsed.aggregation,
         measure=measure if parsed.intent != "count" else None,
+        count_column=parsed.count_column if parsed.intent == "count" else None,
         # Every modifier the chosen intent's executor would ignore is dropped
         # here, so the approval sentence cannot advertise one.
         dimension=dimension if parsed.intent in DIMENSION_INTENTS else None,
@@ -298,6 +350,8 @@ def _to_query_plan(
         filters=tuple(filters),
         year=parsed.year,
         month=parsed.month,
+        day=parsed.day,
+        quarter=parsed.quarter,
         grain=parsed.grain if parsed.intent in GRAIN_INTENTS else None,
         source="ai",
     )
@@ -317,6 +371,13 @@ def plan_query_with_ai(
     if not api_key.strip():
         raise ValueError("An API key is required for the optional AI query planner.")
     if not question.strip():
+        return None
+    # The planner emits the same plan shape the rules do, so a question no
+    # plan can hold -- two metrics, an arithmetic expression, two months, a
+    # comparison operator -- is refused here as well. Asking the model would
+    # only get back the nearest question the plan can hold, presented for
+    # approval as though it were the one asked.
+    if not question_is_representable(question, dataframe, roles):
         return None
     if client is None:
         from openai import OpenAI
@@ -340,7 +401,12 @@ def plan_query_with_ai(
         parsed = AIQueryPlan.model_validate(parsed)
     if not parsed.answerable:
         return None
-    return _to_query_plan(parsed, dataframe, roles)
+    plan = _to_query_plan(parsed, dataframe, roles)
+    if plan is not None and not plan_accounts_for_numbers(question, plan):
+        # "Revenue 2024-01-31" planned as January 2024 dropped the 31, and
+        # with it the question.
+        return None
+    return plan
 
 
 MONTH_NAMES = {
@@ -357,7 +423,13 @@ def _scope_clause(plan: QueryPlan) -> str:
     clause = f" for {' and '.join(parts)}" if parts else ""
     if plan.month is not None:
         label = MONTH_NAMES.get(plan.month, str(plan.month))
-        clause += f" in {label} {plan.year}" if plan.year is not None else f" in {label}"
+        if plan.day is not None:
+            label = f"{label} {plan.day}"
+        clause += f" {'on' if plan.day else 'in'} {label} {plan.year}" if plan.year is not None else (
+            f" {'on' if plan.day else 'in'} {label}"
+        )
+    elif plan.quarter is not None:
+        clause += f" in Q{plan.quarter} {plan.year}" if plan.year is not None else f" in Q{plan.quarter}"
     elif plan.year is not None:
         clause += f" in {plan.year}"
     return clause
@@ -381,16 +453,18 @@ def describe_query_plan(plan: QueryPlan) -> str:
         else:
             description = "count the matching records"
     elif plan.intent == "trend":
-        description = f"track total {measure} per {grain} over time"
+        combined = resolve_metric(plan.measure).combines_as if plan.measure else "count"
+        description = f"track {combined} {measure} per {grain} over time"
     elif plan.intent == "growth":
+        combined = resolve_metric(plan.measure).combines_as if plan.measure else "count"
         if plan.dimension:
             description = (
-                f"rank each {plan.dimension} by how much its total {measure} changed "
+                f"rank each {plan.dimension} by how much its {combined} {measure} changed "
                 f"from the previous {grain} to the latest one"
             )
         else:
             description = (
-                f"compare total {measure} in the latest {grain} with the previous one"
+                f"compare {combined} {measure} in the latest {grain} with the previous one"
             )
     elif plan.intent == "rank":
         direction = "lowest" if plan.ascending else "highest"
