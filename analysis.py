@@ -11,6 +11,8 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 
+from schema import is_identifier_name
+
 
 @dataclass(frozen=True)
 class CleaningReport:
@@ -27,6 +29,8 @@ class CleaningReport:
     datetime_columns_inferred: int
     duplicate_rows_found: int = 0
     unparsed_date_cells: int = 0
+    numeric_cells_unreadable: int = 0
+    non_finite_cells: int = 0
     notes: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -40,6 +44,36 @@ class Insight:
     level: str = "info"
 
 
+# A UTC offset at the end of a timestamp: "+01:00", "+0100", "+01", "Z". It
+# has to follow a clock time, so the "-01" in "2024-01" is never taken for one.
+_TRAILING_OFFSET = re.compile(
+    r"^(.*?\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?)\s*(?:[Zz]|[+-]\d{2}(?::?\d{2})?)$"
+)
+OFFSETS_DROPPED_NOTE = (
+    "Timezone offsets were dropped; dates are read as the local time they were written in."
+)
+
+
+def _without_offsets(values: pd.Series) -> tuple[pd.Series, int]:
+    """Remove the UTC offset from each timestamp before it is parsed.
+
+    Every row keeps the wall clock it was written in. Parsing the offsets
+    instead made the result depend on the rest of the column: a file whose
+    rows all carried +01:00 kept its local times, but the moment one row
+    with +02:00 was appended pandas fell back to UTC and every existing row
+    moved an hour -- some of them into the previous month. A date must not
+    change because of what came after it.
+    """
+    carried = values.map(lambda value: isinstance(value, str) and bool(_TRAILING_OFFSET.match(value)))
+    dropped = int(carried.sum())
+    if not dropped:
+        return values, 0
+    stripped = values.map(
+        lambda value: _TRAILING_OFFSET.sub(r"\1", value) if isinstance(value, str) else value
+    )
+    return stripped, dropped
+
+
 def _speculative_dates(values: pd.Series) -> pd.Series:
     """Parse values as dates without complaining about the ones that are not.
 
@@ -49,7 +83,7 @@ def _speculative_dates(values: pd.Series) -> pd.Series:
     """
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
-        return pd.to_datetime(values, errors="coerce")
+        return pd.to_datetime(_without_offsets(values)[0], errors="coerce")
 
 
 def _is_blank(series: pd.Series) -> pd.Series:
@@ -74,6 +108,8 @@ def _drop_timezone(series: pd.Series) -> pd.Series:
 
 
 INT64_LIMIT = float(np.iinfo(np.int64).max)
+# The largest whole number a float holds exactly; above it, neighbours merge.
+EXACT_FLOAT_LIMIT = float(2**53)
 
 
 def _widen_columns_that_would_overflow(frame: pd.DataFrame) -> int:
@@ -103,6 +139,23 @@ def _normalize_datetime_columns(frame: pd.DataFrame) -> int:
             frame[column] = _drop_timezone(series)
             changed += 1
     return changed
+
+
+def _drop_non_finite(frame: pd.DataFrame) -> dict[str, int]:
+    """Turn inf and -inf into missing, and say how many cells that was.
+
+    pandas reads the text "inf" as a number, and one such cell then owns
+    every total, mean and chart axis built on the column. It carries no
+    quantity a business file could mean, so it is treated as a value that
+    could not be read.
+    """
+    counts = {}
+    for column in frame.select_dtypes(include=["float64", "float32"]).columns:
+        infinite = np.isinf(frame[column])
+        if infinite.any():
+            frame[column] = frame[column].mask(infinite)
+            counts[column] = int(infinite.sum())
+    return counts
 
 
 _CURRENCY_CHARS = "$\u20ac\u00a3\u00a5\u20b9"
@@ -237,6 +290,24 @@ def _numeric_from_text(values: pd.Series) -> pd.Series:
     ).astype("float64")
 
 
+def _infer_numeric(values: pd.Series) -> tuple[pd.Series, bool]:
+    """Plain parsing first, then the formatted reader for whatever it left.
+
+    A value plain parsing already read ("1e3") is never replaced. The second
+    result says whether the formatted reader contributed anything, because
+    when it did the column is a float whatever the plain values were, and a
+    whole number past 2**53 has by then lost its last digits.
+    """
+    parsed = pd.to_numeric(values, errors="coerce")
+    gaps = parsed.isna() & values.notna()
+    if not gaps.any():
+        return parsed, False
+    formatted = _numeric_from_text(values.where(gaps))
+    if not formatted.notna().any():
+        return parsed, False
+    return parsed.astype("float64").fillna(formatted), True
+
+
 # A date written day-or-month first: "3/1/2024", "03-01-24". A year-leading
 # value is ISO and cannot be read two ways.
 _DAY_OR_MONTH_FIRST = re.compile(r"^\s*\d{1,2}[/-]\d{1,2}[/-]\d{2,4}")
@@ -247,16 +318,26 @@ def _dated(values: pd.Series, *, dayfirst: bool) -> pd.Series:
         warnings.simplefilter("ignore", (UserWarning, FutureWarning))
         parsed = pd.to_datetime(values, errors="coerce", dayfirst=dayfirst)
         if parsed.dtype == object:
-            # Mixed offsets -- a file spanning a daylight-saving change --
-            # come back as objects, which no downstream step can use. There
-            # is no single wall clock to keep, so UTC is the honest choice.
-            parsed = pd.to_datetime(values, errors="coerce", dayfirst=dayfirst, utc=True)
-            parsed = parsed.dt.tz_localize(None)
+            # Zones written in a form the offset stripper does not know, and
+            # not all the same, come back as objects no downstream step can
+            # use. Each keeps its own wall clock, the same policy as the
+            # rest of the column, rather than being moved to UTC.
+            parsed = pd.to_datetime(
+                parsed.map(
+                    lambda moment: moment.tz_localize(None)
+                    if isinstance(moment, pd.Timestamp) and moment.tzinfo is not None
+                    else moment
+                ),
+                errors="coerce",
+            )
         return parsed
 
 
-def _read_dates(values: pd.Series) -> tuple[pd.Series, str]:
+def _read_dates(values: pd.Series) -> tuple[pd.Series, str, int]:
     """Parse a date column, and say so when the ordering had to be guessed.
+
+    The third result is how many values carried a UTC offset, which was
+    removed before parsing so that each row keeps its own wall clock.
 
     "01/03/2024" is 1 March in most of the world and 3 January in the United
     States. When some row in the column settles it -- a 13 or higher in the
@@ -265,20 +346,25 @@ def _read_dates(values: pd.Series) -> tuple[pd.Series, str]:
     turning a year of monthly figures into twelve days of January is the one
     outcome nobody can detect downstream.
     """
+    values, offsets = _without_offsets(values)
     month_first = _dated(values, dayfirst=False)
     # Only a value that leads with a day or a month can be read two ways.
     # 2024-03-01 is ISO and settled; 01/03/2024 is not.
     two_ways = values.astype("string").str.match(_DAY_OR_MONTH_FIRST, na=False)
     if not bool(two_ways.any()):
-        return month_first, ""
+        return month_first, "", offsets
 
     day_first = _dated(values, dayfirst=True)
     if day_first.notna().sum() > month_first.notna().sum():
-        return day_first, "day-first"
+        return day_first, "day-first", offsets
     if month_first.notna().sum() > day_first.notna().sum():
-        return month_first, ""
+        return month_first, "", offsets
     disagree = two_ways & month_first.notna() & day_first.notna() & month_first.ne(day_first)
-    return month_first, "ambiguous" if bool(disagree.any()) else ""
+    return month_first, "ambiguous" if bool(disagree.any()) else "", offsets
+
+
+def _non_finite_note(column: str, count: int) -> str:
+    return f"{count} {column} values were infinite and were left missing."
 
 
 def _ordering_note(column: str, ordering: str) -> str:
@@ -369,62 +455,83 @@ def clean_dataframe(
     numeric_columns_inferred = 0
     datetime_columns_inferred = _normalize_datetime_columns(cleaned)
     unparsed_date_cells = 0
+    numeric_cells_unreadable = 0
+    non_finite_cells = 0
     notes: list[str] = []
 
     if datetime_columns_inferred:
-        notes.append(
-            "Timezone offsets were dropped; dates are read as the local time they were written in."
-        )
+        notes.append(OFFSETS_DROPPED_NOTE)
 
-    protected_numeric_tokens = ("id", "code", "zip", "postal", "phone")
     date_tokens = ("date", "time", "timestamp", "created", "updated")
     named_date_ratio, numeric_ratio, unnamed_date_ratio = 0.8, 0.95, 0.95
     date_sample_size = 50
 
     for column in cleaned.select_dtypes(include=["object", "string"]).columns:
         series = cleaned[column]
-        non_null_before = int(series.notna().sum())
         cleaned[column] = series.map(lambda value: value.strip() if isinstance(value, str) else value)
         cleaned[column] = cleaned[column].replace("", pd.NA)
         trimmed_text_columns += 1
 
-        if non_null_before == 0:
+        # Counted after trimming. A whitespace-only cell is a blank, and
+        # counting it as a value put a column of "$100", "$200", "  " under
+        # the bar, so it stayed text.
+        non_null = int(cleaned[column].notna().sum())
+        if non_null == 0:
             continue
 
         normalized_name = column.lower()
         named_like_a_date = any(token in normalized_name for token in date_tokens)
+        # A column named as a key holds neither a quantity to add up nor a
+        # moment to bucket, whatever its values look like: "Customer ID"
+        # full of 2024-01-01 is not the file's date. The reader kept these
+        # as text by the same test, so what it preserved is not undone here.
+        protected = is_identifier_name(column)
         if named_like_a_date:
-            parsed_dates, ordering = _read_dates(cleaned[column])
-            if parsed_dates.notna().sum() / non_null_before >= named_date_ratio:
-                unreadable = int(non_null_before - parsed_dates.notna().sum())
+            parsed_dates, ordering, offsets = _read_dates(cleaned[column])
+            if parsed_dates.notna().sum() / non_null >= named_date_ratio:
+                unreadable = int(non_null - parsed_dates.notna().sum())
                 if unreadable:
                     unparsed_date_cells += unreadable
                     notes.append(f"{unreadable} {column} values could not be read as dates.")
                 if ordering:
                     notes.append(_ordering_note(column, ordering))
+                if offsets:
+                    notes.append(OFFSETS_DROPPED_NOTE)
                 cleaned[column] = _drop_timezone(parsed_dates)
                 datetime_columns_inferred += 1
                 continue
 
-        if not any(token in normalized_name for token in protected_numeric_tokens):
-            parsed_numeric = pd.to_numeric(cleaned[column], errors="coerce")
-            if parsed_numeric.notna().sum() < non_null_before:
-                # Whatever plain parsing could not read, try again allowing the
-                # punctuation a finance export writes: grouping separators, a
-                # currency symbol, parentheses for a negative. The values that
-                # need it are the large ones, so leaving them out biases every
-                # total downwards. Only the gaps are filled -- a value plain
-                # parsing already read ("1e3") is never replaced.
-                gaps = parsed_numeric.isna() & cleaned[column].notna()
-                if gaps.any():
-                    formatted = _numeric_from_text(cleaned[column].where(gaps))
-                    parsed_numeric = parsed_numeric.astype("float64").fillna(formatted)
-            if parsed_numeric.notna().sum() / non_null_before >= numeric_ratio:
+        if not protected:
+            # Whatever plain parsing could not read is tried again allowing
+            # the punctuation a finance export writes: grouping separators, a
+            # currency symbol, parentheses for a negative. The values that
+            # need it are the large ones, so leaving them out biases every
+            # total downwards.
+            parsed_numeric, formatted_used = _infer_numeric(cleaned[column])
+            infinite = np.isinf(parsed_numeric)
+            parsed_numeric = parsed_numeric.mask(infinite)
+            readable = int(parsed_numeric.notna().sum())
+            if readable / non_null >= numeric_ratio:
+                unreadable = non_null - readable - int(infinite.sum())
+                if unreadable:
+                    numeric_cells_unreadable += unreadable
+                    notes.append(
+                        f"{unreadable} {column} values could not be read as numbers and were left missing."
+                    )
+                if infinite.any():
+                    non_finite_cells += int(infinite.sum())
+                    notes.append(_non_finite_note(column, int(infinite.sum())))
+                if formatted_used and bool((parsed_numeric.abs() >= EXACT_FLOAT_LIMIT).any()):
+                    notes.append(
+                        f"{column} holds whole numbers that would not fit exactly in a decimal, "
+                        "which reading its formatted values required; the last few digits are "
+                        "approximate."
+                    )
                 cleaned[column] = parsed_numeric
                 numeric_columns_inferred += 1
                 continue
 
-        if not named_like_a_date:
+        if not named_like_a_date and not protected:
             # A column holds dates whatever it happens to be called -- "Month",
             # "Period", "FY". Numbers were tried first, so a column of bare years
             # stays numeric instead of becoming the 1st of January in each of
@@ -433,12 +540,20 @@ def clean_dataframe(
             # them.
             sample = cleaned[column].dropna().head(date_sample_size)
             if len(sample) and _speculative_dates(sample).notna().mean() >= unnamed_date_ratio:
-                parsed_dates, ordering = _read_dates(cleaned[column])
-                if parsed_dates.notna().sum() / non_null_before >= unnamed_date_ratio:
+                parsed_dates, ordering, offsets = _read_dates(cleaned[column])
+                if parsed_dates.notna().sum() / non_null >= unnamed_date_ratio:
                     if ordering:
                         notes.append(_ordering_note(column, ordering))
+                    if offsets:
+                        notes.append(OFFSETS_DROPPED_NOTE)
                     cleaned[column] = _drop_timezone(parsed_dates)
                     datetime_columns_inferred += 1
+
+    # A column the file already delivered as numbers can carry inf too;
+    # read_csv reads the text "inf" as one before cleaning ever sees it.
+    for column, count in _drop_non_finite(cleaned).items():
+        non_finite_cells += count
+        notes.append(_non_finite_note(column, count))
 
     # Inference can produce a new int64 column, so the overflow check runs
     # once everything that will be numeric already is.
@@ -475,6 +590,8 @@ def clean_dataframe(
         datetime_columns_inferred=datetime_columns_inferred,
         duplicate_rows_found=duplicate_rows,
         unparsed_date_cells=unparsed_date_cells,
+        numeric_cells_unreadable=numeric_cells_unreadable,
+        non_finite_cells=non_finite_cells,
         notes=tuple(dict.fromkeys(notes)),
     )
     return cleaned, report

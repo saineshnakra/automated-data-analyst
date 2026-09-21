@@ -2,6 +2,7 @@ import unittest
 
 from demo_data import make_demo_data
 from pipeline import (
+    NO_SELECTION,
     apply_focus,
     apply_role_selection,
     cleaning_audit_frame,
@@ -27,7 +28,7 @@ class PipelineTests(unittest.TestCase):
 
         selected = apply_role_selection(
             prepared.detected_roles,
-            date="None",
+            date=NO_SELECTION,
             measure="Profit",
             dimension="Region",
         )

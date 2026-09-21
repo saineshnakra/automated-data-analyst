@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 from demo_data import make_demo_data
-from nlq import QueryPlan, answer_question, execute_plan, parse_question, suggested_questions
+from nlq import QueryPlan, answer_question, execute_plan, suggested_questions
 from pipeline import prepare_analysis
 from schema import ColumnRoles, detect_roles
 
@@ -136,8 +136,16 @@ class NLQParsingTests(unittest.TestCase):
         roles = detect_roles(frame)
         result = answer_question("top 2 products by revenue", frame, roles)
         self.assertIsNotNone(result)
-        plan = parse_question("monthly revenue trend", frame, roles)
-        self.assertNotEqual(plan.intent if plan else None, "trend")
+        # Without a date column a trend question is not a total in disguise:
+        # the answer says there is no timeline, instead of quoting the all-time
+        # figure under a sentence about months.
+        result = answer_question("monthly revenue trend", frame, roles)
+        self.assertIsNotNone(result)
+        self.assertIn("no date column", result.answer)
+        self.assertNotIn("$", result.answer)
+        growth = answer_question("revenue growth", frame, roles)
+        self.assertIn("no date column", growth.answer)
+
     def test_asking_for_the_bottom_of_a_ranking_ranks_ascending(self):
         """"Least" and "fewest" ask for the bottom, not the top."""
         leader = self.ask("top product by revenue").answer

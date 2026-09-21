@@ -11,13 +11,19 @@ evidence card and every Ask ADA answer are computed in-process with pandas, and
 without an API key ADA makes no network call at all.
 
 **On the hosted demo, your upload reaches a Streamlit server.** That is what
-uploading to a website is. It lives in memory for the session and is never
-written to a database. Run ADA locally if that matters for your data.
+uploading to a website is. The parsed file is held in that server process's
+memory — in a bounded cache of at most eight files for up to an hour, which
+belongs to the process rather than to your browser session — and is never
+written to disk or to a database. Run ADA locally if that matters for your
+data.
 
-**With an API key, two optional calls become available.** Both send column
-schema and already-computed evidence. **Neither sends your rows.** An evidence
-sentence names the segment it describes, so a segment label — a customer name,
-a product name — can travel inside it. No other cell value does.
+**With an API key, two optional calls become available.** The query planner
+receives only the question you typed and the column schema — names, types and
+detected roles — and nothing that was computed from your values. The strategic
+read receives the schema plus the already-computed evidence. **Neither sends
+your rows.** An evidence sentence names the segment it describes, so in the
+strategic read a segment label — a customer name, a product name — can travel
+inside it. No other cell value does, in either call.
 
 ## What stays local, always
 

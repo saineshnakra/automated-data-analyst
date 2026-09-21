@@ -24,7 +24,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install dependencies
-        run: python -m pip install -r requirements-dev.txt
+        # constraints.txt pins the resolution that was tested; requirements
+        # state the supported ranges. Without the pin a green run would
+        # depend on whatever resolved that morning.
+        run: python -m pip install -r requirements-dev.txt -c constraints.txt
       - name: Lint
         run: ruff check .
       - name: Test

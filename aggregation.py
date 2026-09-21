@@ -97,6 +97,10 @@ class TrendSeries:
     filled_as_zero: bool = True
     partial_period: pd.Timestamp | None = None
     partial_coverage: str = ""
+    #: A first period the data only starts part-way into, excluded for the
+    #: same reason: it is a baseline nothing real was measured against.
+    leading_partial_period: pd.Timestamp | None = None
+    leading_partial_coverage: str = ""
     # A period the data stops part-way through, but not far enough through for
     # exclusion to be safe -- "no orders for three days" looks the same from
     # here. Saying so beats guessing either way.
@@ -118,6 +122,12 @@ class TrendSeries:
                 f"{format_period(self.partial_period, self.frequency)} is still in progress "
                 f"({self.partial_coverage}) and is excluded, so a half-finished period cannot "
                 "read as a collapse."
+            )
+        if self.leading_partial_period is not None:
+            notes.append(
+                f"{format_period(self.leading_partial_period, self.frequency)} only starts "
+                f"part-way through ({self.leading_partial_coverage}) and is excluded, so a "
+                "partial opening period cannot read as a surge."
             )
         if self.filled_periods:
             plural = "periods" if self.filled_periods > 1 else "period"
@@ -175,6 +185,37 @@ def _trailing_partial_period(
     return pd.Timestamp(last_seen.index[-1]), reach, "", True
 
 
+def _leading_partial_period(
+    dates: pd.Series, periods: pd.Series, frequency: str
+) -> tuple[pd.Timestamp | None, str]:
+    """Detect a first period the data only starts part-way into.
+
+    The mirror of _trailing_partial_period, and it has to be measured the
+    other way round. That one asks how far into a period the data reaches,
+    which a late-starting first period answers perfectly well -- an export
+    beginning on a Saturday still reaches Sunday, so it looked complete. What
+    makes it partial is where it *begins*. Two days of trade then became the
+    baseline of every "moved from X to Y", and a steady week read as +578%.
+    """
+    first_seen = dates.groupby(periods).min().sort_index()
+    if len(first_seen) < MIN_PERIODS_FOR_PARTIAL_CHECK:
+        # Too few periods to know what "typical coverage" looks like here.
+        return None, ""
+
+    starts, ends = _period_bounds(pd.DatetimeIndex(first_seen.index), frequency)
+    spans = (ends - starts).to_numpy().astype("timedelta64[s]").astype(float)
+    missed = (first_seen.to_numpy() - starts.to_numpy()).astype("timedelta64[s]").astype(float)
+    coverage = 1.0 - np.divide(missed, spans, out=np.zeros_like(missed), where=spans > 0)
+
+    typical = float(np.median(coverage[1:]))
+    if coverage[0] >= typical - PARTIAL_COVERAGE_MARGIN:
+        return None, ""
+
+    period_days = max(int(round(spans[0] / 86_400)), 1)
+    covered_days = max(period_days - int(round(missed[0] / 86_400)), 1)
+    return pd.Timestamp(first_seen.index[0]), f"{covered_days} of {period_days} days"
+
+
 def build_trend(
     dataframe: pd.DataFrame,
     roles: ColumnRoles,
@@ -211,6 +252,17 @@ def build_trend(
         else:
             partial_period, partial_coverage = None, ""
 
+    leading_period, leading_coverage = _leading_partial_period(
+        working["__date"], working["Period"], frequency
+    )
+    if leading_period is not None:
+        remaining = working[working["Period"] > leading_period]
+        # Same guard as the trailing trim: never drop the only evidence there is.
+        if remaining["Period"].nunique() >= 2:
+            working = remaining
+        else:
+            leading_period, leading_coverage = None, ""
+
     metric = resolve_metric(roles.measure)
     if counted:
         result = working.groupby("Period")["__count"].nunique().rename("Value").reset_index()
@@ -241,6 +293,8 @@ def build_trend(
         filled_as_zero=metric.additive,
         partial_period=partial_period,
         partial_coverage=partial_coverage,
+        leading_partial_period=leading_period,
+        leading_partial_coverage=leading_coverage,
         short_coverage=short_coverage,
         completeness_checked=completeness_checked,
     )
