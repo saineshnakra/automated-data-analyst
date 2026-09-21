@@ -15,7 +15,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from formatting import format_period, is_percentage, percentage_outranks_currency
+from formatting import format_period
+from metrics import resolve_metric
 from schema import ColumnRoles
 
 GRAIN_ORDER = ("W", "M", "Q", "Y")
@@ -48,15 +49,8 @@ def _grain_for_cadence(dates: pd.Series) -> str:
 
 
 def measure_aggregation(measure: str | None) -> str:
-    """How a measure combines across rows: rates average, amounts add.
-
-    Adding two months of conversion rate produces a number with no meaning,
-    and every surface built on period totals was doing exactly that. The
-    decision lives here so trend, segment and headline agree.
-    """
-    if measure and is_percentage(measure) and percentage_outranks_currency(measure):
-        return "mean"
-    return "sum"
+    """How a measure combines across rows: rates average, amounts add."""
+    return resolve_metric(measure).aggregation
 
 
 def _period_frequency(date_series: pd.Series) -> str:
@@ -98,6 +92,9 @@ class TrendSeries:
     frame: pd.DataFrame
     frequency: str
     filled_periods: int = 0
+    #: True when those periods were filled with zero (an additive measure),
+    #: False when they were left empty (a rate has no observation to average).
+    filled_as_zero: bool = True
     partial_period: pd.Timestamp | None = None
     partial_coverage: str = ""
     # A period the data stops part-way through, but not far enough through for
@@ -124,8 +121,15 @@ class TrendSeries:
             )
         if self.filled_periods:
             plural = "periods" if self.filled_periods > 1 else "period"
+            # A rate's gaps are NOT zeroes - nobody converted at 0%, nobody
+            # measured at all - so the caption cannot say they were counted as
+            # zero while the chart shows a break in the line.
+            settled = (
+                "counted as zero" if self.filled_as_zero else "left empty, since an average "
+                "needs an observation"
+            )
             notes.append(
-                f"{self.filled_periods} {plural} with no rows counted as zero, keeping the "
+                f"{self.filled_periods} {plural} with no rows {settled}, keeping the "
                 "timeline evenly spaced."
             )
         return tuple(notes)
@@ -175,18 +179,24 @@ def build_trend(
     dataframe: pd.DataFrame,
     roles: ColumnRoles,
     frequency: str | None = None,
+    count_column: str | None = None,
 ) -> TrendSeries:
-    """Aggregate the measure over a human-sized grain, on an even timeline."""
+    """Aggregate the measure over a human-sized grain, on an even timeline.
+
+    With ``count_column`` and no measure, each period holds the number of
+    distinct values in that column: customers per month, not rows per month.
+    """
     if not roles.date:
         return TrendSeries(frame=EMPTY_TREND.copy(), frequency=frequency or "M")
 
-    columns = [roles.date] + ([roles.measure] if roles.measure else [])
+    counted = count_column if count_column and not roles.measure and count_column != roles.date else None
+    columns = [roles.date] + ([roles.measure] if roles.measure else []) + ([counted] if counted else [])
     working = dataframe[columns].dropna(subset=[roles.date]).copy()
     if working.empty:
         return TrendSeries(frame=EMPTY_TREND.copy(), frequency=frequency or "M")
     # Internal names from here on. A measure the file calls "Period" was being
     # overwritten by the period buckets built below, then summed as datetimes.
-    working.columns = ["__date"] + (["__measure"] if roles.measure else [])
+    working.columns = ["__date"] + (["__measure"] if roles.measure else []) + (["__count"] if counted else [])
 
     frequency = frequency or _period_frequency(working["__date"])
     working["Period"] = working["__date"].dt.to_period(frequency).dt.to_timestamp()
@@ -201,20 +211,34 @@ def build_trend(
         else:
             partial_period, partial_coverage = None, ""
 
-    if roles.measure:
-        result = working.groupby("Period", as_index=False)["__measure"].agg(
-            measure_aggregation(roles.measure)
-        )
-        result = result.rename(columns={"__measure": "Value"})
+    metric = resolve_metric(roles.measure)
+    if counted:
+        result = working.groupby("Period")["__count"].nunique().rename("Value").reset_index()
+    elif roles.measure:
+        grouped = working.groupby("Period")["__measure"]
+        # A period whose every value is missing is a missing period, not a
+        # period that measured zero: sum(min_count=1) keeps it NaN.
+        totals = grouped.sum(min_count=1) if metric.aggregation == "sum" else grouped.mean()
+        result = totals.rename("Value").reset_index()
     else:
         result = working.groupby("Period", as_index=False).size().rename(columns={"size": "Value"})
     result = result.sort_values("Period").reset_index(drop=True)
 
-    result, filled = _fill_empty_periods(result, frequency)
+    # A month with no rows is a month of zero sales, but it is not a month
+    # of zero conversion rate -- there is no observation, so the gap stays
+    # empty. And with fewer than three distinct dates there is no cadence to
+    # fill against at all; two month-end readings were being spread into
+    # three invented zero weeks.
+    fill_value = 0.0 if metric.additive else float("nan")
+    if working["__date"].nunique() >= 3:
+        result, filled = _fill_empty_periods(result, frequency, fill_value)
+    else:
+        filled = 0
     return TrendSeries(
         frame=result,
         frequency=frequency,
         filled_periods=filled,
+        filled_as_zero=metric.additive,
         partial_period=partial_period,
         partial_coverage=partial_coverage,
         short_coverage=short_coverage,
@@ -222,7 +246,9 @@ def build_trend(
     )
 
 
-def _fill_empty_periods(trend: pd.DataFrame, frequency: str) -> tuple[pd.DataFrame, int]:
+def _fill_empty_periods(
+    trend: pd.DataFrame, frequency: str, fill_value: float = 0.0
+) -> tuple[pd.DataFrame, int]:
     """Materialise periods with no rows as zero, so gaps stop bending the fit.
 
     A month in which nothing was sold is a month of zero sales, not a month
@@ -243,7 +269,7 @@ def _fill_empty_periods(trend: pd.DataFrame, frequency: str) -> tuple[pd.DataFra
 
     filled = (
         trend.set_index("Period")
-        .reindex(complete, fill_value=0.0)
+        .reindex(complete, fill_value=fill_value)
         .rename_axis("Period")
         .reset_index()
     )
@@ -335,14 +361,26 @@ def segment_period_change(
     )
     working["Period"] = working["__date"].dt.to_period(frequency).dt.to_timestamp()
     comparison = working[working["Period"].isin([previous_period, current_period])]
+    metric = resolve_metric(roles.measure)
     grouped = (
         comparison.groupby(["__segment", "Period"])["__measure"]
-        .agg(measure_aggregation(roles.measure))
-        .unstack(fill_value=0)
+        .agg(metric.aggregation)
+        .unstack()
     )
     grouped.index.name = roles.dimension
     if previous_period not in grouped or current_period not in grouped:
         return None
+    if metric.additive:
+        # A segment with no rows in a period sold nothing in it: zero.
+        grouped = grouped.fillna(0.0)
+    else:
+        # A segment with no rows in a period has no average in it. Filling
+        # with zero made a region that first appears this month "rise from
+        # 0.0% to 31.0%", so a segment has to be present on both sides to
+        # have a change at all.
+        grouped = grouped.dropna(subset=[previous_period, current_period])
+        if grouped.empty:
+            return None
 
     grouped["Change"] = grouped[current_period] - grouped[previous_period]
     return grouped, previous_period, current_period
@@ -358,7 +396,9 @@ def driver_frame(dataframe: pd.DataFrame, roles: ColumnRoles, limit: int = 9) ->
     top = changes.head(limit)
     frame = pd.DataFrame({"Segment": top.index.astype(str), "Change": top.to_numpy(dtype=float)})
     remainder = float(changes.iloc[limit:].sum())
-    if len(changes) > limit and remainder:
+    # Changes in segment averages do not sum to anything, so there is no
+    # "other" bar to add up for a rate -- only the segments shown.
+    if len(changes) > limit and remainder and resolve_metric(roles.measure).additive:
         other = pd.DataFrame({"Segment": ["Other segments"], "Change": [remainder]})
         frame = pd.concat([frame, other], ignore_index=True)
     return frame
