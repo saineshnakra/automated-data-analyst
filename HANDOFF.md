@@ -39,7 +39,34 @@ Private intermediate columns are `__date`, `__measure`, `__segment`, `__period`,
 `__value`; collisions are avoided with `distinct_label()`. `NO_SELECTION = "(none)"` is
 the empty-selection sentinel.
 
-## 3. Repo state as of 2026-09-21
+## 3. Repo state as of 2026-09-21 (later the same day)
+
+`main` is now `6a8b890`. Merged: #48 (star ask), #45, #46, #42, #47. ruff clean,
+309 tests green.
+
+**The trap that caught us:** #43 and #44 were merged into `metric-contract-module`,
+their base branch, *after* #42 had already gone to main from `96ca93c`. The branch moved
+on, main did not follow, and both fixes silently missed main. **PR #49** recovers them by
+merging `metric-contract-module` into main, and also carries a parser fix (below).
+Lesson: when a stacked PR merges into its base rather than main, main does not get it.
+
+### PR #49 also fixes the number parser
+
+`_read_formatted_number` on main was refusing `$(100)` and `$-100` (cell becomes NaN,
+money vanishes from every total) and *accepting* `1,2,3` as 123, `12 34` as 1234, and
+unclosed `(100` as positive 100. Replaced with the marker-at-a-time version from
+`consistency-release` plus `_digit_groups`/`_integer_and_fraction`. Tests in
+`tests/test_accounting_negatives.py` — 7 tests, 8 failures on unfixed main.
+330 tests green with it.
+
+### Review findings that did NOT need porting to main
+
+- partial-period trim guard: already on main via #47
+- ai_insights uniqueness rule: main's logic was already correct; release differs in comments only
+- ui.py histogram collision: main uses `px.histogram`, has no manual binning, bug absent
+- nlq.py duplicate spellings: main collects every match per column already, bug absent
+
+### Earlier state (superseded, kept for context)
 
 - `main` is `66c494c` and has not moved since Sep 9. **Nothing of mine has been merged.**
 - 28 stars, 10 forks, 34 open issues.
