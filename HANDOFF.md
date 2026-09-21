@@ -56,13 +56,22 @@ the empty-selection sentinel.
 | #44 | me | 3/N rate trends average (base #42) | mine, ready |
 | #43 | me | 2/N trend gaps are not numbers (base #42) | mine, ready |
 | #42 | me | 1/N metric contract module | mine, ready |
-| #41 | Uday029 | accessible text summaries for charts | outside, independent, reviewable |
-| #40 | me | the whole consistency release, ~4k lines | superseded by #42–#47+, close unmerged when the stack lands |
+| #48 | me | README star ask, 14 lines, text only | mine, ready |
+| #41 | Uday029 | accessible text summaries for charts | reviewed — changes requested, see section 9 |
+| #40 | me | the whole consistency release, ~4k lines | **closed unmerged 2026-09-21** — see below |
 | #36 | Saket7002 | interactive cleaning suggestions, 946 lines | too big — author needs to split it |
-| #35 | Som0111 | QUERY_STOPWORDS additions | superseded by the span ledger in #40's stack |
-| #31 | HNK69 | pass column values to format_number | superseded |
+| #35 | Som0111 | QUERY_STOPWORDS additions | **take it** — not superseded, the release keeps the same short list |
+| #31 | HNK69 | pass column values to format_number | real bug on main; the release's `_shown()` helper covers more call sites — leave open until that lands |
 
 #33 and #34 were already closed (they duplicated each other).
+
+### #40 is closed
+
+Closed without merging on 2026-09-21, before the split finished. **`origin/consistency-release`
+is still at `fae5680` and holds everything** — all 26 audit items and the eight review
+fixes. Only six slices (#42–#47) were cut before it closed, so the remaining ~22 slices
+exist only on that branch. Cut them from `consistency-release`, not from a reopened #40.
+Do not reopen #40 or open a replacement for the whole thing.
 
 ## 4. The split of #40
 
@@ -140,6 +149,27 @@ Three branches are pushed on the mobile app and **they are stacked, not independ
 The last one contains all three. No PRs opened for them yet. A setup SQL file on that
 branch adds a column and **has not been run** — running it is mine to do, and nothing
 should run it automatically.
+
+## 9. Review of #41 — changes requested
+
+Reviewed 2026-09-21. Good idea, four real defects, CI red. All four reproduced against
+the branch; 293 tests pass but `ruff check` fails on import order in `ui.py`.
+
+1. `heatmap_frame` fills empty cells with `0` (`unstack(fill_value=0)`, `aggregation.py:400`),
+   so `summarize_heatmap`'s `idxmin` reports a segment that did not exist in a period as a
+   real low of 0.00. Same defect as review finding 1 — a gap is not a number.
+2. `segment_frame` cuts to the top 12 with no "Other" row (`aggregation.py:288`), so
+   "lowest" names the twelfth-ranked segment, not the lowest. The sentence is false.
+3. `summarize_trend` reports a rate as a percentage of itself: churn 5% → 7% reads
+   "+40.0%". A rate moves in percentage points.
+4. `abs(first_value)` makes a sign flip read "−100 → +50 (+150.0%)".
+
+Also: numbers bypass `format_number` so currency and `%` are lost and the heatmap summary
+prints a raw timestamp where the axis prints `Jan 2025`; `summarize_movement` can name
+"Other segments" as the largest increase.
+
+The blocker to state first is the diff itself — the feature is ~40 lines but `ui.py` was
+reflowed for ~400, which buries the change and will conflict with the stack.
 
 ## 8. What is left
 
