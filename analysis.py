@@ -105,16 +105,74 @@ def _normalize_datetime_columns(frame: pd.DataFrame) -> int:
     return changed
 
 
-# A business-formatted number: an optional sign or accounting parentheses, an
-# optional currency symbol, then digits with grouping punctuation. Anything
-# holding a slash or a letter is not this -- notably a date, which would
-# otherwise survive as a very large integer.
-# A business-formatted number: an optional sign or accounting parentheses, an
-# optional currency symbol, then digits with grouping punctuation. Anything
-# holding a slash or a letter is not this -- notably a date, which would
-# otherwise survive as a very large integer.
-_MONEY = re.compile(r"^[+-]?\(?\s*[-+]?\s*[$\u20ac\u00a3\u00a5\u20b9]?\s*\d[\d,.\s']*\)?$")
 _CURRENCY_CHARS = "$\u20ac\u00a3\u00a5\u20b9"
+_SEPARATOR_CHARS = ",. '"
+_DIGITS = "0123456789"
+
+
+def _digit_groups(body: str) -> tuple[list[str], list[str]] | None:
+    """Split "1,234.50" into its digit groups and the single marks between them.
+
+    Anything else -- a letter, a doubled mark, a mark with no digit on one
+    side -- is not a number, and saying so is the whole point: "(100",
+    "1,2,3" and "12 34" used to come out as 100, 123 and 1234.
+    """
+    groups: list[str] = []
+    marks: list[str] = []
+    current = ""
+    for char in body:
+        if char in _DIGITS:
+            current += char
+        elif char in _SEPARATOR_CHARS and current:
+            groups.append(current)
+            marks.append(char)
+            current = ""
+        else:
+            return None
+    if not current:
+        return None
+    groups.append(current)
+    return groups, marks
+
+
+def _integer_and_fraction(body: str) -> tuple[str, str] | None:
+    """Read the digits of a formatted number, deciding which mark is the decimal.
+
+    When both "," and "." appear, the one that comes last is the decimal
+    point and the other is grouping. When only one mark appears once, three
+    digits after a comma is grouping ("1,000") and one or two is a decimal
+    ("1234,50"); "1,234" alone reads as a thousand, which is what pandas and
+    every US export mean by it, and a single "." is always a decimal, as
+    pd.to_numeric reads it. A space or an apostrophe is only ever grouping.
+    Grouping marks must then delimit groups of exactly three digits, so a
+    stray mark is refused rather than read past.
+    """
+    split = _digit_groups(body)
+    if split is None:
+        return None
+    groups, marks = split
+    if not marks:
+        return groups[0], ""
+    last = marks[-1]
+    if len(marks) == 1:
+        if last == ",":
+            decimal = len(groups[-1]) in (1, 2)
+        else:
+            decimal = last == "."
+    else:
+        grouping = set(marks[:-1])
+        if len(grouping) != 1:
+            return None
+        if last in grouping:
+            decimal = False
+        elif last in ",.":
+            decimal = True
+        else:
+            return None
+    integer_groups, fraction = (groups[:-1], groups[-1]) if decimal else (groups, "")
+    if any(len(group) != 3 for group in integer_groups[1:]):
+        return None
+    return "".join(integer_groups), fraction
 
 
 def _read_formatted_number(text: str) -> float | None:
@@ -126,52 +184,43 @@ def _read_formatted_number(text: str) -> float | None:
     so refunds became revenue. That is the one mistake this function must not
     be able to make again, whatever else it gets wrong.
 
-    Then the separators. When both "," and "." appear, the one that comes
-    last is the decimal point and the other is grouping. When only one
-    appears, three digits after it is grouping ("1,000") and one or two is a
-    decimal ("1234,50"); "1,234" alone reads as a thousand, which is what
-    pandas and every US export mean by it.
+    A sign, a currency symbol and a pair of parentheses may lead the number
+    in any order -- "$-100" and "-$100" are both a hundred owed -- but each
+    at most once, and an opening parenthesis must have its closing one. The
+    digits then have to satisfy _integer_and_fraction.
     """
     raw = text.strip()
-    if not raw or not _MONEY.match(raw):
+    negative = False
+    sign_seen = currency_seen = parentheses_seen = False
+    while raw:
+        if raw[0] in "+-":
+            if sign_seen:
+                return None
+            # `or`, not `=`: a leading parenthesis has already said negative,
+            # and "(+100)" must not be read back as a positive hundred. Each
+            # marker may appear once; either one of them means owed.
+            sign_seen = True
+            negative = negative or raw[0] == "-"
+            raw = raw[1:].lstrip()
+        elif raw[0] in _CURRENCY_CHARS:
+            if currency_seen:
+                return None
+            currency_seen = True
+            raw = raw[1:].lstrip()
+        elif raw[0] == "(":
+            if parentheses_seen or not raw.endswith(")"):
+                return None
+            parentheses_seen, negative = True, True
+            raw = raw[1:-1].strip()
+        else:
+            break
+    if not raw or raw.endswith(")"):
         return None
-    negative = raw.startswith("-") or (raw.startswith("(") and raw.endswith(")"))
-    body = raw.strip("()+-").strip()
-    if body.startswith("-") or body.startswith("+"):
-        # A second sign after the currency symbol, "$-100", or a redundant one
-        # inside accounting parentheses, "-(100)": both say negative once more.
-        negative = negative or body.startswith("-")
-        body = body[1:].strip()
-    body = "".join(ch for ch in body if ch not in _CURRENCY_CHARS and not ch.isspace() and ch != "'")
-    if not body or not body[0].isdigit():
+    digits = _integer_and_fraction(raw)
+    if digits is None:
         return None
-
-    last_comma, last_dot = body.rfind(","), body.rfind(".")
-    if last_comma >= 0 and last_dot >= 0:
-        decimal = "," if last_comma > last_dot else "."
-    elif last_comma >= 0:
-        digits_after = len(body) - last_comma - 1
-        decimal = "," if body.count(",") == 1 and digits_after in (1, 2) else None
-    elif last_dot >= 0:
-        digits_after = len(body) - last_dot - 1
-        # "1.234.567" is grouped; "1.234" is a decimal; "12.5" is a decimal.
-        decimal = None if body.count(".") > 1 else "."
-        if decimal == "." and body.count(".") == 1 and digits_after == 3 and len(body) > 4:
-            # "1.234" with nothing to disambiguate stays a decimal, matching
-            # pd.to_numeric; only the multi-dot form is treated as grouping.
-            decimal = "."
-    else:
-        decimal = None
-
-    grouping = {",", "."} - ({decimal} if decimal else set())
-    for mark in grouping:
-        body = body.replace(mark, "")
-    if decimal and decimal != ".":
-        body = body.replace(decimal, ".")
-    try:
-        value = float(body)
-    except ValueError:
-        return None
+    integer, fraction = digits
+    value = float(f"{integer}.{fraction or '0'}")
     return -value if negative else value
 
 

@@ -114,7 +114,9 @@ class RateMeasureTests(unittest.TestCase):
         self.assertEqual(measure_aggregation("Margin Amount"), "sum")
 
     def test_the_headline_averages_a_rate_with_a_matching_number(self):
-        brief = analyze_business(pd.DataFrame({"Date": MONTHS[:2], "Conversion Rate": [0.1, 0.2]}))
+        # No date, so no trend card: the fallback headline has to combine the
+        # rate honestly on its own.
+        brief = analyze_business(pd.DataFrame({"Conversion Rate": [0.1, 0.2], "Channel": ["a", "b"]}))
 
         self.assertIn("averages", brief.headline)
         self.assertIn("15.0%", brief.headline)
