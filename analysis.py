@@ -34,6 +34,230 @@ class CleaningReport:
 
 
 @dataclass(frozen=True)
+class CleaningSuggestion:
+    column: str
+    operation: str
+    description: str
+
+
+def _parse_numeric_suggestion_values(series: pd.Series) -> pd.Series | None:
+    """Parse a consistently formatted numeric text column without guessing."""
+    values = series.astype("string").str.strip()
+
+    pattern = re.compile(
+        r"^\s*"
+        r"(?P<open>\()?"
+        r"(?P<currency>[$€£])?"
+        r"\s*"
+        r"(?P<number>\d+(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)"
+        r"\s*"
+        r"(?P<suffix>[A-Za-z%]+(?:\s+[A-Za-z%]+)*)?"
+        r"\s*"
+        r"(?P<close>\))?"
+        r"\s*$"
+    )
+
+    parsed: list[float | None] = []
+    suffixes: list[str] = []
+
+    for value in values:
+        if pd.isna(value):
+            parsed.append(None)
+            continue
+
+        match = pattern.fullmatch(str(value))
+        if match is None:
+            return None
+
+        if bool(match.group("open")) != bool(match.group("close")):
+            return None
+
+        suffix = (match.group("suffix") or "").strip().lower()
+        suffixes.append(suffix)
+
+        number = match.group("number").replace(",", "")
+        amount = float(number)
+
+        if match.group("open"):
+            amount = -amount
+
+        parsed.append(amount)
+
+    if len(set(suffixes)) > 1:
+        return None
+
+    return pd.Series(parsed, index=series.index, dtype="float64")
+
+def _split_suggestion_values(series: pd.Series) -> pd.Series | None:
+    """Split consistently delimited text values without guessing."""
+    values = series.astype("string").str.strip()
+
+    delimiters = ["/", "|", ";", ","]
+    detected_delimiter: str | None = None
+
+    for delimiter in delimiters:
+        if values.str.contains(re.escape(delimiter), regex=True, na=False).all():
+            detected_delimiter = delimiter
+            break
+
+    if detected_delimiter is None:
+        return None
+
+    split_values = values.str.split(detected_delimiter)
+
+    if split_values.map(lambda parts: len(parts) if parts is not None else 0).nunique() != 1:
+        return None
+
+    if split_values.map(lambda parts: len(parts) if parts is not None else 0).iloc[0] < 2:
+        return None
+
+    return split_values.map(
+        lambda parts: [part.strip() for part in parts] if parts is not None else None
+    )
+
+
+def suggest_cleaning(dataframe: pd.DataFrame) -> list[CleaningSuggestion]:
+    """Suggest conservative, deterministic cleaning transformations."""
+    suggestions: list[CleaningSuggestion] = []
+
+    for column in dataframe.select_dtypes(include=["object", "string"]).columns:
+        series = dataframe[column]
+        non_null = series.dropna()
+
+        if non_null.empty:
+            continue
+
+        protected_numeric_tokens = ("id", "code", "zip", "postal", "phone")
+        normalized_name = str(column).lower()
+
+        if any(token in normalized_name for token in protected_numeric_tokens):
+            continue
+
+        numeric = _parse_numeric_suggestion_values(non_null)
+
+        if numeric is not None:
+            original = non_null.astype("string").str.strip()
+            cleaned_values = numeric.astype("string")
+
+            if not original.reset_index(drop=True).equals(
+                cleaned_values.reset_index(drop=True)
+            ):
+                suggestions.append(
+                    CleaningSuggestion(
+                        column=str(column),
+                        operation="parse_numeric",
+                        description=(
+                            "Parse consistently formatted numeric text, "
+                            "including currency symbols, separators, "
+                            "accounting parentheses, or units."
+                        ),
+                    )
+                )
+
+        split_values = _split_suggestion_values(non_null)
+
+        if split_values is not None:
+            suggestions.append(
+                CleaningSuggestion(
+                    column=str(column),
+                    operation="split",
+                    description=(
+                        "Split consistently delimited text into separate values."
+                    ),
+                )
+            )
+    return suggestions
+
+def preview_cleaning_suggestion(
+    dataframe: pd.DataFrame,
+    suggestion: CleaningSuggestion,
+) -> pd.DataFrame:
+    """Return real before/after values for a cleaning suggestion."""
+
+    before = dataframe[suggestion.column]
+
+    if suggestion.operation == "parse_numeric":
+        after = _parse_numeric_suggestion_values(before)
+
+        if after is None:
+            raise ValueError(
+                "The column no longer matches the suggested numeric transformation."
+            )
+
+    elif suggestion.operation == "split":
+        after = _split_suggestion_values(before)
+
+        if after is None:
+            raise ValueError(
+                "The column no longer matches the suggested split transformation."
+            )
+
+    else:
+        raise ValueError(
+            f"Unsupported cleaning operation: {suggestion.operation}"
+        )
+
+    return pd.DataFrame(
+        {
+            "before": before,
+            "after": after,
+        }
+    )
+    """Return real before/after values for a cleaning suggestion."""
+    if suggestion.operation != "parse_numeric":
+        raise ValueError(f"Unsupported cleaning operation: {suggestion.operation}")
+
+    before = dataframe[suggestion.column]
+    after = _parse_numeric_suggestion_values(before)
+
+    if after is None:
+        raise ValueError(
+            "The column no longer matches the suggested numeric transformation."
+        )
+
+    return pd.DataFrame(
+        {
+            "before": before,
+            "after": after,
+        }
+    )
+
+def apply_cleaning_suggestion(
+    dataframe: pd.DataFrame,
+    suggestion: CleaningSuggestion,
+) -> pd.DataFrame:
+    """Apply an accepted cleaning suggestion deterministically."""
+    cleaned = dataframe.copy()
+
+    if suggestion.operation == "parse_numeric":
+        parsed = _parse_numeric_suggestion_values(cleaned[suggestion.column])
+
+        if parsed is None:
+            raise ValueError(
+                "The column no longer matches the suggested numeric transformation."
+            )
+
+        cleaned[suggestion.column] = parsed
+
+    elif suggestion.operation == "split":
+        split_values = _split_suggestion_values(cleaned[suggestion.column])
+
+        if split_values is None:
+            raise ValueError(
+                "The column no longer matches the suggested split transformation."
+            )
+
+        cleaned[suggestion.column] = split_values
+
+    else:
+        raise ValueError(
+            f"Unsupported cleaning operation: {suggestion.operation}"
+        )
+
+    return cleaned
+
+
+@dataclass(frozen=True)
 class Insight:
     title: str
     detail: str
