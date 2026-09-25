@@ -4,7 +4,15 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 
-from analysis import build_markdown_report, clean_dataframe, column_profile, generate_insights
+from analysis import (
+    apply_cleaning_suggestion,
+    build_markdown_report,
+    clean_dataframe,
+    column_profile,
+    generate_insights,
+    preview_cleaning_suggestion,
+    suggest_cleaning,
+)
 from schema import (
     DIMENSION_KEYWORDS,
     MEASURE_KEYWORDS,
@@ -67,8 +75,167 @@ class CleanDataframeTests(unittest.TestCase):
         cleaned, _ = clean_dataframe(frame)
 
         self.assertFalse(is_datetime64_any_dtype(cleaned["Container"]))
+    def test_numeric_cleanup_is_suggested_without_changing_data(self):
+        frame = pd.DataFrame(
+            {"Amount": ["$4,906.87", "$1,200.00", "$850.50"]}
+        )
 
+        suggestions = suggest_cleaning(frame)
 
+        self.assertEqual(len(suggestions), 1)
+        self.assertEqual(suggestions[0].column, "Amount")
+        self.assertEqual(suggestions[0].operation, "parse_numeric")
+
+    def test_numeric_cleanup_preview_contains_before_and_after_values(self):
+        frame = pd.DataFrame(
+            {"Amount": ["$4,906.87", "$1,200.00", "$850.50"]}
+        )
+
+        suggestions = suggest_cleaning(frame)
+
+        preview = preview_cleaning_suggestion(frame, suggestions[0])
+
+        self.assertEqual(
+            preview["before"].tolist(),
+            ["$4,906.87", "$1,200.00", "$850.50"],
+        )
+        self.assertEqual(
+            preview["after"].tolist(),
+            [4906.87, 1200.00, 850.50],
+        )
+
+    def test_identifier_columns_are_not_suggested_as_numeric(self):
+        frame = pd.DataFrame(
+            {"Customer ID": ["00123", "00456", "00789"]}
+        )
+
+        suggestions = suggest_cleaning(frame)
+
+        self.assertEqual(suggestions, [])
+
+    def test_accounting_parentheses_are_suggested_as_negative_numbers(self):
+        frame = pd.DataFrame(
+            {"Amount": ["4,906.87", "(208.82)", "100.00"]}
+        )
+
+        suggestions = suggest_cleaning(frame)
+
+        self.assertEqual(len(suggestions), 1)
+        self.assertEqual(suggestions[0].column, "Amount")
+        self.assertEqual(suggestions[0].operation, "parse_numeric")
+
+        preview = preview_cleaning_suggestion(frame, suggestions[0])
+
+        self.assertEqual(
+            preview["after"].tolist(),
+            [4906.87, -208.82, 100.00],
+        )
+
+    def test_numeric_value_with_units_is_suggested(self):
+        frame = pd.DataFrame(
+            {"Quantity": ["3,450 units", "1,200 units", "850 units"]}
+        )
+
+        suggestions = suggest_cleaning(frame)
+
+        self.assertEqual(len(suggestions), 1)
+        self.assertEqual(suggestions[0].column, "Quantity")
+        self.assertEqual(suggestions[0].operation, "parse_numeric")
+
+        preview = preview_cleaning_suggestion(frame, suggestions[0])
+
+        self.assertEqual(
+            preview["after"].tolist(),
+            [3450, 1200, 850],
+        )
+
+    def test_consistent_delimiter_is_suggested_for_split(self):
+        frame = pd.DataFrame(
+            {
+                "Segment": [
+                    "West / Enterprise",
+                    "East / Consumer",
+                    "South / Enterprise",
+                ]
+            }
+        )
+
+        suggestions = suggest_cleaning(frame)
+
+        self.assertEqual(len(suggestions), 1)
+        self.assertEqual(suggestions[0].column, "Segment")
+        self.assertEqual(suggestions[0].operation, "split")
+    def test_split_preview_shows_before_and_after_values(self):
+        frame = pd.DataFrame(
+            {
+                "Segment": [
+                    "West / Enterprise",
+                    "East / Consumer",
+                    "South / Enterprise",
+                ]
+            }
+        )
+
+        suggestions = suggest_cleaning(frame)
+
+        preview = preview_cleaning_suggestion(frame, suggestions[0])
+
+        self.assertEqual(
+            preview["before"].tolist(),
+            [
+                "West / Enterprise",
+                "East / Consumer",
+                "South / Enterprise",
+            ],
+        )
+        self.assertEqual(
+            preview["after"].tolist(),
+            [
+                ["West", "Enterprise"],
+                ["East", "Consumer"],
+                ["South", "Enterprise"],
+            ],
+        )
+
+    def test_apply_numeric_cleaning_suggestion(self):
+        frame = pd.DataFrame(
+            {
+                "Revenue": ["$4,906.87", "$1,200.00", "$850.50"],
+            }
+        )
+
+        suggestion = suggest_cleaning(frame)[0]
+
+        cleaned = apply_cleaning_suggestion(frame, suggestion)
+
+        self.assertEqual(
+            cleaned["Revenue"].tolist(),
+            [4906.87, 1200.0, 850.5],
+        )
+
+    def test_apply_split_cleaning_suggestion(self):
+        frame = pd.DataFrame(
+            {
+                "Segment": [
+                    "West / Enterprise",
+                    "East / Consumer",
+                    "South / Enterprise",
+                ]
+            }
+        )
+
+        suggestion = suggest_cleaning(frame)[0]
+
+        cleaned = apply_cleaning_suggestion(frame, suggestion)
+
+        self.assertEqual(
+            cleaned["Segment"].tolist(),
+            [
+                ["West", "Enterprise"],
+                ["East", "Consumer"],
+                ["South", "Enterprise"],
+            ],
+        )
 
 class RepeatRowTests(unittest.TestCase):
     """Two identical sales are a busy till, not a data defect."""
