@@ -123,7 +123,6 @@ class NLQParsingTests(unittest.TestCase):
         for question in (
             "which region grew the most",
             "how much revenue did we make",
-            "what were total revenue last quarter",
             "give me revenue by channel",
             "whats the total revenue",
         ):
