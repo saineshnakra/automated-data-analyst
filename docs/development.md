@@ -51,6 +51,7 @@ python -m unittest discover -s tests -p "test_nlq.py" -v
 | `test_nlq.py` | Question parsing and plan execution |
 | `test_ai_insights.py` | Typed output and the privacy contract |
 | `test_autovis.py` | Chart-form choice and series folding |
+| `test_selection.py` | Chart selections as filters, their wording, and the slice-versus-whole comparison |
 | `test_bug_bash.py` | Behaviours pinned after walking every customer journey |
 | `test_app.py` | Rendering smoke tests, and that the app survives without the AI layer |
 
