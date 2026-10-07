@@ -617,3 +617,7 @@ div[data-testid="stExpander"] { border: 1px solid var(--line); border-radius: .9
   .brief h1 { font-size: 1.95rem; }
   .proof-row { gap: .4rem; }
 }
+.selection-panel { margin-top: 1rem; padding: 1rem 1.15rem; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: .9rem; background: var(--paper); }
+.selection-panel .section-label { margin-top: 0; }
+.selection-description { margin: 0 0 .35rem; font-weight: 700; color: var(--ink); }
+.selection-adjustment { margin: 0 0 .35rem; color: var(--muted); font-size: .9rem; }
