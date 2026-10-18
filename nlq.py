@@ -59,7 +59,12 @@ AGGREGATION_LABELS: dict[Aggregation, str] = {
 # a word listed in only one of them reads as a request for the opposite end.
 ASCENDING_WORDS = ("worst", "bottom", "lowest", "smallest", "least", "fewest")
 SUPERLATIVE_WORDS = (
-    "best", "top", "leading", "highest", "largest", "biggest",
+    # "most" belongs here beside "least", which lives in ASCENDING_WORDS. While
+    # it was in neither, "which region made the most revenue" fell through to
+    # the plain aggregate branch and answered the grand total with the named
+    # dimension silently dropped -- the exact shape of answer this parser
+    # exists to refuse -- while "least" ranked correctly.
+    "best", "top", "leading", "highest", "largest", "biggest", "most",
     *ASCENDING_WORDS,
 )
 DECLINE_WORDS = ("slowest", "declined", "decreased", "dropped", "fell", "shrank")
@@ -109,10 +114,13 @@ MAX_FILTER_CANDIDATES = 200
 BREAKDOWN_LIMIT = 12
 
 QUERY_STOPWORDS = {
-    "a", "about", "across", "all", "and", "are", "by", "can", "do", "does", "each",
-    "for", "from", "have", "he", "how", "i", "in", "is", "it", "me", "many", "my",
-    "of", "on", "or", "our", "please", "re", "s", "she", "show", "tell", "than", "that",
-    "the", "there", "this", "to", "they", "ve", "we", "what", "which", "with", "you", "your",
+    "a", "about", "across", "all", "also", "and", "any", "are", "been", "by", "can",
+    "did", "do", "does", "done", "each", "for", "from", "get", "give", "got", "have",
+    "has", "he", "how", "hows", "i", "in", "is", "it", "just", "last", "least", "make", "made",
+    "many", "me", "most", "much", "my", "next", "of", "on", "only", "or", "our",
+    "please", "re", "s", "she", "show", "tell", "than", "that", "the", "then", "there",
+    "this", "to", "they", "us", "ve", "was", "we", "were", "what", "whats", "which",
+    "with", "you", "your",
 }
 
 
@@ -521,6 +529,12 @@ UNSUPPORTED_PHRASES = re.compile(
     r"above \d+|below \d+|over \d+|under \d+|between \d+|exceeds?|exceeding|"
     r"this (?:year|month|quarter|week)|last (?:year|month|quarter|week|\d+ (?:days|weeks|months|years))|"
     r"next (?:year|month|quarter|week)|previous (?:year|month|quarter|week)|"
+    # "last december" named one December and was answered with every
+    # December in the file summed together, under a sentence that said
+    # only "in December". "next december" answered a future period from
+    # past rows. The plan holds a month or a year, not a month relative
+    # to now, so the question is refused instead of quietly rewritten.
+    rf"(?:last|next|previous|this) (?:{'|'.join(MONTH_NAMES)})|"
     r"year to date|ytd|today|yesterday|past \d+|"
     r"minus|plus|divided by|multiplied by|times|ratio of|difference between|"
     r"versus|vs|compared (?:to|with)|comparison|"
