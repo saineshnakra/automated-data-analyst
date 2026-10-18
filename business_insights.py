@@ -24,6 +24,7 @@ from formatting import (
     normalized_name,
     percentage_outranks_currency,
 )
+from metrics import resolve_metric
 from schema import TIME_PART_TOKENS, ColumnRoles, detect_roles, looks_like_identifier
 from timeseries import robust_scale
 
@@ -320,7 +321,12 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
     if total == 0 or not np.isfinite(total):
         return ()
     values = segments["Value"].to_numpy(dtype=float)
-    shares_hold = _shares_are_meaningful(values)
+    # A rate fails the same test mixed signs fail, for the same reason: the
+    # parts do not add up to the whole. Ten per cent churn beside twenty is
+    # not "one segment contributing two thirds of the churn rate", and a
+    # Herfindahl index over those shares is a number about nothing.
+    additive = resolve_metric(roles.measure).additive if roles.measure else True
+    shares_hold = _shares_are_meaningful(values) and additive
     if not shares_hold:
         # Without a usable denominator the only honest ordering is by size of
         # the number itself, and no percentage may be quoted from it.
@@ -355,15 +361,25 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
                 )
                 if shares_hold
                 else (
-                    f"{leader['Segment']} is the largest {dimension.lower()} by size at "
-                    f"{leader_amount}. {measure} runs both positive and negative here, so no "
-                    f"share of the total can be quoted -- the parts do not add up to it."
+                    f"{leader['Segment']} is the highest {dimension.lower()} at {leader_amount}. "
+                    f"{measure} is an average, not a quantity that adds up, so no share of a "
+                    f"total can be quoted."
+                    if not additive
+                    else (
+                        f"{leader['Segment']} is the largest {dimension.lower()} by size at "
+                        f"{leader_amount}. {measure} runs both positive and negative here, so no "
+                        f"share of the total can be quoted -- the parts do not add up to it."
+                    )
                 )
             ),
             calculation=(
                 f"{leader['Segment']} {measure} ÷ total {measure}"
                 if shares_hold
-                else f"largest |{measure}| by {dimension}; share undefined on mixed signs"
+                else (
+                    f"highest average {measure} by {dimension}; a rate has no total to share"
+                    if not additive
+                    else f"largest |{measure}| by {dimension}; share undefined on mixed signs"
+                )
             ),
             tone="positive" if shares_hold else "warning",
         ),
@@ -772,7 +788,16 @@ def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) 
         )
     if evidence_by_kind := {item.kind: item for item in evidence}:
         if leader := evidence_by_kind.get("leader"):
-            kpis.append(KPI(f"Top {roles.dimension}", leader.value, "Share contributed by the leader"))
+            share_quoted = leader.calculation.endswith(f"total {roles.measure}")
+            kpis.append(
+                KPI(
+                    f"Top {roles.dimension}",
+                    leader.value,
+                    "Share contributed by the leader"
+                    if share_quoted
+                    else "Highest of any segment",
+                )
+            )
 
     # Back-fill towards four tiles from a finite list of fallbacks. The old
     # loop ran until it had four and its last branch had no already-added
