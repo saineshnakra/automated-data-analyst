@@ -16,7 +16,8 @@ from typing import Literal
 import pandas as pd
 
 from aggregation import TrendSeries, build_trend, measure_aggregation, preferred_frequency, unlabelled_label
-from formatting import format_number
+from formatting import format_number, format_rate_change
+from metrics import resolve_metric
 from schema import ColumnRoles
 
 Intent = Literal["aggregate", "count", "rank", "breakdown", "trend", "growth"]
@@ -174,6 +175,32 @@ def _mentioned(normalized_name: str, question: str) -> bool:
         for variant in _word_variants(normalized_name)
         if variant
     )
+
+
+def _without_columns(question: str, columns: tuple[str | None, ...]) -> str:
+    """The question with the column names it matched blanked out.
+
+    A column carries ordinary English in its name, and every intent word below
+    is read off the raw question. "Cell Count" put "count" into every question
+    about it, so "total cell count" was answered with a row count; "Total
+    Sales" put "total" in front of an explicit "average" and won, because the
+    aggregation scan takes the first word it finds; "Revenue Growth" and
+    "Change Score" turned a total into a period-over-period move. Removing the
+    names first means only the words the reader chose decide the question.
+    """
+    blanked = question
+    for column in columns:
+        if not column:
+            continue
+        name = _norm(column)
+        if name:
+            blanked = re.sub(rf"\b{re.escape(name)}\b", " ", blanked)
+    return " ".join(blanked.split())
+
+
+def _is_rate(measure: str | None) -> bool:
+    """Whether this measure moves in percentage points rather than percent."""
+    return bool(measure) and resolve_metric(measure).unit == "rate"
 
 
 def _match_column(question: str, columns: list[str]) -> str | None:
@@ -347,8 +374,15 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
     filters = _detect_value_filters(q, dataframe, roles, exclude=(dimension,))
     filters_including_dimension = _detect_value_filters(q, dataframe, roles)
 
+    # Intent is read from what is left once the matched column names are
+    # removed, so a column cannot ask a different question from its reader.
+    intent_text = _without_columns(q, (measure, dimension))
     aggregation: Aggregation | None = next(
-        (AGGREGATION_WORDS[word] for word in AGGREGATION_WORDS if re.search(rf"\b{word}\b", q)),
+        (
+            AGGREGATION_WORDS[word]
+            for word in AGGREGATION_WORDS
+            if re.search(rf"\b{word}\b", intent_text)
+        ),
         None,
     )
     top_match = re.search(r"\b(top|bottom)\s+(\d{1,3})\b", q)
@@ -358,12 +392,12 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
     # "highest" and "largest" rank; only the literal words ask for an extreme
     # per group. Both live in AGGREGATION_WORDS as max, so they are told apart
     # here rather than by silently downgrading every min/max to a sum.
-    explicit_extreme = bool(re.search(r"\b(min|minimum|max|maximum)\b", q))
-    superlative = any(re.search(rf"\b{word}\b", q) for word in SUPERLATIVE_WORDS)
-    wants_breakdown = bool(re.search(r"\b(by|per|across|breakdown|split|each)\b", q))
-    wants_count = bool(re.search(r"\b(how many|count|number of)\b", q))
-    wants_growth = any(re.search(rf"\b{word}\b", q) for word in GROWTH_WORDS)
-    wants_trend = grain is not None or any(phrase in q for phrase in TREND_WORDS)
+    explicit_extreme = bool(re.search(r"\b(min|minimum|max|maximum)\b", intent_text))
+    superlative = any(re.search(rf"\b{word}\b", intent_text) for word in SUPERLATIVE_WORDS)
+    wants_breakdown = bool(re.search(r"\b(by|per|across|breakdown|split|each)\b", intent_text))
+    wants_count = bool(re.search(r"\b(how many|count|number of)\b", intent_text))
+    wants_growth = any(re.search(rf"\b{word}\b", intent_text) for word in GROWTH_WORDS)
+    wants_trend = grain is not None or any(phrase in intent_text for phrase in TREND_WORDS)
 
     base = {
         "measure": measure or roles.measure,
@@ -654,13 +688,25 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
             )
         first, last = float(trend.iloc[0]["Value"]), float(trend.iloc[-1]["Value"])
         grain_name = {"D": "day", "W": "week", "M": "month", "Q": "quarter", "Y": "year"}.get(grain, "period")
-        # Growing from nothing has no percentage. Printing +0.0% beside two
-        # different numbers contradicts the rest of the sentence.
-        movement = (
-            f"{(last - first) / abs(first) * 100:+.1f}% across {len(trend)} {grain_name}s"
-            if first
-            else f"across {len(trend)} {grain_name}s, from a starting period of zero"
-        )
+        # A rate moves in percentage points. 3% to 4% is one point, and the
+        # "+33.3%" the relative formula gives is what nobody means by it.
+        # formatting has said so since the rate work landed; these sentences
+        # were the two surfaces that never asked.
+        if _is_rate(plan.measure):
+            column = dataframe[plan.measure].dropna() if plan.measure in dataframe else None
+            direction = "+" if last >= first else "-"
+            movement = (
+                f"{direction}{format_rate_change(last - first, column)} "
+                f"across {len(trend)} {grain_name}s"
+            )
+        else:
+            # Growing from nothing has no percentage. Printing +0.0% beside two
+            # different numbers contradicts the rest of the sentence.
+            movement = (
+                f"{(last - first) / abs(first) * 100:+.1f}% across {len(trend)} {grain_name}s"
+                if first
+                else f"across {len(trend)} {grain_name}s, from a starting period of zero"
+            )
         answer = (
             f"{plan.measure or 'Records'} per {grain_name}{_phrase(applied)} moved from "
             f"{format_number(first, plan.measure)} to {format_number(last, plan.measure)} "
@@ -804,12 +850,21 @@ def _execute_growth(
             answer="The previous period is zero, so a growth rate is undefined.",
             calculation=f"growth undefined for zero base{scope}",
         )
-    change = (current - previous) / abs(previous) * 100
-    direction = "up" if change >= 0 else "down"
-    answer = (
-        f"{measure or 'Records'}{_phrase(applied)} is {direction} {abs(change):.1f}% versus the prior "
-        f"period ({format_number(previous, measure)} → {format_number(current, measure)})."
-    )
+    if _is_rate(measure):
+        column = working[measure].dropna() if measure and measure in working else None
+        direction = "up" if current >= previous else "down"
+        answer = (
+            f"{measure}{_phrase(applied)} is {direction} "
+            f"{format_rate_change(current - previous, column)} versus the prior "
+            f"period ({format_number(previous, measure)} → {format_number(current, measure)})."
+        )
+    else:
+        change = (current - previous) / abs(previous) * 100
+        direction = "up" if change >= 0 else "down"
+        answer = (
+            f"{measure or 'Records'}{_phrase(applied)} is {direction} {abs(change):.1f}% versus the "
+            f"prior period ({format_number(previous, measure)} → {format_number(current, measure)})."
+        )
     return QueryAnswer(
         question="",
         plan=plan,

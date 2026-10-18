@@ -27,6 +27,7 @@ class CleaningReport:
     datetime_columns_inferred: int
     duplicate_rows_found: int = 0
     unparsed_date_cells: int = 0
+    non_finite_cells: int = 0
     notes: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -336,6 +337,23 @@ def _looks_like_exported_index(series: pd.Series, name: str) -> bool:
     return ascending and dense
 
 
+def _drop_non_finite(frame: pd.DataFrame) -> dict[str, int]:
+    """Turn inf and -inf into missing, and say how many cells that was.
+
+    pandas reads the text "inf" as a number, and one such cell then owns every
+    total, mean and chart axis built on the column -- a file with three rows
+    summed to inf. It carries no quantity a business file could mean, so it is
+    treated as a value that could not be read rather than as a measurement.
+    """
+    counts: dict[str, int] = {}
+    for column in frame.select_dtypes(include=["float64", "float32"]).columns:
+        infinite = np.isinf(frame[column])
+        if infinite.any():
+            frame[column] = frame[column].mask(infinite)
+            counts[column] = int(infinite.sum())
+    return counts
+
+
 def clean_dataframe(
     dataframe: pd.DataFrame, *, drop_duplicates: bool = False
 ) -> tuple[pd.DataFrame, CleaningReport]:
@@ -448,6 +466,15 @@ def clean_dataframe(
             "number, so it is measured as a decimal; the last few digits are approximate."
         )
 
+    non_finite = _drop_non_finite(cleaned)
+    non_finite_cells = sum(non_finite.values())
+    for column, count in non_finite.items():
+        noun, verb = ("values", "were") if count > 1 else ("value", "was")
+        notes.append(
+            f"{count:,} infinite {noun} in {column} {verb} treated as missing; "
+            "an infinity is not a quantity the totals can carry."
+        )
+
     duplicate_rows = int(cleaned.duplicated().sum())
     if drop_duplicates:
         cleaned = cleaned.drop_duplicates()
@@ -475,6 +502,7 @@ def clean_dataframe(
         datetime_columns_inferred=datetime_columns_inferred,
         duplicate_rows_found=duplicate_rows,
         unparsed_date_cells=unparsed_date_cells,
+        non_finite_cells=non_finite_cells,
         notes=tuple(dict.fromkeys(notes)),
     )
     return cleaned, report
