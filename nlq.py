@@ -27,7 +27,6 @@ Aggregation = Literal["sum", "mean", "median", "min", "max", "count"]
 AGGREGATION_WORDS: dict[str, Aggregation] = {
     "total": "sum",
     "sum": "sum",
-    "overall": "sum",
     "average": "mean",
     "avg": "mean",
     "mean": "mean",
@@ -117,6 +116,7 @@ QUERY_STOPWORDS = {
     "a", "about", "across", "all", "also", "and", "any", "are", "been", "by", "can",
     "did", "do", "does", "done", "each", "for", "from", "get", "give", "got", "have",
     "has", "he", "how", "hows", "i", "in", "is", "it", "just", "last", "least", "make", "made",
+    "overall",
     "many", "me", "most", "much", "my", "next", "of", "on", "only", "or", "our",
     "please", "re", "s", "she", "show", "tell", "than", "that", "the", "then", "there",
     "this", "to", "they", "us", "ve", "was", "we", "were", "what", "whats", "which",
@@ -682,7 +682,15 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
             return None
         wants_ranked_growth = superlative or any(word in grammar for word in ("which", "fastest", "slowest"))
         rank_dimension = dimension or (roles.dimension if wants_ranked_growth else None)
-        ascending = bool(re.search(ASCENDING_PATTERN, grammar))
+        # TOP_PATTERN claims "bottom 3" whole, so blanked() has already erased
+        # the word before ASCENDING_PATTERN can see it. The plain rank branch
+        # reads the direction off top_match for exactly this reason; the growth
+        # branch did not, and answered "bottom 3 ... growth" with the fastest.
+        ascending = (
+            top_match.group(1) == "bottom"
+            if top_match
+            else bool(re.search(ASCENDING_PATTERN, grammar))
+        )
         top_n = int(top_match.group(2)) if top_match else None
         return QueryPlan(
             intent="growth", aggregation=default_aggregation, dimension=rank_dimension,
@@ -1036,7 +1044,18 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
                 answer="Not enough periods in that scope to draw a trend.",
                 calculation=f"trend needs at least 2 periods{scope}",
             )
-        first, last = float(trend.iloc[0]["Value"]), float(trend.iloc[-1]["Value"])
+        observed = trend[np.isfinite(pd.to_numeric(trend["Value"], errors="coerce"))]
+        if len(observed) < 2:
+            return QueryAnswer(
+                question="",
+                plan=plan,
+                answer=(
+                    f"{plan.measure or 'Records'}{_phrase(applied)} has fewer than two periods "
+                    "with a value, so there is no movement to report."
+                ),
+                calculation=f"trend needs at least 2 observed periods{scope}",
+            )
+        first, last = float(observed.iloc[0]["Value"]), float(observed.iloc[-1]["Value"])
         grain_name = {"D": "day", "W": "week", "M": "month", "Q": "quarter", "Y": "year"}.get(grain, "period")
         # Growing from nothing has no percentage. Printing +0.0% beside two
         # different numbers contradicts the rest of the sentence.
@@ -1068,7 +1087,7 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
         )
 
     if plan.intent == "growth":
-        return _execute_growth(plan, working, roles, scope, applied)
+        return _execute_growth(plan, working, roles, scope, applied, whole=dataframe)
 
     raise ValueError(f"Unsupported intent: {plan.intent}")
 
@@ -1079,8 +1098,17 @@ def _execute_growth(
     roles: ColumnRoles,
     scope: str,
     applied: list[str],
+    whole: pd.DataFrame | None = None,
 ) -> QueryAnswer:
+    """Report a period-over-period move, formatted against the whole column.
+
+    ``working`` is filtered and does the arithmetic. ``whole`` is the unfiltered
+    frame and settles nothing but the scale: a rate column of [0.5, 2.0] is in
+    percentage points, and a filter leaving only the sub-1 values made the same
+    reading print 50.0% where the unscoped answer printed 0.5%.
+    """
     assert roles.date is not None
+    scale_frame = working if whole is None else whole
     measure = plan.measure
     scoped_roles = ColumnRoles(
         date=roles.date,
@@ -1105,7 +1133,11 @@ def _execute_growth(
     is_rate = bool(measure) and metric.unit == "rate"
     # A rate moves in percentage points: 10% to 20% is ten points, and the
     # "100% growth" the relative formula gives is what nobody means by it.
-    scale = 100.0 if is_rate and rate_scale(working[measure].dropna()) == "fraction" else 1.0
+    scale = (
+        100.0
+        if is_rate and rate_scale(scale_frame[measure].dropna()) == "fraction"
+        else 1.0
+    )
 
     if plan.dimension:
         grain = plan.grain or preferred_frequency(working[roles.date])
@@ -1170,7 +1202,7 @@ def _execute_growth(
                     f"No {plan.dimension} has a growth rate this period, because every one "
                     f"of them started from zero. The largest new arrival is "
                     f"{newest[plan.dimension]} at "
-                    f"{_shown(float(newest[latest_name]), measure, working)}."
+                    f"{_shown(float(newest[latest_name]), measure, scale_frame)}."
                 ),
                 calculation=(
                     f"per-{plan.dimension} growth undefined from a zero base; "
@@ -1204,8 +1236,8 @@ def _execute_growth(
         )
         answer = (
             f"{leader[plan.dimension]} moved {direction}{_phrase(applied)}: {moved} "
-            f"({_shown(float(leader[previous_name]), measure, working)} → "
-            f"{_shown(float(leader[latest_name]), measure, working)}) in the latest period."
+            f"({_shown(float(leader[previous_name]), measure, scale_frame)} → "
+            f"{_shown(float(leader[latest_name]), measure, scale_frame)}) in the latest period."
         )
         if not from_nothing.empty:
             newest = from_nothing.loc[from_nothing[latest_name].abs().idxmax()]
@@ -1213,7 +1245,7 @@ def _execute_growth(
             answer += (
                 f" {len(from_nothing)} segment(s) are left out of the ranking because they "
                 f"started from zero ({names}); the largest is {newest[plan.dimension]} at "
-                f"{_shown(float(newest[latest_name]), measure, working)}."
+                f"{_shown(float(newest[latest_name]), measure, scale_frame)}."
             )
         combined = metric.combines_as if measure else "count"
         ranked_by = "change in percentage points" if is_rate else "% change"
@@ -1259,7 +1291,8 @@ def _execute_growth(
         direction = "up" if change >= 0 else "down"
         answer = (
             f"{measure}{_phrase(applied)} is {direction} {abs(change):.1f} percentage points versus "
-            f"the prior period ({_shown(previous, measure, working)} → {_shown(current, measure, working)})."
+            f"the prior period ({_shown(previous, measure, scale_frame)} → "
+            f"{_shown(current, measure, scale_frame)})."
         )
         calculation = "latest period average − previous period average, in percentage points"
     else:
@@ -1274,7 +1307,7 @@ def _execute_growth(
         direction = "up" if change >= 0 else "down"
         answer = (
             f"{measure or 'Records'}{_phrase(applied)} is {direction} {abs(change):.1f}% versus the prior "
-            f"period ({_shown(previous, measure, working)} → {_shown(current, measure, working)})."
+            f"period ({_shown(previous, measure, scale_frame)} → {_shown(current, measure, scale_frame)})."
         )
         combined = "period counts" if not measure else f"period {metric.combines_as}s"
         calculation = f"(latest − previous) ÷ |previous| on {combined}"
