@@ -719,6 +719,12 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
         )
 
     if wants_trend and roles.date:
+        if dimension and not _filtered_on(mentions.filters, dimension):
+            # A trend per segment is a different chart from a trend, and the
+            # plan holds one series. Answering the ungrouped trend would drop
+            # the word the reader typed. "Revenue for Region West" is not this
+            # case: there the column name was spent by the filter beside it.
+            return None
         if aggregation not in (None, default_aggregation):
             # The trend executor combines each period the way the measure
             # combines. "Average revenue monthly" would be answered with sums,
@@ -736,9 +742,20 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
         )
 
     if base["measure"] and (aggregation or measure):
+        if dimension and not _filtered_on(mentions.filters, dimension):
+            # The breakdown branch above takes every grouped shape it can
+            # represent. Reaching here with a dimension still unspent means the
+            # grand total would be returned under a question that named a
+            # column, so it is refused instead.
+            return None
         return QueryPlan(intent="aggregate", aggregation=aggregation or default_aggregation, **base)
 
     return None
+
+
+def _filtered_on(filters: tuple[ValueFilter, ...], column: str) -> bool:
+    """Whether a filter already accounts for this column being named."""
+    return any(item.column == column for item in filters)
 
 
 def _grouped_aggregation(
@@ -1057,13 +1074,24 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
             )
         first, last = float(observed.iloc[0]["Value"]), float(observed.iloc[-1]["Value"])
         grain_name = {"D": "day", "W": "week", "M": "month", "Q": "quarter", "Y": "year"}.get(grain, "period")
-        # Growing from nothing has no percentage. Printing +0.0% beside two
-        # different numbers contradicts the rest of the sentence.
-        movement = (
-            f"{(last - first) / abs(first) * 100:+.1f}% across {len(trend)} {grain_name}s"
-            if first
-            else f"across {len(trend)} {grain_name}s, from a starting period of zero"
-        )
+        # A rate moves in percentage points, the same way _execute_growth
+        # reports it. While this said percent, the two surfaces disagreed
+        # about the same column on the same page: 2% to 3% read as "+50.0%"
+        # here and "+1.0 percentage points" there.
+        trend_metric = resolve_metric(plan.measure) if plan.measure and not counted else None
+        if trend_metric is not None and trend_metric.unit == "rate":
+            points = (last - first) * (
+                100.0 if rate_scale(dataframe[plan.measure].dropna()) == "fraction" else 1.0
+            )
+            movement = f"{points:+.1f} percentage points across {len(trend)} {grain_name}s"
+        else:
+            # Growing from nothing has no percentage. Printing +0.0% beside two
+            # different numbers contradicts the rest of the sentence.
+            movement = (
+                f"{(last - first) / abs(first) * 100:+.1f}% across {len(trend)} {grain_name}s"
+                if first
+                else f"across {len(trend)} {grain_name}s, from a starting period of zero"
+            )
         if counted and plan.count_column:
             subject, shown_measure = f"Distinct {plan.count_column}", None
             counted_as = f"count distinct {plan.count_column}"

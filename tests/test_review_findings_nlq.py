@@ -106,3 +106,72 @@ class OverallIsNotASumTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TrendReportsARateInPointsTests(unittest.TestCase):
+    """The growth branch says points and the trend branch said percent, for
+    the same column on the same page."""
+
+    def setUp(self):
+        self.frame = pd.DataFrame({
+            "Date": pd.to_datetime(["2025-01-05", "2025-02-05"] * 2),
+            "Region": ["East", "East", "West", "West"],
+            "Churn Rate": [2.0, 3.0, 4.0, 5.0],
+        })
+        self.roles = roles(date="Date", measure="Churn Rate", dimension="Region",
+                           numeric=("Churn Rate",), dimensions=("Region",))
+
+    def test_a_rate_trend_moves_in_points(self):
+        answer = answer_question("churn rate per month", self.frame, self.roles)
+        self.assertIn("percentage points", answer.answer, answer.answer)
+
+    def test_the_two_surfaces_agree(self):
+        trend = answer_question("churn rate per month", self.frame, self.roles)
+        growth = answer_question("how did churn rate change", self.frame, self.roles)
+        self.assertIn("percentage points", trend.answer)
+        self.assertIn("percentage points", growth.answer)
+
+    def test_an_additive_trend_still_reports_a_percentage(self):
+        frame = self.frame.rename(columns={"Churn Rate": "Revenue"})
+        answer = answer_question("revenue per month", frame,
+                                 roles(date="Date", measure="Revenue", numeric=("Revenue",)))
+        self.assertIn("%", answer.answer)
+        self.assertNotIn("percentage points", answer.answer)
+
+
+class ANamedDimensionIsNotDroppedTests(unittest.TestCase):
+    """A column the reader named has to reach the plan or the question is
+    refused. Answering the grand total pretends the word was not there."""
+
+    def setUp(self):
+        self.frame = pd.DataFrame({
+            "Date": pd.to_datetime(["2025-01-05", "2025-02-05"] * 3),
+            "Region": ["East", "East", "West", "West", "North", "North"],
+            "Revenue": [500.0, 0.0, 100.0, 200.0, 300.0, 330.0],
+        })
+        self.roles = roles(date="Date", measure="Revenue", dimension="Region",
+                           numeric=("Revenue",), dimensions=("Region",))
+
+    def test_a_trend_does_not_quietly_drop_the_dimension(self):
+        plan = parse_question("revenue per month by region", self.frame, self.roles)
+        if plan is not None:
+            self.assertEqual(plan.dimension, "Region", "the dimension was dropped")
+
+    def test_an_aggregate_does_not_quietly_drop_the_dimension(self):
+        plan = parse_question("revenue for region", self.frame, self.roles)
+        if plan is not None:
+            self.assertEqual(plan.dimension, "Region", "answered the grand total instead")
+
+    def test_the_ordinary_breakdown_still_works(self):
+        plan = parse_question("revenue by region", self.frame, self.roles)
+        self.assertEqual(plan.intent, "breakdown")
+        self.assertEqual(plan.dimension, "Region")
+
+    def test_a_plain_total_is_untouched(self):
+        plan = parse_question("total revenue", self.frame, self.roles)
+        self.assertEqual(plan.intent, "aggregate")
+        self.assertIsNone(plan.dimension)
+
+    def test_a_plain_trend_is_untouched(self):
+        plan = parse_question("revenue per month", self.frame, self.roles)
+        self.assertEqual(plan.intent, "trend")
