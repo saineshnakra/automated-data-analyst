@@ -1,29 +1,44 @@
 # ADA: Automated Data Analyst
 
 [![CI](https://github.com/saineshnakra/automated-data-analyst/actions/workflows/ci.yml/badge.svg)](https://github.com/saineshnakra/automated-data-analyst/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?logo=python&logoColor=white)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.13-3776ab?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-20a779.svg)](https://github.com/saineshnakra/automated-data-analyst/blob/main/LICENSE)
 [![Stars](https://img.shields.io/github/stars/saineshnakra/automated-data-analyst?style=flat&logo=github&color=f5b731&label=Star%20this%20repo)](https://github.com/saineshnakra/automated-data-analyst/stargazers)
 
-**Upload a CSV or Excel file. Get a dashboard, an executive brief, anomaly
-flags, a forecast, and answers to plain-English questions — with the calculation
-shown under every number.**
+**You open the CSV, squint at the columns, write a groupby, make a chart, then
+notice the dates parsed as text and start over.**
 
-[Live demo](https://automated-data-analyst.streamlit.app/) ·
-[Documentation](https://github.com/saineshnakra/automated-data-analyst/tree/main/docs) ·
-[Roadmap](https://github.com/saineshnakra/automated-data-analyst/blob/main/ROADMAP.md) ·
-[Contributing](https://github.com/saineshnakra/automated-data-analyst/blob/main/CONTRIBUTING.md)
+Upload the file to ADA instead. It works out which column is the date, which is
+the measure and which is the segment, builds the trend, the breakdown, the
+anomaly flags and a guarded forecast, and shows the arithmetic under every
+number.
 
-**Source:** [github.com/saineshnakra/automated-data-analyst](https://github.com/saineshnakra/automated-data-analyst)
+[**Try it now**](https://automated-data-analyst.streamlit.app/) · no sign-up, no API key
 
-> **⭐ If ADA saved you an afternoon, [star the repo](https://github.com/saineshnakra/automated-data-analyst).**
-> It is the whole marketing budget: stars are what put this in front of the next
-> person looking for a tool that shows its arithmetic. One click, and it costs
-> you nothing.
+![Ask ADA a plain-English question and receive a pandas-backed answer with its calculation](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/ask-ada.gif)
 
-![ADA turns CSV and Excel files into decision-ready business dashboards](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/ada-social-preview.png)
+## Point it at research data and see what it finds
 
-## What it does
+ADA does not know anything about your field. It finds structure in a table and
+shows its working. That turns out to be enough to be useful on a lot of things
+that are not business data:
+
+- **Have biological data that feels like junk?** Put it in ADA. It will not
+  understand the biology, but it will show you the structure.
+- **Have a lab export you have not opened in months?** Drop it in and see
+  whether anything actually moves.
+- **Have field measurements across sites and seasons?** Load them and see which
+  periods sit outside the band.
+- **Have an instrument or sensor log nobody has plotted?** Find out where the
+  odd periods are.
+- **Have a scraped CSV you never cleaned?** ADA reports exactly what it fixed,
+  then analyzes what is left.
+- **Have a city open-data file you were curious about?** Point ADA at it before
+  you spend an afternoon in pandas.
+- **Have a revenue export and a meeting in an hour?** Upload it and get the
+  trend, the segment breakdown and the arithmetic behind both.
+
+## Analyze a CSV or Excel file without writing code
 
 ADA reads your file, works out which column is the metric, which is the date,
 and which is the segment, then builds the analysis around that.
@@ -37,22 +52,6 @@ and which is the segment, then builds the analysis around that.
 
 Limits: 25 MB per file, 250,000 rows analyzed. Formats: `.csv`, `.xlsx`, `.xlsm`.
 
-### Nothing to upload? Try a sample
-
-Pick **Try a sample dataset** in the app, or download one from [`samples/`](https://github.com/saineshnakra/automated-data-analyst/tree/main/samples):
-
-| Sample | What it shows |
-|---|---|
-| [SaaS subscriptions](https://github.com/saineshnakra/automated-data-analyst/blob/main/samples/saas-subscriptions.csv) | A real revenue drop the anomaly radar finds, and a forecast that beats no-change |
-| [Support tickets](https://github.com/saineshnakra/automated-data-analyst/blob/main/samples/support-tickets.csv) | No revenue column, and a forecast honest enough to say it is useless |
-| [Ecommerce orders](https://github.com/saineshnakra/automated-data-analyst/blob/main/samples/ecommerce-orders.csv) | Returns as negative rows, so totals cope with mixed signs |
-
-All three are synthetic, so they carry no privacy or licensing baggage.
-
-### Ask a business question. Get the number and its calculation.
-
-![Ask ADA a plain-English question and receive a pandas-backed answer with its calculation](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/ask-ada.gif)
-
 ### Focus on one segment. The whole analysis regroups.
 
 ![Drill into one business segment and automatically regroup the dashboard by the next useful dimension](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/drilldown.gif)
@@ -62,7 +61,45 @@ All three are synthetic, so they carry no privacy or licensing baggage.
   <img src="https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/evidence-ledger.png" width="49%" alt="ADA evidence ledger showing calculations, anomalies, concentration, correlation, and detected schema">
 </p>
 
-## Run it
+## What ADA refuses to do
+
+The refusals are the feature. A tool that always answers is a tool you cannot
+trust with a number you have not checked.
+
+- **The forecast refuses thin history** and tells you when it scored no better
+  than assuming no change.
+- **Ask ADA refuses a question it cannot represent** rather than answering the
+  nearest one it can. A precise answer to a question nobody asked is worse than
+  no answer.
+- **No model ever computes a number.** Every figure comes from pandas. The
+  optional AI layer proposes a calculation and waits for you to confirm it.
+- **Recommendations are labelled interpretation**, and separated from the
+  evidence that triggered them. ADA never claims a cause.
+- **A gap is not a zero.** A period with no rows stays empty rather than
+  dragging a rate down.
+
+## What ADA is not
+
+It is descriptive analysis of one tabular file. It is not a statistics package
+and it has no domain knowledge. There is no hypothesis testing, no survival
+analysis, no study design, no multiple-comparison correction, nothing
+bioinformatic. If you need a p-value for a specific claim, ADA is the step
+before that, not the step instead of it.
+
+## Try it on a sample dataset
+
+Pick **Try a sample dataset** in the app, or download one from [`samples/`](https://github.com/saineshnakra/automated-data-analyst/tree/main/samples):
+
+| Sample | What it shows |
+|---|---|
+| [Lab measurements](https://github.com/saineshnakra/automated-data-analyst/blob/main/samples/lab-measurements.csv) | A cell-culture viability assay. One treatment arm declining, one bad plate, and a rate column that has to be averaged while the count beside it is summed |
+| [SaaS subscriptions](https://github.com/saineshnakra/automated-data-analyst/blob/main/samples/saas-subscriptions.csv) | A real revenue drop the anomaly radar finds, and a forecast that beats no-change |
+| [Support tickets](https://github.com/saineshnakra/automated-data-analyst/blob/main/samples/support-tickets.csv) | No revenue column, and a forecast honest enough to say it is useless |
+| [Ecommerce orders](https://github.com/saineshnakra/automated-data-analyst/blob/main/samples/ecommerce-orders.csv) | Returns as negative rows, so totals cope with mixed signs |
+
+All four are synthetic, so they carry no privacy or licensing baggage.
+
+## Run it locally in two commands
 
 ```bash
 git clone https://github.com/saineshnakra/automated-data-analyst.git
@@ -74,6 +111,10 @@ streamlit run app.py
 ```
 
 No API key required. The app opens with a built-in demo dataset.
+
+Python: tested on 3.11, 3.12 and 3.13 (the CI matrix); `requires-python` is
+`>=3.11`. To install the exact package versions CI tests against, add
+`-c constraints.txt` to the `pip install` line.
 
 ## Does my data leave my machine?
 
@@ -120,6 +161,8 @@ Read [CONTRIBUTING.md](https://github.com/saineshnakra/automated-data-analyst/bl
 or pick something from the [roadmap](https://github.com/saineshnakra/automated-data-analyst/blob/main/ROADMAP.md).
 
 Every new recommendation needs a test and the calculation that supports it.
+Pull requests are kept to about 100 lines of executable code so they can be
+reviewed properly — CONTRIBUTING explains how to split a larger change.
 
 ## Building on ADA?
 
@@ -134,13 +177,17 @@ the code.
 
 - *Yours could be here.*
 
+## Cite ADA
+
+If ADA helped with something you published, there is a `CITATION.cff` in the
+repository root — GitHub turns it into a **Cite this repository** button in the
+sidebar, which will give you BibTeX or APA.
+
 ## Star it
 
 You read the whole thing — [that is worth a star](https://github.com/saineshnakra/automated-data-analyst/stargazers).
 ADA has no ads, no launch budget and no growth team; it gets found because
-people who liked it clicked the button. If you are shipping something with it,
-[say so in an issue](https://github.com/saineshnakra/automated-data-analyst/issues/new)
-and it goes in the list above.
+people who liked it clicked the button.
 
 ## License
 

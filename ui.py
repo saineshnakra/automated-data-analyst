@@ -69,13 +69,13 @@ def render_landing() -> None:
         """
         <section class="hero">
           <div class="hero-copy">
-            <div class="eyebrow">Zero-config business intelligence</div>
-            <h1>Drop a file.<br><span class="grad">Get the business story.</span></h1>
-            <p>ADA turns CSV and Excel data into an executive dashboard, explains what changed, identifies the driver, and recommends the next move—without making you configure a BI tool.</p>
+            <div class="eyebrow">Exploratory analysis for any table</div>
+            <h1>Drop in the messy table.<br><span class="grad">Every number shows its math.</span></h1>
+            <p>Lab results, field measurements, survey exports, sales. ADA reads the columns, finds the structure, flags what looks odd, and shows the arithmetic behind every figure. No guessing which column is which, no groupby after groupby, no chart redone because the dates parsed as text.</p>
             <div class="proof-row">
-              <span class="proof-pill"><strong>01</strong> Automatic schema detection</span>
-              <span class="proof-pill"><strong>02</strong> Traceable calculations</span>
-              <span class="proof-pill"><strong>03</strong> Decision-ready actions</span>
+              <span class="proof-pill"><strong>01</strong> No model computes a number</span>
+              <span class="proof-pill"><strong>02</strong> No API key, no setup</span>
+              <span class="proof-pill"><strong>03</strong> It says when it cannot</span>
             </div>
           </div>
         </section>
@@ -88,9 +88,9 @@ def render_how_it_works() -> None:
     st.markdown(
         """
         <section class="how-grid">
-          <article class="how-card"><div class="how-number">01 · DROP</div><h3>Any business file</h3><p>Upload CSV or Excel. ADA cleans common issues and detects the metric, date, segment, and identifiers.</p></article>
-          <article class="how-card"><div class="how-number">02 · TRACE</div><h3>Facts before opinions</h3><p>Every trend, driver, concentration signal, and exception exposes its calculation.</p></article>
-          <article class="how-card"><div class="how-number">03 · DECIDE</div><h3>Actions, not chart clutter</h3><p>Interpretation stays separate from evidence, with the highest-value investigation first.</p></article>
+          <article class="how-card"><div class="how-number">01 · DROP</div><h3>Any table you have</h3><p>Upload CSV or Excel. ADA detects the date, the measure, the segment and the identifiers, cleans common problems, and reports what it changed.</p></article>
+          <article class="how-card"><div class="how-number">02 · TRACE</div><h3>Arithmetic, not assertion</h3><p>Trend, breakdown, anomaly flags, correlation with a confidence interval. Every finding shows the calculation that produced it. All local, no network call.</p></article>
+          <article class="how-card"><div class="how-number">03 · REFUSE</div><h3>It says when it cannot</h3><p>The forecast will not run on thin history. Ask ADA declines a question it cannot represent. Recommendations are labelled interpretation, never cause.</p></article>
         </section>
         """,
         unsafe_allow_html=True,
@@ -212,6 +212,23 @@ def render_ai_narrative(narrative: AINarrative, *, model: str) -> None:
     )
 
 
+GRAIN_NAMES = {"D": "Day", "W": "Week", "M": "Month", "Q": "Quarter", "Y": "Year"}
+
+
+def axis_names(roles: ColumnRoles, frequency: str | None = None) -> dict[str, str]:
+    """Display names for the private intermediate columns a chart is built on.
+
+    The frame calls them Period, Value and Segment so a user column of the same
+    name cannot collide with them. An axis labelled "Value" tells the reader
+    nothing, so the chart shows what they actually picked.
+    """
+    return {
+        "Value": roles.measure or "Records",
+        "Segment": roles.dimension or "Segment",
+        "Period": GRAIN_NAMES.get(frequency or "", "Period"),
+    }
+
+
 def style_chart(figure: go.Figure, *, height: int = 390) -> go.Figure:
     figure.update_layout(
         height=height,
@@ -241,6 +258,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 y="Value",
                 markers=True,
                 title=f"{roles.measure or 'Records'} over time",
+                labels=axis_names(roles, series.frequency),
                 color_discrete_sequence=[ACCENT],
             )
             figure.update_traces(line={"width": 3}, fillcolor="rgba(99,91,255,.11)")
@@ -303,6 +321,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 y="Segment",
                 orientation="h",
                 title=f"{roles.measure or 'Records'} by {roles.dimension}",
+                labels=axis_names(roles),
                 color_discrete_sequence=[LEAF],
             )
             figure.update_traces(marker_line_width=0, hovertemplate="%{y}: %{x:,.2f}<extra></extra>")
@@ -351,6 +370,17 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 title=f"{roles.measure or 'Records'} intensity by {roles.dimension} and period"
             )
             heatmap.update_yaxes(autorange="reversed")
+            # A two-year monthly matrix prints 24 labels on their side, and a
+            # categorical axis will not thin them on its own. Every nth label is
+            # shown instead; the hover still names every period.
+            labels = [format_period(period, series.frequency) for period in heat.columns]
+            step = max(1, round(len(labels) / 8))
+            heatmap.update_xaxes(
+                tickmode="array",
+                tickvals=labels[::step],
+                ticktext=labels[::step],
+                tickangle=0,
+            )
             st.plotly_chart(style_chart(heatmap), width="stretch", config={"displayModeBar": False})
         else:
             st.markdown(
@@ -367,8 +397,10 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 x=roles.measure,
                 nbins=35,
                 title=f"Distribution of {roles.measure}",
+                labels={"count": "Records"},
                 color_discrete_sequence=["#0E8F6E"],
             )
+            figure.update_yaxes(title_text="Records")
             st.plotly_chart(style_chart(figure), width="stretch", config={"displayModeBar": False})
     with lower_columns[1]:
         partner = next((column for column in numeric if column != roles.measure), None)
