@@ -69,13 +69,13 @@ def render_landing() -> None:
         """
         <section class="hero">
           <div class="hero-copy">
-            <div class="eyebrow">Zero-config business intelligence</div>
-            <h1>Drop a file.<br><span class="grad">Get the business story.</span></h1>
-            <p>ADA turns CSV and Excel data into an executive dashboard, explains what changed, identifies the driver, and recommends the next move—without making you configure a BI tool.</p>
+            <div class="eyebrow">Exploratory analysis for any table</div>
+            <h1>Drop in the messy table.<br><span class="grad">Every number shows its math.</span></h1>
+            <p>Lab results, field measurements, survey exports, sales. ADA reads the columns, finds the structure, flags what looks odd, and shows the arithmetic behind every figure. No guessing which column is which, no groupby after groupby, no chart redone because the dates parsed as text.</p>
             <div class="proof-row">
-              <span class="proof-pill"><strong>01</strong> Automatic schema detection</span>
-              <span class="proof-pill"><strong>02</strong> Traceable calculations</span>
-              <span class="proof-pill"><strong>03</strong> Decision-ready actions</span>
+              <span class="proof-pill"><strong>01</strong> No model computes a number</span>
+              <span class="proof-pill"><strong>02</strong> No API key, no setup</span>
+              <span class="proof-pill"><strong>03</strong> It says when it cannot</span>
             </div>
           </div>
         </section>
@@ -88,9 +88,9 @@ def render_how_it_works() -> None:
     st.markdown(
         """
         <section class="how-grid">
-          <article class="how-card"><div class="how-number">01 · DROP</div><h3>Any business file</h3><p>Upload CSV or Excel. ADA cleans common issues and detects the metric, date, segment, and identifiers.</p></article>
-          <article class="how-card"><div class="how-number">02 · TRACE</div><h3>Facts before opinions</h3><p>Every trend, driver, concentration signal, and exception exposes its calculation.</p></article>
-          <article class="how-card"><div class="how-number">03 · DECIDE</div><h3>Actions, not chart clutter</h3><p>Interpretation stays separate from evidence, with the highest-value investigation first.</p></article>
+          <article class="how-card"><div class="how-number">01 · DROP</div><h3>Any table you have</h3><p>Upload CSV or Excel. ADA detects the date, the measure, the segment and the identifiers, cleans common problems, and reports what it changed.</p></article>
+          <article class="how-card"><div class="how-number">02 · TRACE</div><h3>Arithmetic, not assertion</h3><p>Trend, breakdown, anomaly flags, correlation with a confidence interval. Every finding shows the calculation that produced it. All local, no network call.</p></article>
+          <article class="how-card"><div class="how-number">03 · REFUSE</div><h3>It says when it cannot</h3><p>The forecast will not run on thin history. Ask ADA declines a question it cannot represent. Recommendations are labelled interpretation, never cause.</p></article>
         </section>
         """,
         unsafe_allow_html=True,
