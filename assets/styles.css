@@ -145,17 +145,17 @@ input:focus-visible,
 .hero {
   position: relative;
   overflow: hidden;
-  padding: 4.6rem 0 2.1rem;
+  padding: 2.2rem 0 1rem;
 }
 
 .hero::after {
   content: "";
   position: absolute;
   z-index: 0;
-  width: 24rem;
-  height: 24rem;
-  right: -11rem;
-  top: -9rem;
+  width: 18rem;
+  height: 18rem;
+  right: -7.5rem;
+  top: -6rem;
   border: 1px solid rgba(99, 91, 255, .18);
   border-radius: 50%;
   box-shadow: 0 0 0 4rem rgba(99, 91, 255, .04), 0 0 0 8rem rgba(99, 91, 255, .028);
@@ -172,11 +172,11 @@ input:focus-visible,
 
 .hero h1 {
   max-width: 980px;
-  margin: .8rem 0 1.15rem;
+  margin: .5rem 0 .8rem;
   color: var(--ink);
   font-family: var(--display);
-  font-size: clamp(3.1rem, 7.2vw, 6rem);
-  line-height: .96;
+  font-size: clamp(2.4rem, 4.3vw, 3.65rem);
+  line-height: 1.04;
   letter-spacing: -.045em;
   font-weight: 700;
 }
@@ -194,14 +194,14 @@ input:focus-visible,
 .brief h1 [data-testid="stHeaderActionElements"] { display: none; }
 
 .hero p {
-  max-width: 760px;
+  max-width: 720px;
   margin: 0;
   color: #596171;
-  font-size: 1.16rem;
-  line-height: 1.68;
+  font-size: 1.02rem;
+  line-height: 1.6;
 }
 
-.proof-row { display: flex; flex-wrap: wrap; gap: .55rem; margin-top: 1.45rem; }
+.proof-row { display: flex; flex-wrap: wrap; gap: .55rem; margin-top: 1rem; }
 .proof-pill {
   display: inline-flex;
   gap: .42rem;
@@ -608,9 +608,9 @@ div[data-testid="stExpander"] { border: 1px solid var(--line); border-radius: .9
 
 @media (max-width: 580px) {
   .block-container { padding-left: 1rem; padding-right: 1rem; }
-  .hero { padding-top: 3rem; }
-  .hero h1 { font-size: 3.1rem; }
-  .hero p { font-size: 1rem; }
+  .hero { padding-top: 1.6rem; }
+  .hero h1 { font-size: 2.3rem; }
+  .hero p { font-size: .97rem; }
   .how-grid, .kpi-grid, .evidence-grid { grid-template-columns: 1fr; }
   .dataset-bar, .footer { align-items: flex-start; flex-direction: column; }
   .brief { padding: 1.45rem; }
