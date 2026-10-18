@@ -212,6 +212,23 @@ def render_ai_narrative(narrative: AINarrative, *, model: str) -> None:
     )
 
 
+GRAIN_NAMES = {"D": "Day", "W": "Week", "M": "Month", "Q": "Quarter", "Y": "Year"}
+
+
+def axis_names(roles: ColumnRoles, frequency: str | None = None) -> dict[str, str]:
+    """Display names for the private intermediate columns a chart is built on.
+
+    The frame calls them Period, Value and Segment so a user column of the same
+    name cannot collide with them. An axis labelled "Value" tells the reader
+    nothing, so the chart shows what they actually picked.
+    """
+    return {
+        "Value": roles.measure or "Records",
+        "Segment": roles.dimension or "Segment",
+        "Period": GRAIN_NAMES.get(frequency or "", "Period"),
+    }
+
+
 def style_chart(figure: go.Figure, *, height: int = 390) -> go.Figure:
     figure.update_layout(
         height=height,
@@ -241,6 +258,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 y="Value",
                 markers=True,
                 title=f"{roles.measure or 'Records'} over time",
+                labels=axis_names(roles, series.frequency),
                 color_discrete_sequence=[ACCENT],
             )
             figure.update_traces(line={"width": 3}, fillcolor="rgba(99,91,255,.11)")
@@ -303,6 +321,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 y="Segment",
                 orientation="h",
                 title=f"{roles.measure or 'Records'} by {roles.dimension}",
+                labels=axis_names(roles),
                 color_discrete_sequence=[LEAF],
             )
             figure.update_traces(marker_line_width=0, hovertemplate="%{y}: %{x:,.2f}<extra></extra>")
@@ -351,6 +370,17 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 title=f"{roles.measure or 'Records'} intensity by {roles.dimension} and period"
             )
             heatmap.update_yaxes(autorange="reversed")
+            # A two-year monthly matrix prints 24 labels on their side, and a
+            # categorical axis will not thin them on its own. Every nth label is
+            # shown instead; the hover still names every period.
+            labels = [format_period(period, series.frequency) for period in heat.columns]
+            step = max(1, round(len(labels) / 8))
+            heatmap.update_xaxes(
+                tickmode="array",
+                tickvals=labels[::step],
+                ticktext=labels[::step],
+                tickangle=0,
+            )
             st.plotly_chart(style_chart(heatmap), width="stretch", config={"displayModeBar": False})
         else:
             st.markdown(
@@ -367,8 +397,10 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 x=roles.measure,
                 nbins=35,
                 title=f"Distribution of {roles.measure}",
+                labels={"count": "Records"},
                 color_discrete_sequence=["#0E8F6E"],
             )
+            figure.update_yaxes(title_text="Records")
             st.plotly_chart(style_chart(figure), width="stretch", config={"displayModeBar": False})
     with lower_columns[1]:
         partner = next((column for column in numeric if column != roles.measure), None)
