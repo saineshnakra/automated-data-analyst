@@ -49,6 +49,9 @@ app = ["streamlit==1.59.2", "plotly>=5.24,<7"]
 ai = ["openai>=2.46,<3", "pydantic>=2.11,<3"]
 dev = ["ruff>=0.8,<1"]
 
+[project.scripts]
+ada = "ada.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/saineshnakra/automated-data-analyst"
 Demo = "https://automated-data-analyst.streamlit.app/"

@@ -78,6 +78,8 @@ trust with a number you have not checked.
 - **A gap is not a zero.** A period with no rows stays empty rather than
   dragging a rate down.
 
+![Six evidence cards, each showing the calculation that produced it, above the detected schema table](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/evidence-ledger.png)
+
 ## What ADA is not
 
 It is descriptive analysis of one tabular file. It is not a statistics package
@@ -85,6 +87,87 @@ and it has no domain knowledge. There is no hypothesis testing, no survival
 analysis, no study design, no multiple-comparison correction, nothing
 bioinformatic. If you need a p-value for a specific claim, ADA is the step
 before that, not the step instead of it.
+
+## Use it in your own code
+
+You have a DataFrame and you want the findings, not a browser. One call, one
+object, and everything else hangs off it.
+
+```python
+import ada
+
+report = ada.analyze("orders.csv")        # a DataFrame, a path, or raw bytes
+print(report.headline)
+# +12.2% latest movement, with 33.3% coming from the leading category.
+
+for item in report.evidence:
+    print(item.value, item.title)
+    print("   ", item.calculation)
+# +12.2% Latest revenue movement
+#     (Latest period − previous period) ÷ |previous period|, set against the
+#     spread of past period-over-period changes
+```
+
+No data of your own to hand? `ada.sample()` returns one of the four bundled
+files, including a cell-culture assay if you want something that is not sales
+data.
+
+### A refusal is an object, not a silence
+
+ADA declines rather than answering a question it cannot represent. In a browser
+that is a sentence on screen. In your code it is a value you can branch on:
+
+```python
+forecast = report.forecast()
+if not forecast:                      # a Refusal is falsy
+    print(forecast.code)              # 'thin_history'
+    print(forecast.needed, forecast.had)   # 'more periods'  '4 periods'
+else:
+    print(forecast.method, forecast.backtest.beats_no_change)
+```
+
+Every refusal carries a code from a documented set, so you never parse English
+to find out what happened. The same applies to `report.ask("total revenue")`,
+which returns either an answer with its calculation or a refusal saying which
+of the two reasons applied.
+
+### Track your own app's metrics
+
+Point it at your metrics table on a schedule. `ada check` is built for cron,
+and the exit code is the whole answer:
+
+```bash
+ada check metrics.csv --measure signups --frequency W
+```
+
+| exit | meaning |
+|---|---|
+| `0` | looked, nothing outside the expected band |
+| `1` | looked, something was flagged |
+| `3` | could not look — no timeline, or too little history |
+| `2` | the input could not be used at all |
+
+**`3` and `0` are different on purpose.** A job that cannot tell "quiet" from
+"blind" will report quiet for a week after its feed breaks. The same
+distinction holds in Python: `report.anomalies` returns an empty tuple when
+nothing left the band and a `Refusal` when ADA could not look, so test the type
+rather than the truth value.
+
+```python
+found = report.anomalies
+if isinstance(found, ada.Refusal):
+    page_me(f"ADA could not check: {found.message}")
+elif found:
+    for item in found:
+        page_me(f"{item.period:%Y-%m-%d} {item.direction} to {item.value:,.0f}")
+```
+
+Pass `frequency=` for anything scheduled. Left unset, ADA picks the grain from
+the recording cadence, which is right for exploring a file once and wrong for a
+job that runs every week.
+
+ADA holds no state between runs. Deduplicate with a key you own —
+`f"anomaly:{item.period:%Y-%m-%d}"` is stable and readable in a log.
 
 ## Try it on a sample dataset
 
@@ -99,7 +182,21 @@ Pick **Try a sample dataset** in the app, or download one from [`samples/`](http
 
 All four are synthetic, so they carry no privacy or licensing baggage.
 
-## Run it locally in two commands
+## Install it
+
+```bash
+pip install automated-data-analyst          # the engine: pandas, numpy, openpyxl
+pip install 'automated-data-analyst[app]'   # + the browser app
+```
+
+Then either open the app, or use it from your own code:
+
+```bash
+ada app                      # the browser app
+ada analyze orders.csv       # the same findings, in the terminal
+```
+
+## Run it from source
 
 ```bash
 git clone https://github.com/saineshnakra/automated-data-analyst.git
