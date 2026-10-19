@@ -7,15 +7,15 @@ import zipfile
 import numpy as np
 import pandas as pd
 
-import ui
-from aggregation import build_trend, measure_aggregation, segment_frame
-from analysis import clean_dataframe
-from autovis import recommend_chart
-from business_insights import analyze_business, increase_is_welcome
-from file_io import list_excel_sheets, read_tabular_file
-from nlq import answer_question, unsupported_phrasing
-from pipeline import prepare_analysis
-from schema import ColumnRoles, detect_roles
+from ada import ui
+from ada.aggregation import build_trend, measure_aggregation, segment_frame
+from ada.analysis import clean_dataframe
+from ada.autovis import recommend_chart
+from ada.business_insights import analyze_business, increase_is_welcome
+from ada.file_io import list_excel_sheets, read_tabular_file
+from ada.nlq import answer_question, unsupported_phrasing
+from ada.pipeline import prepare_analysis
+from ada.schema import ColumnRoles, detect_roles
 
 MONTHS = pd.date_range("2024-01-01", periods=12, freq="MS")
 
@@ -239,7 +239,7 @@ class IngestionTests(unittest.TestCase):
 
 class EvidenceBudgetTests(unittest.TestCase):
     def test_a_quality_card_is_never_squeezed_out_by_the_six_card_cap(self):
-        from business_insights import Evidence, _shown_evidence
+        from ada.business_insights import Evidence, _shown_evidence
 
         filler = [
             Evidence(kind=f"k{i}", title="t", value="v", statement="s", calculation="c") for i in range(7)

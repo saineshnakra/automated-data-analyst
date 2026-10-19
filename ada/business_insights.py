@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from aggregation import (
+from .aggregation import (
     build_trend,
     measure_aggregation,
     preferred_frequency,
@@ -15,8 +15,8 @@ from aggregation import (
     segment_period_change,
     trend_frame,
 )
-from anomalies import detect_anomalies
-from formatting import (
+from .anomalies import detect_anomalies
+from .formatting import (
     format_number,
     format_percentage,
     format_period,
@@ -24,9 +24,9 @@ from formatting import (
     normalized_name,
     percentage_outranks_currency,
 )
-from metrics import resolve_metric
-from schema import TIME_PART_TOKENS, ColumnRoles, detect_roles, looks_like_identifier
-from timeseries import robust_scale
+from .metrics import resolve_metric
+from .schema import TIME_PART_TOKENS, ColumnRoles, detect_roles, looks_like_identifier
+from .timeseries import robust_scale
 
 
 @dataclass(frozen=True)
@@ -828,9 +828,18 @@ def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) 
     growth_text = growth.statement if growth else None
     leader = next((item for item in evidence if item.kind == "leader"), None)
     if growth and leader:
+        # "coming from" is share language. After the non-additive fix the leader
+        # card reports a rate's highest level rather than a share, and the level
+        # does not come from anywhere -- it is simply the highest.
+        quotes_a_share = "÷ total" in leader.calculation
         headline = (
             f"{growth.value} latest movement, with {leader.value} coming from the leading "
             f"{roles.dimension.lower()}."
+            if quotes_a_share
+            else (
+                f"{growth.value} latest movement, and the highest "
+                f"{roles.dimension.lower()} at {leader.value}."
+            )
         )
     elif growth:
         # Cut at a sentence end, not at the decimal point inside "18.5%".

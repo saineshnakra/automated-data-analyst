@@ -28,7 +28,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from timeseries import fit_trendline, observed_periods, robust_scale
+from .timeseries import fit_trendline, observed_periods, robust_scale
 
 MIN_PERIODS = 8
 FALSE_ALARM_RATE = 0.05

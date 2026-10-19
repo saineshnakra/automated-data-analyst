@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from forecasting import Backtest, build_forecast, describe_backtest
+from ada.forecasting import Backtest, build_forecast, describe_backtest
 
 
 def make_trend(values, freq="MS", start="2024-01-01"):

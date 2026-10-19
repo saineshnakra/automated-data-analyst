@@ -4,8 +4,8 @@ import unittest
 
 import pandas as pd
 
-from business_insights import analyze_business
-from pipeline import prepare_analysis
+from ada.business_insights import analyze_business
+from ada.pipeline import prepare_analysis
 
 
 def brief_for(measure: str):

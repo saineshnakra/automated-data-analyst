@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from formatting import is_percentage, normalized_name, percentage_outranks_currency
+from .formatting import is_percentage, normalized_name, percentage_outranks_currency
 
 # A measure where going up is bad. Whole-word: "Cost" and "Refund Amount"
 # count, "Cost Savings" does not.

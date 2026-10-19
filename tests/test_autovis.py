@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from autovis import MAX_SERIES, ChartSpec, fold_small_series, recommend_chart
+from ada.autovis import MAX_SERIES, ChartSpec, fold_small_series, recommend_chart
 
 
 def frame(rows: int = 120) -> pd.DataFrame:

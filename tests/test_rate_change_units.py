@@ -20,7 +20,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from formatting import format_rate_change, rate_scale
+from ada.formatting import format_rate_change, rate_scale
 
 
 class RateScaleTests(unittest.TestCase):

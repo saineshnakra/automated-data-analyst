@@ -9,7 +9,7 @@ from zipfile import BadZipFile
 import pandas as pd
 from pandas.io.parsers.readers import STR_NA_VALUES
 
-from formatting import normalized_name
+from .formatting import normalized_name
 
 SUPPORTED_SUFFIXES = {".csv", ".xlsx", ".xlsm"}
 SAMPLES_DIRECTORY = Path(__file__).parent / "samples"

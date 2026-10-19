@@ -15,9 +15,9 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from formatting import format_period
-from metrics import resolve_metric
-from schema import ColumnRoles
+from .formatting import format_period
+from .metrics import resolve_metric
+from .schema import ColumnRoles
 
 GRAIN_ORDER = ("W", "M", "Q", "Y")
 

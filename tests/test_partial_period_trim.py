@@ -17,7 +17,7 @@ import unittest
 
 import pandas as pd
 
-from pipeline import prepare_analysis
+from ada.pipeline import prepare_analysis
 
 
 def dated(pairs):

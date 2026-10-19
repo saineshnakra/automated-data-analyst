@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from timeseries import (
+from ada.timeseries import (
     MAD_SCALE,
     MEAN_ABS_DEV_SCALE,
     fit_trendline,

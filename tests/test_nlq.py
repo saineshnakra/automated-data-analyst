@@ -3,10 +3,10 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from demo_data import make_demo_data
-from nlq import QueryPlan, answer_question, execute_plan, parse_question, suggested_questions
-from pipeline import prepare_analysis
-from schema import ColumnRoles, detect_roles
+from ada.demo_data import make_demo_data
+from ada.nlq import QueryPlan, answer_question, execute_plan, parse_question, suggested_questions
+from ada.pipeline import prepare_analysis
+from ada.schema import ColumnRoles, detect_roles
 
 
 class NLQParsingTests(unittest.TestCase):
@@ -162,7 +162,7 @@ class NLQParsingTests(unittest.TestCase):
 
     def test_every_ascending_word_is_also_a_superlative(self):
         """A word in only one list would rank from the wrong end."""
-        from nlq import ASCENDING_WORDS, SUPERLATIVE_WORDS
+        from ada.nlq import ASCENDING_WORDS, SUPERLATIVE_WORDS
 
         self.assertTrue(set(ASCENDING_WORDS).issubset(SUPERLATIVE_WORDS))
 

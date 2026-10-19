@@ -5,7 +5,7 @@ from io import BytesIO
 
 import pandas as pd
 
-from file_io import list_excel_sheets, list_sample_datasets, read_tabular_file, safe_csv
+from ada.file_io import list_excel_sheets, list_sample_datasets, read_tabular_file, safe_csv
 
 
 class FileParsingTests(unittest.TestCase):

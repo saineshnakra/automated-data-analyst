@@ -1,10 +1,67 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "automated-data-analyst"
-version = "0.1.0"
-description = "ADA: an AI data analyst for spreadsheets, where every number shows its calculation."
+version = "0.2.0"
+description = "Exploratory analysis for any CSV or Excel table, with the arithmetic under every number."
 requires-python = ">=3.11"
 readme = "README.md"
 license = { file = "LICENSE" }
+authors = [{ name = "Sainesh Nakra" }]
+keywords = [
+    "exploratory-data-analysis",
+    "eda",
+    "data-profiling",
+    "csv",
+    "excel",
+    "pandas",
+    "anomaly-detection",
+    "forecasting",
+    "tabular-data",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Office/Business :: Financial :: Spreadsheet",
+]
+
+# The engine is pandas and numpy. openpyxl is here rather than in an extra
+# because reading .xlsx is what half the callers arrive wanting.
+dependencies = [
+    "pandas>=2.2,<3",
+    "numpy>=1.26,<3",
+    "openpyxl>=3.1,<4",
+]
+
+[project.optional-dependencies]
+# Only ada.ui imports streamlit and plotly, so a library caller never pays for them.
+app = ["streamlit==1.59.2", "plotly>=5.24,<7"]
+# Only ada.ai_insights imports pydantic. The AI layer is optional by design:
+# it proposes a calculation and never computes a number.
+ai = ["openai>=2.46,<3", "pydantic>=2.11,<3"]
+dev = ["ruff>=0.8,<1"]
+
+[project.urls]
+Homepage = "https://github.com/saineshnakra/automated-data-analyst"
+Demo = "https://automated-data-analyst.streamlit.app/"
+Source = "https://github.com/saineshnakra/automated-data-analyst"
+Issues = "https://github.com/saineshnakra/automated-data-analyst/issues"
+
+[tool.setuptools]
+packages = ["ada"]
+
+[tool.setuptools.package-data]
+# The stylesheet and the sample files ship with the wheel; both are read from
+# inside the package at runtime, so a pip install has to carry them.
+ada = ["assets/*.css", "samples/*.csv", "samples/*.md"]
 
 [tool.ruff]
 line-length = 110
@@ -15,4 +72,4 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.lint.per-file-ignores]
 "app.py" = ["E501"]
-"ui.py" = ["E501"]
+"ada/ui.py" = ["E501"]

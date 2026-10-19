@@ -12,17 +12,17 @@ import plotly.graph_objects as go
 import streamlit as st
 from pandas.api.types import is_datetime64_any_dtype
 
-from aggregation import build_trend, driver_frame, heatmap_frame, segment_frame
-from anomalies import detect_anomalies
-from autovis import fold_small_series, recommend_chart
-from business_insights import BusinessBrief
-from forecasting import build_forecast, describe_backtest
-from formatting import format_number, format_period
-from nlq import QueryAnswer
-from schema import ColumnRoles
+from .aggregation import build_trend, driver_frame, heatmap_frame, segment_frame
+from .anomalies import detect_anomalies
+from .autovis import fold_small_series, recommend_chart
+from .business_insights import BusinessBrief
+from .forecasting import build_forecast, describe_backtest
+from .formatting import format_number, format_period
+from .nlq import QueryAnswer
+from .schema import ColumnRoles
 
 if TYPE_CHECKING:  # The AI layer is optional; ui must import without it.
-    from ai_insights import AINarrative
+    from .ai_insights import AINarrative
 
 ACCENT = "#635BFF"
 LIME = "#C7F36B"  # Brand accent for surfaces and text. Too light to be a data mark.
