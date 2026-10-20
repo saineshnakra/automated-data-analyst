@@ -25,6 +25,9 @@ so one contributor can take it from start to finish.
 - Worksheet selection for multi-sheet workbooks
 - Explore tab: chart form chosen from the selected columns, with the reason
   printed (see [docs/reference/autovis.md](docs/reference/autovis.md))
+- Select points on the Explore chart and analyze that slice against the whole
+  ([#30](https://github.com/saineshnakra/automated-data-analyst/issues/30), see
+  [docs/reference/selection.md](docs/reference/selection.md))
 - Currency and percentage formatting from column names
   ([#7](https://github.com/saineshnakra/automated-data-analyst/issues/7))
 - Accounting-style negatives and locale-formatted numbers
@@ -101,7 +104,6 @@ say. Either one ships with an updated README and
 - [Manual pivot builder](https://github.com/saineshnakra/automated-data-analyst/issues/27): shelves for x, y, colour and filter, starting from the recommended chart
 - [Search column pairs for findings](https://github.com/saineshnakra/automated-data-analyst/issues/28), with a correction for the number of candidates examined
 - [Suggest cleaning steps](https://github.com/saineshnakra/automated-data-analyst/issues/29): preview a transform and apply it only on confirmation
-- [Select points and analyze the slice](https://github.com/saineshnakra/automated-data-analyst/issues/30)
 
 ## Longer horizon
 

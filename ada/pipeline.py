@@ -8,8 +8,9 @@ import pandas as pd
 
 from .aggregation import preferred_frequency
 from .analysis import CleaningReport, clean_dataframe
-from .business_insights import BusinessBrief, analyze_business
+from .business_insights import BusinessBrief, Evidence, analyze_business
 from .schema import ColumnRoles, detect_roles
+from .selection import Selection, SliceComparison, compare_slice
 
 
 @dataclass(frozen=True)
@@ -131,6 +132,40 @@ def apply_focus(
         dimensions=roles.dimensions,
     )
     return filtered.reset_index(drop=True), focused_roles
+
+
+@dataclass(frozen=True)
+class SelectionAnalysis:
+    dataframe: pd.DataFrame
+    comparison: SliceComparison
+    # Each piece of evidence about the slice, beside the same kind of evidence
+    # for the whole view (None when the whole view's brief has none of it).
+    evidence: tuple[tuple[Evidence, Evidence | None], ...] = ()
+
+
+def analyze_selection(
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles,
+    selection: Selection,
+    whole_brief: BusinessBrief | None = None,
+) -> SelectionAnalysis:
+    """Analyze a slice the reader picked on a chart, set against the view it came from.
+
+    The slice goes through the same ``analyze_business`` as the whole view, and
+    each finding is paired with the matching one for the whole, so no slice
+    figure is ever shown alone. A slice too small for statistics, or one that
+    is the whole view, is not analyzed rather than reported on thin evidence.
+    """
+    part, comparison = compare_slice(dataframe, selection, roles)
+    if not comparison.supports_statistics:
+        return SelectionAnalysis(dataframe=part, comparison=comparison)
+    sliced = analyze_business(part, roles)
+    whole = whole_brief or analyze_business(dataframe, roles)
+    by_kind: dict[str, Evidence] = {}
+    for item in whole.evidence:
+        by_kind.setdefault(item.kind, item)
+    pairs = tuple((item, by_kind.get(item.kind)) for item in sliced.evidence)
+    return SelectionAnalysis(dataframe=part, comparison=comparison, evidence=pairs)
 
 
 def cleaning_audit_frame(report: CleaningReport) -> pd.DataFrame:

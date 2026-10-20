@@ -53,6 +53,7 @@ python -m unittest discover -s tests -p "test_nlq.py" -v
 | `test_ai_insights.py` | Typed output, plan validation and the privacy contract |
 | `test_autovis.py` | Chart-form choice, series folding, the Explore frame |
 | `test_public_api.py` | The `ada` package API and the `ada` command |
+| `test_selection.py` | Chart selections as filters, their wording, and the slice-versus-whole comparison |
 | `test_app.py` | Rendering smoke tests, and that the app survives without the AI layer |
 
 Tests use fake clients for anything model-related, so the suite needs no network

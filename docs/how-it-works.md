@@ -113,8 +113,10 @@ Evidence kinds: `trend`, `driver`, `leader`, `concentration`, `anomaly`,
 ## 10. Draw it
 
 `ada/ui.py` renders components and styles the Plotly charts. `app.py` builds
-the Streamlit page and holds session state. Neither calculates anything; see
-[Architecture](architecture.md).
+the Streamlit page and holds session state. `ada/pipeline.py` sits between
+them: it bundles steps 1 to 3 into one call and handles drill-down and slices
+selected on the Explore chart. Neither `ada/ui.py` nor `app.py` calculates
+anything; see [Architecture](architecture.md).
 
 ---
 

@@ -32,6 +32,7 @@ follows and its edge cases.
 | [Ask ADA](reference/ask-ada.md) | `ada/nlq.py` | How a question becomes a pandas calculation |
 | [Formatting](reference/formatting.md) | `ada/formatting.py` | How numbers and dates are displayed |
 | [Choosing the chart](reference/autovis.md) | `ada/autovis.py` | How Explore picks a chart form, and the colour rules |
+| [Selecting a slice](reference/selection.md) | `ada/selection.py` | How a selection on the Explore chart becomes a filter, and how the slice is compared with the whole |
 | [The optional AI layer](reference/ai-layer.md) | `ada/ai_insights.py` | What the model receives and how its output is checked |
 
 ## Working on ADA

@@ -20,7 +20,9 @@ from .forecasting import build_forecast, describe_backtest
 from .formatting import format_number, format_period
 from .metrics import resolve_metric
 from .nlq import QueryAnswer
+from .pipeline import analyze_selection
 from .schema import ColumnRoles, is_design_name
+from .selection import comparison_frame, selection_from_event, selection_modes
 
 if TYPE_CHECKING:  # The AI layer is optional; ui must import without it.
     from .ai_insights import AINarrative
@@ -613,7 +615,7 @@ def _explore_figure(frame: pd.DataFrame, spec) -> go.Figure | None:
     return style_chart(figure, height=380)
 
 
-def render_explore(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
+def render_explore(dataframe: pd.DataFrame, roles: ColumnRoles, brief: BusinessBrief | None = None) -> None:
     """Let the user pick columns, then draw the recommended chart and its rationale."""
     render_section_heading(
         "Explore",
@@ -644,6 +646,7 @@ def render_explore(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
         return
 
     frame = _explore_frame(dataframe, spec)
+    event = None
     if spec.form == "stat":
         present = dataframe[spec.y].dropna() if spec.y else pd.Series(dtype="float64")
         if present.empty:
@@ -659,7 +662,7 @@ def render_explore(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
     else:
         figure = _explore_figure(frame, spec)
         if figure is not None:
-            st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
+            event = _selectable_chart(figure, spec, chosen)
 
     st.markdown(
         f'<p class="calculation">WHY THIS CHART · {escape(spec.rationale)}</p>',
@@ -667,6 +670,114 @@ def render_explore(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
     )
     for note in spec.notes:
         st.caption(note)
+    if event:
+        render_selection(dataframe, roles, selection_from_event(event, spec, dataframe), chosen, brief)
+
+
+SELECTION_HINTS = {
+    "scatter": "Drag a box around points to analyze just those records, or switch to the lasso in the chart's toolbar.",
+    "line": "Drag across the time axis to analyze just that stretch of time.",
+    "area": "Drag across the time axis to analyze just that stretch of time.",
+    "column": "Click a bar to analyze just those records. Shift-click to add more bars.",
+    "bar": "Click a bar to analyze just those records. Shift-click to add more bars.",
+    "histogram": "Drag across the axis to analyze just the records in that range.",
+}
+
+
+def _selection_key(chosen: list[str]) -> str:
+    # The key changes when the columns change, and when the reader clears the
+    # selection, so the chart remounts with nothing selected either way.
+    generation = int(st.session_state.get("explore_selection_generation", 0))
+    return f"explore_chart_{generation}_{'|'.join(chosen)}"
+
+
+def _selectable_chart(figure: go.Figure, spec, chosen: list[str]):
+    """Draw the chart, and return its selection event when its form supports one."""
+    modes = selection_modes(spec)
+    if not modes:
+        st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
+        return None
+    if "box" in modes:
+        # Clicks are left to Streamlit's own defaults; a drawn area needs its
+        # tool active from the start, since the toolbar is usually hidden.
+        figure.update_layout(dragmode="select")
+    if spec.form in ("line", "area", "histogram"):
+        figure.update_layout(selectdirection="h")
+    config = {
+        # The mode bar is only how a reader switches between box and lasso, so
+        # it is shown when there is a choice to make and nothing else is on it.
+        "displayModeBar": "lasso" in modes,
+        "displaylogo": False,
+        "modeBarButtonsToRemove": [
+            "zoom2d", "pan2d", "zoomIn2d", "zoomOut2d", "autoScale2d", "resetScale2d", "toImage",
+        ],
+    }
+    st.caption(SELECTION_HINTS.get(spec.form, ""))
+    state = st.plotly_chart(
+        figure,
+        width="stretch",
+        config=config,
+        key=_selection_key(chosen),
+        on_select="rerun",
+        selection_mode=modes,
+    )
+    return state.get("selection") if state else None
+
+
+def render_selection(
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles,
+    selection,
+    chosen: list[str],
+    brief: BusinessBrief | None = None,
+) -> None:
+    """The slice the reader picked, analyzed, and always set against the whole view."""
+    if selection.is_empty:
+        return
+    result = analyze_selection(dataframe, roles, selection, whole_brief=brief)
+    comparison = result.comparison
+    adjustment = (
+        f'<p class="selection-adjustment">{escape(selection.adjustment)}</p>' if selection.adjustment else ""
+    )
+    st.markdown(
+        f'''<section class="selection-panel"><div class="section-label">The slice you picked</div>
+        <p class="selection-description">{escape(comparison.description)}</p>{adjustment}
+        <p class="calculation">This is a filter you chose on the chart, not a grouping ADA found. Every figure below sits beside the same figure for the whole view.</p></section>''',
+        unsafe_allow_html=True,
+    )
+    if st.button("Clear selection", key=f"clear_{_selection_key(chosen)}"):
+        st.session_state.explore_selection_generation = (
+            int(st.session_state.get("explore_selection_generation", 0)) + 1
+        )
+        st.rerun()
+
+    st.dataframe(comparison_frame(comparison), hide_index=True, width="stretch")
+    for note in comparison.notes:
+        if note != selection.adjustment:  # already stated beside the description
+            st.caption(note)
+    if result.evidence:
+        st.markdown(
+            '<div class="section-label" style="margin-top:1rem">Evidence within your slice, beside the whole view</div>',
+            unsafe_allow_html=True,
+        )
+        render_evidence_pairs(result.evidence)
+
+
+def render_evidence_pairs(pairs) -> None:
+    """Slice evidence cards, each carrying the same check's result for the whole view."""
+    cards = []
+    for item, whole in pairs[:4]:
+        if whole is not None:
+            beside = f"WHOLE VIEW · {escape(whole.value)} · {escape(whole.statement)}"
+        else:
+            beside = "WHOLE VIEW · not among the evidence for the whole view"
+        cards.append(
+            f'<article class="evidence {escape(item.tone)}"><div class="evidence-value">{escape(item.value)}</div>'
+            f'<h3>{escape(item.title)}</h3><p>{escape(item.statement)}</p>'
+            f'<p class="calculation">{beside}</p>'
+            f'<p class="calculation">CALC · {escape(item.calculation)}</p></article>'
+        )
+    st.markdown(f'<section class="evidence-grid">{"".join(cards)}</section>', unsafe_allow_html=True)
 
 
 def render_chat_rejected() -> None:
