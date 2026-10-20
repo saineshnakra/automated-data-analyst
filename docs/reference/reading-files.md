@@ -40,11 +40,16 @@ rows left out.
    selects `utf-8-sig`. Otherwise `utf-8-sig`, `utf-8` and `latin-1` are tried
    in turn. `utf-8-sig` comes first so that a byte-order mark does not end up
    in the first column name.
-2. Parse with the comma separator.
-3. If that gives exactly one column and the header line contains `;`, a tab or
-   `|`, re-parse with that separator. Only the header line is checked, so a
-   one-column file of sentences is not split on their semicolons.
-4. If there is still one column, and the first line has no comma while the
+2. Settle the separator and the header line on the opening lines of the file
+   (the first 256 KB, `SNIFF_BYTES`, cut at a line end), then parse the whole
+   file once with what they showed. A large file is never parsed once per
+   separator tried. If the opening lines end inside a quoted field that spans
+   lines, the whole file is used to decide instead.
+3. Parse the opening lines with the comma separator.
+4. If that gives exactly one column and the header line contains `;`, a tab or
+   `|`, use that separator. Only the header line is checked, so a one-column
+   file of sentences is not split on their semicolons.
+5. If there is still one column, and the first line has no comma while the
    second and third lines have the same number of commas, treat the first line
    as a report title and use the second as the header.
 
