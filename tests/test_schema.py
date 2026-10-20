@@ -419,6 +419,18 @@ class LongTableTests(unittest.TestCase):
 
         self.assertEqual(roles.focus, "Ammonia")
 
+    def test_a_parameter_never_named_beside_a_value_is_no_long_table(self):
+        # Parameters and values on different rows, as when a file stacks two tables.
+        frame = self.frame.copy()
+        stacked = frame.index % 2 == 0
+        frame.loc[stacked, "result"] = None
+        frame.loc[~stacked, ["determinand.label", "determinand.unit.label"]] = None
+
+        roles = detect_roles(frame)
+
+        self.assertEqual(roles.table_shape, "flat")
+        self.assertIsNone(roles.focus)
+
     def test_an_ab_test_group_is_not_a_parameter(self):
         frame = pd.DataFrame({"Test Group": ["A", "B"] * 30, "Revenue": readings(60, centre=100)})
 

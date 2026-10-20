@@ -740,10 +740,15 @@ def _long_layout(
 
 def _long_focus(
     dataframe: pd.DataFrame, parameter: str, units: str | None, measure: str
-) -> tuple[str, str]:
-    """Pick the parameter the brief covers, the most common, and describe the choice."""
+) -> tuple[str, str] | None:
+    """Pick the parameter the brief covers, the most common, and describe the choice.
+
+    None when no row has both a parameter and a value, so there is nothing to pick.
+    """
     measured = dataframe[dataframe[measure].notna()]
     counts = measured[parameter].value_counts()
+    if counts.empty:
+        return None
     choices = counts
     if units and units != parameter:
         # A parameter recorded in two units would still mix them.
@@ -1010,12 +1015,13 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
     table_shape = "flat"
     focus = None
     parameter, units = _long_layout(dataframe, measure, text_columns)
-    if parameter and measure:
+    chosen = _long_focus(dataframe, parameter, units, measure) if parameter and measure else None
+    if chosen:
         table_shape = "long"
         dimension = parameter
         if parameter not in dimensions:
             dimensions.append(parameter)
-        focus, note = _long_focus(dataframe, parameter, units, measure)
+        focus, note = chosen
         notes.append(note)
     elif matrix:
         table_shape = "matrix"
