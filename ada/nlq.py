@@ -1,10 +1,8 @@
 """Deterministic natural-language queries over the analyzed dataset.
 
-Every question becomes an explicit, auditable ``QueryPlan``. The plan is
-executed locally with pandas and returns the answer together with the exact
-calculation that produced it. No network call or model is required; an
-optional AI planner may emit the same ``QueryPlan`` shape for questions the
-rules cannot parse, and it goes through the same local executor.
+Each question becomes an explicit ``QueryPlan`` that pandas executes locally,
+returning the answer with the calculation behind it. An optional AI planner may
+emit the same plan shape for questions the rules cannot parse.
 """
 
 from __future__ import annotations
@@ -53,16 +51,11 @@ AGGREGATION_LABELS: dict[Aggregation, str] = {
     "count": "Count of",
 }
 
-# Words asking for the bottom of a ranking. Every one of them is also a
-# superlative, so the two tuples are composed rather than typed out twice --
-# a word listed in only one of them reads as a request for the opposite end.
+# Words asking for the bottom of a ranking. Each is also a superlative, so
+# SUPERLATIVE_WORDS includes this tuple rather than repeating it.
 ASCENDING_WORDS = ("worst", "bottom", "lowest", "smallest", "least", "fewest")
 SUPERLATIVE_WORDS = (
-    # "most" belongs here beside "least", which lives in ASCENDING_WORDS. While
-    # it was in neither, "which region made the most revenue" fell through to
-    # the plain aggregate branch and answered the grand total with the named
-    # dimension silently dropped -- the exact shape of answer this parser
-    # exists to refuse -- while "least" ranked correctly.
+    # "most" ranks from the top, like "highest"; "least" is in ASCENDING_WORDS.
     "best", "top", "leading", "highest", "largest", "biggest", "most",
     *ASCENDING_WORDS,
 )
@@ -178,15 +171,11 @@ def _mentioned(normalized_name: str, question: str) -> bool:
 
 
 def _without_columns(question: str, columns: tuple[str | None, ...]) -> str:
-    """The question with the column names it matched blanked out.
+    """Return the question with the matched column names blanked out.
 
-    A column carries ordinary English in its name, and every intent word below
-    is read off the raw question. "Cell Count" put "count" into every question
-    about it, so "total cell count" was answered with a row count; "Total
-    Sales" put "total" in front of an explicit "average" and won, because the
-    aggregation scan takes the first word it finds; "Revenue Growth" and
-    "Change Score" turned a total into a period-over-period move. Removing the
-    names first means only the words the reader chose decide the question.
+    Column names contain words the intent scan would otherwise read: "Cell
+    Count" would make "total cell count" a row count, and "Total Sales" would
+    outrank an explicit "average".
     """
     blanked = question
     for column in columns:
@@ -312,11 +301,10 @@ def _unrecognized_query_tokens(
     return {token for token in question.split() if token.isalpha() and token not in allowed}
 
 
-# Phrasings the grammar cannot represent. Answering them with the nearest
-# supported question -- "revenue > 200" as the total of everything, "January
-# and February" as January -- is a precise answer to a question nobody asked.
-# Refusing hands them to the optional planner, or to the suggestion chips.
-# Comparison operators are checked on the raw text, because _norm strips them.
+# Phrasings a plan cannot represent, such as "revenue > 200" or "last 30 days".
+# They are refused rather than approximated, leaving them to the optional
+# planner or the suggestion chips. Operators are matched on the raw text
+# because _norm strips them.
 UNSUPPORTED_OPERATORS = re.compile(r"[<>=\u2265\u2264\u2260]")
 UNSUPPORTED_PHRASES = re.compile(
     r"\b(?:"
@@ -324,11 +312,8 @@ UNSUPPORTED_PHRASES = re.compile(
     r"above \d+|below \d+|over \d+|under \d+|between \d+|exceeds?|exceeding|"
     r"this (?:year|month|quarter|week)|last (?:year|month|quarter|week|\d+ (?:days|weeks|months|years))|"
     r"next (?:year|month|quarter|week)|previous (?:year|month|quarter|week)|"
-    # "last december" named one December and was answered with every
-    # December in the file summed together, under a sentence that said
-    # only "in December". "next december" answered a future period from
-    # past rows. The plan holds a month or a year, not a month relative
-    # to now, so the question is refused instead of quietly rewritten.
+    # A plan holds a calendar month, not one relative to today, so "last
+    # december" is refused rather than read as every December in the file.
     rf"(?:last|next|previous|this) (?:{'|'.join(MONTH_NAMES)})|"
     r"year to date|ytd|today|yesterday|past \d+|"
     r"or"
@@ -337,7 +322,7 @@ UNSUPPORTED_PHRASES = re.compile(
 
 
 def _asks_for_several_periods(q: str) -> bool:
-    """Two months or two years in one question is a set the plan cannot hold."""
+    """Whether the question names two or more months or years, which a plan cannot hold."""
     months = {MONTH_NAMES[name] for name in MONTH_NAMES if re.search(rf"\b{name}\b", q)}
     years = set(re.findall(r"\b(?:19|20)\d{2}\b", q))
     return len(months) >= 2 or len(years) >= 2
@@ -367,15 +352,13 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
         return None
     year, month = _detect_time_filter(q)
     grain = _detect_grain(q)
-    # For a grouped answer the matched dimension is the thing being grouped,
-    # so its values are not read as filters. For a plain total they are:
-    # "revenue for Region West" is a filter, and naming the column must not
-    # steal the value from it -- that answered with the all-region total.
+    # A grouped answer groups by the matched dimension, so its values are not
+    # filters. Ungrouped answers keep them: "revenue for Region West" filters
+    # to West even though "Region" also matched as the dimension.
     filters = _detect_value_filters(q, dataframe, roles, exclude=(dimension,))
     filters_including_dimension = _detect_value_filters(q, dataframe, roles)
 
-    # Intent is read from what is left once the matched column names are
-    # removed, so a column cannot ask a different question from its reader.
+    # Read intent words with the matched column names removed (see _without_columns).
     intent_text = _without_columns(q, (measure, dimension))
     aggregation: Aggregation | None = next(
         (
@@ -387,11 +370,10 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
     )
     top_match = re.search(r"\b(top|bottom)\s+(\d{1,3})\b", q)
     if top_match and int(top_match.group(2)) < 1:
-        # "top 0" is not a ranking; it was showing the fallback twelve.
+        # "top 0" is refused; a zero limit would fall back to BREAKDOWN_LIMIT rows.
         return None
-    # "highest" and "largest" rank; only the literal words ask for an extreme
-    # per group. Both live in AGGREGATION_WORDS as max, so they are told apart
-    # here rather than by silently downgrading every min/max to a sum.
+    # "highest" and "largest" map to max but ask for a ranking; only the
+    # literal min/max words ask for a per-group extreme.
     explicit_extreme = bool(re.search(r"\b(min|minimum|max|maximum)\b", intent_text))
     superlative = any(re.search(rf"\b{word}\b", intent_text) for word in SUPERLATIVE_WORDS)
     wants_breakdown = bool(re.search(r"\b(by|per|across|breakdown|split|each)\b", intent_text))
@@ -408,8 +390,8 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
     }
 
     ungrouped = {**base, "filters": filters_including_dimension}
-    # Chat combines a measure the way the dashboard does: rates average,
-    # amounts add. Saying "total" or "sum" out loud still gets a sum.
+    # Same default as the dashboard: rates average, amounts sum. An explicit
+    # "total" or "sum" still sums.
     default_aggregation = measure_aggregation(base["measure"])
 
     if wants_count and not wants_growth:
@@ -445,10 +427,9 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
 
     if wants_trend and roles.date:
         if aggregation not in (None, default_aggregation):
-            # The trend executor combines each period the way the measure
-            # combines. "Average revenue monthly" would be answered with sums,
-            # so it is not answered here; "average conversion rate monthly"
-            # is exactly what the executor does, so it is.
+            # The trend executor always uses the measure's default aggregation,
+            # so "average revenue monthly" is refused (it would get sums) while
+            # "average conversion rate monthly" is answered.
             return None
         return QueryPlan(intent="trend", aggregation=default_aggregation, **ungrouped)
 
@@ -469,7 +450,7 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
 def _grouped_aggregation(
     aggregation: Aggregation | None, explicit_extreme: bool, default: Aggregation
 ) -> Aggregation:
-    """What a rank or breakdown computes per group."""
+    """Choose the aggregation a rank or breakdown computes per group."""
     if aggregation in ("mean", "median"):
         return aggregation
     if aggregation in ("min", "max") and explicit_extreme:
@@ -478,12 +459,10 @@ def _grouped_aggregation(
 
 
 class TimeScopeUnavailable(Exception):
-    """A year or month was asked for in a file that has no date column."""
+    """Raised when a plan asks for a year or month but the file has no date column."""
 
 
-# Full names by number. Deriving these by searching MONTH_NAMES backwards used
-# to drop May, whose only spelling is three letters long, leaving the scope
-# label empty in the answer sentence.
+# Full month names by number, for answer sentences.
 MONTH_LABELS = {
     1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June",
     7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December",
@@ -509,9 +488,7 @@ def _apply_filters(
         applied.append(f"{value_filter.column} in ({', '.join(value_filter.values)})")
     if plan.year or plan.month:
         if not roles.date or roles.date not in working.columns:
-            # Returning the all-time figure under a sentence that names a year
-            # is the worst available answer, so the scope is reported as
-            # impossible instead of dropped.
+            # Report the scope as unavailable rather than answer with the all-time figure.
             raise TimeScopeUnavailable(_when_label(plan))
         dates = working[roles.date]
         if plan.year:
@@ -535,9 +512,7 @@ def _grouped_frame(
     dataframe: pd.DataFrame, plan: QueryPlan, value_label: str
 ) -> pd.DataFrame:
     assert plan.dimension is not None
-    # Rows with no label are a group, not a rounding error. Dropping them and
-    # then taking percentages against what is left reports a share of a total
-    # the reader never saw.
+    # Keep unlabelled rows as their own group so shares add up to the full total.
     labelled = dataframe.copy()
     labelled[plan.dimension] = labelled[plan.dimension].astype(object).where(
         labelled[plan.dimension].notna(),
@@ -554,16 +529,19 @@ def _grouped_frame(
     if plan.aggregation in ("sum", "count"):
         values = grouped[value_label].to_numpy(dtype=float)
         total = float(values.sum())
-        # A share is only a share when every part carries the same sign as the
-        # whole. Mixed signs give 500% and -250% from arithmetic that is
-        # working exactly as written.
+        # Shares need every group to have the same sign; mixed signs give values
+        # like 500% and -250%.
         if total and ((values >= 0).all() or (values <= 0).all()):
             grouped["Share %"] = (grouped[value_label] / total * 100).round(1)
     return grouped.reset_index(drop=True)
 
 
 def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -> QueryAnswer:
-    """Run a validated plan locally and package the auditable answer."""
+    """Run a plan locally and return the answer with its calculation trace.
+
+    Raises ``ValueError`` for an unknown column or intent. The returned
+    ``question`` is empty; ``answer_question`` fills it in.
+    """
     for column in (plan.measure, plan.dimension, plan.count_column):
         if column is not None and column not in dataframe.columns:
             raise ValueError(f"Unknown column in plan: {column}")
@@ -643,7 +621,7 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
         leader_value = float(leader[value_label])
         direction = "lowest" if plan.ascending else "leading"
         share_note = f" ({leader['Share %']:.1f}% of the total)" if "Share %" in table.columns else ""
-        # A row count is not money, whatever the measure column is called.
+        # Format a row count as a plain number, not in the measure's unit.
         counted = value_label == "Rows"
         answer = (
             f"{leader[plan.dimension]} is the {direction} {plan.dimension} by {value_label.lower()}"
@@ -656,9 +634,8 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
             plan=plan,
             answer=answer,
             calculation=(
-                # value_label already records whether rows or the measure were
-                # aggregated; naming count(<measure>) when .size() ran flipped
-                # which group won.
+                # Name what ran: row counts use .size(), which differs from
+                # count(<measure>) when the measure has missing values.
                 f"{'row count' if value_label == 'Rows' else f'{plan.aggregation}({plan.measure})'}"
                 f" by {plan.dimension}, {order}, showing {len(table)}{scope}"
             ),
@@ -688,10 +665,7 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
             )
         first, last = float(trend.iloc[0]["Value"]), float(trend.iloc[-1]["Value"])
         grain_name = {"D": "day", "W": "week", "M": "month", "Q": "quarter", "Y": "year"}.get(grain, "period")
-        # A rate moves in percentage points. 3% to 4% is one point, and the
-        # "+33.3%" the relative formula gives is what nobody means by it.
-        # formatting has said so since the rate work landed; these sentences
-        # were the two surfaces that never asked.
+        # Rates move in percentage points: 3% to 4% is +1 point, not +33.3%.
         if _is_rate(plan.measure):
             column = dataframe[plan.measure].dropna() if plan.measure in dataframe else None
             direction = "+" if last >= first else "-"
@@ -700,8 +674,7 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
                 f"across {len(trend)} {grain_name}s"
             )
         else:
-            # Growing from nothing has no percentage. Printing +0.0% beside two
-            # different numbers contradicts the rest of the sentence.
+            # Percent change from a zero start is undefined, so it is omitted.
             movement = (
                 f"{(last - first) / abs(first) * 100:+.1f}% across {len(trend)} {grain_name}s"
                 if first
@@ -782,9 +755,8 @@ def _execute_growth(
                 "Latest": pivot[current_period].to_numpy(dtype=float),
             }
         )
-        # A percentage from zero is undefined, but a segment that went from
-        # nothing to something is usually the most newsworthy row in the file.
-        # It leaves the ranking and keeps its sentence.
+        # Growth from zero is undefined, so those segments leave the ranking but
+        # are still named in the answer.
         from_nothing = result[(result["Previous"] == 0) & (result["Latest"] != 0)]
         result = result[result["Previous"] != 0]
         if result.empty and not from_nothing.empty:
@@ -876,11 +848,7 @@ def _execute_growth(
 
 
 def _with_notes(calculation: str, series: TrendSeries) -> str:
-    """Carry the timeline adjustments into the answer's calculation trace.
-
-    A chat answer that quietly drops an in-progress period owes the reader
-    the same disclosure the dashboard gives.
-    """
+    """Append the trend's timeline notes (e.g. a dropped in-progress period) to the trace."""
     return "; ".join([calculation, *series.notes]) if series.notes else calculation
 
 
@@ -908,7 +876,7 @@ def answer_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) 
 
 
 def suggested_questions(dataframe: pd.DataFrame, roles: ColumnRoles) -> list[str]:
-    """Offer starter questions that the deterministic engine can definitely answer."""
+    """Return up to four starter questions the rule-based parser can answer."""
     suggestions: list[str] = []
     if roles.measure:
         suggestions.append(f"Total {roles.measure}")

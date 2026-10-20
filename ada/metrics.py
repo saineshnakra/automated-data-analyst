@@ -1,12 +1,7 @@
-"""What a measure is, decided once and consumed everywhere.
+"""Resolve how a measure aggregates and whether a rise in it is good news.
 
-The rate change fixed the headline, then the trend, then chat, and each
-surface disagreed with the next about whether a rate adds up. It does not:
-two months of conversion rate do not sum to anything, a segment's share of
-"total conversion rate" is not a share of anything, and a waterfall of
-changes in segment averages does not reconcile to the change in the overall
-average. So the decision is made here, once, and every surface asks for it
-rather than inferring it again from the column name.
+Every surface asks here instead of re-reading the column name, so they agree that
+a rate is averaged, not summed, and has no meaningful shares or waterfall.
 """
 
 from __future__ import annotations
@@ -61,8 +56,8 @@ class MetricSpec:
     def additive(self) -> bool:
         """Whether parts add up to the whole.
 
-        Only then do shares of a total, a concentration index or a waterfall
-        of segment changes mean anything. A rate is an average of averages.
+        Shares of a total, concentration and segment waterfalls are valid only
+        when this is true; it is false for a rate, which is averaged.
         """
         return self.aggregation != "mean"
 
@@ -72,7 +67,11 @@ class MetricSpec:
 
 
 def resolve_metric(name: str | None) -> MetricSpec:
-    """The one place a column name becomes a decision about arithmetic."""
+    """Decide a measure's aggregation, unit and direction from its column name.
+
+    Percentage-named columns are averaged as rates, others summed as amounts;
+    no name means a row count.
+    """
     if not name:
         return MetricSpec(name=None, aggregation="count", unit="count", increase_is_welcome=True)
     if is_percentage(name) and percentage_outranks_currency(name):

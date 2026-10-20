@@ -1,18 +1,8 @@
 """Robust trendline primitives shared by anomaly detection and forecasting.
 
-Two decisions make every downstream period calculation trustworthy:
-
-* **Theil-Sen slope.** The slope is the median of every pairwise slope rather
-  than the median of consecutive differences. Both resist a single wild
-  period, but the pairwise median uses information from every observation
-  instead of adjacent pairs only, so it stays steady on the short, noisy
-  histories a business file usually contains.
-* **Calendar positions.** Periods are placed on the calendar instead of being
-  numbered by row order, so a missing month leaves a real gap in the fit
-  rather than silently shortening the timeline and flattening the slope.
-
-Both are deterministic, dependency-free, and explainable in one sentence to
-someone reading the evidence card.
+Slopes are Theil-Sen (median of pairwise slopes, so one wild period can't tilt
+the line). Periods are positioned on the calendar rather than by row order, so a
+missing month leaves a gap in the fit instead of shortening the timeline.
 """
 
 from __future__ import annotations
@@ -22,10 +12,9 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-MAD_SCALE = 1.4826  # MAD -> standard-deviation equivalent for normal data
-# The mean absolute deviation is sqrt(2/pi) standard deviations for normal
-# data; the reciprocal puts the fallback on the same scale as MAD_SCALE, so
-# switching estimators does not change how surprising a period looks.
+MAD_SCALE = 1.4826  # converts MAD to a standard deviation for normal data
+# 1/sqrt(2/pi): puts the mean absolute deviation on the same scale as MAD_SCALE,
+# so falling back to it doesn't shift z-scores.
 MEAN_ABS_DEV_SCALE = 1.2533
 MAX_PAIRWISE_POINTS = 800  # keeps the O(n^2) slope search bounded
 
@@ -56,10 +45,10 @@ class TrendLine:
 
 
 def period_grain(periods: pd.DatetimeIndex) -> str:
-    """Classify the observed spacing into a calendar grain.
+    """Classify the median spacing of ``periods`` as "D", "W", "M", "Q" or "Y".
 
-    The median spacing is used so that a gap in the middle of an otherwise
-    regular series cannot change the answer.
+    The median keeps one gap in a regular series from changing the answer.
+    Returns "D" for fewer than two periods.
     """
     index = pd.DatetimeIndex(periods)
     if len(index) < 2:
@@ -82,8 +71,8 @@ def period_positions(periods: pd.DatetimeIndex) -> np.ndarray:
     """Number periods by the calendar, so gaps stay visible to the fit.
 
     Consecutive periods are one apart and a skipped period leaves a hole.
-    Counting calendar periods rather than dividing elapsed days avoids the
-    drift that unequal month and quarter lengths accumulate over long spans.
+    Counting calendar periods instead of dividing elapsed days avoids drift
+    from unequal month and quarter lengths.
     """
     index = pd.DatetimeIndex(periods)
     if len(index) == 0:
@@ -132,18 +121,11 @@ def fit_trendline(periods: pd.DatetimeIndex, values: np.ndarray) -> TrendLine:
 
 
 def robust_scale(residuals: np.ndarray) -> float:
-    """Scale residuals into standard-deviation-equivalent units.
+    """Estimate the residuals' standard deviation robustly, from the scaled MAD.
 
-    Falls back to the mean absolute deviation when more than half of the
-    residuals are identical, which drives the median absolute deviation to
-    zero and would otherwise make every remaining period look infinitely
-    surprising.
-
-    Both estimators are put on the same footing. For normal residuals the mean
-    absolute deviation is about 0.798 standard deviations, so using it raw
-    made the fallback scale roughly a fifth too small -- inflating every
-    z-score computed from it and quietly destroying the false-alarm rate the
-    anomaly thresholds are calibrated to.
+    Falls back to the scaled mean absolute deviation when more than half the
+    residuals are identical, since MAD is then zero and every other period would
+    look infinitely unusual. Returns 0.0 when residuals are empty or all equal.
     """
     values = np.asarray(residuals, dtype=float)
     if values.size == 0:
@@ -160,27 +142,10 @@ def robust_scale(residuals: np.ndarray) -> float:
 
 
 def observed_periods(trend: pd.DataFrame) -> pd.DataFrame:
-    """A trend with its unobserved periods removed.
+    """Drop periods with no observation before fitting.
 
-    A period whose every value was missing is held as NaN rather than zero -
-    that distinction is the whole point of the calendar rules in aggregation,
-    and it is right. But NaN is not a number the arithmetic downstream can
-    carry: ``to_numpy(dtype=float)`` hands it to Theil-Sen, one NaN makes the
-    slope NaN, and from there every forecast value, every band edge and every
-    residual is NaN. The visible damage was a forecast card reading "nan" and
-    the backtest caption saying the model "did not beat" a naive one it was
-    never scored against, plus anomaly detection returning nothing at all for
-    a series with an obvious spike in it.
-
-    So the gap is preserved where it means something - the chart, the caption,
-    the filled-period count - and dropped here, where a period with no
-    observation is simply not evidence about the trend. Fitting a line through
-    the periods that WERE observed is the honest reading of a series with a
-    hole in it; the alternative is refusing to forecast at all because one
-    month of a three-year history was blank.
-
-    Returns the frame unchanged when nothing is missing, so the common path
-    pays one ``isna`` and no copy.
+    The trend frame keeps empty periods as NaN for the chart, but one NaN makes
+    the Theil-Sen slope NaN. Returns the frame unchanged when nothing is missing.
     """
     if trend.empty or "Value" not in trend.columns:
         return trend

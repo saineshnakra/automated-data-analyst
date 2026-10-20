@@ -1,4 +1,7 @@
-"""Explainable business intelligence built from deterministic calculations."""
+"""Turn a dataset into an executive brief: KPIs, evidence cards and recommendations.
+
+Every figure comes from a deterministic pandas calculation that is shown beside it.
+"""
 
 from __future__ import annotations
 
@@ -75,10 +78,10 @@ def _period_changes(values: np.ndarray) -> np.ndarray:
 
 
 def _movement_in_context(values: np.ndarray, change: float) -> str:
-    """Say whether the latest movement is unusual for this particular series.
+    """Describe the latest change relative to this series' usual volatility.
 
-    A metric that routinely swings 30% has not told you anything by swinging
-    30% again. Without that context every movement reads as a development.
+    Returns a sentence with a leading space, or "" when there are too few prior
+    changes or they have no spread.
     """
     prior = _period_changes(values[:-1])
     if len(prior) < MIN_PERIODS_FOR_VOLATILITY:
@@ -90,9 +93,8 @@ def _movement_in_context(values: np.ndarray, change: float) -> str:
         return ""
 
     distance = abs(change - float(np.median(prior))) / spread
-    # The measurement is distance from the norm, not size. A flat month in a
-    # series that always moves 5% is unusual, but calling 0.0% "an unusually
-    # large swing" describes the opposite of what happened.
+    # Distance from the median decides how unusual; the size of the move picks
+    # the wording, so a flat period in a volatile series reads as "quiet".
     moved_more = abs(change) > typical
     if distance < 1.0:
         verdict = "This is within normal period-to-period variation"
@@ -119,18 +121,14 @@ def _growth_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | 
     if previous == 0 or not np.isfinite(previous) or not np.isfinite(current):
         return None
     change = (current - previous) / abs(previous) * 100
-    # A quarter is "Q4 2023", not "Oct 2023" -- which the anomaly card and the
-    # chart axis already knew, so the brief was contradicting its own page.
+    # Format at the series frequency so a quarter reads "Q4 2023", matching the chart axis.
     period = format_period(trend.iloc[-1]["Period"], series.frequency)
-    # With too few periods to judge completeness, the last one cannot be
-    # called complete -- a three-month file whose third month is half over
-    # was reporting a 50% collapse as settled fact.
+    # Without enough periods to check completeness, the last one may be partial.
     completeness = "complete period" if series.completeness_checked else "period so far"
     measure = roles.measure or "Records"
     measure_values = dataframe[roles.measure].dropna() if roles.measure else None
     direction = "increased" if change >= 0 else "decreased"
-    # A rising cost is not good news. Tone follows what the movement means
-    # for the business, and recommendations follow tone.
+    # Tone follows business meaning (a rising cost is negative); recommendations follow tone.
     welcome = increase_is_welcome(roles.measure)
     context = _movement_in_context(values, change)
     if series.short_coverage:
@@ -168,8 +166,7 @@ def _change_driver_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evid
     if gross_change == 0:
         return None
 
-    # Look the row up by its real index value; a boolean segment column has an
-    # index of True/False, and str() turned that into a KeyError.
+    # Index by the original key, not its str(): a boolean segment column has True/False keys.
     driver_key = changes.abs().idxmax()
     driver_name = str(driver_key)
     previous_value = float(grouped.loc[driver_key, previous_period])
@@ -186,9 +183,8 @@ def _change_driver_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evid
         f"{format_number(current_value, roles.measure, column_values=measure_values)}."
     )
 
-    # Segments that cancel out leave a tiny net change, and a share of that
-    # net reads as an absurd multiple. Measure against total movement instead
-    # and say plainly that the offsetting is what is really going on.
+    # When segments largely cancel, a share of the small net would be a large
+    # multiple, so measure against gross movement and report the offsetting.
     if abs(net_change) < OFFSETTING_NET_RATIO * gross_change:
         share = abs(driver_change) / gross_change * 100
         statement = (
@@ -257,15 +253,10 @@ CONCENTRATED_EFFECTIVE_SEGMENTS = 3.0
 
 
 def _effective_segments(values: np.ndarray, total: float) -> float | None:
-    """How many equally sized segments the business really rests on.
+    """Effective number of equally sized segments (1 / Herfindahl index).
 
-    The reciprocal of the Herfindahl index. Ten segments where one holds
-    ninety percent of the total behave like barely more than one, which the
-    top-three share cannot express -- and with only four segments in the
-    file, "the top three hold 80%" is nearly a tautology.
-
-    Undefined when any segment is negative, since a share of a total that
-    parts of it subtract from means nothing.
+    Ten segments where one holds 90% score just above 1. Returns None when the
+    total is not positive or any segment is negative.
     """
     if total <= 0 or (values < 0).any():
         return None
@@ -275,12 +266,11 @@ def _effective_segments(values: np.ndarray, total: float) -> float | None:
 
 
 def _shares_are_meaningful(values: np.ndarray) -> bool:
-    """A share of a total that parts of it subtract from is not a share.
+    """True when all values share a sign, so each one's share of the total is meaningful.
 
-    All-positive is the ordinary case. All-negative is a cost or loss column,
-    where -6k of -20k is honestly 30%. Mixed signs are the case with no answer:
-    the denominator is a net figure the parts do not sum into, which is how a
-    segment ends up "contributing 2,000,000% of profit".
+    All-negative counts (a cost column: -6k of -20k is 30%). With mixed signs the
+    total is a net figure and one segment's share can run to thousands of percent.
+    Empty input returns False.
     """
     if not values.size:
         return False
@@ -296,21 +286,17 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
     if total == 0 or not np.isfinite(total):
         return ()
     values = segments["Value"].to_numpy(dtype=float)
-    # A rate fails the same test mixed signs fail, for the same reason: the
-    # parts do not add up to the whole. Ten per cent churn beside twenty is
-    # not "one segment contributing two thirds of the churn rate", and a
-    # Herfindahl index over those shares is a number about nothing.
+    # Shares also need an additive measure: segment churn rates of 10% and 20%
+    # don't make one segment two thirds of churn.
     additive = resolve_metric(roles.measure).additive if roles.measure else True
     shares_hold = _shares_are_meaningful(values) and additive
     if not shares_hold:
-        # Without a usable denominator the only honest ordering is by size of
-        # the number itself, and no percentage may be quoted from it.
+        # No usable denominator: rank by absolute value and quote no percentages.
         segments = segments.reindex(
             segments["Value"].abs().sort_values(ascending=False).index
         ).reset_index(drop=True)
     elif total < 0:
-        # A cost column: the biggest contributor is the most negative one, not
-        # the one nearest zero that a descending sort puts on top.
+        # All-negative (cost) column: the largest contributor is the most negative value.
         segments = segments.sort_values("Value").reset_index(drop=True)
     leader = segments.iloc[0]
     leader_share = float(leader["Value"] / total * 100) if shares_hold else float("nan")
@@ -358,8 +344,7 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
             ),
             tone="positive" if shares_hold else "warning",
         ),
-        # Concentration is a statement about shares. Without shares there is
-        # nothing to say, so the card is left out rather than printed as nan%.
+        # Concentration needs shares; omit the card rather than print nan%.
         *(
             (
                 _concentration_evidence(
@@ -468,8 +453,8 @@ def _relationship_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evide
             "relationship at all."
         )
 
-    # Pearson measures straight lines and a handful of extreme records can
-    # create one. A rank correlation that disagrees says exactly that.
+    # A few extreme records can produce a strong Pearson r; a Spearman rank
+    # correlation that disagrees flags it.
     ranked = float(paired.corr(method="spearman").iloc[0, 1])
     if abs(value - ranked) > RANK_DIVERGENCE:
         statement += (
@@ -544,11 +529,10 @@ def _quality_evidence(dataframe: pd.DataFrame) -> Evidence | None:
 
 
 def _shown_evidence(evidence: list[Evidence], limit: int = 6) -> list[Evidence]:
-    """The executive preview, with a data-quality card never squeezed out.
+    """Return the first ``limit`` cards, swapping in a data-quality card if it was cut.
 
-    Six cards is the reading budget. A quality warning past the sixth slot
-    was silently gone -- the one card that says the other five may be built
-    on incomplete data.
+    A quality card past the limit replaces the last shown card, since it
+    qualifies every other figure.
     """
     shown = list(evidence[:limit])
     quality = next((item for item in evidence[limit:] if item.kind == "quality"), None)
@@ -563,9 +547,8 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
 
     trend = by_kind.get("trend")
     driver = by_kind.get("driver")
-    # A segment that grew while the total fell did not cause the fall, so it
-    # is not named as the thing to reconcile. "Reconcile the Alpha decline"
-    # beside a card saying Alpha rose 110 is a contradiction on one page.
+    # Name the driver only when it moved with the total; a segment that grew
+    # while the total fell didn't cause the fall.
     if driver and trend and driver.tone != trend.tone:
         driver = None
     adverse = "decline" if increase_is_welcome(roles.measure) else "increase"
@@ -733,8 +716,7 @@ def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) 
         measure_values = dataframe[roles.measure].dropna()
         total = float(measure_values.sum())
         average = float(measure_values.mean())
-        # Adding percentages up produces a number with no meaning: eleven
-        # months of margin do not total 1,189% of anything.
+        # Only additive measures get a total; summing monthly margin % is meaningless.
         if resolve_metric(roles.measure).additive:
             kpis.append(
                 KPI(
@@ -773,10 +755,8 @@ def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) 
                 )
             )
 
-    # Back-fill towards four tiles from a finite list of fallbacks. The old
-    # loop ran until it had four and its last branch had no already-added
-    # guard, so a thin file rendered "Data completeness" three times and read
-    # as a broken page. Three real tiles beats four with two copies.
+    # Pad towards four tiles from a fixed list, skipping labels already shown;
+    # a thin file gets fewer tiles rather than duplicates.
     completeness = 1 - dataframe.isna().sum().sum() / max(dataframe.size, 1)
     fallbacks = []
     if roles.identifier:
@@ -802,9 +782,8 @@ def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) 
     growth_text = growth.statement if growth else None
     leader = next((item for item in evidence if item.kind == "leader"), None)
     if growth and leader:
-        # "coming from" is share language. After the non-additive fix the leader
-        # card reports a rate's highest level rather than a share, and the level
-        # does not come from anywhere -- it is simply the highest.
+        # "coming from" implies a share; when the leader card quotes a level
+        # (non-additive or mixed-sign measure), call it the highest instead.
         quotes_a_share = "÷ total" in leader.calculation
         headline = (
             f"{growth.value} latest movement, with {leader.value} coming from the leading "
@@ -863,7 +842,7 @@ def build_business_report(
     source_name: str,
     context: str = "",
 ) -> str:
-    """Create a portable, evidence-linked executive report."""
+    """Render the brief as a Markdown report with each figure's calculation beside it."""
     lines = [
         "# ADA Executive Brief",
         "",

@@ -1,24 +1,9 @@
-"""Robust, explainable anomaly detection over period aggregates.
+"""Flag periods whose residual from the shared Theil-Sen trendline is unusually large.
 
-Periods are compared against the shared Theil-Sen trendline from
-``timeseries``: the slope is the median of every pairwise slope and periods
-are placed on the calendar, so neither a single wild period nor a missing
-one can bend the baseline. A period is flagged when its residual exceeds a
-calibrated multiple of the robust scale, and the expected value and range
-are reported alongside the observed one.
-
-The multiplier is measured, not assumed. A fixed three deviations sounds
-strict but flags at least one period in roughly a quarter of perfectly
-stable series, because the question being asked is "is *any* of these n
-periods unusual" and because the robust scale is itself unstable on short
-histories. ``CRITICAL_VALUES`` instead holds the multiplier at which only
-``FALSE_ALARM_RATE`` of stable series would raise a flag at all, simulated
-per history length by ``tools/calibrate_anomalies.py``.
-
-That guarantee assumes roughly normal period-to-period noise. A measure with
-genuinely heavy tails -- spiky marketing spend, a handful of enterprise
-deals dominating a month -- will exceed the band more often than one series
-in twenty, because for such a measure those periods are ordinary.
+The threshold is a multiple of the robust scale, calibrated per history length
+so only ``FALSE_ALARM_RATE`` of stable series raise any flag. The calibration
+assumes roughly normal noise; heavy-tailed measures (spiky ad spend, a few large
+deals) are flagged more often.
 """
 
 from __future__ import annotations
@@ -33,7 +18,8 @@ from .timeseries import fit_trendline, observed_periods, robust_scale
 MIN_PERIODS = 8
 FALSE_ALARM_RATE = 0.05
 
-# (history length, residual multiplier) from tools/calibrate_anomalies.py.
+# (history length, residual multiplier) from tools/calibrate_anomalies.py. A fixed
+# 3.0 would flag about a quarter of stable series, since every period is tested.
 CRITICAL_VALUES: tuple[tuple[int, float], ...] = (
     (8, 7.01),
     (10, 5.82),
@@ -71,7 +57,7 @@ class Anomaly:
     expected_low: float
     expected_high: float
     direction: str  # "above" or "below"
-    severity: float  # residual in scaled-MAD units
+    severity: float  # |residual| in robust-scale units
 
 
 def detect_anomalies(
@@ -81,17 +67,15 @@ def detect_anomalies(
     threshold: float | None = None,
     limit: int = 5,
 ) -> tuple[Anomaly, ...]:
-    """Flag periods whose value escapes the trendline's expected range.
+    """Flag periods whose value falls outside the trendline's expected range.
 
-    ``threshold`` defaults to the calibrated multiplier for this history
-    length. Passing an explicit value trades the false-alarm guarantee for
-    sensitivity, which is occasionally the right call but should be a
-    deliberate one.
+    ``threshold`` defaults to the calibrated multiplier for this history length;
+    an explicit value bypasses the ``FALSE_ALARM_RATE`` calibration. Returns at
+    most ``limit`` anomalies, most severe first.
     """
     if trend.empty or not {"Period", "Value"}.issubset(trend.columns):
         return ()
-    # As in build_forecast: a period with no observation is not evidence, and
-    # one NaN makes the residual scale NaN, which silently flags nothing.
+    # Drop unobserved periods: one NaN makes the fit and scale NaN, which flags nothing.
     trend = observed_periods(trend)
     if len(trend) < min_periods:
         return ()

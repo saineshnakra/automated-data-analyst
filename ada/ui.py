@@ -27,14 +27,13 @@ if TYPE_CHECKING:  # The AI layer is optional; ui must import without it.
 ACCENT = "#635BFF"
 LIME = "#C7F36B"  # Brand accent for surfaces and text. Too light to be a data mark.
 
-# Data-mark colours, checked against the light chart surface for the lightness
-# band, chroma floor, colour-vision separation and 3:1 contrast. Assigned in
-# this order and never cycled -- a generated fifth hue reads as one of these
-# four to a colour-blind reader, so series past the fourth fold into "Other".
+# Data-mark colours, checked on the light chart surface for lightness, chroma,
+# colour-vision separation and 3:1 contrast. Assigned in order, never cycled: a
+# fifth hue would read as one of these four to colour-blind readers, so series
+# past the fourth fold into "Other".
 SERIES_COLORS = ("#635BFF", "#0E8F6E", "#B5761B", "#D64A73")
-LEAF = "#5C8A1B"  # single-hue magnitude, replacing LIME which sat at 1.24:1
-# Polarity, for up-versus-down. Green/red is the one pair a deuteranope cannot
-# read -- the previous #26A17B/#E35D6A sat at 5.4 separation against a 8 floor.
+LEAF = "#5C8A1B"  # single-hue magnitude (LIME is only 1.24:1 on the chart surface)
+# Up versus down: blue/orange, since deuteranopes cannot separate green/red.
 RISE, FALL = "#1B6FB5", "#B5761B"
 INK = "#101114"
 MUTED = "#667085"
@@ -182,10 +181,8 @@ def render_evidence(brief: BusinessBrief, *, limit: int | None = None) -> None:
 
 
 def render_ai_narrative(narrative: AINarrative, *, model: str) -> None:
-    # Each action names the evidence it rests on, and the model's own caveats
-    # are shown rather than dropped: both were in the typed response and
-    # neither reached the page, which left the confident parts of the read
-    # standing without the parts that qualified them.
+    # Show each action's evidence and the model's watch-outs, so the caveats sit
+    # beside the recommendations they qualify.
     actions = "".join(
         f'<article class="ai-action"><span class="confidence">{escape(item.confidence)} confidence</span>'
         f'<strong>{escape(item.title)}</strong><p>{escape(item.recommendation)}</p>'
@@ -215,11 +212,9 @@ GRAIN_NAMES = {"D": "Day", "W": "Week", "M": "Month", "Q": "Quarter", "Y": "Year
 
 
 def axis_names(roles: ColumnRoles, frequency: str | None = None) -> dict[str, str]:
-    """Display names for the private intermediate columns a chart is built on.
+    """Map the internal Period, Value and Segment columns to user-facing axis labels.
 
-    The frame calls them Period, Value and Segment so a user column of the same
-    name cannot collide with them. An axis labelled "Value" tells the reader
-    nothing, so the chart shows what they actually picked.
+    Value takes the measure name (or "Records"); with frequency "M", Period reads "Month".
     """
     return {
         "Value": roles.measure or "Records",
@@ -369,9 +364,8 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 title=f"{roles.measure or 'Records'} intensity by {roles.dimension} and period"
             )
             heatmap.update_yaxes(autorange="reversed")
-            # A two-year monthly matrix prints 24 labels on their side, and a
-            # categorical axis will not thin them on its own. Every nth label is
-            # shown instead; the hover still names every period.
+            # A categorical axis doesn't thin its labels, so show about eight;
+            # the hover still names every period.
             labels = [format_period(period, series.frequency) for period in heat.columns]
             step = max(1, round(len(labels) / 8))
             heatmap.update_xaxes(
@@ -448,10 +442,8 @@ def _chat_answer_figure(result: QueryAnswer) -> go.Figure | None:
 def render_chat_answer(result: QueryAnswer, *, key: str) -> None:
     """Render one answered question with its table, chart, and calculation.
 
-    ``key`` identifies this answer within the transcript. Two questions can
-    resolve to the same plan and therefore render an identical chart and
-    table, and Streamlit refuses to give two identical elements the same
-    auto-generated id, so each answer names its own.
+    ``key`` must be unique within the transcript: two questions can resolve to the
+    same plan, and Streamlit rejects identical elements without explicit keys.
     """
     if result.plan.source == "ai":
         st.markdown(
@@ -477,7 +469,7 @@ def render_chat_answer(result: QueryAnswer, *, key: str) -> None:
 
 
 def render_chat_fallback(suggestions: list[str]) -> None:
-    """Shown when a question cannot be mapped to a local calculation."""
+    """Render the reply for a question that maps to no local calculation."""
     st.markdown(
         "I map questions to transparent calculations, and I could not map that one. "
         "Try naming a metric, a segment, or a time scope — for example:"
@@ -486,11 +478,10 @@ def render_chat_fallback(suggestions: list[str]) -> None:
 
 
 def _cap(frame: pd.DataFrame, spec, value: str, limit: int) -> pd.DataFrame:
-    """Trim to a drawable size by dropping the least interesting rows.
+    """Trim to ``limit`` rows for drawing.
 
-    Taking the first N groups drops the newest periods off a trend and the
-    biggest categories off a ranking -- exactly the rows the reader opened the
-    chart for. Time keeps its most recent end; anything else keeps its largest.
+    A datetime x axis keeps its most recent rows; any other chart keeps its
+    largest values.
     """
     if len(frame) <= limit:
         return frame
@@ -508,8 +499,8 @@ def _explore_frame(
         return dataframe[columns].dropna().head(20_000)
 
     grouping = [column for column in (spec.x, spec.y, spec.color) if column]
-    # A heatmap, and the table it falls back to when the grid is too large,
-    # are both "measure across two categories".
+    # A heatmap and its fallback table (for grids too large to draw) both sum a
+    # measure across two categories.
     if spec.color and spec.x and spec.y and spec.form in ("heatmap", "table"):
         keys = [spec.y, spec.x]
         grid = dataframe.groupby(keys, dropna=True, observed=True)[spec.color].sum().reset_index()
@@ -522,8 +513,7 @@ def _explore_frame(
         return dataframe[grouping].dropna()
 
     if spec.aggregation == "count" or not spec.y:
-        # A column the file calls "Records" collides with the count column
-        # built here, so the count takes a name the frame is not using.
+        # Use a count column name the frame lacks, so a user column "Records" can't collide.
         value = next(name for name in ("Records", "Record count", "Rows") if name not in dataframe.columns)
         frame = dataframe.groupby(keys, dropna=True, observed=True).size().reset_index(name=value)
     else:
@@ -537,9 +527,8 @@ def _explore_frame(
 
 
 def _explore_figure(frame: pd.DataFrame, spec) -> go.Figure | None:
-    """Draw exactly the form the recommendation asked for."""
-    # The grouped frame's last column is always the value being plotted,
-    # whatever it had to be called.
+    """Draw the form named by ``spec``, or return None for forms it does not plot."""
+    # The grouped frame's last column is the plotted value, whatever its name.
     value = spec.y if (spec.y and spec.y in frame.columns) else str(frame.columns[-1])
 
     if spec.form in ("line", "area"):
@@ -571,8 +560,7 @@ def _explore_figure(frame: pd.DataFrame, spec) -> go.Figure | None:
         return None
 
     if spec.form == "heatmap":
-        # The colour is the measurement; naming only the two axes describes the
-        # grid and not what is in it.
+        # Name the measure the colour encodes, not just the two axes.
         title = f"{spec.color} by {spec.y} and {spec.x}"
     elif spec.form == "histogram":
         title = f"Distribution of {spec.x}"
@@ -585,7 +573,7 @@ def _explore_figure(frame: pd.DataFrame, spec) -> go.Figure | None:
 
 
 def render_explore(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
-    """Pick any columns; ADA picks the chart and says why it picked it."""
+    """Let the user pick columns, then draw the recommended chart and its rationale."""
     render_section_heading(
         "Explore",
         "Chart any columns you like",
@@ -646,8 +634,7 @@ def render_chat_rejected() -> None:
 
 
 def render_footer(*, build: str = "") -> None:
-    # The build tag is what lets a mixed or stale deployment be recognised
-    # from the page itself, instead of from a redacted traceback.
+    # The build tag makes a stale or mixed deploy visible on the page itself.
     tag = f' &nbsp;·&nbsp; <span class="build">build {escape(build)}</span>' if build else ""
     st.markdown(
         f"""

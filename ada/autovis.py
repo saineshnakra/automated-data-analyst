@@ -1,12 +1,8 @@
-"""Choosing the chart that fits the columns a reader picked.
+"""Recommend a chart form for the columns a reader picked.
 
-The form is decided by what the data has to do -- compare magnitudes, show a
-trend, tell series apart, relate two measures -- and not by what happens to be
-available. Every decision is returned as a sentence alongside the spec, because
-a chart nobody can question is the same problem as a number nobody can check.
-
-Nothing here draws anything. It reports what should be drawn and why, so the
-choice can be tested without a browser.
+The form follows the task (compare magnitudes, show a trend, separate series,
+relate two measures), and each spec carries a sentence explaining the choice.
+Nothing is drawn here, so recommendations can be tested without a browser.
 """
 
 from __future__ import annotations
@@ -16,14 +12,14 @@ from dataclasses import dataclass, field
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 
-# Past this many classes a legend stops helping and a table reads better.
+# Series past MAX_SERIES fold into "Other" (extra hues are hard to tell apart);
+# categories past MAX_BARS render as a table.
 MAX_SERIES = 4
 MAX_BARS = 25
-# A heatmap is a rectangle of cells and the browser is sent every one of them.
-# Two identifier-ish columns produce millions, which exceeds Streamlit's own
-# websocket message limit before it ever reaches a screen.
+# Every heatmap cell is sent to the browser; two high-cardinality columns can
+# exceed Streamlit's websocket message limit.
 MAX_HEATMAP_CELLS = 4_000
-# Beyond this a vertical axis cannot hold the labels.
+# Past this many categories, or labels longer than LONG_LABEL_CHARACTERS, bars go horizontal.
 HORIZONTAL_BAR_THRESHOLD = 6
 LONG_LABEL_CHARACTERS = 12
 
@@ -75,7 +71,10 @@ def _labels_are_long(dataframe: pd.DataFrame, column: str) -> bool:
 
 
 def _bar_form(dataframe: pd.DataFrame, category: str) -> tuple[Form, str]:
-    """A vertical axis cannot hold many categories, or long ones."""
+    """Choose horizontal bars or vertical columns, with a phrase saying why.
+
+    Many categories or long labels don't fit along a vertical layout's x axis.
+    """
     if _distinct(dataframe, category) > HORIZONTAL_BAR_THRESHOLD or _labels_are_long(
         dataframe, category
     ):
@@ -104,7 +103,7 @@ def recommend_chart(
             "scales, which makes their lines comparable by accident rather than by fact."
         )
 
-    # Time on one axis is the strongest signal there is: the job is a trend.
+    # A date with a measure is always a trend, whatever else was picked.
     if dates and numbers:
         date, measure = dates[0], numbers[0]
         if categories:
@@ -140,8 +139,7 @@ def recommend_chart(
             notes=tuple(notes),
         )
 
-    # Two categories and a measure form a grid, which a heatmap reads better
-    # than any number of side-by-side bars.
+    # Two categories and a measure form a grid: a heatmap, not grouped bars.
     if len(categories) >= 2 and numbers:
         rows, columns_axis, measure = categories[0], categories[1], numbers[0]
         cells = _distinct(dataframe, rows) * _distinct(dataframe, columns_axis)
@@ -200,7 +198,7 @@ def recommend_chart(
             notes=tuple(notes),
         )
 
-    # Two measures and nothing to group by: the question is how they relate.
+    # Two measures and nothing to group by: show how they relate.
     if len(numbers) >= 2:
         return ChartSpec(
             form="scatter",
@@ -275,10 +273,10 @@ def recommend_chart(
 def fold_small_series(
     frame: pd.DataFrame, column: str, value: str, limit: int = MAX_SERIES
 ) -> pd.DataFrame:
-    """Keep the largest series and group the tail, rather than adding hues.
+    """Keep the ``limit`` largest series by total ``value`` and fold the rest into "Other".
 
-    A generated fifth or ninth colour is indistinguishable from one already in
-    use, so the honest move is to stop drawing series, not to invent colours.
+    Extra generated colours are hard to tell from ones already in use. The label
+    becomes "Other (2)" and so on if the column already has an "Other".
     """
     if frame.empty or column not in frame.columns:
         return frame
@@ -289,10 +287,8 @@ def fold_small_series(
         return frame
     keep = set(totals.head(limit).index)
     folded = frame.copy()
-    # A Categorical rejects a label that is not already one of its categories,
-    # and a column that genuinely contains "Other" would have the folded tail
-    # silently added to a real segment. Both are avoided by choosing a label
-    # the column does not already use and dropping the categorical dtype.
+    # Cast to object so a Categorical accepts the new label, and use a label the
+    # column lacks so the tail never merges into a real "Other" segment.
     folded[column] = folded[column].astype(object)
     label = _fold_label(set(totals.index))
     folded[column] = folded[column].where(folded[column].isin(keep), label)
@@ -300,7 +296,7 @@ def fold_small_series(
 
 
 def _fold_label(existing: set) -> str:
-    """A name for the folded tail that is not already a real category."""
+    """Return a label for the folded tail that no existing category uses."""
     label = "Other"
     suffix = 2
     present = {str(value) for value in existing}

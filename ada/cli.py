@@ -1,22 +1,20 @@
 """The ``ada`` command.
 
-    ada analyze orders.csv
-    ada schema orders.csv
+    ada analyze measurements.csv
+    ada schema measurements.csv
     ada ask orders.csv "which category made the most revenue"
     ada check metrics.csv --measure signups --frequency W
     ada samples
     ada app
 
-``check`` is the one built for cron. Its exit code is the answer, so a shell
-can branch without parsing anything:
+``ada check`` is meant for scheduled jobs and reports through its exit code:
 
-    0  looked, nothing outside the band
-    1  looked, something was flagged
-    3  could not look -- no timeline, or too little history
-    2  the input could not be used at all
+    0  checked, nothing flagged
+    1  checked, at least one period flagged
+    2  the input could not be read
+    3  could not check: no date column or too few periods
 
-Three and one are different on purpose. A job that cannot tell "quiet" from
-"blind" will eventually report quiet for a week because its feed broke.
+3 is kept separate from 0 so that a broken feed doesn't look like a quiet one.
 """
 
 from __future__ import annotations
@@ -52,7 +50,7 @@ def _analyze(args: argparse.Namespace) -> int:
 
 
 def _schema(args: argparse.Namespace) -> int:
-    """What ADA decided, so you know which names to pass back to it."""
+    """Print the detected column roles and any cleaning notes."""
     report = _load(args)
     roles = report.roles
     print(f"{report.source_name} — {report.rows_analyzed:,} rows")
@@ -100,7 +98,7 @@ def _samples(_: argparse.Namespace) -> int:
 
 
 def _app(_: argparse.Namespace) -> int:
-    """Launch the Streamlit app, which lives behind the [app] extra."""
+    """Launch the Streamlit app (needs the [app] extra)."""
     try:
         from streamlit.web import cli as streamlit_cli  # noqa: PLC0415
     except ImportError:

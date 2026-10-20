@@ -1,4 +1,4 @@
-"""Deterministic demo dataset with enough structure for a useful dashboard."""
+"""Seeded demo sales data with growth, seasonality and segment effects for the dashboard."""
 
 from __future__ import annotations
 
