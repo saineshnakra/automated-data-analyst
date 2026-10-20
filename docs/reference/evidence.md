@@ -88,8 +88,25 @@ The strongest numeric pair is reported only when all of these hold:
 | Requirement | Value |
 |---|---|
 | Absolute Pearson correlation | At least 0.45 (`MATERIAL_CORRELATION`) |
-| Complete pairs | At least 12 (`MIN_CORRELATION_PAIRS`) |
-| Columns | Not identifiers, not experimental-design labels (`Replicate`, `Plate`, ...), not named exactly as a time part (`year`, `month`, ...) |
+| Complete pairs | At least 12 (`MIN_CORRELATION_PAIRS`); a pair with fewer is not considered |
+| Columns | Not identifiers, not experimental-design labels (`Replicate`, `Plate`, `Row`, `Column`, ...), not labels for the unit a row belongs to (`subject`, `participant`, `patient`, `animal`, `mouse`, `rat`, `donor`, `individual`, `specimen`, or an id-like word; `is_entity_name` in `ada/schema.py`), not named exactly as a time part (`year`, `month`, ...) |
+| Not a near-duplicate | See below |
+
+A participant numbered 1 to 20 with three rows each is not unique enough to
+look like an identifier, but its number is a label, so it is left out by name
+whatever its values. The same goes for a plate's `Column`, which correlates
+with a dose only because the dilution series was laid out across the plate.
+
+**Near-duplicates.** A pair with an absolute Pearson correlation of 0.99 or
+more (`NEAR_DUPLICATE_CORRELATION`) is usually one quantity twice: a reading
+and its adjusted copy, or a size in two directions that always match. Such a
+pair is not chosen as the relationship. If any were set aside, the card ends
+with one sentence naming up to three of them (`NEAR_DUPLICATES_NAMED`) and
+saying they probably measure the same thing or one is derived from another.
+If no other pair qualifies, there is no card. A pair whose rank correlation is
+more than 0.25 below its Pearson figure is not a near-duplicate, since a few
+extreme records produce that figure; it stays in and is reported with that
+caveat.
 
 The card gives a 95% confidence interval from the Fisher transform, and the
 sample size. If the interval includes zero, the card says the sample cannot

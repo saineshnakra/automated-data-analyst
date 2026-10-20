@@ -9,6 +9,7 @@ from ada.schema import (
     MEASURE_KEYWORDS,
     detect_roles,
     is_design_name,
+    is_entity_name,
     is_identifier_name,
 )
 
@@ -132,6 +133,18 @@ class ResearchMeasureTests(unittest.TestCase):
             with self.subTest(word=word):
                 self.assertGreaterEqual(MEASURE_KEYWORDS[word], 5)
                 self.assertLess(MEASURE_KEYWORDS[word], MEASURE_KEYWORDS["price"])
+
+
+class EntityNameTests(unittest.TestCase):
+    def test_the_unit_a_row_belongs_to_is_an_entity(self):
+        for name in ("subject", "Participant", "Patient ID", "mouse", "Donor", "specimen_no"):
+            with self.subTest(name=name):
+                self.assertTrue(is_entity_name(name))
+
+    def test_a_quantity_measured_on_the_unit_is_not(self):
+        for name in ("Animal Weight", "Patient Age", "score", "Heart Rate"):
+            with self.subTest(name=name):
+                self.assertFalse(is_entity_name(name))
 
 
 class IdentifierNamePunctuationTests(unittest.TestCase):

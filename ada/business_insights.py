@@ -28,7 +28,14 @@ from .formatting import (
     sentence_case,
 )
 from .metrics import increase_is_welcome, resolve_metric
-from .schema import TIME_PART_TOKENS, ColumnRoles, detect_roles, is_design_name, looks_like_identifier
+from .schema import (
+    TIME_PART_TOKENS,
+    ColumnRoles,
+    detect_roles,
+    is_design_name,
+    is_entity_name,
+    looks_like_identifier,
+)
 from .timeseries import robust_scale
 
 
@@ -435,6 +442,10 @@ def _concentration_evidence(
 OFFSETTING_NET_RATIO = 0.25
 MIN_CORRELATION_PAIRS = 12
 MATERIAL_CORRELATION = 0.45
+# Pairs this close are one quantity twice (a reading and its adjusted copy, a size
+# in two units), so reporting them as a relationship tells the reader nothing.
+NEAR_DUPLICATE_CORRELATION = 0.99
+NEAR_DUPLICATES_NAMED = 3
 RANK_DIVERGENCE = 0.25
 NORMAL_95 = 1.959963985
 
@@ -448,30 +459,73 @@ def _correlation_interval(value: float, pairs: int) -> tuple[float, float]:
     return float(np.tanh(centre - margin)), float(np.tanh(centre + margin))
 
 
+def _rank_correlation(dataframe: pd.DataFrame, first: str, second: str) -> float:
+    return float(dataframe[[first, second]].dropna().corr(method="spearman").iloc[0, 1])
+
+
+def _is_near_duplicate(dataframe: pd.DataFrame, first: str, second: str, value: float) -> bool:
+    """True when two columns are one quantity twice: r near ±1, with ranks that agree.
+
+    Two extreme records can push r this high on their own; then the ranks
+    disagree and the pair stays in, to be reported with that caveat.
+    """
+    if abs(value) < NEAR_DUPLICATE_CORRELATION:
+        return False
+    return abs(value) - abs(_rank_correlation(dataframe, first, second)) <= RANK_DIVERGENCE
+
+
+def _near_duplicate_note(duplicates: pd.Series) -> str:
+    """One sentence naming the pairs left out for moving together almost exactly."""
+    ordered = duplicates.reindex(duplicates.abs().sort_values(ascending=False, kind="stable").index)
+    named = [
+        f"{first} and {second} (r = {value:.2f})"
+        for (first, second), value in ordered.head(NEAR_DUPLICATES_NAMED).items()
+    ]
+    if len(ordered) > NEAR_DUPLICATES_NAMED:
+        named.append(f"and {len(ordered) - NEAR_DUPLICATES_NAMED} more pairs")
+    if (ordered > 0).all():
+        motion = "together"
+    elif (ordered < 0).all():
+        motion = "in opposite directions"
+    else:
+        motion = "together or in opposite directions"
+    return (
+        f" {', '.join(named)} were left out: they move {motion} almost exactly, so they "
+        "probably measure the same thing or one is derived from another."
+    )
+
+
 def _relationship_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
     usable = [
         column
         for column in roles.numeric
         if not looks_like_identifier(column, dataframe[column])
         and not is_design_name(column)
+        and not is_entity_name(column)
         and not any(token == normalized_name(column) for token in TIME_PART_TOKENS)
     ]
     if len(usable) < 2:
         return None
-    correlations = dataframe[usable].corr()
+    # A pair with too few complete values gets no coefficient, so it can neither
+    # win nor be called a near-duplicate on a handful of rows.
+    correlations = dataframe[usable].corr(min_periods=MIN_CORRELATION_PAIRS)
     upper = correlations.where(np.triu(np.ones(correlations.shape), k=1).astype(bool))
     stacked = upper.stack().dropna()
-    if stacked.empty:
+    near_duplicate = pd.Series(
+        [_is_near_duplicate(dataframe, first, second, r) for (first, second), r in stacked.items()],
+        index=stacked.index,
+        dtype=bool,
+    )
+    candidates = stacked[~near_duplicate]
+    if candidates.empty:
         return None
-    pair = stacked.abs().idxmax()
+    pair = candidates.abs().idxmax()
     value = float(correlations.loc[pair[0], pair[1]])
     if abs(value) < MATERIAL_CORRELATION:
         return None
 
     paired = dataframe[[pair[0], pair[1]]].dropna()
     pairs = len(paired)
-    if pairs < MIN_CORRELATION_PAIRS:
-        return None
 
     low, high = _correlation_interval(value, pairs)
     relationship = "move together" if value > 0 else "move in opposite directions"
@@ -505,6 +559,8 @@ def _relationship_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evide
         " It is the strongest of several pairs tested, so treat it as a lead to check, "
         "not as evidence of cause."
     )
+    if near_duplicate.any():
+        statement += _near_duplicate_note(stacked[near_duplicate])
     return Evidence(
         kind="relationship",
         title="Strongest measurable relationship",
@@ -512,8 +568,9 @@ def _relationship_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evide
         statement=statement,
         calculation=(
             "Pearson r over paired non-missing values, 95% CI by Fisher transform, checked "
-            "against Spearman. Strongest of all numeric pairs; the interval is not adjusted "
-            "for that selection"
+            f"against Spearman. Strongest of all numeric pairs with {MIN_CORRELATION_PAIRS} or "
+            f"more paired values, leaving out near-duplicates (|r| ≥ {NEAR_DUPLICATE_CORRELATION}); "
+            "the interval is not adjusted for that selection"
         ),
     )
 

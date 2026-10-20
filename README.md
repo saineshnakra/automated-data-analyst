@@ -88,7 +88,8 @@ ada ask orders.csv "which category made the most revenue"
   question it can't represent is refused rather than answered approximately.
 - **Reports correlations with a 95% interval**, the sample size and a rank
   correlation check, and says that the pair was picked as the strongest of
-  several.
+  several. Participant numbers, plate positions and near-duplicate pairs (a
+  reading and its adjusted copy) are left out.
 - **Analyzes a slice you select**: draw a box or lasso on the Explore chart, or
   click some bars, and get the same analysis for those rows beside the whole.
 

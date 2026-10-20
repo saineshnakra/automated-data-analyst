@@ -21,7 +21,7 @@ from .formatting import format_number, format_period
 from .metrics import resolve_metric
 from .nlq import QueryAnswer
 from .pipeline import analyze_selection
-from .schema import ColumnRoles, is_design_name
+from .schema import ColumnRoles, is_design_name, is_entity_name
 from .selection import comparison_frame, selection_from_event, selection_modes
 
 if TYPE_CHECKING:  # The AI layer is optional; ui must import without it.
@@ -415,7 +415,9 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
     numeric = [
         column
         for column in roles.numeric
-        if dataframe[column].nunique(dropna=True) > 2 and not is_design_name(column)
+        if dataframe[column].nunique(dropna=True) > 2
+        and not is_design_name(column)
+        and not is_entity_name(column)
     ]
     lower_columns = st.columns(2, gap="medium")
     with lower_columns[0]:

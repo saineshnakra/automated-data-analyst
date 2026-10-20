@@ -99,6 +99,14 @@ IDENTIFIER_NAME_WORDS = frozenset({
     "mobile", "tel", "fax", "sku", "number", "no", "#", "key", "uuid",
 })
 
+# Head words that name the unit a row belongs to rather than a quantity: subject 12
+# is not more of anything than subject 3. These columns repeat (three readings per
+# participant), so they fail the uniqueness test that identifiers must pass.
+ENTITY_NAME_WORDS = frozenset({
+    "subject", "participant", "patient", "animal", "mouse", "rat", "donor", "individual",
+    "specimen",
+}) | IDENTIFIER_NAME_WORDS
+
 # Head words of columns holding calendar years and months. A table with no date
 # column but a year (and perhaps a month) is still a timeline; cleaning builds
 # its dates from these.
@@ -140,6 +148,12 @@ def is_design_name(name: str) -> bool:
     """Whether the name marks an experimental-design label such as "Replicate" or "Plate"."""
     words = _head_words(name)
     return bool(words) and words[-1] in DESIGN_TOKENS
+
+
+def is_entity_name(name: str) -> bool:
+    """Whether the name labels the unit a row belongs to, such as "Subject" or "Patient ID"."""
+    words = _head_words(name)
+    return bool(words) and words[-1] in ENTITY_NAME_WORDS
 
 
 def is_year_name(name: str) -> bool:

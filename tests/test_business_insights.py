@@ -635,5 +635,78 @@ class NegativeLevelTests(unittest.TestCase):
         self.assertEqual(top.context, "Largest in size of any segment")
 
 
+def relationship_of(frame: pd.DataFrame) -> Evidence | None:
+    brief = analyze_business(frame, detect_roles(frame))
+    return next((item for item in brief.evidence if item.kind == "relationship"), None)
+
+
+class RelationshipCandidateTests(unittest.TestCase):
+    def test_a_numbered_participant_is_not_correlated_with_their_score(self):
+        rng = np.random.default_rng(7)
+        subjects = np.repeat(np.arange(1, 21), 3)
+        frame = pd.DataFrame({
+            "subject": subjects,
+            "attention": ["divided", "focused"] * 30,
+            "score": subjects * 0.3 + rng.normal(0, 1, 60),
+            "solutions": rng.integers(1, 4, 60),
+        })
+
+        relationship = relationship_of(frame)
+
+        self.assertTrue(relationship is None or "subject" not in relationship.statement)
+
+    def test_a_plate_column_is_not_correlated_with_the_dilution_laid_out_across_it(self):
+        rng = np.random.default_rng(11)
+        columns = np.tile(np.arange(1, 13), 8)
+        dose = 100 / 2.0 ** (columns - 1)
+        frame = pd.DataFrame({
+            "Column": columns,
+            "Dose (µM)": dose,
+            "Abs 450nm": 0.2 + dose / 100 + rng.normal(0, 0.05, 96),
+        })
+
+        relationship = relationship_of(frame)
+
+        assert relationship is not None
+        self.assertNotIn("Column", relationship.statement)
+        self.assertTrue(relationship.statement.startswith("Dose (µM) and Abs 450nm"))
+
+    def test_a_derived_copy_is_named_but_not_reported_as_the_relationship(self):
+        rng = np.random.default_rng(5)
+        co2 = np.linspace(315, 410, 120) + rng.normal(0, 0.5, 120)
+        frame = pd.DataFrame({
+            "CO2": co2,
+            "adjusted CO2": co2 - 0.3,
+            "Temperature anomaly": (co2 - 315) / 100 + rng.normal(0, 0.15, 120),
+        })
+
+        relationship = relationship_of(frame)
+
+        assert relationship is not None
+        self.assertNotIn("CO2 and adjusted CO2 move together:", relationship.statement)
+        self.assertIn(
+            "CO2 and adjusted CO2 (r = 1.00) were left out: they move together almost exactly",
+            relationship.statement,
+        )
+        self.assertIn("treat it as a lead to check", relationship.statement)
+        self.assertIn("near-duplicates", relationship.calculation)
+
+    def test_no_card_when_the_only_strong_pair_is_a_near_duplicate(self):
+        values = np.linspace(1.0, 50.0, 40)
+        frame = pd.DataFrame({"x": values, "y": values * 1.001 + 0.01})
+
+        self.assertIsNone(relationship_of(frame))
+
+    def test_an_ordinary_relationship_gets_no_near_duplicate_sentence(self):
+        rng = np.random.default_rng(3)
+        units = rng.normal(50, 10, 200)
+        frame = pd.DataFrame({"Units": units, "Revenue": units * 20 + rng.normal(0, 150, 200)})
+
+        relationship = relationship_of(frame)
+
+        assert relationship is not None
+        self.assertNotIn("left out", relationship.statement)
+
+
 if __name__ == "__main__":
     unittest.main()
