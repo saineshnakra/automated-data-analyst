@@ -3,12 +3,15 @@ import unittest
 import numpy as np
 import pandas as pd
 
+from ada import ui
+from ada.business_insights import describe_correlation, measure_correlation
 from ada.demo_data import make_demo_data
 from ada.nlq import (
     QueryPlan,
     answer_question,
     execute_plan,
     parse_question,
+    rephrase_hint,
     suggested_questions,
     unsupported_phrasing,
 )
@@ -696,6 +699,372 @@ class SuggestionWordingTests(unittest.TestCase):
         suggestions = suggested_questions(frame, detect_roles(frame))
         self.assertIn("Average Order Value", suggestions)
         self.assertNotIn("Average Average Order Value", suggestions)
+
+
+def measurement_frame() -> tuple[pd.DataFrame, ColumnRoles]:
+    """Unit-suffixed measurements whose default measure, bill_depth_mm, is never the one asked for."""
+    frame = pd.DataFrame({
+        "island": ["Biscoe", "Dream", "Torgersen"] * 4,
+        "bill_depth_mm": [18.0, 17.5, 19.0, 18.2] * 3,
+        "bill_length_mm": [45.0, 44.0, 39.0, 41.0] * 3,
+        "flipper_length_mm": [210.0, 190.0, 195.0, 200.0] * 3,
+        "body_mass_g": [5000.0, 3700.0, 3800.0, 4200.0] * 3,
+    })
+    numeric = ("bill_depth_mm", "bill_length_mm", "flipper_length_mm", "body_mass_g")
+    roles = ColumnRoles(date=None, measure="bill_depth_mm", dimension="island", identifier=None,
+                        numeric=numeric, dimensions=("island",))
+    return frame, roles
+
+
+class UnitAnnotatedNameTests(unittest.TestCase):
+    def test_a_name_without_its_unit_names_the_column(self):
+        frame, roles = measurement_frame()
+        for question, column in (
+            ("average body mass by island", "body_mass_g"),
+            ("average flipper length by island", "flipper_length_mm"),
+            ("average body mass g by island", "body_mass_g"),
+        ):
+            with self.subTest(question=question):
+                answer = answer_question(question, frame, roles)
+                self.assertEqual(answer.plan.measure, column)
+                self.assertIn(f"mean({column})", answer.calculation)
+
+    def test_a_bracketed_unit_is_left_out(self):
+        dates = pd.date_range("2024-01-01", periods=12, freq="MS").repeat(2)
+        frame = pd.DataFrame({
+            "Collection Date": dates,
+            "Site": ["River A", "Lake C"] * 12,
+            "Analyte": ["Nitrate", "Lead", "Lead", "Nitrate"] * 6,
+            "Concentration (mg/L)": np.linspace(1.0, 5.0, 24),
+            "Temp (°C)": [12.0, 14.0] * 12,
+        })
+        roles = ColumnRoles(date="Collection Date", measure="Temp (°C)", dimension="Site", identifier=None,
+                            numeric=("Concentration (mg/L)", "Temp (°C)"), dimensions=("Site", "Analyte"))
+        for question, intent in (
+            ("which site has the highest concentration", "rank"),
+            ("average concentration by analyte", "breakdown"),
+            ("monthly concentration trend", "trend"),
+        ):
+            with self.subTest(question=question):
+                answer = answer_question(question, frame, roles)
+                self.assertEqual(answer.plan.intent, intent)
+                self.assertEqual(answer.plan.measure, "Concentration (mg/L)")
+
+    def test_a_partial_name_is_refused_and_the_column_named(self):
+        frame, roles = measurement_frame()
+
+        self.assertIsNone(answer_question("average body by island", frame, roles))
+        self.assertEqual(rephrase_hint("average body by island", frame, roles), "Did you mean body_mass_g?")
+
+    def test_a_word_in_several_names_names_each_of_them(self):
+        frame, roles = measurement_frame()
+
+        self.assertIsNone(answer_question("average length by island", frame, roles))
+        self.assertEqual(
+            rephrase_hint("average length by island", frame, roles),
+            "Did you mean bill_length_mm or flipper_length_mm?",
+        )
+
+    def test_min_and_max_are_not_read_as_units(self):
+        frame = pd.DataFrame({"Station": list("abab"), "temp_max": [20.0, 22.0, 19.0, 25.0],
+                              "temp_min": [5.0, 7.0, 4.0, 9.0]})
+        roles = detect_roles(frame)
+
+        self.assertIsNone(answer_question("average temp by station", frame, roles))
+        self.assertEqual(
+            rephrase_hint("average temp by station", frame, roles), "Did you mean temp_max or temp_min?"
+        )
+        answer = answer_question("average temp max by station", frame, roles)
+        self.assertEqual(answer.plan.measure, "temp_max")
+
+    def test_a_core_name_two_columns_share_names_neither(self):
+        frame = pd.DataFrame({"Site": list("abab"), "Temp (°C)": [10.0, 12.0, 11.0, 13.0],
+                              "Temp (°F)": [50.0, 53.6, 51.8, 55.4]})
+        roles = detect_roles(frame)
+
+        self.assertIsNone(answer_question("average temp by site", frame, roles))
+        self.assertIn("Temp (°C) or Temp (°F)", rephrase_hint("average temp by site", frame, roles))
+
+
+def timepoint_frame() -> tuple[pd.DataFrame, ColumnRoles]:
+    """Twenty timepoints, three rows each; the signal peaks at timepoint 5."""
+    points = np.repeat(np.arange(20), 3)
+    frame = pd.DataFrame({
+        "Region": np.tile(["North", "South", "East"], 20),
+        "timepoint": points,
+        "signal": 10.0 - np.abs(points - 5),
+        "weight": np.arange(60, dtype=float) + 0.5,
+    })
+    roles = ColumnRoles(date=None, measure="signal", dimension="Region", identifier=None,
+                        numeric=("timepoint", "signal", "weight"), dimensions=("Region",))
+    return frame, roles
+
+
+class NumericGroupingTests(unittest.TestCase):
+    def test_a_numeric_column_after_by_is_the_grouping(self):
+        frame, roles = timepoint_frame()
+
+        answer = answer_question("mean signal by timepoint", frame, roles)
+
+        self.assertEqual(answer.plan.intent, "breakdown")
+        self.assertEqual((answer.plan.measure, answer.plan.dimension), ("signal", "timepoint"))
+        self.assertEqual(answer.plan.aggregation, "mean")
+        self.assertIn("timepoint 5 has the highest average signal", answer.answer)
+
+    def test_numbered_groups_keep_their_order_past_the_breakdown_limit(self):
+        frame, roles = timepoint_frame()
+
+        answer = answer_question("mean signal by timepoint", frame, roles)
+
+        self.assertEqual(list(answer.table["timepoint"]), list(range(20)))
+        self.assertIn("in timepoint order, showing 20", answer.calculation)
+        self.assertEqual(answer.chart, "line")
+
+    def test_a_ranking_still_sorts_numbered_groups_by_value(self):
+        frame, roles = timepoint_frame()
+
+        which = answer_question("which timepoint has the highest signal", frame, roles)
+        top = answer_question("top 3 timepoints by signal", frame, roles)
+
+        self.assertEqual((which.plan.intent, which.plan.dimension), ("rank", "timepoint"))
+        self.assertEqual(which.table.iloc[0]["timepoint"], 5)
+        self.assertEqual(len(top.table), 3)
+        self.assertEqual(top.table.iloc[0]["timepoint"], 5)
+
+    def test_a_column_with_too_many_values_is_refused_rather_than_dropped(self):
+        frame, roles = timepoint_frame()
+
+        question = "average signal by weight"
+
+        self.assertIsNone(answer_question(question, frame, roles))
+        self.assertIn("weight has 60 distinct values", rephrase_hint(question, frame, roles))
+
+    def test_two_groupings_are_refused(self):
+        frame, roles = timepoint_frame()
+
+        self.assertIsNone(answer_question("mean signal by timepoint by region", frame, roles))
+
+    def test_after_a_segment_the_column_after_by_is_still_the_measure(self):
+        frame, roles = timepoint_frame()
+
+        answer = answer_question("top 2 region by signal", frame, roles)
+
+        self.assertEqual((answer.plan.dimension, answer.plan.measure), ("Region", "signal"))
+
+    def test_the_default_measure_is_used_when_only_the_grouping_is_named(self):
+        frame, roles = timepoint_frame()
+
+        answer = answer_question("average by timepoint", frame, roles)
+
+        self.assertEqual((answer.plan.dimension, answer.plan.measure), ("timepoint", "signal"))
+
+    def test_a_text_column_kept_out_of_the_segments_by_its_name_can_group(self):
+        frame = pd.DataFrame({"diet": ["low fat", "no fat"] * 6, "pulse": np.arange(80, 92),
+                              "time": ["1 min", "15 min", "30 min"] * 4})
+        roles = detect_roles(frame)
+        self.assertNotIn("time", roles.dimensions)
+
+        answer = answer_question("mean pulse by time", frame, roles)
+
+        self.assertEqual((answer.plan.intent, answer.plan.dimension), ("breakdown", "time"))
+
+    def test_a_date_column_after_by_asks_for_the_trend(self):
+        frame = pd.DataFrame({"Order Date": pd.date_range("2024-01-01", periods=120, freq="D"),
+                              "Revenue": np.arange(120, dtype=float)})
+
+        answer = answer_question("revenue by order date", frame, detect_roles(frame))
+
+        self.assertEqual(answer.plan.intent, "trend")
+
+    def test_the_chart_follows_the_table_order(self):
+        frame, roles = timepoint_frame()
+
+        figure = ui._chat_answer_figure(answer_question("mean signal by timepoint", frame, roles))
+
+        self.assertEqual(list(figure.data[0].x), list(range(20)))
+
+
+class NumericCountTests(unittest.TestCase):
+    def setUp(self):
+        self.frame = pd.DataFrame({"subject": np.tile(np.arange(1, 21), 3),
+                                   "Units": np.tile([1, 2, 3, 4, 5], 12),
+                                   "score": np.linspace(1.0, 9.0, 60)})
+        self.roles = detect_roles(self.frame)
+
+    def test_a_numbered_entity_column_counts_distinct_values(self):
+        answer = answer_question("how many subjects", self.frame, self.roles)
+
+        self.assertEqual(answer.plan.count_column, "subject")
+        self.assertIn("20 distinct subject values", answer.answer)
+
+    def test_a_quantity_column_is_not_counted_as_entities(self):
+        answer = answer_question("how many units", self.frame, self.roles)
+
+        self.assertIsNone(answer.plan.count_column)
+
+
+def paired_frame(rows: int = 40) -> pd.DataFrame:
+    rng = np.random.default_rng(7)
+    x = np.arange(rows, dtype=float)
+    y = 2 * x + rng.normal(0, 4, rows)
+    return pd.DataFrame({"x": x, "y": y, "group": ["Alpha", "Beta"] * (rows // 2)})
+
+
+class CorrelationTests(unittest.TestCase):
+    def setUp(self):
+        self.frame = paired_frame()
+        self.roles = detect_roles(self.frame)
+
+    def test_each_phrasing_asks_for_a_correlation(self):
+        for question in ("correlation between x and y", "is x correlated with y",
+                         "how does x relate to y", "relationship between x and y"):
+            with self.subTest(question=question):
+                plan = parse_question(question, self.frame, self.roles)
+                self.assertEqual((plan.intent, plan.measure, plan.partner), ("correlation", "x", "y"))
+
+    def test_the_answer_reports_r_its_interval_n_and_the_rank_correlation(self):
+        answer = answer_question("correlation between x and y", self.frame, self.roles)
+        expected = np.corrcoef(self.frame["x"], self.frame["y"])[0, 1]
+
+        self.assertIn(f"Pearson r = {expected:.2f}", answer.answer)
+        self.assertIn("95% CI", answer.answer)
+        self.assertIn("n = 40", answer.answer)
+        self.assertIn("rank correlation", answer.answer)
+        self.assertIn("not evidence of cause", answer.answer)
+        self.assertNotIn("strongest", answer.answer)
+        self.assertIn("Fisher", answer.calculation)
+        self.assertIn("Spearman", answer.calculation)
+
+    def test_the_wording_is_the_brief_wording(self):
+        answer = answer_question("correlation between x and y", self.frame, self.roles)
+
+        brief = describe_correlation(measure_correlation(self.frame[["x", "y"]]))
+        self.assertTrue(answer.answer.startswith(brief), answer.answer)
+
+    def test_the_answer_carries_the_pairs_for_a_scatter(self):
+        answer = answer_question("correlation between x and y", self.frame, self.roles)
+
+        self.assertEqual(answer.chart, "scatter")
+        self.assertEqual(list(answer.table.columns), ["x", "y"])
+        self.assertEqual(ui._chat_answer_figure(answer).data[0].mode, "markers")
+
+    def test_a_filter_narrows_the_pairs(self):
+        answer = answer_question("correlation between x and y for Alpha", self.frame, self.roles)
+
+        self.assertEqual(answer.plan.filters[0].values, ("Alpha",))
+        self.assertIn("n = 20", answer.answer)
+
+    def test_too_few_complete_pairs_are_refused_with_the_count(self):
+        frame = self.frame.copy()
+        frame.loc[11:, "y"] = np.nan
+
+        answer = answer_question("correlation between x and y", frame, detect_roles(frame))
+
+        self.assertIn("Only 11 rows have both x and y", answer.answer)
+        self.assertNotIn("Pearson", answer.answer)
+
+    def test_a_text_column_cannot_be_correlated(self):
+        question = "correlation between x and group"
+
+        self.assertIsNone(answer_question(question, self.frame, self.roles))
+        self.assertIn("group is not numeric", rephrase_hint(question, self.frame, self.roles))
+        plan = QueryPlan(intent="correlation", measure="x", partner="group")
+        with self.assertRaises(ValueError):
+            execute_plan(plan, self.frame, self.roles)
+
+    def test_one_correlation_per_group_is_refused(self):
+        self.assertIsNone(answer_question("correlation between x and y by group", self.frame, self.roles))
+
+    def test_a_constant_column_has_no_correlation(self):
+        frame = self.frame.assign(y=1.0)
+
+        answer = answer_question("correlation between x and y", frame, detect_roles(frame))
+
+        self.assertIn("y has a single value", answer.answer)
+
+    def test_an_unrelated_pair_says_it_cannot_be_told_from_none(self):
+        rng = np.random.default_rng(3)
+        frame = pd.DataFrame({"x": rng.normal(size=30), "y": rng.normal(size=30)})
+
+        answer = answer_question("correlation between x and y", frame, detect_roles(frame))
+
+        self.assertIn("cannot be told apart from no relationship", answer.answer)
+
+
+def daily_frame() -> pd.DataFrame:
+    """Two years of daily revenue with a spike through July 2024."""
+    dates = pd.date_range("2024-01-01", "2025-12-31", freq="D")
+    revenue = np.where((dates.year == 2024) & (dates.month == 7), 1_000.0, 100.0)
+    return pd.DataFrame({"Order Date": dates, "Revenue": revenue})
+
+
+class PeriodRankTests(unittest.TestCase):
+    def setUp(self):
+        self.frame = daily_frame()
+        self.roles = detect_roles(self.frame)
+
+    def test_which_month_names_the_top_period_and_its_value(self):
+        answer = answer_question("which month had the highest revenue", self.frame, self.roles)
+
+        self.assertEqual((answer.plan.intent, answer.plan.grain, answer.plan.dimension), ("rank", "M", None))
+        self.assertTrue(answer.answer.startswith("Jul 2024 had the highest total revenue of any month"))
+        self.assertIn("$31.0K", answer.answer)
+        self.assertIn("sum(Revenue) per month", answer.calculation)
+        self.assertEqual(answer.chart, "line")
+
+    def test_the_lowest_period_ranks_ascending(self):
+        answer = answer_question("which year had the lowest revenue", self.frame, self.roles)
+
+        self.assertTrue(answer.plan.ascending)
+        self.assertTrue(answer.answer.startswith("2025 had the lowest"), answer.answer)
+
+    def test_an_aggregation_the_trend_does_not_use_is_refused(self):
+        self.assertIsNone(
+            answer_question("which month had the highest average revenue", self.frame, self.roles)
+        )
+
+    def test_rows_rank_row_counts(self):
+        answer = answer_question("which month had the most rows", self.frame, self.roles)
+
+        self.assertIsNone(answer.plan.measure)
+        self.assertIn("row count", answer.answer)
+
+    def test_without_a_date_column_there_are_no_periods_to_rank(self):
+        frame = self.frame.drop(columns=["Order Date"])
+
+        plan = parse_question("which month had the highest revenue", frame, detect_roles(frame))
+
+        self.assertFalse(plan is not None and plan.intent == "rank" and plan.grain)
+
+
+class ConsistentAggregationTests(unittest.TestCase):
+    """Every intent combines a measure the same way unless the question names an aggregation."""
+
+    def test_a_level_is_averaged_by_every_intent(self):
+        frame = pd.DataFrame({"Survey Date": MONTHS.repeat(2), "Site": ["North", "South"] * 12,
+                              "Water Temp (°C)": np.linspace(10.0, 14.0, 24)})
+        roles = detect_roles(frame)
+        for question in ("which site has the highest water temp", "water temp by site",
+                         "top 1 site by water temp", "water temp", "monthly water temp trend",
+                         "how did water temp change", "which month had the highest water temp"):
+            with self.subTest(question=question):
+                self.assertEqual(parse_question(question, frame, roles).aggregation, "mean")
+
+    def test_an_amount_is_summed_by_every_intent(self):
+        frame = pd.DataFrame({"Month": MONTHS.repeat(2), "Region": ["North", "South"] * 12,
+                              "Revenue": np.linspace(100.0, 400.0, 24)})
+        roles = detect_roles(frame)
+        for question in ("which region has the highest revenue", "revenue by region",
+                         "revenue", "monthly revenue trend", "how did revenue change"):
+            with self.subTest(question=question):
+                self.assertEqual(parse_question(question, frame, roles).aggregation, "sum")
+
+    def test_a_numeric_grouping_takes_its_aggregation_from_the_measure(self):
+        frame = pd.DataFrame({"timepoint": np.repeat(np.arange(4), 3), "Temp (°C)": np.linspace(10, 12, 12)})
+
+        plan = parse_question("temp by timepoint", frame, detect_roles(frame))
+
+        self.assertEqual((plan.measure, plan.aggregation), ("Temp (°C)", "mean"))
 
 
 if __name__ == "__main__":

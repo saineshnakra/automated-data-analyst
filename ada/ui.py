@@ -458,10 +458,23 @@ def _chat_answer_figure(result: QueryAnswer) -> go.Figure | None:
     table = result.table
     if table is None or table.empty or result.chart is None:
         return None
+    if result.chart == "scatter" and len(table.columns) >= 2:
+        x, y = table.columns[:2]
+        figure = px.scatter(table, x=x, y=y, opacity=0.62, title=f"{y} vs {x}", color_discrete_sequence=[ACCENT])
+        return style_chart(figure, height=320)
     if result.chart == "line" and {"Period", "Value"}.issubset(table.columns):
         # The plan carries the aggregation the trend was built with.
         averaged = bool(result.plan.measure) and result.plan.aggregation == "mean"
         figure = _trend_figure(table, averaged, title=result.plan.measure or "Records")
+        return style_chart(figure, height=320)
+    if result.chart == "line":
+        # Groups of a numbered column (timepoint 0, 1, 2...), in the table's order.
+        category, value = table.columns[:2]
+        figure = px.line(
+            table, x=category, y=value, markers=True, title=f"{value} by {category}",
+            color_discrete_sequence=[ACCENT],
+        )
+        figure.update_traces(line={"width": 3})
         return style_chart(figure, height=320)
     category = table.columns[0]
     value = next((name for name in ("Change %", "Change") if name in table.columns), table.columns[1])
@@ -506,11 +519,15 @@ def render_chat_answer(result: QueryAnswer, *, key: str) -> None:
     )
 
 
-def render_chat_fallback(suggestions: list[str]) -> None:
-    """Render the reply for a question that maps to no local calculation."""
+def render_chat_fallback(suggestions: list[str], hint: str | None = None) -> None:
+    """Render the reply for a question that maps to no local calculation.
+
+    ``hint`` names the column the question may have meant, from ``rephrase_hint``.
+    """
     st.markdown(
         "I map questions to transparent calculations, and I could not map that one. "
-        "Try naming a metric, a segment, or a time scope, for example:"
+        + (f"{hint} " if hint else "")
+        + "Try naming a metric, a segment, or a time scope, for example:"
     )
     st.markdown("\n".join(f"- {suggestion}" for suggestion in suggestions))
 

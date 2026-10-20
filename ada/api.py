@@ -28,7 +28,7 @@ from .file_io import list_sample_datasets as _list_sample_datasets
 from .file_io import read_tabular_file
 from .forecasting import Forecast, build_forecast
 from .metrics import AGGREGATION_CHOICES, metric_for
-from .nlq import QueryAnswer, answer_question, suggested_questions, unsupported_phrasing
+from .nlq import QueryAnswer, answer_question, rephrase_hint, suggested_questions, unsupported_phrasing
 from .pipeline import apply_focus, focus_options, prepare_analysis
 from .schema import ColumnRoles
 
@@ -337,6 +337,7 @@ class Analysis:
         Returns a :class:`Refusal` with code ``unsupported_phrasing`` when the
         question uses a form the parser doesn't support (e.g. "revenue > 200"),
         or ``unrepresentable_question`` when it can't be mapped onto this table.
+        The second names the column the question may have meant, when there is one.
         """
         if unsupported_phrasing(question):
             return Refusal(
@@ -345,10 +346,9 @@ class Analysis:
             )
         answer = answer_question(question, self.frame, self.roles)
         if answer is None:
-            return Refusal(
-                "unrepresentable_question",
-                "ADA could not build a plan for that question against this table.",
-            )
+            message = "ADA could not build a plan for that question against this table."
+            hint = rephrase_hint(question, self.frame, self.roles)
+            return Refusal("unrepresentable_question", f"{message} {hint}" if hint else message)
         return answer
 
     def focus(self, value: str) -> Analysis | Refusal:

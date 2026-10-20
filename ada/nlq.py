@@ -12,13 +12,20 @@ from dataclasses import dataclass, replace
 from typing import Literal
 
 import pandas as pd
+from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 
 from .aggregation import TrendSeries, build_trend, preferred_frequency, unlabelled_label
-from .formatting import format_change, format_number, format_values_apart, sentence_case
+from .business_insights import (
+    MIN_CORRELATION_PAIRS,
+    RANK_DIVERGENCE,
+    describe_correlation,
+    measure_correlation,
+)
+from .formatting import format_change, format_number, format_period, format_values_apart, sentence_case
 from .metrics import metric_for
 from .schema import ColumnRoles
 
-Intent = Literal["aggregate", "count", "rank", "breakdown", "trend", "growth"]
+Intent = Literal["aggregate", "count", "rank", "breakdown", "trend", "growth", "correlation"]
 Aggregation = Literal["sum", "mean", "median", "min", "max", "count"]
 
 AGGREGATION_WORDS: dict[str, Aggregation] = {
@@ -67,6 +74,10 @@ GROWTH_WORDS = (
     "decline", "declined", "dropped", "drop", "shrank", "fell",
 )
 TREND_WORDS = ("over time", "trend", "timeline", "history", "trajectory")
+CORRELATION_WORDS = (
+    "correlation", "correlated", "correlate", "correlates",
+    "relationship", "relate", "relates", "related",
+)
 GRAIN_WORDS = {
     "daily": "D",
     "day": "D",
@@ -104,16 +115,43 @@ MONTH_NAMES = {
 
 MAX_FILTER_CANDIDATES = 200
 BREAKDOWN_LIMIT = 12
+# A numeric column with at most this many distinct values can group rows
+# ("mean signal by timepoint"); more than that and it reads as a measure.
+GROUPING_LIMIT = 50
+# Most points a correlation answer carries for its scatter.
+SCATTER_LIMIT = 2_000
+# Words that put the column named right after them in the grouping role:
+# "mean signal by timepoint". After a ranking word the column is what gets
+# ranked, and a later "by" names the measure: "top 3 cylinders by mpg".
+GROUPING_WORDS = r"(?:by|per|across|each)"
+RANKING_WORDS = r"(?:which|top|bottom)(?:\s+\d{1,3})?"
+GRAIN_NAMES = {"D": "day", "W": "week", "M": "month", "Q": "quarter", "Y": "year"}
+# Trailing unit tokens left out of a column's core name, so "body mass" names
+# body_mass_g. "min" and "max" are missing because they also mean minimum and maximum.
+UNIT_TOKENS = frozenset({
+    "mm", "cm", "m", "km", "nm", "um", "ft", "g", "kg", "mg", "ug", "ng", "lb", "lbs", "oz",
+    "l", "ml", "ul", "c", "f", "k", "s", "ms", "sec", "secs", "h", "hr", "hrs",
+    "pct", "percent", "ppm", "ppb", "mol", "mmol", "umol", "kda", "rfu", "au",
+    "hz", "kpa", "psi", "mph", "bpm", "rpm", "kcal", "usd", "eur", "gbp",
+})
+_TRAILING_ANNOTATION = re.compile(r"\s*[(\[][^)\]]*[)\]]\s*$")
 
 QUERY_STOPWORDS = {
-    "a", "about", "across", "all", "also", "and", "any", "are", "been", "by", "can",
+    "a", "about", "across", "all", "also", "and", "any", "are", "been", "between", "by", "can",
     "did", "do", "does", "done", "each", "for", "from", "get", "give", "got", "have",
-    "has", "he", "how", "hows", "i", "in", "is", "it", "just", "last", "least", "make", "made",
+    "had", "has", "he", "how", "hows", "i", "in", "is", "it", "just", "last", "least", "make", "made",
     "many", "me", "most", "much", "my", "next", "of", "on", "only", "or", "our",
     "please", "re", "s", "she", "show", "tell", "than", "that", "the", "then", "there",
     "this", "to", "they", "us", "ve", "was", "we", "were", "what", "whats", "which",
     "with", "you", "your",
 }
+# Every word the parser reads as query grammar rather than as data.
+QUERY_GRAMMAR = frozenset({
+    *QUERY_STOPWORDS, *AGGREGATION_WORDS, *SUPERLATIVE_WORDS, *DECLINE_WORDS, *GROWTH_WORDS,
+    *CORRELATION_WORDS, *GRAIN_WORDS, *MONTH_NAMES,
+    "bottom", "count", "breakdown", "fastest", "history", "number", "per", "rows", "sells",
+    "split", "sold", "top", "trajectory", "trend", "over", "time", "timeline",
+})
 
 
 @dataclass(frozen=True)
@@ -129,6 +167,8 @@ class QueryPlan:
     measure: str | None = None
     dimension: str | None = None
     count_column: str | None = None
+    #: The second column of a correlation; ``measure`` is the first.
+    partner: str | None = None
     top_n: int | None = None
     ascending: bool = False
     filters: tuple[ValueFilter, ...] = ()
@@ -145,7 +185,7 @@ class QueryAnswer:
     answer: str
     calculation: str
     table: pd.DataFrame | None = None
-    chart: Literal["bar", "line"] | None = None
+    chart: Literal["bar", "line", "scatter"] | None = None
 
 
 def _norm(text: str) -> str:
@@ -175,7 +215,98 @@ def _mentioned(normalized_name: str, question: str) -> bool:
     )
 
 
-def _without_columns(question: str, columns: tuple[str | None, ...]) -> str:
+def _core_name(column: str) -> str:
+    """The normalized name without its trailing unit: "Concentration (mg/L)" gives "concentration".
+
+    A bracketed annotation goes first, then unit tokens from the end while a word
+    remains, so body_mass_g gives "body mass" and a column called "mm" stays "mm".
+    """
+    words = _norm(_TRAILING_ANNOTATION.sub("", str(column))).split()
+    while len(words) > 1 and words[-1] in UNIT_TOKENS:
+        words.pop()
+    return " ".join(words)
+
+
+def _column_names(columns: list[str]) -> dict[str, tuple[str, ...]]:
+    """Each column's normalized name, plus its core name when that differs.
+
+    A core name shared with another column, or found inside another column's
+    name, is left out: with "Temp (°C)" and "Temp (°F)", "temp" names neither.
+    """
+    full = {column: _norm(column) for column in columns}
+    cores = {column: _core_name(column) for column in columns}
+    names: dict[str, tuple[str, ...]] = {}
+    for column in columns:
+        core = cores[column]
+        if not core or core == full[column]:
+            names[column] = (full[column],)
+            continue
+        # Normalized names are single-spaced words, so padding makes this a whole-word match.
+        shared = any(
+            other != column and (cores[other] == core or f" {core} " in f" {full[other]} ")
+            for other in columns
+        )
+        names[column] = (full[column],) if shared else (full[column], core)
+    return names
+
+
+def _name_words(forms: tuple[str, ...]) -> set[str]:
+    """Words that can refer to a column: those of its names, and plurals of each name."""
+    words: set[str] = set()
+    for form in forms:
+        words.update(form.split())
+        words.update(_word_variants(form))
+        words.update(_word_variants(form.split(" ", 1)[0]))
+    return words
+
+
+def _follows(question: str, start: int, words: str = f"(?:{GROUPING_WORDS}|{RANKING_WORDS})") -> bool:
+    """Whether the text at ``start`` comes right after one of ``words``, as in "by timepoint"."""
+    return bool(re.search(rf"\b{words}\s+(?:the\s+)?$", question[:start]))
+
+
+def _mentions(question: str, names: dict[str, tuple[str, ...]]) -> dict[str, int]:
+    """Map each column named in the question to where it is named, in question order.
+
+    Longer names claim their words first, so "revenue growth" is not also read
+    as "revenue". A core name that is also a query word ("time" for "Time (h)")
+    names its column only right after a grouping word: "by time", not "over time".
+    """
+    remaining = question
+    found: dict[str, int] = {}
+    forms = sorted(
+        ((form, column) for column, column_forms in names.items() for form in column_forms if form),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+    for form, column in forms:
+        if column in found:
+            continue
+        grouping_only = form in QUERY_GRAMMAR and form != names[column][0]
+        for variant in sorted(_word_variants(form), key=len, reverse=True):
+            match = next(
+                (
+                    candidate
+                    for candidate in re.finditer(rf"\b{re.escape(variant)}\b", remaining)
+                    if not grouping_only or _follows(question, candidate.start())
+                ),
+                None,
+            )
+            if match:
+                found[column] = match.start()
+                remaining = f"{remaining[:match.start()]}{' ' * len(variant)}{remaining[match.end():]}"
+                break
+    return dict(sorted(found.items(), key=lambda item: item[1]))
+
+
+def _longest(columns: list[str]) -> str | None:
+    """The column with the longest name; the first wins a tie."""
+    return max(columns, key=lambda column: len(_norm(column))) if columns else None
+
+
+def _without_columns(
+    question: str, columns: tuple[str | None, ...], names: dict[str, tuple[str, ...]]
+) -> str:
     """Return the question with the matched column names blanked out.
 
     Column names contain words the intent scan would otherwise read: "Cell
@@ -186,9 +317,9 @@ def _without_columns(question: str, columns: tuple[str | None, ...]) -> str:
     for column in columns:
         if not column:
             continue
-        name = _norm(column)
-        if name:
-            blanked = re.sub(rf"\b{re.escape(name)}\b", " ", blanked)
+        for name in names.get(column, (_norm(column),)):
+            if name:
+                blanked = re.sub(rf"\b{re.escape(name)}\b", " ", blanked)
     return " ".join(blanked.split())
 
 
@@ -207,18 +338,43 @@ def _scoped_roles(roles: ColumnRoles, measure: str | None, dimension: str | None
     return replace(roles, measure=measure, dimension=dimension, aggregation=aggregation)
 
 
-def _match_column(question: str, columns: list[str]) -> str | None:
-    """Return the column with the longest name mentioned in the question."""
-    matches = [column for column in columns if _mentioned(_norm(column), question)]
-    return max(matches, key=lambda column: len(_norm(column))) if matches else None
+def _labels_entities(column: str, series: pd.Series) -> bool:
+    """Whether a numeric column numbers entities, like a subject column holding 1 to 20.
+
+    It needs whole numbers and a singular name: "Units" or "Visits" holds a
+    quantity, so counting its distinct values would answer a different question.
+    """
+    values = series.dropna()
+    if values.empty or bool((values % 1 != 0).any()):
+        return False
+    last = (_core_name(column).split() or [""])[-1]
+    return not last.endswith("s") or last.endswith(("ss", "us", "is"))
 
 
-def _match_countable(question: str, roles: ColumnRoles) -> str | None:
-    """Match 'how many <entities>' to an identifier or dimension column."""
+def _match_countable(
+    question: str, dataframe: pd.DataFrame, roles: ColumnRoles, names: dict[str, tuple[str, ...]]
+) -> str | None:
+    """Match 'how many <entities>' to an identifier, a dimension or a numbered entity column.
+
+    A numeric column must pass ``_labels_entities`` and be named in the plural
+    right after "how many" or "number of": "how many subjects" counts a subject
+    column, while "how many horsepower" is not a count of anything.
+    """
     candidates = [column for column in (roles.identifier, *roles.dimensions) if column]
     for column in candidates:
         tokens = {_norm(column), _norm(column).split(" ")[0]}
         if any(_mentioned(token, question) for token in tokens if token):
+            return column
+    for column in roles.numeric:
+        if column not in dataframe.columns or not _labels_entities(column, dataframe[column]):
+            continue
+        plurals = {
+            variant for form in names.get(column, ()) for variant in _word_variants(form) - {form}
+        }
+        if any(
+            re.search(rf"\b(?:how many|number of)\s+(?:the\s+)?{re.escape(plural)}\b", question)
+            for plural in plurals
+        ):
             return column
     return None
 
@@ -264,56 +420,59 @@ def _detect_grain(question: str) -> str | None:
     return None
 
 
-def _unrecognized_query_tokens(
-    question: str, dataframe: pd.DataFrame, roles: ColumnRoles
-) -> set[str]:
-    """Return content words that cannot refer to this dataset or query grammar."""
-    allowed = set(QUERY_STOPWORDS)
-    allowed.update(AGGREGATION_WORDS)
-    allowed.update(ASCENDING_WORDS)
-    allowed.update(SUPERLATIVE_WORDS)
-    allowed.update(DECLINE_WORDS)
-    allowed.update(GROWTH_WORDS)
-    allowed.update(GRAIN_WORDS)
-    allowed.update(MONTH_NAMES)
-    allowed.update(
-        {
-            "bottom",
-            "count",
-            "breakdown",
-            "fastest",
-            "history",
-            "number",
-            "per",
-            "rows",
-            "sells",
-            "split",
-            "sold",
-            "top",
-            "trajectory",
-            "trend",
-            "over",
-            "time",
-            "timeline",
-        }
-    )
-
-    for column in dataframe.columns:
-        normalized = _norm(column)
-        allowed.update(normalized.split())
-        allowed.update(_word_variants(normalized))
-        first_word = normalized.split(" ", 1)[0]
-        allowed.update(_word_variants(first_word))
-
+def _value_words(dataframe: pd.DataFrame, roles: ColumnRoles) -> set[str]:
+    """Words in the values of segment columns small enough to filter on."""
+    words: set[str] = set()
     for column in roles.dimensions:
         if column not in dataframe.columns:
             continue
         unique_values = dataframe[column].dropna().astype(str).unique()
         if len(unique_values) <= MAX_FILTER_CANDIDATES:
             for value in unique_values:
-                allowed.update(_norm(value).split())
+                words.update(_norm(value).split())
+    return words
 
+
+def _unrecognized_query_tokens(
+    question: str, names: dict[str, tuple[str, ...]], value_words: set[str]
+) -> set[str]:
+    """Return content words that cannot refer to this dataset or query grammar."""
+    allowed = set(QUERY_GRAMMAR) | value_words
+    for forms in names.values():
+        allowed.update(_name_words(forms))
     return {token for token in question.split() if token.isalpha() and token not in allowed}
+
+
+def _partial_mentions(
+    question: str,
+    numeric_columns: list[str],
+    names: dict[str, tuple[str, ...]],
+    mentioned: dict[str, int],
+    value_words: set[str],
+) -> tuple[str, ...]:
+    """Numeric columns the question names only in part, such as "body" for body_mass_g.
+
+    A word counts when it is not query grammar and only the names of numeric
+    columns the question did not name in full use it. Answering anyway would
+    use the default measure, which is not the column the reader meant.
+    """
+    claimed = set(QUERY_GRAMMAR) | value_words
+    for column, forms in names.items():
+        if column not in numeric_columns or column in mentioned:
+            claimed.update(_name_words(forms))
+    unnamed = {
+        column: _name_words(names[column])
+        for column in numeric_columns
+        if column in names and column not in mentioned
+    }
+    candidates: list[str] = []
+    for token in question.split():
+        if not token.isalpha() or token in claimed:
+            continue
+        candidates.extend(
+            column for column, words in unnamed.items() if token in words and column not in candidates
+        )
+    return tuple(candidates)
 
 
 # Phrasings a plan cannot represent, such as "revenue > 200" or "last 30 days".
@@ -352,6 +511,94 @@ def unsupported_phrasing(question: str) -> bool:
     )
 
 
+def _can_group_text(dataframe: pd.DataFrame, column: str, roles: ColumnRoles) -> bool:
+    """Whether a text column can group rows when the question names it after "by".
+
+    Besides the detected segments, this admits a small text column kept out of
+    them by its name, such as a "time" column holding "1 min" and "15 min".
+    """
+    if column in roles.dimensions:
+        return True
+    series = dataframe[column]
+    if column in (roles.date, roles.identifier) or is_numeric_dtype(series):
+        return False
+    if is_datetime64_any_dtype(series):
+        return False
+    return 2 <= int(series.nunique(dropna=True)) <= GROUPING_LIMIT
+
+
+def _choose_columns(
+    question: str,
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles,
+    names: dict[str, tuple[str, ...]],
+    mentioned: dict[str, int],
+) -> tuple[str | None, str | None] | None:
+    """Pick the measure and the grouping column, or None when the question can't be one plan.
+
+    A numeric column named right after a grouping or ranking word groups the rows
+    when no segment is named and it has at most GROUPING_LIMIT values: in "mean
+    signal by timepoint" the measure is signal. With more values it cannot group,
+    and a question naming another measure is refused rather than answered without
+    its "by". Two groupings ("by timepoint by region") are refused too.
+    """
+    numeric_columns = [column for column in roles.numeric if column in dataframe.columns]
+    numbers = [column for column in numeric_columns if column in mentioned]
+    ranked = [column for column, start in mentioned.items() if _follows(question, start, RANKING_WORDS)]
+    grouped = [column for column, start in mentioned.items() if _follows(question, start, GROUPING_WORDS)]
+    text_groupings = list(dict.fromkeys(
+        column for column in ranked + grouped
+        if column not in numeric_columns and _can_group_text(dataframe, column, roles)
+    ))
+    numeric_groupings = [column for column in ranked if column in numbers] or [
+        column for column in grouped if column in numbers
+    ]
+    if len(text_groupings) > 1 or len(numeric_groupings) > 1:
+        return None
+    segments = [column for column in roles.dimensions if column in mentioned]
+    dimension = text_groupings[0] if text_groupings else _longest(segments)
+    if not numeric_groupings:
+        return _longest(numbers), dimension
+
+    grouping = numeric_groupings[0]
+    others = [column for column in numbers if column != grouping]
+    if dimension:
+        # "top 3 products by revenue": the column after "by" is the measure.
+        return None if others else (grouping, dimension)
+    unnamed = _without_columns(question, tuple(mentioned), names)
+    counting = re.search(r"\b(how many|count|number of)\b", unnamed)
+    if others or counting or roles.measure not in (None, grouping):
+        if int(dataframe[grouping].nunique(dropna=True)) <= GROUPING_LIMIT:
+            return _longest(others), grouping
+        if others:
+            return None
+    return _longest(numbers), None
+
+
+def _correlation_plan(
+    question: str,
+    numeric_columns: list[str],
+    mentioned: dict[str, int],
+    filters: tuple[ValueFilter, ...],
+    year: int | None,
+    month: int | None,
+) -> QueryPlan | None:
+    """Plan a correlation of the two numeric columns the question names, in the order named.
+
+    Refused when it names anything else to group by ("by species", "per month"),
+    since that asks for one r per group. A column named only to filter on is fine.
+    """
+    pair = [column for column in mentioned if column in numeric_columns]
+    filtered = {item.column for item in filters}
+    if len(pair) != 2 or _detect_grain(question):
+        return None
+    if any(column not in pair and column not in filtered for column in mentioned):
+        return None
+    return QueryPlan(
+        intent="correlation", measure=pair[0], partner=pair[1], filters=filters, year=year, month=month
+    )
+
+
 def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -> QueryPlan | None:
     """Turn a plain-English question into an explicit plan, or None if unsupported."""
     q = _norm(question)
@@ -359,22 +606,42 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
         return None
 
     numeric_columns = [column for column in roles.numeric if column in dataframe.columns]
-    dimension_columns = [column for column in roles.dimensions if column in dataframe.columns]
-
-    measure = _match_column(q, numeric_columns)
-    dimension = _match_column(q, dimension_columns)
-    if _unrecognized_query_tokens(q, dataframe, roles):
+    names = _column_names(list(dataframe.columns))
+    value_words = _value_words(dataframe, roles)
+    if _unrecognized_query_tokens(q, names, value_words):
         return None
+    mentioned = _mentions(q, names)
+    if _partial_mentions(q, numeric_columns, names, mentioned, value_words):
+        return None
+    # "which month had the highest wind" ranks the periods of the date column;
+    # the grain word names the period, not a column that happens to be called "month".
+    period = re.search(r"\b(?:which|what)\s+(day|week|month|quarter|year)\b", q) if roles.date else None
+    if period:
+        mentioned = {column: start for column, start in mentioned.items() if start != period.start(1)}
+
     year, month = _detect_time_filter(q)
     grain = _detect_grain(q)
+    filters_including_dimension = _detect_value_filters(q, dataframe, roles)
+
+    unnamed = _without_columns(q, tuple(mentioned), names)
+    if any(re.search(rf"\b{word}\b", unnamed) for word in CORRELATION_WORDS):
+        return _correlation_plan(q, numeric_columns, mentioned, filters_including_dimension, year, month)
+
+    chosen = _choose_columns(q, dataframe, roles, names, mentioned)
+    if chosen is None:
+        return None
+    measure, dimension = chosen
+    # "revenue by order date" asks for the trend; with a segment as well it asks for two groupings.
+    by_date = roles.date in mentioned and _follows(q, mentioned[roles.date], GROUPING_WORDS)
+    if by_date and dimension:
+        return None
     # A grouped answer groups by the matched dimension, so its values are not
     # filters. Ungrouped answers keep them: "revenue for Region West" filters
     # to West even though "Region" also matched as the dimension.
     filters = _detect_value_filters(q, dataframe, roles, exclude=(dimension,))
-    filters_including_dimension = _detect_value_filters(q, dataframe, roles)
 
     # Read intent words with the matched column names removed (see _without_columns).
-    intent_text = _without_columns(q, (measure, dimension))
+    intent_text = _without_columns(q, (measure, dimension), names)
     aggregation: Aggregation | None = next(
         (
             AGGREGATION_WORDS[word]
@@ -394,7 +661,7 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
     wants_breakdown = bool(re.search(r"\b(by|per|across|breakdown|split|each)\b", intent_text))
     wants_count = bool(re.search(r"\b(how many|count|number of)\b", intent_text))
     wants_growth = any(re.search(rf"\b{word}\b", intent_text) for word in GROWTH_WORDS)
-    wants_trend = grain is not None or any(phrase in intent_text for phrase in TREND_WORDS)
+    wants_trend = by_date or grain is not None or any(phrase in intent_text for phrase in TREND_WORDS)
 
     base = {
         "measure": measure or roles.measure,
@@ -406,13 +673,14 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
 
     ungrouped = {**base, "filters": filters_including_dimension}
     # Same default as the dashboard: rates and levels average, amounts sum. An
-    # explicit "total" or "sum" still sums.
+    # explicit "total" or "sum" still sums. It is taken from the final measure, so
+    # every intent combines a given measure the same way.
     default_aggregation = metric_for(base["measure"], roles).aggregation
 
     if wants_count and not wants_growth:
         if dimension and wants_breakdown:
             return QueryPlan(intent="breakdown", aggregation="count", dimension=dimension, **base)
-        countable = _match_countable(q, roles)
+        countable = _match_countable(q, dataframe, roles, names)
         return QueryPlan(intent="count", aggregation="count", count_column=countable, **ungrouped)
 
     if wants_growth and roles.date:
@@ -421,7 +689,24 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
         ascending = bool(re.search(ASCENDING_PATTERN, intent_text))
         top_n = int(top_match.group(2)) if top_match else None
         return QueryPlan(
-            intent="growth", dimension=rank_dimension, ascending=ascending, top_n=top_n, **base
+            intent="growth", aggregation=default_aggregation, dimension=rank_dimension,
+            ascending=ascending, top_n=top_n, **base,
+        )
+
+    if period and superlative:
+        # "which month had the most rows" ranks row counts.
+        period_measure = None if not measure and re.search(r"\brows\b", intent_text) else base["measure"]
+        per_period = metric_for(period_measure, roles).aggregation
+        # Periods come from build_trend, which combines with the measure's default,
+        # so "which month had the highest average revenue" is refused like a trend.
+        if dimension or _grouped_aggregation(aggregation, explicit_extreme, per_period) != per_period:
+            return None
+        return QueryPlan(
+            intent="rank",
+            aggregation=per_period,
+            top_n=1,
+            ascending=bool(re.search(ASCENDING_PATTERN, intent_text)),
+            **{**ungrouped, "measure": period_measure, "grain": GRAIN_WORDS[period.group(1)]},
         )
 
     if (top_match or superlative) and dimension:
@@ -557,9 +842,15 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
     Raises ``ValueError`` for an unknown column or intent. The returned
     ``question`` is empty; ``answer_question`` fills it in.
     """
-    for column in (plan.measure, plan.dimension, plan.count_column):
+    for column in (plan.measure, plan.dimension, plan.count_column, plan.partner):
         if column is not None and column not in dataframe.columns:
             raise ValueError(f"Unknown column in plan: {column}")
+    if plan.intent == "correlation":
+        pair = (plan.measure, plan.partner)
+        if None in pair or plan.measure == plan.partner:
+            raise ValueError("A correlation needs two different columns")
+        if not all(is_numeric_dtype(dataframe[column]) for column in pair):
+            raise ValueError("A correlation needs two numeric columns")
 
     try:
         working, applied = _apply_filters(dataframe, plan, roles)
@@ -625,25 +916,52 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
             calculation=f"{plan.aggregation}({plan.measure}){scope}",
         )
 
+    if plan.intent == "correlation":
+        return _execute_correlation(plan, working, scope, applied)
+
+    if plan.intent == "rank" and plan.dimension is None and plan.grain:
+        return _rank_periods(plan, working, roles, scope, applied)
+
     if plan.intent in ("rank", "breakdown"):
         assert plan.dimension is not None
         label = AGGREGATION_LABELS[plan.aggregation]
         value_label = f"{label} {plan.measure}" if plan.measure and plan.aggregation != "count" else "Rows"
         grouped = _grouped_frame(working, plan, value_label)
-        limit = plan.top_n if plan.intent == "rank" else BREAKDOWN_LIMIT
-        table = grouped.head(limit or BREAKDOWN_LIMIT)
-        leader = table.iloc[0]
+        # Numbered groups (timepoint 0, 1, 2...) are listed in their own order, up
+        # to GROUPING_LIMIT of them; a ranking still sorts them by value.
+        numbered = is_numeric_dtype(working[plan.dimension])
+        ordered = numbered and plan.intent == "breakdown"
+        if ordered:
+            table = grouped.sort_values(
+                plan.dimension, key=lambda values: pd.to_numeric(values, errors="coerce"), kind="stable"
+            ).head(GROUPING_LIMIT).reset_index(drop=True)
+            order = f"in {plan.dimension} order"
+        else:
+            limit = plan.top_n if plan.intent == "rank" else BREAKDOWN_LIMIT
+            table = grouped.head(limit or BREAKDOWN_LIMIT)
+            order = "ascending" if plan.ascending else "descending"
+        leader = grouped.iloc[0]
         leader_value = float(leader[value_label])
-        direction = "lowest" if plan.ascending else "leading"
         share_note = f" ({leader['Share %']:.1f}% of the total)" if "Share %" in table.columns else ""
         # Format a row count as a plain number, not in the measure's unit.
         counted = value_label == "Rows"
-        answer = (
-            f"{leader[plan.dimension]} is the {direction} {plan.dimension} by {sentence_case(value_label)}"
-            f"{_phrase(applied)} at "
-            f"{format_number(leader_value, None if counted else plan.measure)}{share_note}."
-        )
-        order = "ascending" if plan.ascending else "descending"
+        value_text = format_number(leader_value, None if counted else plan.measure)
+        if numbered:
+            if counted:
+                most = "fewest rows" if plan.ascending else "most rows"
+            else:
+                most = f"{'lowest' if plan.ascending else 'highest'} {sentence_case(value_label)}"
+            answer = (
+                f"{plan.dimension} {_group_label(leader[plan.dimension])} has the {most}"
+                f"{_phrase(applied)} at {value_text}{share_note}."
+            )
+        else:
+            direction = "lowest" if plan.ascending else "leading"
+            answer = (
+                f"{leader[plan.dimension]} is the {direction} {plan.dimension} by "
+                f"{sentence_case(value_label)}{_phrase(applied)} at {value_text}{share_note}."
+            )
+        showing = f"{len(table)} of {len(grouped)}" if len(table) < len(grouped) and ordered else len(table)
         return QueryAnswer(
             question="",
             plan=plan,
@@ -652,10 +970,10 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
                 # Name what ran: row counts use .size(), which differs from
                 # count(<measure>) when the measure has missing values.
                 f"{'row count' if value_label == 'Rows' else f'{plan.aggregation}({plan.measure})'}"
-                f" by {plan.dimension}, {order}, showing {len(table)}{scope}"
+                f" by {plan.dimension}, {order}, showing {showing}{scope}"
             ),
             table=table,
-            chart="bar",
+            chart="line" if ordered else "bar",
         )
 
     if plan.intent == "trend":
@@ -672,7 +990,7 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
                 calculation=f"trend needs at least 2 periods{scope}",
             )
         first, last = float(trend.iloc[0]["Value"]), float(trend.iloc[-1]["Value"])
-        grain_name = {"D": "day", "W": "week", "M": "month", "Q": "quarter", "Y": "year"}.get(grain, "period")
+        grain_name = GRAIN_NAMES.get(grain, "period")
         # Rates move in points and levels by a plain difference (see format_change).
         column = working[plan.measure].dropna() if plan.measure else None
         unit = _unit(plan.measure, scoped_roles)
@@ -702,6 +1020,122 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
         return _execute_growth(plan, working, roles, scope, applied)
 
     raise ValueError(f"Unsupported intent: {plan.intent}")
+
+
+def _group_label(value: object) -> str:
+    """A group value as it reads in a sentence: 24.0 reads as 24."""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _execute_correlation(
+    plan: QueryPlan, working: pd.DataFrame, scope: str, applied: list[str]
+) -> QueryAnswer:
+    """Correlate the plan's two columns over the rows where both are recorded.
+
+    Worded like the brief's relationship card, except that the pair was chosen by
+    the reader, so nothing is said about picking it from several.
+    """
+    assert plan.measure is not None and plan.partner is not None
+    paired = working[[plan.measure, plan.partner]].dropna()
+    pairs = len(paired)
+    if pairs < MIN_CORRELATION_PAIRS:
+        return QueryAnswer(
+            question="",
+            plan=plan,
+            answer=(
+                f"Only {pairs:,} rows have both {plan.measure} and {plan.partner}{_phrase(applied)}; "
+                f"a correlation needs at least {MIN_CORRELATION_PAIRS}."
+            ),
+            calculation=f"{pairs:,} complete pairs, fewer than {MIN_CORRELATION_PAIRS}{scope}",
+        )
+    correlation = measure_correlation(paired)
+    if correlation is None:
+        flat = next((column for column in paired.columns if paired[column].nunique() < 2), None)
+        return QueryAnswer(
+            question="",
+            plan=plan,
+            answer=(
+                f"{flat} has a single value{_phrase(applied)}, so a correlation is undefined."
+                if flat
+                else f"A correlation is undefined for these values{_phrase(applied)}."
+            ),
+            calculation=f"Pearson r undefined over {pairs:,} complete pairs{scope}",
+        )
+    answer = describe_correlation(correlation, _phrase(applied))
+    if abs(correlation.rank_divergence) <= RANK_DIVERGENCE:
+        answer += f" The rank correlation is {correlation.spearman:.2f}."
+    answer += " On its own this is not evidence of cause."
+    calculation = (
+        f"Pearson r over {pairs:,} paired non-missing values, 95% CI by Fisher transform, "
+        f"checked against Spearman{scope}"
+    )
+    points = paired
+    if pairs > SCATTER_LIMIT:
+        points = paired.sample(SCATTER_LIMIT, random_state=0).sort_index()
+        calculation += f"; the chart shows {SCATTER_LIMIT:,} of the {pairs:,} pairs, sampled"
+    return QueryAnswer(
+        question="",
+        plan=plan,
+        answer=answer,
+        calculation=calculation,
+        table=points.reset_index(drop=True),
+        chart="scatter",
+    )
+
+
+def _rank_periods(
+    plan: QueryPlan,
+    working: pd.DataFrame,
+    roles: ColumnRoles,
+    scope: str,
+    applied: list[str],
+) -> QueryAnswer:
+    """Name the period at the plan's grain with the highest (or lowest) value of the trend."""
+    if not roles.date or plan.grain not in GRAIN_NAMES:
+        raise ValueError("Ranking periods needs a date column and a grain")
+    scoped_roles = ColumnRoles(
+        date=roles.date,
+        measure=plan.measure,
+        dimension=None,
+        identifier=roles.identifier,
+        numeric=roles.numeric,
+        dimensions=roles.dimensions,
+    )
+    series = build_trend(working, scoped_roles, frequency=plan.grain)
+    # A rate leaves periods without rows empty rather than zero; they can't rank.
+    trend = series.frame.dropna(subset=["Value"])
+    grain_name = GRAIN_NAMES[plan.grain]
+    if len(trend) < 2:
+        return QueryAnswer(
+            question="",
+            plan=plan,
+            answer=f"Fewer than two {grain_name}s have values in that scope, so there is nothing to compare.",
+            calculation=f"ranking needs at least 2 {grain_name}s{scope}",
+        )
+    pick = trend.loc[trend["Value"].idxmin() if plan.ascending else trend["Value"].idxmax()]
+    period = format_period(pd.Timestamp(pick["Period"]), plan.grain)
+    if plan.grain == "W":
+        period = f"The week of {period}"
+    direction = "lowest" if plan.ascending else "highest"
+    label = AGGREGATION_LABELS[plan.aggregation]
+    described = sentence_case(f"{label} {plan.measure}") if plan.measure else "row count"
+    return QueryAnswer(
+        question="",
+        plan=plan,
+        answer=(
+            f"{period} had the {direction} {described} of any {grain_name}{_phrase(applied)}, at "
+            f"{format_number(float(pick['Value']), plan.measure)}."
+        ),
+        calculation=_with_notes(
+            f"{plan.aggregation}({plan.measure or 'rows'}) per {grain_name}, the {direction} of "
+            f"{len(trend)} {grain_name}s{scope}",
+            series,
+        ),
+        table=series.frame,
+        chart="line",
+    )
 
 
 def _execute_growth(
@@ -923,6 +1357,54 @@ def answer_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) 
         calculation=result.calculation,
         table=result.table,
         chart=result.chart,
+    )
+
+
+def _listed(columns: tuple[str, ...] | list[str]) -> str:
+    """Join names as "a", "a or b", "a, b or c"."""
+    return columns[0] if len(columns) == 1 else f"{', '.join(columns[:-1])} or {columns[-1]}"
+
+
+def rephrase_hint(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -> str | None:
+    """Say which column a refused question may have meant, or None without a lead.
+
+    Names the numeric columns the question names only in part ("Did you mean
+    body_mass_g?"), a text column it asks to correlate, or a numeric column it
+    groups by that has too many values.
+    """
+    q = _norm(question)
+    if not q:
+        return None
+    numeric_columns = [column for column in roles.numeric if column in dataframe.columns]
+    names = _column_names(list(dataframe.columns))
+    mentioned = _mentions(q, names)
+    partial = _partial_mentions(q, numeric_columns, names, mentioned, _value_words(dataframe, roles))
+    if partial:
+        return f"Did you mean {_listed(partial)}?"
+    numbers = [column for column in mentioned if column in numeric_columns]
+    unnamed = _without_columns(q, tuple(mentioned), names)
+    if len(numbers) < 2 and any(re.search(rf"\b{word}\b", unnamed) for word in CORRELATION_WORDS):
+        others = [column for column in mentioned if column not in numeric_columns]
+        if others:
+            return f"A correlation needs two numeric columns, and {_listed(others)} is not numeric."
+    # The same column _choose_columns would group by: a ranked one first, then one after "by".
+    grouping = next(
+        (
+            column
+            for words in (RANKING_WORDS, GROUPING_WORDS)
+            for column in numbers
+            if _follows(q, mentioned[column], words)
+        ),
+        None,
+    )
+    if grouping is None or len(numbers) < 2:
+        return None
+    distinct = int(dataframe[grouping].nunique(dropna=True))
+    if distinct <= GROUPING_LIMIT:
+        return None
+    return (
+        f"{grouping} has {distinct:,} distinct values, too many to group by "
+        f"(the limit is {GROUPING_LIMIT})."
     )
 
 

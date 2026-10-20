@@ -93,7 +93,7 @@ from ada.business_insights import BusinessBrief, analyze_business, build_busines
 from ada.demo_data import make_demo_data  # noqa: E402
 from ada.file_io import list_excel_sheets, list_sample_datasets, read_tabular_file, safe_csv  # noqa: E402
 from ada.metrics import resolve_metric  # noqa: E402
-from ada.nlq import QueryPlan, answer_question, suggested_questions  # noqa: E402
+from ada.nlq import QueryPlan, answer_question, rephrase_hint, suggested_questions  # noqa: E402
 from ada.pipeline import (  # noqa: E402
     apply_focus,
     apply_role_selection,
@@ -402,7 +402,7 @@ def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str, api_key: st
             elif entry["result"] is not None:
                 render_chat_answer(entry["result"], key=str(position))
             else:
-                render_chat_fallback(suggestions)
+                render_chat_fallback(suggestions, rephrase_hint(entry["question"], dataframe, roles))
 
 
 inject_styles()
