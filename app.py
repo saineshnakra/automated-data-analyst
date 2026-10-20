@@ -364,7 +364,7 @@ def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str, api_key: st
         plan = pending["plan"]
         st.info(
             "I prepared this calculation from the table schema. Review it before ADA runs anything:\n\n"
-            f"**{describe_query_plan(plan)}**"
+            f"**{describe_query_plan(plan, roles)}**"
         )
         approve, reject = st.columns(2)
         plan_key = hashlib.sha256(pending["question"].encode()).hexdigest()[:12]

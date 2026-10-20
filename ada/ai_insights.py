@@ -15,6 +15,7 @@ from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_
 from pydantic import BaseModel, Field
 
 from .business_insights import BusinessBrief
+from .metrics import metric_for
 from .nlq import AGGREGATION_LABELS, QueryAnswer, QueryPlan, ValueFilter, execute_plan
 from .schema import ColumnRoles, looks_like_identifier
 
@@ -132,10 +133,12 @@ class AIQueryPlan(BaseModel):
     """Structured plan the model returns; ADA validates and executes it locally."""
 
     answerable: bool
-    intent: Literal["aggregate", "count", "rank", "breakdown", "trend", "growth"] = "aggregate"
+    intent: Literal["aggregate", "count", "rank", "breakdown", "trend", "growth", "correlation"] = "aggregate"
     aggregation: Literal["sum", "mean", "median", "min", "max", "count"] = "sum"
     measure: str | None = None
     dimension: str | None = None
+    #: The second numeric column of a correlation; ``measure`` is the first.
+    partner: str | None = None
     top_n: int | None = Field(default=None, ge=1, le=50)
     ascending: bool = False
     filters: list[AIQueryFilter] = Field(default_factory=list, max_length=4)
@@ -149,6 +152,7 @@ PLANNER_CONFIG = AIConfig("gpt-5.6-luna", "low", "Query planner")
 PLANNER_INSTRUCTIONS = """You translate one business question about a single table into a strict query plan.
 Use only the listed column names, exactly as written; never invent a column.
 Filter values may only be phrases quoted from the question itself.
+For a correlation, put the two numeric columns in measure and partner.
 If the schema cannot answer the question, set answerable to false instead of guessing."""
 
 
@@ -207,7 +211,8 @@ GROUPING_INTENTS = ("rank", "breakdown")
 DIMENSION_INTENTS = ("rank", "breakdown", "growth")
 # Intents that resample onto a period grain.
 GRAIN_INTENTS = ("trend", "growth")
-# Intents whose executor sums per period and ignores plan.aggregation.
+# Intents whose executor combines each period with the measure's own aggregation
+# (a sum for an amount, a mean for a rate or level), whatever the plan says.
 PERIOD_INTENTS = ("trend", "growth")
 # Above this share of distinct values a column identifies rows rather than grouping them.
 IDENTIFIER_UNIQUENESS = 0.9
@@ -261,14 +266,24 @@ def _to_query_plan(
     """
     measure = parsed.measure or roles.measure
     dimension = parsed.dimension
-    for column in (parsed.measure, parsed.dimension):
+    for column in (parsed.measure, parsed.dimension, parsed.partner):
         if column is not None and column not in dataframe.columns:
             return None
-    if parsed.intent in PERIOD_INTENTS and not roles.date:
-        return None
-    # Period intents always sum, so refuse a plan asking for e.g. a mean over time.
-    if parsed.intent in PERIOD_INTENTS and parsed.aggregation != "sum":
-        return None
+    if parsed.intent == "correlation":
+        pair = (parsed.measure, parsed.partner)
+        if None in pair or parsed.measure == parsed.partner:
+            return None
+        if not all(is_numeric_dtype(dataframe[column]) for column in pair):
+            return None
+    if parsed.intent in PERIOD_INTENTS:
+        if not roles.date:
+            return None
+        # Refuse a plan asking for another aggregation, such as a mean of revenue
+        # over time, rather than run one it doesn't describe. Without a measure
+        # the periods hold row counts.
+        runs = {metric_for(measure, roles).aggregation} if measure else {"sum", "count"}
+        if parsed.aggregation not in runs:
+            return None
     if parsed.intent == "aggregate" and not measure:
         return None
     if measure is not None and not _usable_measure(dataframe, measure, parsed.aggregation):
@@ -297,6 +312,7 @@ def _to_query_plan(
         # Drop modifiers this intent's executor ignores, so the approval
         # sentence can't mention them.
         dimension=dimension if parsed.intent in DIMENSION_INTENTS else None,
+        partner=parsed.partner if parsed.intent == "correlation" else None,
         top_n=parsed.top_n if parsed.intent == "rank" else None,
         ascending=parsed.ascending,
         filters=tuple(filters),
@@ -371,32 +387,40 @@ def _scope_clause(plan: QueryPlan) -> str:
     return clause
 
 
-def describe_query_plan(plan: QueryPlan) -> str:
+def describe_query_plan(plan: QueryPlan, roles: ColumnRoles | None = None) -> str:
     """Describe in one sentence what ``execute_plan`` will do with ``plan``.
 
     Built per intent rather than from whichever fields are set, so the approval
-    prompt matches the calculation that runs.
+    prompt matches the calculation that runs. Pass the ``roles`` the plan runs
+    with, so an override of how the measure combines is described too.
     """
     measure = plan.measure or "records"
     aggregation = AGGREGATION_LABELS[plan.aggregation]
     grain = GRAIN_LABELS.get(plan.grain or "", "period")
+    # Periods combine the way the measure does: a total, or an average for a rate or level.
+    per_period = "average" if plan.measure and not metric_for(plan.measure, roles).additive else "total"
 
     if plan.intent == "count":
         if plan.count_column:
             description = f"count the distinct {plan.count_column} values"
         else:
             description = "count the matching records"
+    elif plan.intent == "correlation":
+        description = (
+            f"correlate {plan.measure} with {plan.partner} over the rows that have both "
+            "(Pearson r with a 95% interval, checked against Spearman)"
+        )
     elif plan.intent == "trend":
-        description = f"track total {measure} per {grain} over time"
+        description = f"track {per_period} {measure} per {grain} over time"
     elif plan.intent == "growth":
         if plan.dimension:
             description = (
-                f"rank each {plan.dimension} by how much its total {measure} changed "
+                f"rank each {plan.dimension} by how much its {per_period} {measure} changed "
                 f"from the previous {grain} to the latest one"
             )
         else:
             description = (
-                f"compare total {measure} in the latest {grain} with the previous one"
+                f"compare {per_period} {measure} in the latest {grain} with the previous one"
             )
     elif plan.intent == "rank":
         direction = "lowest" if plan.ascending else "highest"

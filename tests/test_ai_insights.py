@@ -206,6 +206,46 @@ class PlanValidationTests(unittest.TestCase):
 
         self.assertIsNotNone(plan)
 
+    def test_a_correlation_plan_needs_two_different_numeric_columns(self):
+        frame = self.frame.assign(Units=[float(index % 7) for index in range(40)])
+        roles = detect_roles(frame)
+
+        def plan(measure, partner):
+            parsed = AIQueryPlan(answerable=True, intent="correlation", measure=measure, partner=partner,
+                                 dimension="Region", grain="M")
+            return _to_query_plan(parsed, frame, roles)
+
+        accepted = plan("Revenue", "Units")
+        assert accepted is not None
+        self.assertEqual((accepted.partner, accepted.dimension, accepted.grain), ("Units", None, None))
+        self.assertIn("Correlate Revenue with Units", describe_query_plan(accepted))
+        self.assertTrue(execute_plan(accepted, frame, roles).answer)
+        for measure, partner in (("Revenue", "Region"), ("Revenue", "Revenue"), ("Revenue", None)):
+            with self.subTest(partner=partner):
+                self.assertIsNone(plan(measure, partner))
+
+    def test_a_partner_outside_a_correlation_is_dropped(self):
+        plan = self._plan(intent="aggregate", aggregation="sum", measure="Revenue", partner="Revenue")
+
+        assert plan is not None
+        self.assertIsNone(plan.partner)
+
+    def test_a_period_plan_must_use_the_measures_own_aggregation(self):
+        frame = pd.DataFrame({"Month": pd.date_range("2024-01-01", periods=12, freq="MS"),
+                              "Churn Rate": [0.02 + index / 1000 for index in range(12)]})
+        roles = detect_roles(frame)
+
+        def plan(aggregation):
+            return _to_query_plan(
+                AIQueryPlan(answerable=True, intent="trend", aggregation=aggregation, measure="Churn Rate"),
+                frame, roles,
+            )
+
+        averaged = plan("mean")
+        assert averaged is not None
+        self.assertIn("Track average Churn Rate", describe_query_plan(averaged))
+        self.assertIsNone(plan("sum"))
+
     def test_every_approved_plan_executes_without_raising(self):
         for intent in ("aggregate", "count", "rank", "breakdown", "trend", "growth"):
             for measure in (None, "Revenue", "Region", "Order Date", "Ticket"):
