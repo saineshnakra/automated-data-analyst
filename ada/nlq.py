@@ -1095,14 +1095,9 @@ def _rank_periods(
     """Name the period at the plan's grain with the highest (or lowest) value of the trend."""
     if not roles.date or plan.grain not in GRAIN_NAMES:
         raise ValueError("Ranking periods needs a date column and a grain")
-    scoped_roles = ColumnRoles(
-        date=roles.date,
-        measure=plan.measure,
-        dimension=None,
-        identifier=roles.identifier,
-        numeric=roles.numeric,
-        dimensions=roles.dimensions,
-    )
+    # The override of how the measure combines belongs to the detected measure only.
+    aggregation = roles.aggregation if plan.measure == roles.measure else None
+    scoped_roles = replace(roles, measure=plan.measure, dimension=None, aggregation=aggregation)
     series = build_trend(working, scoped_roles, frequency=plan.grain)
     # A rate leaves periods without rows empty rather than zero; they can't rank.
     trend = series.frame.dropna(subset=["Value"])

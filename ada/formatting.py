@@ -314,6 +314,21 @@ def sentence_case(name: str) -> str:
     )
 
 
+def group_label(column: str | None, value: object) -> str:
+    """Name a group for a sentence: text values as they are, numeric codes with their column.
+
+    A group of a numeric column reads as "Status 2" rather than a bare "2",
+    which on its own could be mistaken for a quantity.
+    """
+    if isinstance(value, bool | np.bool_):
+        value = int(value)
+    if isinstance(value, int | float | np.integer | np.floating) and column:
+        number = float(value)
+        shown = f"{int(number)}" if number.is_integer() else f"{number:g}"
+        return f"{column} {shown}"
+    return str(value)
+
+
 def format_percentage(value: float, *, signed: bool = False) -> str:
     """Format a percentage, or an em dash when the value is NaN or infinite.
 

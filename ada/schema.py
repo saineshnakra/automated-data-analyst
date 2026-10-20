@@ -27,6 +27,9 @@ class ColumnRoles:
     #: "sum" or "mean" when the user has said how the measure combines; None
     #: follows its name. Read it through ``metrics.metric_for``.
     aggregation: str | None = None
+    #: Numeric columns that hold category codes rather than quantities (a 0/1
+    #: flag, a status code, a set dose). They are listed in ``dimensions`` too.
+    factors: tuple[str, ...] = ()
 
 
 MEASURE_KEYWORDS = {

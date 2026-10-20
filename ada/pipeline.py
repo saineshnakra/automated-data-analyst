@@ -92,13 +92,11 @@ def apply_role_selection(
     dimension: str,
     aggregation: str | None = None,
 ) -> ColumnRoles:
-    return ColumnRoles(
+    return replace(
+        detected,
         date=None if date == "None" else date,
         measure=None if measure == "None" else measure,
         dimension=None if dimension == "None" else dimension,
-        identifier=detected.identifier,
-        numeric=detected.numeric,
-        dimensions=detected.dimensions,
         aggregation=aggregation,
     )
 

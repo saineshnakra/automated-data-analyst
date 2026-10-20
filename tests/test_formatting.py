@@ -10,6 +10,7 @@ from ada.formatting import (
     format_number,
     format_rate_change,
     format_values_apart,
+    group_label,
     normalized_name,
     rate_scale,
     sentence_case,
@@ -112,3 +113,14 @@ class ChangeEndsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GroupLabelTests(unittest.TestCase):
+    def test_a_numeric_group_is_named_with_its_column(self):
+        self.assertEqual(group_label("Status", 2), "Status 2")
+        self.assertEqual(group_label("Dose", 2.5), "Dose 2.5")
+        self.assertEqual(group_label("Dose", np.float64(10.0)), "Dose 10")
+        self.assertEqual(group_label("Treated", True), "Treated 1")
+
+    def test_a_text_group_is_left_as_it_is(self):
+        self.assertEqual(group_label("Site", "North Marsh"), "North Marsh")
