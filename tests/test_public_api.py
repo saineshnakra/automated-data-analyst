@@ -261,5 +261,15 @@ class OverrideTests(unittest.TestCase):
         self.assertEqual(profile["Column"].tolist(), ["Date", "Team", "Revenue"])
 
 
+class OverrideTypeTests(unittest.TestCase):
+    def test_a_date_override_must_hold_dates(self):
+        with self.assertRaisesRegex(ada.AdaError, "could not be read as dates"):
+            ada.analyze(steady(), date="Team")
+
+    def test_a_measure_override_must_be_numeric(self):
+        with self.assertRaisesRegex(ada.AdaError, "is not numeric"):
+            ada.analyze(steady(), measure="Team")
+
+
 if __name__ == "__main__":
     unittest.main()

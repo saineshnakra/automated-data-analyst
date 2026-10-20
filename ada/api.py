@@ -150,10 +150,15 @@ def analyze(
         for role, column in (("date", date), ("measure", measure), ("dimension", dimension))
         if column is not None
     }
-    missing = [column for column in overrides.values() if column not in prepared.dataframe.columns]
+    cleaned = prepared.dataframe
+    missing = [column for column in overrides.values() if column not in cleaned.columns]
     if missing:
-        available = ", ".join(map(str, prepared.dataframe.columns))
+        available = ", ".join(map(str, cleaned.columns))
         raise AdaError(f"No column named {missing[0]!r}. Columns: {available}")
+    if date is not None and not pd.api.types.is_datetime64_any_dtype(cleaned[date]):
+        raise AdaError(f"{date!r} could not be read as dates, so it can't be the date column.")
+    if measure is not None and not pd.api.types.is_numeric_dtype(cleaned[measure]):
+        raise AdaError(f"{measure!r} is not numeric, so it can't be the measure.")
     roles = replace(prepared.detected_roles, **overrides)
     return Analysis(
         frame=prepared.dataframe,

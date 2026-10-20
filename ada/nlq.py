@@ -932,7 +932,12 @@ def suggested_questions(dataframe: pd.DataFrame, roles: ColumnRoles) -> list[str
     """Return up to four starter questions the rule-based parser can answer."""
     suggestions: list[str] = []
     if roles.measure:
-        suggestions.append(f"{resolve_metric(roles.measure).combines_as.capitalize()} {roles.measure}")
+        # "Average Order Value" already says how it combines; don't prefix it again.
+        first_word = (roles.measure.split() or [""])[0].lower()
+        if first_word in {"average", "avg", "mean", "median", "total"}:
+            suggestions.append(roles.measure)
+        else:
+            suggestions.append(f"{resolve_metric(roles.measure).combines_as.capitalize()} {roles.measure}")
     if roles.measure and roles.dimension:
         suggestions.append(f"Top 5 {roles.dimension} by {roles.measure}")
     if roles.measure and roles.date:

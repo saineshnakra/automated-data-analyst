@@ -631,5 +631,13 @@ class PluralAndWordMatchTests(unittest.TestCase):
         self.assertTrue(result.answer.startswith("B "))
 
 
+class SuggestionWordingTests(unittest.TestCase):
+    def test_a_measure_named_average_is_not_prefixed_again(self):
+        frame = pd.DataFrame({"Average Order Value": [1.0, 2.0, 3.0, 4.0], "Region": list("abab")})
+        suggestions = suggested_questions(frame, detect_roles(frame))
+        self.assertIn("Average Order Value", suggestions)
+        self.assertNotIn("Average Average Order Value", suggestions)
+
+
 if __name__ == "__main__":
     unittest.main()
