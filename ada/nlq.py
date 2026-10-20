@@ -27,6 +27,17 @@ from .business_insights import (
     RANK_DIVERGENCE,
     describe_correlation,
     measure_correlation,
+    numeric_readings,
+)
+from .compare import (
+    NOTABLE_CORRELATION,
+    compare_groups,
+    comparison_calculation,
+    comparison_table,
+    correlation_interval,
+    describe_comparison,
+    entity_column,
+    scan_relationships,
 )
 from .formatting import (
     format_change,
@@ -42,7 +53,9 @@ from .formatting import (
 from .metrics import metric_for
 from .schema import ColumnRoles
 
-Intent = Literal["aggregate", "count", "rank", "breakdown", "trend", "growth", "correlation"]
+Intent = Literal[
+    "aggregate", "count", "rank", "breakdown", "trend", "growth", "correlation", "compare", "correlates"
+]
 #: Plans answered from the column profile rather than by combining a measure.
 ProfileIntent = Literal["missing"]
 Aggregation = Literal["sum", "mean", "median", "min", "max", "count"]
@@ -1380,7 +1393,11 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
 
     The plan uses every column, value, grouping and condition the question
     names. When it can't, the question is refused and ``rephrase_hint`` says why.
+    Questions that compare groups or ask what correlates with a column are
+    planned first (see ``_comparison_plan``).
     """
+    if _norm(question) and (compared := _comparison_plan(question, dataframe, roles)):
+        return compared
     return _plan_question(question, dataframe, roles)[0]
 
 
@@ -2034,6 +2051,12 @@ def _run_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -> Q
     if plan.intent == "correlation":
         return _execute_correlation(plan, working, scope, applied)
 
+    if plan.intent == "compare":
+        return _execute_compare(plan, working, roles, scope, applied)
+
+    if plan.intent == "correlates":
+        return _execute_correlates(plan, working, roles, scope, applied)
+
     if plan.intent == "rank" and plan.dimension is None and plan.grain:
         return _rank_periods(plan, working, roles, scope, applied)
 
@@ -2350,6 +2373,270 @@ def _execute_correlation(
         calculation=calculation,
         table=points.reset_index(drop=True),
         chart="scatter",
+    )
+
+
+# Words that ask whether groups differ, or which way: "does pH differ by site",
+# "is troponin higher in positive than negative". A compare plan records the
+# direction asked as its aggregation: "max" for higher, "min" for lower.
+DIFFERENCE_WORDS = ("differ", "differs", "different", "difference", "differences", "vary", "varies")
+DIRECTION_WORDS = {
+    "higher": "max", "greater": "max", "larger": "max", "bigger": "max", "more": "max",
+    "lower": "min", "smaller": "min", "less": "min",
+}
+# Grammar of comparison and "what correlates with" questions, beyond QUERY_GRAMMAR.
+# The nouns name the rows being compared ("in positive patients") or the columns
+# being ranked ("which variables").
+COMPARISON_GRAMMAR = frozenset({
+    *DIFFERENCE_WORDS, *DIRECTION_WORDS, "compare", "compared", "comparison", "than", "among",
+    "significant", "significantly", "statistically", "clear", "clearly", "really", "there", "group",
+    "groups", "level", "levels", "associated", "linked", "strongly", "column", "columns", "variable",
+    "variables", "measure", "measures", "patients", "participants", "subjects", "people",
+    "individuals", "samples", "records", "cases", "animals", "ones",
+})
+CORRELATES_PATTERN = re.compile(r"\b(?:correlat\w*|relat\w*|associated|linked)\b")
+
+
+def _comparison_plan(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -> QueryPlan | None:
+    """Plan a group comparison or a "what correlates with X" ranking, or None for other questions.
+
+    "does X differ by Y", "is X different between Y" and "compare X across Y"
+    compare X across the groups of Y; "is X higher in A than B" compares groups
+    A and B of one column. "what correlates with X" and "what is most related
+    to X" rank every numeric column against X. A question with words outside
+    this grammar is left to the other plans.
+    """
+    q = _norm(question)
+    differ = any(re.search(rf"\b{word}\b", q) for word in DIFFERENCE_WORDS)
+    compare = bool(re.search(r"\bcompare\b", q))
+    direction = re.search(rf"\b({'|'.join(DIRECTION_WORDS)})\b.*\bthan\b", q)
+    correlates = bool(CORRELATES_PATTERN.search(q)) and bool(
+        re.search(r"\b(?:what|which)\b|\bcorrelates of\b|\bmost\b", q)
+    )
+    if not (differ or compare or direction or correlates):
+        return None
+    # The question is read as any other is, so every word must be a column, a
+    # value, a number or grammar, here including the words of comparison.
+    # Numbered groups ("condition 2 than condition 1") may repeat a column's name.
+    reading = _read_question(question, dataframe, roles)
+    names = reading.names
+    column_words = {word for forms in names.values() for form in forms for word in form.split()}
+    leftover = [
+        word for _, _, word in _tokens(reading.remaining)
+        if word not in QUERY_GRAMMAR
+        and word not in COMPARISON_GRAMMAR
+        and word not in column_words
+        and not _is_number(word)
+    ]
+    if leftover:
+        return None
+    mentioned = _mentions(q, names)
+    numeric_columns = [column for column in roles.numeric if column in dataframe.columns]
+    year, month = _detect_time_filter(q)
+    filters = reading.value_filters
+
+    if correlates and not (differ or direction):
+        numbers = [column for column in mentioned if column in numeric_columns]
+        filtered = {item.column for item in filters}
+        if len(numbers) != 1 or any(column not in numbers and column not in filtered for column in mentioned):
+            return None
+        return QueryPlan(intent="correlates", measure=numbers[0], filters=filters, year=year, month=month)
+
+    grouping, compared = _compared_groups(q, dataframe, roles, names, mentioned, filters)
+    if grouping is None:
+        return None
+    measures = [column for column in mentioned if column in numeric_columns and column != grouping]
+    if len(measures) > 1:
+        return None
+    measure = measures[0] if measures else roles.measure
+    if measure is None or measure == grouping:
+        return None
+    kept = [item for item in filters if item.column != grouping]
+    # "compare revenue across regions" asks for each region's total when revenue
+    # adds up; only words of difference ask for the test.
+    if compare and not (differ or direction) and metric_for(measure, roles).additive and not compared:
+        return QueryPlan(
+            intent="breakdown", aggregation=metric_for(measure, roles).aggregation, measure=measure,
+            dimension=grouping, filters=tuple(kept), year=year, month=month,
+        )
+    if compared:
+        kept.insert(0, ValueFilter(column=grouping, values=compared))
+    return QueryPlan(
+        intent="compare",
+        aggregation=DIRECTION_WORDS[direction.group(1)] if direction and len(compared) == 2 else "mean",
+        measure=measure,
+        dimension=grouping,
+        filters=tuple(kept),
+        year=year,
+        month=month,
+    )
+
+
+def _compared_groups(
+    q: str,
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles,
+    names: dict[str, tuple[str, ...]],
+    mentioned: dict[str, int],
+    filters: tuple[ValueFilter, ...],
+) -> tuple[str | None, tuple[str, ...]]:
+    """The column whose groups a comparison question names, and the two groups it names, in order.
+
+    Groups are named as numbered groups ("condition 2 than condition 1") or by
+    value ("positive and negative"). A column named after "by", "across" or
+    "between" compares all of its groups, and values of other columns then
+    only filter the rows; so does a column with a single named value.
+    """
+    for column in mentioned:
+        if not is_numeric_dtype(dataframe[column]):
+            continue
+        found = sorted(
+            (match.start(), float(match.group(1)))
+            for form in names.get(column, ())
+            for match in re.finditer(rf"\b{re.escape(form)}s?\s+(\d+(?:\.\d+)?)\b", q)
+        )
+        levels = dataframe[column].dropna().unique()
+        named = list(dict.fromkeys(
+            value for _, number in found for value in levels if float(value) == number
+        ))
+        if len(named) >= 2:
+            return column, tuple(str(value) for value in named[:2])
+    filtered = {item.column for item in filters}
+    groupings = [
+        column
+        for column in mentioned
+        if column not in filtered
+        and _follows(q, mentioned[column], r"(?:by|per|across|between|among|each|in)")
+        and (
+            _can_group_text(dataframe, column, roles)
+            or (
+                is_numeric_dtype(dataframe[column])
+                and 2 <= int(dataframe[column].nunique(dropna=True)) <= GROUPING_LIMIT
+            )
+        )
+    ]
+    if len(groupings) == 1:
+        return groupings[0], ()
+    if groupings or not filters:
+        return None, ()
+    chosen = max(filters, key=lambda item: len(item.values))
+    ordered = sorted(chosen.values, key=lambda value: q.find(_norm(value)))
+    return chosen.column, tuple(ordered[:2]) if len(ordered) >= 2 else ()
+
+
+def _execute_compare(
+    plan: QueryPlan, working: pd.DataFrame, roles: ColumnRoles, scope: str, applied: list[str]
+) -> QueryAnswer:
+    """Compare the measure across the plan's groups with the brief's test and effect size."""
+    if plan.measure is None or plan.dimension is None or not is_numeric_dtype(working[plan.measure]):
+        raise ValueError("A comparison needs a numeric measure and a grouping column")
+    comparison = compare_groups(working, plan.measure, plan.dimension, entity=entity_column(working, roles))
+    if comparison is None:
+        return QueryAnswer(
+            question="",
+            plan=plan,
+            answer=(
+                f"Fewer than two {plan.dimension} groups have two or more {plan.measure} values"
+                f"{_phrase(applied)}, so there is nothing to compare."
+            ),
+            calculation=f"group comparison needs two groups of two or more values{scope}",
+        )
+    answer = describe_comparison(comparison, working[plan.measure].dropna())
+    asked = next((item.values for item in plan.filters if item.column == plan.dimension), ())
+    if plan.aggregation in ("max", "min") and len(asked) == 2 and comparison.two_groups:
+        # "Is X higher in A than in B" gets its yes or no before the evidence.
+        named_first = str(comparison.higher.value) == asked[0]
+        if comparison.verdict != "clear":
+            answer = f"Not clearly. {answer}"
+        elif named_first == (plan.aggregation == "max"):
+            answer = f"Yes. {answer}"
+        else:
+            answer = f"No, the other way round. {answer}"
+    return QueryAnswer(
+        question="",
+        plan=plan,
+        answer=answer,
+        calculation=f"{comparison_calculation(comparison)}{scope}",
+        table=comparison_table(comparison),
+        chart="bar",
+    )
+
+
+def _execute_correlates(
+    plan: QueryPlan, working: pd.DataFrame, roles: ColumnRoles, scope: str, applied: list[str]
+) -> QueryAnswer:
+    """Rank every numeric reading by how strongly it relates to the measure, as the brief does."""
+    if plan.measure is None or not is_numeric_dtype(working[plan.measure]):
+        raise ValueError("Ranking correlates needs a numeric measure")
+    # In table order, which tells a total from the items before it.
+    readings = {*numeric_readings(working, roles), plan.measure}
+    columns = [column for column in working.columns if column in readings]
+    scan = scan_relationships(working, columns, plan.measure, limit=BREAKDOWN_LIMIT, others=False)
+    if scan is None or not scan.correlates:
+        return QueryAnswer(
+            question="",
+            plan=plan,
+            answer=(
+                f"No other numeric column shares {MIN_CORRELATION_PAIRS} or more rows with "
+                f"{plan.measure}{_phrase(applied)}, so nothing can be correlated with it."
+            ),
+            calculation=f"correlations need {MIN_CORRELATION_PAIRS} complete pairs{scope}",
+        )
+    top = scan.correlates[0]
+    tested = scan.measure_tests
+    if top.strength < NOTABLE_CORRELATION:
+        answer = (
+            f"Nothing relates to {plan.measure}{_phrase(applied)}: none of the {tested} numeric columns "
+            f"tested reaches |r| = {NOTABLE_CORRELATION}. The closest is {top.second} (r = "
+            f"{top.pearson:.2f}, Spearman {top.spearman:.2f}, n = {top.pairs:,})."
+        )
+    else:
+        detail = measure_correlation(working[[plan.measure, top.second]].dropna())
+        assert detail is not None
+        answer = (
+            f"{top.second} relates most to {plan.measure} of the {tested} numeric columns tested. "
+            f"{describe_correlation(detail, _phrase(applied))}"
+        )
+        following = [pair for pair in scan.correlates[1:3] if pair.strength >= NOTABLE_CORRELATION]
+        if following:
+            answer += " Next: " + ", ".join(
+                f"{pair.second} (r = {pair.pearson:.2f}, Spearman {pair.spearman:.2f})" for pair in following
+            ) + "."
+        answer += (
+            " It was picked from several columns, so treat it as a lead to check, not as evidence of cause."
+        )
+    intervals = [correlation_interval(pair.pearson, pair.pairs) for pair in scan.correlates]
+    table = pd.DataFrame(
+        {
+            "Column": [pair.second for pair in scan.correlates],
+            "Pearson r": [round(pair.pearson, 3) for pair in scan.correlates],
+            "95% CI low": [round(low, 3) for low, _ in intervals],
+            "95% CI high": [round(high, 3) for _, high in intervals],
+            "Spearman r": [round(pair.spearman, 3) for pair in scan.correlates],
+            "n": [pair.pairs for pair in scan.correlates],
+        }
+    )
+    calculation = (
+        f"Pearson r with a 95% CI by Fisher transform, and Spearman r, of each of {tested} numeric "
+        f"columns with {plan.measure} over their complete rows; ranked by the larger of |Spearman r| "
+        "and |Pearson r| without the most influential record"
+    )
+    left_out = [item.describe() for item in scan.derived if plan.measure in (item.column, *item.parts)]
+    left_out += [flag.describe() for flag in scan.flags if plan.measure in (flag.flag, flag.column)]
+    left_out += [
+        f"{first} and {second}, which move together almost exactly"
+        for first, second, _ in scan.near_duplicates
+        if plan.measure in (first, second)
+    ]
+    if left_out:
+        calculation += "; left out: " + "; ".join(left_out)
+    return QueryAnswer(
+        question="",
+        plan=plan,
+        answer=answer,
+        calculation=f"{calculation}{scope}",
+        table=table,
+        chart="bar",
     )
 
 

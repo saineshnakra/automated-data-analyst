@@ -1480,5 +1480,116 @@ class SubDayTrendTests(unittest.TestCase):
         self.assertTrue(plan is None or plan.grain != "h")
 
 
+def trial_frame() -> tuple[pd.DataFrame, ColumnRoles]:
+    """Patients by result and condition: troponin separates the results, sugar does not."""
+    rng = np.random.default_rng(11)
+    result = np.where(np.arange(200) % 2 == 0, "positive", "negative")
+    frame = pd.DataFrame({
+        "Troponin": rng.normal(1.0, 0.3, 200) + np.where(result == "positive", 0.8, 0.0),
+        "Sugar": rng.normal(140, 40, 200),
+        "Age": rng.normal(55, 10, 200),
+        "Condition": np.tile([1, 2], 100),
+        "Result": result,
+    })
+    frame["Score"] = frame["Age"] * 0.5 + rng.normal(0, 2, 200)
+    roles = ColumnRoles(
+        date=None, measure="Sugar", dimension="Result", identifier=None,
+        numeric=("Troponin", "Sugar", "Age", "Condition", "Score"), dimensions=("Result",),
+    )
+    return frame, roles
+
+
+class GroupComparisonQuestionTests(unittest.TestCase):
+    def setUp(self):
+        self.frame, self.roles = trial_frame()
+
+    def ask(self, question):
+        return answer_question(question, self.frame, self.roles)
+
+    def test_each_phrasing_asks_for_a_comparison(self):
+        for question in (
+            "does Troponin differ by Result", "is Troponin different between results",
+            "compare Troponin across Result", "does Troponin vary by result",
+        ):
+            with self.subTest(question=question):
+                plan = parse_question(question, self.frame, self.roles)
+                self.assertEqual(
+                    (plan.intent, plan.measure, plan.dimension), ("compare", "Troponin", "Result")
+                )
+
+    def test_the_answer_carries_the_test_effect_size_and_a_table(self):
+        answer = self.ask("does Troponin differ by Result")
+
+        self.assertTrue(answer.answer.startswith("Troponin is higher in positive than in negative"))
+        self.assertIn("95% CI", answer.answer)
+        self.assertIn("Hedges' g", answer.calculation)
+        self.assertEqual(answer.chart, "bar")
+        self.assertEqual(list(answer.table.columns[:3]), ["Result", "Mean Troponin", "n"])
+
+    def test_a_directed_question_gets_its_yes_or_no_first(self):
+        higher = self.ask("is Troponin higher in positive patients than negative")
+        lower = self.ask("is Troponin lower in positive than negative")
+
+        self.assertEqual(higher.plan.filters[0].values, ("positive", "negative"))
+        self.assertTrue(higher.answer.startswith("Yes. Troponin is higher in positive"))
+        self.assertTrue(lower.answer.startswith("No, the other way round."))
+
+    def test_no_clear_difference_is_said_plainly(self):
+        answer = self.ask("does Sugar differ between positive and negative")
+
+        self.assertIn("Sugar shows no clear difference between", answer.answer)
+        directed = self.ask("is Sugar higher in positive than negative")
+        self.assertTrue(directed.answer.startswith("Not clearly."))
+
+    def test_numbered_groups_can_be_named(self):
+        plan = parse_question("is Age higher in condition 2 than condition 1", self.frame, self.roles)
+
+        self.assertEqual((plan.intent, plan.dimension), ("compare", "Condition"))
+        self.assertEqual(plan.filters[0].values, ("2", "1"))
+        self.assertEqual(plan.aggregation, "max")
+
+    def test_comparing_a_summed_measure_is_left_to_the_breakdown(self):
+        frame, roles = frame_with("Revenue")
+
+        plan = parse_question("compare Revenue across Team", frame, roles)
+
+        self.assertEqual(plan.intent, "breakdown")
+
+    def test_a_correlation_of_two_named_columns_is_unchanged(self):
+        plan = parse_question("is Age related to Score", self.frame, self.roles)
+
+        self.assertEqual((plan.intent, plan.measure, plan.partner), ("correlation", "Age", "Score"))
+
+
+class CorrelatesQuestionTests(unittest.TestCase):
+    def setUp(self):
+        self.frame, self.roles = trial_frame()
+
+    def test_each_phrasing_ranks_the_columns_against_one(self):
+        for question in ("what correlates with Score", "what is most related to Score",
+                         "which variables are most correlated with Score"):
+            with self.subTest(question=question):
+                plan = parse_question(question, self.frame, self.roles)
+                self.assertEqual((plan.intent, plan.measure), ("correlates", "Score"))
+
+    def test_the_answer_names_the_strongest_and_ranks_the_rest(self):
+        answer = answer_question("what correlates with Score", self.frame, self.roles)
+
+        self.assertTrue(answer.answer.startswith("Age relates most to Score of the 3 numeric columns tested"))
+        self.assertIn("Pearson r =", answer.answer)
+        self.assertEqual(answer.chart, "bar")
+        self.assertEqual(answer.table.iloc[0]["Column"], "Age")
+        self.assertEqual(
+            list(answer.table.columns),
+            ["Column", "Pearson r", "95% CI low", "95% CI high", "Spearman r", "n"],
+        )
+        self.assertNotIn("Condition", set(answer.table["Column"]))
+
+    def test_nothing_related_is_a_plain_answer(self):
+        answer = answer_question("what correlates with Sugar", self.frame, self.roles)
+
+        self.assertTrue(answer.answer.startswith("Nothing relates to Sugar"))
+
+
 if __name__ == "__main__":
     unittest.main()
