@@ -487,3 +487,13 @@ class UndatedTimeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChosenMeasureTests(unittest.TestCase):
+    def test_a_column_chosen_as_the_measure_is_not_also_a_code(self):
+        frame = pd.DataFrame({"Site": ["A", "B"] * 60, "Mark": [n % 7 + 1 for n in range(120)]})
+
+        report = ada.analyze(frame, measure="Mark")
+
+        self.assertNotIn("Mark", report.roles.factors)
+        self.assertNotIn("Mark", report.roles.dimensions)

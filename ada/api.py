@@ -174,8 +174,17 @@ def analyze(
         raise AdaError(f"{measure!r} is not numeric, so it can't be the measure.")
     roles = replace(prepared.detected_roles, **overrides, aggregation=aggregation)
     if measure is not None:
-        # The runners-up were for ADA's own pick; a chosen measure has none.
-        roles = replace(roles, measure_alternatives=())
+        # The runners-up were for ADA's own pick; a chosen measure has none. A
+        # column chosen as the measure is a quantity, even if it looked like codes.
+        roles = replace(
+            roles,
+            measure_alternatives=(),
+            factors=tuple(column for column in roles.factors if column != measure),
+            flags=tuple(column for column in roles.flags if column != measure),
+            dimensions=tuple(
+                column for column in roles.dimensions if column != measure or column not in roles.factors
+            ),
+        )
     name = source_name or detected_name
     frame = prepared.dataframe
     if roles.focus and dimension is None:

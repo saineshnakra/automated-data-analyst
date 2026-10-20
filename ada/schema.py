@@ -15,8 +15,8 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_dtype
 
-from .formatting import normalized_name
-from .metrics import ADDITIVE_WORDS, LEVEL_WORDS
+from .formatting import is_percentage, normalized_name
+from .metrics import ADDITIVE_WORDS, LEVEL_WORDS, is_level_name
 
 
 @dataclass(frozen=True)
@@ -511,7 +511,9 @@ def _factor_kind(name: str, series: pd.Series) -> str | None:
         return None
     if _named_as_label(name) and len(values) >= 2 * levels:
         return "label"
-    if _named_as_quantity(name):
+    # A reading named as one ("Humidity", "pH", "Score") is a quantity even when
+    # it was recorded in whole numbers with few values.
+    if _named_as_quantity(name) or is_level_name(name) or is_percentage(name):
         return None
     if levels == 2 and len(values) >= 3 * levels:
         return "code"

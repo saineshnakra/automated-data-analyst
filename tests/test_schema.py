@@ -179,6 +179,11 @@ class FactorTests(unittest.TestCase):
             "weight_kg": readings(rows, seed=4, centre=80),
         })
 
+    def test_a_reading_in_whole_numbers_stays_a_quantity(self):
+        frame = self.frame.assign(Humidity=[60 + n % 11 for n in range(len(self.frame))])
+
+        self.assertNotIn("Humidity", detect_roles(frame).factors)
+
     def test_flags_codes_and_labels_are_factors_and_groupings(self):
         roles = detect_roles(self.frame)
 
