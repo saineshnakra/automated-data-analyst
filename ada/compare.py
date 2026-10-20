@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from .formatting import format_number, format_values_apart, group_label, normalized_name
+from .formatting import format_number, format_values_apart, group_label, list_names, normalized_name
 from .metrics import metric_for
 from .schema import ColumnRoles, is_entity_name
 
@@ -89,6 +89,9 @@ AGGREGATE_NAME_WORDS = frozenset({
 
 
 # --- Group comparisons --------------------------------------------------------
+
+# A pooled standard deviation below this share of the means counts as no spread at all.
+NO_SPREAD = 1e-9
 
 
 @dataclass(frozen=True)
@@ -348,7 +351,10 @@ def _pair(first: np.ndarray, second: np.ndarray) -> tuple[float, float, float, f
     else:
         margin = 0.0
     pooled = np.sqrt(((n1 - 1) * var1 + (n2 - 1) * var2) / (n1 + n2 - 2))
-    hedges = difference / pooled * (1 - 3 / (4 * (n1 + n2) - 9)) if pooled > 0 else float("nan")
+    # Groups that barely vary inside themselves leave g undefined, not astronomically large.
+    scale = max(abs(float(first.mean())), abs(float(second.mean())), 1.0)
+    spread = pooled > NO_SPREAD * scale
+    hedges = difference / pooled * (1 - 3 / (4 * (n1 + n2) - 9)) if spread else float("nan")
     ranks = stats.rankdata(np.concatenate([first, second]))
     superiority = (ranks[:n1].sum() - n1 * (n1 + 1) / 2) / (n1 * n2)
     return difference, difference - margin, difference + margin, float(hedges), float(superiority)
@@ -722,6 +728,11 @@ def _test_text(comparison: GroupComparison) -> str:
     return f"{comparison.test}, {adjusted}{format_p(comparison.decisive_p)}"
 
 
+def _tied(comparison: GroupComparison, centre: float) -> list[str]:
+    """The groups whose centre equals ``centre``, so a tie is not reported as one group."""
+    return [group.label for group in comparison.groups if np.isclose(comparison.centre(group), centre)]
+
+
 def describe_comparison(comparison: GroupComparison, column_values: pd.Series | None = None) -> str:
     """State whether the reading differs across the groups, with the sizes, test and effect behind it.
 
@@ -790,9 +801,11 @@ def describe_comparison(comparison: GroupComparison, column_values: pd.Series | 
         )
         variation = "of its variance" if not c.uses_ranks else "of the variation in its ranks"
         if verdict == "clear":
+            top, bottom = _tied(c, c.centre(high)), _tied(c, c.centre(low))
+            verb = "have" if len(top) > 1 else "has"
             text = (
-                f"{c.measure} differs across {c.grouping}: {high.label} has the highest {word}, "
-                f"{first}, and {low.label} the lowest, {second} ({sizes}). {c.grouping} explains "
+                f"{c.measure} differs across {c.grouping}: {list_names(top)} {verb} the highest {word}, "
+                f"{first}, and {list_names(bottom)} the lowest, {second} ({sizes}). {c.grouping} explains "
                 f"{c.explained:.0%} {variation} ({c.explained_name} = {c.explained:.2f}, {_test_text(c)})"
             )
             if c.uses_ranks:
