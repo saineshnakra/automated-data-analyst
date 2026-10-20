@@ -515,5 +515,22 @@ class IdentifierNameCleaningTests(unittest.TestCase):
         self.assertEqual(cleaned["Account Number"].tolist(), ["00042", "00017"])
 
 
+class LeadingZeroTests(unittest.TestCase):
+    def test_codes_with_leading_zeros_stay_text(self):
+        frame = pd.DataFrame({
+            "Zipcode": ["02134", "02139", "10001", "-", "02115"],
+            "Store": ["007", "012", "100", "101", "102"],
+            "Phone No.": ["0123456789"] * 5,
+        })
+        cleaned, _ = clean_dataframe(frame)
+        self.assertEqual(cleaned["Zipcode"].tolist(), ["02134", "02139", "10001", "-", "02115"])
+        self.assertEqual(cleaned["Store"].tolist(), ["007", "012", "100", "101", "102"])
+        self.assertEqual(cleaned["Phone No."].iloc[0], "0123456789")
+
+    def test_decimals_below_one_are_still_numbers(self):
+        cleaned, _ = clean_dataframe(pd.DataFrame({"OD600": ["0.81", "0.05", "NA", "1.20"]}))
+        self.assertEqual(cleaned["OD600"].dtype.kind, "f")
+
+
 if __name__ == "__main__":
     unittest.main()

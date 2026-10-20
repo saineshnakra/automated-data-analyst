@@ -393,7 +393,7 @@ def clean_dataframe(
         series = cleaned[column]
         non_null_before = int(series.notna().sum())
         stripped = series.map(lambda value: value.strip() if isinstance(value, str) else value)
-        if not stripped.equals(series):
+        if series.map(lambda value: isinstance(value, str) and value != value.strip()).any():
             trimmed_text_columns += 1
         cleaned[column] = stripped.replace("", pd.NA)
 
@@ -415,8 +415,10 @@ def clean_dataframe(
                 datetime_columns_inferred += 1
                 continue
 
-        if not is_identifier_name(column):
-            values = cleaned[column]
+        values = cleaned[column]
+        # "02134" or "007" is a code: converting it would drop the leading zero.
+        leading_zero = values.astype("string").str.match(r"^0\d").fillna(False).astype(bool).any()
+        if not is_identifier_name(column) and not leading_zero:
             markers = _missing_markers(values)
             readable = non_null_before - int(markers.sum())
             parsed_numeric = pd.to_numeric(values.mask(markers), errors="coerce")

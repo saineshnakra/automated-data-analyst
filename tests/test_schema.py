@@ -69,5 +69,15 @@ class DesignColumnTests(unittest.TestCase):
         self.assertFalse(is_design_name("Run Date"))
 
 
+class IdentifierNamePunctuationTests(unittest.TestCase):
+    def test_key_names_with_punctuation_or_symbols(self):
+        for name in ("Phone No.", "Account #", "Zipcode", "Postcode", "Telephone"):
+            with self.subTest(name=name):
+                self.assertTrue(is_identifier_name(name))
+        for name in ("Width", "Humidity", "Paid Amount"):
+            with self.subTest(name=name):
+                self.assertFalse(is_identifier_name(name))
+
+
 if __name__ == "__main__":
     unittest.main()

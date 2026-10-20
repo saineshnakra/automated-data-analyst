@@ -81,9 +81,10 @@ DESIGN_TOKENS = frozenset({"replicate", "rep", "batch", "plate", "well", "run", 
 # Head words that mark a column as a key rather than a quantity. Such columns stay
 # text through reading and cleaning, so an account number 00042 keeps its zeros.
 # Whole-word match, so "Paid Amount" is not an id.
-IDENTIFIER_NAME_WORDS = frozenset(
-    {"id", "ids", "code", "codes", "zip", "postal", "phone", "sku", "number", "no", "key", "uuid"}
-)
+IDENTIFIER_NAME_WORDS = frozenset({
+    "id", "ids", "code", "codes", "zip", "zipcode", "postal", "postcode", "phone", "telephone",
+    "mobile", "tel", "fax", "sku", "number", "no", "#", "key", "uuid",
+})
 
 
 # A trailing unit or annotation is not the head noun: "Revenue (USD)" is scored on "Revenue".
@@ -127,8 +128,9 @@ def _named_like_a_date(name: str) -> bool:
 
 
 def _head_words(name: str) -> list[str]:
-    """Words of a column name, with any trailing annotation removed."""
-    return normalized_name(_ANNOTATION.sub("", str(name))).split()
+    """Words of a column name, with any trailing annotation and punctuation removed."""
+    words = (word.strip(".,:;") for word in normalized_name(_ANNOTATION.sub("", str(name))).split())
+    return [word for word in words if word]
 
 
 def _keyword_score(name: str, keywords: dict[str, int]) -> int:

@@ -84,9 +84,10 @@ Cells holding a missing-value marker (`MISSING_MARKERS`: `NA`, `n/a`, `nd`,
 censored value such as `<0.1`) do not count against the 95%. If the column
 converts, they become missing and a note lists them.
 
-A column whose name ends in a key word (`id`, `code`, `zip`, `phone`, `number`
-and others; `is_identifier_name` in `ada/schema.py`) is never converted to
-numbers.
+A column whose name ends in a key word (`id`, `code`, `zip`, `postcode`,
+`phone`, `number`, `no`, `#` and others; `is_identifier_name` in
+`ada/schema.py`) is never converted to numbers, and neither is a column with a
+value that has a leading zero (`02134`, `007`).
 
 **Dates in other columns.** Dates also arrive in columns called `Month`,
 `Period` or `FY`. For a column with any other name, the first 50 values must
