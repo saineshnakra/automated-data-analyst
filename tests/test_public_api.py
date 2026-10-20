@@ -245,5 +245,21 @@ class CommandLineTests(unittest.TestCase):
         self.assertIn("Lab Measurements", self.run_ada("samples").stdout)
 
 
+class OverrideTests(unittest.TestCase):
+    def test_an_unknown_override_column_raises(self):
+        with self.assertRaisesRegex(ada.AdaError, "No column named 'Nope'"):
+            ada.analyze(steady(), measure="Nope")
+
+    def test_an_override_leaves_other_roles_as_detected(self):
+        frame = pd.DataFrame({"Team": ["A", "B"] * 6, "Revenue": [1.0] * 12, "Units": [2.0] * 12})
+        report = ada.analyze(frame, measure="Units")
+        self.assertEqual(report.roles.measure, "Units")
+        self.assertIsNone(report.roles.date)
+
+    def test_profile_has_a_row_per_column(self):
+        profile = ada.analyze(steady()).profile()
+        self.assertEqual(profile["Column"].tolist(), ["Date", "Team", "Revenue"])
+
+
 if __name__ == "__main__":
     unittest.main()

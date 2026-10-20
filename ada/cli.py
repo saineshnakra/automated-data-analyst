@@ -112,7 +112,12 @@ def _app(_: argparse.Namespace) -> int:
 
     entry = Path(__file__).resolve().parent.parent / "app.py"
     if not entry.is_file():
-        print(f"Could not find the app at {entry}.", file=sys.stderr)
+        print(
+            "The app runs from a source checkout:\n"
+            "    git clone https://github.com/saineshnakra/automated-data-analyst\n"
+            "    cd automated-data-analyst && pip install -e '.[app]' && ada app",
+            file=sys.stderr,
+        )
         return EXIT_ERROR
     sys.argv = ["streamlit", "run", str(entry)]
     streamlit_cli.main()
@@ -144,7 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
     with_source("check", "flag periods outside the expected band; for cron")
 
     subcommands.add_parser("samples", help="list the bundled datasets")
-    subcommands.add_parser("app", help="launch the browser app (needs the app extra)")
+    subcommands.add_parser("app", help="launch the browser app (from a source checkout)")
     return parser
 
 
