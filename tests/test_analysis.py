@@ -483,5 +483,37 @@ class UnreadableDateColumnTests(unittest.TestCase):
         self.assertNotEqual(roles.dimension, "Date")
 
 
+class MissingMarkerTests(unittest.TestCase):
+    def test_missing_markers_in_a_numeric_column_become_missing(self):
+        frame = pd.DataFrame({"OD600": ["0.81", "NA", "0.77", "nd", "<0.05", "0.92"]})
+        cleaned, report = clean_dataframe(frame)
+        self.assertEqual(cleaned["OD600"].dtype.kind, "f")
+        self.assertEqual(int(cleaned["OD600"].isna().sum()), 3)
+        self.assertTrue(any('"NA"' in note and "OD600" in note for note in report.notes), report.notes)
+
+    def test_a_text_column_keeps_its_na_values(self):
+        frame = pd.DataFrame({"Region": ["NA", "EU", "APAC", "NA"], "Revenue": [1.0, 2.0, 3.0, 4.0]})
+        cleaned, _ = clean_dataframe(frame)
+        self.assertEqual(cleaned["Region"].tolist(), ["NA", "EU", "APAC", "NA"])
+
+    def test_a_column_of_only_markers_stays_text(self):
+        frame = pd.DataFrame({"Note": ["nd", "nd", "NA"], "Value": [1.0, 2.0, 3.0]})
+        cleaned, _ = clean_dataframe(frame)
+        self.assertEqual(cleaned["Note"].dtype, object)
+
+
+class IdentifierNameCleaningTests(unittest.TestCase):
+    def test_words_containing_id_are_still_parsed_as_numbers(self):
+        frame = pd.DataFrame({"Humidity": ["45.1", "NA", "47.3"], "Width": ["1,204", "980", "1,010"]})
+        cleaned, _ = clean_dataframe(frame)
+        self.assertEqual(cleaned["Humidity"].dtype.kind, "f")
+        self.assertEqual(cleaned["Width"].tolist(), [1204.0, 980.0, 1010.0])
+
+    def test_key_columns_keep_their_leading_zeros(self):
+        frame = pd.DataFrame({"Account Number": ["00042", "00017"], "Amount": [1.0, 2.0]})
+        cleaned, _ = clean_dataframe(frame)
+        self.assertEqual(cleaned["Account Number"].tolist(), ["00042", "00017"])
+
+
 if __name__ == "__main__":
     unittest.main()

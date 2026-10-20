@@ -11,6 +11,8 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 
+from .schema import is_identifier_name
+
 
 @dataclass(frozen=True)
 class CleaningReport:
@@ -39,6 +41,23 @@ class Insight:
     title: str
     detail: str
     level: str = "info"
+
+
+# Text that stands for a missing reading in a numeric column: R's NA, "not
+# detected", spreadsheet errors, and values below or above a detection limit.
+MISSING_MARKERS = frozenset({
+    "na", "n/a", "n.a.", "nan", "nd", "n.d.", "none", "null", "missing", "-", "--", "—",
+    "?", ".", "#n/a", "#value!", "#div/0!", "not detected", "bdl", "bql", "lod", "loq",
+    "<lod", "<loq", "<dl", "below detection limit",
+})
+_CENSORED_VALUE = re.compile(r"^[<>]\s*[\d.]")
+
+
+def _missing_markers(series: pd.Series) -> pd.Series:
+    """True for cells holding a missing-value marker such as "NA", "nd" or "<0.1"."""
+    text = series.astype("string").str.strip().str.lower()
+    marked = text.isin(MISSING_MARKERS) | text.str.match(_CENSORED_VALUE.pattern)
+    return marked.fillna(False).astype(bool)
 
 
 def _speculative_dates(values: pd.Series) -> pd.Series:
@@ -320,6 +339,13 @@ def _drop_non_finite(frame: pd.DataFrame) -> dict[str, int]:
     return counts
 
 
+def _missing_marker_note(column: str, marked: pd.Series) -> str:
+    examples = list(dict.fromkeys(marked.astype(str).str.strip()))
+    shown = ", ".join(f'"{value}"' for value in examples[:4]) + (", ..." if len(examples) > 4 else "")
+    noun = "cells" if len(marked) > 1 else "cell"
+    return f"{len(marked):,} {noun} in {column} read as missing: {shown}."
+
+
 def clean_dataframe(
     dataframe: pd.DataFrame, *, drop_duplicates: bool = False
 ) -> tuple[pd.DataFrame, CleaningReport]:
@@ -359,7 +385,6 @@ def clean_dataframe(
             "Timezone offsets were dropped; dates are read as the local time they were written in."
         )
 
-    protected_numeric_tokens = ("id", "code", "zip", "postal", "phone")
     date_tokens = ("date", "time", "timestamp", "created", "updated")
     named_date_ratio, numeric_ratio, unnamed_date_ratio = 0.8, 0.95, 0.95
     date_sample_size = 50
@@ -367,9 +392,10 @@ def clean_dataframe(
     for column in cleaned.select_dtypes(include=["object", "string"]).columns:
         series = cleaned[column]
         non_null_before = int(series.notna().sum())
-        cleaned[column] = series.map(lambda value: value.strip() if isinstance(value, str) else value)
-        cleaned[column] = cleaned[column].replace("", pd.NA)
-        trimmed_text_columns += 1
+        stripped = series.map(lambda value: value.strip() if isinstance(value, str) else value)
+        if not stripped.equals(series):
+            trimmed_text_columns += 1
+        cleaned[column] = stripped.replace("", pd.NA)
 
         if non_null_before == 0:
             continue
@@ -389,19 +415,24 @@ def clean_dataframe(
                 datetime_columns_inferred += 1
                 continue
 
-        if not any(token in normalized_name for token in protected_numeric_tokens):
-            parsed_numeric = pd.to_numeric(cleaned[column], errors="coerce")
-            if parsed_numeric.notna().sum() < non_null_before:
+        if not is_identifier_name(column):
+            values = cleaned[column]
+            markers = _missing_markers(values)
+            readable = non_null_before - int(markers.sum())
+            parsed_numeric = pd.to_numeric(values.mask(markers), errors="coerce")
+            if parsed_numeric.notna().sum() < readable:
                 # Retry cells plain parsing missed as formatted numbers ("$1,203.55",
                 # "(48.10)"). Large values are the ones with separators, so skipping
                 # them biases totals down. Values already read ("1e3") are kept.
-                gaps = parsed_numeric.isna() & cleaned[column].notna()
+                gaps = parsed_numeric.isna() & values.notna() & ~markers
                 if gaps.any():
-                    formatted = _numeric_from_text(cleaned[column].where(gaps))
+                    formatted = _numeric_from_text(values.where(gaps))
                     parsed_numeric = parsed_numeric.astype("float64").fillna(formatted)
-            if parsed_numeric.notna().sum() / non_null_before >= numeric_ratio:
+            if readable and parsed_numeric.notna().sum() / readable >= numeric_ratio:
                 cleaned[column] = parsed_numeric
                 numeric_columns_inferred += 1
+                if markers.any():
+                    notes.append(_missing_marker_note(column, values[markers]))
                 continue
 
         if not named_like_a_date:
@@ -428,10 +459,7 @@ def clean_dataframe(
     non_finite_cells = sum(non_finite.values())
     for column, count in non_finite.items():
         noun, verb = ("values", "were") if count > 1 else ("value", "was")
-        notes.append(
-            f"{count:,} infinite {noun} in {column} {verb} treated as missing; "
-            "an infinity is not a quantity the totals can carry."
-        )
+        notes.append(f"{count:,} infinite {noun} in {column} {verb} treated as missing.")
 
     duplicate_rows = int(cleaned.duplicated().sum())
     if drop_duplicates:
@@ -439,8 +467,7 @@ def clean_dataframe(
     cleaned = cleaned.reset_index(drop=True)
     if duplicate_rows and not drop_duplicates:
         notes.append(
-            f"{duplicate_rows:,} identical rows were kept; repeat transactions are not "
-            "assumed to be mistakes."
+            f"{duplicate_rows:,} identical rows were kept, since repeated records are often legitimate."
         )
 
     if cleaned.empty or len(cleaned.columns) == 0:
@@ -625,7 +652,7 @@ def build_markdown_report(
 
     for row in profile.to_dict(orient="records"):
         lines.append(
-            f"- **{row['Column']}** — {row['Type']}; {row['Missing %']:.2f}% missing; "
+            f"- **{row['Column']}**: {row['Type']}; {row['Missing %']:.2f}% missing; "
             f"{row['Unique']:,} unique values"
         )
 

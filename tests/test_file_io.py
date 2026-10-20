@@ -164,5 +164,14 @@ class CsvExportSafetyTests(unittest.TestCase):
         self.assertTrue(safe_csv(frame).startswith("'=1+1"))
 
 
+class TitleRowEncodingTests(unittest.TestCase):
+    def test_a_title_row_is_skipped_in_utf16_files(self):
+        text = "Sales report Q1\nRegion,Revenue\nNorth,10\nSouth,20\n"
+        for encoding in ("utf-8", "utf-16"):
+            with self.subTest(encoding=encoding):
+                frame = read_tabular_file(text.encode(encoding), "report.csv")
+                self.assertEqual(list(frame.columns), ["Region", "Revenue"])
+
+
 if __name__ == "__main__":
     unittest.main()

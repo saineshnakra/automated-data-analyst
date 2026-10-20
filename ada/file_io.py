@@ -9,7 +9,7 @@ from zipfile import BadZipFile
 import pandas as pd
 from pandas.io.parsers.readers import STR_NA_VALUES
 
-from .formatting import normalized_name
+from .schema import is_identifier_name
 
 SUPPORTED_SUFFIXES = {".csv", ".xlsx", ".xlsm"}
 SAMPLES_DIRECTORY = Path(__file__).parent / "samples"
@@ -75,17 +75,9 @@ def list_excel_sheets(contents: bytes, filename: str) -> list[str]:
 # pandas' default missing-value markers except "NA", which in business data is
 # usually a region code (North America).
 NA_VALUES = sorted(STR_NA_VALUES - {"NA"})
-# Columns whose last word marks a key are read as text, so "00042" keeps its zeros.
-TEXT_HEAD_WORDS = frozenset({"id", "ids", "code", "codes", "zip", "postal", "phone", "sku", "number", "no"})
-
-
 def _kept_as_text(columns) -> dict[str, type]:
-    kept = {}
-    for column in columns:
-        words = normalized_name(str(column)).split()
-        if words and (words[-1] in TEXT_HEAD_WORDS or words == ["id"]):
-            kept[column] = str
-    return kept
+    """Read key columns (see ``schema.is_identifier_name``) as text, so "00042" keeps its zeros."""
+    return {column: str for column in columns if is_identifier_name(str(column))}
 
 
 def _read_csv(contents: bytes, encoding: str, **options) -> pd.DataFrame:
@@ -146,10 +138,11 @@ def _skip_title_row(parsed: pd.DataFrame, contents: bytes, encoding: str) -> pd.
     """
     if len(parsed.columns) > 1 or parsed.empty:
         return parsed
-    lines = contents.split(b"\n")[:3]
+    # Decode before splitting: in UTF-16 the newline is two bytes.
+    lines = contents.decode(encoding, errors="replace").lstrip("\ufeff").split("\n")[:3]
     if len(lines) < 3:
         return parsed
-    title, header, first_row = (line.decode(encoding, errors="replace") for line in lines)
+    title, header, first_row = lines
     # Only commas count as delimiters here, so a one-column file of sentences
     # containing semicolons is left as it is.
     if "," in title or not header.count(",") or header.count(",") != first_row.count(","):
