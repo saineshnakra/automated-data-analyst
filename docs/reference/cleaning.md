@@ -11,8 +11,8 @@ table or as a note.
 
 | # | Step | Detail |
 |---|---|---|
-| 1 | Normalize and de-duplicate column names | Whitespace collapsed; a blank name becomes `column_<position>`; a repeated name gets `_2`, `_3` and so on |
-| 2 | Drop empty columns | Every value missing or whitespace |
+| 1 | Normalize and de-duplicate column names | Whitespace collapsed; a blank name becomes `column_<position>`; a repeated name gets `_2`, `_3` and so on. A note names each repeated header, and says whether the two columns differ |
+| 2 | Drop empty columns | Every value missing or whitespace; a note names them |
 | 3 | Drop empty rows | Every value missing or whitespace |
 | 4 | Drop exported index columns | See below |
 | 5 | Drop timezones | Timezone-aware columns keep their wall-clock time |
@@ -23,11 +23,12 @@ table or as a note.
 | 10 | Infer dates in other columns | See below |
 | 11 | Join a date column and a time column | See [Times with no date](#times-with-no-date) |
 | 12 | Read elapsed time | See [Elapsed time](#elapsed-time) |
-| 13 | Build dates from years | See below |
-| 14 | Merge label spellings | See below |
-| 15 | Widen overflowing integers | An integer column whose total would overflow int64 becomes float64 |
-| 16 | Replace infinities | `inf` and `-inf` in float columns become missing |
-| 17 | Count identical rows | Counted and kept |
+| 13 | Read "not stated" as missing in text columns | See below |
+| 14 | Build dates from years | See below |
+| 15 | Merge label spellings | See below |
+| 16 | Widen overflowing integers | An integer column whose total would overflow int64 becomes float64 |
+| 17 | Replace infinities | `inf` and `-inf` in float columns become missing |
+| 18 | Count identical rows | Counted and kept |
 
 If nothing is left, `clean_dataframe` raises `ValueError` rather than
 returning an empty frame.
@@ -168,9 +169,32 @@ any other character, such as a slash, is not read this way, so a date cannot
 become a large integer.
 
 Cells holding a missing-value marker (`MISSING_MARKERS`: `NA`, `n/a`, `nd`,
-`null`, `-`, `#DIV/0!`, `<LOD`, `below detection limit` and similar, or a
-censored value such as `<0.1`) do not count against the 95%. If the column
-converts, they become missing and a note lists them.
+`null`, `-`, `#DIV/0!`, `<LOD`, `below detection limit` and similar; a
+"not stated" phrase from `NOT_STATED_MARKERS`, below; or a censored value such
+as `<0.1` or `<3,87`) do not count against the 95%. If the column converts,
+they become missing and a note lists them.
+
+Values past a detection limit get a note of their own. The limit is parsed
+like any number, so `<3,87` is read as below 3.87, and the note gives the
+limits and the share of the column: "7,239 cells in Phosphorus (15.5%) were
+below a detection limit (<3.87) and read as missing". When 10% or more of a
+column is censored (`CENSORED_SHARE`), the note adds that the mean of the rest
+is biased upward (downward for values above a limit), since the values left
+out are the smallest (or largest) ones.
+
+**A lone token.** Weather records write `T` for a trace of rain, and instrument
+logs write `M` or `*`. When the only text left in a column after markers is one
+token of up to three characters with no digits, repeated, and it is no more
+than half the column, it is read as a marker too: the column converts, the
+token's cells become missing, and a note counts them. For `T` the note adds
+that if it marks a trace, the true values are near zero and the mean of the
+rest runs high. The word `trace` (or `tr`) is clearly a trace, so it is read
+as 0, with a note. A longer word among numbers (`Control` among doses) is a
+real level, and the column stays text.
+
+**Cells that could not be read.** Up to 5% of a column may fail to parse and
+the column still converts; those cells become missing, and a note names them
+with examples, so nothing disappears unseen.
 
 A column whose name ends in a key word (`id`, `code`, `zip`, `postcode`,
 `phone`, `number`, `no`, `#`, `notation` and others; `is_identifier_name` in
@@ -179,6 +203,16 @@ they are keys; decimals under such a name are measurements and are converted.
 `no` counts only after another word or with a mark (`Order No`, `No.`), so a
 column of nitric oxide readings named `NO` is numeric. A column with a value
 that has a leading zero (`02134`, `007`) is never converted.
+
+**Not stated, in text columns.** A phrase for "not stated" is a missing
+value, not a group: left as a label, `NO INDICA` and `No indica` would become
+two groups of their own and could lead the brief. After inference, cells in
+text columns matching `NOT_STATED_MARKERS` (`no indica`, `no indicado`,
+`sin dato`, `nicht angegeben`, `non renseigné`, `not stated`, `not specified`,
+`N/A`, `ND`, `ERROR: #N/A` and similar, ignoring case and spacing) become
+missing, and a note lists them. `ND` is left alone in a column of two-letter
+codes, where it is North Dakota. The same list counts as markers in numeric
+columns.
 
 **Dates in other columns.** Dates also arrive in columns called `Month`,
 `Period` or `FY`. For a column with any other name, the first 50 values must
@@ -237,10 +271,12 @@ count for each operation: empty rows, empty columns and index columns removed,
 text columns whose values trimming changed, numeric and datetime columns
 inferred, identical rows found and removed, unreadable date values and
 infinite values. Its `notes` hold the sentences shown above the dashboard
-(date-order assumptions, timezones, unreadable dates, dates built from years,
-missing-value markers, merged label spellings, widened columns, infinities,
-identical rows). `pipeline.prepare_analysis` adds what schema detection
-concluded about the columns (see [Schema detection](schema-detection.md#notes)).
+(repeated headers, dropped empty columns, date-order assumptions, timezones,
+unreadable dates, dates built from years, missing-value markers, values past a
+detection limit, lone tokens, unreadable numbers, "not stated" phrases, merged
+label spellings, widened columns, infinities, identical rows).
+`pipeline.prepare_analysis` adds what schema detection concluded about the
+columns (see [Schema detection](schema-detection.md#notes)).
 
 `pipeline.cleaning_audit_frame` turns the counts into the table shown in the
 app.
@@ -263,6 +299,10 @@ app.
 | `year` and `month` (`January` ...), and no date column | Combined into a monthly `year-month` column |
 | `model_year` holding 70 to 82 | Left as numbers |
 | A cell reading `inf` | Treated as missing, with a note |
+| `Precip` holding numbers and 14% `T` | Converted; the `T` cells become missing, with a note |
+| `P mg/kg` holding `<3,87` in 15% of rows | Converted; those cells become missing, with a note on the limit and the biased mean |
+| `Drainage` holding `No indica` and `ERROR: #N/A` | Those cells become missing, with a note |
+| A CSV header repeated, read as `diabetes` and `diabetes.1` | Both kept, with a note saying on how many rows they differ |
 
 ## Changing this
 

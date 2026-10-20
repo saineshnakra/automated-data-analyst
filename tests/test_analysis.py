@@ -577,6 +577,90 @@ class MissingMarkerTests(unittest.TestCase):
         cleaned, _ = clean_dataframe(frame)
         self.assertEqual(cleaned["Note"].dtype, object)
 
+    def test_a_lone_repeated_token_is_a_marker_and_the_column_stays_numeric(self):
+        frame = pd.DataFrame({"Precip": ["0", "T", "1.5", "T", "0.2", "0.8", "T", "2.1"] * 5})
+        cleaned, report = clean_dataframe(frame)
+        self.assertEqual(cleaned["Precip"].dtype.kind, "f")
+        self.assertEqual(int(cleaned["Precip"].isna().sum()), 15)
+        note = next(note for note in report.notes if "Precip" in note)
+        self.assertIn('15 cells in Precip held "T"', note)
+        self.assertIn("trace", note)
+
+    def test_the_word_trace_reads_as_zero(self):
+        frame = pd.DataFrame({"Snowfall": ["trace", "1.2", "0.4", "2.0", "0.0"] * 4})
+        cleaned, report = clean_dataframe(frame)
+        self.assertEqual(int((cleaned["Snowfall"] == 0).sum()), 8)
+        self.assertTrue(any('held "trace" and were read as 0' in note for note in report.notes))
+
+    def test_a_long_word_among_numbers_is_a_level_not_a_marker(self):
+        frame = pd.DataFrame({"Dose": ["Control", "1", "5", "10"] * 5})
+        cleaned, _ = clean_dataframe(frame)
+        self.assertEqual(cleaned["Dose"].dtype, object)
+
+    def test_values_below_a_comma_decimal_limit_are_censored_with_a_bias_note(self):
+        frame = pd.DataFrame({"P mg/kg": ["<3,87", "5,10", "7,25", "<3,87", "9,00"] * 4})
+        cleaned, report = clean_dataframe(frame)
+        self.assertEqual(int(cleaned["P mg/kg"].isna().sum()), 8)
+        note = next(note for note in report.notes if "P mg/kg" in note)
+        self.assertIn("below a detection limit (<3.87)", note)
+        self.assertIn("biased upward", note)
+
+    def test_a_few_censored_values_get_no_bias_warning(self):
+        values = ["<0.5"] + [f"{1 + i / 10:.1f}" for i in range(30)]
+        cleaned, report = clean_dataframe(pd.DataFrame({"Zinc": values}))
+        note = next(note for note in report.notes if "Zinc" in note)
+        self.assertIn("below a detection limit (<0.5)", note)
+        self.assertNotIn("biased", note)
+
+    def test_cells_numbers_could_not_read_are_named(self):
+        values = [f"{i / 10:.1f}" for i in range(40)] + ["1 1"]
+        cleaned, report = clean_dataframe(pd.DataFrame({"Reading": values}))
+        self.assertEqual(cleaned["Reading"].dtype.kind, "f")
+        unread = [note for note in report.notes if "could not be read as a number" in note]
+        self.assertTrue(unread and '"1 1"' in unread[0], report.notes)
+
+    def test_not_stated_phrases_in_a_text_column_become_missing(self):
+        frame = pd.DataFrame({
+            "Drainage": ["Good", "No indica", "Poor", "NO INDICA", "ERROR: #N/A", "sin dato"],
+            "pH": [5.1, 6.2, 4.8, 5.5, 6.0, 5.9],
+        })
+        cleaned, report = clean_dataframe(frame)
+        self.assertEqual(int(cleaned["Drainage"].isna().sum()), 4)
+        self.assertTrue(any("Drainage" in note and "not stated" in note for note in report.notes))
+
+    def test_nd_stays_in_a_column_of_two_letter_codes(self):
+        frame = pd.DataFrame({"State": ["ND", "SD", "MN", "ND", "IA"], "Sales": [1.0, 2.0, 3.0, 4.0, 5.0]})
+        cleaned, _ = clean_dataframe(frame)
+        self.assertEqual(cleaned["State"].tolist(), ["ND", "SD", "MN", "ND", "IA"])
+
+
+class CleaningNoteTests(unittest.TestCase):
+    def test_a_renamed_duplicate_header_is_noted_with_whether_it_differs(self):
+        frame = pd.DataFrame({"diabetes": [1, 0, 1, 0], "diabetes.1": [1, 1, 1, 0], "age": [40, 50, 60, 70]})
+        _, report = clean_dataframe(frame)
+        self.assertIn(
+            'The header "diabetes" appears more than once; the repeat is named "diabetes.1". '
+            "They differ on 1 row.",
+            report.notes,
+        )
+
+    def test_numbers_as_headers_are_not_a_repeat(self):
+        frame = pd.DataFrame({"400": [0.1, 0.2], "400.5": [0.3, 0.4], "401": [0.5, 0.6]})
+        _, report = clean_dataframe(frame)
+        self.assertFalse(any("appears more than once" in note for note in report.notes))
+
+    def test_a_duplicate_column_in_a_frame_is_noted(self):
+        frame = pd.DataFrame([[1, 1, 5], [0, 0, 6]], columns=["flag", "flag", "x"])
+        _, report = clean_dataframe(frame)
+        expected = 'repeat is named "flag_2". They hold the same values.'
+        self.assertTrue(any(expected in note for note in report.notes), report.notes)
+
+    def test_dropped_empty_columns_are_named(self):
+        frame = pd.DataFrame({"FT": [None, None], "Value": [1.0, 2.0], "WTE": ["", " "]})
+        cleaned, report = clean_dataframe(frame)
+        self.assertEqual(list(cleaned.columns), ["Value"])
+        self.assertIn("2 empty columns were dropped: FT and WTE.", report.notes)
+
 
 class IdentifierNameCleaningTests(unittest.TestCase):
     def test_words_containing_id_are_still_parsed_as_numbers(self):
@@ -604,17 +688,17 @@ class IdentifierNameCleaningTests(unittest.TestCase):
 class LabelVariantTests(unittest.TestCase):
     def test_labels_differing_only_in_case_accents_or_spacing_are_merged(self):
         frame = pd.DataFrame({
-            "Tiempo": ["NO INDICA"] * 4 + ["No indica", "no Indica", "de 1 a 5 años", "De 1 a 5  anos"],
+            "Tiempo": ["MAS DE 5"] * 4 + ["Mas de 5", "mas De 5", "de 1 a 5 años", "De 1 a 5  anos"],
             "MO": [1.0] * 8,
         })
 
         cleaned, report = clean_dataframe(frame)
 
         self.assertEqual(
-            cleaned["Tiempo"].value_counts().to_dict(), {"NO INDICA": 6, "de 1 a 5 años": 2}
+            cleaned["Tiempo"].value_counts().to_dict(), {"MAS DE 5": 6, "de 1 a 5 años": 2}
         )
         note = next(note for note in report.notes if note.startswith("3 Tiempo values"))
-        self.assertIn('"No indica" and "no Indica" became "NO INDICA"', note)
+        self.assertIn('"Mas de 5" and "mas De 5" became "MAS DE 5"', note)
         self.assertIn("1 other label likewise", note)
 
     def test_distinct_labels_and_keys_are_left_alone(self):

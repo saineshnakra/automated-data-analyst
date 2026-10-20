@@ -53,7 +53,35 @@ MISSING_MARKERS = frozenset({
     "?", ".", "#n/a", "#value!", "#div/0!", "not detected", "bdl", "bql", "lod", "loq",
     "<lod", "<loq", "<dl", "below detection limit",
 })
-_CENSORED_VALUE = re.compile(r"^[<>]\s*[\d.]")
+# Phrases for "not stated" in the languages exports most often arrive in, and a
+# spreadsheet's lookup error. They are missing values in a text column as much
+# as in a numeric one, and left as labels they become a group of their own.
+NOT_STATED_MARKERS = frozenset({
+    "n/a", "#n/a", "error: #n/a", "nd", "n.d.", "not stated", "not specified",
+    "not indicated", "not available", "no indica", "no indicado", "no indicada",
+    "sin dato", "sin datos", "nicht angegeben", "non renseigné", "non renseigne",
+})
+# Censoring markers without a number: the reading was below what the method sees.
+BELOW_LIMIT_MARKERS = frozenset({
+    "<lod", "<loq", "<dl", "bdl", "bql", "below detection limit", "not detected",
+})
+# "<0.5" or "<3,87": a reading below, or above, a detection limit.
+_CENSORED_VALUE = re.compile(r"^[<>]\s*[\d.,]")
+# A lone token that means a trace amount when it is the column's only text.
+TRACE_TOKENS = frozenset({"t", "tr", "trace"})
+
+
+def _normalized_text(series: pd.Series) -> pd.Series:
+    return series.astype("string").str.strip().str.lower().str.replace(r"\s+", " ", regex=True)
+
+
+def _cells_matching(series: pd.Series, matches) -> pd.Series:
+    """True for cells whose normalised text ``matches`` marks; judged once per distinct value."""
+    distinct = pd.Series(series.dropna().unique(), dtype=object)
+    if distinct.empty:
+        return pd.Series(False, index=series.index)
+    hits = distinct[matches(_normalized_text(distinct)).fillna(False).astype(bool).to_numpy()]
+    return series.isin(hits.tolist())
 
 
 def _per_value(series: pd.Series, transform) -> pd.Series:
@@ -74,14 +102,122 @@ def _per_value(series: pd.Series, transform) -> pd.Series:
 
 
 def _missing_markers(series: pd.Series) -> pd.Series:
-    """True for cells holding a missing-value marker such as "NA", "nd" or "<0.1"."""
+    """True for cells holding a missing-value marker such as "NA", "nd", "no indica" or "<0.1"."""
+    markers = MISSING_MARKERS | NOT_STATED_MARKERS
+    return _cells_matching(series, lambda text: text.isin(markers) | text.str.match(_CENSORED_VALUE.pattern))
 
-    def marked(values: pd.Series) -> pd.Series:
-        text = values.astype("string").str.strip().str.lower()
-        found = text.isin(MISSING_MARKERS) | text.str.match(_CENSORED_VALUE.pattern)
-        return found.fillna(False).astype(bool)
 
-    return _per_value(series, marked)
+def _censored(series: pd.Series) -> tuple[pd.Series, pd.Series]:
+    """Cells below a detection limit, and cells above one ("<0.1", "BDL"; ">12,88")."""
+    below = _cells_matching(
+        series, lambda text: text.str.match(r"^<\s*[\d.,]") | text.isin(BELOW_LIMIT_MARKERS)
+    )
+    return below, _cells_matching(series, lambda text: text.str.match(r"^>\s*[\d.,]"))
+
+
+def _limits(values: pd.Series) -> list[float]:
+    """The detection limits written in censored cells, parsed like any number: "<3,87" is 3.87."""
+    numbers = values.astype("string").str.strip().str.lstrip("<>").str.strip()
+    parsed = {_read_formatted_number(number) for number in numbers.dropna().unique()}
+    return sorted(value for value in parsed if value is not None)
+
+
+def _censored_note(column: str, values: pd.Series, below: pd.Series, above: pd.Series, total: int) -> str:
+    """Say how many cells were past a detection limit, and which way that biases the mean."""
+    censored = below | above
+    count = int(censored.sum())
+    limits = _limits(values[censored])
+    side = "below" if below.sum() >= above.sum() else "above"
+    shown = ""
+    if limits:
+        mark = "<" if side == "below" else ">"
+        low, high = (f"{mark}{limit:g}" for limit in (limits[0], limits[-1]))
+        shown = f" ({low})" if low == high else f" ({low} to {high})"
+    share = count / max(total, 1) * 100
+    portion = "under 0.1%" if share < 0.05 else f"{share:.1f}%"
+    subject = f"{count:,} cells in {column} ({portion}) were" if count > 1 else f"1 cell in {column} was"
+    note = f"{subject} {side} a detection limit{shown} and read as missing"
+    if share >= CENSORED_SHARE * 100:
+        direction = "upward" if side == "below" else "downward"
+        note += f"; with this many left out, the mean of the rest is biased {direction}"
+    return note + "."
+
+
+#: Share of a column past a detection limit at which its note warns that the mean is biased.
+CENSORED_SHARE = 0.10
+
+
+def _lone_token(values: pd.Series, unread: pd.Series) -> str | None:
+    """The single text token left in an otherwise numeric column, when it reads as a marker.
+
+    Weather records write "T" for a trace of rain and instrument logs write "M"
+    or "*": one short token, repeated, with numbers everywhere else. A longer
+    word ("Control" among doses) is a real level and is not returned.
+    """
+    if not unread.any():
+        return None
+    tokens = _normalized_text(pd.Series(values[unread].unique(), dtype=object)).dropna().unique()
+    if len(tokens) != 1:
+        return None
+    token = str(tokens[0])
+    if token in TRACE_TOKENS or (len(token) <= 3 and not any(char.isdigit() for char in token)):
+        return token
+    return None
+
+
+def _not_stated(series: pd.Series) -> pd.Series:
+    """True for text cells holding a NOT_STATED_MARKERS phrase.
+
+    "ND" is left alone in a column of two-letter codes, where it is North Dakota.
+    """
+    markers = NOT_STATED_MARKERS
+    distinct = _normalized_text(pd.Series(series.dropna().unique(), dtype=object))
+    if len(distinct) and distinct.str.fullmatch(r"[a-z]{2}").mean() >= 0.5:
+        markers = markers - {"nd"}
+    return _cells_matching(series, lambda text: text.isin(markers))
+
+
+_MANGLED_DUPLICATE = re.compile(r"^(.+)\.(\d+)$")
+
+
+def _duplicate_header_notes(original: pd.Index, frame: pd.DataFrame) -> list[str]:
+    """Name each repeated header and the name its copy now has, and say whether they differ.
+
+    A reader renames a repeated "diabetes" to "diabetes.1"; ADA renames one in a
+    DataFrame to "diabetes_2". Either way the two columns may hold different data.
+    """
+    notes = []
+    renamed: list[tuple[str, str]] = []
+    names = [str(name) for name in frame.columns]
+    for name in names:
+        match = _MANGLED_DUPLICATE.match(name)
+        # Numbers as headers ("400" and "400.5" nm) are not a repeat.
+        if match and match.group(1) in names and any(char.isalpha() for char in match.group(1)):
+            renamed.append((match.group(1), name))
+    seen: dict[str, int] = {}
+    for position, raw_name in enumerate(original):
+        base = " ".join(str(raw_name).strip().split()) or f"column_{position + 1}"
+        seen[base] = seen.get(base, 0) + 1
+        if seen[base] > 1:
+            renamed.append((base, names[position]))
+    for first, copy in renamed:
+        a, b = frame[first], frame[copy]
+        if not (is_numeric_dtype(a) and is_numeric_dtype(b)):
+            a, b = a.astype("string"), b.astype("string")
+        differ = int((a.ne(b) & ~(a.isna() & b.isna())).sum())
+        rows = "row" if differ == 1 else "rows"
+        same = "They hold the same values." if differ == 0 else f"They differ on {differ:,} {rows}."
+        notes.append(f'The header "{first}" appears more than once; the repeat is named "{copy}". {same}')
+    return notes
+
+
+def _dropped_columns_note(columns: list[str]) -> str:
+    shown = [str(column) for column in columns]
+    if len(shown) > 8:
+        shown = [*shown[:8], f"{len(shown) - 8} more"]
+    listed = shown[0] if len(shown) == 1 else f"{', '.join(shown[:-1])} and {shown[-1]}"
+    noun = "columns were" if len(columns) > 1 else "column was"
+    return f"{len(columns)} empty {noun} dropped: {listed}."
 
 
 def _speculative_dates(values: pd.Series) -> pd.Series:
@@ -698,6 +834,67 @@ def _missing_marker_note(column: str, marked: pd.Series) -> str:
     return f"{len(marked):,} {noun} in {column} read as missing: {shown}."
 
 
+def _not_stated_note(column: str, stated: pd.Series) -> str:
+    phrases = "This phrase means" if stated.astype(str).str.strip().nunique() == 1 else "These phrases mean"
+    return f"{_missing_marker_note(column, stated)} {phrases} the value was not stated."
+
+
+def _marker_notes(
+    column: str,
+    values: pd.Series,
+    markers: pd.Series,
+    token_cells: pd.Series,
+    token: str | None,
+    total: int,
+) -> list[str]:
+    """Notes for the markers read in a column that became numeric.
+
+    Values past a detection limit get their own note, since leaving them out
+    biases the mean; other markers and a lone token are listed as read.
+    """
+    notes = []
+    below, above = _censored(values)
+    censored = (below | above) & markers
+    plain = markers & ~censored
+    if plain.any():
+        notes.append(_missing_marker_note(column, values[plain]))
+    if censored.any():
+        notes.append(_censored_note(column, values, below & markers, above & markers, total))
+    if token_cells.any():
+        count = int(token_cells.sum())
+        shown = str(values[token_cells].astype(str).str.strip().iloc[0])
+        noun, verb = ("cells", "were") if count > 1 else ("cell", "was")
+        if token in TRACE_TOKENS - {"t"}:
+            notes.append(
+                f'{count:,} {noun} in {column} held "{shown}" and {verb} read as 0: a trace is below the '
+                "smallest amount measured."
+            )
+        else:
+            note = (
+                f'{count:,} {noun} in {column} held "{shown}", the only text in the column, and {verb} '
+                "read as missing"
+            )
+            if token in TRACE_TOKENS:
+                note += (
+                    f'; if "{shown}" marks a trace, the true values are near zero and the mean of the '
+                    "rest runs high"
+                )
+            notes.append(note + ".")
+    return notes
+
+
+def _unread_note(column: str, unread: pd.Series) -> str:
+    """Name the cells a numeric column could not read, which became missing."""
+    examples = list(dict.fromkeys(unread.astype(str).str.strip()))
+    shown = ", ".join(f'"{value}"' for value in examples[:4]) + (", ..." if len(examples) > 4 else "")
+    if len(unread) == 1:
+        return f"1 cell in {column} could not be read as a number and was treated as missing: {shown}."
+    return (
+        f"{len(unread):,} cells in {column} could not be read as numbers and were treated as "
+        f"missing: {shown}."
+    )
+
+
 def clean_dataframe(
     dataframe: pd.DataFrame, *, drop_duplicates: bool = False, date: str | None = None
 ) -> tuple[pd.DataFrame, CleaningReport]:
@@ -715,12 +912,14 @@ def clean_dataframe(
     cleaned = dataframe.copy()
     original_rows, original_columns = cleaned.shape
     cleaned.columns = _make_unique_columns(cleaned.columns)
+    notes: list[str] = _duplicate_header_notes(dataframe.columns, cleaned)
 
     blanks = {column: _is_blank(cleaned[column]).to_numpy() for column in cleaned.columns}
     empty_columns = [column for column, blank in blanks.items() if blank.all()]
     # Each drop copies the whole frame, so only drop what is there.
     if empty_columns:
         cleaned = cleaned.drop(columns=empty_columns)
+        notes.append(_dropped_columns_note(empty_columns))
 
     kept = [blank for column, blank in blanks.items() if column not in empty_columns]
     empty_row_mask = np.logical_and.reduce(kept) if kept else np.ones(len(cleaned), dtype=bool)
@@ -738,7 +937,6 @@ def clean_dataframe(
     numeric_columns_inferred = 0
     datetime_columns_inferred = _normalize_datetime_columns(cleaned)
     unparsed_date_cells = 0
-    notes: list[str] = []
 
     if datetime_columns_inferred:
         notes.append(
@@ -808,12 +1006,21 @@ def clean_dataframe(
         keys = is_identifier_name(column) and not _holds_decimals(values)
         if not keys and not leading_zero and _numeric_share(_probe(values)) >= PROBE_RATIO:
             parsed_numeric, markers = _read_numbers(values)
-            readable = non_null_before - int(markers.sum())
+            unread = parsed_numeric.isna() & values.notna() & ~markers
+            # One short token repeated among numbers ("T" for a trace) is a marker,
+            # as long as it is not most of the column.
+            token = _lone_token(values, unread)
+            token_cells = unread if token and unread.sum() <= 0.5 * non_null_before else unread & False
+            readable = non_null_before - int(markers.sum()) - int(token_cells.sum())
             if readable and parsed_numeric.notna().sum() / readable >= numeric_ratio:
+                if token_cells.any() and token in TRACE_TOKENS - {"t"}:
+                    parsed_numeric = parsed_numeric.mask(token_cells, 0.0)
                 cleaned[column] = parsed_numeric
                 numeric_columns_inferred += 1
-                if markers.any():
-                    notes.append(_missing_marker_note(column, values[markers]))
+                notes.extend(_marker_notes(column, values, markers, token_cells, token, non_null_before))
+                skipped = unread & ~token_cells
+                if skipped.any():
+                    notes.append(_unread_note(column, values[skipped]))
                 continue
 
         if not named_like_a_date:
@@ -850,6 +1057,13 @@ def clean_dataframe(
             f"{column} counts {UNIT_NAMES[unit]} from the start, so it is used as a time axis "
             "starting at 00:00:00; no calendar date is attached to it."
         )
+
+    # Text columns that stayed text: "not stated" phrases are missing values, not a group.
+    for column in cleaned.select_dtypes(include=["object", "string"]).columns:
+        stated = _not_stated(cleaned[column])
+        if stated.any():
+            notes.append(_not_stated_note(column, cleaned[column][stated]))
+            cleaned[column] = cleaned[column].mask(stated)
 
     # Runs after inference, so year columns held as text have become numbers.
     year_columns = _year_columns(cleaned, None if elapsed else date)
