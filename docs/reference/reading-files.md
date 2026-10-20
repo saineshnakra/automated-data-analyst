@@ -1,71 +1,97 @@
 # Reading files
 
-**Code:** `file_io.py` · limits set in `app.py` · **Tests:** `tests/test_file_io.py`
+**Code:** `ada/file_io.py`; app limits in `app.py` · **Tests:** `tests/test_file_io.py`
 
-Turns uploaded bytes into a DataFrame, and refuses anything it cannot read
-safely. No analysis happens here.
+Turns uploaded bytes into a DataFrame and rejects anything it cannot read. No
+analysis happens here.
 
-## What is accepted
+## Accepted formats
 
 | Format | Extensions | Notes |
 |---|---|---|
-| CSV | `.csv` | Comma, semicolon, or tab separated |
-| Excel | `.xlsx`, `.xlsm` | Read via `openpyxl` |
+| CSV | `.csv` | Comma, semicolon, tab or pipe separated |
+| Excel | `.xlsx`, `.xlsm` | Read with `openpyxl` |
 
-Anything else is rejected with "ADA supports CSV, XLSX, and XLSM files." An
-empty file is rejected too.
+Any other extension is rejected with "ADA supports CSV, XLSX, and XLSM files."
+An empty file is rejected with "The uploaded file is empty."
 
 ## Limits
 
-| Limit | Value | Where | What happens |
+| Limit | Value | Where | Behaviour |
 |---|---|---|---|
-| File size | 25 MB | `MAX_UPLOAD_BYTES` in `app.py` | Upload refused with a message |
-| Rows analyzed | 250,000 | `MAX_ANALYSIS_ROWS` in `app.py` | The **most recent** 250,000 kept, and the app says how many older rows were skipped and what date range it analyzed |
+| File size | 25 MB | `MAX_UPLOAD_BYTES` in `app.py` | The app refuses the upload with a message |
+| Rows analyzed | 250,000 | `MAX_ANALYSIS_ROWS` in `app.py`, `DEFAULT_ROW_LIMIT` in `ada/api.py` | The most recent rows are kept; the app reports how many older rows were skipped and the date range analyzed |
 
-Both exist so a hosted deployment stays predictable. Change them if you run ADA
-yourself on bigger machines.
+The file-size limit is the app's; the library does not enforce it
+(`ada.MAX_FILE_BYTES` records the value). Raise either limit when you run ADA
+on your own hardware: `ada.analyze(..., row_limit=...)` in Python.
 
-Recency matters more than order of appearance. Exports are usually written
-oldest-first, so keeping the head of a long file analyzes the periods nobody is
-asking about — and then forecasts months the file already contains. Rows are
-selected by the detected date column where there is one, and from the end of
-the file where there is not. Cleaning runs before the cut, so the skipped count
-is the real number of rows dropped.
+Exports are usually written oldest first, so keeping the first rows of a long
+file would analyze the oldest periods and forecast months the file already
+contains. Rows are ranked by the detected date column when there is one, and
+taken from the end of the file when there is not. If the cut splits the oldest
+kept period, that period is dropped too, unless that would leave no rows.
+Cleaning runs before the cut, so the skipped count is the number of cleaned
+rows left out.
 
-## How CSV parsing works
+## CSV parsing
 
-1. Try encodings in order: `utf-8-sig`, then `utf-8`, then `latin-1`.
-   `utf-8-sig` goes first so a Windows byte-order mark does not end up glued to
-   the first column name.
-2. Parse with the default comma separator.
-3. If that produces exactly **one** column and the first 4 KB contains a `;` or
-   a tab, re-parse with separator sniffing. The single-column result is the
-   tell-tale sign of a semicolon-separated European export.
+1. Choose encodings. A UTF-16 byte-order mark selects `utf-16`; a UTF-8 one
+   selects `utf-8-sig`. Otherwise `utf-8-sig`, `utf-8` and `latin-1` are tried
+   in turn. `utf-8-sig` comes first so that a byte-order mark does not end up
+   in the first column name.
+2. Parse with the comma separator.
+3. If that gives exactly one column and the header line contains `;`, a tab or
+   `|`, re-parse with that separator. Only the header line is checked, so a
+   one-column file of sentences is not split on their semicolons.
+4. If there is still one column, and the first line has no comma while the
+   second and third lines have the same number of commas, treat the first line
+   as a report title and use the second as the header.
 
-If every encoding fails, you get "The file could not be parsed as CSV."
+If every encoding fails: "The file could not be parsed as CSV."
 
-## How Excel parsing works
+Two parsing rules apply to CSV and Excel alike:
 
-`list_excel_sheets` returns the worksheet names — an empty list for CSV. When a
-workbook has more than one sheet, `app.py` shows a picker and passes the choice
-through. With no choice, sheet index `0` is read.
+- A column whose name ends in a key word (`id`, `ids`, `code`, `codes`, `zip`,
+  `postal`, `phone`, `sku`, `number`, `no`, `key`, `uuid`; see
+  `is_identifier_name` in `ada/schema.py`) is read as text, so `00042` keeps
+  its leading zeros.
+- The text `NA` is kept as a value, not read as missing, because in business
+  data it is often a region code (North America). pandas' other missing-value
+  markers apply.
 
-A file with an Excel extension that is not really a workbook raises "The file is
-not a valid Excel workbook" rather than a raw `BadZipFile`.
+## Excel parsing
+
+`list_excel_sheets` returns the worksheet names, or an empty list for a CSV.
+When a workbook has more than one sheet, `app.py` shows a picker and passes the
+choice through. With no choice, the first sheet is read.
+
+A file with an Excel extension that is not a valid workbook raises "The file
+is not a valid Excel workbook." rather than a raw `BadZipFile` or `KeyError`.
+
+## Other functions
+
+- `list_sample_datasets` returns the bundled files in `ada/samples/` keyed by
+  display name ("SaaS Subscriptions").
+- `safe_csv` writes the cleaned-data download. Text cells and headers that
+  start with `=`, `+`, `-`, `@`, a tab or a carriage return get a leading
+  apostrophe, so a spreadsheet shows them as text instead of running them as
+  formulas.
 
 ## Edge cases
 
 | Situation | Behavior |
 |---|---|
-| Empty file | `ValueError` — "The uploaded file is empty." |
+| Empty file | `ValueError`: "The uploaded file is empty." |
 | Multi-sheet workbook, no sheet chosen | First sheet |
-| `.xlsx` that is not a zip | Clear error, not a traceback |
-| CSV with a BOM | Handled by `utf-8-sig` |
-| Semicolon CSV | Detected on the retry pass |
+| `.xlsx` that is not a workbook | `ValueError` with a readable message |
+| CSV with a byte-order mark | Handled by `utf-8-sig` or `utf-16` |
+| Semicolon, tab or pipe CSV | Detected on the re-parse |
+| Title line above the header | Skipped |
 
 ## Changing this
 
-Adding a format means adding the suffix to `SUPPORTED_SUFFIXES`, adding a
-branch in `read_tabular_file`, and keeping validation just as strict. Every
-error path should raise `ValueError` with a message a non-technical user can
-act on — those messages are shown verbatim in the app.
+Adding a format means adding its suffix to `SUPPORTED_SUFFIXES`, a branch in
+`read_tabular_file`, and validation as strict as the existing formats. Every
+error path raises `ValueError` with a message a non-technical user can act on;
+the app shows these messages as they are.

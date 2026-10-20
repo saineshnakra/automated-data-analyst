@@ -1,22 +1,20 @@
 """The ``ada`` command.
 
-    ada analyze orders.csv
-    ada schema orders.csv
+    ada analyze measurements.csv
+    ada schema measurements.csv
     ada ask orders.csv "which category made the most revenue"
     ada check metrics.csv --measure signups --frequency W
     ada samples
     ada app
 
-``check`` is the one built for cron. Its exit code is the answer, so a shell
-can branch without parsing anything:
+``ada check`` is meant for scheduled jobs and reports through its exit code:
 
-    0  looked, nothing outside the band
-    1  looked, something was flagged
-    3  could not look -- no timeline, or too little history
-    2  the input could not be used at all
+    0  checked, nothing flagged
+    1  checked, at least one period flagged
+    2  the input could not be read
+    3  could not check: no date column or too few periods
 
-Three and one are different on purpose. A job that cannot tell "quiet" from
-"blind" will eventually report quiet for a week because its feed broke.
+3 is kept separate from 0 so that a broken feed doesn't look like a quiet one.
 """
 
 from __future__ import annotations
@@ -24,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from . import __version__
 from .api import AdaError, Refusal, analyze, sample, samples
@@ -52,7 +51,7 @@ def _analyze(args: argparse.Namespace) -> int:
 
 
 def _schema(args: argparse.Namespace) -> int:
-    """What ADA decided, so you know which names to pass back to it."""
+    """Print the detected column roles and any cleaning notes."""
     report = _load(args)
     roles = report.roles
     print(f"{report.source_name} — {report.rows_analyzed:,} rows")
@@ -89,7 +88,7 @@ def _check(args: argparse.Namespace) -> int:
         return EXIT_QUIET
     for item in found:
         key = f"anomaly:{item.period:%Y-%m-%d}"
-        print(f"{key}  {item.direction} to {item.value:,.2f}, expected about {item.expected:,.2f}")
+        print(f"{key}  {item.value:,.2f}, {item.direction} the expected {item.expected:,.2f}")
     return EXIT_FLAGGED
 
 
@@ -100,21 +99,20 @@ def _samples(_: argparse.Namespace) -> int:
 
 
 def _app(_: argparse.Namespace) -> int:
-    """Launch the Streamlit app, which lives behind the [app] extra."""
-    try:
-        from streamlit.web import cli as streamlit_cli  # noqa: PLC0415
-    except ImportError:
+    """Launch the Streamlit app from a source checkout (needs the [app] extra)."""
+    entry = Path(__file__).resolve().parent.parent / "app.py"
+    if not entry.is_file():
         print(
-            "The app needs Streamlit. Install it with:\n"
-            "    pip install 'automated-data-analyst[app]'",
+            "The app runs from a source checkout:\n"
+            "    git clone https://github.com/saineshnakra/automated-data-analyst\n"
+            "    cd automated-data-analyst && pip install -e '.[app]' && ada app",
             file=sys.stderr,
         )
         return EXIT_ERROR
-    from pathlib import Path  # noqa: PLC0415
-
-    entry = Path(__file__).resolve().parent.parent / "app.py"
-    if not entry.is_file():
-        print(f"Could not find the app at {entry}.", file=sys.stderr)
+    try:
+        from streamlit.web import cli as streamlit_cli  # noqa: PLC0415
+    except ImportError:
+        print("The app needs Streamlit: pip install -e '.[app]'", file=sys.stderr)
         return EXIT_ERROR
     sys.argv = ["streamlit", "run", str(entry)]
     streamlit_cli.main()
@@ -146,7 +144,7 @@ def build_parser() -> argparse.ArgumentParser:
     with_source("check", "flag periods outside the expected band; for cron")
 
     subcommands.add_parser("samples", help="list the bundled datasets")
-    subcommands.add_parser("app", help="launch the browser app (needs the app extra)")
+    subcommands.add_parser("app", help="launch the browser app (from a source checkout)")
     return parser
 
 

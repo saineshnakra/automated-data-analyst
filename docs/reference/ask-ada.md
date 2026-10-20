@@ -1,14 +1,14 @@
 # Ask ADA
 
-**Code:** `nlq.py` · **Tests:** `tests/test_nlq.py`
+**Code:** `ada/nlq.py` · **Tests:** `tests/test_nlq.py`
 
-Answers plain-English questions about the loaded data, and shows the calculation
-behind every answer.
+Answers plain-English questions about the loaded data and shows the
+calculation behind each answer.
 
-## The idea
+## Overview
 
-ADA does not generate code and run it. Your question becomes a **`QueryPlan`** —
-a small, fixed structure — and that plan is executed with pandas locally.
+The question becomes a `QueryPlan`, a small fixed structure, and pandas
+executes the plan locally. No code is generated.
 
 ```
 "Top 5 regions by revenue"
@@ -18,9 +18,6 @@ QueryPlan(intent="rank", measure="Revenue", dimension="Region",
         ↓ execute_plan
 QueryAnswer(answer="...", calculation="...", table=..., chart="bar")
 ```
-
-The plan is inspectable and the calculation is printed under the answer. There
-is no model-written code anywhere in this path.
 
 ## The plan
 
@@ -38,113 +35,134 @@ class QueryPlan:
     year: int | None
     month: int | None
     grain: str | None         # D | W | M | Q | Y
-    source: str               # "rules" or the AI planner
+    source: str               # "rules", or "ai" for the optional planner
 ```
 
-`source` is what the interface badges. A user can always see whether the rules
-or a model produced the plan.
+## Intents
 
-## The six intents
-
-| Intent | Question it answers | Example |
+| Intent | Answers | Example |
 |---|---|---|
 | `aggregate` | One number | "Total revenue" |
-| `count` | How many | "How many orders?" |
-| `rank` | Best or worst N | "Top 5 products by sales" |
-| `breakdown` | Split by segment | "Revenue by region" |
-| `trend` | Over time | "Monthly revenue trend" |
-| `growth` | What changed | "Which region grew fastest?" |
+| `count` | How many rows, or distinct values | "How many orders?" |
+| `rank` | Top or bottom N groups | "Top 5 products by sales" |
+| `breakdown` | The measure per group | "Revenue by region" |
+| `trend` | The measure per period | "Monthly revenue trend" |
+| `growth` | Latest period against the previous one | "Which region grew fastest?" |
 
-## How the parser decides
+## How the parser reads a question
 
-Roughly in this order:
-
-1. **Match columns** mentioned in the question, allowing simple plural and
-   singular variants
-2. **Detect a time filter** — a year, a month name
-3. **Detect a grain** — daily, weekly, monthly, quarterly, yearly
-4. **Detect value filters** — segment values named in the question, e.g. "in the
-   West"
-5. **Detect an aggregation word** — total, average, median, highest, lowest, ...
-6. Then choose an intent:
+1. Refuse phrasing a plan cannot represent: comparison operators (`>`, `<`,
+   `=`, `≥`, `≤`, `≠`), thresholds ("greater than", "at least 10"), dates
+   relative to today ("last 30 days", "this year", "year to date", "last
+   December"), "or", and questions naming two or more months or years.
+2. Match columns named in the question, including the name with a trailing
+   `s` or `es` added or a trailing `s` removed. The longest matching name wins.
+3. Refuse the question if any word is unrecognized (see below).
+4. Detect a year (1900 to 2099) and a month name.
+5. Detect a grain: daily, weekly, monthly, quarterly, yearly.
+6. Detect value filters: values of segment columns (with at most 200 distinct
+   values, and at least 3 characters long) named in the question, e.g. "West".
+7. Detect an aggregation word (total, average, median, highest, lowest, ...),
+   reading the question with the matched column names removed so that
+   `Total Sales` does not read as "total".
+8. Choose an intent, checking these signals in order:
 
 | Signal | Result |
 |---|---|
-| "how many", "count", "number of" | `count`, or `breakdown` with count if a segment is named |
-| A growth word and a date column exists | `growth`, ranked if the question asks *which* |
-| "top N" / "bottom N", or a superlative with a segment | `rank` |
-| A grain, or "over time"/"trend"/"timeline"/"history" | `trend` |
-| A segment plus "by"/"per"/"across"/"each" | `breakdown` |
-| A measure with an aggregation word | `aggregate` |
+| "how many", "count" or "number of", without a growth word | `count`; `breakdown` by count if a segment and a grouping word are present |
+| A growth word, and a date column exists | `growth`; ranked by segment when one is named, or by the detected segment when the question says "which", "fastest", "slowest" or a superlative |
+| "top N", "bottom N", or a superlative, with a segment | `rank` |
+| A grain, or "over time", "trend", "timeline", "history", "trajectory" | `trend` |
+| A segment with "by", "per", "across", "breakdown", "split" or "each", or a segment with no measure named | `breakdown` |
+| A measure with an aggregation word, or a measure named on its own | `aggregate` |
 
-If none match, `parse_question` returns `None` — and returning `None` is the
-correct behavior, not a failure. It is what triggers the AI fallback or the
-suggestion list, rather than ADA guessing.
+If none match, `parse_question` returns `None`. That triggers the AI planner
+(when a key is set) or the suggestion list.
 
-### Refusing unreadable questions
+Without an aggregation word, the measure's default is used: a sum for an
+amount, a mean for a rate or level (see
+[Concepts](../concepts.md#amounts-rates-and-levels)). A trend question whose
+aggregation word differs from that default ("average revenue monthly") is
+refused, because the trend executor always uses the default.
 
-Before a plan is built, every word in the question must be either a known
-column/value, part of the query grammar (aggregation, ranking, growth, time,
-grain words), or one of `QUERY_STOPWORDS` — a fixed allowlist of function
-words ("the", "by", "how", "give", "were", ...). Any other word — a column
-that doesn't exist, a typo, an off-topic request — refuses the question
-(`None`) instead of guessing. This is why "tell me a joke" and "total sales by
-region" (no `sales` column) return `None`.
+### Unrecognized words
 
-`QUERY_STOPWORDS` is a temporary, allowlist-based approach: ordinary phrasing
-("how much revenue did we make") can fail until its function words are added
-to the list. The [long-term fix](https://github.com/saineshnakra/automated-data-analyst/issues/32)
-is schema-based validation — refuse only when a question names a column or
-measure that genuinely doesn't exist, rather than maintaining a word list.
+Each word in the question must be one of:
+
+- a word from a column name, or a value of a segment column
+- part of the query grammar: aggregation, ranking, growth, time and grain
+  words
+- one of `QUERY_STOPWORDS`, a fixed list of function words ("the", "by",
+  "how", "give", "were", ...)
+
+Any other word (a column that does not exist, a typo, an unrelated request)
+makes the parser return `None` instead of guessing. "Tell me a joke" and
+"total sales by region" on a file with no `sales` column both return `None`.
+
+The stopword list is maintained by hand, so a question using an unlisted
+function word is refused until that word is added.
 
 ## Execution
 
-`execute_plan` applies filters, aggregates, and returns a `QueryAnswer`:
+`execute_plan` applies the filters and the year or month, then computes the
+answer. It returns a `QueryAnswer`:
 
 | Field | Contents |
 |---|---|
 | `answer` | The formatted answer |
-| `calculation` | The exact operation, in words |
+| `calculation` | The operation that ran, in words |
 | `table` | Supporting rows, when useful |
-| `chart` | `"bar"`, `"line"`, or nothing |
+| `chart` | `"bar"`, `"line"` or `None` |
 
-Trend and growth answers go through the same `TrendSeries` as the dashboard, so
-the period adjustments ([Periods](periods.md#the-two-timeline-adjustments)) are
-appended to the calculation text. A chat answer and the chart above it can never
-quietly disagree about what a month is.
+Trend and growth answers use the same `TrendSeries` as the dashboard, so the
+timeline notes ([Periods](periods.md#timeline-adjustments)) are appended to the
+calculation text.
 
-Breakdowns cap at 12 groups; filter candidate values cap at 200.
+Other behaviour:
+
+- A breakdown shows at most 12 groups; a rank shows `top_n`.
+- Sum and count groupings get a `Share %` column when every group has the same
+  sign.
+- Changes are given in the measure's own terms: percent for an amount or
+  count, percentage points for a rate, the plain difference for a level.
+- Growth by segment ranks amounts by percent change. It leaves out segments
+  that started from zero and names them separately, since a growth rate from
+  zero is undefined. For a rate or level, segments are ranked by the change in
+  their average, and only segments with values in both periods are included.
 
 ## When the rules cannot parse
 
-Two fallbacks, in this order:
+1. **The AI planner**, if an API key is set. It receives column names, types
+   and roles, never rows, and returns the same `QueryPlan` shape. The app
+   describes the plan in one sentence and runs it only after the user approves.
+   See [The optional AI layer](ai-layer.md).
+2. **Suggested questions** from `suggested_questions`: up to four starter
+   questions built from the detected roles, each answerable by the rules.
 
-1. **The AI planner**, if an API key is configured. It receives column names,
-   types, and roles — never rows — and returns the same `QueryPlan` shape, which
-   goes through the same local executor. Unresolvable plans are refused rather
-   than guessed. See [The optional AI layer](ai-layer.md).
-2. **Suggested questions**, from `suggested_questions` — starter questions built
-   from the detected roles, which the deterministic engine is guaranteed to be
-   able to answer.
+From Python, `Analysis.ask()` returns a `Refusal` with code
+`unsupported_phrasing` or `unrepresentable_question` instead of `None`.
 
 ## Edge cases
 
 | Situation | Behavior |
 |---|---|
 | Empty question | `None` |
-| Question mentions no known column | Falls back to the detected measure |
-| Growth question but no date column | Not treated as growth |
-| Filter column missing from the data | `ValueError` — plans are validated before running |
-| More than 12 breakdown groups | Truncated to 12 |
+| No column named, but an aggregation word ("total") | Uses the detected measure |
+| Growth question with no date column | Not treated as growth |
+| Year or month asked, no date column | Answer says the scope is unavailable |
+| No rows match the filters | Answer says there is nothing to calculate |
+| Plan names a column missing from the data | `execute_plan` raises `ValueError`; `answer_question` returns `None` |
+| "top 0" | `None` |
+| More than 12 breakdown groups | First 12 shown |
 
 ## Adding a question shape
 
-1. Extend the parser in `parse_question`
-2. Add the execution branch in `execute_plan`
-3. Extend `QueryPlan` only if genuinely new state is needed
-4. Test the parse **and** the execution — a plan that parses but executes wrong
-   is worse than one that does not parse at all
-5. Make sure the `calculation` string still describes what actually ran
+1. Extend `parse_question`.
+2. Add the execution branch in `execute_plan`.
+3. Extend `QueryPlan` only if the shape needs new state.
+4. Test both parsing and execution.
+5. Check that the `calculation` string describes what ran, and that
+   `describe_query_plan` in `ada/ai_insights.py` still matches.
 
-Comparisons ("West vs East"), shares ("what % of revenue is Enterprise"), and
+Comparisons ("West vs East"), shares ("what % of revenue is Enterprise") and
 date ranges are on the [roadmap](../../ROADMAP.md).

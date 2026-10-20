@@ -1,75 +1,63 @@
 # Selecting a slice on a chart
 
-**Code:** `selection.py` · orchestrated by `pipeline.analyze_selection` · rendered by `ui.render_explore` · **Tests:** `tests/test_selection.py`
+**Code:** `ada/selection.py`, run by `pipeline.analyze_selection` and drawn by `ui.render_explore` · **Tests:** `tests/test_selection.py`
 
-The drill-down dropdown answers "show me West". It cannot answer "those ones":
-the cluster in the scatter, the four months on the trend. On the Explore tab a
-reader can now select directly on the chart, and ADA analyzes just that slice,
-set against the whole view.
+On the Explore tab you can select part of a chart (a cluster in a scatter, a
+few months on a trend, some bars) and ADA analyzes just those rows beside the
+whole view. The drill-down dropdown filters by one value; a selection filters
+by what you drew.
 
-## A selection is a filter, not a finding
-
-The reader chose the slice; ADA did not discover it. Every sentence on the
-panel says so — "the slice you picked", "records you selected" — and nothing
-implies the grouping was found in the data. One is a filter, the other would be
-a claim.
+A selection is a filter you chose, not a grouping ADA found, and the panel
+words it that way ("the slice you picked", "records you selected").
 
 ## Gestures
 
 | Chart form | Gesture | Becomes |
 |---|---|---|
 | Scatter | Box, or lasso from the chart toolbar | A range on each axis, or the lasso polygon |
-| Line / area over time | Drag across the time axis | A date range, widened to whole periods |
-| Column / bar | Click a bar, shift-click for more | The clicked categories |
+| Line or area over time | Drag across the time axis | A date range, narrowed to whole periods |
+| Column or bar | Click a bar; shift-click adds more | The clicked categories |
 | Histogram | Drag across the axis | A value range |
-| Heatmap, table, stat | — | No selection; none maps back to rows honestly |
+| Heatmap, table, stat | None | A cell doesn't map back to rows |
 
-The filter is built from the geometry the reader drew, not from the indices of
-the plotted points. A trend or a bar chart plots aggregates, so a point index
-says nothing about which rows are behind it, while "dates from March to June"
-does — and that is also what the reader can check against the axis.
-
-A box drawn over a trend only uses its horizontal extent. The vertical extent
-is a range of period totals, not of records.
+Filters come from the drawn geometry, not from the indices of plotted points: a
+trend or bar chart plots aggregates, so an index doesn't identify the rows
+behind it. A box over a trend uses only its horizontal extent; its vertical
+extent is a range of plotted totals.
 
 ## Rules
 
-**The slice is stated in words.** `describe_selection` writes the count and
-every filter in the column's own units — "447 of 1,800 records you selected:
-Order Date from 01 Apr 2025 to 30 Sep 2025" — so a screenshot still explains
-itself.
+**The slice is stated in words.** `describe_selection` gives the count and each
+filter in the column's own units, for example "447 of 1,800 records you
+selected: Order Date from 01 May 2025 to 31 Aug 2025".
 
-**Time windows are widened to whole periods, and say so.** A window from the
-19th of one month to the 8th of another leaves both end months part-covered,
-and a third of a month reads as a collapse to every trend and anomaly check.
-The window is widened to the grain `aggregation.preferred_frequency` picks for
-the rows inside it, so the slice and its trend agree on what a period is. The
-dates the reader drew are printed beside the widened ones.
+**A drawn time window is narrowed to whole periods.** A window from the 19th of
+one month to the 8th of another leaves both end months part-covered, and a
+part-covered month reads as a fall in the trend checks. The window is narrowed
+to the whole periods inside it, at the grain `aggregation.preferred_frequency`
+picks for those rows, and the panel prints the dates you drew. Rows outside
+the drawn window are never added. If no whole period fits, the window is kept
+as drawn. Clicked points keep the exact range clicked.
 
-**The same evidence machinery, not a parallel path.** The slice goes through
-`analyze_business` like any view. Each evidence card for the slice carries the
-result of the same check on the whole view.
+**The slice uses the same evidence code.** It goes through `analyze_business`
+like any view, and each evidence card for the slice shows the same card for the
+whole view.
 
-**Never shown alone.** Every slice figure — records, total, average, the most
-common segment — sits beside the same figure for the whole view, with its
-calculation.
+**Every figure has the whole view beside it.** Records, total, average and the
+most common segment are shown for both, with the calculation. The average of a
+rate differs from the whole in percentage points, and a level (temperature,
+pH) by a plain difference. The segment mix is left out when the selection
+itself filters that column, since it would always be 100%.
 
-**Too small says so.** Below `MIN_SLICE_RECORDS` (5) an average or a segment
-mix is mostly noise. The count and total are still reported, because they are
-arithmetic; the statistics are replaced by a note saying how many records
-would be needed. Evidence is not computed at all.
+**Small slices get a note instead of statistics.** Below `MIN_SLICE_RECORDS`
+(5) only the count and the total are reported, and no evidence is computed.
 
-**A rate is averaged, never totalled.** `metrics.resolve_metric` decides, as it
-does everywhere else.
-
-**Clearing restores the whole exactly.** An empty selection returns the frame
-untouched, and the rest of the product never sees the slice: the brief,
-dashboard, chat and exports keep analyzing the whole view throughout.
+**Clearing restores the whole view.** An empty selection returns the frame
+unchanged, and the brief, dashboard, chat and exports always use the whole view.
 
 ## Changing this
 
-A new chart form that should accept a selection needs an entry in
-`SELECTION_MODES`, a branch in `selection_from_event` that maps its gesture to
-filters over raw rows, and a test asserting the rows it keeps. Keep the
-wording rule: if a sentence could be read as ADA having found the grouping,
-rewrite it.
+A new chart form that accepts a selection needs an entry in `SELECTION_MODES`,
+a branch in `selection_from_event` that maps its gesture to filters over raw
+rows, and a test for the rows it keeps. Keep the wording rule: no sentence
+should suggest ADA found the grouping.

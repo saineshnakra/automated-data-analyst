@@ -1,15 +1,8 @@
-"""The one place a metric says how it combines and which way is good news.
-
-Nothing reads this yet: it is the groundwork the rate fixes are built on, and
-it is separate so the rule itself can be reviewed before the eight surfaces
-that will follow it.
-"""
-
 from __future__ import annotations
 
 import unittest
 
-from ada.metrics import increase_is_welcome, resolve_metric
+from ada.metrics import increase_is_welcome, is_level_name, resolve_metric
 
 
 class MetricSpecTests(unittest.TestCase):
@@ -32,16 +25,39 @@ class MetricSpecTests(unittest.TestCase):
         self.assertEqual(counted.combines_as, "count")
 
     def test_direction_of_good_is_read_from_the_whole_name(self):
-        # "Cost Savings" is not a cost, and "Revenue After Returns" is not a
-        # return. A substring test on either would get both backwards.
-        self.assertTrue(increase_is_welcome("Revenue After Returns"))
-        self.assertTrue(increase_is_welcome("Cost Savings"))
-        self.assertTrue(increase_is_welcome("Units"))
-        self.assertFalse(increase_is_welcome("Cost"))
-        self.assertFalse(increase_is_welcome("Refund Amount"))
+        for name in ("Revenue", "Units", "Cost Savings", "Revenue After Returns", "Defects Avoided",
+                     "Revenue Net of Returns", "Revenue Without Refunds", "Net Revenue"):
+            with self.subTest(name=name):
+                self.assertTrue(increase_is_welcome(name))
+        for name in ("Cost", "Refund Amount", "Sales Returns", "Customer Acquisition Cost", "Churn Rate"):
+            with self.subTest(name=name):
+                self.assertFalse(increase_is_welcome(name))
 
     def test_an_unnamed_metric_is_not_assumed_to_be_bad_news(self):
         self.assertTrue(increase_is_welcome(None))
+
+
+class LevelMeasureTests(unittest.TestCase):
+    def test_measured_levels_are_averaged(self):
+        for name in ("Water Temp (°C)", "pH", "OD600", "Concentration (mg/L)", "Lactate (mM)",
+                     "Nitrate (ppm)", "CSAT Score", "Cell Density (cells/mL)"):
+            with self.subTest(name=name):
+                spec = resolve_metric(name)
+                self.assertEqual(spec.unit, "level")
+                self.assertEqual(spec.aggregation, "mean")
+                self.assertFalse(spec.additive)
+
+    def test_amounts_and_counts_are_still_summed(self):
+        for name in ("Revenue", "Units", "Live Cells", "Resolution Hours", "Amount (USD)",
+                     "Revenue ($M)", "Population (M)", "Revenue (USD/month)", "Weekly Sales (units/wk)",
+                     "Shipping Weight"):
+            with self.subTest(name=name):
+                self.assertEqual(resolve_metric(name).aggregation, "sum")
+
+    def test_is_level_name_reads_units(self):
+        self.assertTrue(is_level_name("Glucose (mmol/L)"))
+        self.assertTrue(is_level_name("Speed (km/h)"))
+        self.assertFalse(is_level_name("Distance (m)"))
 
 
 if __name__ == "__main__":

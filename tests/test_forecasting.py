@@ -90,8 +90,8 @@ class ForecastTests(unittest.TestCase):
         self.assertLess(forecast.backtest.mase, 1.0)
         self.assertIs(forecast.backtest.beats_no_change, True)
 
-    def test_an_unforecastable_series_admits_it_did_not_beat_no_change(self):
-        """A random walk has no trend to extrapolate; the scaled error says so."""
+    def test_an_unforecastable_series_does_not_beat_no_change(self):
+        """A random walk: the last value is the best forecast, so MASE is above 1."""
         rng = np.random.default_rng(6)
         trend = make_trend(500 + np.cumsum(rng.normal(0, 60, 26)))
 
@@ -133,7 +133,7 @@ class ForecastTests(unittest.TestCase):
         self.assertIn("better than assuming no change", note)
         self.assertNotIn("no better", note)
 
-    def test_the_error_note_is_honest_when_there_is_no_backtest(self):
+    def test_the_error_note_says_when_there_is_no_backtest(self):
         self.assertEqual(
             describe_backtest(Backtest(mape=None, mase=None, holdout_periods=0, periods_without_mape=0)),
             "history is too thin for a backtest",
@@ -151,6 +151,22 @@ class ForecastTests(unittest.TestCase):
         pairs = zip(forecast.periods, forecast.periods[1:], strict=False)
         self.assertTrue(all(later > earlier for earlier, later in pairs))
         self.assertGreater(forecast.periods[0], pd.Timestamp(trend.iloc[-1]["Period"]))
+
+
+class BlankPeriodTests(unittest.TestCase):
+    def test_one_blank_month_does_not_make_the_whole_forecast_nan(self):
+        values = [100.0 + 5 * i for i in range(24)]
+        values[7] = np.nan
+        forecast = build_forecast(make_trend(values, freq="ME", start="2022-01-31"))
+        self.assertIsNotNone(forecast)
+        for name in ("values", "lower", "upper"):
+            numbers = np.asarray(getattr(forecast, name), dtype=float)
+            self.assertFalse(np.isnan(numbers).any(), f"{name} carries NaN")
+
+    def test_history_is_counted_in_periods_that_were_measured(self):
+        # Eight rows with one blank are seven observations, below min_periods=8.
+        values = [100.0, np.nan] + [100.0 + i for i in range(6)]
+        self.assertIsNone(build_forecast(make_trend(values, freq="ME", start="2022-01-31"), min_periods=8))
 
 
 if __name__ == "__main__":

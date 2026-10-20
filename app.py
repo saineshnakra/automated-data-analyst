@@ -1,4 +1,7 @@
-"""ADA: zero-configuration business intelligence for CSV and Excel data."""
+"""ADA: exploratory analysis for any CSV or Excel table, research data included.
+
+Streamlit entry point: loads a table, detects its structure and renders the analysis.
+"""
 
 from __future__ import annotations
 
@@ -13,20 +16,12 @@ import pandas as pd
 import streamlit as st
 from streamlit.errors import StreamlitSecretNotFoundError
 
-# ---------------------------------------------------------------------------
-# Keep ADA's own modules current across deploys.
-#
-# Streamlit re-executes this file on every rerun, but a module it has already
-# imported stays in sys.modules until the process restarts -- and a hosted
-# process can outlive many deploys. When file_io.py gained a function and this
-# file started importing it, the host was still holding July's file_io and
-# raised "cannot import name" until someone rebooted it by hand. So before any
-# local import, every local module whose source on disk no longer matches what
-# was loaded is reloaded, leaves first so dependants rebind to fresh code.
-# ---------------------------------------------------------------------------
+# Streamlit reruns this file but keeps imported modules in sys.modules until the
+# process restarts, which can span several deploys. Before any local import,
+# reload the local modules whose source on disk has changed.
 _HERE = Path(__file__).resolve().parent
 _PACKAGE = "ada"
-_LOCAL_MODULES = tuple(  # dependency order: a module lists only modules above it
+_LOCAL_MODULES = tuple(  # dependency order: each module imports only from those above it
     f"{_PACKAGE}.{name}"
     for name in (
         "formatting", "metrics", "schema", "timeseries", "anomalies", "forecasting", "aggregation",
@@ -43,7 +38,7 @@ def _source_digest(name: str) -> str:
 
 @st.cache_resource(show_spinner=False)
 def _loaded_digests() -> dict[str, str]:
-    """What each local module looked like when this process first loaded it."""
+    """Source digest of each local module at the last refresh, shared across reruns."""
     return {}
 
 
@@ -55,9 +50,8 @@ def _refresh_stale_modules() -> None:
         if name in sys.modules and loaded.get(name) not in ("", None, _source_digest(name))
     ]
     if stale:
-        # Reload the whole chain from the first stale module onwards, so a
-        # module that imported a name from it is rebound rather than left
-        # holding the old object.
+        # Reload from the first stale module onwards, so a module that did
+        # `from stale import name` rebinds to the new object.
         first = min(_LOCAL_MODULES.index(name) for name in stale)
         for name in _LOCAL_MODULES[first:]:
             if name in sys.modules:
@@ -71,10 +65,10 @@ _refresh_stale_modules()
 
 @st.cache_resource(show_spinner=False)
 def build_identifier() -> str:
-    """The revision this process is serving, so a mixed deploy is visible.
+    """Return a short id for the revision this process serves, shown in the footer.
 
-    Prefers the git commit; falls back to a digest of the source files, which
-    also changes if any one of them differs from the rest of the checkout.
+    Uses the git commit when readable, otherwise ``src-`` plus a digest of the
+    local source files, so a partially updated deploy gets an id of its own.
     """
     head = _HERE / ".git" / "HEAD"
     try:
@@ -105,10 +99,8 @@ from ada.pipeline import (  # noqa: E402
     schema_frame,
 )
 
-# The AI layer is optional, and so is everything it depends on. Importing it
-# at module scope meant one missing package took down the whole product --
-# including the deterministic analysis that is the reason to open ADA without
-# a key at all. A failure here disables the two optional calls and nothing else.
+# The AI layer and its dependencies are optional. Any import failure disables
+# only the narrative and the query planner.
 try:  # noqa: E402
     from ada.ai_insights import (
         DEFAULT_PRESET,
@@ -148,8 +140,9 @@ from ada.ui import (  # noqa: E402
 )
 
 SAMPLE_NOTES = {
+    "Lab Measurements": "Weekly cell-culture assay by treatment arm. Viability is averaged while live-cell counts are summed; one arm declines and one plate reads badly.",
     "SaaS Subscriptions": "Monthly recurring revenue by plan and region. Contains a real drop in April 2025 for the anomaly radar to find.",
-    "Support Tickets": "Operational tickets by team and priority. No revenue column, and the forecast admits it cannot beat assuming no change.",
+    "Support Tickets": "Operational tickets by team and priority. No revenue column, and the forecast says when it cannot beat assuming no change.",
     "Ecommerce Orders": "Orders by category and channel, with returns as negative rows so totals have to handle mixed signs.",
 }
 
@@ -157,14 +150,14 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 MAX_ANALYSIS_ROWS = 250_000
 
 st.set_page_config(
-    page_title="ADA | AI Business Dashboard from CSV & Excel",
+    page_title="ADA | Exploratory data analysis for CSV and Excel",
     page_icon="◈",
     layout="wide",
     initial_sidebar_state="collapsed",
     menu_items={
         "Get Help": "https://github.com/saineshnakra/automated-data-analyst/issues",
         "Report a bug": "https://github.com/saineshnakra/automated-data-analyst/issues/new",
-        "About": "ADA turns business spreadsheets into evidence-backed dashboards and actions.",
+        "About": "ADA analyzes CSV and Excel tables and shows the calculation behind every number.",
     },
 )
 
@@ -200,15 +193,15 @@ def render_sidebar(*, server_api_key: str) -> str:
         st.markdown(
             "- Calculations happen locally\n"
             "- Evidence is shown before interpretation\n"
-            "- Your rows are never sent to the strategy model\n"
+            "- Your rows are never sent to the AI model\n"
             "- Recommendations are not causal proof"
         )
         st.markdown("---")
         if AI_LAYER_ERROR:
             st.warning(
                 "The optional AI layer could not be loaded on this deployment, so the "
-                "strategic read and the AI query planner are unavailable. Every analysis, "
-                "chart and Ask ADA answer below is unaffected — none of them uses a model."
+                "AI summary and the AI query planner are unavailable. Every analysis, "
+                "chart and Ask ADA answer below still works; none of them uses a model."
             )
             st.caption(AI_LAYER_ERROR)
             st.link_button(
@@ -218,7 +211,7 @@ def render_sidebar(*, server_api_key: str) -> str:
             )
             return ""
         if server_api_key:
-            st.success("Optional strategy agent is available on this deployment.")
+            st.success("The optional AI summary is available on this deployment.")
             api_key = server_api_key
         else:
             st.info("Deterministic mode is free and complete. No model call is required.")
@@ -227,7 +220,7 @@ def render_sidebar(*, server_api_key: str) -> str:
                 type="password",
                 placeholder="Session only · not persisted by ADA",
                 help=(
-                    "Use your own key to enable the optional strategic read. The key remains in this "
+                    "Use your own key to enable the optional AI summary. The key remains in this "
                     "Streamlit session and is sent only to the OpenAI API."
                 ),
             ).strip()
@@ -260,9 +253,9 @@ def maybe_generate_narrative(
     )
     config = MODEL_PRESETS[selected_preset]
 
-    if st.button("Generate AI strategic read", type="primary", width="stretch"):
+    if st.button("Generate AI summary", type="primary", width="stretch"):
         try:
-            with st.spinner("Connecting the evidence into a strategic read…"):
+            with st.spinner("Writing the summary…"):
                 cached = generate_ai_narrative(
                     brief,
                     api_key=api_key,
@@ -274,8 +267,8 @@ def maybe_generate_narrative(
             st.session_state.ai_narrative_fingerprint = fingerprint
             st.session_state.ai_narrative_model = config.model
             cached_fingerprint = fingerprint
-        except Exception:  # API failures should never take down the deterministic product.
-            st.error("The optional strategy agent is temporarily unavailable. Try again or switch models.")
+        except Exception:  # An API error must not break the deterministic page.
+            st.error("The AI summary is temporarily unavailable. Try again or switch models.")
             return None, None
 
     if cached_fingerprint != fingerprint or not isinstance(cached, AINarrative):
@@ -290,7 +283,11 @@ def plan_ai_query(
     roles,
     api_key: str,
 ) -> QueryPlan | None:
-    """Ask the optional model for a plan without executing it."""
+    """Ask the optional model for a query plan without executing it.
+
+    Returns None when the AI layer is unavailable, the call fails, or no usable
+    plan comes back.
+    """
     if AI_LAYER_ERROR:
         return None
     try:
@@ -301,19 +298,16 @@ def plan_ai_query(
             api_key=api_key,
             safety_identifier=get_safety_identifier(),
         )
-    except Exception:  # A planner outage must never break the chat.
+    except Exception:  # Treated as no plan, so the chat shows its fallback reply.
         return None
 
 
 def dataset_fingerprint(dataframe: pd.DataFrame, roles, source_name: str) -> str:
-    """Identify the exact table an answer was computed from.
+    """Hash the table's content and roles to key the chat history and pending plan.
 
-    Name, row count and column names do not identify a dataset. Two months of
-    the same export share all three, and so does the same file drilled into a
-    different segment -- and an answer, or a pending model plan, carried across
-    that boundary is a wrong number with a confident sentence under it. The
-    content is hashed, and the roles with it, because changing which column is
-    the measure changes what every answer means.
+    Name, shape and column names are not enough: two monthly exports, or one file
+    drilled into different segments, can share all three. Roles are included
+    because changing the measure changes what every answer means.
     """
     content = int(pd.util.hash_pandas_object(dataframe, index=False).sum())
     parts = (source_name, str(dataframe.shape), ",".join(map(str, dataframe.columns)),
@@ -336,7 +330,7 @@ def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str, api_key: st
         if chip.button(suggestion, key=f"chip_{suggestion}", width="stretch"):
             question = suggestion
 
-    typed = st.chat_input("Ask about this data — try “top 5 by revenue” or “which segment grew fastest?”")
+    typed = st.chat_input("Ask about this data, e.g. “top 5 by revenue” or “which segment grew fastest?”")
     question = typed or question
     pending = st.session_state.get("pending_ai_plan")
     if pending is not None and question and question != pending["question"]:
@@ -423,7 +417,6 @@ source_mode = st.segmented_control(
     label_visibility="collapsed",
 )
 # A segmented control returns None when the selected option is clicked again.
-# Falling through with None used to reach a bare assert and render a traceback.
 if source_mode is None:
     source_mode = "Explore the live demo"
 
@@ -444,7 +437,7 @@ if source_mode == "Upload your file":
         help="Maximum file size: 25 MB. A workbook with several sheets lets you pick one.",
     )
     business_context = st.text_input(
-        "Optional business context",
+        "Optional context for the AI summary",
         placeholder="Example: Subscription revenue by customer, product, and month",
         max_chars=500,
     )
@@ -520,7 +513,7 @@ measure_options = ["None", *detected.numeric]
 dimension_options = ["None", *detected.dimensions]
 
 with st.expander("Tune ADA's schema detection", expanded=False):
-    st.caption("ADA selected these roles automatically. Override them only when the source schema needs context.")
+    st.caption("ADA picked these columns automatically. Change any that are wrong.")
     selectors = st.columns(3)
     selected_date = selectors[0].selectbox(
         "Date",
@@ -533,7 +526,7 @@ with st.expander("Tune ADA's schema detection", expanded=False):
         index=measure_options.index(detected.measure) if detected.measure in measure_options else 0,
     )
     selected_dimension = selectors[2].selectbox(
-        "Business segment",
+        "Grouping column",
         dimension_options,
         index=dimension_options.index(detected.dimension) if detected.dimension in dimension_options else 0,
     )
@@ -572,9 +565,9 @@ executive_tab, ask_tab, dashboard_tab, explore_tab, evidence_tab, data_tab = st.
 
 with executive_tab:
     render_section_heading(
-        "Decision layer",
-        "The next move, with receipts",
-        "ADA keeps recommendations beside the evidence that triggered them so judgment never masquerades as a metric.",
+        "Summary",
+        "Suggested next steps",
+        "Each recommendation sits beside the evidence it is based on.",
     )
     executive_columns = st.columns([1.08, 0.92], gap="large")
     with executive_columns[0]:
@@ -584,7 +577,7 @@ with executive_tab:
         st.markdown('<div class="section-label">What the data says</div>', unsafe_allow_html=True)
         render_evidence(brief, limit=4)
         st.markdown(
-            '<div class="trust-note"><strong>Trust contract:</strong> evidence cards are calculations. Recommendations are interpretations—not causal proof.</div>',
+            '<div class="trust-note">Evidence cards are calculations. Recommendations are interpretation, not causal proof.</div>',
             unsafe_allow_html=True,
         )
 
@@ -592,9 +585,9 @@ with executive_tab:
     narrative_model = None
     if api_key:
         render_section_heading(
-            "Optional strategy agent",
-            "Connect the signals into a strategic read",
-            "Only the computed evidence and supplied business context are sent. Your rows stay out of the model prompt, though the segment names inside an evidence sentence travel with it.",
+            "Optional AI summary",
+            "Summarize the findings with a model",
+            "Only the computed evidence and any context you add are sent. Raw rows are not, though segment names inside evidence sentences are.",
         )
         control_column, note_column = st.columns([.42, .58], gap="large")
         with control_column:
@@ -620,16 +613,16 @@ with ask_tab:
         "Ask this data anything",
         "Questions become transparent pandas calculations that run locally, and every "
         "reply shows its math. Only when the rules cannot read a question, and only if you "
-        "supplied a key, is the question itself sent to the planner — which returns a plan "
+        "supplied a key, is the question itself sent to the planner, which returns a plan "
         "for you to approve, never an answer.",
     )
     render_ask_ada(dataframe, roles, source_name, api_key)
 
 with dashboard_tab:
     render_section_heading(
-        "Operating view",
-        "The shape of the business",
-        "Trend, contribution, distribution, and the strongest measurable relationship—generated without chart configuration.",
+        "Overview",
+        "The main charts",
+        "Trend, breakdown, distribution and the strongest relationship, chosen automatically.",
     )
     render_dashboard(dataframe, roles)
 
@@ -640,10 +633,10 @@ with evidence_tab:
     render_section_heading(
         "Evidence ledger",
         "Trace every conclusion",
-        "Every displayed signal exposes the calculation behind it. Adjust the detected schema when a business-specific field was misunderstood.",
+        "Every figure shows the calculation behind it. If ADA picked the wrong column for a role, change it under Tune ADA's schema detection.",
     )
     render_evidence(brief)
-    st.markdown('<div class="section-label" style="margin-top:1.5rem">Detected business schema</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-label" style="margin-top:1.5rem">Detected columns</div>', unsafe_allow_html=True)
     st.dataframe(schema_frame(roles), hide_index=True, width="stretch")
 
 with data_tab:

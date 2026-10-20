@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import zipfile
 from io import BytesIO
 
 import pandas as pd
@@ -63,6 +64,15 @@ class FileParsingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not a valid Excel workbook"):
             read_tabular_file(b"definitely not a zip", "book.xlsx")
 
+    def test_a_zip_that_is_not_a_workbook_is_a_readable_error(self):
+        buffer = BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("hello.txt", "hi")
+
+        for reader in (list_excel_sheets, read_tabular_file):
+            with self.subTest(reader=reader.__name__), self.assertRaises(ValueError):
+                reader(buffer.getvalue(), "x.xlsx")
+
     def test_rejects_empty_and_unsupported_files(self) -> None:
         with self.assertRaisesRegex(ValueError, "empty"):
             read_tabular_file(b"", "sales.csv")
@@ -81,10 +91,20 @@ class FileParsingTests(unittest.TestCase):
                 self.assertGreater(len(frame.columns), 1)
 
 
+class CellValueTests(unittest.TestCase):
+    def test_na_is_north_america_not_missing(self):
+        frame = read_tabular_file(b"Region,Revenue\nNA,10\nEU,20\n", "f.csv")
+
+        self.assertEqual(frame["Region"].tolist(), ["NA", "EU"])
+
+    def test_an_id_column_keeps_its_leading_zeros(self):
+        frame = read_tabular_file(b"Customer ID,Revenue\n00042,10\n00007,20\n", "f.csv")
+
+        self.assertEqual(frame["Customer ID"].tolist(), ["00042", "00007"])
+        self.assertEqual(frame["Revenue"].tolist(), [10, 20])
+
 
 class DelimiterRescueTests(unittest.TestCase):
-    """The rescue for European CSVs must not shred ordinary one-column files."""
-
     def test_a_semicolon_delimited_file_is_still_split(self):
         frame = read_tabular_file(b"Datum;Region;Umsatz\n2024-01-01;Nord;100\n", "eu.csv")
 
@@ -119,10 +139,7 @@ class DelimiterRescueTests(unittest.TestCase):
         self.assertEqual(list(frame.columns), ["Date", "Region", "Revenue"])
 
 
-
 class CsvExportSafetyTests(unittest.TestCase):
-    """A downloaded file gets forwarded, and the reader did not choose to run anything."""
-
     def test_text_that_looks_like_a_formula_is_neutralised(self):
         frame = pd.DataFrame({"Note": ["=cmd|' /C calc'!A0", "+1+1", "@SUM(A1)", "-5 apples"]})
 
@@ -145,6 +162,16 @@ class CsvExportSafetyTests(unittest.TestCase):
         frame = pd.DataFrame({"=1+1": [1]})
 
         self.assertTrue(safe_csv(frame).startswith("'=1+1"))
+
+
+class TitleRowEncodingTests(unittest.TestCase):
+    def test_a_title_row_is_skipped_in_utf16_files(self):
+        text = "Sales report Q1\nRegion,Revenue\nNorth,10\nSouth,20\n"
+        for encoding in ("utf-8", "utf-16"):
+            with self.subTest(encoding=encoding):
+                frame = read_tabular_file(text.encode(encoding), "report.csv")
+                self.assertEqual(list(frame.columns), ["Region", "Revenue"])
+
 
 if __name__ == "__main__":
     unittest.main()

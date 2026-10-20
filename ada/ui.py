@@ -18,9 +18,10 @@ from .autovis import fold_small_series, recommend_chart
 from .business_insights import BusinessBrief
 from .forecasting import build_forecast, describe_backtest
 from .formatting import format_number, format_period
+from .metrics import resolve_metric
 from .nlq import QueryAnswer
 from .pipeline import analyze_selection
-from .schema import ColumnRoles
+from .schema import ColumnRoles, is_design_name
 from .selection import comparison_frame, selection_from_event, selection_modes
 
 if TYPE_CHECKING:  # The AI layer is optional; ui must import without it.
@@ -29,15 +30,13 @@ if TYPE_CHECKING:  # The AI layer is optional; ui must import without it.
 ACCENT = "#635BFF"
 LIME = "#C7F36B"  # Brand accent for surfaces and text. Too light to be a data mark.
 
-# Data-mark colours, checked against the light chart surface for the lightness
-# band, chroma floor, colour-vision separation and 3:1 contrast. Assigned in
-# this order and never cycled -- a generated fifth hue reads as one of these
-# four to a colour-blind reader, so series past the fourth fold into "Other".
+# Data-mark colours, checked on the light chart surface for lightness, chroma,
+# colour-vision separation and 3:1 contrast. Assigned in order, never cycled: a
+# fifth hue would read as one of these four to colour-blind readers, so series
+# past the fourth fold into "Other".
 SERIES_COLORS = ("#635BFF", "#0E8F6E", "#B5761B", "#D64A73")
-LEAF = "#5C8A1B"  # single-hue magnitude, replacing LIME which sat at 1.24:1
-OTHER_GRAY = "#98A2B3"
-# Polarity, for up-versus-down. Green/red is the one pair a deuteranope cannot
-# read -- the previous #26A17B/#E35D6A sat at 5.4 separation against a 8 floor.
+LEAF = "#5C8A1B"  # single-hue magnitude (LIME is only 1.24:1 on the chart surface)
+# Up versus down: blue/orange, since deuteranopes cannot separate green/red.
 RISE, FALL = "#1B6FB5", "#B5761B"
 INK = "#101114"
 MUTED = "#667085"
@@ -171,7 +170,7 @@ def render_evidence(brief: BusinessBrief, *, limit: int | None = None) -> None:
     evidence = brief.evidence[:limit] if limit else brief.evidence
     if not evidence:
         st.markdown(
-            '<div class="empty-state">No strong signal yet. Open “Tune detection” and select a date, metric, and segment.</div>',
+            '<div class="empty-state">No strong signal yet. Open “Tune ADA\'s schema detection” and pick a date, metric and grouping column.</div>',
             unsafe_allow_html=True,
         )
         return
@@ -185,10 +184,8 @@ def render_evidence(brief: BusinessBrief, *, limit: int | None = None) -> None:
 
 
 def render_ai_narrative(narrative: AINarrative, *, model: str) -> None:
-    # Each action names the evidence it rests on, and the model's own caveats
-    # are shown rather than dropped: both were in the typed response and
-    # neither reached the page, which left the confident parts of the read
-    # standing without the parts that qualified them.
+    # Show each action's evidence and the model's watch-outs, so the caveats sit
+    # beside the recommendations they qualify.
     actions = "".join(
         f'<article class="ai-action"><span class="confidence">{escape(item.confidence)} confidence</span>'
         f'<strong>{escape(item.title)}</strong><p>{escape(item.recommendation)}</p>'
@@ -218,11 +215,9 @@ GRAIN_NAMES = {"D": "Day", "W": "Week", "M": "Month", "Q": "Quarter", "Y": "Year
 
 
 def axis_names(roles: ColumnRoles, frequency: str | None = None) -> dict[str, str]:
-    """Display names for the private intermediate columns a chart is built on.
+    """Map the internal Period, Value and Segment columns to user-facing axis labels.
 
-    The frame calls them Period, Value and Segment so a user column of the same
-    name cannot collide with them. An axis labelled "Value" tells the reader
-    nothing, so the chart shows what they actually picked.
+    Value takes the measure name (or "Records"); with frequency "M", Period reads "Month".
     """
     return {
         "Value": roles.measure or "Records",
@@ -247,6 +242,23 @@ def style_chart(figure: go.Figure, *, height: int = 390) -> go.Figure:
     return figure
 
 
+def _hover_format(values) -> str:
+    """Plotly number format for hover labels: whole numbers for large values, decimals for small."""
+    finite = pd.Series(values, dtype="float64").abs().dropna()
+    return ",.0f" if not finite.empty and finite.median() >= 100 else ",.2f"
+
+
+def _trend_figure(frame: pd.DataFrame, measure: str | None, **options) -> go.Figure:
+    """Period values as a filled area for totals, or a plain line for averages."""
+    if measure and not resolve_metric(measure).additive:
+        figure = px.line(frame, x="Period", y="Value", markers=True, color_discrete_sequence=[ACCENT], **options)
+        figure.update_traces(line={"width": 3})
+        return figure
+    figure = px.area(frame, x="Period", y="Value", markers=True, color_discrete_sequence=[ACCENT], **options)
+    figure.update_traces(line={"width": 3}, fillcolor="rgba(99,91,255,.11)")
+    return figure
+
+
 def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
     series = build_trend(dataframe, roles)
     trend = series.frame
@@ -254,16 +266,12 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
     chart_columns = st.columns(2, gap="medium")
     with chart_columns[0]:
         if not trend.empty:
-            figure = px.area(
+            figure = _trend_figure(
                 trend,
-                x="Period",
-                y="Value",
-                markers=True,
+                roles.measure,
                 title=f"{roles.measure or 'Records'} over time",
                 labels=axis_names(roles, series.frequency),
-                color_discrete_sequence=[ACCENT],
             )
-            figure.update_traces(line={"width": 3}, fillcolor="rgba(99,91,255,.11)")
             anomalies = detect_anomalies(trend)
             if anomalies:
                 figure.add_trace(
@@ -278,7 +286,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                             "color": "#E35D6A",
                             "line": {"width": 2, "color": "white"},
                         },
-                        hovertemplate="%{x|%b %Y}: %{y:,.0f} — outside the expected band<extra>Anomaly</extra>",
+                        hovertemplate=f"%{{x|%b %Y}}: %{{y:{_hover_format(trend['Value'])}}}, outside the expected band<extra>Anomaly</extra>",
                     )
                 )
             forecast = build_forecast(trend)
@@ -302,7 +310,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                         mode="lines",
                         name="Forecast",
                         line={"width": 2.5, "dash": "dash", "color": "#8B5CF6"},
-                        hovertemplate="%{x|%b %Y}: %{y:,.0f} — baseline forecast<extra></extra>",
+                        hovertemplate=f"%{{x|%b %Y}}: %{{y:{_hover_format(trend['Value'])}}} (forecast)<extra></extra>",
                     )
                 )
             st.plotly_chart(style_chart(figure), width="stretch", config={"displayModeBar": False})
@@ -334,7 +342,22 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
     movement_columns = st.columns(2, gap="medium")
     with movement_columns[0]:
         drivers = driver_frame(dataframe, roles)
-        if not drivers.empty:
+        if not drivers.empty and roles.measure and not resolve_metric(roles.measure).additive:
+            # Changes in group averages don't add up to the overall change, so
+            # they are shown side by side rather than stacked into a total.
+            changes = go.Figure(
+                go.Bar(
+                    x=list(drivers["Segment"]),
+                    y=list(drivers["Change"]),
+                    marker_color=[RISE if change >= 0 else FALL for change in drivers["Change"]],
+                    hovertemplate=f"%{{x}}: %{{y:+{_hover_format(drivers['Change'])}}}<extra></extra>",
+                )
+            )
+            changes.update_layout(
+                title=f"{roles.measure}: change in average per {roles.dimension}"
+            )
+            st.plotly_chart(style_chart(changes), width="stretch", config={"displayModeBar": False})
+        elif not drivers.empty:
             waterfall = go.Figure(
                 go.Waterfall(
                     x=[*drivers["Segment"], "Net change"],
@@ -344,10 +367,10 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                     increasing={"marker": {"color": RISE}},
                     decreasing={"marker": {"color": FALL}},
                     totals={"marker": {"color": ACCENT}},
-                    hovertemplate="%{x}: %{delta:+,.0f}<extra></extra>",
+                    hovertemplate=f"%{{x}}: %{{delta:+{_hover_format(drivers['Change'])}}}<extra></extra>",
                 )
             )
-            waterfall.update_layout(title=f"What moved {roles.measure} — latest vs previous period")
+            waterfall.update_layout(title=f"What moved {roles.measure}: latest vs previous period")
             st.plotly_chart(style_chart(waterfall), width="stretch", config={"displayModeBar": False})
         else:
             st.markdown(
@@ -364,7 +387,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                     x=[format_period(period, series.frequency) for period in heat.columns],
                     y=[str(segment) for segment in heat.index],
                     colorscale=[[0, "#F6F7F9"], [0.5, "#B9B1FF"], [1, "#4E43C7"]],
-                    hovertemplate="%{y} · %{x}: %{z:,.0f}<extra></extra>",
+                    hovertemplate=f"%{{y}} · %{{x}}: %{{z:{_hover_format(heat.to_numpy().ravel())}}}<extra></extra>",
                     showscale=False,
                 )
             )
@@ -372,11 +395,10 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 title=f"{roles.measure or 'Records'} intensity by {roles.dimension} and period"
             )
             heatmap.update_yaxes(autorange="reversed")
-            # A two-year monthly matrix prints 24 labels on their side, and a
-            # categorical axis will not thin them on its own. Every nth label is
-            # shown instead; the hover still names every period.
+            # A categorical axis doesn't thin its labels, so show about five;
+            # the hover still names every period.
             labels = [format_period(period, series.frequency) for period in heat.columns]
-            step = max(1, round(len(labels) / 8))
+            step = max(1, -(-len(labels) // 5))
             heatmap.update_xaxes(
                 tickmode="array",
                 tickvals=labels[::step],
@@ -390,7 +412,11 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 unsafe_allow_html=True,
             )
 
-    numeric = [column for column in roles.numeric if dataframe[column].nunique(dropna=True) > 2]
+    numeric = [
+        column
+        for column in roles.numeric
+        if dataframe[column].nunique(dropna=True) > 2 and not is_design_name(column)
+    ]
     lower_columns = st.columns(2, gap="medium")
     with lower_columns[0]:
         if roles.measure:
@@ -405,7 +431,13 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
             figure.update_yaxes(title_text="Records")
             st.plotly_chart(style_chart(figure), width="stretch", config={"displayModeBar": False})
     with lower_columns[1]:
-        partner = next((column for column in numeric if column != roles.measure), None)
+        candidates = [column for column in numeric if column != roles.measure]
+        # Plot the measure against the column it correlates with most strongly.
+        def strength(column: str) -> float:
+            value = dataframe[roles.measure].corr(dataframe[column])
+            return 0.0 if pd.isna(value) else abs(float(value))
+
+        partner = max(candidates, key=strength) if roles.measure and candidates else None
         if roles.measure and partner:
             figure = px.scatter(
                 dataframe,
@@ -424,18 +456,10 @@ def _chat_answer_figure(result: QueryAnswer) -> go.Figure | None:
     if table is None or table.empty or result.chart is None:
         return None
     if result.chart == "line" and {"Period", "Value"}.issubset(table.columns):
-        figure = px.area(
-            table,
-            x="Period",
-            y="Value",
-            markers=True,
-            title=result.plan.measure or "Records",
-            color_discrete_sequence=[ACCENT],
-        )
-        figure.update_traces(line={"width": 3}, fillcolor="rgba(99,91,255,.11)")
+        figure = _trend_figure(table, result.plan.measure, title=result.plan.measure or "Records")
         return style_chart(figure, height=320)
     category = table.columns[0]
-    value = "Change %" if "Change %" in table.columns else table.columns[1]
+    value = next((name for name in ("Change %", "Change") if name in table.columns), table.columns[1])
     figure = px.bar(
         table.sort_values(value),
         x=value,
@@ -451,10 +475,8 @@ def _chat_answer_figure(result: QueryAnswer) -> go.Figure | None:
 def render_chat_answer(result: QueryAnswer, *, key: str) -> None:
     """Render one answered question with its table, chart, and calculation.
 
-    ``key`` identifies this answer within the transcript. Two questions can
-    resolve to the same plan and therefore render an identical chart and
-    table, and Streamlit refuses to give two identical elements the same
-    auto-generated id, so each answer names its own.
+    ``key`` must be unique within the transcript: two questions can resolve to the
+    same plan, and Streamlit rejects identical elements without explicit keys.
     """
     if result.plan.source == "ai":
         st.markdown(
@@ -480,20 +502,19 @@ def render_chat_answer(result: QueryAnswer, *, key: str) -> None:
 
 
 def render_chat_fallback(suggestions: list[str]) -> None:
-    """Shown when a question cannot be mapped to a local calculation."""
+    """Render the reply for a question that maps to no local calculation."""
     st.markdown(
         "I map questions to transparent calculations, and I could not map that one. "
-        "Try naming a metric, a segment, or a time scope — for example:"
+        "Try naming a metric, a segment, or a time scope, for example:"
     )
     st.markdown("\n".join(f"- {suggestion}" for suggestion in suggestions))
 
 
 def _cap(frame: pd.DataFrame, spec, value: str, limit: int) -> pd.DataFrame:
-    """Trim to a drawable size by dropping the least interesting rows.
+    """Trim to ``limit`` rows for drawing.
 
-    Taking the first N groups drops the newest periods off a trend and the
-    biggest categories off a ranking -- exactly the rows the reader opened the
-    chart for. Time keeps its most recent end; anything else keeps its largest.
+    A datetime x axis keeps its most recent rows; any other chart keeps its
+    largest values.
     """
     if len(frame) <= limit:
         return frame
@@ -511,11 +532,12 @@ def _explore_frame(
         return dataframe[columns].dropna().head(20_000)
 
     grouping = [column for column in (spec.x, spec.y, spec.color) if column]
-    # A heatmap, and the table it falls back to when the grid is too large,
-    # are both "measure across two categories".
+    how = "mean" if spec.aggregation == "mean" else "sum"
+    # A heatmap and its fallback table (for grids too large to draw) both
+    # aggregate a measure across two categories.
     if spec.color and spec.x and spec.y and spec.form in ("heatmap", "table"):
         keys = [spec.y, spec.x]
-        grid = dataframe.groupby(keys, dropna=True, observed=True)[spec.color].sum().reset_index()
+        grid = dataframe.groupby(keys, dropna=True, observed=True)[spec.color].agg(how).reset_index()
         if spec.form == "table":
             return grid.nlargest(limit, spec.color).reset_index(drop=True)
         return grid
@@ -525,12 +547,17 @@ def _explore_frame(
         return dataframe[grouping].dropna()
 
     if spec.aggregation == "count" or not spec.y:
-        # A column the file calls "Records" collides with the count column
-        # built here, so the count takes a name the frame is not using.
+        # Use a count column name the frame lacks, so a user column "Records" can't collide.
         value = next(name for name in ("Records", "Record count", "Rows") if name not in dataframe.columns)
         frame = dataframe.groupby(keys, dropna=True, observed=True).size().reset_index(name=value)
+    elif how == "mean" and spec.color:
+        # Fold the small series on the raw rows, so "Other" is the mean of its rows
+        # rather than an unweighted mean of each series' mean.
+        rows = fold_small_series(dataframe[[*keys, spec.y]].assign(__rows=1), spec.color, "__rows")
+        frame = rows.groupby(keys, dropna=True, observed=True)[spec.y].mean().reset_index()
+        return _cap(frame, spec, spec.y, limit)
     else:
-        frame = dataframe.groupby(keys, dropna=True, observed=True)[spec.y].sum().reset_index()
+        frame = dataframe.groupby(keys, dropna=True, observed=True)[spec.y].agg(how).reset_index()
         value = spec.y
 
     if spec.color and spec.color in frame.columns:
@@ -540,9 +567,8 @@ def _explore_frame(
 
 
 def _explore_figure(frame: pd.DataFrame, spec) -> go.Figure | None:
-    """Draw exactly the form the recommendation asked for."""
-    # The grouped frame's last column is always the value being plotted,
-    # whatever it had to be called.
+    """Draw the form named by ``spec``, or return None for forms it does not plot."""
+    # The grouped frame's last column is the plotted value, whatever its name.
     value = spec.y if (spec.y and spec.y in frame.columns) else str(frame.columns[-1])
 
     if spec.form in ("line", "area"):
@@ -551,6 +577,9 @@ def _explore_figure(frame: pd.DataFrame, spec) -> go.Figure | None:
                 frame, x=spec.x, y=value, color=spec.color, markers=True,
                 color_discrete_sequence=list(SERIES_COLORS),
             )
+            figure.update_traces(line={"width": 2})
+        elif spec.form == "line":
+            figure = px.line(frame, x=spec.x, y=value, markers=True, color_discrete_sequence=[ACCENT])
             figure.update_traces(line={"width": 2})
         else:
             figure = px.area(frame, x=spec.x, y=value, color_discrete_sequence=[ACCENT])
@@ -574,8 +603,7 @@ def _explore_figure(frame: pd.DataFrame, spec) -> go.Figure | None:
         return None
 
     if spec.form == "heatmap":
-        # The colour is the measurement; naming only the two axes describes the
-        # grid and not what is in it.
+        # Name the measure the colour encodes, not just the two axes.
         title = f"{spec.color} by {spec.y} and {spec.x}"
     elif spec.form == "histogram":
         title = f"Distribution of {spec.x}"
@@ -588,7 +616,7 @@ def _explore_figure(frame: pd.DataFrame, spec) -> go.Figure | None:
 
 
 def render_explore(dataframe: pd.DataFrame, roles: ColumnRoles, brief: BusinessBrief | None = None) -> None:
-    """Pick any columns; ADA picks the chart and says why it picked it."""
+    """Let the user pick columns, then draw the recommended chart and its rationale."""
     render_section_heading(
         "Explore",
         "Chart any columns you like",
@@ -758,8 +786,7 @@ def render_chat_rejected() -> None:
 
 
 def render_footer(*, build: str = "") -> None:
-    # The build tag is what lets a mixed or stale deployment be recognised
-    # from the page itself, instead of from a redacted traceback.
+    # The build tag makes a stale or mixed deploy visible on the page itself.
     tag = f' &nbsp;·&nbsp; <span class="build">build {escape(build)}</span>' if build else ""
     st.markdown(
         f"""

@@ -1,5 +1,3 @@
-"""Weak signals are shown, but never dressed up as findings."""
-
 import unittest
 
 import numpy as np
@@ -26,7 +24,7 @@ def evidence_of(frame, kind):
 class MovementContextTests(unittest.TestCase):
     def test_a_routine_swing_is_labelled_as_routine(self):
         rng = np.random.default_rng(41)
-        values = 1_000 * (1 + rng.normal(0, 0.25, 20))  # a habitually volatile metric
+        values = 1_000 * (1 + rng.normal(0, 0.25, 20))  # 25% noise per period
 
         trend = evidence_of(monthly_frame(values), "trend")
 
@@ -71,10 +69,10 @@ class CorrelationEvidenceTests(unittest.TestCase):
         self.assertIn("95% CI", relationship.statement)
         self.assertIn("n = 300", relationship.statement)
         self.assertNotIn("cannot be told apart", relationship.statement)
-        self.assertIn("not proof of causation", relationship.statement)
+        self.assertIn("not as evidence of cause", relationship.statement)
 
-    def test_a_correlation_from_a_thin_sample_admits_it_proves_nothing(self):
-        """r = 0.51 looks material until you see the interval runs from -0.06 to 0.83."""
+    def test_a_correlation_from_a_thin_sample_is_reported_as_inconclusive(self):
+        """With n = 13, r is 0.55 but its 95% interval (-0.003 to 0.84) includes zero."""
         rng = np.random.default_rng(2)
         revenue = rng.normal(1_000, 200, 13)
         frame = monthly_frame(revenue, Units=revenue * 0.01 + rng.normal(0, 4.0, 13))
@@ -96,7 +94,7 @@ class CorrelationEvidenceTests(unittest.TestCase):
         rng = np.random.default_rng(5)
         revenue = rng.normal(500, 30, 60)
         units = rng.normal(50, 10, 60)
-        revenue[0], units[0] = 40_000, 4_000  # one enormous deal invents a straight line
+        revenue[0], units[0] = 40_000, 4_000  # two extreme records carry the linear correlation
         revenue[1], units[1] = 35_000, 3_600
         frame = monthly_frame(revenue, Units=units)
 
@@ -106,7 +104,7 @@ class CorrelationEvidenceTests(unittest.TestCase):
         self.assertIn("rank correlation", relationship.statement)
         self.assertIn("few extreme records", relationship.statement)
 
-    def test_a_clean_relationship_is_not_accused_of_being_outlier_driven(self):
+    def test_a_clean_relationship_is_not_flagged_as_outlier_driven(self):
         rng = np.random.default_rng(3)
         revenue = rng.normal(1_000, 200, 300)
         frame = monthly_frame(revenue, Units=revenue * 0.01 + rng.normal(0, 1, 300))

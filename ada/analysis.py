@@ -11,6 +11,8 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 
+from .schema import is_identifier_name
+
 
 @dataclass(frozen=True)
 class CleaningReport:
@@ -41,12 +43,27 @@ class Insight:
     level: str = "info"
 
 
-def _speculative_dates(values: pd.Series) -> pd.Series:
-    """Parse values as dates without complaining about the ones that are not.
+# Text that stands for a missing reading in a numeric column: R's NA, "not
+# detected", spreadsheet errors, and values below or above a detection limit.
+MISSING_MARKERS = frozenset({
+    "na", "n/a", "n.a.", "nan", "nd", "n.d.", "none", "null", "missing", "-", "--", "—",
+    "?", ".", "#n/a", "#value!", "#div/0!", "not detected", "bdl", "bql", "lod", "loq",
+    "<lod", "<loq", "<dl", "below detection limit",
+})
+_CENSORED_VALUE = re.compile(r"^[<>]\s*[\d.]")
 
-    Every call here is a guess about a column whose format is unknown and
-    which is usually not dates at all, so pandas' "could not infer format"
-    warning is the expected case rather than something to report.
+
+def _missing_markers(series: pd.Series) -> pd.Series:
+    """True for cells holding a missing-value marker such as "NA", "nd" or "<0.1"."""
+    text = series.astype("string").str.strip().str.lower()
+    marked = text.isin(MISSING_MARKERS) | text.str.match(_CENSORED_VALUE.pattern)
+    return marked.fillna(False).astype(bool)
+
+
+def _speculative_dates(values: pd.Series) -> pd.Series:
+    """Parse values as dates, suppressing pandas' "could not infer format" warning.
+
+    Callers probe columns that are usually not dates, so the warning is expected.
     """
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
@@ -54,7 +71,7 @@ def _speculative_dates(values: pd.Series) -> pd.Series:
 
 
 def _is_blank(series: pd.Series) -> pd.Series:
-    """Missing, or text that is nothing but whitespace -- an empty cell either way."""
+    """True for missing cells and for text that is only whitespace."""
     blank = series.isna()
     if series.dtype == object or str(series.dtype) == "string":
         blank = blank | series.astype("string").str.strip().eq("").fillna(False)
@@ -64,10 +81,8 @@ def _is_blank(series: pd.Series) -> pd.Series:
 def _drop_timezone(series: pd.Series) -> pd.Series:
     """Return the same instants as naive local time.
 
-    Every downstream calculation compares a date against a period boundary,
-    and pandas builds those boundaries without a timezone. Converting to UTC
-    first would move a row into the previous calendar day for anyone east of
-    Greenwich, so the wall clock the file was written in is what is kept.
+    Period boundaries are tz-naive. Converting to UTC first would shift rows east of
+    UTC into the previous day, so the wall-clock time from the file is kept.
     """
     if isinstance(series.dtype, pd.DatetimeTZDtype):
         return series.dt.tz_localize(None)
@@ -78,13 +93,10 @@ INT64_LIMIT = float(np.iinfo(np.int64).max)
 
 
 def _widen_columns_that_would_overflow(frame: pd.DataFrame) -> int:
-    """Move an integer column to float when its own total will not fit.
+    """Cast integer columns to float64 when their absolute total would overflow int64.
 
-    numpy sums int64 in int64, so a strictly positive ledger whose total
-    passes 9.2e18 wraps round to a negative number and every figure built on
-    it is nonsense. Float loses precision in the last few digits; wrapping
-    loses the sign. Only columns that would actually overflow are touched, so
-    ordinary integers keep their type.
+    numpy sums int64 in int64, so an overflowing total wraps and can flip sign; float
+    only loses the last few digits. Returns the number of columns widened.
     """
     widened = 0
     for column in frame.select_dtypes(include=["int64", "int32", "uint64"]).columns:
@@ -96,7 +108,7 @@ def _widen_columns_that_would_overflow(frame: pd.DataFrame) -> int:
 
 
 def _normalize_datetime_columns(frame: pd.DataFrame) -> int:
-    """Strip timezones from every date column, whatever put them there."""
+    """Strip timezones from every tz-aware column; return how many changed."""
     changed = 0
     for column in frame.columns:
         series = frame[column]
@@ -114,9 +126,8 @@ _DIGITS = "0123456789"
 def _digit_groups(body: str) -> tuple[list[str], list[str]] | None:
     """Split "1,234.50" into its digit groups and the single marks between them.
 
-    Anything else -- a letter, a doubled mark, a mark with no digit on one
-    side -- is not a number, and saying so is the whole point: "(100",
-    "1,2,3" and "12 34" used to come out as 100, 123 and 1234.
+    Returns None on a letter, a doubled mark, or a mark without a digit on both
+    sides ("1,,000", ",5", "5.").
     """
     groups: list[str] = []
     marks: list[str] = []
@@ -137,16 +148,12 @@ def _digit_groups(body: str) -> tuple[list[str], list[str]] | None:
 
 
 def _integer_and_fraction(body: str) -> tuple[str, str] | None:
-    """Read the digits of a formatted number, deciding which mark is the decimal.
+    """Return the integer and fraction digits of a formatted number, or None if malformed.
 
-    When both "," and "." appear, the one that comes last is the decimal
-    point and the other is grouping. When only one mark appears once, three
-    digits after a comma is grouping ("1,000") and one or two is a decimal
-    ("1234,50"); "1,234" alone reads as a thousand, which is what pandas and
-    every US export mean by it, and a single "." is always a decimal, as
-    pd.to_numeric reads it. A space or an apostrophe is only ever grouping.
-    Grouping marks must then delimit groups of exactly three digits, so a
-    stray mark is refused rather than read past.
+    With several marks, the earlier ones must match and are grouping; a different last
+    "," or "." is the decimal point. A single "," is a decimal only before one or two
+    digits ("1,234" is a thousand); a single "." is always a decimal, as in pd.to_numeric.
+    Spaces and apostrophes only group. Integer groups after the first need three digits.
     """
     split = _digit_groups(body)
     if split is None:
@@ -177,18 +184,11 @@ def _integer_and_fraction(body: str) -> tuple[str, str] | None:
 
 
 def _read_formatted_number(text: str) -> float | None:
-    """Read one business-formatted number, or refuse it.
+    """Parse one business-formatted number, or return None.
 
-    The sign is settled first and never touched again: a leading minus, a
-    leading plus, or accounting parentheses. An earlier version of this
-    stripped "everything that is not a digit" and took the minus sign with it,
-    so refunds became revenue. That is the one mistake this function must not
-    be able to make again, whatever else it gets wrong.
-
-    A sign, a currency symbol and a pair of parentheses may lead the number
-    in any order -- "$-100" and "-$100" are both a hundred owed -- but each
-    at most once, and an opening parenthesis must have its closing one. The
-    digits then have to satisfy _integer_and_fraction.
+    A sign, a currency symbol and enclosing parentheses may lead in any order, each at
+    most once ("$-100", "-$100", "($100)"). A minus or parentheses make the value
+    negative. The remaining digits must pass _integer_and_fraction.
     """
     raw = text.strip()
     negative = False
@@ -197,9 +197,7 @@ def _read_formatted_number(text: str) -> float | None:
         if raw[0] in "+-":
             if sign_seen:
                 return None
-            # `or`, not `=`: a leading parenthesis has already said negative,
-            # and "(+100)" must not be read back as a positive hundred. Each
-            # marker may appear once; either one of them means owed.
+            # `or`, not `=`: parentheses may already have set negative ("(+100)").
             sign_seen = True
             negative = negative or raw[0] == "-"
             raw = raw[1:].lstrip()
@@ -226,20 +224,17 @@ def _read_formatted_number(text: str) -> float | None:
 
 
 def _numeric_from_text(values: pd.Series) -> pd.Series:
-    """Read business-formatted numbers cell by cell: "$1,203.55", "(48.10)", "1 234,50".
+    """Parse business-formatted numbers cell by cell: "$1,203.55", "(48.10)", "1 234,50".
 
-    A thousands separator is punctuation, not data, and an amount in
-    parentheses is how every accounting export writes a negative. Reading
-    them as text loses the largest values in the file, which are exactly the
-    ones with a separator in them.
+    Non-string and unreadable cells become NaN.
     """
     return values.map(
         lambda value: _read_formatted_number(value) if isinstance(value, str) else None
     ).astype("float64")
 
 
-# A date written day-or-month first: "3/1/2024", "03-01-24". A year-leading
-# value is ISO and cannot be read two ways.
+# Day-or-month-first dates such as "3/1/2024" or "03-01-24". Year-first (ISO)
+# dates are unambiguous.
 _DAY_OR_MONTH_FIRST = re.compile(r"^\s*\d{1,2}[/-]\d{1,2}[/-]\d{2,4}")
 
 
@@ -248,27 +243,22 @@ def _dated(values: pd.Series, *, dayfirst: bool) -> pd.Series:
         warnings.simplefilter("ignore", (UserWarning, FutureWarning))
         parsed = pd.to_datetime(values, errors="coerce", dayfirst=dayfirst)
         if parsed.dtype == object:
-            # Mixed offsets -- a file spanning a daylight-saving change --
-            # come back as objects, which no downstream step can use. There
-            # is no single wall clock to keep, so UTC is the honest choice.
+            # Mixed UTC offsets (e.g. across a daylight-saving change) parse to
+            # object dtype. There is no single wall clock to keep, so use UTC.
             parsed = pd.to_datetime(values, errors="coerce", dayfirst=dayfirst, utc=True)
             parsed = parsed.dt.tz_localize(None)
         return parsed
 
 
 def _read_dates(values: pd.Series) -> tuple[pd.Series, str]:
-    """Parse a date column, and say so when the ordering had to be guessed.
+    """Parse a date column, reporting the day/month order when it had to be decided.
 
-    "01/03/2024" is 1 March in most of the world and 3 January in the United
-    States. When some row in the column settles it -- a 13 or higher in the
-    first position -- that reading wins outright. When nothing settles it,
-    month-first is assumed and the assumption is reported, because silently
-    turning a year of monthly figures into twelve days of January is the one
-    outcome nobody can detect downstream.
+    Returns the series and "day-first", "ambiguous" or "". The order that parses more
+    values wins ("25/12/2024" only parses day-first). On a tie where the readings
+    differ, month-first is used and "ambiguous" is returned so the caller can warn.
     """
     month_first = _dated(values, dayfirst=False)
-    # Only a value that leads with a day or a month can be read two ways.
-    # 2024-03-01 is ISO and settled; 01/03/2024 is not.
+    # Only day-or-month-first values (01/03/2024, not 2024-03-01) can be read two ways.
     two_ways = values.astype("string").str.match(_DAY_OR_MONTH_FIRST, na=False)
     if not bool(two_ways.any()):
         return month_first, ""
@@ -301,8 +291,7 @@ def _make_unique_columns(columns: pd.Index) -> list[str]:
         base = " ".join(str(raw_name).strip().split()) or f"column_{position}"
         counts[base] = counts.get(base, 0) + 1
         candidate = base if counts[base] == 1 else f"{base}_{counts[base]}"
-        # A file can already contain the name the suffix would produce, so
-        # keep counting until the result is genuinely unused.
+        # The file may already use a suffixed name ("Sales_2"), so keep counting.
         while candidate in taken:
             counts[base] += 1
             candidate = f"{base}_{counts[base]}"
@@ -313,13 +302,11 @@ def _make_unique_columns(columns: pd.Index) -> list[str]:
 
 
 def _looks_like_exported_index(series: pd.Series, name: str) -> bool:
-    """A stray row-number column left behind by someone's to_csv(index=True).
+    """True for a row-number column left behind by to_csv(index=True).
 
-    Gaps are allowed. Blank rows are dropped before this runs, and each one
-    takes a number out of the sequence -- a single blank line was enough to
-    leave the row numbers in place and let them become the file's headline
-    metric. The "unnamed" prefix is what makes this safe to be lenient about;
-    a counter with a real name is never touched.
+    Only "Unnamed..." columns qualify, so a named counter is never dropped. Gaps are
+    allowed because blank rows are removed before this runs; the values must still
+    start at 0 or 1, ascend and stay dense.
     """
     if not name.lower().startswith("unnamed"):
         return False
@@ -332,18 +319,16 @@ def _looks_like_exported_index(series: pd.Series, name: str) -> bool:
     if values.size == 0 or values[0] not in (0, 1):
         return False
     ascending = bool(np.all(np.diff(values) > 0))
-    # Still has to look like row numbers rather than sparse identifiers.
+    # Dense enough to be row numbers rather than sparse identifiers.
     dense = values[-1] - values[0] < 2 * len(values)
     return ascending and dense
 
 
 def _drop_non_finite(frame: pd.DataFrame) -> dict[str, int]:
-    """Turn inf and -inf into missing, and say how many cells that was.
+    """Replace inf and -inf in float columns with NaN in place; return counts per column.
 
-    pandas reads the text "inf" as a number, and one such cell then owns every
-    total, mean and chart axis built on the column -- a file with three rows
-    summed to inf. It carries no quantity a business file could mean, so it is
-    treated as a value that could not be read rather than as a measurement.
+    pandas parses the text "inf" as a number, and one such cell makes every total,
+    mean and chart axis on the column infinite.
     """
     counts: dict[str, int] = {}
     for column in frame.select_dtypes(include=["float64", "float32"]).columns:
@@ -354,15 +339,21 @@ def _drop_non_finite(frame: pd.DataFrame) -> dict[str, int]:
     return counts
 
 
+def _missing_marker_note(column: str, marked: pd.Series) -> str:
+    examples = list(dict.fromkeys(marked.astype(str).str.strip()))
+    shown = ", ".join(f'"{value}"' for value in examples[:4]) + (", ..." if len(examples) > 4 else "")
+    noun = "cells" if len(marked) > 1 else "cell"
+    return f"{len(marked):,} {noun} in {column} read as missing: {shown}."
+
+
 def clean_dataframe(
     dataframe: pd.DataFrame, *, drop_duplicates: bool = False
 ) -> tuple[pd.DataFrame, CleaningReport]:
-    """Apply conservative, explainable cleaning and return an audit report.
+    """Clean the frame conservatively and return it with a report of what changed.
 
-    Identical rows are counted but kept. Two sales of the same item, for the
-    same amount, on the same day are an ordinary Tuesday at a till, not a
-    defect, and deleting them silently removes real revenue from every number
-    on the page. Callers that know their rows carry a key can opt in.
+    Identical rows are counted but kept, because repeated records are common in
+    real data. Pass ``drop_duplicates=True`` to remove them. Raises ValueError if
+    the input, or what remains after cleaning, has no rows or columns.
     """
     if dataframe.empty or len(dataframe.columns) == 0:
         raise ValueError("The CSV does not contain any rows and columns to analyze.")
@@ -394,7 +385,6 @@ def clean_dataframe(
             "Timezone offsets were dropped; dates are read as the local time they were written in."
         )
 
-    protected_numeric_tokens = ("id", "code", "zip", "postal", "phone")
     date_tokens = ("date", "time", "timestamp", "created", "updated")
     named_date_ratio, numeric_ratio, unnamed_date_ratio = 0.8, 0.95, 0.95
     date_sample_size = 50
@@ -402,9 +392,10 @@ def clean_dataframe(
     for column in cleaned.select_dtypes(include=["object", "string"]).columns:
         series = cleaned[column]
         non_null_before = int(series.notna().sum())
-        cleaned[column] = series.map(lambda value: value.strip() if isinstance(value, str) else value)
-        cleaned[column] = cleaned[column].replace("", pd.NA)
-        trimmed_text_columns += 1
+        stripped = series.map(lambda value: value.strip() if isinstance(value, str) else value)
+        if series.map(lambda value: isinstance(value, str) and value != value.strip()).any():
+            trimmed_text_columns += 1
+        cleaned[column] = stripped.replace("", pd.NA)
 
         if non_null_before == 0:
             continue
@@ -424,31 +415,32 @@ def clean_dataframe(
                 datetime_columns_inferred += 1
                 continue
 
-        if not any(token in normalized_name for token in protected_numeric_tokens):
-            parsed_numeric = pd.to_numeric(cleaned[column], errors="coerce")
-            if parsed_numeric.notna().sum() < non_null_before:
-                # Whatever plain parsing could not read, try again allowing the
-                # punctuation a finance export writes: grouping separators, a
-                # currency symbol, parentheses for a negative. The values that
-                # need it are the large ones, so leaving them out biases every
-                # total downwards. Only the gaps are filled -- a value plain
-                # parsing already read ("1e3") is never replaced.
-                gaps = parsed_numeric.isna() & cleaned[column].notna()
+        values = cleaned[column]
+        # "02134" or "007" is a code: converting it would drop the leading zero.
+        leading_zero = values.astype("string").str.match(r"^0\d").fillna(False).astype(bool).any()
+        if not is_identifier_name(column) and not leading_zero:
+            markers = _missing_markers(values)
+            readable = non_null_before - int(markers.sum())
+            parsed_numeric = pd.to_numeric(values.mask(markers), errors="coerce")
+            if parsed_numeric.notna().sum() < readable:
+                # Retry cells plain parsing missed as formatted numbers ("$1,203.55",
+                # "(48.10)"). Large values are the ones with separators, so skipping
+                # them biases totals down. Values already read ("1e3") are kept.
+                gaps = parsed_numeric.isna() & values.notna() & ~markers
                 if gaps.any():
-                    formatted = _numeric_from_text(cleaned[column].where(gaps))
+                    formatted = _numeric_from_text(values.where(gaps))
                     parsed_numeric = parsed_numeric.astype("float64").fillna(formatted)
-            if parsed_numeric.notna().sum() / non_null_before >= numeric_ratio:
+            if readable and parsed_numeric.notna().sum() / readable >= numeric_ratio:
                 cleaned[column] = parsed_numeric
                 numeric_columns_inferred += 1
+                if markers.any():
+                    notes.append(_missing_marker_note(column, values[markers]))
                 continue
 
         if not named_like_a_date:
-            # A column holds dates whatever it happens to be called -- "Month",
-            # "Period", "FY". Numbers were tried first, so a column of bare years
-            # stays numeric instead of becoming the 1st of January in each of
-            # them. A sample decides whether the full parse is worth attempting,
-            # because most text columns are not dates and this runs over all of
-            # them.
+            # Detect dates in columns without a date-like name ("Month", "FY").
+            # Numbers are tried first, so a column of bare years stays numeric.
+            # A sample is checked first because most text columns are not dates.
             sample = cleaned[column].dropna().head(date_sample_size)
             if len(sample) and _speculative_dates(sample).notna().mean() >= unnamed_date_ratio:
                 parsed_dates, ordering = _read_dates(cleaned[column])
@@ -458,8 +450,7 @@ def clean_dataframe(
                     cleaned[column] = _drop_timezone(parsed_dates)
                     datetime_columns_inferred += 1
 
-    # Inference can produce a new int64 column, so the overflow check runs
-    # once everything that will be numeric already is.
+    # Runs after inference, which can create new int64 columns.
     if _widen_columns_that_would_overflow(cleaned):
         notes.append(
             "A column's values are large enough that their total would not fit in a whole "
@@ -470,10 +461,7 @@ def clean_dataframe(
     non_finite_cells = sum(non_finite.values())
     for column, count in non_finite.items():
         noun, verb = ("values", "were") if count > 1 else ("value", "was")
-        notes.append(
-            f"{count:,} infinite {noun} in {column} {verb} treated as missing; "
-            "an infinity is not a quantity the totals can carry."
-        )
+        notes.append(f"{count:,} infinite {noun} in {column} {verb} treated as missing.")
 
     duplicate_rows = int(cleaned.duplicated().sum())
     if drop_duplicates:
@@ -481,8 +469,7 @@ def clean_dataframe(
     cleaned = cleaned.reset_index(drop=True)
     if duplicate_rows and not drop_duplicates:
         notes.append(
-            f"{duplicate_rows:,} identical rows were kept; repeat transactions are not "
-            "assumed to be mistakes."
+            f"{duplicate_rows:,} identical rows were kept, since repeated records are often legitimate."
         )
 
     if cleaned.empty or len(cleaned.columns) == 0:
@@ -667,7 +654,7 @@ def build_markdown_report(
 
     for row in profile.to_dict(orient="records"):
         lines.append(
-            f"- **{row['Column']}** — {row['Type']}; {row['Missing %']:.2f}% missing; "
+            f"- **{row['Column']}**: {row['Type']}; {row['Missing %']:.2f}% missing; "
             f"{row['Unique']:,} unique values"
         )
 

@@ -1,12 +1,11 @@
-"""ADA: exploratory analysis for any table, with the arithmetic under every number.
+"""ADA: exploratory analysis for CSV and Excel tables, with the calculation behind every number.
 
     import ada
-    report = ada.analyze("orders.csv")
+    report = ada.analyze("measurements.csv")
     print(report)
 
-Importing this package pulls in pandas and numpy and nothing else. Streamlit,
-plotly and the optional AI layer live behind extras and are never imported
-unless you reach for them.
+The core depends only on pandas, numpy and openpyxl. Streamlit, plotly and
+the optional AI layer are extras and are imported only when used.
 """
 
 from .api import (

@@ -1,22 +1,10 @@
-"""Guarded baseline forecasting with a visible backtest.
+"""Baseline forecasting: Theil-Sen trendline plus optional month-of-year seasonality.
 
-The model is deliberately simple and fully explainable: the shared Theil-Sen
-trendline plus an optional month-of-year seasonal adjustment learned from
-residual medians. A forecast is only produced when history is long enough,
-the horizon never exceeds half the observed history, and the honest
-backtested error ships with the numbers.
-
-Two properties matter more than the model itself.
-
-The band widens with the horizon. Six periods out is not as knowable as one,
-and a constant band claims otherwise. The width uses the least-squares
-prediction-interval shape with a robust scale, which is an approximation
-for a median-based fit -- close enough to keep the shape honest, which is
-why the backtest, not the band, is the number to trust.
-
-The backtest reports a scaled error next to the percentage one. A MAPE of
-12% means nothing on its own; a MASE below 1 means the forecast beat simply
-assuming next period looks like this one, and above 1 means it did not.
+Forecasts need ``MIN_PERIODS`` observed periods, the horizon is capped at half
+the history, and each forecast carries a holdout backtest. The band widens with
+the horizon using the least-squares prediction-interval shape with a robust
+scale; that is an approximation for a median fit, so the backtest is the better
+guide to accuracy.
 """
 
 from __future__ import annotations
@@ -35,10 +23,14 @@ BAND_DEVIATIONS = 2.0
 
 @dataclass(frozen=True)
 class Backtest:
-    """Honest error, measured on periods the fit never saw."""
+    """Forecast error measured on held-out periods the fit never saw.
+
+    ``mase`` divides the holdout error by the in-sample error of a one-step
+    no-change forecast, so a value below 1 beats that baseline.
+    """
 
     mape: float | None  # mean absolute % error on the holdout
-    mase: float | None  # holdout error ÷ error of a no-change forecast
+    mase: float | None  # holdout MAE ÷ in-sample MAE of a no-change forecast
     holdout_periods: int
     periods_without_mape: int  # holdout periods too near zero for a percentage
 
@@ -58,7 +50,7 @@ class Forecast:
 
 
 def describe_backtest(backtest: Backtest) -> str:
-    """Plain-language error note, kept free of any presentation framework."""
+    """Describe the backtest in one plain-language line, independent of the UI."""
     if not backtest.holdout_periods:
         return "history is too thin for a backtest"
 
@@ -108,9 +100,9 @@ def _future_periods(periods: pd.DatetimeIndex, horizon: int) -> pd.DatetimeIndex
 def _prediction_spread(positions: np.ndarray, future: np.ndarray, scale: float) -> np.ndarray:
     """Uncertainty at each future position, widening with distance from the data.
 
-    The least-squares prediction-interval shape: irreducible noise, plus the
-    uncertainty in the level, plus the uncertainty in the slope -- the last
-    of which is what grows as the forecast reaches further out.
+    Least-squares prediction-interval shape: noise, plus level uncertainty, plus
+    slope uncertainty, which grows with distance. Flat at ``scale`` for fewer
+    than three positions.
     """
     count = len(positions)
     centre = float(np.mean(positions))
@@ -131,9 +123,8 @@ def build_forecast(
     """Forecast the next periods, or return None when history is too thin."""
     if trend.empty or not {"Period", "Value"}.issubset(trend.columns):
         return None
-    # Unobserved periods are NaN by design (see aggregation's calendar rules).
-    # Dropped BEFORE the length check, so "enough history" counts periods that
-    # were actually measured rather than blanks the fit cannot use anyway.
+    # Drop unobserved (NaN) periods before the length check so only measured
+    # periods count as history.
     trend = observed_periods(trend)
     if len(trend) < min_periods:
         return None
@@ -179,9 +170,8 @@ def build_forecast(
     if scale > 0:
         method += f" · band = ±{BAND_DEVIATIONS:g} robust deviations, widening with horizon"
     else:
-        # A history with no variation gives a zero-width band. Drawing that as
-        # a line and captioning it as a widening interval claims a certainty
-        # nothing here supports.
+        # Zero variation gives a zero-width band; say so instead of calling it a
+        # widening interval.
         method += " · history shows no variation, so no uncertainty band could be estimated"
 
     return Forecast(
@@ -195,11 +185,11 @@ def build_forecast(
 
 
 def _backtest(periods: pd.DatetimeIndex, values: np.ndarray, *, monthly: bool) -> Backtest:
-    """Refit on a training split and score the held-out tail honestly."""
+    """Refit on a training split and score the held-out tail."""
     count = len(values)
     holdout = min(max(3, count // 5), count - MIN_PERIODS + 3)
-    # periods[:-0] is the whole array, not "everything but nothing", so a
-    # holdout that resolves to zero or less trained on an empty split.
+    # Guard the slicing below: periods[:-0] is empty, and a negative holdout
+    # would slice from the front.
     if holdout < 1 or count - holdout < 5:
         return Backtest(mape=None, mase=None, holdout_periods=0, periods_without_mape=0)
 
@@ -219,8 +209,7 @@ def _backtest(periods: pd.DatetimeIndex, values: np.ndarray, *, monthly: bool) -
         holdout_periods.month.to_numpy(), seasonal
     )
     if float(train_values.min()) >= 0:
-        # Score the forecast that is actually shown: production clips a
-        # non-negative series at zero, so the backtest must too.
+        # Clip at zero like build_forecast, so the score matches what is shown.
         predicted = np.maximum(predicted, 0.0)
     actual = values[-holdout:]
     errors = np.abs(predicted - actual)
@@ -232,7 +221,7 @@ def _backtest(periods: pd.DatetimeIndex, values: np.ndarray, *, monthly: bool) -
         else None
     )
 
-    # A no-change forecast is the bar any baseline has to clear.
+    # MASE denominator: in-sample MAE of a one-step no-change forecast.
     no_change_error = float(np.mean(np.abs(np.diff(train_values))))
     mase = round(float(np.mean(errors) / no_change_error), 2) if no_change_error > 0 else None
 

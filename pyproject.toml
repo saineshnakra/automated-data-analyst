@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "automated-data-analyst"
 version = "0.2.0"
-description = "Exploratory analysis for any CSV or Excel table, with the arithmetic under every number."
+description = "Exploratory analysis for CSV and Excel tables, with the calculation behind every number."
 requires-python = ">=3.11"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -33,8 +33,7 @@ classifiers = [
     "Topic :: Office/Business :: Financial :: Spreadsheet",
 ]
 
-# The engine is pandas and numpy. openpyxl is here rather than in an extra
-# because reading .xlsx is what half the callers arrive wanting.
+# openpyxl is a core dependency so .xlsx files work out of the box.
 dependencies = [
     "pandas>=2.2,<3",
     "numpy>=1.26,<3",
@@ -42,10 +41,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Only ada.ui imports streamlit and plotly, so a library caller never pays for them.
+# Only the Streamlit app (app.py, ada/ui.py) needs these.
 app = ["streamlit==1.59.2", "plotly>=5.24,<7"]
-# Only ada.ai_insights imports pydantic. The AI layer is optional by design:
-# it proposes a calculation and never computes a number.
+# Optional AI layer (ada/ai_insights.py). It proposes query plans; pandas runs them.
 ai = ["openai>=2.46,<3", "pydantic>=2.11,<3"]
 dev = ["ruff>=0.8,<1"]
 
@@ -62,8 +60,7 @@ Issues = "https://github.com/saineshnakra/automated-data-analyst/issues"
 packages = ["ada"]
 
 [tool.setuptools.package-data]
-# The stylesheet and the sample files ship with the wheel; both are read from
-# inside the package at runtime, so a pip install has to carry them.
+# Read from inside the package at runtime.
 ada = ["assets/*.css", "samples/*.csv", "samples/*.md"]
 
 [tool.ruff]

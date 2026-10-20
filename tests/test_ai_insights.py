@@ -110,8 +110,6 @@ class AIInsightTests(unittest.TestCase):
 
 
 class PlanValidationTests(unittest.TestCase):
-    """A plan the user approves must be a plan ADA will run exactly as described."""
-
     def setUp(self):
         self.frame = pd.DataFrame(
             {
@@ -188,7 +186,6 @@ class PlanValidationTests(unittest.TestCase):
         self.assertEqual(plan.grain, "M")
 
     def test_the_breakdown_sentence_names_the_aggregation_that_runs(self):
-        """A mean described as "total" is the exact lie the gate exists to stop."""
         for aggregation, word in (("sum", "total"), ("mean", "average"), ("median", "median"),
                                   ("min", "minimum"), ("max", "maximum")):
             with self.subTest(aggregation=aggregation):
@@ -198,7 +195,7 @@ class PlanValidationTests(unittest.TestCase):
                 self.assertIn(f"{word} Revenue", describe_query_plan(plan))
 
     def test_a_small_pre_aggregated_table_can_be_broken_down(self):
-        """Two regions in a two-row summary are unique by construction, not an id."""
+        """Each region appears once here, which must not make Region read as an identifier."""
         summary = pd.DataFrame({"Region": ["West", "East"], "Revenue": [100.0, 200.0]})
 
         plan = _to_query_plan(
@@ -210,7 +207,6 @@ class PlanValidationTests(unittest.TestCase):
         self.assertIsNotNone(plan)
 
     def test_every_approved_plan_executes_without_raising(self):
-        """Nothing that survives validation may blow up in the executor."""
         for intent in ("aggregate", "count", "rank", "breakdown", "trend", "growth"):
             for measure in (None, "Revenue", "Region", "Order Date", "Ticket"):
                 for dimension in (None, "Region", "Revenue", "Order Date", "Ticket"):
@@ -225,12 +221,7 @@ class PlanValidationTests(unittest.TestCase):
 
 
 class PayloadContentTests(unittest.TestCase):
-    """The privacy claim is only as good as a test that could falsify it.
-
-    Asserting on key names cannot catch a leak, because a leak arrives inside
-    a value. These put distinctive markers in the data and search the payload
-    text for them.
-    """
+    """The fixture puts distinctive markers in the data; the tests search the payload text for them."""
 
     def _frame(self):
         return pd.DataFrame(
@@ -260,13 +251,8 @@ class PayloadContentTests(unittest.TestCase):
         self.assertNotIn("SECRET-NOTE", payload)
         self.assertNotIn("ACCT-", payload)
 
-    def test_the_segment_names_that_do_travel_are_documented_as_travelling(self):
-        """Evidence sentences name the segment they describe, and that is stated.
-
-        This is not a leak to be fixed silently -- it is the documented
-        boundary. The test exists so the boundary cannot move without someone
-        noticing, in either direction.
-        """
+    def test_segment_names_reach_the_narrative_payload(self):
+        """Evidence sentences name the segment they describe, as docs/privacy.md states."""
         frame = self._frame()
         brief = analyze_business(frame, detect_roles(frame))
 
@@ -390,8 +376,7 @@ class AIQueryPlannerTests(unittest.TestCase):
         self.assertIsNotNone(plan)
         assert plan is not None
         description = describe_query_plan(plan)
-        # The sentence has to describe the ranking that actually runs, not the
-        # aggregate the plan's fields would suggest on their own.
+        # The description follows the rank intent, not the aggregate the fields alone suggest.
         self.assertIn("Rank Product", description)
         self.assertIn("total Revenue", description)
         self.assertIn("2 highest", description)

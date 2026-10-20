@@ -1,21 +1,10 @@
-"""One rule for "this column's name says it holds a key".
-
-Three places need the answer and they must not disagree: the reader, which
-keeps "Order No" as text rather than parsing it into a float; the cleaner,
-which must not turn it back into a number afterwards; and the parser, which
-must not offer it as a measure to average. When they each carried their own
-list, a column was a key to one of them and a number to another - which is how
-"Invoice No" ended up rendered as 1.00047e+11.
-
-Nothing else changes here: this is the rule on its own, before the three
-callers are pointed at it.
-"""
-
 from __future__ import annotations
 
 import unittest
 
-from ada.schema import IDENTIFIER_NAME_WORDS, is_identifier_name
+import pandas as pd
+
+from ada.schema import IDENTIFIER_NAME_WORDS, detect_roles, is_design_name, is_identifier_name
 
 
 class IdentifierNameTests(unittest.TestCase):
@@ -30,8 +19,7 @@ class IdentifierNameTests(unittest.TestCase):
                 self.assertTrue(is_identifier_name(word))
 
     def test_a_measure_that_merely_contains_the_word_does_not(self):
-        # The head noun is what the column holds. "Identified Revenue" is
-        # revenue, and a substring test would have made it a key.
+        # Only the last word counts, so "Identified Revenue" is a measure.
         for name in ("Identified Revenue", "Code Coverage", "Number of Orders", "Keyboard Sales"):
             with self.subTest(name=name):
                 self.assertFalse(is_identifier_name(name))
@@ -52,11 +40,43 @@ class IdentifierNameTests(unittest.TestCase):
                 self.assertFalse(is_identifier_name(name))
 
     def test_the_word_list_is_reachable_for_callers_that_need_it(self):
-        # The parser matches identifier-ish words in a question, so it reads
-        # the same set rather than restating it.
         self.assertIn("id", IDENTIFIER_NAME_WORDS)
         self.assertIn("sku", IDENTIFIER_NAME_WORDS)
         self.assertNotIn("revenue", IDENTIFIER_NAME_WORDS)
+
+
+class RoleDeterminismTests(unittest.TestCase):
+    def test_the_event_date_wins_whatever_order_the_columns_arrive_in(self):
+        months = pd.date_range("2024-01-01", periods=10, freq="MS")
+        frame = pd.DataFrame(
+            {"Order Date": months, "Ship Date": months + pd.Timedelta(days=3), "Revenue": range(10)}
+        )
+
+        self.assertEqual(detect_roles(frame).date, "Order Date")
+        self.assertEqual(detect_roles(frame[["Ship Date", "Order Date", "Revenue"]]).date, "Order Date")
+
+
+class DesignColumnTests(unittest.TestCase):
+    def test_a_replicate_number_is_not_picked_as_the_measure(self):
+        frame = pd.DataFrame({
+            "Treatment": ["Control", "Drug"] * 6,
+            "Replicate": [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6],
+            "Yield": [4.1, 3.2, 4.0, 3.1, 4.3, 3.3, 3.9, 3.0, 4.2, 3.4, 4.0, 3.2],
+        })
+        self.assertEqual(detect_roles(frame).measure, "Yield")
+        self.assertTrue(is_design_name("Replicate"))
+        self.assertTrue(is_design_name("Plate"))
+        self.assertFalse(is_design_name("Run Date"))
+
+
+class IdentifierNamePunctuationTests(unittest.TestCase):
+    def test_key_names_with_punctuation_or_symbols(self):
+        for name in ("Phone No.", "Account #", "Zipcode", "Postcode", "Telephone"):
+            with self.subTest(name=name):
+                self.assertTrue(is_identifier_name(name))
+        for name in ("Width", "Humidity", "Paid Amount"):
+            with self.subTest(name=name):
+                self.assertFalse(is_identifier_name(name))
 
 
 if __name__ == "__main__":

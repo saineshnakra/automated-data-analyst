@@ -10,6 +10,7 @@ from ada.business_insights import analyze_business
 from ada.demo_data import make_demo_data
 from ada.nlq import ValueFilter
 from ada.pipeline import analyze_selection, prepare_analysis
+from ada.schema import detect_roles
 from ada.selection import (
     MIN_SLICE_RECORDS,
     RangeFilter,
@@ -84,13 +85,13 @@ class EventTranslationTests(unittest.TestCase):
         self.assertEqual(len(selection.ranges), 1)
         window = selection.ranges[0]
         self.assertEqual(window.column, "Order Date")
-        self.assertLessEqual(window.low, pd.Timestamp("2025-03-01"))
-        self.assertGreaterEqual(window.high, pd.Timestamp("2025-06-30 23:59:59"))
+        self.assertGreaterEqual(window.low, pd.Timestamp("2025-03-01"))
+        self.assertLessEqual(window.high.normalize(), pd.Timestamp("2025-06-30"))
         kept = apply_selection(self.data.frame, selection)
         self.assertTrue(kept["Order Date"].between(window.low, window.high).all())
         self.assertGreater(len(kept), 0)
 
-    def test_a_time_window_is_widened_to_whole_periods_and_says_so(self):
+    def test_a_time_window_is_narrowed_to_whole_periods_and_says_so(self):
         spec = ChartSpec(form="area", rationale="", x="Order Date", y="Revenue")
         box = {"x": ["2025-04-19", "2025-09-08"]}
 
@@ -99,10 +100,14 @@ class EventTranslationTests(unittest.TestCase):
         inside = self.data.frame["Order Date"].between("2025-04-19", "2025-09-08")
         grain = preferred_frequency(self.data.frame.loc[inside, "Order Date"])
 
-        # Both ends land on the boundaries of the grain the slice is analyzed in.
+        # Both ends land on period boundaries, inside what was drawn.
         self.assertEqual(window.low, pd.Period(window.low, freq=grain).start_time)
         self.assertEqual(window.high, pd.Period(window.high, freq=grain).end_time)
-        self.assertIn("Widened to whole", selection.adjustment)
+        self.assertGreaterEqual(window.low, pd.Timestamp("2025-04-19"))
+        self.assertLessEqual(window.high, pd.Timestamp("2025-09-08 23:59:59.999999999"))
+        kept = apply_selection(self.data.frame, selection)
+        self.assertTrue(kept["Order Date"].between("2025-04-19", "2025-09-08 23:59:59").all())
+        self.assertIn("Narrowed to whole", selection.adjustment)
         self.assertIn("19 Apr 2025 to 08 Sep 2025 you selected", selection.adjustment)
         _, comparison = compare_slice(self.data.frame, selection, self.data.roles)
         self.assertIn(selection.adjustment, comparison.notes)
@@ -154,7 +159,7 @@ class EventTranslationTests(unittest.TestCase):
 
         self.assertTrue(selection.is_empty)
 
-    def test_forms_without_an_honest_mapping_to_rows_accept_no_selection(self):
+    def test_heatmaps_tables_and_stats_accept_no_selection(self):
         for form in ("heatmap", "table", "stat", "none"):
             with self.subTest(form=form):
                 spec = ChartSpec(form=form, rationale="", x="Product", y="Region")
@@ -346,6 +351,27 @@ class SelectionFrameUnchangedTests(unittest.TestCase):
         analyze_selection(data.frame, data.roles, Selection(values=(ValueFilter("Region", ("West",)),)))
 
         pdt.assert_frame_equal(data.frame, before)
+
+
+class AveragedMeasureComparisonTests(unittest.TestCase):
+    def comparison(self, measure):
+        frame = pd.DataFrame({"Region": list("ABCD") * 10, measure: [10.0, 20.0, 30.0, 40.0] * 10})
+        spec = ChartSpec(form="column", rationale="", x="Region", y=measure)
+        selection = selection_from_event(event(points=[{"x": "D"}]), spec, frame)
+        _, comparison = compare_slice(frame, selection, detect_roles(frame))
+        return {stat.label: stat for stat in comparison.stats}
+
+    def test_a_rate_differs_from_the_whole_in_points(self):
+        stats = self.comparison("Conversion Rate")
+        self.assertEqual(stats["Average Conversion Rate"].difference, "+15.0 pts vs the whole")
+
+    def test_a_level_differs_from_the_whole_by_a_plain_difference(self):
+        stats = self.comparison("pH")
+        self.assertEqual(stats["Average pH"].difference, "+15 vs the whole")
+
+    def test_no_segment_mix_when_the_selection_filters_that_column(self):
+        stats = self.comparison("Conversion Rate")
+        self.assertFalse(any(label.startswith("Most common") for label in stats))
 
 
 if __name__ == "__main__":

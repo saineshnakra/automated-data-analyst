@@ -1,119 +1,125 @@
 # Architecture
 
-## The shape of it
+## Overview
 
-ADA is a Streamlit app wrapped around a pure-Python analysis engine. The engine
-does not know Streamlit exists. That is the main structural idea, and most of
-the rules below exist to protect it.
+ADA is a pure-Python analysis engine (the `ada` package) with two front ends: a
+Streamlit app (`app.py` at the repository root) and a Python API with a command
+line (`ada/api.py`, `ada/cli.py`). The engine does not import Streamlit, so it
+runs from a script or a test with no browser and no API key.
 
 ```
-                 app.py          ← Streamlit page, session state
-                    │
-                 ui.py           ← components, Plotly styling
-                    │
-                pipeline.py      ← bundles prep, cleaning, roles, drill-down
-                    │
-   ┌────────────────┼───────────────────────────────┐
-   │                │                               │
-file_io.py    business_insights.py                nlq.py
-analysis.py     ↑        ↑        ↑                  │
-schema.py    anomalies forecasting aggregation ──────┘
-                  └────────┴──── timeseries.py
-                                 formatting.py
-                                       │
-                                 ai_insights.py   ← optional, isolated
+   app.py  (Streamlit page, session state)      ada/cli.py  (the ada command)
+      │                                              │
+   ada/ui.py  (components, Plotly styling)       ada/api.py  (ada.analyze, Analysis, Refusal)
+      │                                              │
+      └──────────────────┬───────────────────────────┘
+                         │
+                  ada/pipeline.py  (cleaning, roles, row limit, drill-down)
+                         │
+   ┌─────────────────────┼──────────────────────────────┐
+   │                     │                              │
+ file_io.py      business_insights.py                 nlq.py
+ analysis.py      │        │         │                  │
+ schema.py    anomalies  forecasting  aggregation ──────┘
+                  │        │          metrics.py
+                  └────────┴─ timeseries.py
+                              formatting.py
+
+ autovis.py      chart-form choice for the Explore tab (used by ui.py)
+ ai_insights.py  optional; the only module that makes a network call
 ```
 
-Nothing below `pipeline.py` imports Streamlit. You can run the entire analysis
-engine from a plain Python script or a test, with no browser and no API key.
+Only `app.py`, `ada/ui.py` and the `ada app` subcommand import Streamlit, and
+`ada app` imports it only when run. The installed package depends on pandas,
+numpy and openpyxl; Streamlit and Plotly come with the `app` extra, and the
+OpenAI client and Pydantic with the `ai` extra.
 
 ## Layers
 
 | Layer | Files | Rule |
 |---|---|---|
-| **Presentation** | `app.py`, `ui.py` | Draws things. Calculates nothing. |
-| **Orchestration** | `pipeline.py` | Sequences the engine. Holds no business logic of its own. |
-| **Engine** | `analysis.py`, `schema.py`, `aggregation.py`, `timeseries.py`, `anomalies.py`, `forecasting.py`, `business_insights.py`, `nlq.py`, `autovis.py`, `selection.py` | Pure functions over DataFrames. No I/O, no globals. |
-| **Input** | `file_io.py`, `demo_data.py` | Parses and validates. No analysis. |
-| **Output formatting** | `formatting.py` | Decides how a number *looks*. Never changes what it *is*. |
-| **Optional AI** | `ai_insights.py` | The only file allowed to make a network call. Imported defensively: if it or its dependencies fail to load, the rest of the product still runs. |
+| Presentation | `app.py`, `ada/ui.py` | Draws results. Does not calculate. |
+| Public interface | `ada/api.py`, `ada/cli.py` | Wraps the engine for Python and the shell. No analysis of its own. |
+| Orchestration | `ada/pipeline.py` | Sequences cleaning, role detection and the row limit. |
+| Engine | `analysis.py`, `schema.py`, `metrics.py`, `aggregation.py`, `timeseries.py`, `anomalies.py`, `forecasting.py`, `business_insights.py`, `nlq.py`, `autovis.py`, `selection.py` | Functions over DataFrames. No network, no global state. |
+| Input | `ada/file_io.py`, `ada/demo_data.py` | Parses and validates input. No analysis. |
+| Output formatting | `ada/formatting.py` | Decides how a value is displayed, never what it is. |
+| Optional AI | `ada/ai_insights.py` | The only module that makes a network call. `app.py` imports it inside a `try`, so a missing dependency disables the AI features and nothing else. |
 
-## What each file owns
+## Module responsibilities
 
 | File | Owns |
 |---|---|
-| `app.py` | Streamlit page setup, session state, sidebar, the upload flow |
-| `ui.py` | Reusable render functions and consistent Plotly styling |
-| `pipeline.py` | `prepare_analysis`, role overrides, drill-down focus, chart-selection analysis, audit frames |
-| `file_io.py` | Validated CSV/Excel parsing, worksheet listing |
-| `analysis.py` | Cleaning, the cleaning report, column profiling, Markdown report |
-| `schema.py` | `ColumnRoles` and the role-detection scoring |
-| `aggregation.py` | **The only definition of a period.** Trend, segment, driver, heatmap frames |
-| `timeseries.py` | Theil–Sen trendline and robust scale |
-| `anomalies.py` | Anomaly detection and the calibrated threshold table |
-| `forecasting.py` | Baseline forecast, prediction band, backtest |
-| `business_insights.py` | Evidence cards, KPIs, recommendations, the executive brief |
-| `nlq.py` | Question → `QueryPlan` → local execution |
-| `autovis.py` | Picks the chart form for a set of columns, and the sentence saying why |
-| `selection.py` | Turns a chart selection into filters, states them in words, and sets the slice against the whole |
-| `formatting.py` | `format_number`, `format_period`, column-name helpers |
-| `ai_insights.py` | Typed Responses API calls for the query planner and strategic read |
-| `demo_data.py` | The deterministic synthetic dataset |
-| `tools/` | Offline calibration scripts, not imported by the app |
+| `app.py` | Streamlit page setup, session state, sidebar, upload flow, the Ask ADA approval step |
+| `ada/ui.py` | Render functions, Plotly styling, the chart palette |
+| `ada/api.py` | `analyze`, `Analysis`, `Refusal` and its codes, `sample`, `read_file` |
+| `ada/cli.py` | The `ada` command: `analyze`, `schema`, `ask`, `check`, `samples`, `app` |
+| `ada/pipeline.py` | `prepare_analysis`, role overrides, drill-down focus, chart-selection analysis, the audit and schema tables |
+| `ada/file_io.py` | CSV and Excel parsing, worksheet listing, bundled samples, formula-safe CSV export |
+| `ada/analysis.py` | Cleaning, the cleaning report, column profiling |
+| `ada/schema.py` | `ColumnRoles` and role detection |
+| `ada/metrics.py` | Whether a measure is summed or averaged, and whether a rise is good news |
+| `ada/aggregation.py` | The definition of a period; trend, segment, driver and heatmap frames |
+| `ada/timeseries.py` | Theil-Sen trendline, calendar positions, robust scale |
+| `ada/anomalies.py` | Anomaly detection and the calibrated threshold table |
+| `ada/forecasting.py` | Baseline forecast, prediction band, backtest |
+| `ada/business_insights.py` | Evidence cards, KPIs, recommendations, the executive brief |
+| `ada/nlq.py` | Question to `QueryPlan` to local execution |
+| `ada/autovis.py` | Chart form for a set of columns, and the sentence explaining it |
+| `ada/selection.py` | Turns a selection on the Explore chart into filters, states them in words, and compares the slice with the whole |
+| `ada/formatting.py` | `format_number`, `format_period`, `normalized_name` |
+| `ada/ai_insights.py` | Typed Responses API calls for the query planner and the AI summary |
+| `ada/demo_data.py` | The seeded synthetic demo dataset |
+| `tools/` | Offline calibration script, not imported by the app or the package |
 
-## Rules that hold the design together
+## Design rules
 
-These are not style preferences. Breaking one causes a specific, known problem.
+**1. One module defines a period.**
+`ada/aggregation.py` chooses the grain and the timeline adjustments. The trend
+chart, anomaly detection, the forecast and Ask ADA all read the same
+`TrendSeries`, so they agree on what a period is.
 
-**1. One place decides what a period is.**
-`aggregation.py` owns it. If the trend chart, the anomaly detector, and the
-forecast each decided their own grain, they would disagree on screen and nobody
-would be able to tell which was right.
+**2. Formatting does not change values.**
+`ada/formatting.py` turns a number into a string. It does not rescale, round or
+reinterpret stored data, so a display change cannot alter a result.
 
-**2. Formatting never changes values.**
-`formatting.py` turns a number into a string. It never rescales, rounds, or
-reinterprets the stored data. A display bug should never become a data bug.
+**3. Calculations live in the engine.**
+A number computed inside a Streamlit callback can only be tested by running the
+app. Engine functions can be tested directly.
 
-**3. Calculations live in the engine, not in UI callbacks.**
-If a number is computed inside a Streamlit callback, it cannot be tested without
-running a browser session.
-
-**4. Evidence and recommendations stay separate.**
-Evidence is calculated. Recommendations are interpretation. They are different
-types (`Evidence`, `Recommendation`), rendered differently, and worded
+**4. Evidence and recommendations are separate types.**
+Evidence is calculated; recommendations are interpretation. They are separate
+dataclasses (`Evidence`, `Recommendation`) and are rendered and worded
 differently. See [Concepts](concepts.md#evidence-vs-recommendation).
 
-**5. Raw rows never reach a model.**
-`ai_insights.py` builds its payloads from column schema and already-computed
-evidence only. Model output is parsed into a typed Pydantic schema, and a
-model-produced query plan runs through the same local executor as a rule-parsed
-one. Generated code is never executed. See [Privacy](privacy.md).
+**5. Raw rows are not sent to a model.**
+`ada/ai_insights.py` builds its payloads from the column schema and
+already-computed evidence. Model output is parsed into Pydantic models, and a
+model-produced query plan is validated, shown to the user for approval, and run
+by the same local executor as a rule-parsed plan. Generated code is never
+executed. See [Privacy](privacy.md).
 
-**6. Every analytical rule has a test.**
-Including the edge cases where it degrades — not enough history, all-zero
-series, a single segment, missing dates.
+**6. Each analytical rule has a test**, including the degraded cases: short
+history, all-zero series, a single segment, missing dates.
 
-**7. The product works with no API key.**
-The deterministic path is the product. The AI layer is an extra, and the app
-must be fully usable without it.
+**7. Everything except the AI features works without an API key.**
 
 ## Dependency injection at the model boundary
 
-`generate_ai_narrative` and `plan_query_with_ai` take a client object rather
-than constructing one. The expected shape is declared as a `Protocol`
-(`_Client`, `_Responses`), so tests pass a fake and assert on the payload
-without network access or API credits.
-
-This is how the privacy-contract tests work: they inspect exactly what would
-have been sent.
+`generate_ai_narrative` and `plan_query_with_ai` accept a `client` argument and
+construct an `OpenAI` client only when it is `None`. The expected shape is a
+`Protocol` (`_Client`, `_Responses`). Tests pass a fake client and inspect the
+exact request, with no network access or API credits.
 
 ## Where to add things
 
-| You want to add | Put it in | Also do |
+| To add | Put it in | Also |
 |---|---|---|
-| A new evidence card | `business_insights.py` | Add a `calculation` string and a test |
-| A new question shape | `nlq.py` | Extend `QueryPlan` if needed; test parse *and* execute |
-| A new chart | `ui.py` | Build its frame in `aggregation.py`, not in the render function |
-| A new file format | `file_io.py` | Keep the validation as strict as it is now |
-| A new detection heuristic | `schema.py` | Add a synthetic fixture that would fail without it |
-| Anything model-related | `ai_insights.py` | Confirm no rows enter the payload; add a privacy test |
+| An evidence card | `ada/business_insights.py` | A `calculation` string and a test |
+| A question shape | `ada/nlq.py` | Extend `QueryPlan` only if needed; test parsing and execution |
+| A dashboard chart | `ada/ui.py` | Build its frame in `ada/aggregation.py`, not in the render function |
+| An Explore chart form | `ada/autovis.py` | A matching branch in `ui._explore_figure` |
+| A file format | `ada/file_io.py` | Validation at least as strict as the existing formats |
+| A detection heuristic | `ada/schema.py` | A synthetic fixture that fails without it |
+| A public API method | `ada/api.py` | A `Refusal` code from `REFUSAL_CODES` for each case it cannot answer |
+| Anything model-related | `ada/ai_insights.py` | A test showing no cell values enter the payload |

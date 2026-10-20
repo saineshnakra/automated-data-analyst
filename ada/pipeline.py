@@ -27,22 +27,18 @@ class PreparedAnalysis:
 
 
 def _most_recent(dataframe: pd.DataFrame, date_column: str | None, row_limit: int) -> pd.DataFrame:
-    """Keep the newest rows, not the first ones.
+    """Keep the newest ``row_limit`` rows, not the first ones.
 
-    Exports are usually written oldest-first, so taking the head of a long
-    file analyzes the periods nobody is asking about and drops the ones they
-    are -- and then forecasts months the file already contains. When a date
-    column is available the newest rows are selected by date; otherwise the
-    end of the file is the best available proxy for the recent end of it.
+    Exports are usually oldest-first. Rows are ranked by ``date_column`` when it
+    exists; otherwise the tail of the file is kept.
     """
     if len(dataframe) <= row_limit:
         return dataframe
     if date_column and date_column in dataframe.columns:
         order = dataframe[date_column].rank(method="first", ascending=False, na_option="bottom")
         kept = dataframe.loc[order <= row_limit]
-        # A cut that lands inside a period leaves that period half-present,
-        # and a half-present oldest period reads as growth into the next one.
-        # It is dropped whenever any row of it was cut.
+        # Drop the oldest period if the cut removed any of its rows; a half-present
+        # first period would read as growth into the next.
         dates = kept[date_column].dropna()
         if not dates.empty:
             grain = preferred_frequency(dates)
@@ -50,11 +46,8 @@ def _most_recent(dataframe: pd.DataFrame, date_column: str | None, row_limit: in
             oldest = dates.min().to_period(grain)
             if (buckets[~dataframe.index.isin(kept.index)] == oldest).any():
                 whole = kept[buckets.loc[kept.index] != oldest]
-                # Only when something survives it. Every kept row sitting in
-                # one truncated period is the ordinary shape of a big export
-                # from a busy week: dropping it leaves ZERO rows, and the app
-                # then reports an empty dataset and a $0.00 headline for a
-                # file with a quarter of a million rows in it.
+                # Skip the drop when every kept row is in that period (a large
+                # export from one busy week), since it would leave no rows.
                 if not whole.empty:
                     kept = whole
         return kept
@@ -69,8 +62,7 @@ def prepare_analysis(raw_dataframe: pd.DataFrame, *, row_limit: int) -> Prepared
     available = len(dataframe)
     dataframe = _most_recent(dataframe, roles.date, row_limit).reset_index(drop=True)
     if len(dataframe) < available:
-        # Roles are detected on everything, but the numeric and dimension
-        # candidates have to describe the rows actually being analyzed.
+        # Re-detect so the numeric and dimension candidates describe the kept rows.
         roles = detect_roles(dataframe)
 
     dated = roles.date is not None and roles.date in dataframe.columns
@@ -196,7 +188,7 @@ def schema_frame(roles: ColumnRoles) -> pd.DataFrame:
     return pd.DataFrame(
         [
             ["Primary metric", roles.measure or "Not detected"],
-            ["Business segment", roles.dimension or "Not detected"],
+            ["Grouping column", roles.dimension or "Not detected"],
             ["Date", roles.date or "Not detected"],
             ["Identifier", roles.identifier or "Not detected"],
         ],

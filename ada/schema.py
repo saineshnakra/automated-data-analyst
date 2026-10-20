@@ -1,11 +1,7 @@
-"""Working out what the columns of an unfamiliar file actually mean.
+"""Infer the business role of each column: measure, date, dimension or identifier.
 
-ADA has to guess a business schema before it can say anything: which column
-is the outcome worth tracking, which one places it in time, which one splits
-it into parts a reader recognises, and which one merely identifies a row.
-The guesses come from names, types, and cardinality together, because none
-of the three is reliable on its own -- "Order Number" is numeric but is not
-a measure, and a column called "Value" may be either.
+Roles are guessed from names, types and cardinality together, since none is
+reliable alone: "Order Number" is numeric but not a measure, and "Value" may be either.
 """
 
 from __future__ import annotations
@@ -79,18 +75,19 @@ MODIFIER_WEIGHT = 2 / 3
 
 IDENTIFIER_TOKENS = ("id", "uuid", "key", "code", "number", "invoice", "order")
 TIME_PART_TOKENS = ("year", "month", "week", "day", "hour", "minute", "quarter")
+# Experimental-design columns are numbered but hold labels, not quantities.
+DESIGN_TOKENS = frozenset({"replicate", "rep", "batch", "plate", "well", "run", "trial", "block", "lane"})
 
-# Head words that say a column holds a key rather than a quantity. The reader
-# keeps such a column as text and the cleaner leaves it alone, so an account
-# number written 00042 stays 00042 from upload to chart. Matched as a whole
-# word: "Paid Amount" is not an id because it contains one.
-IDENTIFIER_NAME_WORDS = frozenset(
-    {"id", "ids", "code", "codes", "zip", "postal", "phone", "sku", "number", "no", "key", "uuid"}
-)
+# Head words that mark a column as a key rather than a quantity. Such columns stay
+# text through reading and cleaning, so an account number 00042 keeps its zeros.
+# Whole-word match, so "Paid Amount" is not an id.
+IDENTIFIER_NAME_WORDS = frozenset({
+    "id", "ids", "code", "codes", "zip", "zipcode", "postal", "postcode", "phone", "telephone",
+    "mobile", "tel", "fax", "sku", "number", "no", "#", "key", "uuid",
+})
 
 
-# A trailing unit or annotation is not the head noun. "Revenue (USD)" is
-# revenue; scoring it on "usd" let an unrelated column take the measure role.
+# A trailing unit or annotation is not the head noun: "Revenue (USD)" is scored on "Revenue".
 _ANNOTATION = re.compile(r"\s*[(\[][^)\]]*[)\]]\s*$")
 
 
@@ -111,15 +108,19 @@ def _date_preference(name: str) -> int:
 
 
 def is_identifier_name(name: str) -> bool:
-    """Whether a column's name says it holds a key: its last word is one of
-    IDENTIFIER_NAME_WORDS, or the whole name is.
+    """Whether the name marks a key column: its last word is in IDENTIFIER_NAME_WORDS.
 
-    This is the one place that decides, so the reader that keeps "Order No"
-    as text and the cleaner that must not turn it back into a number cannot
-    disagree about which columns those are.
+    The reader and the cleaner both use this, so they agree on which columns
+    (such as "Order No") stay text.
     """
     words = _head_words(name)
     return bool(words) and words[-1] in IDENTIFIER_NAME_WORDS
+
+
+def is_design_name(name: str) -> bool:
+    """Whether the name marks an experimental-design label such as "Replicate" or "Plate"."""
+    words = _head_words(name)
+    return bool(words) and words[-1] in DESIGN_TOKENS
 
 
 def _named_like_a_date(name: str) -> bool:
@@ -127,17 +128,17 @@ def _named_like_a_date(name: str) -> bool:
 
 
 def _head_words(name: str) -> list[str]:
-    """Words of a column name, with any trailing annotation removed."""
-    return normalized_name(_ANNOTATION.sub("", str(name))).split()
+    """Words of a column name, with any trailing annotation and punctuation removed."""
+    words = (word.strip(".,:;") for word in normalized_name(_ANNOTATION.sub("", str(name))).split())
+    return [word for word in words if word]
 
 
 def _keyword_score(name: str, keywords: dict[str, int]) -> int:
-    """Score a column name, trusting its last word most.
+    """Score a column name against keywords, weighting its last word most.
 
-    The last word says what a column *is*; earlier words only qualify it.
-    "Product Category" is a category, but "Product Container" is a container --
-    a packaging attribute that scored just as high as the real product
-    dimension while both merely contained the word "product".
+    The last word says what the column is; earlier words only qualify it.
+    "Product Category" scores as a category; "Product Container" gets only the
+    reduced MODIFIER_WEIGHT score for "product".
     """
     words = _head_words(name)
     if not words:
@@ -149,14 +150,11 @@ def _keyword_score(name: str, keywords: dict[str, int]) -> int:
 
 def looks_like_identifier(name: str, series: pd.Series) -> bool:
     if is_datetime64_any_dtype(series):
-        # "Order Date" carries an identifier token and its values are as unique
-        # as any key, but a date names a moment, not a row.
+        # "Order Date" has an identifier token and unique values, but is not a row key.
         return False
     words = _head_words(name)
     if words and words[-1] in MEASURE_KEYWORDS:
-        # The last word decides here for the same reason it decides a measure
-        # score: "Invoice Amount" is an amount that happens to sit beside an
-        # invoice, and reading it as a key costs the file its real metric.
+        # The last word decides, as in _keyword_score: "Invoice Amount" is an amount.
         return False
     token_match = any(token in words for token in IDENTIFIER_TOKENS)
     unique_ratio = series.nunique(dropna=True) / max(int(series.notna().sum()), 1)
@@ -170,25 +168,20 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
         column for column in dataframe.columns if is_datetime64_any_dtype(dataframe[column])
     ]
 
-    # Candidates are sorted by their full name before ranking. max() returns
-    # the first of equal elements, so a tie between "Transaction Date A" and
-    # "Transaction Date B" resolves to the alphabetically first name whatever
-    # order the file wrote them in. An earlier tiebreak compared only the
-    # first eight bytes, which is not enough to separate two long names that
-    # share a prefix.
+    # Sorted by name first because max() keeps the first of equal elements, so a
+    # tie goes to the alphabetically first name regardless of column order.
     date = max(
         sorted(date_columns, key=lambda column: (normalized_name(column), str(column))),
         key=lambda column: (
             1 if any(token in normalized_name(column) for token in ("date", "time", "created")) else 0,
-            # The event that produced the row outranks what happened to it
-            # afterwards: an order dates a sale, a shipment dates a delivery.
+            # The event that created the row outranks later ones: order date over ship date.
             _date_preference(column),
             int(dataframe[column].notna().sum()),
         ),
         default=None,
     )
 
-    measure_candidates: list[tuple[int, float, str]] = []
+    measure_candidates: list[tuple[int, float, float, str]] = []
     for column in numeric:
         series = dataframe[column]
         name = normalized_name(column)
@@ -197,10 +190,11 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
             score -= 20
         if any(token == name or name.endswith(f" {token}") for token in TIME_PART_TOKENS):
             score -= 15
+        if is_design_name(column):
+            score -= 15
         non_null_ratio = float(series.notna().mean())
-        # Amounts carry fractions; postal codes and counters do not. It is a
-        # weak signal, so it only breaks ties -- but it breaks them on the
-        # data, where the fallback was breaking them on column order.
+        # Amounts carry fractions; postal codes and counters do not. A weak
+        # signal, so it only breaks ties.
         continuous = float(
             not is_bool_dtype(series) and bool((series.dropna() % 1 != 0).any())
         )
@@ -208,8 +202,7 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
 
     measure = None
     if measure_candidates:
-        # The column name is the final tiebreak so that two exports of one
-        # table, written in different column orders, detect the same measure.
+        # Name is the final tiebreak, so column order never changes the measure.
         measure = min(
             measure_candidates,
             key=lambda candidate: (-candidate[0], -candidate[1], -candidate[2], candidate[3]),
@@ -221,9 +214,7 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
         if column == date or column in numeric:
             continue
         if _named_like_a_date(column):
-            # ADA tried to parse this as a date and could not. Promoting it to
-            # "business segment" produced evidence reading "2024-06-11 is the
-            # largest date", which is not a finding about the business.
+            # Date-named columns are never segments, even when they didn't parse as dates.
             continue
         series = dataframe[column]
         unique = int(series.nunique(dropna=True))
@@ -255,21 +246,4 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
         identifier=identifier,
         numeric=tuple(numeric),
         dimensions=tuple(dimensions),
-    )
-
-
-def override_roles(
-    roles: ColumnRoles,
-    *,
-    date: str | None = None,
-    measure: str | None = None,
-    dimension: str | None = None,
-) -> ColumnRoles:
-    return ColumnRoles(
-        date=date if date is not None else roles.date,
-        measure=measure if measure is not None else roles.measure,
-        dimension=dimension if dimension is not None else roles.dimension,
-        identifier=roles.identifier,
-        numeric=roles.numeric,
-        dimensions=roles.dimensions,
     )

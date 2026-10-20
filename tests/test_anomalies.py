@@ -9,8 +9,8 @@ from ada.formatting import format_period
 from ada.schema import detect_roles
 
 
-def make_trend(values):
-    periods = pd.date_range("2024-01-01", periods=len(values), freq="MS")
+def make_trend(values, freq="MS", start="2024-01-01"):
+    periods = pd.date_range(start, periods=len(values), freq=freq)
     return pd.DataFrame({"Period": periods, "Value": [float(value) for value in values]})
 
 
@@ -51,7 +51,7 @@ class AnomalyDetectionTests(unittest.TestCase):
         self.assertEqual(detect_anomalies(make_trend(values)), ())
 
     def test_trending_series_with_noise_keeps_edges_clean(self):
-        """The largest draw here is 3.3 sigma: ordinary for 15 periods, not news."""
+        """The largest noise draw is 3.3 sigma, below the threshold used for 15 periods."""
         rng = np.random.default_rng(3)
         values = np.arange(15) * 25 + 400 + rng.normal(0, 5, 15)
         self.assertEqual(detect_anomalies(make_trend(values)), ())
@@ -124,8 +124,7 @@ class CalibrationTests(unittest.TestCase):
         self.assertEqual(critical_value(2), critical_value(8))
         self.assertEqual(critical_value(10_000), critical_value(320))
 
-    def test_stable_series_stay_below_the_promised_false_alarm_rate(self):
-        """The calibration is a promise; re-measure it rather than trust it."""
+    def test_stable_series_stay_below_the_target_false_alarm_rate(self):
         rng = np.random.default_rng(101)
         trials = 400
         flagged = 0
@@ -172,8 +171,26 @@ class AnomalyEvidenceTests(unittest.TestCase):
         self.assertIn("Sep 2024", anomaly.statement)
         self.assertIn("trendline", anomaly.calculation)
         self.assertTrue(
-            any("anomalous periods" in item.title.lower() for item in brief.recommendations)
+            any("flagged periods" in item.title.lower() for item in brief.recommendations)
         )
+
+
+class BlankPeriodTests(unittest.TestCase):
+    def test_a_spike_is_still_found_when_a_month_is_blank(self):
+        values = [100.0] * 24
+        values[5] = np.nan
+        values[18] = 1000.0
+        found = detect_anomalies(make_trend(values, freq="ME", start="2022-01-31"))
+        self.assertTrue(found, "an obvious spike went unreported")
+        self.assertEqual(
+            pd.Timestamp(found[0].period).to_period("M"),
+            pd.Timestamp("2023-07-31").to_period("M"),
+        )
+
+    def test_a_series_with_no_gaps_is_unaffected(self):
+        values = [100.0] * 24
+        values[18] = 1000.0
+        self.assertTrue(detect_anomalies(make_trend(values, freq="ME", start="2022-01-31")))
 
 
 if __name__ == "__main__":

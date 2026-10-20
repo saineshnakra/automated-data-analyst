@@ -1,4 +1,8 @@
-"""Optional evidence-grounded narrative synthesis through the Responses API."""
+"""Optional Responses API calls: a narrative over the computed brief, and a query planner.
+
+Neither call sends raw rows. Planned queries are validated and run locally, and only
+after the user approves them.
+"""
 
 from __future__ import annotations
 
@@ -61,7 +65,10 @@ Write for an operator who needs the decision, not an analytics lecture."""
 
 
 def build_ai_payload(brief: BusinessBrief, *, context: str = "") -> str:
-    """Serialize only computed evidence; raw uploaded rows never enter the prompt."""
+    """Serialize the computed brief as the narrative prompt; raw rows are not included.
+
+    Evidence sentences can still name individual segment values, e.g. a region.
+    """
     payload = {
         "business_context": context.strip() or "Not provided",
         "detected_schema": asdict(brief.roles),
@@ -86,7 +93,11 @@ def generate_ai_narrative(
     safety_identifier: str,
     client: _Client | None = None,
 ) -> AINarrative:
-    """Generate a typed narrative while keeping the deterministic brief authoritative."""
+    """Ask the model for a structured narrative over the computed brief.
+
+    Raises ValueError without an API key and RuntimeError if no parsed narrative
+    comes back.
+    """
     if not api_key.strip():
         raise ValueError("An API key is required for the optional AI narrative.")
     if client is None:
@@ -118,7 +129,7 @@ class AIQueryFilter(BaseModel):
 
 
 class AIQueryPlan(BaseModel):
-    """Typed plan the model must emit; execution always happens locally."""
+    """Structured plan the model returns; ADA validates and executes it locally."""
 
     answerable: bool
     intent: Literal["aggregate", "count", "rank", "breakdown", "trend", "growth"] = "aggregate"
@@ -142,7 +153,7 @@ If the schema cannot answer the question, set answerable to false instead of gue
 
 
 def build_query_schema(dataframe: pd.DataFrame, roles: ColumnRoles) -> list[dict[str, str]]:
-    """Describe columns for the planner without exposing a single cell value."""
+    """Describe each column's name, type and role for the planner; no cell values."""
     schema: list[dict[str, str]] = []
     for column in dataframe.columns:
         series = dataframe[column]
@@ -178,7 +189,7 @@ def build_planner_payload(question: str, dataframe: pd.DataFrame, roles: ColumnR
 
 
 def _resolve_filter(item: AIQueryFilter, dataframe: pd.DataFrame) -> ValueFilter | None:
-    """Map a quoted filter phrase onto real values; refuse rather than guess."""
+    """Match a filter phrase to column values case-insensitively; None if nothing matches."""
     if item.column not in dataframe.columns:
         return None
     wanted = item.value.casefold().strip()
@@ -190,40 +201,36 @@ def _resolve_filter(item: AIQueryFilter, dataframe: pd.DataFrame) -> ValueFilter
     return ValueFilter(column=item.column, values=matched) if matched else None
 
 
-# Intents that group, and so cannot run without a dimension to group by.
+# Intents that need a dimension to group by.
 GROUPING_INTENTS = ("rank", "breakdown")
-# Intents whose executor reads plan.dimension at all. Growth ranks segments by
-# their change, so it uses one; a plain aggregate never does.
+# Intents whose executor reads plan.dimension (growth ranks segments by change).
 DIMENSION_INTENTS = ("rank", "breakdown", "growth")
 # Intents that resample onto a period grain.
 GRAIN_INTENTS = ("trend", "growth")
-# Intents whose executor works on period sums and ignores plan.aggregation.
+# Intents whose executor sums per period and ignores plan.aggregation.
 PERIOD_INTENTS = ("trend", "growth")
-# Above this share of distinct values a column identifies rows rather than
-# grouping them, and a "breakdown" by it is one row per record.
+# Above this share of distinct values a column identifies rows rather than grouping them.
 IDENTIFIER_UNIQUENESS = 0.9
 
 
 def _usable_measure(dataframe: pd.DataFrame, column: str, aggregation: str) -> bool:
-    """Counting works on anything; arithmetic does not."""
+    """Any column can be counted; other aggregations need a numeric column."""
     if aggregation == "count":
         return True
     return is_numeric_dtype(dataframe[column])
 
 
-# Below this many rows, every value being distinct says nothing: a two-row
-# regional summary has two distinct regions and is exactly what a breakdown
-# is for.
+# Below this many rows, all-distinct values don't suggest an identifier: a
+# two-row regional summary has two distinct regions and is a valid breakdown.
 IDENTIFIER_EVIDENCE_ROWS = 25
 
 
 def _usable_dimension(dataframe: pd.DataFrame, column: str) -> bool:
-    """A segment groups records together. A timestamp or an id does not.
+    """Return True if ``column`` can group rows into segments.
 
-    Uniqueness on its own is not evidence of an identifier -- a pre-aggregated
-    table is unique by construction. So a column is refused when its name
-    says it is a key, when it is a timestamp, when it is a continuous number,
-    or when it is unique across enough rows for that to mean something.
+    Refuses empty columns, timestamps, identifier-like columns, continuous numbers,
+    and columns nearly unique over at least ``IDENTIFIER_EVIDENCE_ROWS`` rows (a
+    small pre-aggregated table is unique by construction).
     """
     series = dataframe[column]
     if is_datetime64_any_dtype(series):
@@ -235,8 +242,7 @@ def _usable_dimension(dataframe: pd.DataFrame, column: str) -> bool:
         return False
     distinct = int(series.nunique(dropna=True))
     if is_numeric_dtype(series) and not is_bool_dtype(series):
-        # A continuous measure is not a segment, and grouping by it produces a
-        # row per distinct value.
+        # Fractional or nearly unique numbers are measures, not segments.
         if (series.dropna() % 1 != 0).any() or distinct > present * IDENTIFIER_UNIQUENESS:
             return False
     if present >= IDENTIFIER_EVIDENCE_ROWS and distinct > present * IDENTIFIER_UNIQUENESS:
@@ -247,12 +253,11 @@ def _usable_dimension(dataframe: pd.DataFrame, column: str) -> bool:
 def _to_query_plan(
     parsed: AIQueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles
 ) -> QueryPlan | None:
-    """Turn a model's proposal into a plan ADA will execute exactly as described.
+    """Validate the model's plan and convert it to a QueryPlan that runs as described.
 
-    Everything the executor would ignore is refused or stripped here rather
-    than shown to the user for approval. An approval gate that describes a
-    calculation which is not the one that runs is worse than no gate at all,
-    because it buys confidence without earning it.
+    Returns None if the plan names unknown or unsuitable columns or cannot run as
+    stated. Dimension, top_n and grain are cleared when the intent's executor would
+    ignore them, so the approval sentence never mentions them.
     """
     measure = parsed.measure or roles.measure
     dimension = parsed.dimension
@@ -261,8 +266,7 @@ def _to_query_plan(
             return None
     if parsed.intent in PERIOD_INTENTS and not roles.date:
         return None
-    # The executor sums periods whatever the plan says, so a plan promising an
-    # average over time would answer a different question than the one approved.
+    # Period intents always sum, so refuse a plan asking for e.g. a mean over time.
     if parsed.intent in PERIOD_INTENTS and parsed.aggregation != "sum":
         return None
     if parsed.intent == "aggregate" and not measure:
@@ -276,8 +280,8 @@ def _to_query_plan(
     if dimension is not None:
         if dimension == measure or not _usable_dimension(dataframe, dimension):
             return None
-    # A time filter needs a column to apply it to; without one the executor
-    # quietly returns the all-time figure under a scoped-looking sentence.
+    # Without a date column the executor ignores year/month and returns the
+    # all-time figure.
     if (parsed.year is not None or parsed.month is not None) and not roles.date:
         return None
     filters: list[ValueFilter] = []
@@ -290,8 +294,8 @@ def _to_query_plan(
         intent=parsed.intent,
         aggregation=parsed.aggregation,
         measure=measure if parsed.intent != "count" else None,
-        # Every modifier the chosen intent's executor would ignore is dropped
-        # here, so the approval sentence cannot advertise one.
+        # Drop modifiers this intent's executor ignores, so the approval
+        # sentence can't mention them.
         dimension=dimension if parsed.intent in DIMENSION_INTENTS else None,
         top_n=parsed.top_n if parsed.intent == "rank" else None,
         ascending=parsed.ascending,
@@ -313,7 +317,11 @@ def plan_query_with_ai(
     config: AIConfig = PLANNER_CONFIG,
     client: _Client | None = None,
 ) -> QueryPlan | None:
-    """Ask the model for a typed plan over the schema; execution stays local."""
+    """Ask the model for a query plan from the schema alone; the plan is not executed.
+
+    Returns None for an empty question, a plan the model marks unanswerable, or one
+    that fails validation. Raises ValueError without an API key.
+    """
     if not api_key.strip():
         raise ValueError("An API key is required for the optional AI query planner.")
     if not question.strip():
@@ -364,12 +372,10 @@ def _scope_clause(plan: QueryPlan) -> str:
 
 
 def describe_query_plan(plan: QueryPlan) -> str:
-    """Say, in a sentence, exactly what execute_plan will do with this plan.
+    """Describe in one sentence what ``execute_plan`` will do with ``plan``.
 
-    The sentence is the whole value of the approval step, so it is built per
-    intent rather than from whichever fields happen to be set. A description
-    that mentions a grouping or a ranking the executor ignores teaches the
-    reader to trust a gate that is not checking anything.
+    Built per intent rather than from whichever fields are set, so the approval
+    prompt matches the calculation that runs.
     """
     measure = plan.measure or "records"
     aggregation = AGGREGATION_LABELS[plan.aggregation]
@@ -398,9 +404,7 @@ def describe_query_plan(plan: QueryPlan) -> str:
         described = "rows" if plan.aggregation == "count" else f"{aggregation.lower()} {measure}"
         description = f"rank {plan.dimension} by {described}, showing {showing}"
     elif plan.intent == "breakdown":
-        # The executor honours every aggregation here, so the sentence must
-        # name the one chosen. Hard-coding "total" once described a mean as a
-        # sum, which is the exact lie the approval step exists to prevent.
+        # Name the aggregation that will actually run.
         described = "rows" if plan.aggregation == "count" else f"{aggregation.lower()} {measure}"
         description = f"break {described} down by {plan.dimension}"
     else:
@@ -418,7 +422,7 @@ def execute_approved_ai_plan(
     *,
     approved: bool,
 ) -> QueryAnswer | None:
-    """Execute a validated AI plan only after an explicit approval decision."""
+    """Run a validated AI plan locally; returns None unless ``approved`` is True."""
     if not approved:
         return None
     executed = execute_plan(plan, dataframe, roles)

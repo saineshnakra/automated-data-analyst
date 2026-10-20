@@ -1,94 +1,106 @@
 # Concepts
 
-The words ADA uses, in plain English. Everything else in the docs assumes these.
+The terms used throughout the docs.
 
-## The four column roles
+## Column roles
 
-ADA cannot analyze a file until it decides what the columns mean. It looks for
-four roles. All four are guesses, and all four can be overridden in the app.
+ADA assigns columns to four roles before it analyzes a file. All four are
+detected automatically and can be overridden in the app or in `ada.analyze`.
 
-| Role | Plain meaning | Example columns |
+| Role | Meaning | Example columns |
 |---|---|---|
-| **Measure** | The number you care about | `Revenue`, `Units`, `Cost` |
-| **Date** | When each row happened | `Order Date`, `Created At` |
-| **Segment** (also called *dimension*) | How you split the measure into parts | `Region`, `Product`, `Channel` |
-| **Identifier** | Names a row, but is not worth adding up | `Order ID`, `Invoice Number` |
+| Measure | The number being analyzed | `Revenue`, `Units`, `Viability %` |
+| Date | When each row happened | `Order Date`, `Created At` |
+| Segment (also *dimension*) | How the measure is split into groups | `Region`, `Product`, `Channel` |
+| Identifier | Names a row; not a quantity | `Order ID`, `Invoice Number` |
 
-The identifier role exists mostly to keep things *out* of the measure slot.
-`Order Number` is numeric, but summing it is meaningless.
+The identifier role mainly keeps columns such as `Order Number` out of the
+measure slot: they are numeric, but their sum means nothing.
 
-See [Schema detection](reference/schema-detection.md) for how the guess is made.
+See [Schema detection](reference/schema-detection.md).
+
+## Amounts, rates and levels
+
+A measure is either summed or averaged, decided from its column name by
+`resolve_metric` in `ada/metrics.py`:
+
+- A rate (a name with a `%` sign, or ending in `rate`, `margin` or `ratio`) is
+  averaged.
+- A measured level (a temperature, pH, concentration, score and similar, or a
+  unit annotation such as `(mg/L)` or `(°C)`) is averaged. `LEVEL_WORDS` in
+  `ada/metrics.py` holds the word list.
+- Everything else is an amount and is summed.
+- With no measure, ADA counts rows.
+
+An averaged measure has no total, so ADA quotes no shares, concentration card
+or "Other segments" bar for it. A change is reported as a percentage for an
+amount or count, in percentage points for a rate, and as a plain difference for
+a level.
 
 ## Period and grain
 
-A **period** is one bucket on the timeline: one week, one month, one quarter.
-The **grain** is which of those ADA picked — `W`, `M`, or `Q`.
+A period is one bucket on the timeline. The grain is its size: `W` (week), `M`
+(month), `Q` (quarter) or `Y` (year). Callers can also fix the grain, including
+`D` (day).
 
-ADA picks the grain once, from your dates, and every later step reuses it. That
-matters: if the trend chart says months and the forecast says weeks, the two
-disagree without ever saying so.
+ADA picks the grain once per analysis, from the span of the dates and how often
+rows are recorded, and every later step reuses it.
 
-Two things happen to the timeline before any maths runs:
+Two adjustments are made before any calculation:
 
-- A final period the data only partly covers is **excluded**. An export cut on
-  the 12th of the month would otherwise look like revenue collapsed.
-- A period with no rows is counted as **zero**, not skipped, so the timeline
-  stays evenly spaced.
+- A final period that the data only partly covers is excluded, so an export cut
+  on the 12th of a month does not read as a drop.
+- A period with no rows is filled, so the timeline stays evenly spaced: with
+  zero for a summed measure, and left empty for an averaged one, which has
+  nothing to average.
 
-Both adjustments are written under the chart rather than applied silently.
-
-See [Periods](reference/periods.md).
+Both are reported in a note under the chart. See [Periods](reference/periods.md).
 
 ## Trend series
 
-The measure totalled per period, plus notes about the two adjustments above.
-This is the single input to the trend chart, anomaly detection, and the
-forecast, so those three can never drift apart.
+The measure per period, plus the notes about those adjustments
+(`TrendSeries` in `ada/aggregation.py`). It is the input to the trend chart,
+anomaly detection, the forecast and Ask ADA's trend answers.
 
 ## Trendline
 
-A straight line fitted through the periods, used as the "expected" level.
-
-ADA uses a **Theil–Sen** line: take every pair of points, work out the slope
-between them, and use the median of all those slopes. One wild month cannot
-drag it around the way an ordinary best-fit line can.
+A straight line through the periods, used as the expected level. ADA fits a
+Theil-Sen line: the median of the slopes between every pair of points, so one
+extreme period has little effect on it.
 
 ## Anomaly
 
-A period whose distance from the trendline is bigger than a calibrated band.
-
-"Calibrated" means the band width was *measured* by simulation, not picked by
-hand, so that a genuinely stable series raises a false alarm about once in
-twenty analyses. See [Anomalies](reference/anomalies.md).
+A period whose distance from the trendline exceeds a calibrated band. The band
+width comes from simulation rather than a fixed number of deviations, set so
+that a stable series raises a false alarm in about one analysis in twenty. See
+[Anomalies](reference/anomalies.md).
 
 ## Evidence vs recommendation
 
-ADA keeps these apart on purpose.
+- **Evidence** is a calculated fact about the data, shown with the calculation
+  that produced it. Example: "Revenue fell 12.4% in July."
+- **A recommendation** is a suggestion about what to look at next. It is
+  labelled as interpretation and never presented as a cause. Example: "Check
+  what changed in the West region."
 
-- **Evidence** is something ADA calculated. It is a fact about your data, and it
-  ships with the exact calculation behind it. "Revenue fell 12.4% in July."
-- **Recommendation** is ADA's interpretation. It is a suggestion about what to
-  look at next, and it is never presented as proof of cause. "Check what changed
-  in the West region."
-
-Nothing in ADA claims that A caused B.
+ADA does not claim that one thing caused another.
 
 ## Query plan
 
-When you ask a question in plain English, ADA does not run generated code. It
-turns your question into a **QueryPlan** — a small, fixed structure saying which
-measure, which grouping, which filters, which aggregation.
+A plain-English question is turned into a `QueryPlan`: a fixed structure naming
+the measure, grouping, filters and aggregation. pandas executes the plan
+locally, and the answer shows the calculation. No generated code runs. See
+[Ask ADA](reference/ask-ada.md).
 
-That plan is then executed locally with pandas. You can read the plan, and the
-answer shows the calculation. See [Ask ADA](reference/ask-ada.md).
+## Deterministic path and optional AI
 
-## Deterministic vs optional AI
-
-- **Deterministic** — everything computed with pandas in-process. No network,
-  no API key. This is the whole product. (On the hosted demo the upload itself
-  reaches a Streamlit server; the analysis still runs there and nowhere else.)
-- **Optional AI** — two narrow extras that need an API key. They receive column
-  names, types, and already-computed evidence — including the segment names an
-  evidence sentence mentions. They never receive your rows.
+- **Deterministic path.** Everything is computed in-process with pandas, with
+  no network call and no API key. On the hosted demo, the uploaded file is sent
+  to the Streamlit server and analyzed there.
+- **Optional AI.** Two features that need an API key: a query planner for
+  questions the rules cannot parse, and a written AI summary. They receive
+  column names, types and already-computed evidence, which can include the
+  segment names an evidence sentence mentions. They do not receive rows. A
+  planned query runs only after the user approves it.
 
 See [The optional AI layer](reference/ai-layer.md) and [Privacy](privacy.md).
