@@ -50,6 +50,10 @@ MEASURE_KEYWORDS = {
     "orders": 6,
     "volume": 6,
     "balance": 6,
+    "count": 6,
+    "abundance": 6,
+    "yield": 6,
+    "concentration": 5,
     "score": 4,
 }
 
@@ -75,8 +79,17 @@ MODIFIER_WEIGHT = 2 / 3
 
 IDENTIFIER_TOKENS = ("id", "uuid", "key", "code", "number", "invoice", "order")
 TIME_PART_TOKENS = ("year", "month", "week", "day", "hour", "minute", "quarter")
-# Experimental-design columns are numbered but hold labels, not quantities.
-DESIGN_TOKENS = frozenset({"replicate", "rep", "batch", "plate", "well", "run", "trial", "block", "lane"})
+# Experimental-design columns are numbered but hold labels, not quantities. Plate
+# rows and columns lay out where a sample sat, not what was measured.
+DESIGN_TOKENS = frozenset({
+    "replicate", "rep", "batch", "plate", "well", "run", "trial", "block", "lane",
+    "row", "column", "col", "position",
+})
+# Conditions recorded beside an outcome, and rarely the outcome itself. Any word
+# of the name counts, so "air_temp_c" matches.
+COVARIATE_TOKENS = frozenset({"temp", "temperature", "humidity", "wind", "air"})
+# Coordinates are continuous numbers, but never a quantity to total or trend.
+COORDINATE_TOKENS = frozenset({"latitude", "longitude", "lat", "lon", "lng"})
 
 # Head words that mark a column as a key rather than a quantity. Such columns stay
 # text through reading and cleaning, so an account number 00042 keeps its zeros.
@@ -210,6 +223,12 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
             score -= 15
         if is_design_name(column):
             score -= 15
+        words = set(_head_words(column))
+        if words & COORDINATE_TOKENS:
+            score -= 15
+        if words & COVARIATE_TOKENS:
+            # Light, so a covariate still wins when nothing else is measured.
+            score -= 3
         non_null_ratio = float(series.notna().mean())
         # Amounts carry fractions; postal codes and counters do not. A weak
         # signal, so it only breaks ties.
@@ -241,6 +260,10 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
             continue
         dimensions.append(column)
         score = _keyword_score(column, DIMENSION_KEYWORDS)
+        if is_design_name(column):
+            # A plate row or run label groups by layout, not by anything compared,
+            # so it is picked only when no other column qualifies.
+            score -= 15
         preferred_size = -abs(unique - 10)
         dimension_candidates.append((score, preferred_size, column))
 

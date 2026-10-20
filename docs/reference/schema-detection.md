@@ -44,7 +44,9 @@ Only numeric columns are considered. Each gets a score:
 | Name matches a measure keyword | +4 to +14 for the last word; two thirds of the weight for a keyword elsewhere in the name |
 | Looks like an identifier | −20 |
 | Name is, or ends with, a time part (`year`, `month`, `week`, `day`, `hour`, `minute`, `quarter`) | −15 |
-| Last word is an experimental-design label (`replicate`, `rep`, `batch`, `plate`, `well`, `run`, `trial`, `block`, `lane`) | −15 |
+| Last word is an experimental-design label (`replicate`, `rep`, `batch`, `plate`, `well`, `run`, `trial`, `block`, `lane`, `row`, `column`, `col`, `position`) | −15 |
+| Any word is a coordinate (`latitude`, `longitude`, `lat`, `lon`, `lng`) | −15 |
+| Any word is a condition usually recorded beside the outcome (`temp`, `temperature`, `humidity`, `wind`, `air`) | −3 |
 
 Ties are broken by: whether the column has fractional values (amounts do;
 postal codes and counters do not), then the share of non-missing values, then
@@ -55,8 +57,8 @@ Keyword weights (`MEASURE_KEYWORDS`): `revenue` 14, `mrr` 14, `arr` 14,
 `sales` 14, `gmv` 14, `turnover` 14, `profit` 13, `margin` 12, `amount` 11,
 `value` 10, `income` 10, `spend` 9, `total` 9, `cost` 8, `expense` 8,
 `price` 7, `fee` 7, `fare` 7, `quantity` 6, `units` 6, `orders` 6, `volume` 6,
-`balance` 6, `score` 4. `MEASURE_KEYWORDS` in `ada/schema.py` is the
-authoritative list.
+`balance` 6, `count` 6, `abundance` 6, `yield` 6, `concentration` 5, `score` 4.
+`MEASURE_KEYWORDS` in `ada/schema.py` is the authoritative list.
 
 **Scoring a name.** The last word decides: `Product Category` is a category,
 `Product Container` is a container. A keyword found anywhere else in the name,
@@ -66,7 +68,11 @@ brackets is removed (`Revenue (USD)` is scored on "revenue"), and camelCase is
 split, so `netRevenue` scores like `net_revenue`.
 
 The penalties prevent `Invoice ID` from outscoring `Revenue` because both are
-numeric, and a `Month` or `Replicate` column from becoming the measure. The identifier
+numeric, and a `Month`, `Replicate` or `Latitude` column from becoming the
+measure. The covariate penalty is light: in a survey with `count` and
+`air_temp_c`, or an assay with `Concentration (mg/L)` and `Temp (°C)`, the
+outcome wins even when the temperature has fewer gaps or more decimals, but a
+temperature is still picked when it is the only thing measured. The identifier
 check also looks at the last word: `Invoice Amount` ends in a measure keyword,
 so it is an amount and keeps its score, while `Invoice Number` does not.
 
@@ -87,6 +93,7 @@ Qualifying columns are scored:
 | Signal | Effect |
 |---|---|
 | Name matches a dimension keyword | +5 to +12 (two thirds for a keyword before the last word) |
+| Last word is an experimental-design label (`Row`, `Plate`, `Run`, ...) | −15 |
 | Distinct count close to 10 | Preferred on a tie |
 
 Keyword weights (`DIMENSION_KEYWORDS`): `product` 12, `category` 12,
@@ -94,7 +101,9 @@ Keyword weights (`DIMENSION_KEYWORDS`): `product` 12, `category` 12,
 `customer` 8, `client` 8, `team` 7, `department` 7, `status` 6, `type` 5.
 
 About ten groups reads well on a chart; two is thin, and sixty is too many
-bars.
+bars. A design label such as a plate's `Row` (A to H) groups wells by where
+they sat, so it is picked only when no other column qualifies; `Sample` or
+`Treatment` beside it wins.
 
 ## Picking the identifier
 
