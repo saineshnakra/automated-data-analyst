@@ -1,14 +1,9 @@
-"""A slice the reader picked on a chart, and how it compares to the whole.
+"""Turn a selection on the Explore chart into a filter and compare that slice with the whole.
 
-A selection is a filter, not a finding. The reader drew a box, a lasso or
-clicked some bars; ADA turns that gesture into a filter it can state in words,
-analyzes the rows inside it with the same evidence machinery as everything
-else, and puts every figure beside the same figure for the whole view. Nothing
-here suggests ADA discovered a grouping -- the reader chose it.
-
-Nothing here draws anything or knows about Streamlit. The chart's selection
-event arrives as a plain mapping, so the translation from gesture to filter is
-testable without a browser.
+A box, a lasso or clicked bars become filters over the raw rows that can be
+stated in words. The slice goes through the same evidence code as the whole
+view, and every figure is shown beside the whole view's. The chart event arrives
+as a plain mapping, so none of this needs Streamlit or a browser to test.
 """
 
 from __future__ import annotations
@@ -23,20 +18,18 @@ from pandas.api.types import is_datetime64_any_dtype
 
 from .aggregation import preferred_frequency
 from .autovis import ChartSpec
-from .formatting import format_number, format_percentage
+from .formatting import format_change, format_number, format_percentage
 from .metrics import resolve_metric
 from .nlq import ValueFilter
 from .schema import ColumnRoles
 
-# Below this many records an average, or a share of a segment mix, is mostly
-# noise: one unusual row moves it by a fifth. The count and the total are still
-# arithmetic and are still reported; the statistics are not.
+# Below this many records an average or a segment mix moves a lot with one row,
+# so only the count and the total are reported.
 MIN_SLICE_RECORDS = 5
 
-# Which gestures each chart form accepts. A heatmap cell, a table row and a
-# single stat have no selection that maps back to rows honestly. A chart takes
-# either clicks or a drawn area, not both: while a box or lasso tool is active
-# the chart reports clicks as plain events, not selections.
+# Gestures each chart form accepts. Heatmaps, tables and single stats take none,
+# since a cell doesn't map back to rows. A chart takes clicks or a drawn area, not
+# both: while a box or lasso tool is active, clicks don't arrive as selections.
 SELECTION_MODES: dict[str, tuple[str, ...]] = {
     "scatter": ("box", "lasso"),
     "line": ("box",),
@@ -73,7 +66,7 @@ class Selection:
     ranges: tuple[RangeFilter, ...] = ()
     region: RegionFilter | None = None
     method: str = ""  # box | lasso | click
-    # Set when the drawn window was widened to whole periods, saying from what.
+    # Set when a drawn window was narrowed to whole periods, saying from what.
     adjustment: str = ""
 
     @property
@@ -110,7 +103,7 @@ def selection_modes(spec: ChartSpec) -> tuple[str, ...]:
     return SELECTION_MODES.get(spec.form, ())
 
 
-# --- from a chart event to a selection ---------------------------------------
+# From a chart event to a selection.
 
 
 def _latest(entries: Any) -> Mapping | None:
@@ -147,51 +140,55 @@ GRAIN_NAMES = {"W": "weeks", "M": "months", "Q": "quarters", "Y": "years"}
 
 
 def _whole_periods(dataframe: pd.DataFrame, window: RangeFilter) -> tuple[RangeFilter, str]:
-    """Widen a time window to the whole periods the slice will be analyzed in.
+    """Narrow a drawn time window to the whole periods inside it.
 
-    A window drawn from the 19th of one month to the 8th of another leaves both
-    end months part-covered, and a month with a third of its days reads as a
-    collapse to every trend and anomaly check downstream. The grain is the one
-    ``aggregation`` picks for the rows inside the window, so the slice and its
-    trend agree on what a period is. The widening is reported, never silent.
+    A window from the 19th of one month to the 8th of another leaves both end
+    months part-covered, and a part-covered month reads as a fall in the trend
+    checks. The grain is the one ``aggregation`` picks for the rows inside the
+    window. Rows outside what was drawn are never added, and when no whole
+    period fits the window is kept as drawn.
     """
     column = dataframe[window.column]
     tz = getattr(column.dt, "tz", None)
     naive = column.dt.tz_localize(None) if tz is not None else column
     low = window.low.tz_localize(None) if window.low.tzinfo else window.low
     high = window.high.tz_localize(None) if window.high.tzinfo else window.high
-    start, end, grain = low, high, None
-    for _ in range(len(GRAIN_NAMES)):
-        inside = naive[(naive >= start) & (naive <= end)].dropna()
-        if inside.empty:
-            return window, ""
-        chosen = preferred_frequency(inside)
-        if chosen == grain or chosen not in GRAIN_NAMES:
-            break
-        grain = chosen
-        # A coarser grain contains the finer one, so widening again can only
-        # settle, and never shrinks what the reader drew.
-        start = min(start, pd.Period(low, freq=grain).start_time)
-        end = max(end, pd.Period(high, freq=grain).end_time)
-    if grain is None or (start == low and end == high):
+    inside = naive[(naive >= low) & (naive <= high)].dropna()
+    if inside.empty:
         return window, ""
-    if tz is not None:
-        start, end = start.tz_localize(tz), end.tz_localize(tz)
-    widened = RangeFilter(window.column, start, end)
+    grain = preferred_frequency(inside)
+    if grain not in GRAIN_NAMES:
+        return window, ""
+    # Compare by date, so a box ending at 23:59:59 still covers its last day.
+    first = pd.Period(low, freq=grain)
+    if first.start_time.normalize() < low.normalize():
+        first += 1
+    last = pd.Period(high, freq=grain)
+    if last.end_time.normalize() > high.normalize():
+        last -= 1
+    if first > last:
+        return window, ""
+    start, end = first.start_time, last.end_time
+    if start.normalize() == low.normalize() and end.normalize() == high.normalize():
+        return window, ""
     values = dataframe[window.column]
     drawn = (
         f"{_format_bound(window.low, window.column, values)} to "
         f"{_format_bound(window.high, window.column, values)}"
     )
+    if tz is not None:
+        start, end = start.tz_localize(tz), end.tz_localize(tz)
+    narrowed = RangeFilter(window.column, start, end)
     note = (
-        f"Widened to whole {GRAIN_NAMES[grain]} from the {drawn} you selected, so a part-covered "
-        f"period at either end cannot read as a rise or a fall."
+        f"Narrowed to whole {GRAIN_NAMES[grain]} inside the {drawn} you selected, so a "
+        f"part-covered period at either end can't read as a rise or a fall."
     )
-    return widened, note
+    return narrowed, note
 
 
 def _time_selection(dataframe: pd.DataFrame, window: RangeFilter, method: str) -> Selection:
-    if is_datetime64_any_dtype(dataframe[window.column]):
+    # Only a drawn box is narrowed; clicked points keep the exact range clicked.
+    if method == "box" and is_datetime64_any_dtype(dataframe[window.column]):
         window, adjustment = _whole_periods(dataframe, window)
         return Selection(ranges=(window,), method=method, adjustment=adjustment)
     return Selection(ranges=(window,), method=method)
@@ -209,10 +206,8 @@ def selection_from_event(
 ) -> Selection:
     """Translate a Plotly selection event into filters over the raw rows.
 
-    The geometry the reader drew is used, not the indices of the plotted
-    points: a trend or a bar chart plots aggregates, so a point index says
-    nothing about which rows are behind it, while "dates from March to June"
-    does, and it is also what the reader can check against the axis.
+    Uses the drawn geometry rather than plotted point indices: a trend or bar
+    chart plots aggregates, so an index doesn't identify the rows behind it.
     """
     if not event or spec.form not in SELECTION_MODES:
         return Selection()
@@ -244,8 +239,8 @@ def selection_from_event(
         return Selection()
 
     if spec.form in ("line", "area", "histogram"):
-        # Only the horizontal extent maps to rows. The vertical extent of a box
-        # drawn over a trend is a range of period totals, not of records.
+        # Only the horizontal extent maps to rows; the vertical extent of a box
+        # over a trend is a range of plotted totals.
         if box:
             window = _range(dataframe, spec.x, box.get("x") or [])
             if window:
@@ -276,7 +271,7 @@ def selection_from_event(
     return Selection(values=(ValueFilter(column=column, values=tuple(labels)),), method=method)
 
 
-# --- applying it -------------------------------------------------------------
+# Applying a selection.
 
 
 def _inside(xs: np.ndarray, ys: np.ndarray, vertices: Sequence[tuple[float, float]]) -> np.ndarray:
@@ -326,7 +321,7 @@ def apply_selection(dataframe: pd.DataFrame, selection: Selection) -> pd.DataFra
     return dataframe.loc[selection_mask(dataframe, selection)].reset_index(drop=True)
 
 
-# --- saying it in words ------------------------------------------------------
+# Describing a selection.
 
 
 def _format_bound(value: Any, column: str, values: pd.Series) -> str:
@@ -376,7 +371,7 @@ def describe_filters(selection: Selection, dataframe: pd.DataFrame) -> list[str]
 
 
 def describe_selection(selection: Selection, whole: pd.DataFrame, part: pd.DataFrame) -> str:
-    """State the slice in words, so a screenshot of it still explains itself.
+    """State the slice in words.
 
     For example: 62 of 400 records you selected: Order Date from 1 Mar 2025 to 30 Jun 2025.
     """
@@ -386,7 +381,7 @@ def describe_selection(selection: Selection, whole: pd.DataFrame, part: pd.DataF
     return f"{head}: {'; '.join(clauses)}" if clauses else head
 
 
-# --- the slice against the whole ---------------------------------------------
+# Comparing the slice with the whole.
 
 
 def _relative(part_value: float, whole_value: float) -> str:
@@ -395,6 +390,12 @@ def _relative(part_value: float, whole_value: float) -> str:
     change = (part_value - whole_value) / abs(whole_value) * 100
     sign = "+" if change > 0 else ""
     return f"{sign}{change:.1f}% vs the whole"
+
+
+def _difference(whole_value: float, part_value: float, measure: str, unit: str, values: pd.Series) -> str:
+    """A rate's difference in points and a level's as a plain difference."""
+    size = format_change(whole_value, part_value, measure, unit, values, signed=True)
+    return f"{size.replace(' percentage points', ' pts')} vs the whole" if size else "—"
 
 
 def _points(part_value: float, whole_value: float) -> str:
@@ -406,11 +407,10 @@ def _points(part_value: float, whole_value: float) -> str:
 def compare_slice(
     whole: pd.DataFrame, selection: Selection, roles: ColumnRoles
 ) -> tuple[pd.DataFrame, SliceComparison]:
-    """The selected rows, and every figure about them set against the whole.
+    """Return the selected rows and a comparison of each figure with the whole view.
 
-    Slice statistics are never returned on their own: each one carries the
-    matching figure for the whole view. A slice too small to support a
-    statistic gets a note saying so instead of the statistic.
+    A slice smaller than ``MIN_SLICE_RECORDS`` gets a note instead of an average
+    or a segment mix.
     """
     part = apply_selection(whole, selection)
     description = describe_selection(selection, whole, part)
@@ -464,7 +464,11 @@ def compare_slice(
                     label=f"Average {measure}",
                     slice_value=format_number(part_mean, measure, column_values=whole_values),
                     whole_value=format_number(whole_mean, measure, column_values=whole_values),
-                    difference=_relative(part_mean, whole_mean),
+                    difference=(
+                        _relative(part_mean, whole_mean)
+                        if spec.additive
+                        else _difference(whole_mean, part_mean, measure, spec.unit, whole_values)
+                    ),
                     calculation=(
                         f"mean of {measure} over the {len(part_values):,} selected records with a value, "
                         f"against the mean over all {len(whole_values):,}"
@@ -479,6 +483,9 @@ def compare_slice(
             )
 
     dimension = roles.dimension if roles.dimension and roles.dimension in whole.columns else None
+    # Clicking bars of the grouping column makes its mix 100% by construction.
+    if dimension and any(value_filter.column == dimension for value_filter in selection.values):
+        dimension = None
     if dimension:
         if count >= MIN_SLICE_RECORDS:
             part_mix = part[dimension].astype(str).where(part[dimension].notna()).value_counts(normalize=True)
