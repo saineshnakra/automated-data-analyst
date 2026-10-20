@@ -47,15 +47,18 @@ lab-measurements.csv — 936 rows, 02 Sep 2024 to 23 Feb 2026
       against Compound B. Medians and ranks are used because it is strongly skewed.
       calc: median Viability % per Treatment; Kruskal-Wallis with ε² = H ÷ (n − 1); checked with
       Welch's ANOVA; highest vs lowest median; ranks because it is strongly skewed
-  1 of 1  What differs between groups
+  1 of 3  What differs between groups
       Live Cells differs across Treatment: medians from 1.1M (Compound B) to 1.2M (Compound C),
-      ε² = 0.08. It is the only comparison made.
-      calc: each numeric reading compared across Treatment: ...
+      ε² = 0.08. It is the only clear difference among 3 comparisons across Treatment and
+      Replicate, after a Holm adjustment for all 3.
+      calc: each numeric reading compared across Treatment and Replicate: ...
   1  Anomalous periods
       Jul 2025 is the sharpest anomaly: viability % reached 81.5%, below the expected 88.1%–90.1% range.
       1 period sits outside the trendline band.
       calc: Period values vs Theil–Sen trendline ± a band calibrated so that only 1 stable series in 20 raises a flag
-  ...
+  1 issue  Data checks
+      The data checks found 1 issue to look at before trusting these figures. Viability %: 12
+      extreme values (50.95 to 62.64). ...
 ```
 
 That file ships with the package: `ada.sample("Lab Measurements")` loads it,
