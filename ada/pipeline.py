@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
+from pandas.api.types import is_datetime64_any_dtype
 
 from .aggregation import preferred_frequency
 from .analysis import (
@@ -145,12 +146,13 @@ def prepare_analysis(
     roles = detect_roles(dataframe)
     notes: list[str] = []
 
-    if roles.date and date is None:
-        dataframe, set_aside = set_aside_coarser_rows(dataframe, roles.date)
+    # The column the caller named as the date, once cleaning has read it as dates.
+    timeline = date if date in dataframe.columns and is_datetime64_any_dtype(dataframe[date]) else roles.date
+    if timeline:
+        dataframe, set_aside = set_aside_coarser_rows(dataframe, timeline)
         if set_aside:
             notes.append(set_aside)
-    if roles.date:
-        dataframe, _, stacked = separate_stacked_logs(dataframe, roles.date)
+        dataframe, _, stacked = separate_stacked_logs(dataframe, timeline)
         if stacked:
             notes.append(stacked)
     if notes:
@@ -160,8 +162,8 @@ def prepare_analysis(
     available = len(raw_dataframe) if sampled else len(dataframe)
     selection = "sample" if sampled else ""
     if not sampled and len(dataframe) > row_limit:
-        if roles.date:
-            dataframe = _most_recent(dataframe, roles.date, row_limit).reset_index(drop=True)
+        if timeline:
+            dataframe = _most_recent(dataframe, timeline, row_limit).reset_index(drop=True)
             selection = "newest"
         else:
             dataframe = _ordered_sample(dataframe, row_limit).reset_index(drop=True)
@@ -173,8 +175,8 @@ def prepare_analysis(
         cleaning_report, notes=tuple(dict.fromkeys((*cleaning_report.notes, *roles.notes)))
     )
 
-    dated = roles.date is not None and roles.date in dataframe.columns
-    span = dataframe[roles.date].dropna() if dated else pd.Series(dtype="datetime64[ns]")
+    dated = timeline is not None and timeline in dataframe.columns
+    span = dataframe[timeline].dropna() if dated else pd.Series(dtype="datetime64[ns]")
     if selection == "sample":
         missing = _missing_groups(raw_dataframe, dataframe, roles)
         if missing:
