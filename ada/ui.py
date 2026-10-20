@@ -602,9 +602,9 @@ def _fit_date_axis(
 
     Drawing only the latest dates would drop the start of a long series without
     a word, so dates step up through seconds, minutes, hours, days, weeks,
-    months, quarters and years until the whole range fits. Returns the rows with each date moved to its
-    period's start, and a caption saying what a point is, or, when even years
-    don't fit, how many are shown.
+    months, quarters and years until the whole range fits. Returns the rows
+    with each date moved to its period's start, and a caption saying what a
+    point is, or, when even years don't fit, how many are shown.
     """
     if not (spec.x and spec.x in dataframe.columns and is_datetime64_any_dtype(dataframe[spec.x])):
         return dataframe, None

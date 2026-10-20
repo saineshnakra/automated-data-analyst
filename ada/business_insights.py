@@ -793,9 +793,10 @@ def _coverage_note(dataframe: pd.DataFrame, roles: ColumnRoles, groups: list) ->
             )
     if not notes:
         return ""
+    covers = "its figure covers" if len(notes) == 1 else "their figures cover"
     return (
         f" {'; '.join(notes)}, while the table runs from {format_moment(start)} to "
-        f"{format_moment(end)}, so its figure covers a different stretch of time."
+        f"{format_moment(end)}, so {covers} a different stretch of time."
     )
 
 

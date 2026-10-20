@@ -24,8 +24,6 @@ from .timeseries import (
 )
 
 GRAIN_ORDER = ("s", "min", "h", "D", "W", "M", "Q", "Y")
-# Grains finer than a day, open only to timestamps that carry a time of day.
-SUB_DAY_GRAINS = ("s", "min", "h", "D")
 DAY_SECONDS = 86_400
 # The longest span (in seconds) each finer grain is used for, so a timeline has
 # at most a few hundred periods: ten minutes by the second, eight hours by the
