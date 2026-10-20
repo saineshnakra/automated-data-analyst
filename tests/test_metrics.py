@@ -25,7 +25,8 @@ class MetricSpecTests(unittest.TestCase):
         self.assertEqual(counted.combines_as, "count")
 
     def test_direction_of_good_is_read_from_the_whole_name(self):
-        for name in ("Revenue", "Units", "Cost Savings", "Revenue After Returns", "Defects Avoided"):
+        for name in ("Revenue", "Units", "Cost Savings", "Revenue After Returns", "Defects Avoided",
+                     "Revenue Net of Returns", "Revenue Without Refunds", "Net Revenue"):
             with self.subTest(name=name):
                 self.assertTrue(increase_is_welcome(name))
         for name in ("Cost", "Refund Amount", "Sales Returns", "Customer Acquisition Cost", "Churn Rate"):
@@ -39,7 +40,7 @@ class MetricSpecTests(unittest.TestCase):
 class LevelMeasureTests(unittest.TestCase):
     def test_measured_levels_are_averaged(self):
         for name in ("Water Temp (°C)", "pH", "OD600", "Concentration (mg/L)", "Lactate (mM)",
-                     "Nitrate (ppm)", "CSAT Score", "Body Weight"):
+                     "Nitrate (ppm)", "CSAT Score", "Cell Density (cells/mL)"):
             with self.subTest(name=name):
                 spec = resolve_metric(name)
                 self.assertEqual(spec.unit, "level")
@@ -47,7 +48,9 @@ class LevelMeasureTests(unittest.TestCase):
                 self.assertFalse(spec.additive)
 
     def test_amounts_and_counts_are_still_summed(self):
-        for name in ("Revenue", "Units", "Live Cells", "Resolution Hours", "Amount (USD)"):
+        for name in ("Revenue", "Units", "Live Cells", "Resolution Hours", "Amount (USD)",
+                     "Revenue ($M)", "Population (M)", "Revenue (USD/month)", "Weekly Sales (units/wk)",
+                     "Shipping Weight"):
             with self.subTest(name=name):
                 self.assertEqual(resolve_metric(name).aggregation, "sum")
 

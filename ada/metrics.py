@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .formatting import is_percentage, normalized_name, percentage_outranks_currency
+from .formatting import is_currency, is_percentage, normalized_name, percentage_outranks_currency
 
 # Words that make a rise bad news when they lead or end a measure's name.
 ADVERSE_MEASURE_TOKENS = frozenset({
@@ -25,17 +25,20 @@ LEVEL_WORDS = frozenset({
     "conc", "density", "viscosity", "pressure", "humidity", "salinity", "conductivity",
     "turbidity", "ratio", "index", "score", "rating", "level", "mean", "average", "avg",
     "median", "age", "bmi", "height", "length", "width", "depth", "diameter", "velocity",
-    "speed", "voltage", "elevation", "altitude", "latitude", "longitude", "weight", "mass",
+    "speed", "voltage", "elevation", "altitude", "latitude", "longitude",
 })
-# Unit annotations that mark a level: "per" units (mg/L, km/h), degrees, ppm/ppb,
-# and molar concentrations (mM, µM).
-_LEVEL_UNIT = re.compile(r"[(\[][^)\]]*(?:/|°|\bpp[mbt]\b|\b[mµun]?M\b)[^)\]]*[)\]]")
+# Unit annotations that mark a level: a concentration or density (mg/L, cells/mL,
+# g/cm3), degrees, ppm/ppb, and molar units (mM, µM). Currency names never match.
+_LEVEL_UNIT = re.compile(
+    r"[(\[][^)\]]*(?:/\s*(?:[mµudn]?[lL]|[mµunk]?g|c?m[23²³])\b|°|\bpp[mbt]\b|\b[mµun]M\b)[^)\]]*[)\]]"
+)
 # Optical density readings: "OD", "OD600".
 _OPTICAL_DENSITY = re.compile(r"^od\d*$")
 # Any of these anywhere in the name makes a rise good news: "Cost Savings".
 FAVOURABLE_OVERRIDES = frozenset({"savings", "saved", "recovered", "avoided"})
-# Words that start a qualifier. "Revenue After Returns" is judged on "Revenue".
-QUALIFIER_WORDS = frozenset({"after", "before", "less", "minus", "excluding", "excl"})
+# Words that start a qualifier. "Revenue After Returns" is judged on "Revenue",
+# and so is "Revenue Net of Returns".
+QUALIFIER_WORDS = frozenset({"after", "before", "less", "minus", "excluding", "excl", "without"})
 
 
 def increase_is_welcome(measure: str | None) -> bool:
@@ -51,7 +54,8 @@ def increase_is_welcome(measure: str | None) -> bool:
     if any(word in FAVOURABLE_OVERRIDES for word in words):
         return True
     for position, word in enumerate(words):
-        if word in QUALIFIER_WORDS and position > 0:
+        net_of = word == "net" and words[position + 1 : position + 2] == ["of"]
+        if position > 0 and (word in QUALIFIER_WORDS or net_of):
             words = words[:position]
             break
     if not words:
@@ -87,7 +91,7 @@ def is_level_name(name: str) -> bool:
     words = set(normalized_name(name).split()) | set(re.findall(r"[a-z0-9]+", str(name).lower()))
     if words & LEVEL_WORDS or any(_OPTICAL_DENSITY.match(word) for word in words):
         return True
-    return bool(_LEVEL_UNIT.search(str(name)))
+    return not is_currency(name) and bool(_LEVEL_UNIT.search(str(name)))
 
 
 def resolve_metric(name: str | None) -> MetricSpec:
