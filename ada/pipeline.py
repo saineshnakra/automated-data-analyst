@@ -153,7 +153,7 @@ def schema_frame(roles: ColumnRoles) -> pd.DataFrame:
     return pd.DataFrame(
         [
             ["Primary metric", roles.measure or "Not detected"],
-            ["Business segment", roles.dimension or "Not detected"],
+            ["Grouping column", roles.dimension or "Not detected"],
             ["Date", roles.date or "Not detected"],
             ["Identifier", roles.identifier or "Not detected"],
         ],

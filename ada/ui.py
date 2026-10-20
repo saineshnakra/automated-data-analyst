@@ -20,7 +20,7 @@ from .forecasting import build_forecast, describe_backtest
 from .formatting import format_number, format_period
 from .metrics import resolve_metric
 from .nlq import QueryAnswer
-from .schema import ColumnRoles
+from .schema import ColumnRoles, is_design_name
 
 if TYPE_CHECKING:  # The AI layer is optional; ui must import without it.
     from .ai_insights import AINarrative
@@ -240,6 +240,12 @@ def style_chart(figure: go.Figure, *, height: int = 390) -> go.Figure:
     return figure
 
 
+def _hover_format(values) -> str:
+    """Plotly number format for hover labels: whole numbers for large values, decimals for small."""
+    finite = pd.Series(values, dtype="float64").abs().dropna()
+    return ",.0f" if not finite.empty and finite.median() >= 100 else ",.2f"
+
+
 def _trend_figure(frame: pd.DataFrame, measure: str | None, **options) -> go.Figure:
     """Period values as a filled area for totals, or a plain line for averages."""
     if measure and not resolve_metric(measure).additive:
@@ -278,7 +284,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                             "color": "#E35D6A",
                             "line": {"width": 2, "color": "white"},
                         },
-                        hovertemplate="%{x|%b %Y}: %{y:,.0f}, outside the expected band<extra>Anomaly</extra>",
+                        hovertemplate=f"%{{x|%b %Y}}: %{{y:{_hover_format(trend['Value'])}}}, outside the expected band<extra>Anomaly</extra>",
                     )
                 )
             forecast = build_forecast(trend)
@@ -302,7 +308,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                         mode="lines",
                         name="Forecast",
                         line={"width": 2.5, "dash": "dash", "color": "#8B5CF6"},
-                        hovertemplate="%{x|%b %Y}: %{y:,.0f} (forecast)<extra></extra>",
+                        hovertemplate=f"%{{x|%b %Y}}: %{{y:{_hover_format(trend['Value'])}}} (forecast)<extra></extra>",
                     )
                 )
             st.plotly_chart(style_chart(figure), width="stretch", config={"displayModeBar": False})
@@ -334,7 +340,22 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
     movement_columns = st.columns(2, gap="medium")
     with movement_columns[0]:
         drivers = driver_frame(dataframe, roles)
-        if not drivers.empty:
+        if not drivers.empty and roles.measure and not resolve_metric(roles.measure).additive:
+            # Changes in group averages don't add up to the overall change, so
+            # they are shown side by side rather than stacked into a total.
+            changes = go.Figure(
+                go.Bar(
+                    x=list(drivers["Segment"]),
+                    y=list(drivers["Change"]),
+                    marker_color=[RISE if change >= 0 else FALL for change in drivers["Change"]],
+                    hovertemplate=f"%{{x}}: %{{y:+{_hover_format(drivers['Change'])}}}<extra></extra>",
+                )
+            )
+            changes.update_layout(
+                title=f"{roles.measure}: change in average per {roles.dimension}"
+            )
+            st.plotly_chart(style_chart(changes), width="stretch", config={"displayModeBar": False})
+        elif not drivers.empty:
             waterfall = go.Figure(
                 go.Waterfall(
                     x=[*drivers["Segment"], "Net change"],
@@ -344,7 +365,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                     increasing={"marker": {"color": RISE}},
                     decreasing={"marker": {"color": FALL}},
                     totals={"marker": {"color": ACCENT}},
-                    hovertemplate="%{x}: %{delta:+,.0f}<extra></extra>",
+                    hovertemplate=f"%{{x}}: %{{delta:+{_hover_format(drivers['Change'])}}}<extra></extra>",
                 )
             )
             waterfall.update_layout(title=f"What moved {roles.measure}: latest vs previous period")
@@ -364,7 +385,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                     x=[format_period(period, series.frequency) for period in heat.columns],
                     y=[str(segment) for segment in heat.index],
                     colorscale=[[0, "#F6F7F9"], [0.5, "#B9B1FF"], [1, "#4E43C7"]],
-                    hovertemplate="%{y} · %{x}: %{z:,.0f}<extra></extra>",
+                    hovertemplate=f"%{{y}} · %{{x}}: %{{z:{_hover_format(heat.to_numpy().ravel())}}}<extra></extra>",
                     showscale=False,
                 )
             )
@@ -372,10 +393,10 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 title=f"{roles.measure or 'Records'} intensity by {roles.dimension} and period"
             )
             heatmap.update_yaxes(autorange="reversed")
-            # A categorical axis doesn't thin its labels, so show about eight;
+            # A categorical axis doesn't thin its labels, so show about five;
             # the hover still names every period.
             labels = [format_period(period, series.frequency) for period in heat.columns]
-            step = max(1, round(len(labels) / 8))
+            step = max(1, -(-len(labels) // 5))
             heatmap.update_xaxes(
                 tickmode="array",
                 tickvals=labels[::step],
@@ -389,7 +410,11 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 unsafe_allow_html=True,
             )
 
-    numeric = [column for column in roles.numeric if dataframe[column].nunique(dropna=True) > 2]
+    numeric = [
+        column
+        for column in roles.numeric
+        if dataframe[column].nunique(dropna=True) > 2 and not is_design_name(column)
+    ]
     lower_columns = st.columns(2, gap="medium")
     with lower_columns[0]:
         if roles.measure:
@@ -404,7 +429,13 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
             figure.update_yaxes(title_text="Records")
             st.plotly_chart(style_chart(figure), width="stretch", config={"displayModeBar": False})
     with lower_columns[1]:
-        partner = next((column for column in numeric if column != roles.measure), None)
+        candidates = [column for column in numeric if column != roles.measure]
+        # Plot the measure against the column it correlates with most strongly.
+        def strength(column: str) -> float:
+            value = dataframe[roles.measure].corr(dataframe[column])
+            return 0.0 if pd.isna(value) else abs(float(value))
+
+        partner = max(candidates, key=strength) if roles.measure and candidates else None
         if roles.measure and partner:
             figure = px.scatter(
                 dataframe,
