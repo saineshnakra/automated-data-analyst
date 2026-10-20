@@ -7,6 +7,7 @@ missing month leaves a gap in the fit instead of shortening the timeline.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -45,7 +46,7 @@ class TrendLine:
 
 
 def period_grain(periods: pd.DatetimeIndex) -> str:
-    """Classify the median spacing of ``periods`` as "D", "W", "M", "Q" or "Y".
+    """Classify the median spacing of ``periods`` as "s", "min", "h", "D", "W", "M", "Q" or "Y".
 
     The median keeps one gap in a regular series from changing the answer.
     Returns "D" for fewer than two periods.
@@ -53,9 +54,15 @@ def period_grain(periods: pd.DatetimeIndex) -> str:
     index = pd.DatetimeIndex(periods)
     if len(index) < 2:
         return "D"
-    spacing = np.diff(index.to_numpy()).astype("timedelta64[s]").astype(float) / 86_400.0
+    spacing = np.diff(index.to_numpy()).astype("timedelta64[ms]").astype(float) / 86_400_000.0
     positive = spacing[spacing > 0]
     typical = float(np.median(positive)) if positive.size else 0.0
+    if 0 < typical * 86_400 <= 1.5:
+        return "s"
+    if 0 < typical * 1_440 <= 1.5:
+        return "min"
+    if 0 < typical * 24 <= 1.5:
+        return "h"
     if typical <= 1.5:
         return "D"
     if typical <= 10.0:
@@ -139,6 +146,104 @@ def robust_scale(residuals: np.ndarray) -> float:
 
     fallback = float(np.mean(deviations)) * MEAN_ABS_DEV_SCALE
     return fallback if fallback > 0 else 0.0
+
+
+# Grains with a yearly cycle, and how many periods make one year.
+PERIODS_PER_YEAR = {"M": 12, "Q": 4}
+# Chance of calling noise a yearly pattern: the F test of the season of the
+# year against the residuals from the trendline must reach this p-value. Missing
+# a real cycle flags every winter; mistaking noise for one only compares each
+# period with the same months of other years, so the bar is not set higher.
+SEASONAL_SIGNIFICANCE = 0.05
+# Degrees of freedom left after fitting each season, so the check needs three
+# years of quarters or two of months.
+MIN_SEASONAL_DF = 8
+
+
+def _incomplete_beta(a: float, b: float, x: float) -> float:
+    """The regularized incomplete beta function, by its continued fraction."""
+    if x <= 0:
+        return 0.0
+    if x >= 1:
+        return 1.0
+    if x > (a + 1) / (a + b + 2):
+        return 1.0 - _incomplete_beta(b, a, 1.0 - x)
+    front = math.exp(
+        math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b) + a * math.log(x) + b * math.log(1 - x)
+    ) / a
+    tiny = 1e-300
+    c, d = 1.0, 1.0 - (a + b) * x / (a + 1)
+    d = 1.0 / (d if abs(d) > tiny else tiny)
+    result = d
+    for step in range(1, 300):
+        for numerator in (
+            step * (b - step) * x / ((a + 2 * step - 1) * (a + 2 * step)),
+            -(a + step) * (a + b + step) * x / ((a + 2 * step) * (a + 2 * step + 1)),
+        ):
+            d = 1.0 + numerator * d
+            d = 1.0 / (d if abs(d) > tiny else tiny)
+            c = 1.0 + numerator / c
+            c = c if abs(c) > tiny else tiny
+            result *= c * d
+        if abs(c * d - 1.0) < 1e-12:
+            break
+    return front * result
+
+
+def f_test_p_value(statistic: float, numerator_df: int, denominator_df: int) -> float:
+    """Chance of an F statistic at least this large when the groups do not differ."""
+    if statistic <= 0:
+        return 1.0
+    x = denominator_df / (denominator_df + numerator_df * statistic)
+    return _incomplete_beta(denominator_df / 2, numerator_df / 2, x)
+
+
+def season_numbers(periods: pd.DatetimeIndex, grain: str) -> np.ndarray:
+    """The month (1-12) or quarter (1-4) of each period."""
+    index = pd.DatetimeIndex(periods)
+    return (index.month if grain == "M" else index.quarter).to_numpy()
+
+
+def yearly_pattern(
+    periods: pd.DatetimeIndex, residuals: np.ndarray, *, min_cycles: int = 2
+) -> np.ndarray | None:
+    """Each period's usual offset from the trendline for its time of year, or None.
+
+    A period's offset is the median residual of the same month (or quarter) in
+    the other years, so an unusual period does not set its own expectation.
+    The offsets are centred so they cannot shift the level. Returns None for a
+    grain with no yearly cycle, fewer than ``min_cycles`` sightings of every
+    season, or a season of the year that explains little of the variation.
+    """
+    index = pd.DatetimeIndex(periods)
+    grain = period_grain(index)
+    length = PERIODS_PER_YEAR.get(grain)
+    residuals = np.asarray(residuals, dtype=float)
+    if length is None or len(residuals) - length < MIN_SEASONAL_DF:
+        return None
+    seasons = season_numbers(index, grain)
+    counts = np.bincount(seasons, minlength=length + 1)[1:]
+    if counts.min() < min_cycles:
+        return None
+
+    means = np.array([residuals[seasons == season].mean() for season in range(1, length + 1)])
+    total = float(np.sum((residuals - residuals.mean()) ** 2))
+    within = float(np.sum((residuals - means[seasons - 1]) ** 2))
+    size = len(residuals)
+    if total == 0:
+        return None
+    if within > 0:
+        statistic = ((total - within) / (length - 1)) / (within / (size - length))
+        if f_test_p_value(statistic, length - 1, size - length) > SEASONAL_SIGNIFICANCE:
+            return None
+
+    medians = np.array([np.median(residuals[seasons == season]) for season in range(1, length + 1)])
+    centre = float(np.median(medians))
+    offsets = np.empty(size)
+    for position, season in enumerate(seasons):
+        others = (seasons == season) & (np.arange(size) != position)
+        offsets[position] = float(np.median(residuals[others])) - centre
+    return offsets
 
 
 def observed_periods(trend: pd.DataFrame) -> pd.DataFrame:

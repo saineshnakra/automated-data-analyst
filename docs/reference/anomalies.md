@@ -12,14 +12,31 @@ Flags periods that sit further from the trendline than expected.
 2. Fit the shared Theil-Sen trendline over the period values
    ([Periods](periods.md#the-trendline)).
 3. Take each period's residual: the actual value minus the line's value.
-4. Measure the typical residual size with `robust_scale`.
-5. Flag each period whose residual exceeds `critical_value(n) × scale`, where
+4. If the series is monthly or quarterly, covers at least three years
+   (`MIN_SEASONAL_CYCLES`) and has a yearly pattern
+   ([Periods](periods.md#yearly-patterns)), add each period's usual offset for
+   its month or quarter to the expected value, and take the residual from
+   that. Each winter is then compared with other winters, so a snowy first
+   quarter every year is not flagged, but an unusually snowy one still is.
+5. Measure the typical residual size with `robust_scale`.
+6. Flag each period whose residual exceeds `critical_value(n) × scale`, where
    `n` is the number of observed periods.
-6. Sort by severity and return the five most severe.
+7. Sort by severity and return the five most severe.
+
+For a measure that cannot be negative, the expected range stops at zero when
+the history never goes below it, as the forecast does: callers pass
+`floor_at_zero=MetricSpec.floors_at_zero`, so a temperature keeps its full
+range and rainfall does not get a band reaching -1.0M. The floor changes only
+the range shown, not which periods are flagged.
 
 Each `Anomaly` has the period, the observed value, the expected value, the
-expected range, the direction (`above` or `below`) and the severity in scale
-units.
+expected range, the direction (`above` or `below`), the severity in scale
+units, and `seasonal`, which says whether the expected value allows for the
+time of year.
+
+Re-running the calibration simulation with this step in place still gives
+about 5% of stable series a false flag at 24 to 60 periods, and a strongly
+seasonal quarterly series no more often.
 
 At least 8 observed periods are needed (`MIN_PERIODS`). With fewer, nothing is
 flagged.
@@ -92,6 +109,8 @@ with a fixed one. The 5% false-alarm rate does not hold for a fixed multiplier.
 | Fewer than 8 observed periods | Returns an empty tuple |
 | Perfectly flat series (scale 0) | Returns an empty tuple |
 | More than 5 anomalies | The 5 most severe |
+| A yearly pattern over 3 or more years | Each period is judged against the same month or quarter in other years |
+| A measure that cannot be negative | The expected range stops at zero |
 | Missing `Period` or `Value` column | Returns an empty tuple |
 
 `ada.Analysis.anomalies` returns a `Refusal` (`no_date_column` or
