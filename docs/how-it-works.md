@@ -135,6 +135,8 @@ flowchart LR
     X --> ANS["Answer and calculation"]
 ```
 
+The rule parser gives no plan when the question names a column, value,
+grouping or condition the plan would leave out, and says which part and why.
 The AI planner runs only when the rules cannot parse a question and an API key
 is set. It sees column names, types and roles, not rows. Its plan is validated,
 described in one sentence, and run only if the user approves it. Both paths end

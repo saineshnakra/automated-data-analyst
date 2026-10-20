@@ -19,79 +19,179 @@ QueryPlan(intent="rank", measure="Revenue", dimension="Region",
 QueryAnswer(answer="...", calculation="...", table=..., chart="bar")
 ```
 
+Every part of a question has to reach the plan. A column, a value, a grouping,
+a condition or a "top N" the plan would leave out makes the parser refuse, and
+`rephrase_hint` says which part and why. ADA never answers a simpler question
+under the original wording.
+
 ## The plan
 
 ```python
 @dataclass(frozen=True)
 class QueryPlan:
-    intent: Intent            # aggregate | count | rank | breakdown | trend | growth | correlation
+    intent: Intent            # aggregate | count | rank | breakdown | trend | growth | correlation | missing
     aggregation: Aggregation  # sum | mean | median | min | max | count
     measure: str | None
     dimension: str | None
-    count_column: str | None
+    count_column: str | None  # counts distinct values of this column instead of rows
     partner: str | None       # the second column of a correlation
     top_n: int | None
     ascending: bool
-    filters: tuple[ValueFilter, ...]
+    filters: tuple[ValueFilter, ...]   # rows whose value is one of the listed values
     year: int | None
     month: int | None
     grain: str | None         # D | W | M | Q | Y
     source: str               # "rules", or "ai" for the optional planner
+    conditions: tuple[Condition, ...]  # "pH below 5.5", "OBJECT is 0", "eCO2 missing"
+    time_part: str | None     # "hour" or "weekday" of the date column in `dimension`
+    notes: tuple[str, ...]    # how the question was read, said in the answer
 ```
+
+A `Condition` is a column, an operator (`=`, `<`, `<=`, `>`, `>=` or
+`missing`) and a number.
 
 ## Intents
 
 | Intent | Answers | Example |
 |---|---|---|
-| `aggregate` | One number | "Total revenue" |
-| `count` | How many rows, or distinct values | "How many orders?" |
-| `rank` | Top or bottom N groups, or the top period | "Top 5 products by sales", "Which month had the highest wind?" |
-| `breakdown` | The measure per group | "Revenue by region", "Mean signal by timepoint" |
-| `trend` | The measure per period | "Monthly revenue trend" |
+| `aggregate` | One number | "Total revenue", "maximum strength" |
+| `count` | How many rows, or distinct values; with conditions, also their share | "How many orders?", "how many rows have negative yield" |
+| `rank` | Top or bottom N groups, the row with the highest value, or the top period | "Top 5 products by sales", "Which taxonomy has the highest A101?" |
+| `breakdown` | The measure per group, or per hour or weekday | "Revenue by region", "average PM2.5 by hour" |
+| `trend` | The measure, or a row count, per period | "Monthly revenue trend", "how many readings per month" |
 | `growth` | Latest period against the previous one | "Which region grew fastest?" |
 | `correlation` | How two numeric columns move together | "Is flipper length correlated with body mass?" |
+| `missing` | Missing values per column, or in one column | "Which columns have missing values?" |
 
 ## How the parser reads a question
 
-1. Refuse phrasing a plan cannot represent: comparison operators (`>`, `<`,
-   `=`, `≥`, `≤`, `≠`), thresholds ("greater than", "at least 10"), dates
-   relative to today ("last 30 days", "this year", "year to date", "last
-   December"), "or", and questions naming two or more months or years.
-2. Refuse the question if any word is unrecognized (see below).
-3. Match columns named in the question, including the name with a trailing
-   `s` or `es` added or a trailing `s` removed. Longer names are matched
-   first, so `Revenue Growth` is not also read as `Revenue`. A column also
-   matches on its core name: the name without a trailing unit in brackets
-   (`Concentration (mg/L)` matches "concentration") and without trailing unit
-   words such as `mm`, `g`, `c` or `pct` (`body_mass_g` matches "body mass").
-   `min` and `max` are never treated as units. A core name is not used when
-   another column shares it or contains it, so with `Temp (°C)` and
-   `Temp (°F)`, "temp" names neither. A core name that is also a query word
+### 1. Phrasings no plan can hold
+
+Refused before parsing: dates relative to today ("last 30 days", "this year",
+"year to date", "last December"), "or", `!=` and `≠`, and questions naming two
+or more months or years.
+
+### 2. Every word is claimed
+
+The question is normalized: lowercase, accents dropped ("orgánica" reads as
+"organica"), a decimal point between digits kept ("5.5", "PM2.5"), and
+comparison symbols read as words (`<` as "below", `>=` as "at least"). Then
+each word is claimed, in this order, by:
+
+1. **A column's full name**, including the name with a trailing `s` or `es`
+   added or a trailing `s` removed, and the column's core name: without a
+   trailing unit in brackets (`Concentration (mg/L)` matches "concentration")
+   and without trailing unit words such as `mm`, `g`, `c` or `pct`
+   (`body_mass_g` matches "body mass"). Longer names claim first, so
+   `Revenue Growth` is not also read as `Revenue`. A core name shared with, or
+   found inside, another column's name is not used, so with `Temp (°C)` and
+   `Temp (°F)` "temp" names neither. A core name that is also a query word
    (`Time (h)` gives "time") counts only after a grouping word: "by time".
-4. Refuse the question if it uses a word that only the names of numeric
-   columns contain and none of those columns was named in full. "Average body
-   by island" on a file with `body_mass_g` is refused rather than answered
-   with the default measure.
-5. Detect a year (1900 to 2099) and a month name.
-6. Detect a grain: daily, weekly, monthly, quarterly, yearly.
-7. Detect value filters: values of segment columns (with at most 200 distinct
-   values, and at least 3 characters long) named in the question, e.g. "West".
-8. Pick the grouping column and the measure (see below).
-9. Detect an aggregation word (total, average, median, highest, lowest, ...),
-   reading the question with the matched column names removed so that
-   `Total Sales` does not read as "total".
-10. Choose an intent, checking these signals in order:
+2. **A column name that starts with an aggregation word.** With columns
+   `Wind Speed` and `Maximum Wind Speed`, "maximum wind speed" is the maximum
+   of Wind Speed unless the question has another aggregation word ("average
+   maximum wind speed"); the answer says how it was read. A column called
+   just `MAX` is the word "max" unless the question has another aggregation
+   word or names it after "of" or a grouping word.
+3. **A part of the date**: "by hour", "by hour of day", "by weekday", "by day
+   of week", "which hour". The hour needs a date column that holds times of day.
+4. **Conditions** written around a named column (see below).
+5. **Values** of text columns, written in full (any case).
+6. **Partial column names** (see below).
+7. **Values** of long labels, by whole words: "Tartrazine" names "Tartrazine,
+   FD&C Yellow 5 (US), E102 (EU)".
+8. **Unit conditions**: "at 28 days" is `Age of testing (day)` = 28 when one
+   numeric column has that unit in its name.
+9. **Numbers**: the N of "top N" and "bottom N", a year (1900 to 2099), and a
+   number that is a column's whole name ("correlation between 1001 and 1").
+   In a table with no date column, a number naming a column is the column.
+10. **Nouns for the rows**: a word from `ENTITY_NOUNS` ("patients", "birds",
+    "readings") or a plural word right after "how many", "number of" or
+    "share of".
+11. **"missing"**, "null", "blank" or "empty" not attached to a column: a
+    question about missing values.
+
+The rest must be query grammar: aggregation, ranking, growth, correlation,
+time, grain and share words, and `QUERY_STOPWORDS`, a fixed list of function
+words ("the", "by", "how", "where", "tested", ...). Any other word refuses the
+question and is named: `ADA found no column or value called "A1_1" in this
+table`. When the row limit left rows out, the reason says so, since the value
+may be in the rows ADA did not read.
+
+### Conditions
+
+| Written | Reads as |
+|---|---|
+| "pH below 5.5", "pH < 5.5", "yield under 0" | `pH < 5.5` |
+| "at least 10", ">= 10", "at most", "more than", "greater than", "over", "above" | `>=`, `<=`, `>` |
+| "pH between 5 and 6" | `pH >= 5` and `pH <= 6` |
+| "negative yield", "yield is negative", "positive", "zero" | `< 0`, `> 0`, `= 0` |
+| "when OBJECT is 0", "OBJECT = 0", "OBJECT equals 0" | `OBJECT = 0` |
+| "for Status 2", "cars with 6 cyl" | `Status = 2`, for a column of codes holding that value |
+| "how many have hypertension", "with diabetes", "are healthy", "without diabetes" | a 0/1 flag `= 1`, or `= 0` after "without" |
+| "missing eCO2", "eCO2 is missing" | `eCO2 missing` |
+| "where Condition is Open", "Detector is ON", "Region West" | the value of that text column |
+
+A column of codes is one listed among the segments (a status, a 0/1 flag) or
+one with whole numbers and at most 50 values. "with diabetes" after a
+correlation word ("correlated with diabetes") is a column to correlate, not a
+condition. A threshold that names no column ("over 50") leaves its number
+unclaimed, so the question is refused. A question made only of conditions
+("revenue > 200", "West") counts the rows that meet them.
+
+### Values
+
+Values of text columns with up to 10,000 distinct values
+(`MAX_FILTER_CANDIDATES`) can filter. A value written in full matches in any
+case. A value of three letters or fewer must be written in its own case
+("pH", "ON"), and a single letter also needs a cue before it ("for A"), so
+"on" and a sentence-starting "A" stay words. A number held as text ("47") is
+matched only after its column ("ID 47"). A value made only of query words
+("Top", "Total") needs a cue such as "for", "in" or "is" before it, so "top 2
+contours" ranks while "average Ca for Top" filters.
+
+A long label matches by whole words when only one value holds them, or only
+one starts with them. Words several labels share ("Yellow") are refused with
+the candidates. A value found in several columns is refused with the columns,
+unless it picks the same rows in each (a label and its definition), when the
+first column is used.
+
+### Partial column names
+
+Words of a column's name that no other column shares name that column, and the
+answer says so: "strength" names `Concrete compressive strength (MPa)`, "pH"
+names `pH agua:suelo 2,5:1,0`, "sampling point" names
+`sample.samplingPoint.label` if no other column has those words (camelCase is
+split). A word that starts with a column's whole name word names it when the
+name word is at least three letters and a third of the word: "conductivity"
+names `Conduc`, "stations" names `STA`, "healthy" names `Crop_Health_Label`.
+
+When several columns fit, the one suited to the word's place is used if it is
+the only one: the identifier after "how many", a groupable column after "by"
+or "which", a numeric column elsewhere. Otherwise the question is refused with
+"Did you mean bill_length_mm or flipper_length_mm?". A plural noun for rows
+that several columns share ("how many samples" in a table of `sample.*`
+columns) counts rows instead.
+
+### 3. Choosing the intent
+
+The parser detects a grain (daily, weekly, monthly, quarterly, yearly) and an
+aggregation word (total, average, median, maximum, highest, longest, ...),
+reading the question with the matched column names removed so that
+`Total Sales` does not read as "total". Then it checks these signals in order:
 
 | Signal | Result |
 |---|---|
+| A question about missing values | `missing`, for every column or the one named |
 | "correlation", "correlated", "relate", "related" or "relationship" | `correlation` of the two numeric columns named, in the order named |
-| "how many", "count" or "number of", without a growth word | `count`; `breakdown` by count if a grouping column and a grouping word are present |
+| "how many", "count", "number of", "share", "proportion", "percentage", "percent" or "fraction", without a growth word | `count`; a `breakdown` by count with a grouping word; a `trend` of row counts with a grain |
 | A growth word, and a date column exists | `growth`; ranked by segment when one is named, or by the detected segment when the question says "which", "fastest", "slowest" or a superlative |
 | "which" or "what" followed by day, week, month, quarter or year, with a superlative, and a date column exists | `rank` of the periods |
 | "top N", "bottom N", or a superlative, with a grouping column | `rank` |
 | A grain, "over time", "trend", "timeline", "history", "trajectory", or the date column named after "by" | `trend` |
 | A grouping column with "by", "per", "across", "breakdown", "split" or "each", or a grouping column with no measure named | `breakdown` |
-| A measure with an aggregation word, or a measure named on its own | `aggregate` |
+| A measure with an aggregation word or a superlative, or a measure named on its own | `aggregate` |
+| Only conditions or values | `count` |
 
 If none match, `parse_question` returns `None`. That triggers the AI planner
 (when a key is set) or the suggestion list.
@@ -100,9 +200,15 @@ Without an aggregation word, the measure's default is used: a sum for money
 and counts, a mean for anything else, or whatever the `aggregation` override
 says for the active measure (see
 [Concepts](../concepts.md#amounts-rates-and-levels)). A question about another
-column uses that column's own default. A trend question whose aggregation word
-differs from the default ("average revenue monthly") is refused, because the
-trend executor always uses the default. The same holds for ranking periods
+column uses that column's own default. An explicit "total", "sum", "average",
+"mean" or "median" is honoured in a ranking or breakdown too: "total Interval
+Rain by station" sums. "Highest" asks for a ranking, so only the literal "min"
+and "max" ask for a per-group extreme. In an aggregate, a superlative with no
+aggregation word asks for the extreme: "the most snowfall" is the maximum.
+
+A trend whose aggregation word differs from the default ("average revenue
+monthly") is refused, because the trend executor always uses the default, and
+the reason says how the periods combine. The same holds for ranking periods
 ("which month had the highest average revenue").
 
 A correlation question is refused unless it names exactly two numeric columns.
@@ -117,61 +223,75 @@ The grouping column is usually a segment column. A column named right after a
 grouping word ("by", "per", "across", "each") or a ranking word ("which",
 "top N", "bottom N") can also group the rows:
 
-- **A numeric column** groups the rows when no segment is named and it has at
-  most 50 distinct values (`GROUPING_LIMIT`). In "mean signal by timepoint"
-  the grouping is `timepoint` and the measure is `signal`. With no other
-  numeric column named, the detected measure is used. After a ranking word the
-  column is what gets ranked and a later "by" names the measure: in "top 3
-  cylinders by mpg" the measure is `mpg`.
-- **A text column** that schema detection left out of the segments because of
-  its name, such as a `time` column holding "1 min" and "15 min", groups the
-  rows when it has 2 to 50 distinct values.
-
-These are refused rather than answered without the grouping:
-
-- a numeric column with more than 50 distinct values named as the grouping
-  while another numeric column is named ("average mpg by weight")
-- two groupings ("mean signal by timepoint by region")
-- a segment and the date column ("revenue by region by order date")
+- **A text column with two or more values**, whatever it was detected as. A
+  label on every row groups too: "which taxonomy has the highest A101" names
+  the row, and "top 5 Taxonomy by A3" lists five rows.
+- **A numeric column listed among the segments** (a 0/1 flag, a status code)
+  groups like a text column.
+- **Another numeric column** groups the rows when no segment is named and it
+  has at most 50 distinct values (`GROUPING_LIMIT`), or holds whole-number
+  codes that repeat (at most half as many values as rows, like a station code
+  with 159 values over 119,040 rows). In "mean signal by timepoint" the
+  grouping is `timepoint` and the measure is `signal`. With no other numeric
+  column named, the detected measure is used. After a ranking word the column
+  is what gets ranked and a later "by" names the measure: in "top 3 cylinders
+  by mpg" the measure is `mpg`.
 
 After a segment, the column named after "by" is the measure: "top 5 products
 by revenue". With no grouping column, the measure is the numeric column with
-the longest name.
-
-The default aggregation is taken from the final measure, so a measure combines
-the same way in every intent: "which origin has the highest mpg" and "mpg by
-origin" both use `mpg`'s own aggregation.
+the longest name. The default aggregation is taken from the final measure, so
+a measure combines the same way in every intent.
 
 ### Counting
 
-"How many" counts distinct values of an identifier or segment column it names
-("how many orders" counts `Order ID`). A numeric column is counted the same way
-when it holds whole numbers, its name is singular and the question names it in
-the plural: "how many subjects" counts the distinct values of a `subject`
-column numbered 1 to 20. A plural name such as `Units` holds a quantity, so
-"how many units" returns the row count.
+"How many" counts distinct values of a text column, identifier or segment it
+names ("how many cities"). A numeric column is counted the same way when it
+holds whole numbers, its name is singular and the question names it in the
+plural right after "how many": "how many subjects" counts a `subject` column
+numbered 1 to 20, and "how many stations" counts `STA`. A quantity
+(`Units`) is totalled instead, and "how many" of a measurement (a
+temperature) is refused.
 
-### Unrecognized words
+A noun for the rows counts rows ("how many patients are positive"), or the
+distinct values of an entity column when one repeats across rows: the
+identifier, or the one column named with an ID word such as `ID`, `subject`
+or `participant`. "Readings", "records", "samples" and other nouns in
+`ROW_NOUNS` always count rows. The answer says which: "Counted the birds as
+distinct ID values." or "Each row counts as one of the patients." "How many
+participants per condition" counts distinct participants per condition.
 
-Each word in the question must be one of:
+A count with conditions or values gives its share of the rows: "18 of the
+212,019 rows (under 0.1%) have Expected_Yield below 0." The base is the rows
+where the filtered columns are recorded, and the answer says so when that
+leaves rows out: "701 of the 4,569 rows with diabetes recorded (15.3%) have
+diabetes = 1."
 
-- a word from a column name, or a value of a segment column
-- part of the query grammar: aggregation, ranking, growth, correlation, time
-  and grain words
-- one of `QUERY_STOPWORDS`, a fixed list of function words ("the", "by",
-  "how", "give", "were", ...)
+### 4. Nothing left out
 
-Any other word (a column that does not exist, a typo, an unrelated request)
-makes the parser return `None` instead of guessing. "Tell me a joke" and
-"total sales by region" on a file with no `sales` column both return `None`.
+After the plan is built, `_unused_part` checks it against the question. The
+question is refused when the plan would leave out:
 
-The stopword list is maintained by hand, so a question using an unlisted
-function word is refused until that word is added.
+| Part | Reason given |
+|---|---|
+| A column named after "by" with one value | "Sample has a single value (O) in the 250,000 rows analysed (the row limit left out 2,858,545 others), so there is nothing to group by." |
+| A continuous column named after "by" | "weight has 60 distinct values, too many to group by (the limit is 50)." |
+| A grouping alongside another grouping or a trend | "The question asks for two groupings, Site and Grade; ADA answers one at a time." |
+| A text column in the measure's place | "Precip holds text, not numbers, so it can't be averaged or totalled." |
+| A second measure | "The answer can use one measure, and the question names B and Concentration." |
+| A value of the grouping column | "Open is a value of Condition, which the answer groups by, so it can't also filter the rows." |
+| "top N" with nothing to rank | `"top 5" needs a column to rank, as in "top 5 <group> by <measure>".` |
+| A grain the plan doesn't use | "This table has no date column, so there is no month view." |
+
+`rephrase_hint` returns this reason, or the problem found while reading (an
+unknown word, a partial name or value several columns share). Otherwise it
+names a text column the question asks to correlate. From Python,
+`Analysis.ask()` returns a `Refusal` with code `unsupported_phrasing` or
+`unrepresentable_question`, and the reason in its message.
 
 ## Execution
 
-`execute_plan` applies the filters and the year or month, then computes the
-answer. It returns a `QueryAnswer`:
+`execute_plan` applies the filters, the conditions and the year or month, then
+computes the answer. It returns a `QueryAnswer`:
 
 | Field | Contents |
 |---|---|
@@ -180,23 +300,42 @@ answer. It returns a `QueryAnswer`:
 | `table` | Supporting rows, when useful |
 | `chart` | `"bar"`, `"line"`, `"scatter"` or `None` |
 
+Every answer names its filters and conditions in the sentence ("for Dye Label
+= Tartrazine, FD&C Yellow 5 (US), E102 (EU)"), ends with the plan's notes on
+how the question was read, and says how many rows it used: "Based on 179 of
+1,228 rows." or "Based on all 1,228 rows." An unfiltered aggregate says it in
+its own sentence ("calculated from 1,228 rows") and a count states its rows.
+Given `rows_not_analyzed` (`answer_question`, `execute_plan` and
+`rephrase_hint` take it; `Analysis.ask` and the app pass the rows the row limit
+left out), the answer adds "The row limit left out 2,858,545 older rows, so
+this answer covers only the 250,000 rows ADA analysed."
+
 Trend, growth and period-ranking answers use the same `TrendSeries` as the
 dashboard, so the timeline notes ([Periods](periods.md#timeline-adjustments))
 are appended to the calculation text.
 
 Other behaviour:
 
-- A breakdown shows at most 12 groups, largest first; a rank shows `top_n`.
-- A breakdown by a numeric column lists its groups in their own order
-  (timepoint 0, 1, 2, ...) rather than by value, up to 50 of them, and is drawn
-  as a line. A ranking ("which timepoint has the highest signal") still sorts
-  by value.
+- A breakdown with up to 20 groups shows them all, largest first. With more,
+  the table shows the 10 highest and the 10 lowest (`EXTREME_GROUPS`) and the
+  answer says how many groups there are. A rank shows `top_n`.
+- A breakdown by a numeric column, an hour or a weekday lists its groups in
+  their own order (timepoint 0, 1, 2...; Monday to Sunday), up to 50 of them,
+  and is drawn as a line; beyond 50 it falls back to the highest and lowest.
+  A ranking ("which timepoint has the highest signal") still sorts by value.
 - A breakdown or ranking answer names the first group the way the brief does:
-  "timepoint 5 has the highest average signal of any timepoint, at 10".
-  A numeric group carries its column name (`group_label`), groups tied with
-  the first are all named ("North and South tie for the highest average pH"),
-  and an aggregate the column name already has is not repeated ("total rain",
-  not "total total rain").
+  "timepoint 5 has the highest average signal of any timepoint, at 10". A
+  numeric group carries its column name (`formatting.group_label`), groups
+  tied with the first are all named ("North and South tie for the highest
+  average pH"), and an aggregate the column name already has is not repeated
+  ("total rain", not "total total rain").
+- When every group is one row (a label on each row), the answer names the row
+  and its own value: "Hungatella hathewayi has the highest A101, at 6,803."
+- A count of distinct values per group (`count_column`) gets no share column,
+  since one entity can be in several groups.
+- `missing` lists the columns with missing values, most first, with the count
+  and share of rows, and the number of empty cells; for one column it gives
+  that column's count.
 - Ranking periods ("which month had the highest wind") builds the trend at
   that grain with `build_trend` and names the highest or lowest period with its
   value. Periods left empty for a rate or level are skipped. "Which month had
@@ -222,23 +361,15 @@ Other behaviour:
 ## When the rules cannot parse
 
 1. **The AI planner**, if an API key is set. It receives column names, types
-   and roles, never rows, and returns the same `QueryPlan` shape. The app
-   describes the plan in one sentence and runs it only after the user approves.
-   See [The optional AI layer](ai-layer.md).
+   and roles, never rows, and returns the same `QueryPlan` shape. Its filter
+   values are matched with `matching_values`, the same matching as above. The
+   app describes the plan in one sentence and runs it only after the user
+   approves. See [The optional AI layer](ai-layer.md).
 2. **Suggested questions** from `suggested_questions`: up to four starter
    questions built from the detected roles, each answerable by the rules.
 
-`rephrase_hint` adds a lead when it has one, shown above the suggestions and
-appended to the refusal message:
-
-| Refused question | Hint |
-|---|---|
-| Names part of a numeric column's name | "Did you mean body_mass_g?" (every column that word could mean) |
-| Correlates a text column | "A correlation needs two numeric columns, and species is not numeric." |
-| Groups by a numeric column with too many values | "weight has 351 distinct values, too many to group by (the limit is 50)." |
-
-From Python, `Analysis.ask()` returns a `Refusal` with code
-`unsupported_phrasing` or `unrepresentable_question` instead of `None`.
+The reason from `rephrase_hint` is shown above the suggestions and appended to
+the refusal message.
 
 ## Edge cases
 
@@ -248,23 +379,29 @@ From Python, `Analysis.ask()` returns a `Refusal` with code
 | No column named, but an aggregation word ("total") | Uses the detected measure |
 | Growth question with no date column | Not treated as growth |
 | Year or month asked, no date column | Answer says the scope is unavailable |
-| No rows match the filters | Answer says there is nothing to calculate |
+| No rows match the filters | Answer says there is nothing to calculate; a count says 0 of N rows |
 | Plan names a column missing from the data | `execute_plan` raises `ValueError`; `answer_question` returns `None` |
 | "top 0" | `None` |
-| More than 12 breakdown groups | First 12 shown |
-| A partial column name ("average body by island") | `None`, with a "Did you mean" hint |
+| More than 20 breakdown groups | The 10 highest and the 10 lowest, with the number of groups |
+| A partial column name one column fits ("average body by island") | Uses `body_mass_g` and says so |
+| A partial name several columns fit ("average length by island") | `None`, with "Did you mean bill_length_mm or flipper_length_mm?" |
 | "Which year ..." with no date column | Not a period ranking; a numeric `year` column can still group if it has at most 50 values |
 | Fewer than two periods with values | Answer says there is nothing to compare |
 | A correlation over a column that does not vary | Answer says the correlation is undefined |
+| "by hour" on dates without times | `None`, saying the dates hold no times of day |
 
 ## Adding a question shape
 
-1. Extend `parse_question`.
-2. Add the execution branch in `execute_plan`.
-3. Extend `QueryPlan` only if the shape needs new state.
-4. Test both parsing and execution.
-5. Check that the `calculation` string describes what ran, and that
+1. Make sure `_read_question` claims every word the shape uses; add
+   function words to `QUERY_STOPWORDS` and query words to `QUERY_GRAMMAR`.
+2. Extend `_plan_from_reading`, or add a helper beside `_count_plan`.
+3. Add the execution branch in `_run_plan`.
+4. Extend `QueryPlan` only if the shape needs new state. `_plan_columns` finds
+   the columns any plan field names, so a new field needs no change there.
+5. Test both parsing and execution, and that a question naming a part the
+   shape leaves out is refused.
+6. Check that the `calculation` string describes what ran, and that
    `describe_query_plan` in `ada/ai_insights.py` still matches.
 
-Comparisons ("West vs East"), shares ("what % of revenue is Enterprise") and
-date ranges are on the [roadmap](../../ROADMAP.md).
+Comparisons ("West vs East"), shares of a total ("what % of revenue is
+Enterprise") and date ranges are on the [roadmap](../../ROADMAP.md).

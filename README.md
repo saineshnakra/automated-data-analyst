@@ -95,10 +95,14 @@ ada ask orders.csv "which category made the most revenue"
   too little history.
 - **Answers plain-English questions** ("average pH by site", "mean signal by
   timepoint", "which month had the highest wind", "is pH correlated with
-  temperature") by turning them into a fixed query plan that pandas runs. A
-  question it can't represent is refused rather than answered approximately;
-  one that names only part of a column ("body" for `body_mass_g`) is refused
-  with the columns it may mean.
+  temperature", "how many samples have pH below 5.5", "what share have
+  diabetes", "average PM2.5 by hour") by turning them into a fixed query plan
+  that pandas runs. Every column, value, grouping and condition the question
+  names must reach the plan; otherwise the question is refused with the part
+  ADA couldn't use, rather than answered approximately. A short name that fits
+  one column ("strength" for `Concrete compressive strength (MPa)`) is used
+  and the answer says so. Each answer states its filters, how many rows it
+  used and whether the row limit left rows out.
 - **Reports correlations with a 95% interval**, the sample size and a rank
   correlation check. In the brief it says that the pair was picked as the
   strongest of several; ask about a pair and it reports the same figures for

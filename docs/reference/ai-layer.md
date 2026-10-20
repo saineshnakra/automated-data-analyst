@@ -68,9 +68,13 @@ at most three watchouts.
 - it sets a year or month with no date column
 - any filter value does not match a value in its column
 
-Filter values are matched against the column's values exactly, ignoring case
-and surrounding spaces. A value the model made up matches nothing, and the
-whole plan is discarded. Pydantic bounds the fields: `top_n` 1 to 50, `year`
+Filter values are matched against the column's values the way the rules match
+them in a question (`nlq.matching_values`): the value itself, ignoring case,
+accents and punctuation, or else the one value that holds the phrase as whole
+words, so "Tartrazine" names "Tartrazine, FD&C Yellow 5 (US), E102 (EU)". A
+phrase that several values hold, or a value the model made up, matches
+nothing, and the whole plan is discarded. A number matches a numeric column's
+value. Pydantic bounds the fields: `top_n` 1 to 50, `year`
 1900 to 2100, `month` 1 to 12, at most 4 filters of up to 120 characters each.
 
 Fields the chosen intent's executor would ignore (a dimension on an aggregate,
@@ -84,8 +88,10 @@ turns it into one sentence, built per intent so that it describes the
 calculation that will run, for example "Rank Product by total Revenue, showing
 the 2 highest." The app shows that sentence with **Run calculation** and
 **Reject plan** buttons. `execute_approved_ai_plan` runs the plan only when
-`approved=True`, using the same `execute_plan` as a rule-parsed plan. The plan
-carries `source="ai"`, so its origin stays visible.
+`approved=True`, using the same `execute_plan` as a rule-parsed plan, so the
+answer also says how many rows it used and, given `rows_not_analyzed`, how
+many the row limit left out. The plan carries `source="ai"`, so its origin
+stays visible.
 
 Model-generated code is never executed. The model chooses parameters for a
 fixed executor; it does not write the query.
