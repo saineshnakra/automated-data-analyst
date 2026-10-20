@@ -22,7 +22,7 @@ Evidence says what moved; recommendations say where to look.
 | Field | Contents |
 |---|---|
 | `headline` | One sentence from the strongest available signals |
-| `summary` | A short paragraph |
+| `summary` | A short paragraph: the trend and group findings, or, without a trend, what the table seems to be (see below) |
 | `roles` | The `ColumnRoles` used |
 | `kpis` | Up to 4 `KPI`s |
 | `evidence` | Up to 6 `Evidence` cards |
@@ -40,8 +40,8 @@ assembled in this order:
 |---|---|---|
 | `trend` | Latest period-over-period change, compared with the series' usual movement | No date, fewer than 2 periods, or a percentage change from a previous period of zero |
 | `driver` | The segment that moved the measure most between the last two periods | No date, measure or segment |
-| `leader` | The largest segment and its share of the total; for an averaged measure or mixed-sign values, the largest by size with no share | No segment, or a total of zero |
-| `concentration` | Effective number of segments, and the top-three share | Shares are not meaningful (averaged measure or mixed signs) |
+| `leader` | For a summed measure, the group with the largest share of the total ("Largest share by ..."), or with the most rows when there is no measure ("Most rows by ..."); for an averaged measure, the groups with the highest and lowest average ("Highest average by ..."); for mixed-sign values, the largest by size with no share | No segment, or a total of zero |
+| `concentration` | Effective number of segments, and the top-three share | Shares are not meaningful (averaged measure or mixed signs), or the measure is neither money nor a count of things |
 | `anomaly` | The most severe flagged period and how many were flagged | Under 8 periods, or nothing flagged |
 | `relationship` | Strongest numeric correlation, with a confidence interval | See below |
 | `outliers` | Count of measure values outside 1.5 × IQR | No measure, fewer than 12 values or 4 distinct values, IQR of zero, or no outliers |
@@ -59,7 +59,13 @@ nothing).
 
 The previous and latest values are printed with enough precision to differ
 (`format_values_apart` in `ada/formatting.py`), so a small change never reads
-"from 1.2K to 1.2K".
+"from 3,004.3 to 3,004.3".
+
+For an averaged measure, when either period's figure is the average of fewer
+than 30 rows (`SMALL_SIDE_ROWS`), the card gives both row counts and says a
+few records can swing it. The `driver` card does the same for its group: a
+group whose latest average rests on 12 rows, against 180 the period before,
+says so. A total is everything recorded, so a summed measure gets no such note.
 
 It then compares the latest change with the series' own period-over-period
 changes, measured the same way. It reports whether the change is within normal
@@ -82,6 +88,18 @@ When the net change across segments is under 25% of the gross movement
 each other and gives the driver's share of gross movement rather than of the
 net. "Up 2% overall" can hide one region up 40% and another down 38%.
 
+### Groups
+
+Every group is named with `group_label`, so a numeric code reads as
+"Status 2 has the highest average", never "2 has the highest average".
+
+For an averaged measure the `leader` card names the highest and the lowest
+group, printed with enough precision to differ. Groups whose averages are
+equal are all named ("47 and 68 tie for the highest average"), and the KPI
+tile and recommendations say "47 (tied with 1 other)". When a named group's
+average rests on fewer than 30 rows, every named group is given with its row
+count and the card says a few records can change the order.
+
 ### Concentration
 
 Measured as effective segments, 1 ÷ the Herfindahl index (the sum of squared
@@ -89,6 +107,10 @@ shares), so it does not depend on how many groups exist. Below 3.0 effective
 segments (`CONCENTRATED_EFFECTIVE_SEGMENTS`) the card is a warning. For an
 all-negative measure, where effective segments are undefined, the card reports
 the top-three share instead and warns at 70% or more.
+
+The card appears only for money and counts of things (whole-numbered values),
+since how concentrated revenue or orders are across products is a real
+question, and how concentrated rainfall is across weather stations is not.
 
 ### Correlation
 
@@ -133,11 +155,34 @@ Added in this order, up to four:
 1. Total measure (summed measures only)
 2. Average measure
 3. Latest movement (when there is a `trend` card)
-4. Top segment: its share, or its value when no share can be quoted
+4. The `leader` card's figure, labelled with its title ("Highest average by
+   site", "Largest share by category") and naming the group
 
-Remaining slots are filled from: distinct identifiers, records analyzed, data
-completeness. A label already shown is skipped, so a file with little
+A label never repeats an aggregate the column name already has: the total of
+`Total Rain` is labelled `Total Rain`, not `Total Total Rain`
+(`with_aggregate` in `ada/formatting.py`).
+
+Remaining slots are filled from: distinct identifiers, rows analyzed, data
+completeness. An identifier with one row per value is a row key, not a count
+of anything, so it gets no tile of its own; the rows tile says "One per
+Reading ID" instead. A label already shown is skipped, so a file with little
 structure gets fewer tiles rather than duplicates.
+
+## Summary
+
+With a trend, the summary repeats the trend and group statements. Without
+one, the headline already carries the only finding, so the summary says what
+the table seems to be: how many rows, what one row is when an identifier names
+each row once, the date span, the measure and how it combines, the groups, and
+which of a date and a grouping column is missing:
+
+> 1,319 rows. Measure: Blood sugar, averaged across rows. Groups: the 2 values
+> of Result. No date column was found.
+
+When the roles list runner-up measures (`ColumnRoles.measure_alternatives`),
+the summary ends by naming them: "Measure picked: realism (also plausible:
+risky_decision and risk_perception). Change it with measure="risky_decision"
+or in the app."
 
 ## Recommendations
 
@@ -149,9 +194,9 @@ the evidence card it comes from.
 |---|---|
 | `trend`, negative | Start with the driver segment, or find where the adverse change started |
 | `trend`, positive or neutral | Check whether the change holds |
-| `concentration`, warning | Check how much rests on the leader |
+| `concentration`, warning | Check how much rests on the largest group, named |
 | `leader`, averaged measure | Compare the highest and lowest group against the spread within each |
-| `leader`, summed measure | Compare the leading group with the rest |
+| `leader`, summed measure | Compare the largest group, named, with the others |
 | `anomaly` | Explain the flagged periods |
 | `relationship` | Test the relationship |
 | `outliers` | Review the extreme records |
@@ -160,6 +205,10 @@ the evidence card it comes from.
 The driver is named only when it moved in the same direction as the total. With
 no qualifying evidence, a single "Add a date or a grouping column"
 recommendation explains which columns would enable the analysis.
+
+Recommendations are suggestions of what to look at next, worded for any
+table: they name only the splits the table has (no "time window" without a
+date), and an extreme value is something to check, not presumed an error.
 
 ## The Markdown report
 

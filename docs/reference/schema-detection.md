@@ -117,7 +117,8 @@ A column looks like an identifier when all of these hold:
 - it is not a datetime column
 
 The first such column in the file wins. The role keeps identifiers out of the
-measure slot and provides the "Distinct X" KPI.
+measure slot and provides the "Distinct X" KPI, or, when it names each row
+once, says what one row is ("One per Reading ID").
 
 ## Overriding
 

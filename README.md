@@ -39,7 +39,7 @@ lab-measurements.csv — 936 rows, 02 Sep 2024 to 23 Feb 2026
 
 +0.1 pts latest movement; Control has the highest average, at 91.6%.
 ...
-  91.6%  Leading treatment
+  91.6%  Highest average by treatment
       Control has the highest average Viability %, at 91.6%. Compound B has the lowest, at 84.8%.
       calc: mean Viability % per Treatment; averages are not split into shares
   1  Anomalous periods
@@ -77,6 +77,13 @@ ada ask orders.csv "which category made the most revenue"
   "share of total", and a change in a rate is reported in percentage points.
   When the name misleads, `aggregation="sum"` or `"mean"` (or **Combine rows
   by** in the app) says how the measure combines.
+- **Prints readings in full**: `K` and `M` are kept for money and large
+  counts, so a heart rate of 1,111 is not shown as `1.1K`; very small or very
+  large readings use scientific notation (`3.624e+11`). A `$` needs both a
+  money name and values that look like money, so an income band coded 1 to 15
+  is not printed as dollars. Figures compared in one sentence never print
+  alike, numeric groups are named with their column ("Status 2"), and an
+  average resting on fewer than 30 rows says so.
 - **Builds a timeline**: picks a period grain the data can fill, drops a final
   period the data only partly covers, and notes both under the chart. A
   `Year` column (with a `Month` column, if there is one) counts as a date.

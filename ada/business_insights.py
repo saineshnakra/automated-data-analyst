@@ -12,8 +12,10 @@ import pandas as pd
 
 from .aggregation import (
     build_trend,
+    preferred_frequency,
     segment_frame,
     segment_period_change,
+    unlabelled_label,
 )
 from .anomalies import detect_anomalies
 from .formatting import (
@@ -22,8 +24,12 @@ from .formatting import (
     format_percentage,
     format_period,
     format_values_apart,
+    group_label,
+    is_money,
+    list_names,
     normalized_name,
     sentence_case,
+    with_aggregate,
 )
 from .metrics import MetricSpec, metric_for
 from .schema import (
@@ -131,6 +137,52 @@ def _movement_in_context(values: np.ndarray, change: float, describe=format_perc
     return f" {verdict}; this series typically moves about {describe(typical)} per period."
 
 
+# A figure resting on fewer rows than this is quoted with its row count and a caveat.
+SMALL_SIDE_ROWS = 30
+
+
+def _rows(count: int) -> str:
+    return f"{count:,} row{'' if count == 1 else 's'}"
+
+
+def _segment_labels(dataframe: pd.DataFrame, dimension: str) -> pd.Series:
+    """The grouping column with unlabelled rows under their own label, as the aggregations group it."""
+    labels = dataframe[dimension]
+    return labels.astype(object).where(labels.notna(), unlabelled_label(labels.dropna().unique()))
+
+
+def _rows_per_period(
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles,
+    frequency: str,
+    periods: tuple[pd.Timestamp, ...],
+    segment: object = None,
+) -> tuple[int, ...]:
+    """Rows with a recorded measure in each period, within one segment when one is given."""
+    kept = dataframe[roles.date].notna()
+    if roles.measure:
+        kept &= dataframe[roles.measure].notna()
+    if segment is not None and roles.dimension:
+        kept &= _segment_labels(dataframe, roles.dimension) == segment
+    buckets = dataframe.loc[kept, roles.date].dt.to_period(frequency).dt.to_timestamp()
+    counts = buckets.value_counts()
+    return tuple(int(counts.get(period, 0)) for period in periods)
+
+
+def _thin_sides_note(previous_rows: int, latest_rows: int) -> str:
+    """Name the rows behind each side of a change in an average when either side has few, else ""."""
+    if min(previous_rows, latest_rows) >= SMALL_SIDE_ROWS:
+        return ""
+    if previous_rows == latest_rows:
+        sides = f" Each figure is the average of {_rows(latest_rows)}"
+    else:
+        sides = (
+            f" The previous figure is the average of {_rows(previous_rows)} and the latest "
+            f"of {_rows(latest_rows)}"
+        )
+    return f"{sides}, so a few records can swing it."
+
+
 def _growth_evidence(
     dataframe: pd.DataFrame, roles: ColumnRoles, frequency: str | None = None
 ) -> Evidence | None:
@@ -175,6 +227,10 @@ def _growth_evidence(
     start, end = format_values_apart(
         previous, current, column=roles.measure, column_values=measure_values
     )
+    if roles.measure and not metric.additive:
+        # A total is everything recorded, but an average of a few rows is noisy.
+        periods = (trend.iloc[-2]["Period"], trend.iloc[-1]["Period"])
+        context = _thin_sides_note(*_rows_per_period(dataframe, roles, series.frequency, periods)) + context
     if series.short_coverage:
         context += (
             f" The last period only reaches {series.short_coverage}, so part of this may be "
@@ -211,7 +267,7 @@ def _change_driver_evidence(
 
     # Index by the original key, not its str(): a boolean segment column has True/False keys.
     driver_key = changes.abs().idxmax()
-    driver_name = str(driver_key)
+    driver_name = group_label(roles.dimension, driver_key)
     previous_value = float(grouped.loc[driver_key, previous_period])
     current_value = float(grouped.loc[driver_key, current_period])
     driver_change = float(grouped.loc[driver_key, "Change"])
@@ -228,6 +284,12 @@ def _change_driver_evidence(
     start, end = format_values_apart(
         previous_value, current_value, column=roles.measure, column_values=measure_values
     )
+    thin = ""
+    if not metric.additive:
+        grain = frequency or preferred_frequency(dataframe[roles.date])
+        thin = _thin_sides_note(
+            *_rows_per_period(dataframe, roles, grain, (previous_period, current_period), segment=driver_key)
+        )
     movement = (
         f"{driver_name} moved the most of any {sentence_case(roles.dimension)}: "
         f"{roles.measure} {direction} by {size}, from {start} to {end}."
@@ -264,9 +326,9 @@ def _change_driver_evidence(
 
     return Evidence(
         kind="driver",
-        title="Largest change driver",
+        title=f"Largest change by {sentence_case(roles.dimension)}",
         value=f"{sign}{short}",
-        statement=statement,
+        statement=statement + thin,
         calculation=calculation,
         tone=_tone(driver_change > 0, metric),
         subject=driver_name,
@@ -339,6 +401,104 @@ def _shares_are_meaningful(values: np.ndarray) -> bool:
     return bool((values >= 0).all() or (values <= 0).all())
 
 
+# Group figures this close, relative to their size, are one value computed two
+# ways, so the groups tie.
+TIE_TOLERANCE = 1e-9
+
+
+def _counts_money_or_things(
+    roles: ColumnRoles, metric: MetricSpec, measure_values: pd.Series | None
+) -> bool:
+    """Whether the measure is money or a count of things, the quantities concentration describes.
+
+    How concentrated revenue or orders are across products is a real question.
+    How concentrated rainfall is across weather stations, or a reading across
+    sensors, is not, even when the readings can be summed.
+    """
+    if not roles.measure or metric.unit != "amount" or measure_values is None:
+        return False
+    values = measure_values.to_numpy(dtype=float)
+    values = values[np.isfinite(values)]
+    whole = bool(values.size) and bool((values == np.floor(values)).all())
+    return whole or is_money(roles.measure, measure_values)
+
+
+def _tied_with(segments: pd.DataFrame, value: float) -> pd.DataFrame:
+    """The segments whose value equals ``value``, allowing for rounding in how each was computed."""
+    return segments[np.isclose(segments["Value"].astype(float), value, rtol=TIE_TOLERANCE, atol=0.0)]
+
+
+def _group_names(segments: pd.DataFrame, dimension: str | None) -> list[str]:
+    return [group_label(dimension, value) for value in segments["Segment"]]
+
+
+def _who(names: list[str]) -> str:
+    """The subject and verb of a ranking: "A has" for one group, "A and B tie for" for several."""
+    return f"{list_names(names)} {'has' if len(names) == 1 else 'tie for'}"
+
+
+def _subject(names: list[str]) -> str:
+    """One group's name for a KPI or a recommendation, saying when others tie with it."""
+    others = len(names) - 1
+    return names[0] if not others else f"{names[0]} (tied with {others} other{'s' if others != 1 else ''})"
+
+
+def _rows_per_group(dataframe: pd.DataFrame, roles: ColumnRoles) -> pd.Series:
+    """Rows with a recorded measure in each group, indexed like ``segment_frame``'s segments."""
+    labels = _segment_labels(dataframe, roles.dimension)
+    if roles.measure:
+        return dataframe[roles.measure].notna().groupby(labels, sort=False).sum()
+    return labels.value_counts(sort=False)
+
+
+def _rows_label(counts: list[int]) -> str:
+    """" (4 rows)" for one group, " (4 rows each)" for several alike, " (4 to 9 rows)" otherwise."""
+    if len(counts) == 1:
+        return f" ({_rows(counts[0])})"
+    if min(counts) == max(counts):
+        return f" ({_rows(counts[0])} each)"
+    return f" ({min(counts):,} to {max(counts):,} rows)"
+
+
+def _highest_and_lowest(
+    segments: pd.DataFrame,
+    roles: ColumnRoles,
+    rows: pd.Series,
+    measure_values: pd.Series | None,
+) -> tuple[str, str, str]:
+    """The statement, value and subject naming the groups with the highest and lowest average.
+
+    Ties are named. The two figures are kept apart, so different averages
+    never print alike, and when a named group rests on few rows every named
+    group is quoted with its row count.
+    """
+    measure, dimension = roles.measure, sentence_case(roles.dimension)
+    values = segments["Value"].astype(float)
+    highest, lowest = float(values.iloc[0]), float(values.min())
+    top, bottom = _tied_with(segments, highest), _tied_with(segments, lowest)
+    high, low = format_values_apart(highest, lowest, column=measure, column_values=measure_values)
+    top_names = _group_names(top, roles.dimension)
+    if len(segments) > 1 and len(top) == len(segments):
+        statement = f"All {len(segments)} {dimension} groups have the same average {measure}, {high}."
+        return statement, high, _subject(top_names)
+
+    def counts(groups: pd.DataFrame) -> list[int]:
+        return [int(rows.get(segment, 0)) for segment in groups["Segment"]]
+
+    thin = min(counts(top) + counts(bottom)) < SMALL_SIDE_ROWS
+    top_rows = _rows_label(counts(top)) if thin else ""
+    statement = f"{_who(top_names)} the highest average {measure}, at {high}{top_rows}."
+    if len(segments) > 1:
+        bottom_rows = _rows_label(counts(bottom)) if thin else ""
+        statement += f" {_who(_group_names(bottom, roles.dimension))} the lowest, at {low}{bottom_rows}."
+    if thin:
+        statement += (
+            f" With fewer than {SMALL_SIDE_ROWS} rows behind a group's average, a few records "
+            "can change the order."
+        )
+    return statement, high, _subject(top_names)
+
+
 def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evidence, ...]:
     # All segments, so shares and concentration are measured against the full total.
     segments = segment_frame(dataframe, roles, limit=None)
@@ -347,7 +507,8 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
 
     # Shares also need an additive measure: segment churn rates of 10% and 20%
     # don't make one segment two thirds of churn.
-    additive = metric_for(roles.measure, roles).additive
+    metric = metric_for(roles.measure, roles)
+    additive = metric.additive
     if not additive:
         segments = segments.dropna(subset=["Value"])
         if segments.empty:
@@ -374,43 +535,64 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
         float(segments.head(3)["Value"].sum() / total * 100) if shares_hold else float("nan")
     )
     effective = _effective_segments(segments["Value"].to_numpy(dtype=float), total)
-    measure = roles.measure or "records"
+    measure = roles.measure or "rows"
     measure_values = dataframe[roles.measure].dropna() if roles.measure else None
     dimension = sentence_case(roles.dimension or "segment")
+    leader_name = group_label(roles.dimension, leader["Segment"])
 
     def amount(value: float) -> str:
         return format_number(float(value), roles.measure, column_values=measure_values)
 
     leader_amount = amount(leader["Value"])
+    value = format_percentage(leader_share) if shares_hold else leader_amount
+    subject = leader_name
     if shares_hold:
-        statement = (
-            f"{leader['Segment']} is the largest {dimension}, with "
-            f"{format_percentage(leader_share)} of {sentence_case(measure)} ({leader_amount})."
-        )
-        calculation = f"{leader['Segment']} {measure} ÷ total {measure}"
+        names = _group_names(_tied_with(segments, float(leader["Value"])), roles.dimension)
+        subject = _subject(names)
+        share = format_percentage(leader_share)
+        each = " each" if len(names) > 1 else ""
+        title = f"Largest share by {dimension}" if roles.measure else f"Most rows by {dimension}"
+        if len(segments) > 1 and len(names) == len(segments):
+            statement = (
+                f"All {len(segments)} {dimension} groups have the same {sentence_case(measure)}: "
+                f"{share} each."
+            )
+        elif roles.measure:
+            statement = (
+                f"{_who(names)} the largest share of {sentence_case(measure)}: {share}{each} "
+                f"({leader_amount}{each})."
+            )
+        else:
+            statement = (
+                f"{_who(names)} the most rows: {int(leader['Value']):,}{each} of {int(total):,} "
+                f"({share}{each})."
+            )
+        calculation = f"{leader_name} {measure} ÷ total {measure}"
     elif not additive:
-        statement = f"{leader['Segment']} has the highest average {measure}, at {leader_amount}."
-        if len(segments) > 1:
-            lowest = segments.loc[segments["Value"].idxmin()]
-            statement += f" {lowest['Segment']} has the lowest, at {amount(lowest['Value'])}."
+        title = f"Highest average by {dimension}"
+        statement, value, subject = _highest_and_lowest(
+            segments, roles, _rows_per_group(dataframe, roles), measure_values
+        )
         calculation = f"mean {measure} per {roles.dimension}; averages are not split into shares"
     else:
+        title = f"Largest {dimension} by size"
         statement = (
-            f"{leader['Segment']} is the largest {dimension} by size, at {leader_amount}. "
+            f"{leader_name} is the largest {dimension} by size, at {leader_amount}. "
             f"{measure} has both positive and negative values, so shares of the total are not shown."
         )
         calculation = f"largest |{measure}| by {roles.dimension}; shares are undefined with mixed signs"
     return (
         Evidence(
             kind="leader",
-            title=f"Leading {dimension}",
-            value=format_percentage(leader_share) if shares_hold else leader_amount,
+            title=title,
+            value=value,
             statement=statement,
             calculation=calculation,
             tone="positive" if shares_hold else ("neutral" if not additive else "warning"),
-            subject=str(leader["Segment"]),
+            subject=subject,
         ),
-        # Concentration needs shares; omit the card rather than print nan%.
+        # Concentration needs shares, and describes only money and counts of
+        # things; omit the card rather than print nan%.
         *(
             (
                 _concentration_evidence(
@@ -421,7 +603,7 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
                     effective=effective,
                 ),
             )
-            if shares_hold
+            if shares_hold and _counts_money_or_things(roles, metric, measure_values)
             else ()
         ),
     )
@@ -451,7 +633,7 @@ def _concentration_evidence(
 
     return Evidence(
         kind="concentration",
-        title="Effective segment count",
+        title=f"Concentration by {dimension}",
         value=f"{effective:.1f} of {segment_count}",
         statement=(
             f"{headline} Weighted by share, the {segment_count} {dimension} values are as "
@@ -765,12 +947,13 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
 
     concentration = by_kind.get("concentration")
     leader = by_kind.get("leader")
+    largest = leader.subject if leader and leader.subject else f"the largest {group}"
     if concentration and concentration.tone == "warning":
         recommendations.append(
             Recommendation(
                 "Next",
-                "Check how much rests on the leader",
-                f"Recompute the overall figures without the leading {group} to see how much they change.",
+                f"Check how much rests on {largest}",
+                f"Recompute the overall figures without {largest} to see how much they change.",
                 concentration.statement,
             )
         )
@@ -790,8 +973,8 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
         recommendations.append(
             Recommendation(
                 "Next",
-                f"Compare the leading {group} with the rest",
-                f"Look at what differs between the leading {group} and a typical one.",
+                f"Compare {largest} with the other {group} values",
+                f"Look at what differs between {largest} and a typical {group}.",
                 leader.statement,
             )
         )
@@ -812,12 +995,15 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
 
     relationship = by_kind.get("relationship")
     if relationship:
+        # Name only the splits the table has: a file with no date has no time window.
+        splits = [f"each {group}" if roles.dimension else "", "each time window" if roles.date else ""]
+        within = " and ".join(split for split in splits if split) or "different subsets of the rows"
         recommendations.append(
             Recommendation(
                 "Test",
                 "Test the relationship",
                 (
-                    f"Check whether it holds within each {group} and time window before acting on it; "
+                    f"Check whether it holds within {within} before acting on it; "
                     "a correlation alone doesn't show cause."
                 ),
                 relationship.statement,
@@ -830,7 +1016,10 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
             Recommendation(
                 "Watch",
                 "Review the extreme records",
-                "Check the most extreme values for entry or measurement errors before they skew averages.",
+                (
+                    "Check whether the most extreme values are real or entry and measurement "
+                    "errors; either way they pull averages."
+                ),
                 outliers.statement,
             )
         )
@@ -862,6 +1051,57 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
             )
         )
     return tuple(recommendations[:4])
+
+
+def _row_key(dataframe: pd.DataFrame, roles: ColumnRoles) -> str | None:
+    """The identifier column when it names each row once, so one row is one of it."""
+    if not roles.identifier or dataframe.empty:
+        return None
+    unique = dataframe[roles.identifier].nunique(dropna=True) == len(dataframe)
+    return roles.identifier if unique else None
+
+
+def _measure_alternatives(roles: ColumnRoles) -> tuple[str, ...]:
+    """Columns that came close to being picked as the measure, other than the one in use."""
+    # Older ColumnRoles have no such field.
+    close = getattr(roles, "measure_alternatives", ()) or ()
+    return tuple(column for column in close if column != roles.measure)
+
+
+def _measure_choice_note(roles: ColumnRoles) -> str:
+    """Say when the measure was a close call, and how to pick another, or ""."""
+    alternatives = _measure_alternatives(roles)
+    if not roles.measure or not alternatives:
+        return ""
+    return (
+        f"Measure picked: {roles.measure} (also plausible: {list_names(list(alternatives))}). "
+        f'Change it with measure="{alternatives[0]}" or in the app.'
+    )
+
+
+def _table_description(dataframe: pd.DataFrame, roles: ColumnRoles) -> str:
+    """What the table seems to be: its rows and what one row is, the dates, the measure and the groups."""
+    opening = _rows(len(dataframe))
+    if row_key := _row_key(dataframe, roles):
+        opening += f", one per {row_key}"
+    if roles.date:
+        dates = dataframe[roles.date].dropna()
+        if not dates.empty:
+            first, last = f"{dates.min():%d %b %Y}", f"{dates.max():%d %b %Y}"
+            opening += f", dated {first}" if first == last else f", dated {first} to {last}"
+    sentences = [f"{opening}."]
+    if not roles.measure:
+        sentences.append("No numeric measure was found, so rows are counted.")
+    elif not _measure_alternatives(roles):
+        combined = "averaged" if metric_for(roles.measure, roles).aggregation == "mean" else "summed"
+        sentences.append(f"Measure: {roles.measure}, {combined} across rows.")
+    if roles.dimension:
+        groups = dataframe[roles.dimension].nunique(dropna=True)
+        sentences.append(f"Groups: the {groups:,} values of {roles.dimension}.")
+    missing = [name for name, column in (("date", roles.date), ("grouping", roles.dimension)) if not column]
+    if missing:
+        sentences.append(f"No {' or '.join(missing)} column was found.")
+    return " ".join(sentences)
 
 
 def analyze_business(
@@ -904,16 +1144,16 @@ def analyze_business(
         if metric.additive:
             kpis.append(
                 KPI(
-                    f"Total {roles.measure}",
+                    with_aggregate("Total", roles.measure),
                     format_number(total, roles.measure, column_values=measure_values),
-                    "Across all analyzed records",
+                    "Summed across all analyzed rows",
                 )
             )
         kpis.append(
             KPI(
-                f"Average {roles.measure}",
+                with_aggregate("Average", roles.measure),
                 format_number(average, roles.measure, column_values=measure_values),
-                "Per non-missing record",
+                "Per row with a value",
             )
         )
 
@@ -926,29 +1166,31 @@ def analyze_business(
                 growth.tone,
             )
         )
-    if evidence_by_kind := {item.kind: item for item in evidence}:
-        if leader := evidence_by_kind.get("leader"):
-            if "÷ total" in leader.calculation:
-                context = "Share contributed by the leader"
-            elif leader.calculation.startswith("mean "):
-                context = "Highest average of any segment"
-            else:
-                context = "Largest in size of any segment"
-            kpis.append(KPI(f"Top {roles.dimension}", leader.value, context))
+    leader = next((item for item in evidence if item.kind == "leader"), None)
+    if leader:
+        # The card's title says what was ranked; the tile names the group.
+        kpis.append(KPI(leader.title, leader.value, leader.subject or ""))
 
     # Pad towards four tiles from a fixed list, skipping labels already shown;
     # a thin file gets fewer tiles rather than duplicates.
     completeness = 1 - dataframe.isna().sum().sum() / max(dataframe.size, 1)
     fallbacks = []
-    if roles.identifier:
+    row_key = _row_key(dataframe, roles)
+    if roles.identifier and not row_key:
         fallbacks.append(
             KPI(
                 f"Distinct {roles.identifier}",
                 f"{dataframe[roles.identifier].nunique(dropna=True):,}",
-                "Unique entities in the dataset",
+                "Different values in the column",
             )
         )
-    fallbacks.append(KPI("Records analyzed", f"{len(dataframe):,}", "After conservative cleaning"))
+    fallbacks.append(
+        KPI(
+            "Rows analyzed",
+            f"{len(dataframe):,}",
+            f"One per {row_key}" if row_key else "After conservative cleaning",
+        )
+    )
     fallbacks.append(
         KPI("Data completeness", format_percentage(completeness * 100), "Share of populated cells")
     )
@@ -960,24 +1202,20 @@ def analyze_business(
     kpis = kpis[:4]
 
     recommendations = _recommendations(evidence, roles)
-    growth_text = growth.statement if growth else None
-    leader = next((item for item in evidence if item.kind == "leader"), None)
     if growth and leader:
-        # "coming from" implies a share; when the leader card quotes a level
-        # (non-additive or mixed-sign measure), call it the highest instead.
-        quotes_a_share = "÷ total" in leader.calculation
-        headline = (
-            f"{growth.value} latest movement, with {leader.value} coming from the leading "
-            f"{sentence_case(roles.dimension)}."
-            if quotes_a_share
-            else (
-                f"{growth.value} latest movement; {leader.subject} has the highest average, "
-                f"at {leader.value}."
-                if not metric.additive
-                else f"{growth.value} latest movement; {leader.subject} is the largest by size, "
-                f"at {leader.value}."
+        # A share is quoted only when the leader card divides by a total; a
+        # level (non-additive or mixed-sign measure) is the highest or largest.
+        if "÷ total" in leader.calculation:
+            ranked = (
+                f"has the largest share of {sentence_case(roles.measure)}, at {leader.value}"
+                if roles.measure
+                else f"has the most rows, {leader.value} of them"
             )
-        )
+        elif not metric.additive:
+            ranked = f"has the highest average, at {leader.value}"
+        else:
+            ranked = f"is the largest by size, at {leader.value}"
+        headline = f"{growth.value} latest movement; {leader.subject} {ranked}."
     elif growth:
         # Cut at a sentence end, not at the decimal point inside "18.5%".
         headline = growth.statement.split(". ")[0].rstrip(".") + "."
@@ -992,20 +1230,18 @@ def analyze_business(
             column_values=measure_values,
         )
         verb = "averages" if metric.aggregation == "mean" else "totals"
-        headline = f"{roles.measure} {verb} {total_measure} across the analyzed data."
+        headline = f"{roles.measure} {verb} {total_measure} across all rows."
     else:
-        headline = f"{len(dataframe):,} records are ready for operational review."
+        headline = f"{len(dataframe):,} rows, with no date, measure or grouping column ADA could use."
 
-    summary_parts = []
-    if growth_text:
-        summary_parts.append(growth_text)
-    if leader:
-        summary_parts.append(leader.statement)
-    if not summary_parts:
-        summary_parts.append(
-            "ADA found the clearest available signals in the uploaded schema and separated "
-            "calculations from recommendations."
-        )
+    # Without a trend the headline already gives the one finding there is, so
+    # the summary says what the table seems to be instead of repeating it.
+    if growth:
+        summary_parts = [growth.statement] + ([leader.statement] if leader else [])
+    else:
+        summary_parts = [_table_description(dataframe, roles)]
+    if note := _measure_choice_note(roles):
+        summary_parts.append(note)
 
     return BusinessBrief(
         headline=headline,
@@ -1032,8 +1268,8 @@ def build_business_report(
         f"**Rows analyzed:** {len(dataframe):,}",
     ]
     if context.strip():
-        lines.append(f"**Business context:** {context.strip()}")
-    lines.extend(["", "## Executive read", "", brief.headline, "", brief.summary, ""])
+        lines.append(f"**Context:** {context.strip()}")
+    lines.extend(["", "## Summary", "", brief.headline, "", brief.summary, ""])
     lines.extend(["## What the data says", ""])
     if brief.evidence:
         for item in brief.evidence:
@@ -1048,7 +1284,7 @@ def build_business_report(
                 ]
             )
     else:
-        lines.extend(["No sufficiently strong business signals were detected.", ""])
+        lines.extend(["No finding was strong enough to report.", ""])
 
     lines.extend(["## What ADA recommends", ""])
     for item in brief.recommendations:

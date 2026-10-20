@@ -18,7 +18,7 @@ from pandas.api.types import is_datetime64_any_dtype
 
 from .aggregation import preferred_frequency
 from .autovis import ChartSpec
-from .formatting import format_change, format_number, format_percentage
+from .formatting import format_change, format_number, format_percentage, with_aggregate
 from .metrics import metric_for
 from .nlq import ValueFilter
 from .schema import ColumnRoles
@@ -446,7 +446,7 @@ def compare_slice(
             same_sign = (whole_values >= 0).all() or (whole_values <= 0).all()
             stats.append(
                 SliceStat(
-                    label=f"Total {measure}",
+                    label=with_aggregate("Total", measure),
                     slice_value=format_number(part_total, measure, column_values=whole_values),
                     whole_value=format_number(whole_total, measure, column_values=whole_values),
                     difference=(
@@ -461,7 +461,7 @@ def compare_slice(
             part_mean, whole_mean = float(part_values.mean()), float(whole_values.mean())
             stats.append(
                 SliceStat(
-                    label=f"Average {measure}",
+                    label=with_aggregate("Average", measure),
                     slice_value=format_number(part_mean, measure, column_values=whole_values),
                     whole_value=format_number(whole_mean, measure, column_values=whole_values),
                     difference=(
