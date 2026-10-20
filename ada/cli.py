@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from . import __version__
 from .api import AdaError, Refusal, analyze, sample, samples
@@ -98,18 +99,7 @@ def _samples(_: argparse.Namespace) -> int:
 
 
 def _app(_: argparse.Namespace) -> int:
-    """Launch the Streamlit app (needs the [app] extra)."""
-    try:
-        from streamlit.web import cli as streamlit_cli  # noqa: PLC0415
-    except ImportError:
-        print(
-            "The app needs Streamlit. Install it with:\n"
-            "    pip install 'automated-data-analyst[app]'",
-            file=sys.stderr,
-        )
-        return EXIT_ERROR
-    from pathlib import Path  # noqa: PLC0415
-
+    """Launch the Streamlit app from a source checkout (needs the [app] extra)."""
     entry = Path(__file__).resolve().parent.parent / "app.py"
     if not entry.is_file():
         print(
@@ -118,6 +108,11 @@ def _app(_: argparse.Namespace) -> int:
             "    cd automated-data-analyst && pip install -e '.[app]' && ada app",
             file=sys.stderr,
         )
+        return EXIT_ERROR
+    try:
+        from streamlit.web import cli as streamlit_cli  # noqa: PLC0415
+    except ImportError:
+        print("The app needs Streamlit: pip install -e '.[app]'", file=sys.stderr)
         return EXIT_ERROR
     sys.argv = ["streamlit", "run", str(entry)]
     streamlit_cli.main()
