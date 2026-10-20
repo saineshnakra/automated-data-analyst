@@ -207,6 +207,40 @@ class OptionalAiLayerTests(unittest.TestCase):
         )
 
 
+def _clock_log_dashboard():
+    """A fifty-minute sensor log with clock times only, drawn on the dashboard."""
+    import numpy as np
+    import pandas as pd
+
+    from ada.pipeline import prepare_analysis
+    from ada.ui import render_dashboard
+
+    stamps = pd.date_range("2024-01-01 15:06:28", periods=2974, freq="s").strftime("%H:%M:%S")
+    rng = np.random.default_rng(0)
+    frame = pd.DataFrame({
+        "Time": stamps,
+        "MQ139": 104 + (np.arange(2974) > 2500) * 200 + rng.normal(0, 2, 2974),
+        "Detector": ["OFF"] * 2900 + ["ON"] * 74,
+    })
+    prepared = prepare_analysis(frame, row_limit=1_000_000)
+    render_dashboard(prepared.dataframe, prepared.detected_roles)
+
+
+class DashboardForecastTests(unittest.TestCase):
+    def test_a_forecast_worse_than_no_change_is_drawn_only_when_asked(self):
+        app = AppTest.from_function(_clock_log_dashboard, default_timeout=60).run()
+
+        self.assertFalse(app.exception)
+        self.assertTrue(any("The forecast is not drawn" in caption.value for caption in app.caption))
+        self.assertTrue(any("15:56 is still in progress" in caption.value for caption in app.caption))
+        self.assertEqual([toggle.label for toggle in app.toggle], ["Draw it anyway"])
+
+        app.toggle[0].set_value(True).run()
+
+        self.assertFalse(app.exception)
+        self.assertTrue(any(caption.value.startswith("Baseline forecast") for caption in app.caption))
+
+
 class AppSmokeTests(unittest.TestCase):
     def test_demo_renders_complete_product(self):
         app = AppTest.from_file("app.py", default_timeout=45).run()

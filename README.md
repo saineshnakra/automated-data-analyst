@@ -90,15 +90,25 @@ ada ask orders.csv "which category made the most revenue"
   is not printed as dollars. Figures compared in one sentence never print
   alike, numeric groups are named with their column ("Status 2"), and an
   average resting on fewer than 30 rows says so.
-- **Builds a timeline**: picks a period grain the data can fill, drops a final
-  period the data only partly covers, and notes both under the chart. A
-  `Year` column (with a `Month` column, if there is one) counts as a date.
-- **Flags anomalies**: periods outside a band around a Theil-Sen trendline. The
-  band is calibrated by simulation so a stable series raises a false alarm in
-  about one analysis in twenty.
+- **Builds a timeline**: picks a period grain the data can fill, down to the
+  hour, minute or second for a sensor log, drops a final period the data only
+  partly covers, and notes both under the chart. A `Year` column (with a
+  `Month` column, if there is one) counts as a date. Clock times with no date
+  are read as times of day, never given today's date, and a column of elapsed
+  seconds or minutes can be the time axis.
+- **Compares like with like**: the latest change is measured on the groups
+  that reported in both periods, a series with a yearly cycle is set against
+  the same time of year, and a group's figure says when it covers only part
+  of the dates. Logs stacked one after another in a file, and daily summaries
+  appended below hourly readings, are found and kept apart.
+- **Flags anomalies**: periods outside a band around a Theil-Sen trendline, or
+  around the usual level for the time of year when the series has a yearly
+  cycle. The band is calibrated by simulation so a stable series raises a false
+  alarm in about one analysis in twenty.
 - **Forecasts with a backtest**: a trendline plus month-of-year seasonality,
   scored on held-out periods against a no-change forecast. It refuses to run on
-  too little history.
+  too little history, and says plainly when the forecast did worse than
+  assuming no change.
 - **Answers plain-English questions** ("average pH by site", "mean signal by
   timepoint", "which month had the highest wind", "is pH correlated with
   temperature", "how many samples have pH below 5.5", "what share have
