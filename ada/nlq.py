@@ -1942,11 +1942,17 @@ def _with_scope(
         elif plan.intent != "aggregate":
             sentences.append(f"Based on all {len(dataframe):,} rows.")
     if rows_not_analyzed:
-        older = "older " if roles.date else ""
-        sentences.append(
-            f"The row limit left out {rows_not_analyzed:,} {older}rows, so this answer covers "
-            f"only the {len(dataframe):,} rows ADA analysed."
-        )
+        # A dated table keeps its newest rows; one without a date is sampled at random.
+        if roles.date:
+            sentences.append(
+                f"The row limit left out {rows_not_analyzed:,} older rows, so this answer covers "
+                f"only the {len(dataframe):,} rows ADA analysed."
+            )
+        else:
+            sentences.append(
+                f"The row limit left out {rows_not_analyzed:,} rows, so this answer covers only "
+                f"a random sample of {len(dataframe):,}."
+            )
     return replace(result, answer=" ".join(sentences))
 
 

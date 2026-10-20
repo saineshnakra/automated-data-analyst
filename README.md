@@ -117,8 +117,9 @@ ada ask orders.csv "which category made the most revenue"
 - **Analyzes a slice you select**: draw a box or lasso on the Explore chart, or
   click some bars, and get the same analysis for those rows beside the whole.
 
-The web app accepts files up to 25 MB. By default the most recent 250,000 rows
-are analyzed (`row_limit=` changes that).
+The web app accepts files up to 25 MB. By default up to 1,000,000 rows are
+analyzed (`row_limit=` changes that): the newest rows of a table with a date,
+or a random sample of one without, and every answer says which.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/anomaly-forecast.png" width="49%" alt="ADA dashboard for the lab sample: viability over time with an anomaly and a forecast, change per treatment, heatmap, distribution and scatter">

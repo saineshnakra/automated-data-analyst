@@ -154,7 +154,9 @@ SAMPLE_NOTES = {
 }
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
-MAX_ANALYSIS_ROWS = 250_000
+# The library's DEFAULT_ROW_LIMIT. Cleaning, not the row count, sets the time a
+# file takes, so a file the upload limit admits is analyzed whole.
+MAX_ANALYSIS_ROWS = 1_000_000
 
 st.set_page_config(
     page_title="ADA | Exploratory data analysis for CSV and Excel",
@@ -499,16 +501,8 @@ except (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError, Val
     st.error(f"ADA could not read this file: {error}")
     st.stop()
 
-if prepared.truncated_rows:
-    covered = ""
-    if prepared.analyzed_from is not None and prepared.analyzed_to is not None:
-        covered = (
-            f", covering {prepared.analyzed_from:%d %b %Y} to {prepared.analyzed_to:%d %b %Y}"
-        )
-    st.warning(
-        f"ADA analyzed the {MAX_ANALYSIS_ROWS:,} most recent rows for predictable performance "
-        f"and skipped {prepared.truncated_rows:,} older ones{covered}."
-    )
+if prepared.rows_note:
+    st.warning(f"ADA analyzed {prepared.rows_note} for predictable performance.")
 
 for note in prepared.cleaning_report.notes:
     st.info(note)

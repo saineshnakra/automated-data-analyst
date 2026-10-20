@@ -27,14 +27,16 @@ from .business_insights import BusinessBrief, analyze_business, build_business_r
 from .file_io import list_sample_datasets as _list_sample_datasets
 from .file_io import read_tabular_file
 from .forecasting import Forecast, build_forecast
+from .formatting import format_moment, is_undated
 from .metrics import AGGREGATION_CHOICES, metric_for
 from .nlq import QueryAnswer, answer_question, rephrase_hint, suggested_questions, unsupported_phrasing
 from .pipeline import apply_focus, focus_options, prepare_analysis
 from .schema import ColumnRoles
 
-#: Rows analyzed by default. The oldest rows are dropped first; see
-#: :attr:`Analysis.rows_not_analyzed`.
-DEFAULT_ROW_LIMIT = 250_000
+#: Rows analyzed by default. Over it, a table with a date keeps its newest
+#: rows and one without a date is sampled at random; see
+#: :attr:`Analysis.rows_not_analyzed` and :attr:`Analysis.rows_note`.
+DEFAULT_ROW_LIMIT = 1_000_000
 
 #: Upload limit of the hosted app. Not enforced by the library.
 MAX_FILE_BYTES = 25 * 1024 * 1024
@@ -188,6 +190,7 @@ def analyze(
         period=(prepared.analyzed_from, prepared.analyzed_to),
         frequency=frequency,
         source_name=name,
+        rows_note=prepared.rows_note,
     )
 
 
@@ -233,6 +236,9 @@ class Analysis:
     period: tuple[pd.Timestamp | None, pd.Timestamp | None]
     frequency: str | None = None
     source_name: str = "DataFrame"
+    #: Which rows were analyzed when some were left out ("a random sample of
+    #: 1,000,000 of 3,108,545 rows"), or "" when every row was.
+    rows_note: str = ""
     _trends: dict = field(default_factory=dict, repr=False, compare=False)
 
     @property
@@ -375,6 +381,7 @@ class Analysis:
             period=self.period,
             frequency=self.frequency,
             source_name=f"{self.source_name} · {value}",
+            rows_note=self.rows_note,
         )
 
     def to_markdown(self) -> str:
@@ -393,9 +400,10 @@ class Analysis:
             "source": self.source_name,
             "rows_analyzed": self.rows_analyzed,
             "rows_not_analyzed": self.rows_not_analyzed,
+            "rows_note": self.rows_note,
             "period": {
-                "from": start.isoformat() if start is not None else None,
-                "to": end.isoformat() if end is not None else None,
+                "from": _moment(start),
+                "to": _moment(end),
             },
             "roles": {
                 "date": self.roles.date,
@@ -436,7 +444,9 @@ class Analysis:
     def __str__(self) -> str:
         start, end = self.period
         dated = start is not None and end is not None
-        span = f"{start:%d %b %Y} to {end:%d %b %Y}" if dated else "no date range"
+        span = f"{format_moment(start)} to {format_moment(end)}" if dated else "no date range"
+        if dated and is_undated(start):
+            span += " (times with no calendar date)"
         roles = self.roles
         combined = f" ({metric_for(roles.measure, roles).aggregation})" if roles.measure else ""
         lines = [
@@ -447,8 +457,8 @@ class Analysis:
         ]
         if self.summary and self.summary != self.headline:
             lines.append(self.summary)
-        if self.rows_not_analyzed:
-            lines.append(f"\n{self.rows_not_analyzed:,} older rows were not analyzed (row limit).")
+        if self.rows_note:
+            lines.append(f"\nAnalyzed {self.rows_note} (row limit).")
         if self.evidence:
             lines.append("")
             for item in self.evidence:
@@ -456,3 +466,10 @@ class Analysis:
                 lines.append(f"      {item.statement}")
                 lines.append(f"      calc: {item.calculation}")
         return "\n".join(lines)
+
+
+def _moment(stamp: pd.Timestamp | None) -> str | None:
+    """ISO text for a timestamp, or the time alone ("15:06:28") when it has no calendar date."""
+    if stamp is None:
+        return None
+    return format_moment(stamp) if is_undated(stamp) else stamp.isoformat()

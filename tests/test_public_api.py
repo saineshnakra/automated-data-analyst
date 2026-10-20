@@ -167,7 +167,7 @@ class SurfaceTests(unittest.TestCase):
         self.assertIn("#", self.report.to_markdown())
 
     def test_the_limits_are_readable(self):
-        self.assertEqual(ada.DEFAULT_ROW_LIMIT, 250_000)
+        self.assertEqual(ada.DEFAULT_ROW_LIMIT, 1_000_000)
         self.assertEqual(ada.MAX_FILE_BYTES, 25 * 1024 * 1024)
 
     def test_samples_ship_with_the_package(self):
@@ -443,6 +443,46 @@ class YearTimelineTests(unittest.TestCase):
     def test_anomalies_and_the_forecast_run_on_a_yearly_series(self):
         self.assertNotIsInstance(self.report.anomalies, ada.Refusal)
         self.assertNotIsInstance(self.report.forecast(), ada.Refusal)
+
+
+class RowsLeftOutTests(unittest.TestCase):
+    def setUp(self):
+        self.frame = pd.DataFrame({
+            "Material": [name for name in "ABCD" for _ in range(300)],
+            "Signal": [float(n % 17) for n in range(1200)],
+        })
+
+    def test_every_answer_says_which_rows_it_used(self):
+        report = ada.analyze(self.frame, row_limit=400)
+        answer = report.ask("average Signal by Material")
+        self.assertTrue(answer.answer.endswith(
+            "The row limit left out 800 rows, so this answer covers only a random sample of 400."
+        ))
+        self.assertEqual(report.rows_note, "a random sample of 400 of 1,200 rows")
+        self.assertEqual(report.to_dict()["rows_note"], report.rows_note)
+        self.assertIn("Analyzed a random sample of 400 of 1,200 rows", str(report))
+        self.assertNotIn("older", str(report))
+
+    def test_a_table_analyzed_whole_adds_nothing_to_its_answers(self):
+        report = ada.analyze(self.frame)
+        self.assertNotIn("row limit", report.ask("average Signal by Material").answer)
+        self.assertEqual(report.to_dict()["rows_note"], "")
+
+
+class UndatedTimeTests(unittest.TestCase):
+    def setUp(self):
+        stamps = pd.date_range("2024-01-01 15:06:28", periods=2974, freq="s")
+        self.report = ada.analyze(pd.DataFrame({
+            "Time": stamps.strftime("%H:%M:%S"),
+            "Signal": [100.0 + (n > 2400) * 200 + n % 5 for n in range(2974)],
+        }))
+
+    def test_the_span_is_written_without_a_date(self):
+        text = str(self.report)
+        self.assertIn("15:06:28 to 15:56:01 (times with no calendar date)", text)
+        self.assertNotIn("2026", text)
+        period = self.report.to_dict()["period"]
+        self.assertEqual((period["from"], period["to"]), ("15:06:28", "15:56:01"))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 import unittest
 from dataclasses import replace
 
+import numpy as np
 import pandas as pd
 
 from ada.demo_data import make_demo_data
@@ -168,11 +169,81 @@ class RowLimitTests(unittest.TestCase):
         self.assertEqual(len(prepared.dataframe), 5)
         self.assertEqual(prepared.analyzed_from, pd.Timestamp("2025-01-10"))
 
-    def test_a_file_with_no_dates_still_takes_its_tail(self):
-        frame = pd.DataFrame({"Segment": list("abcdefghij"), "Revenue": [float(n) for n in range(10)]})
-        prepared = prepare_analysis(frame, row_limit=4)
-        self.assertEqual(len(prepared.dataframe), 4)
-        self.assertEqual(prepared.dataframe["Revenue"].tolist(), [6.0, 7.0, 8.0, 9.0])
+    def test_a_file_with_no_dates_is_sampled_in_file_order(self):
+        # Sorted by material: the tail would hold one material only.
+        frame = pd.DataFrame({
+            "Material": [name for name in "ABCD" for _ in range(500)],
+            "Signal": [float(n) for n in range(2000)],
+        })
+        prepared = prepare_analysis(frame, row_limit=400)
+        signal = prepared.dataframe["Signal"]
+        self.assertEqual(len(prepared.dataframe), 400)
+        self.assertTrue(signal.is_monotonic_increasing)
+        self.assertEqual(set(prepared.dataframe["Material"]), set("ABCD"))
+        self.assertEqual(prepared.row_selection, "sample")
+        self.assertEqual(prepared.rows_note, "a random sample of 400 of 2,000 rows")
+        self.assertNotIn("newest", prepared.rows_note)
+
+    def test_the_sample_is_the_same_on_every_run(self):
+        frame = pd.DataFrame({"Segment": list("abcdefghij") * 30, "Revenue": [float(n) for n in range(300)]})
+        first = prepare_analysis(frame, row_limit=40).dataframe["Revenue"].tolist()
+        second = prepare_analysis(frame, row_limit=40).dataframe["Revenue"].tolist()
+        self.assertEqual(first, second)
+
+    def test_a_sample_missing_a_group_says_so(self):
+        frame = pd.DataFrame({
+            "Site": ["Rare"] + ["Common"] * 999 + ["Other"] * 1000,
+            "Reading": [float(n % 7) for n in range(2000)],
+        })
+        prepared = prepare_analysis(frame, row_limit=50)
+        self.assertEqual(prepared.dataframe["Site"].nunique(), 2)
+        self.assertTrue(
+            any("Site has 3 values in the file but 2 in the sample" in note
+                for note in prepared.cleaning_report.notes)
+        )
+
+    def test_a_dated_file_keeps_its_newest_rows_and_says_so(self):
+        rows = [(f"2025-{month:02d}-{day:02d}", 100.0) for month in range(2, 10) for day in (10, 20)]
+        prepared = prepare_analysis(dated(rows), row_limit=15)
+        self.assertEqual(prepared.row_selection, "newest")
+        self.assertEqual(prepared.rows_note, "the newest 14 of 16 rows, from 10 Mar 2025")
+
+    def test_a_file_that_fits_has_no_rows_note(self):
+        prepared = prepare_analysis(make_demo_data(rows=80), row_limit=80)
+        self.assertEqual(prepared.rows_note, "")
+
+
+def hourly(start, hours, level):
+    rng = np.random.default_rng(len(start) + hours)
+    return pd.DataFrame({
+        "Datetime": pd.date_range(start, periods=hours, freq="h"),
+        "CO": level + rng.random(hours),
+    })
+
+
+class LogStructureTests(unittest.TestCase):
+    def test_daily_summaries_below_hourly_rows_are_left_out(self):
+        daily = pd.DataFrame({"Datetime": pd.date_range("2024-01-01", periods=30, freq="D"), "CO": 5.0})
+        frame = pd.concat([hourly("2024-01-01 01:00", 24 * 30, 1.0), daily], ignore_index=True)
+
+        prepared = prepare_analysis(frame, row_limit=10_000)
+
+        self.assertEqual(len(prepared.dataframe), 24 * 30)
+        self.assertLess(prepared.dataframe["CO"].max(), 5.0)
+        self.assertTrue(any("set aside" in note for note in prepared.cleaning_report.notes))
+
+    def test_two_logs_in_one_file_become_two_groups(self):
+        frame = pd.concat(
+            [hourly("2024-01-01", 600, 1.0), hourly("2024-01-01", 600, 3.0)], ignore_index=True
+        )
+
+        prepared = prepare_analysis(frame, row_limit=10_000)
+
+        self.assertEqual(prepared.detected_roles.dimension, "Block")
+        means = prepared.dataframe.groupby("Block")["CO"].mean()
+        self.assertLess(means["Block 1"], 2.0)
+        self.assertGreater(means["Block 2"], 3.0)
+        self.assertTrue(any("holds 2 logs" in note for note in prepared.cleaning_report.notes))
 
 
 if __name__ == "__main__":
