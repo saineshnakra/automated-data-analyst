@@ -218,19 +218,22 @@ def format_number(
     *,
     compact: bool = True,
     column_values: pd.Series | None = None,
+    extra_decimals: int = 0,
 ) -> str:
     """Format a value as a percentage, currency or plain number, judged from the column name.
 
-    Non-finite values render as an em dash.
+    ``extra_decimals`` adds decimal places to a figure that is not compacted
+    (see ``format_values_apart``). Non-finite values render as an em dash.
     """
     if not np.isfinite(value):
         return "—"
+    extra = max(int(extra_decimals), 0)
 
     if is_percentage(column) and percentage_outranks_currency(column):
         if _percentage_uses_fraction_scale(value, column_values):
-            return f"{value * 100:.1f}%"
+            return f"{value * 100:.{1 + extra}f}%"
         if _column_reads_as_percentage(value, column_values):
-            return f"{value:.1f}%"
+            return f"{value:.{1 + extra}f}%"
 
     # Otherwise currency takes precedence over percentage.
     if is_currency(column):
@@ -238,13 +241,13 @@ def format_number(
         prefix = currency_symbol(column)
         body = _compact_magnitude(abs(value), compact=compact)
         # Sign before the symbol: -$1.2M, not $-1.2M.
-        return f"{sign}{prefix}{body}" if body else f"{sign}{prefix}{abs(value):,.2f}"
+        return f"{sign}{prefix}{body}" if body else f"{sign}{prefix}{abs(value):,.{2 + extra}f}"
 
     if is_percentage(column):
         if _percentage_uses_fraction_scale(value, column_values):
-            return f"{value * 100:.1f}%"
+            return f"{value * 100:.{1 + extra}f}%"
         if _column_reads_as_percentage(value, column_values):
-            return f"{value:.1f}%"
+            return f"{value:.{1 + extra}f}%"
         # Fall through: a ratio-named column above MAX_PLAUSIBLE_PERCENTAGE
         # renders as a plain number.
 
@@ -258,9 +261,45 @@ def format_number(
 
     # Three significant figures below 1, so 0.0012 doesn't print as 0.00.
     if abs(value) < 1:
-        return f"{value:.3g}"
+        return f"{value:.{3 + extra}g}"
 
-    return f"{value:,.2f}"
+    return f"{value:,.{2 + extra}f}"
+
+
+# How many decimals format_values_apart may add before it gives up on telling values apart.
+MAX_EXTRA_DECIMALS = 4
+
+
+def _kept_apart(values: tuple[float, ...], rendered: tuple[str, ...]) -> bool:
+    """Whether every two different values have different renderings."""
+    seen: dict[str, float] = {}
+    return all(seen.setdefault(text, value) == value for value, text in zip(values, rendered, strict=True))
+
+
+def format_values_apart(
+    *values: float,
+    column: str | None = None,
+    column_values: pd.Series | None = None,
+) -> tuple[str, ...]:
+    """Format figures quoted together so that different values never print alike.
+
+    At the usual precision 1,211 and 1,214 both print as "1.2K", and "from 1.2K
+    to 1.2K" hides the change the sentence reports. When any two collide, all
+    are written out in full ("1,211.30" and "1,214.80"), with more decimals if
+    needed, so they keep one precision. Equal values, and values within
+    rounding noise of each other, keep the usual rendering.
+    """
+    usual = tuple(format_number(value, column, column_values=column_values) for value in values)
+    if _kept_apart(values, usual):
+        return usual
+    for extra in range(MAX_EXTRA_DECIMALS + 1):
+        full = tuple(
+            format_number(value, column, compact=False, column_values=column_values, extra_decimals=extra)
+            for value in values
+        )
+        if _kept_apart(values, full):
+            return full
+    return usual
 
 
 def sentence_case(name: str) -> str:

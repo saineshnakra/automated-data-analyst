@@ -57,6 +57,10 @@ the previous period for an amount or count, percentage points for a rate, and
 the plain difference for a level (a percentage of a temperature in °C means
 nothing).
 
+The previous and latest values are printed with enough precision to differ
+(`format_values_apart` in `ada/formatting.py`), so a small change never reads
+"from 1.2K to 1.2K".
+
 It then compares the latest change with the series' own period-over-period
 changes, measured the same way. It reports whether the change is within normal
 variation, larger or quieter than usual, or unusually large or quiet, based on

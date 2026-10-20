@@ -14,7 +14,7 @@ from typing import Literal
 import pandas as pd
 
 from .aggregation import TrendSeries, build_trend, measure_aggregation, preferred_frequency, unlabelled_label
-from .formatting import format_change, format_number, sentence_case
+from .formatting import format_change, format_number, format_values_apart, sentence_case
 from .metrics import resolve_metric
 from .schema import ColumnRoles
 
@@ -678,10 +678,10 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
             if size
             else f"across {len(trend)} {grain_name}s, from a starting period of zero"
         )
+        start, end = format_values_apart(first, last, column=plan.measure)
         answer = (
             f"{plan.measure or 'Records'} per {grain_name}{_phrase(applied)} moved from "
-            f"{format_number(first, plan.measure)} to {format_number(last, plan.measure)} "
-            f"({movement})."
+            f"{start} to {end} ({movement})."
         )
         return QueryAnswer(
             question="",
@@ -793,11 +793,10 @@ def _execute_growth(
         if plan.top_n:
             result = result.head(plan.top_n)
         leader = result.iloc[0]
+        start, end = format_values_apart(float(leader["Previous"]), float(leader["Latest"]), column=measure)
         answer = (
             f"{leader[plan.dimension]} {_ranked_move(leader['Change %'], plan.ascending)}"
-            f"{_phrase(applied)}: {leader['Change %']:+.1f}% "
-            f"({format_number(float(leader['Previous']), measure)} → "
-            f"{format_number(float(leader['Latest']), measure)}) in the latest period."
+            f"{_phrase(applied)}: {leader['Change %']:+.1f}% ({start} → {end}) in the latest period."
         )
         if not from_nothing.empty:
             newest = from_nothing.loc[from_nothing["Latest"].abs().idxmax()]
@@ -831,9 +830,10 @@ def _execute_growth(
             calculation=f"change undefined for a zero or missing base{scope}",
         )
     direction = "up" if current >= previous else "down"
+    start, end = format_values_apart(previous, current, column=measure)
     answer = (
         f"{measure or 'Records'}{_phrase(applied)} is {direction} {size} versus the prior "
-        f"period ({format_number(previous, measure)} → {format_number(current, measure)})."
+        f"period ({start} → {end})."
     )
     if unit in ("rate", "level"):
         formula = f"latest − previous period average{scope}"
@@ -881,10 +881,10 @@ def _rank_level_changes(
     leader = result.iloc[0]
     previous, latest = float(leader["Previous"]), float(leader["Latest"])
     size = format_change(previous, latest, measure, unit, column, signed=True)
+    start, end = format_values_apart(previous, latest, column=measure)
     answer = (
         f"{leader[plan.dimension]} {_ranked_move(latest - previous, plan.ascending)}"
-        f"{_phrase(applied)}: {size} "
-        f"({format_number(previous, measure)} → {format_number(latest, measure)}) in the latest period."
+        f"{_phrase(applied)}: {size} ({start} → {end}) in the latest period."
     )
     unit_label = "percentage points" if unit == "rate" else "difference"
     return QueryAnswer(

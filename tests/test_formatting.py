@@ -9,6 +9,7 @@ from ada.formatting import (
     format_change,
     format_number,
     format_rate_change,
+    format_values_apart,
     normalized_name,
     rate_scale,
     sentence_case,
@@ -81,6 +82,32 @@ class NumberDisplayTests(unittest.TestCase):
         self.assertEqual(sentence_case("Water Temp (°C)"), "water temp (°C)")
         self.assertEqual(sentence_case("SKU"), "SKU")
         self.assertEqual(sentence_case("pH"), "pH")
+
+
+
+class ChangeEndsTests(unittest.TestCase):
+    def test_ends_that_round_alike_are_written_out(self):
+        self.assertEqual(format_number(1_211.3), format_number(1_214.8))
+        self.assertEqual(format_values_apart(1_211.3, 1_214.8), ("1,211.30", "1,214.80"))
+        self.assertEqual(
+            format_values_apart(2_700_100, 2_700_400, column="Revenue"), ("$2,700,100.00", "$2,700,400.00")
+        )
+        self.assertEqual(format_values_apart(0.2501, 0.2504, column="Conversion Rate"), ("25.01%", "25.04%"))
+        self.assertEqual(format_values_apart(12.3401, 12.3412, column="pH"), ("12.340", "12.341"))
+
+    def test_ends_that_already_differ_keep_the_usual_rendering(self):
+        self.assertEqual(format_values_apart(36_800, 41_300, column="Revenue"), ("$36.8K", "$41.3K"))
+        self.assertEqual(format_values_apart(0.0012, 0.0015), ("0.0012", "0.0015"))
+
+    def test_a_value_just_outside_a_range_never_prints_as_its_bound(self):
+        self.assertEqual(
+            format_values_apart(13.336, 13.341, 15.5, column="Resolution Hours"),
+            ("13.336", "13.341", "15.500"),
+        )
+
+    def test_equal_ends_print_alike(self):
+        self.assertEqual(format_values_apart(5.0, 5.0, column="pH"), ("5", "5"))
+        self.assertEqual(format_values_apart(1_200.0, 1_200.0), ("1.2K", "1.2K"))
 
 
 if __name__ == "__main__":

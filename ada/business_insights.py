@@ -22,6 +22,7 @@ from .formatting import (
     format_number,
     format_percentage,
     format_period,
+    format_values_apart,
     normalized_name,
     sentence_case,
 )
@@ -162,6 +163,9 @@ def _growth_evidence(
     direction = "increased" if delta >= 0 else "decreased"
     # Tone follows meaning (a rising cost is negative); recommendations follow tone.
     welcome = increase_is_welcome(roles.measure)
+    start, end = format_values_apart(
+        previous, current, column=roles.measure, column_values=measure_values
+    )
     if series.short_coverage:
         context += (
             f" The last period only reaches {series.short_coverage}, so part of this may be "
@@ -173,8 +177,7 @@ def _growth_evidence(
         value=value,
         statement=(
             f"{measure} {direction} {moved} in the latest {completeness} "
-            f"({period}), from {format_number(previous, roles.measure, column_values=measure_values)} to "
-            f"{format_number(current, roles.measure, column_values=measure_values)}.{context}"
+            f"({period}), from {start} to {end}.{context}"
         ),
         calculation=f"{calculation}, compared with past period-to-period changes",
         tone="positive" if (delta >= 0) == welcome else "negative",
@@ -211,11 +214,12 @@ def _change_driver_evidence(
     else:
         size = short = format_number(abs(driver_change), roles.measure, column_values=measure_values)
 
+    start, end = format_values_apart(
+        previous_value, current_value, column=roles.measure, column_values=measure_values
+    )
     movement = (
         f"{driver_name} moved the most of any {sentence_case(roles.dimension)}: "
-        f"{roles.measure} {direction} by {size}, "
-        f"from {format_number(previous_value, roles.measure, column_values=measure_values)} to "
-        f"{format_number(current_value, roles.measure, column_values=measure_values)}."
+        f"{roles.measure} {direction} by {size}, from {start} to {end}."
     )
 
     if not resolve_metric(roles.measure).additive:
@@ -274,16 +278,18 @@ def _anomaly_evidence(
     measure_values = dataframe[roles.measure].dropna() if roles.measure else None
     label = format_period(worst.period, grain)
     plural = "periods sit" if len(anomalies) > 1 else "period sits"
+    # The value sits just outside one end of the range, so all three are kept apart.
+    reached, low, high = format_values_apart(
+        worst.value, worst.expected_low, worst.expected_high,
+        column=roles.measure, column_values=measure_values,
+    )
     return Evidence(
         kind="anomaly",
         title="Anomalous periods",
         value=f"{len(anomalies)}",
         statement=(
-            f"{label} is the sharpest anomaly: {sentence_case(measure)} reached "
-            f"{format_number(worst.value, roles.measure, column_values=measure_values)}, "
-            f"{worst.direction} the expected "
-            f"{format_number(worst.expected_low, roles.measure, column_values=measure_values)}–"
-            f"{format_number(worst.expected_high, roles.measure, column_values=measure_values)} range. "
+            f"{label} is the sharpest anomaly: {sentence_case(measure)} reached {reached}, "
+            f"{worst.direction} the expected {low}–{high} range. "
             f"{len(anomalies)} {plural} outside the trendline band."
         ),
         calculation=(

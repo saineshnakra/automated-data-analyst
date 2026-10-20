@@ -512,6 +512,18 @@ class DirectionOfGoodTests(unittest.TestCase):
             self.assertNotIn("Alpha decline", item.action)
 
 
+class ChangeWordingTests(unittest.TestCase):
+    def test_a_small_change_never_reads_from_x_to_x(self):
+        frame = pd.DataFrame(
+            {"Month": MONTHS, "Units": [1_150.0, 1_160.0, 1_175.0, 1_180.0, 1_190.0, 1_195.0,
+                                        1_200.0, 1_204.0, 1_206.0, 1_208.0, 1_211.0, 1_214.0]}
+        )
+
+        trend = next(item for item in analyze_business(frame).evidence if item.kind == "trend")
+
+        self.assertIn("from 1,211 to 1,214", trend.statement)
+
+
 class EvidenceBudgetTests(unittest.TestCase):
     def test_a_quality_card_is_never_squeezed_out_by_the_six_card_cap(self):
         filler = [
