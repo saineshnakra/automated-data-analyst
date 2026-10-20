@@ -17,7 +17,7 @@ from .anomalies import detect_anomalies
 from .autovis import fold_small_series, recommend_chart
 from .business_insights import BusinessBrief
 from .forecasting import build_forecast, describe_backtest
-from .formatting import format_number, format_period
+from .formatting import format_number, format_period, group_label
 from .metrics import metric_for
 from .nlq import QueryAnswer
 from .pipeline import analyze_selection
@@ -133,7 +133,7 @@ def render_brief(brief: BusinessBrief) -> None:
     st.markdown(
         f"""
         <section class="brief">
-          <div class="brief-top"><span class="signal-orb"></span><div class="eyebrow">Executive signal</div></div>
+          <div class="brief-top"><span class="signal-orb"></span><div class="eyebrow">Headline</div></div>
           <h1>{escape(brief.headline)}</h1>
           <p>{escape(brief.summary)}</p>
           <div class="brief-trust">CALCULATED FROM THE FILE · INTERPRETATION SHOWN SEPARATELY · NO CAUSAL CLAIMS</div>
@@ -248,6 +248,23 @@ def _hover_format(values) -> str:
     return ",.0f" if not finite.empty and finite.median() >= 100 else ",.2f"
 
 
+def group_names(dataframe: pd.DataFrame, dimension: str | None, values) -> list[str]:
+    """Chart labels for groups: "Status 2" for a numeric code, the text itself otherwise.
+
+    The aggregations may hand back a numeric code as text ("2"), so it is read
+    back as a number when the grouping column is numeric. A label that isn't a
+    number, such as "Other segments", is kept as it is.
+    """
+    numeric = bool(dimension) and pd.api.types.is_numeric_dtype(dataframe[dimension])
+    if not numeric:
+        return [str(value) for value in values]
+    codes = pd.to_numeric(pd.Series(list(values), dtype=object), errors="coerce")
+    return [
+        group_label(dimension, float(code)) if pd.notna(code) else str(value)
+        for value, code in zip(values, codes, strict=True)
+    ]
+
+
 def _trend_figure(frame: pd.DataFrame, averaged: bool, **options) -> go.Figure:
     """Period values as a filled area for totals, or a plain line for averages."""
     if averaged:
@@ -264,6 +281,8 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
     series = build_trend(dataframe, roles)
     trend = series.frame
     segments = segment_frame(dataframe, roles)
+    if not segments.empty:
+        segments["Segment"] = group_names(dataframe, roles.dimension, segments["Segment"])
     chart_columns = st.columns(2, gap="medium")
     with chart_columns[0]:
         if not trend.empty:
@@ -338,7 +357,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
             figure.update_traces(marker_line_width=0, hovertemplate="%{y}: %{x:,.2f}<extra></extra>")
             st.plotly_chart(style_chart(figure), width="stretch", config={"displayModeBar": False})
         else:
-            st.markdown('<div class="empty-state">Select a segment column to reveal contribution.</div>', unsafe_allow_html=True)
+            st.markdown('<div class="empty-state">Pick a grouping column to compare groups.</div>', unsafe_allow_html=True)
 
     movement_columns = st.columns(2, gap="medium")
     with movement_columns[0]:
@@ -348,7 +367,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
             # they are shown side by side rather than stacked into a total.
             changes = go.Figure(
                 go.Bar(
-                    x=list(drivers["Segment"]),
+                    x=group_names(dataframe, roles.dimension, drivers["Segment"]),
                     y=list(drivers["Change"]),
                     marker_color=[RISE if change >= 0 else FALL for change in drivers["Change"]],
                     hovertemplate=f"%{{x}}: %{{y:+{_hover_format(drivers['Change'])}}}<extra></extra>",
@@ -361,7 +380,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
         elif not drivers.empty:
             waterfall = go.Figure(
                 go.Waterfall(
-                    x=[*drivers["Segment"], "Net change"],
+                    x=[*group_names(dataframe, roles.dimension, drivers["Segment"]), "Net change"],
                     y=[*drivers["Change"], 0],
                     measure=[*(["relative"] * len(drivers)), "total"],
                     connector={"line": {"color": "#E5E7EB"}},
@@ -375,7 +394,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
             st.plotly_chart(style_chart(waterfall), width="stretch", config={"displayModeBar": False})
         else:
             st.markdown(
-                '<div class="empty-state">A date, metric, and segment together unlock the movement waterfall.</div>',
+                '<div class="empty-state">A date, a measure and a grouping column together show what changed between the last two periods.</div>',
                 unsafe_allow_html=True,
             )
 
@@ -386,7 +405,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 go.Heatmap(
                     z=heat.to_numpy(),
                     x=[format_period(period, series.frequency) for period in heat.columns],
-                    y=[str(segment) for segment in heat.index],
+                    y=group_names(dataframe, roles.dimension, heat.index),
                     colorscale=[[0, "#F6F7F9"], [0.5, "#B9B1FF"], [1, "#4E43C7"]],
                     hovertemplate=f"%{{y}} · %{{x}}: %{{z:{_hover_format(heat.to_numpy().ravel())}}}<extra></extra>",
                     showscale=False,
@@ -409,7 +428,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
             st.plotly_chart(style_chart(heatmap), width="stretch", config={"displayModeBar": False})
         else:
             st.markdown(
-                '<div class="empty-state">A date and a segment together unlock the intensity heatmap.</div>',
+                '<div class="empty-state">A date and a grouping column together show each group over time.</div>',
                 unsafe_allow_html=True,
             )
 

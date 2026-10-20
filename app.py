@@ -124,6 +124,7 @@ except Exception as error:  # noqa: BLE001 - any import failure must degrade, no
     DEFAULT_PRESET, MODEL_PRESETS, AINarrative = "", {}, ()
 
 from ada.ui import (  # noqa: E402
+    group_names,
     inject_styles,
     render_ai_narrative,
     render_brief,
@@ -518,8 +519,16 @@ date_options = [
 measure_options = ["None", *detected.numeric]
 dimension_options = ["None", *detected.dimensions]
 
-with st.expander("Tune ADA's schema detection", expanded=False):
+# Runners-up for the measure, when the pick was a close call. Older ColumnRoles have no such field.
+close_measures = [
+    column for column in getattr(detected, "measure_alternatives", ()) or () if column != detected.measure
+]
+with st.expander("Tune ADA's schema detection", expanded=bool(close_measures)):
     st.caption("ADA picked these columns automatically. Change any that are wrong.")
+    if close_measures:
+        st.caption(
+            f"The metric was a close call: {', '.join(close_measures)} could also be it."
+        )
     selectors = st.columns(3)
     selected_date = selectors[0].selectbox(
         "Date",
@@ -563,23 +572,28 @@ roles = apply_role_selection(
 )
 
 focus_value = None
+focus_label = None
 focus_values = focus_options(dataframe, roles)
 if focus_values:
     everything = f"All {roles.dimension} values"
+    # A numeric code reads as "Status 2" rather than a bare "2".
+    focus_labels = dict(zip(focus_values, group_names(dataframe, roles.dimension, focus_values), strict=True))
     focus_columns = st.columns([0.34, 0.66])
     choice = focus_columns[0].selectbox(
         f"Drill into one {roles.dimension}",
         [everything, *focus_values],
+        format_func=lambda value: focus_labels.get(value, value),
         help="Focus the brief, dashboard, chat, and exports on a single slice. "
         "ADA regroups the slice by the next useful segment.",
     )
     if choice != everything:
         focus_value = choice
+        focus_label = focus_labels[choice]
 
 dataframe, roles = apply_focus(dataframe, roles, focus_value)
 brief = analyze_business(dataframe, roles)
 
-render_dataset_bar(source_name, dataframe, roles, focus=focus_value)
+render_dataset_bar(source_name, dataframe, roles, focus=focus_label)
 render_brief(brief)
 render_kpis(brief)
 
