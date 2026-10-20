@@ -518,6 +518,86 @@ def _near_duplicate_note(duplicates: pd.Series) -> str:
     )
 
 
+@dataclass(frozen=True)
+class Correlation:
+    """Pearson r over the complete pairs of two columns, with its interval and Spearman's r."""
+
+    first: str
+    second: str
+    pearson: float
+    low: float
+    high: float
+    pairs: int
+    spearman: float
+
+    @property
+    def rank_divergence(self) -> float:
+        """How far the rank correlation is from the linear one, in absolute strength."""
+        return abs(self.spearman) - abs(self.pearson)
+
+
+def measure_correlation(paired: pd.DataFrame) -> Correlation | None:
+    """Correlate the two columns of ``paired``, which holds only complete rows.
+
+    Returns None when r is undefined, as it is when either column does not vary.
+    """
+    value = float(paired.corr().iloc[0, 1])
+    if not np.isfinite(value):
+        return None
+    low, high = _correlation_interval(value, len(paired))
+    ranked = float(paired.corr(method="spearman").iloc[0, 1])
+    first, second = (str(column) for column in paired.columns[:2])
+    return Correlation(first, second, value, low, high, len(paired), ranked)
+
+
+def describe_correlation(correlation: Correlation, scope: str = "") -> str:
+    """State r with its interval, adding why the sample or the rank correlation may undercut it.
+
+    The brief and Ask both use this, so a pair reads the same in either. ``scope``
+    follows the column names, as in " for Site in (North)".
+    """
+    value, pairs = correlation.pearson, correlation.pairs
+    if round(value, 2) == 0:
+        relationship = "show no linear relationship"
+    else:
+        relationship = "move together" if value > 0 else "move in opposite directions"
+        if abs(value) < MATERIAL_CORRELATION:
+            relationship += " only weakly"
+    statement = (
+        f"{correlation.first} and {correlation.second} {relationship}{scope}: "
+        f"Pearson r = {value:.2f} (95% CI {correlation.low:.2f} to {correlation.high:.2f}, "
+        f"n = {pairs:,})."
+    )
+
+    # An interval spanning zero means the sample cannot rule out no relationship.
+    # A strong r that still spans zero is a thin sample; a weak one is just weak.
+    if correlation.low <= 0.0 <= correlation.high:
+        if abs(value) >= MATERIAL_CORRELATION:
+            statement += (
+                f" With only {pairs:,} paired values this cannot be told apart from no "
+                "relationship at all."
+            )
+        else:
+            statement += (
+                " The interval includes zero, so this cannot be told apart from no "
+                "relationship at all."
+            )
+
+    # Spearman well above Pearson: monotonic but curved. Well below: a few
+    # extreme records are producing the linear figure.
+    if correlation.rank_divergence > RANK_DIVERGENCE:
+        statement += (
+            f" The rank correlation is stronger ({correlation.spearman:.2f}), so the relationship is "
+            "consistent but not a straight line."
+        )
+    elif correlation.rank_divergence < -RANK_DIVERGENCE:
+        statement += (
+            f" The rank correlation is only {correlation.spearman:.2f}, so a few extreme records are "
+            "driving the linear figure."
+        )
+    return statement
+
+
 def _relationship_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
     usable = [
         column
@@ -548,37 +628,11 @@ def _relationship_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evide
         return None
 
     paired = dataframe[[pair[0], pair[1]]].dropna()
-    pairs = len(paired)
+    correlation = measure_correlation(paired)
+    if correlation is None:
+        return None
 
-    low, high = _correlation_interval(value, pairs)
-    relationship = "move together" if value > 0 else "move in opposite directions"
-    statement = (
-        f"{pair[0]} and {pair[1]} {relationship}: Pearson r = {value:.2f} "
-        f"(95% CI {low:.2f} to {high:.2f}, n = {pairs:,})."
-    )
-
-    # An interval spanning zero means the sample cannot rule out no relationship.
-    if low <= 0.0 <= high:
-        statement += (
-            f" With only {pairs:,} paired values this cannot be told apart from no "
-            "relationship at all."
-        )
-
-    # Spearman well above Pearson: monotonic but curved. Well below: a few
-    # extreme records are producing the linear figure.
-    ranked = float(paired.corr(method="spearman").iloc[0, 1])
-    if abs(ranked) - abs(value) > RANK_DIVERGENCE:
-        statement += (
-            f" The rank correlation is stronger ({ranked:.2f}), so the relationship is "
-            "consistent but not a straight line."
-        )
-    elif abs(value) - abs(ranked) > RANK_DIVERGENCE:
-        statement += (
-            f" The rank correlation is only {ranked:.2f}, so a few extreme records are "
-            "driving the linear figure."
-        )
-
-    statement += (
+    statement = describe_correlation(correlation) + (
         " It is the strongest of several pairs tested, so treat it as a lead to check, "
         "not as evidence of cause."
     )
@@ -587,7 +641,7 @@ def _relationship_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evide
     return Evidence(
         kind="relationship",
         title="Strongest measurable relationship",
-        value=f"r = {value:.2f}",
+        value=f"r = {correlation.pearson:.2f}",
         statement=statement,
         calculation=(
             "Pearson r over paired non-missing values, 95% CI by Fisher transform, checked "
