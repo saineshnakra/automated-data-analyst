@@ -237,7 +237,7 @@ class ColumnNameIntentTests(unittest.TestCase):
         answer = answer_question("total cell count", frame, roles)
         self.assertIsNotNone(answer)
         self.assertIn("sum(Cell Count)", answer.calculation, answer.calculation)
-        self.assertIn("1.0K", answer.answer, answer.answer)
+        self.assertIn("1,000", answer.answer, answer.answer)
 
     def test_a_count_column_breaks_down_by_its_own_values(self):
         frame, roles = frame_with("Cell Count")

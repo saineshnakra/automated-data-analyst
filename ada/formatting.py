@@ -66,6 +66,38 @@ def is_currency(column: str | None) -> bool:
     return bool(tokens & set(CURRENCY_TOKENS)) or bool(tokens & set(CURRENCY_CODES))
 
 
+# A currency-named column whose values are all whole numbers from 0 to this
+# holds coded bands (income bracket 1 to 15), not amounts of money.
+MAX_BAND_CODE = 15
+
+
+def _finite_values(column_values: pd.Series) -> pd.Series:
+    values = pd.to_numeric(column_values, errors="coerce").dropna()
+    return values[np.isfinite(values)]
+
+
+def _all_whole(values: pd.Series) -> bool:
+    return bool((values == np.floor(values)).all())
+
+
+def is_money(column: str | None, column_values: pd.Series | None = None) -> bool:
+    """Whether a column holds money: a currency name, and values that look like amounts.
+
+    The name alone is not enough. "income" coded 1 to 15 for income brackets
+    is a category, and printing its average as "$8.11" would invent a sum of
+    money. Without the column values the name decides.
+    """
+    if not is_currency(column):
+        return False
+    if column_values is None:
+        return True
+    values = _finite_values(column_values)
+    if values.empty:
+        return True
+    coded = _all_whole(values) and values.min() >= 0 and values.max() <= MAX_BAND_CODE
+    return not coded
+
+
 def is_percentage(column: str | None) -> bool:
     """Return whether the column name represents a percentage."""
     if not column:
@@ -196,6 +228,19 @@ def _percentage_uses_fraction_scale(
 SCALES = ((1_000_000_000_000_000, "e15"), (1_000_000_000_000, "T"),
           (1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K"))
 
+# Counts are shortened ("12.0K") only from this size up. Smaller counts, and
+# readings of any size, keep their digits: "1.1K" would hide that a heart rate
+# of 1,111 is impossible.
+COMPACT_COUNT_FROM = 10_000
+
+# Outside this range a figure that is not money is written in scientific
+# notation: "3.624e+11" for a spectral intensity, "4.2e-05" for a concentration.
+SCIENTIFIC_BELOW = 0.001
+SCIENTIFIC_FROM = 1e9
+
+# Significant digits of a figure in scientific notation.
+SCIENTIFIC_DIGITS = 4
+
 
 def _compact_magnitude(absolute: float, *, compact: bool) -> str:
     """Render a positive magnitude on the largest scale that fits ("1.2M"), or "".
@@ -212,6 +257,54 @@ def _compact_magnitude(absolute: float, *, compact: bool) -> str:
     return ""
 
 
+def _counts_things(value: float, column: str | None, column_values: pd.Series | None) -> bool:
+    """Whether a figure is a count: a whole number, from a count-named column or no column at all.
+
+    A row count has no column. A reading such as a pressure in pascals can be
+    a whole number too, so the name has to say it counts something.
+    """
+    if not float(value).is_integer():
+        return False
+    if column:
+        # Imported here because metrics builds on this module.
+        from .metrics import is_additive_name
+
+        if not is_additive_name(column):
+            return False
+    if column_values is not None:
+        values = _finite_values(column_values)
+        if not values.empty and not _all_whole(values):
+            return False
+    return True
+
+
+def _scientific(value: float, digits: int) -> str:
+    """Scientific notation with up to ``digits`` significant digits: "3.624e+11", "4.2e-05"."""
+    mantissa, exponent = f"{value:.{max(digits, 1) - 1}e}".split("e")
+    if "." in mantissa:
+        mantissa = mantissa.rstrip("0").rstrip(".")
+    return f"{mantissa}e{exponent}"
+
+
+def _plain_number(value: float, extra: int) -> str:
+    """A figure that is neither money nor compacted, to about five significant digits.
+
+    Whole numbers print in full, values from 1 to 1,000 with two decimals, up to
+    10,000 with one, and beyond that as whole numbers; very small and very large
+    ones in scientific notation.
+    """
+    absolute = abs(value)
+    if absolute and (absolute < SCIENTIFIC_BELOW or absolute >= SCIENTIFIC_FROM):
+        return _scientific(value, SCIENTIFIC_DIGITS + extra)
+    if float(value).is_integer():
+        return f"{int(value):,}"
+    # Three significant figures below 1, so 0.0012 doesn't print as 0.00.
+    if absolute < 1:
+        return f"{value:.{3 + extra}g}"
+    decimals = 2 if absolute < 1_000 else 1 if absolute < COMPACT_COUNT_FROM else 0
+    return f"{value:,.{decimals + extra}f}"
+
+
 def format_number(
     value: float,
     column: str | None = None,
@@ -220,10 +313,13 @@ def format_number(
     column_values: pd.Series | None = None,
     extra_decimals: int = 0,
 ) -> str:
-    """Format a value as a percentage, currency or plain number, judged from the column name.
+    """Format a value as a percentage, money, a count or a plain number.
 
-    ``extra_decimals`` adds decimal places to a figure that is not compacted
-    (see ``format_values_apart``). Non-finite values render as an em dash.
+    The column name and, when given, ``column_values`` decide which. Only
+    money and large counts are compacted ("$1.2K", "12.0K"); ``compact=False``
+    writes them out in full. ``extra_decimals`` adds digits to a figure that is
+    not compacted (see ``format_values_apart``). Non-finite values render as an
+    em dash.
     """
     if not np.isfinite(value):
         return "—"
@@ -235,8 +331,8 @@ def format_number(
         if _column_reads_as_percentage(value, column_values):
             return f"{value:.{1 + extra}f}%"
 
-    # Otherwise currency takes precedence over percentage.
-    if is_currency(column):
+    # Otherwise money takes precedence over percentage.
+    if is_money(column, column_values):
         sign = "-" if value < 0 else ""
         prefix = currency_symbol(column)
         body = _compact_magnitude(abs(value), compact=compact)
@@ -251,19 +347,10 @@ def format_number(
         # Fall through: a ratio-named column above MAX_PLAUSIBLE_PERCENTAGE
         # renders as a plain number.
 
-    sign = "-" if value < 0 else ""
-    body = _compact_magnitude(abs(value), compact=compact)
-    if body:
-        return f"{sign}{body}"
+    if compact and abs(value) >= COMPACT_COUNT_FROM and _counts_things(value, column, column_values):
+        return f"{'-' if value < 0 else ''}{_compact_magnitude(abs(value), compact=True)}"
 
-    if float(value).is_integer():
-        return f"{int(value):,}"
-
-    # Three significant figures below 1, so 0.0012 doesn't print as 0.00.
-    if abs(value) < 1:
-        return f"{value:.{3 + extra}g}"
-
-    return f"{value:,.{2 + extra}f}"
+    return _plain_number(value, extra)
 
 
 # How many decimals format_values_apart may add before it gives up on telling values apart.
@@ -283,11 +370,11 @@ def format_values_apart(
 ) -> tuple[str, ...]:
     """Format figures quoted together so that different values never print alike.
 
-    At the usual precision 1,211 and 1,214 both print as "1.2K", and "from 1.2K
-    to 1.2K" hides the change the sentence reports. When any two collide, all
-    are written out in full ("1,211.30" and "1,214.80"), with more decimals if
-    needed, so they keep one precision. Equal values, and values within
-    rounding noise of each other, keep the usual rendering.
+    At the usual precision 3,004.25 and 3,004.21 both print as "3,004.3", and
+    "from 3,004.3 to 3,004.3" hides the change the sentence reports. When any
+    two collide, all are written out in full ("3,004.25" and "3,004.21"), with
+    more decimals if needed, so they keep one precision. Equal values, and
+    values within rounding noise of each other, keep the usual rendering.
     """
     usual = tuple(format_number(value, column, column_values=column_values) for value in values)
     if _kept_apart(values, usual):
@@ -302,16 +389,63 @@ def format_values_apart(
     return usual
 
 
+# Capitalised words this short are more often symbols or codes ("Ca", "Na",
+# "Gp", "Hgb") than ordinary words, so sentence_case leaves them as written.
+MAX_SYMBOL_LETTERS = 3
+
+
+def _is_ordinary_word(word: str) -> bool:
+    """A capitalised word with nothing else in capitals, no digits and more than three letters."""
+    letters = sum(character.isalpha() for character in word)
+    return (
+        letters > MAX_SYMBOL_LETTERS
+        and word[:1].isupper()
+        and word[1:].islower()
+        and not any(character.isdigit() for character in word)
+    )
+
+
 def sentence_case(name: str) -> str:
     """Lowercase the ordinary capitalised words of a column name for use mid-sentence.
 
-    "Water Temp (°C)" becomes "water temp (°C)"; acronyms and units such as
-    "SKU", "OD600" and "pH" are left alone.
+    "Water Temp (°C)" becomes "water temp (°C)". Acronyms, units, chemical
+    symbols and short codes such as "SKU", "OD600", "pH", "Ca", "NO2" and
+    "PM2.5" are left as written.
     """
-    return " ".join(
-        word.lower() if word[:1].isupper() and word[1:].islower() else word
-        for word in str(name).split()
-    )
+    return " ".join(word.lower() if _is_ordinary_word(word) else word for word in str(name).split())
+
+
+# Words that already say how a column combines, so with_aggregate doesn't repeat them.
+AGGREGATE_SYNONYMS = {
+    "total": frozenset({"total", "totals", "sum"}),
+    "average": frozenset({"average", "avg", "mean"}),
+    "maximum": frozenset({"maximum", "max"}),
+    "minimum": frozenset({"minimum", "min"}),
+}
+
+
+def with_aggregate(word: str, column: str) -> str:
+    """Put an aggregate word before a column name unless the name already says it.
+
+    "Total" and "Total Rain" make "Total Rain", not "Total Total Rain", and
+    "Average" and "Mean Temp" make "Mean Temp". A different aggregate is kept:
+    "Average Total Rain" is the average of a total.
+    """
+    key = word.lower()
+    synonyms = AGGREGATE_SYNONYMS.get(key, frozenset({key}))
+    if synonyms & set(normalized_name(column).split()):
+        return str(column)
+    return f"{word} {column}"
+
+
+def list_names(names: list[str], limit: int = 3) -> str:
+    """Join names for a sentence: "A", "A and B", "A, B and C", "A, B, C and 2 others"."""
+    if len(names) > limit:
+        rest = len(names) - limit
+        return f"{', '.join(names[:limit])} and {rest} other{'s' if rest != 1 else ''}"
+    if len(names) <= 1:
+        return "".join(names)
+    return f"{', '.join(names[:-1])} and {names[-1]}"
 
 
 def group_label(column: str | None, value: object) -> str:

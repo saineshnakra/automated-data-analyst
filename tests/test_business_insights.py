@@ -314,7 +314,7 @@ class BusinessAnalysisTests(unittest.TestCase):
         )
 
     def test_a_ratio_named_column_holding_money_is_not_a_percentage(self):
-        self.assertEqual(format_number(1_250_000, "Gross Margin"), "1.2M")
+        self.assertEqual(format_number(1_250_000, "Gross Margin"), "1,250,000")
         self.assertEqual(format_number(45.0, "Gross Margin"), "45.0%")
 
     def test_the_headline_is_not_cut_at_a_decimal_point(self):
