@@ -995,6 +995,8 @@ def _restarts(dates: np.ndarray) -> list[int]:
 
     Small steps back (a clock reset by minutes, a re-sent stretch) are not
     restarts: the time must fall back to the earliest tenth of the block so far.
+    The block is in time order apart from such steps, so its earliest tenth
+    ends about a tenth of the way through it.
     """
     backward = np.flatnonzero(np.diff(dates) < 0) + 1
     # Many steps back mean rows that are not in time order at all.
@@ -1002,9 +1004,10 @@ def _restarts(dates: np.ndarray) -> list[int]:
         return [0]
     starts = [0]
     for position in backward:
-        if position - starts[-1] < MIN_BLOCK_ROWS:
+        start = starts[-1]
+        if position - start < MIN_BLOCK_ROWS:
             continue
-        if dates[position] <= np.quantile(dates[starts[-1] : position], RESTART_QUANTILE):
+        if dates[position] <= dates[start + int((position - start) * RESTART_QUANTILE)]:
             starts.append(int(position))
     smallest = max(MIN_BLOCK_ROWS, MIN_BLOCK_SHARE * len(dates))
     ends = [*starts[1:], len(dates)]

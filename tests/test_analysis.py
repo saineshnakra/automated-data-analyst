@@ -844,6 +844,16 @@ class StackedLogTests(unittest.TestCase):
         self.assertIsNone(block)
         self.assertEqual(note, "")
 
+    def test_a_log_with_many_small_steps_back_is_one_log(self):
+        frame = hourly_log("2020-01-01", 50_000)
+        # A clock nudged back by minutes every 40 rows.
+        frame.loc[::40, "Datetime"] -= pd.Timedelta(minutes=90)
+
+        _, block, note = separate_stacked_logs(frame, "Datetime")
+
+        self.assertIsNone(block)
+        self.assertEqual(note, "")
+
     def test_readings_recorded_side_by_side_get_a_note(self):
         stamps = pd.date_range("2024-01-01", periods=500, freq="min")
         frame = pd.DataFrame({
