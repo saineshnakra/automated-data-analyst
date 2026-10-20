@@ -54,6 +54,10 @@ or "Other segments" bar for it. A change is reported as a percentage for an
 amount or count, in percentage points for a rate, and as a plain difference for
 a level.
 
+A rise is good news for an amount or a rate unless the name says otherwise
+(`Cost`, `Churn Rate`, `Defects`). A level whose name says nothing about which
+way is good, such as CO2, rainfall or a temperature, is reported in neutral
+colours and words.
 
 ## Period and grain
 

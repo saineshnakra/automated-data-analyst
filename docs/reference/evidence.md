@@ -71,7 +71,9 @@ coverage but was not excluded, the card says part of the change may be
 missing data.
 
 The card's tone follows the measure's meaning: a rising cost or ticket count is
-negative (`increase_is_welcome` in `ada/metrics.py`).
+negative (`increase_is_welcome` in `ada/metrics.py`). A level whose name has no
+word for which way is good, such as CO2 or a temperature, gets a neutral tone
+(`MetricSpec.direction_known`), and so does its driver card.
 
 ### Offsetting movement
 
@@ -146,7 +148,7 @@ the evidence card it comes from.
 | Evidence | Recommendation |
 |---|---|
 | `trend`, negative | Start with the driver segment, or find where the adverse change started |
-| `trend`, positive | Check whether the change holds |
+| `trend`, positive or neutral | Check whether the change holds |
 | `concentration`, warning | Check how much rests on the leader |
 | `leader`, averaged measure | Compare the highest and lowest group against the spread within each |
 | `leader`, summed measure | Compare the leading group with the rest |

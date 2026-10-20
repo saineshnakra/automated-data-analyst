@@ -25,7 +25,7 @@ from .formatting import (
     normalized_name,
     sentence_case,
 )
-from .metrics import increase_is_welcome, metric_for
+from .metrics import MetricSpec, metric_for
 from .schema import (
     TIME_PART_TOKENS,
     ColumnRoles,
@@ -75,6 +75,17 @@ class BusinessBrief:
 
 
 MIN_PERIODS_FOR_VOLATILITY = 5
+
+
+def _tone(rose: bool, metric: MetricSpec) -> str:
+    """Positive or negative by what the measure means: a rising cost is negative.
+
+    Neutral for a level whose name doesn't say which way is good, so a rise in
+    CO2 or rainfall is reported without being called good or bad news.
+    """
+    if not metric.direction_known:
+        return "neutral"
+    return "positive" if rose == metric.increase_is_welcome else "negative"
 
 
 def _period_changes(values: np.ndarray, *, relative: bool = True) -> np.ndarray:
@@ -161,8 +172,6 @@ def _growth_evidence(
     completeness = "complete period" if series.completeness_checked else "period so far"
     measure = roles.measure or "Records"
     direction = "increased" if delta >= 0 else "decreased"
-    # Tone follows meaning (a rising cost is negative); recommendations follow tone.
-    welcome = increase_is_welcome(roles.measure)
     start, end = format_values_apart(
         previous, current, column=roles.measure, column_values=measure_values
     )
@@ -180,7 +189,8 @@ def _growth_evidence(
             f"({period}), from {start} to {end}.{context}"
         ),
         calculation=f"{calculation}, compared with past period-to-period changes",
-        tone="positive" if (delta >= 0) == welcome else "negative",
+        # Recommendations follow this tone.
+        tone=_tone(delta >= 0, metric),
     )
 
 
@@ -258,7 +268,7 @@ def _change_driver_evidence(
         value=f"{sign}{short}",
         statement=statement,
         calculation=calculation,
-        tone="positive" if (driver_change > 0) == increase_is_welcome(roles.measure) else "negative",
+        tone=_tone(driver_change > 0, metric),
         subject=driver_name,
     )
 
@@ -658,8 +668,8 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
     trend = by_kind.get("trend")
     driver = by_kind.get("driver")
     # Name the driver only when it moved with the total; a segment that grew
-    # while the total fell didn't cause the fall.
-    if driver and trend and driver.tone != trend.tone:
+    # while the total fell didn't cause the fall. Both cards lead with the sign.
+    if driver and trend and driver.value.startswith("-") != trend.value.startswith("-"):
         driver = None
     adverse = "decline" if metric.increase_is_welcome else "increase"
     if trend and trend.tone == "negative":

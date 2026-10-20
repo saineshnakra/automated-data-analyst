@@ -93,6 +93,24 @@ class LevelMeasureTests(unittest.TestCase):
         self.assertFalse(is_level_name("Distance (m)"))
 
 
+class DirectionTests(unittest.TestCase):
+    def test_a_level_whose_name_says_nothing_has_no_good_direction(self):
+        for name in ("CO2", "Water Temp (°C)", "Rainfall", "pH"):
+            with self.subTest(name=name):
+                self.assertFalse(resolve_metric(name).direction_known)
+
+    def test_a_level_with_a_direction_word_keeps_it(self):
+        hours = resolve_metric("Resolution Hours")
+        self.assertTrue(hours.direction_known)
+        self.assertFalse(hours.increase_is_welcome)
+
+    def test_amounts_and_rates_always_have_a_direction(self):
+        for name in ("Revenue", "Units", "Churn Rate", "Viability %"):
+            with self.subTest(name=name):
+                self.assertTrue(resolve_metric(name).direction_known)
+        self.assertTrue(resolve_metric(None).direction_known)
+
+
 class AggregationOverrideTests(unittest.TestCase):
     def roles(self, measure, aggregation):
         return ColumnRoles(
@@ -104,6 +122,7 @@ class AggregationOverrideTests(unittest.TestCase):
         spec = resolve_metric("Rainfall (mm)", "sum")
         self.assertEqual((spec.aggregation, spec.unit), ("sum", "amount"))
         self.assertTrue(spec.additive)
+        self.assertTrue(spec.direction_known)
 
     def test_averaging_an_amount_makes_it_a_level(self):
         spec = resolve_metric("Revenue", "mean")

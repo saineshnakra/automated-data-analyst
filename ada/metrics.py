@@ -76,15 +76,15 @@ FAVOURABLE_OVERRIDES = frozenset({"savings", "saved", "recovered", "avoided"})
 QUALIFIER_WORDS = frozenset({"after", "before", "less", "minus", "excluding", "excl", "without"})
 
 
-def increase_is_welcome(measure: str | None) -> bool:
-    """Whether a rise in this measure is good news.
+def _named_direction(measure: str | None) -> bool | None:
+    """What the name says about a rise: True for good news, False for bad, None for neither.
 
     The name is cut at the first qualifier word, then its first and last words
     decide: "Refund Amount" and "Sales Returns" are bad news when they rise,
-    "Revenue After Returns" is not.
+    "Revenue After Returns" says nothing either way.
     """
     if not measure:
-        return True
+        return None
     words = normalized_name(measure).split()
     if any(word in FAVOURABLE_OVERRIDES for word in words):
         return True
@@ -93,9 +93,18 @@ def increase_is_welcome(measure: str | None) -> bool:
         if position > 0 and (word in QUALIFIER_WORDS or net_of):
             words = words[:position]
             break
-    if not words:
-        return True
-    return words[0] not in ADVERSE_MEASURE_TOKENS and words[-1] not in ADVERSE_MEASURE_TOKENS
+    if words and (words[0] in ADVERSE_MEASURE_TOKENS or words[-1] in ADVERSE_MEASURE_TOKENS):
+        return False
+    return None
+
+
+def increase_is_welcome(measure: str | None) -> bool:
+    """Whether a rise in this measure is good news.
+
+    True unless the name marks the measure as adverse (see ``_named_direction``),
+    so more revenue or more units read as good news by default.
+    """
+    return _named_direction(measure) is not False
 
 
 @dataclass(frozen=True)
@@ -106,6 +115,9 @@ class MetricSpec:
     aggregation: str  # sum | mean | count
     unit: str  # amount | rate | level | count
     increase_is_welcome: bool
+    #: False for a level whose name says nothing about which way is good: a rise
+    #: in CO2 or rainfall is reported, not praised or flagged.
+    direction_known: bool = True
 
     @property
     def additive(self) -> bool:
@@ -186,8 +198,13 @@ def resolve_metric(name: str | None, aggregation: str | None = None) -> MetricSp
         combined, unit = "mean", "level"
     if aggregation is not None and aggregation != combined:
         combined, unit = aggregation, "amount" if aggregation == "sum" else "level"
+    named = _named_direction(name)
     return MetricSpec(
-        name=name, aggregation=combined, unit=unit, increase_is_welcome=increase_is_welcome(name)
+        name=name,
+        aggregation=combined,
+        unit=unit,
+        increase_is_welcome=named is not False,
+        direction_known=unit != "level" or named is not None,
     )
 
 

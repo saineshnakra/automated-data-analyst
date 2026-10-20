@@ -9,10 +9,10 @@ from ada.business_insights import (
     _shown_evidence,
     analyze_business,
     build_business_report,
-    increase_is_welcome,
 )
 from ada.demo_data import make_demo_data
 from ada.formatting import format_number
+from ada.metrics import increase_is_welcome
 from ada.pipeline import prepare_analysis
 from ada.schema import ColumnRoles, detect_roles
 
@@ -510,6 +510,41 @@ class DirectionOfGoodTests(unittest.TestCase):
 
         for item in brief.recommendations:
             self.assertNotIn("Alpha decline", item.action)
+
+    def test_a_rise_in_a_reading_is_neither_good_nor_bad_news(self):
+        frame = pd.DataFrame({"Month": MONTHS, "CO2": np.linspace(410, 416, 12)})
+
+        brief = analyze_business(frame)
+
+        trend = next(item for item in brief.evidence if item.kind == "trend")
+        movement = next(item for item in brief.kpis if item.label == "Latest movement")
+        self.assertEqual(trend.tone, "neutral")
+        self.assertEqual(movement.tone, "neutral")
+        self.assertEqual(brief.recommendations[0].title, "Check whether the change holds")
+
+    def test_a_reading_named_as_adverse_keeps_its_direction(self):
+        frame = pd.DataFrame({"Month": MONTHS, "Resolution Hours": np.linspace(10, 16, 12)})
+
+        trend = next(item for item in analyze_business(frame).evidence if item.kind == "trend")
+
+        self.assertEqual(trend.tone, "negative")
+
+    def test_a_site_moving_against_a_neutral_average_is_not_named(self):
+        # North rises 6 degrees, but South's four readings fall 2, so the average falls.
+        frame = pd.DataFrame(
+            {
+                "Month": [MONTHS[0]] * 5 + [MONTHS[1]] * 5,
+                "Site": ["North", "South", "South", "South", "South"] * 2,
+                "Water Temp (°C)": [10.0, 20.0, 20.0, 20.0, 20.0, 16.0, 18.0, 18.0, 18.0, 18.0],
+            }
+        )
+
+        brief = analyze_business(frame)
+
+        kinds = {item.kind: item for item in brief.evidence}
+        self.assertEqual(kinds["trend"].tone, "neutral")
+        self.assertEqual(kinds["driver"].subject, "North")
+        self.assertNotIn("North", brief.recommendations[0].title)
 
 
 class ChangeWordingTests(unittest.TestCase):
