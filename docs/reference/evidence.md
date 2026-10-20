@@ -38,11 +38,11 @@ assembled in this order:
 
 | Kind | Reports | Skipped when |
 |---|---|---|
-| `trend` | Latest period-over-period change, compared with the series' usual movement | No date, fewer than 2 periods, or a percentage change from a previous period of zero |
+| `trend` | Latest period-over-period change on the groups present in both periods, compared with the series' usual movement or with the time of year | No date, fewer than 2 periods, or a percentage change from a previous period of zero |
 | `driver` | The segment that moved the measure most between the last two periods | No date, measure or segment |
 | `leader` | For a summed measure, the group with the largest share of the total ("Largest share by ..."), or with the most rows when there is no measure ("Most rows by ..."); for an averaged measure, the groups with the highest and lowest average ("Highest average by ..."); for mixed-sign values, the largest by size with no share | No segment, or a total of zero |
 | `concentration` | Effective number of segments, and the top-three share | Shares are not meaningful (averaged measure or mixed signs), or the measure is neither money nor a count of things |
-| `anomaly` | The most severe flagged period and how many were flagged | Under 8 periods, or nothing flagged |
+| `anomaly` | The most severe flagged period and how many were flagged, against the band for its time of year when the series has a yearly pattern | Under 8 periods, or nothing flagged |
 | `relationship` | Strongest numeric correlation, with a confidence interval | See below |
 | `outliers` | Count of measure values outside 1.5 × IQR | No measure, fewer than 12 values or 4 distinct values, IQR of zero, or no outliers |
 | `quality` | Share of populated cells | No missing cells |
@@ -76,13 +76,54 @@ variation, larger or quieter than usual, or unusually large or quiet, based on
 its distance from the median change in robust-scale units (under 1, under 2,
 2 or more). It needs at least five earlier changes
 (`MIN_PERIODS_FOR_VOLATILITY`). When the last period ends short of typical
-coverage but was not excluded, the card says part of the change may be
-missing data.
+coverage but was not excluded, the card calls it the "latest period" rather
+than the "latest complete period" and says part of the change may be missing
+data.
+
+**Time of year.** At a monthly or quarterly grain, a series with a clear yearly
+pattern (`yearly_pattern` in `ada/timeseries.py`; see
+[Periods](periods.md#yearly-patterns)) is compared with the time of year
+instead, since a winter-to-spring rise is not news in a series that rises every
+spring. The card gives the range of the same move in earlier years (from the
+previous month or quarter into the latest one), says whether the latest move
+is within that range, and sets the latest value beside the same period a year
+earlier: *"In the 6 earlier years on record, the move into Q2 ranged from
++8.63 to +16.40 (median +13.86), so this one is within the range usual for the
+time of year. Against Q2 2022 (15.52), it is down 2.39."*
+
+**Groups that come and go.** With a grouping column, the change is measured on
+the groups that reported in both of the last two periods
+(`matched_period_change` in `ada/aggregation.py`). Weather stations that start
+reporting halfway through a record, or a site that stops, would otherwise
+move a pooled average on their own. The card names the groups left out and
+gives the pooled figures too: *"This compares the 88 station values that
+reported in both periods; ... With every station included it went from 29.96
+to 24.82."* The usual movement and the time-of-year comparison then use the
+same groups' history. When no group reported in both periods, the pooled
+change is kept and the card says it compares different groups.
 
 The card's tone follows the measure's meaning: a rising cost or ticket count is
 negative (`increase_is_welcome` in `ada/metrics.py`). A level whose name has no
 word for which way is good, such as CO2 or a temperature, gets a neutral tone
 (`MetricSpec.direction_known`), and so does its driver card.
+
+### Drivers on the same groups
+
+The `driver` card compares only segments with figures in both of the last two
+periods (`segment_period_change`). A segment that starts or stops reporting
+would read as rising from zero or falling to it, and as "100% of the
+movement"; such segments are named as left out. When only one segment is in
+both periods, the card says so instead of giving it a share.
+
+### Ranked groups
+
+The `leader` card ranks segments on the figures they have. A segment with no
+values for the measure (a station with no rain gauge) has no figure rather
+than zero: it is left out of the ranking and named. When a ranked segment's
+figures cover less than 75% of the table's dates (`PARTIAL_COVERAGE_SHARE`),
+the card gives its dates, since an average over two lockdown months is not
+comparable with one over five years. `Analysis.segments()` lists every
+segment's first and last date (`From`, `To`) when there is a date column.
 
 ### Offsetting movement
 

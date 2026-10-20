@@ -15,11 +15,39 @@ import pandas as pd
 from .formatting import format_period
 from .metrics import metric_for
 from .schema import ColumnRoles
+from .timeseries import (
+    PERIODS_PER_YEAR,
+    fit_trendline,
+    observed_periods,
+    season_numbers,
+    yearly_pattern,
+)
 
-GRAIN_ORDER = ("W", "M", "Q", "Y")
+GRAIN_ORDER = ("s", "min", "h", "D", "W", "M", "Q", "Y")
+# Grains finer than a day, open only to timestamps that carry a time of day.
+SUB_DAY_GRAINS = ("s", "min", "h", "D")
+DAY_SECONDS = 86_400
+# The longest span (in seconds) each finer grain is used for, so a timeline has
+# at most a few hundred periods: ten minutes by the second, eight hours by the
+# minute, ten days by the hour, a month by the day.
+SUB_DAY_SPANS = (("s", 600), ("min", 8 * 3_600), ("h", 10 * DAY_SECONDS), ("D", 31 * DAY_SECONDS))
+# The widest recording gap (in seconds) each finer grain can still fill.
+SUB_DAY_CADENCES = (("s", 1), ("min", 60), ("h", 3_600), ("D", DAY_SECONDS))
 
 
-def _grain_for_span(span_days: int) -> str:
+def _carries_time_of_day(dates: pd.Series) -> bool:
+    """Whether most distinct timestamps fall at a time other than midnight."""
+    unique = dates.drop_duplicates()
+    return bool((unique != unique.dt.normalize()).mean() > 0.5)
+
+
+def _grain_for_span(span: pd.Timedelta, timed: bool) -> str:
+    if timed:
+        seconds = span.total_seconds()
+        for grain, longest in SUB_DAY_SPANS:
+            if seconds <= longest:
+                return grain
+    span_days = max(span.days, 0)
     if span_days <= 120:
         return "W"
     if span_days <= 900:
@@ -27,13 +55,18 @@ def _grain_for_span(span_days: int) -> str:
     return "Q"
 
 
-def _grain_for_cadence(dates: pd.Series) -> str:
+def _grain_for_cadence(dates: pd.Series, timed: bool) -> str:
     """Finest grain the recording cadence is dense enough to fill."""
     unique = dates.drop_duplicates()
     if len(unique) < 3:
-        return "W"
-    spacing = np.diff(unique.sort_values().to_numpy()).astype("timedelta64[D]").astype(int)
+        return GRAIN_ORDER[0] if timed else "W"
+    spacing = np.diff(unique.sort_values().to_numpy()).astype("timedelta64[s]").astype(float)
     typical = float(np.median(spacing)) if spacing.size else 0.0
+    if timed:
+        for grain, widest in SUB_DAY_CADENCES:
+            if typical <= widest:
+                return grain
+    typical /= DAY_SECONDS
     if typical <= 10:
         return "W"
     if typical <= 45:
@@ -49,13 +82,16 @@ def _period_frequency(date_series: pd.Series) -> str:
 
     Takes the coarser of the span-based and cadence-based grains: five monthly
     readings over four months stay monthly instead of becoming seventeen weeks.
+    Grains finer than a week are used only for timestamps with a time of day,
+    so a fifty-minute log of readings a second apart is charted by the minute.
     """
     dates = date_series.dropna()
     if dates.empty:
         return "M"
 
-    span_days = max((dates.max() - dates.min()).days, 0)
-    return max(_grain_for_span(span_days), _grain_for_cadence(dates), key=GRAIN_ORDER.index)
+    timed = _carries_time_of_day(dates)
+    span = max(dates.max() - dates.min(), pd.Timedelta(0))
+    return max(_grain_for_span(span, timed), _grain_for_cadence(dates, timed), key=GRAIN_ORDER.index)
 
 
 def preferred_frequency(date_series: pd.Series) -> str:
@@ -140,24 +176,42 @@ def _trailing_partial_period(
     if len(last_seen) < MIN_PERIODS_FOR_PARTIAL_CHECK:
         # Too few periods to establish typical coverage.
         return None, "", "", False
+    if frequency == "s":
+        # A second has no part to cover.
+        return None, "", "", True
 
     starts, ends = _period_bounds(pd.DatetimeIndex(last_seen.index), frequency)
-    spans = (ends - starts).to_numpy().astype("timedelta64[s]").astype(float)
-    reached = (last_seen.to_numpy() - starts.to_numpy()).astype("timedelta64[s]").astype(float)
+    # Nanoseconds, so a minute's span (59.999999999 s) still counts as 60 seconds.
+    spans = (ends - starts).to_numpy().astype("timedelta64[ns]").astype(float) / 1e9
+    reached = (last_seen.to_numpy() - starts.to_numpy()).astype("timedelta64[ns]").astype(float) / 1e9
     coverage = np.divide(reached, spans, out=np.zeros_like(reached), where=spans > 0)
-
-    period_days = max(int(round(spans[-1] / 86_400)), 1)
-    covered_days = max(int(round(reached[-1] / 86_400)) + 1, 1)
-    reach = f"{covered_days} of {period_days} days"
+    covered, total, reach = _reach(reached[-1], spans[-1], frequency)
 
     typical = float(np.median(coverage[:-1]))
     if coverage[-1] >= typical - PARTIAL_COVERAGE_MARGIN:
         # Too close to typical to exclude (a cut on the 26th looks like a quiet
-        # last week), so only report the shortfall.
-        short = reach if coverage[-1] < typical - SHORT_COVERAGE_MARGIN else ""
-        return None, "", short, True
+        # last week), so only report the shortfall, and never a period it fills.
+        shortfall = coverage[-1] < typical - SHORT_COVERAGE_MARGIN and covered < total
+        return None, "", reach if shortfall else "", True
 
     return pd.Timestamp(last_seen.index[-1]), reach, "", True
+
+
+# What the reach into a period is counted in, by grain: days for a week or
+# longer, hours for a day, minutes for an hour, seconds for a minute.
+REACH_UNITS = {"D": ("hours", 3_600), "h": ("minutes", 60), "min": ("seconds", 1)}
+
+
+def _reach(reached: float, span: float, frequency: str) -> tuple[int, int, str]:
+    """How far the data gets into a period, in whole units: (covered, total, "6 of 7 days").
+
+    The unit the data stops in counts as covered, so data ending on Saturday
+    covers 6 of a week's 7 days.
+    """
+    unit, size = REACH_UNITS.get(frequency, ("days", DAY_SECONDS))
+    total = max(int(round(span / size)), 1)
+    covered = min(max(int(reached // size) + 1, 1), total)
+    return covered, total, f"{covered} of {total} {unit}"
 
 
 def build_trend(
@@ -278,10 +332,15 @@ def segment_frame(dataframe: pd.DataFrame, roles: ColumnRoles, limit: int | None
         return pd.DataFrame(columns=["Segment", "Value"])
 
     if roles.measure:
-        result = working.groupby("__segment", as_index=False)["__measure"].agg(
-            metric_for(roles.measure, roles).aggregation
+        grouped = working.groupby("__segment")["__measure"]
+        # min_count=1: a group with no values (a station with no rain gauge) has
+        # no total, not a total of zero.
+        totals = (
+            grouped.sum(min_count=1)
+            if metric_for(roles.measure, roles).aggregation == "sum"
+            else grouped.mean()
         )
-        result = result.rename(columns={"__segment": "Segment", "__measure": "Value"})
+        result = totals.rename("Value").rename_axis("Segment").reset_index()
     else:
         result = (
             working.groupby("__segment", as_index=False)
@@ -315,7 +374,9 @@ def segment_period_change(
 ) -> tuple[pd.DataFrame, pd.Timestamp, pd.Timestamp] | None:
     """Per-segment totals for the latest two periods, or None when unavailable.
 
-    ``frequency`` fixes the grain; without it the trend's own grain is used.
+    Only segments with values in both periods are compared; the ones left out
+    are in the frame's ``attrs["left_out"]``. ``frequency`` fixes the grain;
+    without it the trend's own grain is used.
     """
     if not roles.date or not roles.measure or not roles.dimension:
         return None
@@ -347,16 +408,16 @@ def segment_period_change(
     grouped.index.name = roles.dimension
     if previous_period not in grouped or current_period not in grouped:
         return None
-    if metric.additive:
-        # No rows in a period means zero for an additive measure.
-        grouped = grouped.fillna(0.0)
-    else:
-        # An averaged measure has no value in a period without rows, so keep only
-        # segments in both; zero-filling would show a new region rising "from
-        # 0.0% to 31.0%".
-        grouped = grouped.dropna(subset=[previous_period, current_period])
-        if grouped.empty:
-            return None
+    # Only segments with values in both periods are compared. One that starts or
+    # stops reporting would otherwise read as rising from, or falling to, zero
+    # ("100% of the movement"), and an averaged one has no value to compare.
+    # The ones left out are recorded on the frame for the caption.
+    unmatched = grouped[[previous_period, current_period]].isna().any(axis=1)
+    left_out = tuple(grouped.index[unmatched])
+    grouped = grouped.loc[~unmatched].copy()
+    if grouped.empty:
+        return None
+    grouped.attrs["left_out"] = left_out
 
     grouped["Change"] = grouped[current_period] - grouped[previous_period]
     return grouped, previous_period, current_period
@@ -408,8 +469,10 @@ def heatmap_frame(
     working["Period"] = working["__date"].dt.to_period(frequency).dt.to_timestamp()
     if roles.measure:
         metric = metric_for(roles.measure, roles)
-        grouped = working.groupby(["__segment", "Period"])["__measure"].agg(metric.aggregation)
-        # An averaged measure has no value in an empty cell, so it stays blank.
+        cells = working.groupby(["__segment", "Period"])["__measure"]
+        grouped = cells.sum(min_count=1) if metric.aggregation == "sum" else cells.mean()
+        # A cell with no rows is zero for a total and blank for an average; a
+        # cell whose rows hold no values is blank either way.
         pivot = grouped.unstack(fill_value=0) if metric.additive else grouped.unstack()
         order = pivot.sum(axis=1) if metric.additive else pivot.mean(axis=1)
     else:
@@ -417,3 +480,135 @@ def heatmap_frame(
         order = pivot.sum(axis=1)
     pivot.index.name = roles.dimension
     return pivot.loc[order.sort_values(ascending=False).index]
+
+
+@dataclass(frozen=True)
+class MatchedChange:
+    """The latest change measured on the groups present in both periods.
+
+    Set when groups start or stop reporting between the two periods, so the
+    pooled change partly reflects which groups were there.
+    """
+
+    previous: float
+    current: float
+    groups: int
+    #: Groups with values in only the previous or only the latest period.
+    stopped: tuple
+    started: tuple
+    #: Groups with values in both periods.
+    kept: tuple = ()
+
+
+def _period_groups(
+    working: pd.DataFrame, previous_period: pd.Timestamp, current_period: pd.Timestamp
+) -> tuple[set, set]:
+    """The groups with a value (or, with no measure, a row) in each of the two periods."""
+    valued = working.dropna(subset=["__measure"]) if "__measure" in working else working
+    return (
+        set(valued.loc[valued["Period"] == previous_period, "__segment"]),
+        set(valued.loc[valued["Period"] == current_period, "__segment"]),
+    )
+
+
+def matched_period_change(
+    dataframe: pd.DataFrame, roles: ColumnRoles, series: TrendSeries
+) -> MatchedChange | None:
+    """Recompute the trend's latest change on the groups present in both periods.
+
+    Returns None without a grouping column, with fewer than two periods, or
+    when the same groups report in both periods. With no group in both, the
+    values are NaN and ``groups`` is 0.
+    """
+    trend = series.frame
+    if not roles.dimension or not roles.date or len(trend) < 2:
+        return None
+    previous_period, current_period = trend.iloc[-2]["Period"], trend.iloc[-1]["Period"]
+    columns = [roles.date, roles.dimension] + ([roles.measure] if roles.measure else [])
+    working = dataframe[columns].dropna(subset=[roles.date, roles.dimension])
+    working.columns = ["__date", "__segment"] + (["__measure"] if roles.measure else [])
+    working = working.assign(Period=working["__date"].dt.to_period(series.frequency).dt.to_timestamp())
+    working = working[working["Period"].isin([previous_period, current_period])]
+    before, after = _period_groups(working, previous_period, current_period)
+    both = before & after
+    if before == after:
+        return None
+    matched = working[working["__segment"].isin(both)]
+    if roles.measure:
+        grouped = matched.groupby("Period")["__measure"]
+        metric = metric_for(roles.measure, roles)
+        values = grouped.sum(min_count=1) if metric.aggregation == "sum" else grouped.mean()
+    else:
+        values = matched.groupby("Period").size().astype(float)
+    return MatchedChange(
+        previous=float(values.get(previous_period, np.nan)),
+        current=float(values.get(current_period, np.nan)),
+        groups=len(both),
+        stopped=tuple(sorted(before - after, key=str)),
+        started=tuple(sorted(after - before, key=str)),
+        kept=tuple(sorted(both, key=str)),
+    )
+
+
+def group_coverage(dataframe: pd.DataFrame, roles: ColumnRoles) -> pd.DataFrame:
+    """First and last date with a value for each group, as columns From and To."""
+    if not roles.date or not roles.dimension:
+        return pd.DataFrame(columns=["From", "To"])
+    columns = [roles.date, roles.dimension] + ([roles.measure] if roles.measure else [])
+    working = dataframe[columns].dropna()
+    dates = working.groupby(roles.dimension)[roles.date]
+    return pd.DataFrame({"From": dates.min(), "To": dates.max()})
+
+
+@dataclass(frozen=True)
+class SeasonalContext:
+    """The latest period set against the same time of year in earlier years."""
+
+    #: The same period a year earlier and its value, when the trend has one.
+    year_ago: pd.Timestamp | None
+    year_ago_value: float
+    #: Changes into the latest period's month or quarter in earlier years,
+    #: from the period before each.
+    usual_changes: tuple[float, ...]
+
+
+def seasonal_context(series: TrendSeries, *, relative: bool) -> SeasonalContext | None:
+    """Compare the latest period with the same time of year, when the trend has a yearly pattern.
+
+    A winter-to-spring rise is not news in a series that rises every spring, so
+    the latest change is set beside the same change in earlier years, and the
+    latest value beside the same period a year earlier. ``relative`` gives the
+    changes as percentages (for a total) rather than differences. Returns None
+    for a grain with no yearly cycle or a series without a clear yearly pattern.
+    """
+    trend = observed_periods(series.frame)
+    if series.frequency not in PERIODS_PER_YEAR or len(trend) < 3:
+        return None
+    periods = pd.DatetimeIndex(pd.to_datetime(trend["Period"]))
+    values = trend["Value"].to_numpy(dtype=float)
+    if yearly_pattern(periods, fit_trendline(periods, values).residuals(values)) is None:
+        return None
+    by_period = pd.Series(values, index=periods)
+    latest = periods[-1]
+    year_ago = latest - pd.DateOffset(years=1)
+    step = pd.DateOffset(months=12 // PERIODS_PER_YEAR[series.frequency])
+    changes = []
+    for period in periods[:-1]:
+        before = period - step
+        if season_numbers(pd.DatetimeIndex([period]), series.frequency)[0] != season_numbers(
+            pd.DatetimeIndex([latest]), series.frequency
+        )[0] or before not in by_period.index:
+            continue
+        start, end = by_period[before], by_period[period]
+        if relative:
+            if start == 0:
+                continue
+            changes.append((end - start) / abs(start) * 100)
+        else:
+            changes.append(end - start)
+    has_year_ago = year_ago in by_period.index
+    return SeasonalContext(
+        year_ago=year_ago if has_year_ago else None,
+        year_ago_value=float(by_period[year_ago]) if has_year_ago else float("nan"),
+        usual_changes=tuple(float(change) for change in changes),
+    )

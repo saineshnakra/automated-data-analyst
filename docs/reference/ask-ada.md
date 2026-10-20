@@ -40,7 +40,7 @@ class QueryPlan:
     filters: tuple[ValueFilter, ...]   # rows whose value is one of the listed values
     year: int | None
     month: int | None
-    grain: str | None         # D | W | M | Q | Y
+    grain: str | None         # s | min | h | D | W | M | Q | Y
     source: str               # "rules", or "ai" for the optional planner
     conditions: tuple[Condition, ...]  # "pH below 5.5", "OBJECT is 0", "eCO2 missing"
     time_part: str | None     # "hour" or "weekday" of the date column in `dimension`
@@ -175,7 +175,9 @@ columns) counts rows instead.
 
 ### 3. Choosing the intent
 
-The parser detects a grain (daily, weekly, monthly, quarterly, yearly) and an
+The parser detects a grain (hourly, by minute, daily, weekly, monthly,
+quarterly, yearly; "hour" and "second" alone are not grain words, since "by
+hour of day" asks for a profile and "second highest" a rank) and an
 aggregation word (total, average, median, maximum, highest, longest, ...),
 reading the question with the matched column names removed so that
 `Total Sales` does not read as "total". Then it checks these signals in order:

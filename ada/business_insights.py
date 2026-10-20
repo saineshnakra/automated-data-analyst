@@ -11,8 +11,14 @@ import numpy as np
 import pandas as pd
 
 from .aggregation import (
+    MatchedChange,
+    SeasonalContext,
+    TrendSeries,
     build_trend,
+    group_coverage,
+    matched_period_change,
     preferred_frequency,
+    seasonal_context,
     segment_frame,
     segment_period_change,
     unlabelled_label,
@@ -20,6 +26,7 @@ from .aggregation import (
 from .anomalies import detect_anomalies
 from .formatting import (
     format_change,
+    format_moment,
     format_number,
     format_percentage,
     format_period,
@@ -194,6 +201,16 @@ def _growth_evidence(
     values = trend["Value"].to_numpy(dtype=float)
     previous = float(values[-2])
     current = float(values[-1])
+    # Groups that start or stop reporting would move a pooled figure on their own,
+    # so the change, and the history it is judged against, use the groups in both.
+    matched = matched_period_change(dataframe, roles, series)
+    pooled = (previous, current)
+    history = series
+    if matched is not None and matched.groups:
+        previous, current = matched.previous, matched.current
+        kept = dataframe[dataframe[roles.dimension].isin(matched.kept)]
+        history = build_trend(kept, roles, series.frequency)
+        values = history.frame["Value"].to_numpy(dtype=float)
     metric = metric_for(roles.measure, roles)
     unit = metric.unit
     measure_values = dataframe[roles.measure].dropna() if roles.measure else None
@@ -213,15 +230,24 @@ def _growth_evidence(
         calculation = "Latest period average − previous period average"
         if unit == "rate":
             calculation += ", in percentage points"
+        change = delta
     else:
         change = delta / abs(previous) * 100
         value = format_percentage(change, signed=True)
         context = _movement_in_context(values, change)
         calculation = "(Latest period − previous period) ÷ |previous period|"
+    compared = "compared with past period-to-period changes"
+    seasonal = seasonal_context(history, relative=unit not in ("rate", "level"))
+    if seasonal is not None:
+        context = _seasonal_note(seasonal, history, change, current, roles, unit, measure_values)
+        compared = "compared with the same move in earlier years and the same period a year earlier"
     # Format at the series frequency so a quarter reads "Q4 2023", matching the chart axis.
     period = format_period(trend.iloc[-1]["Period"], series.frequency)
-    # Without enough periods to check completeness, the last one may be partial.
+    # Without enough periods to check completeness, the last one may be partial,
+    # and one that falls short is not called complete.
     completeness = "complete period" if series.completeness_checked else "period so far"
+    if series.short_coverage:
+        completeness = "period"
     measure = roles.measure or "Records"
     direction = "increased" if delta >= 0 else "decreased"
     start, end = format_values_apart(
@@ -236,6 +262,10 @@ def _growth_evidence(
             f" The last period only reaches {series.short_coverage}, so part of this may be "
             "missing data rather than a real move."
         )
+    if matched is not None:
+        context = _matched_note(matched, roles, pooled, series, measure_values) + context
+        if matched.groups:
+            calculation = f"On the {roles.dimension} values present in both periods: {calculation}"
     return Evidence(
         kind="trend",
         title=f"Latest {sentence_case(measure)} movement",
@@ -244,10 +274,101 @@ def _growth_evidence(
             f"{measure} {direction} {moved} in the latest {completeness} "
             f"({period}), from {start} to {end}.{context}"
         ),
-        calculation=f"{calculation}, compared with past period-to-period changes",
+        calculation=f"{calculation}, {compared}",
         # Recommendations follow this tone.
         tone=_tone(delta >= 0, metric),
     )
+
+
+GROUPS_NAMED = 3
+
+
+def _listed(groups: tuple, column: str | None) -> str:
+    """Name up to GROUPS_NAMED groups ("East and West"), then count the rest."""
+    names = [group_label(column, group) for group in groups[:GROUPS_NAMED]]
+    if len(groups) > GROUPS_NAMED:
+        names.append(f"{len(groups) - GROUPS_NAMED:,} more")
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def _matched_note(
+    matched: MatchedChange,
+    roles: ColumnRoles,
+    pooled: tuple[float, float],
+    series: TrendSeries,
+    measure_values: pd.Series | None,
+) -> str:
+    """Say which groups the latest change was measured on, and what all of them showed."""
+    dimension = sentence_case(roles.dimension or "group")
+    previous, latest = (
+        format_period(series.frame.iloc[position]["Period"], series.frequency) for position in (-2, -1)
+    )
+    changes = []
+    if matched.stopped:
+        changes.append(f"{_listed(matched.stopped, roles.dimension)} reported in {previous} but not {latest}")
+    if matched.started:
+        changes.append(f"{_listed(matched.started, roles.dimension)} reported in {latest} but not {previous}")
+    if not matched.groups:
+        return (
+            f" No {dimension} value reported in both periods ({'; '.join(changes)}), so this "
+            "compares different groups."
+        )
+    start, end = format_values_apart(*pooled, column=roles.measure, column_values=measure_values)
+    plural = "values" if matched.groups > 1 else "value"
+    return (
+        f" This compares the {matched.groups:,} {dimension} {plural} that reported in both periods; "
+        f"{'; '.join(changes)}. With every {dimension} included it went from {start} to {end}."
+    )
+
+
+def _season_name(period: pd.Timestamp, grain: str) -> str:
+    return f"Q{period.quarter}" if grain == "Q" else period.strftime("%b")
+
+
+def _seasonal_note(
+    seasonal: SeasonalContext,
+    series: TrendSeries,
+    change: float,
+    current: float,
+    roles: ColumnRoles,
+    unit: str,
+    measure_values: pd.Series | None,
+) -> str:
+    """Set the latest move beside the same move in earlier years and the same period a year ago.
+
+    Replaces the comparison with all past period-to-period changes, which a
+    yearly cycle makes look unusual every spring.
+    """
+    relative = unit not in ("rate", "level")
+
+    def describe(size: float) -> str:
+        if relative:
+            return format_percentage(size, signed=True)
+        return format_change(0, size, roles.measure, unit, measure_values, signed=True) or "—"
+
+    latest = pd.Timestamp(series.frame.iloc[-1]["Period"])
+    season = _season_name(latest, series.frequency)
+    note = ""
+    usual = np.asarray(seasonal.usual_changes, dtype=float)
+    if usual.size == 1:
+        note = f" In the one earlier year on record, the move into {season} was {describe(usual[0])}."
+    elif usual.size:
+        low, high = float(usual.min()), float(usual.max())
+        within = "within" if low <= change <= high else "outside"
+        note = (
+            f" In the {usual.size} earlier years on record, the move into {season} ranged from "
+            f"{describe(low)} to {describe(high)} (median {describe(float(np.median(usual)))}), "
+            f"so this one is {within} the range usual for the time of year."
+        )
+    if seasonal.year_ago is not None:
+        then = format_period(seasonal.year_ago, series.frequency)
+        before = seasonal.year_ago_value
+        size = format_change(before, current, roles.measure, unit, measure_values)
+        shown = format_values_apart(before, current, column=roles.measure, column_values=measure_values)[0]
+        if size is not None:
+            verb = "up" if current > before else "down" if current < before else "level"
+            note += f" Against {then} ({shown}), it is {verb}" + (f" {size}." if verb != "level" else ".")
+    return note
 
 
 def _change_driver_evidence(
@@ -295,7 +416,12 @@ def _change_driver_evidence(
         f"{roles.measure} {direction} by {size}, from {start} to {end}."
     )
 
-    if not metric.additive:
+    if len(changes) == 1:
+        # One segment is all of its own movement; a share would say nothing.
+        dimension = sentence_case(roles.dimension)
+        statement = f"{movement} It is the only {dimension} with figures in both periods."
+        calculation = f"Latest {driver_name} {roles.measure} − previous"
+    elif not metric.additive:
         # Changes in segment averages don't add up to the change in the overall average.
         statement = movement
         calculation = (
@@ -323,6 +449,15 @@ def _change_driver_evidence(
             f"Latest {driver_name} {roles.measure} − previous {driver_name} {roles.measure}; "
             "ranked across segments"
         )
+    left_out = grouped.attrs.get("left_out", ())
+    if left_out:
+        # Their change is reporting starting or stopping, not a move in the measure.
+        noun = "value" if len(left_out) == 1 else "values"
+        statement += (
+            f" {len(left_out):,} {sentence_case(roles.dimension)} {noun} with figures in only one "
+            f"of the two periods ({_listed(left_out, roles.dimension)}) are left out."
+        )
+        calculation += "; only segments with figures in both periods"
 
     return Evidence(
         kind="driver",
@@ -341,7 +476,8 @@ def _anomaly_evidence(
     if not roles.date:
         return None
     series = build_trend(dataframe, roles, frequency)
-    anomalies = detect_anomalies(series.frame)
+    metric = metric_for(roles.measure, roles)
+    anomalies = detect_anomalies(series.frame, floor_at_zero=metric.floors_at_zero)
     if not anomalies:
         return None
     # Label at the series' own grain, which a fixed frequency may have set.
@@ -356,6 +492,11 @@ def _anomaly_evidence(
         worst.value, worst.expected_low, worst.expected_high,
         column=roles.measure, column_values=measure_values,
     )
+    band = "trendline band"
+    expected = "Theil–Sen trendline"
+    if worst.seasonal:
+        band = "band for its time of year"
+        expected += " plus the usual offset of the same month or quarter in other years"
     return Evidence(
         kind="anomaly",
         title="Anomalous periods",
@@ -363,10 +504,10 @@ def _anomaly_evidence(
         statement=(
             f"{label} is the sharpest anomaly: {sentence_case(measure)} reached {reached}, "
             f"{worst.direction} the expected {low}–{high} range. "
-            f"{len(anomalies)} {plural} outside the trendline band."
+            f"{len(anomalies)} {plural} outside the {band}."
         ),
         calculation=(
-            "Period values vs Theil–Sen trendline ± a band calibrated so that only "
+            f"Period values vs {expected} ± a band calibrated so that only "
             "1 stable series in 20 raises a flag"
         ),
         tone="warning",
@@ -509,10 +650,11 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
     # don't make one segment two thirds of churn.
     metric = metric_for(roles.measure, roles)
     additive = metric.additive
-    if not additive:
-        segments = segments.dropna(subset=["Value"])
-        if segments.empty:
-            return ()
+    # A segment with no values for the measure has no figure, not a figure of zero.
+    no_data = tuple(segments.loc[segments["Value"].isna(), "Segment"])
+    segments = segments.dropna(subset=["Value"])
+    if segments.empty:
+        return ()
     total = float(segments["Value"].sum())
     if additive and (total == 0 or not np.isfinite(total)):
         return ()
@@ -573,6 +715,10 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
         statement, value, subject = _highest_and_lowest(
             segments, roles, _rows_per_group(dataframe, roles), measure_values
         )
+        ranked = [leader["Segment"]]
+        if len(segments) > 1:
+            ranked.append(segments.loc[segments["Value"].idxmin(), "Segment"])
+        statement += _coverage_note(dataframe, roles, ranked)
         calculation = f"mean {measure} per {roles.dimension}; averages are not split into shares"
     else:
         title = f"Largest {dimension} by size"
@@ -581,6 +727,14 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
             f"{measure} has both positive and negative values, so shares of the total are not shown."
         )
         calculation = f"largest |{measure}| by {roles.dimension}; shares are undefined with mixed signs"
+    if additive:
+        statement += _coverage_note(dataframe, roles, [leader["Segment"]])
+    if no_data:
+        verb, pronoun = ("has", "it is") if len(no_data) == 1 else ("have", "they are")
+        statement += (
+            f" {_listed(no_data, roles.dimension)} {verb} no {measure} values, so {pronoun} "
+            "left out rather than counted as zero."
+        )
     return (
         Evidence(
             kind="leader",
@@ -606,6 +760,38 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
             if shares_hold and _counts_money_or_things(roles, metric, measure_values)
             else ()
         ),
+    )
+
+
+# A ranked group whose figures span less than this share of the table's dates is
+# named with its own dates, since its average covers a different stretch of time.
+PARTIAL_COVERAGE_SHARE = 0.75
+
+
+def _coverage_note(dataframe: pd.DataFrame, roles: ColumnRoles, groups: list) -> str:
+    """Name the ranked groups whose figures cover only part of the table's dates."""
+    coverage = group_coverage(dataframe, roles)
+    if coverage.empty:
+        return ""
+    start, end = coverage["From"].min(), coverage["To"].max()
+    span = end - start
+    if span <= pd.Timedelta(0):
+        return ""
+    notes = []
+    for group in groups:
+        if group not in coverage.index:
+            continue
+        first, last = coverage.loc[group, "From"], coverage.loc[group, "To"]
+        if (last - first) < PARTIAL_COVERAGE_SHARE * span:
+            notes.append(
+                f"{group_label(roles.dimension, group)} only has figures from "
+                f"{format_moment(first)} to {format_moment(last)}"
+            )
+    if not notes:
+        return ""
+    return (
+        f" {'; '.join(notes)}, while the table runs from {format_moment(start)} to "
+        f"{format_moment(end)}, so its figure covers a different stretch of time."
     )
 
 

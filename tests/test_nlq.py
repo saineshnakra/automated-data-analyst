@@ -1461,5 +1461,24 @@ class ScopeEchoTests(unittest.TestCase):
         self.assertIn("The row limit left out 300 rows", limited.answer)
 
 
+class SubDayTrendTests(unittest.TestCase):
+    def setUp(self):
+        stamps = pd.date_range("2024-05-01 15:00:00", periods=3000, freq="s")
+        self.frame = pd.DataFrame({"Time": stamps, "TVOC": np.arange(3000) % 50 + 10.0})
+        self.roles = detect_roles(self.frame)
+
+    def test_a_trend_by_the_minute_is_named_in_minutes(self):
+        answer = answer_question("TVOC trend by minute", self.frame, self.roles)
+
+        self.assertEqual(answer.plan.grain, "min")
+        self.assertIn("TVOC per minute", answer.answer)
+        self.assertIn("across 50 minutes", answer.answer)
+
+    def test_hour_of_day_is_not_read_as_an_hourly_trend(self):
+        plan = parse_question("average TVOC by hour of day", self.frame, self.roles)
+
+        self.assertTrue(plan is None or plan.grain != "h")
+
+
 if __name__ == "__main__":
     unittest.main()

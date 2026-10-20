@@ -186,6 +186,21 @@ class BusinessAnalysisTests(unittest.TestCase):
         self.assertIn("from 28.0% to 31.0%", report)
 
     def test_negative_latest_period_prioritizes_diagnosis(self):
+        months = ["2025-01-15", "2025-02-15", "2025-03-15", "2025-04-15", "2025-05-15"]
+        dataframe = pd.DataFrame(
+            {
+                "Date": pd.to_datetime(months * 2),
+                "Revenue": [500, 520, 540, 560, 580, 500, 550, 600, 650, 100],
+                "Region": ["West"] * 5 + ["East"] * 5,
+            }
+        )
+
+        brief = analyze_business(dataframe)
+
+        self.assertEqual(brief.recommendations[0].title, "Start with East")
+        self.assertIn("moved the most of any region", brief.recommendations[0].rationale)
+
+    def test_a_region_that_stops_reporting_is_not_the_driver(self):
         dataframe = pd.DataFrame(
             {
                 "Date": pd.to_datetime(
@@ -198,8 +213,10 @@ class BusinessAnalysisTests(unittest.TestCase):
 
         brief = analyze_business(dataframe)
 
-        self.assertEqual(brief.recommendations[0].title, "Start with East")
-        self.assertIn("moved the most of any region", brief.recommendations[0].rationale)
+        self.assertNotIn("driver", [item.kind for item in brief.evidence])
+        trend = next(item for item in brief.evidence if item.kind == "trend")
+        self.assertIn("No region value reported in both periods", trend.statement)
+        self.assertIn("East reported in Apr 2025 but not May 2025", trend.statement)
 
     def test_offsetting_segments_are_measured_against_all_movement(self):
         """West rises by 1,000 and East falls by 980, so the net movement is only 20."""
@@ -984,6 +1001,100 @@ class SummaryTests(unittest.TestCase):
         for kpi in brief.kpis:
             self.assertNotIn("$", kpi.value)
         self.assertNotIn("$", brief.headline)
+
+
+def evidence_of(frame, kind, roles=None):
+    brief = analyze_business(frame, roles or detect_roles(frame))
+    return next((item for item in brief.evidence if item.kind == kind), None)
+
+
+def stations_by_quarter():
+    """Three stations a quarter for six years; the warm South stops after Q3 1945."""
+    quarters = pd.date_range("1940-01-01", periods=24, freq="QS")
+    season = np.tile([5.0, 15.0, 25.0, 15.0], 6)
+    rows = []
+    for station, offset in (("North", 0.0), ("Middle", 2.0), ("South", 20.0)):
+        for quarter, level in zip(quarters, season, strict=True):
+            if station == "South" and quarter > pd.Timestamp("1945-07-01"):
+                continue
+            rows.append((quarter, station, level + offset))
+    return pd.DataFrame(rows, columns=["Date", "Station", "MaxTemp"])
+
+
+class PeriodComparisonTests(unittest.TestCase):
+    def test_a_station_that_stops_reporting_does_not_move_the_change(self):
+        trend = evidence_of(stations_by_quarter(), "trend")
+
+        self.assertIn("compares the 2 station values that reported in both periods", trend.statement)
+        self.assertIn("South reported in Q3 1945 but not Q4 1945", trend.statement)
+        self.assertIn("With every station included it went from", trend.statement)
+        self.assertIn("decreased by 10 ", trend.statement)
+        self.assertIn("within the range usual for the time of year", trend.statement)
+        self.assertIn("Against Q4 1944 (16), it is level", trend.statement)
+        self.assertTrue(trend.calculation.startswith("On the Station values present in both periods"))
+
+    def test_a_winter_to_spring_move_is_set_beside_earlier_years(self):
+        frame = stations_by_quarter()
+        frame = frame[frame["Station"] == "North"]
+
+        trend = evidence_of(frame, "trend")
+
+        self.assertIn("the move into Q4 ranged from -10 to -10", trend.statement)
+        self.assertIn("within the range usual for the time of year", trend.statement)
+        self.assertIn("Against Q4 1944 (15), it is level", trend.statement)
+        self.assertNotIn("unusually large swing", trend.statement)
+
+    def test_a_short_last_period_is_not_called_complete(self):
+        stamps = pd.date_range("2024-09-02", "2025-01-04 23:00", freq="h")
+        frame = pd.DataFrame({"Time": stamps, "CO": 400.0 + np.arange(len(stamps)) % 7})
+
+        brief = analyze_business(frame, detect_roles(frame), frequency="W")
+        trend = next(item for item in brief.evidence if item.kind == "trend")
+
+        self.assertIn("in the latest period (30 Dec 2024)", trend.statement)
+        self.assertIn("only reaches 6 of 7 days", trend.statement)
+
+
+class GroupCoverageTests(unittest.TestCase):
+    def test_a_group_with_no_readings_is_no_data_not_zero(self):
+        months = pd.date_range("2024-01-01", periods=6, freq="MS")
+        frame = pd.DataFrame({
+            "Date": list(months) * 3,
+            "Station": ["Oak"] * 6 + ["63rd"] * 6 + ["Foster"] * 6,
+            "Rainfall Total": [5.0] * 6 + [9.0] * 6 + [np.nan] * 6,
+        })
+
+        leader = evidence_of(frame, "leader")
+        segments = segment_frame(frame, detect_roles(frame), limit=None).set_index("Segment")
+
+        self.assertIn("Foster has no Rainfall Total values", leader.statement)
+        self.assertTrue(np.isnan(segments.loc["Foster", "Value"]))
+
+    def test_a_ranked_group_covering_part_of_the_dates_says_so(self):
+        months = pd.date_range("2015-01-01", periods=60, freq="MS")
+        frame = pd.DataFrame({
+            "Date": list(months) * 2,
+            "City": ["Delhi"] * 60 + ["Aizawl"] * 60,
+            "PM2.5": [90.0] * 60 + [np.nan] * 54 + [20.0] * 6,
+        })
+
+        leader = evidence_of(frame, "leader")
+
+        self.assertIn("Aizawl only has figures from 01 Jul 2019 to 01 Dec 2019", leader.statement)
+        self.assertNotIn("Delhi only has", leader.statement)
+
+    def test_the_only_group_in_both_periods_gets_no_share(self):
+        months = pd.date_range("2024-01-01", periods=6, freq="MS")
+        frame = pd.DataFrame({
+            "Date": list(months) + list(months[:4]),
+            "Station": ["Oak"] * 6 + ["63rd"] * 4,
+            "Rain Total": [5.0, 6.0, 7.0, 8.0, 9.0, 3.0, 9.0, 9.0, 9.0, 9.0],
+        })
+
+        driver = evidence_of(frame, "driver")
+
+        self.assertIn("It is the only station with figures in both periods.", driver.statement)
+        self.assertNotIn("100.0% of the net movement", driver.statement)
 
 
 if __name__ == "__main__":

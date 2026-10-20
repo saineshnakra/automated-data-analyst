@@ -114,6 +114,9 @@ GRAIN_WORDS = {
     "yearly": "Y",
     "annual": "Y",
     "year": "Y",
+    # Not "hour" or "second": "by hour of day" asks for a profile, "second highest" a rank.
+    "hourly": "h",
+    "minute": "min",
 }
 MONTH_NAMES = {
     name: number
@@ -156,7 +159,10 @@ SCATTER_LIMIT = 2_000
 # ranked, and a later "by" names the measure: "top 3 cylinders by mpg".
 GROUPING_WORDS = r"(?:by|per|across|each)"
 RANKING_WORDS = r"(?:which|top|bottom)(?:\s+\d{1,3})?"
-GRAIN_NAMES = {"D": "day", "W": "week", "M": "month", "Q": "quarter", "Y": "year"}
+GRAIN_NAMES = {
+    "s": "second", "min": "minute", "h": "hour",
+    "D": "day", "W": "week", "M": "month", "Q": "quarter", "Y": "year",
+}
 # Trailing unit tokens left out of a column's core name, so "body mass" names
 # body_mass_g. "min" and "max" are missing because they also mean minimum and maximum.
 UNIT_TOKENS = frozenset({

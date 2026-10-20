@@ -17,7 +17,7 @@ from .anomalies import detect_anomalies
 from .autovis import fold_small_series, recommend_chart
 from .business_insights import BusinessBrief
 from .forecasting import build_forecast, describe_backtest
-from .formatting import format_number, format_period, group_label
+from .formatting import format_number, format_period, group_label, is_undated
 from .metrics import metric_for
 from .nlq import QueryAnswer
 from .pipeline import analyze_selection
@@ -211,7 +211,10 @@ def render_ai_narrative(narrative: AINarrative, *, model: str) -> None:
     )
 
 
-GRAIN_NAMES = {"D": "Day", "W": "Week", "M": "Month", "Q": "Quarter", "Y": "Year"}
+GRAIN_NAMES = {
+    "s": "Second", "min": "Minute", "h": "Hour",
+    "D": "Day", "W": "Week", "M": "Month", "Q": "Quarter", "Y": "Year",
+}
 
 
 def axis_names(roles: ColumnRoles, frequency: str | None = None) -> dict[str, str]:
@@ -265,15 +268,37 @@ def group_names(dataframe: pd.DataFrame, dimension: str | None, values) -> list[
     ]
 
 
+# How a period is written in a hover label, by grain; plotly reads d3 time formats.
+HOVER_DATES = {
+    "Y": "%Y", "Q": "%b %Y", "M": "%b %Y", "W": "%d %b %Y", "D": "%d %b %Y",
+    "h": "%d %b %Y %H:%M", "min": "%d %b %Y %H:%M", "s": "%d %b %Y %H:%M:%S",
+}
+
+
+def _hover_date(periods, frequency: str | None) -> str:
+    """The d3 format for a period in a hover label; times with no date show the time alone."""
+    shown = HOVER_DATES.get(frequency or "", "%d %b %Y")
+    if len(periods) and is_undated(pd.Series(periods).iloc[0]):
+        return "%H:%M:%S" if frequency == "s" else "%H:%M"
+    return shown
+
+
+def _undated_axis(figure: go.Figure, periods) -> go.Figure:
+    """Label a time axis with no calendar date by its clock time, never by its stand-in date."""
+    if len(periods) and is_undated(pd.Series(periods).iloc[0]):
+        figure.update_xaxes(tickformat="%H:%M:%S")
+    return figure
+
+
 def _trend_figure(frame: pd.DataFrame, averaged: bool, **options) -> go.Figure:
     """Period values as a filled area for totals, or a plain line for averages."""
     if averaged:
         figure = px.line(frame, x="Period", y="Value", markers=True, color_discrete_sequence=[ACCENT], **options)
         figure.update_traces(line={"width": 3})
-        return figure
+        return _undated_axis(figure, frame["Period"])
     figure = px.area(frame, x="Period", y="Value", markers=True, color_discrete_sequence=[ACCENT], **options)
     figure.update_traces(line={"width": 3}, fillcolor="rgba(99,91,255,.11)")
-    return figure
+    return _undated_axis(figure, frame["Period"])
 
 
 def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
@@ -292,7 +317,8 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 title=f"{roles.measure or 'Records'} over time",
                 labels=axis_names(roles, series.frequency),
             )
-            anomalies = detect_anomalies(trend)
+            anomalies = detect_anomalies(trend, floor_at_zero=metric.floors_at_zero)
+            when = _hover_date(trend["Period"], series.frequency)
             if anomalies:
                 figure.add_trace(
                     go.Scatter(
@@ -306,11 +332,22 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                             "color": "#E35D6A",
                             "line": {"width": 2, "color": "white"},
                         },
-                        hovertemplate=f"%{{x|%b %Y}}: %{{y:{_hover_format(trend['Value'])}}}, outside the expected band<extra>Anomaly</extra>",
+                        hovertemplate=f"%{{x|{when}}}: %{{y:{_hover_format(trend['Value'])}}}, outside the expected band<extra>Anomaly</extra>",
                     )
                 )
             forecast = build_forecast(trend, floor_at_zero=metric.floors_at_zero)
-            if forecast:
+            chart = st.empty()
+            drawn = bool(forecast) and forecast.reliable
+            if forecast and not forecast.reliable:
+                # A line that did worse than "no change" on held-out periods would
+                # look like a prediction, so it is shown only when asked for.
+                st.caption(
+                    "The forecast is not drawn: on the last "
+                    f"{forecast.backtest.holdout_periods} periods it did worse than simply "
+                    f"assuming no change (MASE {forecast.backtest.mase:.2f})."
+                )
+                drawn = st.toggle("Draw it anyway", key="draw_unreliable_forecast")
+            if drawn:
                 figure.add_trace(
                     go.Scatter(
                         x=[*forecast.periods, *reversed(forecast.periods)],
@@ -330,11 +367,11 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                         mode="lines",
                         name="Forecast",
                         line={"width": 2.5, "dash": "dash", "color": "#8B5CF6"},
-                        hovertemplate=f"%{{x|%b %Y}}: %{{y:{_hover_format(trend['Value'])}}} (forecast)<extra></extra>",
+                        hovertemplate=f"%{{x|{when}}}: %{{y:{_hover_format(trend['Value'])}}} (forecast)<extra></extra>",
                     )
                 )
-            st.plotly_chart(style_chart(figure), width="stretch", config={"displayModeBar": False})
-            if forecast:
+            chart.plotly_chart(style_chart(figure), width="stretch", config={"displayModeBar": False})
+            if drawn:
                 st.caption(
                     f"Baseline forecast: {forecast.method} · {describe_backtest(forecast.backtest)}."
                 )
@@ -555,7 +592,7 @@ def render_chat_fallback(suggestions: list[str], hint: str | None = None) -> Non
 # Points the Explore chart draws along one axis.
 EXPLORE_POINTS = 400
 # A long date axis steps up through these until the whole range fits.
-EXPLORE_GRAINS = ("D", "W", "M", "Q", "Y")
+EXPLORE_GRAINS = ("s", "min", "h", "D", "W", "M", "Q", "Y")
 
 
 def _fit_date_axis(
@@ -564,8 +601,8 @@ def _fit_date_axis(
     """Group a date axis by the finest period that fits ``limit`` points.
 
     Drawing only the latest dates would drop the start of a long series without
-    a word, so dates step up through days, weeks, months, quarters and years
-    until the whole range fits. Returns the rows with each date moved to its
+    a word, so dates step up through seconds, minutes, hours, days, weeks,
+    months, quarters and years until the whole range fits. Returns the rows with each date moved to its
     period's start, and a caption saying what a point is, or, when even years
     don't fit, how many are shown.
     """

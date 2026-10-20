@@ -19,7 +19,7 @@ from typing import Any
 
 import pandas as pd
 
-from .aggregation import TrendSeries, build_trend, segment_frame
+from .aggregation import TrendSeries, build_trend, group_coverage, segment_frame
 from .analysis import column_profile
 from .anomalies import MIN_PERIODS as ANOMALY_MIN_PERIODS
 from .anomalies import Anomaly, detect_anomalies
@@ -318,7 +318,9 @@ class Analysis:
                 needed=f"{ANOMALY_MIN_PERIODS} periods",
                 had=f"{periods} periods",
             )
-        return detect_anomalies(series.frame)
+        return detect_anomalies(
+            series.frame, floor_at_zero=metric_for(self.roles.measure, self.roles).floors_at_zero
+        )
 
     def forecast(self, horizon: int = 6) -> Forecast | Refusal:
         """Trend-based forecast with a backtest. Check ``.backtest`` before using it."""
@@ -341,10 +343,18 @@ class Analysis:
         return result
 
     def segments(self, limit: int = 12) -> pd.DataFrame | Refusal:
-        """The measure broken down by the grouping column, as a DataFrame."""
+        """The measure broken down by the grouping column, as a DataFrame.
+
+        With a date column, From and To give each group's first and last date
+        with a value, since groups ranked side by side may cover different years.
+        A group with no values for the measure has a missing Value, not zero.
+        """
         if not self.roles.dimension:
             return Refusal("no_dimension_column", "This table has no segment column to group by.")
-        return segment_frame(self.frame, self.roles, limit=limit)
+        frame = segment_frame(self.frame, self.roles, limit=limit)
+        if self.roles.date:
+            frame = frame.join(group_coverage(self.frame, self.roles), on="Segment")
+        return frame
 
     def ask(self, question: str) -> QueryAnswer | Refusal:
         """Answer a plain-English question with pandas, locally.
