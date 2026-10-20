@@ -25,11 +25,13 @@ class MetricSpecTests(unittest.TestCase):
         self.assertEqual(counted.aggregation, "count")
         self.assertEqual(counted.combines_as, "count")
 
-    def test_only_levels_may_forecast_below_zero(self):
-        self.assertTrue(resolve_metric("Revenue").floors_at_zero)
-        self.assertTrue(resolve_metric("Churn Rate").floors_at_zero)
-        self.assertTrue(resolve_metric(None).floors_at_zero)
-        self.assertFalse(resolve_metric("Water Temp (°C)").floors_at_zero)
+    def test_only_readings_whose_scale_goes_below_zero_forecast_past_it(self):
+        for name in ("Revenue", "Churn Rate", None, "Rainfall (mm)", "Concentration (mg/L)", "CO2"):
+            with self.subTest(name=name):
+                self.assertTrue(resolve_metric(name).floors_at_zero)
+        for name in ("Water Temp (°C)", "air_temp", "Elevation (m)", "Reading (°F)"):
+            with self.subTest(name=name):
+                self.assertFalse(resolve_metric(name).floors_at_zero)
 
     def test_direction_of_good_is_read_from_the_whole_name(self):
         for name in ("Revenue", "Units", "Cost Savings", "Revenue After Returns", "Defects Avoided",
@@ -127,7 +129,7 @@ class AggregationOverrideTests(unittest.TestCase):
     def test_averaging_an_amount_makes_it_a_level(self):
         spec = resolve_metric("Revenue", "mean")
         self.assertEqual((spec.aggregation, spec.unit), ("mean", "level"))
-        self.assertFalse(spec.floors_at_zero)
+        self.assertTrue(spec.floors_at_zero)
 
     def test_an_override_that_agrees_with_the_name_changes_nothing(self):
         self.assertEqual(resolve_metric("Churn Rate", "mean"), resolve_metric("Churn Rate"))

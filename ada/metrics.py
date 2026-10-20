@@ -56,6 +56,12 @@ ADDITIVE_WORDS = frozenset({
     "cells", "colonies", "individuals", "specimens", "sightings", "abundance", "population",
     "visitors", "arrivals", "departures",
 })
+# Levels whose scale carries on below zero, so a forecast heading down may pass it
+# even when the history never did: a temperature in °C or °F, a height relative to
+# sea level. Rainfall, concentrations and most other readings stop at zero.
+SIGNED_LEVEL_WORDS = frozenset({
+    "temperature", "temp", "celsius", "fahrenheit", "elevation", "altitude",
+})
 # Head words of a per-unit price, which is averaged although it is money.
 PRICE_WORDS = frozenset({"price", "prices"})
 # How a measure may be told to combine, overriding what its name implies.
@@ -136,10 +142,19 @@ class MetricSpec:
     def floors_at_zero(self) -> bool:
         """Whether a forecast may stop at zero when the history never goes below it.
 
-        Amounts, counts and rates cannot be negative. A level can: a temperature
-        falling past 0 °C keeps falling.
+        Amounts, counts, rates and most readings (rainfall, a concentration)
+        cannot be negative. A temperature or an elevation can: one falling past
+        0 °C keeps falling.
         """
-        return self.unit != "level"
+        return not is_signed_level_name(self.name)
+
+
+def is_signed_level_name(name: str | None) -> bool:
+    """Whether the name is a reading whose scale goes below zero, such as "Water Temp (°C)"."""
+    if not name:
+        return False
+    words = set(normalized_name(name).split()) | set(re.findall(r"[a-z0-9]+", str(name).lower()))
+    return bool(words & SIGNED_LEVEL_WORDS) or "°" in str(name)
 
 
 def is_level_name(name: str) -> bool:
