@@ -3,291 +3,230 @@
 [![CI](https://github.com/saineshnakra/automated-data-analyst/actions/workflows/ci.yml/badge.svg)](https://github.com/saineshnakra/automated-data-analyst/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.13-3776ab?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-20a779.svg)](https://github.com/saineshnakra/automated-data-analyst/blob/main/LICENSE)
-[![Stars](https://img.shields.io/github/stars/saineshnakra/automated-data-analyst?style=flat&logo=github&color=f5b731&label=Star%20this%20repo)](https://github.com/saineshnakra/automated-data-analyst/stargazers)
+[![Stars](https://img.shields.io/github/stars/saineshnakra/automated-data-analyst?style=flat&logo=github&color=f5b731)](https://github.com/saineshnakra/automated-data-analyst/stargazers)
 
-**You open the CSV, squint at the columns, write a groupby, make a chart, then
-notice the dates parsed as text and start over.**
+ADA is a first pass at a CSV or Excel file you haven't looked at yet. It
+detects the date, the measure and the grouping column, cleans what it can,
+and builds the trend, a breakdown by group, anomaly flags and a baseline
+forecast. Every number comes from pandas and is shown with the calculation
+that produced it.
 
-Upload the file to ADA instead. It works out which column is the date, which is
-the measure and which is the segment, builds the trend, the breakdown, the
-anomaly flags and a guarded forecast, and shows the arithmetic under every
-number.
+It works on sales exports, but it was also built for research data: lab
+assays, field surveys, instrument logs. It averages measurements such as
+temperature, pH or concentration instead of summing them, and reads `NA`, `nd`
+or `<LOD` in a numeric column as missing.
 
-[**Try it now**](https://automated-data-analyst.streamlit.app/) · no sign-up, no API key
+[**Try the web app**](https://automated-data-analyst.streamlit.app/) (no sign-up, no API key) or `pip install` it.
 
-![Ask ADA a plain-English question and receive a pandas-backed answer with its calculation](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/ask-ada.gif)
+![Asking ADA a plain-English question and getting a pandas-backed answer with its calculation](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/ask-ada.gif)
 
-## Point it at research data and see what it finds
+## Quick start
 
-ADA does not know anything about your field. It finds structure in a table and
-shows its working. That turns out to be enough to be useful on a lot of things
-that are not business data:
-
-- **Have biological data that feels like junk?** Put it in ADA. It will not
-  understand the biology, but it will show you the structure.
-- **Have a lab export you have not opened in months?** Drop it in and see
-  whether anything actually moves.
-- **Have field measurements across sites and seasons?** Load them and see which
-  periods sit outside the band.
-- **Have an instrument or sensor log nobody has plotted?** Find out where the
-  odd periods are.
-- **Have a scraped CSV you never cleaned?** ADA reports exactly what it fixed,
-  then analyzes what is left.
-- **Have a city open-data file you were curious about?** Point ADA at it before
-  you spend an afternoon in pandas.
-- **Have a revenue export and a meeting in an hour?** Upload it and get the
-  trend, the segment breakdown and the arithmetic behind both.
-
-## Analyze a CSV or Excel file without writing code
-
-ADA reads your file, works out which column is the metric, which is the date,
-and which is the segment, then builds the analysis around that.
-
-- **Dashboard** — trend, segment breakdown, movement waterfall, segment × period heatmap
-- **Ask ADA** — plain-English questions answered locally with pandas, calculation shown
-- **Anomaly flags** — periods outside a calibrated band, sized so a stable series false-alarms about once in twenty analyses
-- **Forecast** — a guarded baseline that refuses to run on thin history and reports when it was no better than assuming no change
-- **Evidence and next steps** — every finding carries its calculation; recommendations are labelled as interpretation, never as cause
-- **Downloads** — Markdown executive brief and cleaned CSV
-
-Limits: 25 MB per file, 250,000 rows analyzed. Formats: `.csv`, `.xlsx`, `.xlsm`.
-
-### Focus on one segment. The whole analysis regroups.
-
-![Drill into one business segment and automatically regroup the dashboard by the next useful dimension](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/drilldown.gif)
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/anomaly-forecast.png" width="49%" alt="ADA dashboard showing anomaly markers, a guarded forecast, movement waterfall, and segment heatmap">
-  <img src="https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/evidence-ledger.png" width="49%" alt="ADA evidence ledger showing calculations, anomalies, concentration, correlation, and detected schema">
-</p>
-
-## What ADA refuses to do
-
-The refusals are the feature. A tool that always answers is a tool you cannot
-trust with a number you have not checked.
-
-- **The forecast refuses thin history** and tells you when it scored no better
-  than assuming no change.
-- **Ask ADA refuses a question it cannot represent** rather than answering the
-  nearest one it can. A precise answer to a question nobody asked is worse than
-  no answer.
-- **No model ever computes a number.** Every figure comes from pandas. The
-  optional AI layer proposes a calculation and waits for you to confirm it.
-- **Recommendations are labelled interpretation**, and separated from the
-  evidence that triggered them. ADA never claims a cause.
-- **A gap is not a zero.** A period with no rows stays empty rather than
-  dragging a rate down.
-
-![Six evidence cards, each showing the calculation that produced it, above the detected schema table](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/evidence-ledger.png)
-
-## What ADA is not
-
-It is descriptive analysis of one tabular file. It is not a statistics package
-and it has no domain knowledge. There is no hypothesis testing, no survival
-analysis, no study design, no multiple-comparison correction, nothing
-bioinformatic. If you need a p-value for a specific claim, ADA is the step
-before that, not the step instead of it.
-
-## Use it in your own code
-
-You have a DataFrame and you want the findings, not a browser. One call, one
-object, and everything else hangs off it.
+```bash
+pip install automated-data-analyst
+```
 
 ```python
 import ada
 
-report = ada.analyze("orders.csv")        # a DataFrame, a path, or raw bytes
-print(report.headline)
-# +12.2% latest movement, with 33.3% coming from the leading category.
-
-for item in report.evidence:
-    print(item.value, item.title)
-    print("   ", item.calculation)
-# +12.2% Latest revenue movement
-#     (Latest period − previous period) ÷ |previous period|, set against the
-#     spread of past period-over-period changes
+report = ada.analyze("lab-measurements.csv")   # a path, a DataFrame or raw bytes
+print(report)
 ```
 
-No data of your own to hand? `ada.sample()` returns one of the four bundled
-files, including a cell-culture assay if you want something that is not sales
-data.
+```text
+lab-measurements.csv — 936 rows, 02 Sep 2024 to 23 Feb 2026
+  date=Run Date  measure=Viability %  segment=Treatment
 
-### A refusal is an object, not a silence
++0.1 pts latest movement; Control has the highest average, at 91.6%.
+...
+  91.6%  Leading treatment
+      Control has the highest average Viability %, at 91.6%. Compound B has the lowest, at 84.8%.
+      calc: mean Viability % per Treatment; averages are not split into shares
+  1  Anomalous periods
+      Jul 2025 is the sharpest anomaly: viability % reached 81.5%, below the expected 88.1%–90.1% range.
+      1 period sits outside the trendline band.
+      calc: Period values vs Theil–Sen trendline ± a band calibrated so that only 1 stable series in 20 raises a flag
+  ...
+```
 
-ADA declines rather than answering a question it cannot represent. In a browser
-that is a sentence on screen. In your code it is a value you can branch on:
+That file ships with the package: `ada.sample("Lab Measurements")` loads it,
+and `ada.samples()` lists all four bundled datasets.
+
+From the command line:
+
+```bash
+ada analyze measurements.csv          # the same report
+ada analyze measurements.csv --json   # as JSON
+ada schema measurements.csv           # which column ADA used for what
+ada ask orders.csv "which category made the most revenue"
+```
+
+## What it does
+
+- **Cleans conservatively and says what it changed**: encodings (UTF-8,
+  UTF-16, Latin-1), `;` and tab delimiters, a title line above the header,
+  `$1,203.55` and `(48.10)` style numbers, day/month order in dates, missing-value
+  markers. Identical rows are counted, not dropped.
+- **Detects column roles**: the date, the measure, the grouping column and an
+  ID column, from names, types and cardinality. Override any of them with
+  `ada.analyze(df, measure="OD600")` or in the app.
+- **Knows what can be added up**: amounts and counts are summed; rates
+  (`Viability %`, `Churn Rate`) and measured levels (`Water Temp (°C)`, `pH`,
+  `Concentration (mg/L)`) are averaged. Averages get no totals and no "share of
+  total", and a change in a rate is reported in percentage points.
+- **Builds a timeline**: picks a period grain the data can fill, drops a final
+  period the data only partly covers, and notes both under the chart.
+- **Flags anomalies**: periods outside a band around a Theil-Sen trendline. The
+  band is calibrated by simulation so a stable series raises a false alarm in
+  about one analysis in twenty.
+- **Forecasts with a backtest**: a trendline plus month-of-year seasonality,
+  scored on held-out periods against a no-change forecast. It refuses to run on
+  too little history.
+- **Answers plain-English questions** ("average pH by site", "which treatment
+  fell most") by turning them into a fixed query plan that pandas runs. A
+  question it can't represent is refused rather than answered approximately.
+- **Reports correlations with a 95% interval**, the sample size and a rank
+  correlation check, and says that the pair was picked as the strongest of
+  several.
+
+The web app accepts files up to 25 MB. By default the most recent 250,000 rows
+are analyzed (`row_limit=` changes that).
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/anomaly-forecast.png" width="49%" alt="ADA dashboard for the lab sample: viability over time with an anomaly and a forecast, change per treatment, heatmap, distribution and scatter">
+  <img src="https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/evidence-ledger.png" width="49%" alt="ADA evidence ledger listing each finding with its calculation">
+</p>
+
+## What it doesn't do
+
+It describes one table. It has no domain knowledge and is not a statistics
+package: no hypothesis tests, no study design, no multiple-comparison
+correction. The recommendations it prints are suggestions for what to look at
+next, not causal claims. If you need a p-value for a specific comparison, ADA
+is the step before that.
+
+## Using it from Python
+
+```python
+report = ada.analyze(df, date="Survey Date", measure="Water Temp (°C)", dimension="Site")
+
+report.profile()          # one row per column: type, missing, distinct values
+report.evidence           # findings, each with .statement and .calculation
+report.trend()            # the measure per period, with notes on adjustments
+report.segments()         # the measure by group, as a DataFrame
+report.anomalies          # flagged periods
+report.forecast()         # forecast with .backtest
+report.ask("average pH by site")
+report.focus("North Marsh")   # the same analysis for one group
+report.to_dict()          # JSON-safe, versioned by schema_version
+report.to_markdown()      # the report the web app downloads
+```
+
+When ADA can't answer, it returns a `Refusal` instead of a number. A refusal is
+falsy and has a `code` from `ada.REFUSAL_CODES`:
 
 ```python
 forecast = report.forecast()
-if not forecast:                      # a Refusal is falsy
-    print(forecast.code)              # 'thin_history'
-    print(forecast.needed, forecast.had)   # 'more periods'  '4 periods'
-else:
-    print(forecast.method, forecast.backtest.beats_no_change)
+if not forecast:
+    print(forecast.code, forecast.message)
+    # thin_history A forecast needs more history than this; the table has 4 periods.
 ```
 
-Every refusal carries a code from a documented set, so you never parse English
-to find out what happened. The same applies to `report.ask("total revenue")`,
-which returns either an answer with its calculation or a refusal saying which
-of the two reasons applied.
+`report.anomalies` returns an empty tuple when it checked and found nothing,
+and a `Refusal` when it couldn't check (no date column, too few periods). Both
+are falsy, so check the type when the difference matters.
 
-### Track your own app's metrics
+## Scheduled checks
 
-Point it at your metrics table on a schedule. `ada check` is built for cron,
-and the exit code is the whole answer:
+`ada check` runs anomaly detection and reports through its exit code, so it can
+sit in a cron job:
 
 ```bash
-ada check metrics.csv --measure signups --frequency W
+ada check saas-subscriptions.csv --frequency M
+# anomaly:2025-04-01  162,605.02, below the expected 267,236.53
 ```
 
-| exit | meaning |
+| Exit code | Meaning |
 |---|---|
-| `0` | looked, nothing outside the expected band |
-| `1` | looked, something was flagged |
-| `3` | could not look — no timeline, or too little history |
-| `2` | the input could not be used at all |
+| `0` | checked, nothing flagged |
+| `1` | at least one period flagged |
+| `2` | the input could not be read |
+| `3` | could not check: no date column or too few periods |
 
-**`3` and `0` are different on purpose.** A job that cannot tell "quiet" from
-"blind" will report quiet for a week after its feed breaks. The same
-distinction holds in Python: `report.anomalies` returns an empty tuple when
-nothing left the band and a `Refusal` when ADA could not look, so test the type
-rather than the truth value.
+Pass `--frequency` (or `frequency=` in Python) for anything scheduled, so the
+period grain doesn't change from one run to the next.
 
-```python
-found = report.anomalies
-if isinstance(found, ada.Refusal):
-    page_me(f"ADA could not check: {found.message}")
-elif found:
-    for item in found:
-        page_me(f"{item.period:%Y-%m-%d} {item.direction} to {item.value:,.0f}")
-```
+## Sample datasets
 
-Pass `frequency=` for anything scheduled. Left unset, ADA picks the grain from
-the recording cadence, which is right for exploring a file once and wrong for a
-job that runs every week.
-
-ADA holds no state between runs. Deduplicate with a key you own —
-`f"anomaly:{item.period:%Y-%m-%d}"` is stable and readable in a log.
-
-## Try it on a sample dataset
-
-Pick **Try a sample dataset** in the app, or download one from [`samples/`](https://github.com/saineshnakra/automated-data-analyst/tree/main/samples):
+All synthetic. Pick one in the web app or load it with `ada.sample(name)`.
 
 | Sample | What it shows |
 |---|---|
-| [Lab measurements](https://github.com/saineshnakra/automated-data-analyst/blob/main/samples/lab-measurements.csv) | A cell-culture viability assay. One treatment arm declining, one bad plate, and a rate column that has to be averaged while the count beside it is summed |
-| [SaaS subscriptions](https://github.com/saineshnakra/automated-data-analyst/blob/main/samples/saas-subscriptions.csv) | A real revenue drop the anomaly radar finds, and a forecast that beats no-change |
-| [Support tickets](https://github.com/saineshnakra/automated-data-analyst/blob/main/samples/support-tickets.csv) | No revenue column, and a forecast honest enough to say it is useless |
-| [Ecommerce orders](https://github.com/saineshnakra/automated-data-analyst/blob/main/samples/ecommerce-orders.csv) | Returns as negative rows, so totals cope with mixed signs |
+| [Lab measurements](https://github.com/saineshnakra/automated-data-analyst/blob/main/ada/samples/lab-measurements.csv) | A cell-culture assay by treatment: viability averaged while live-cell counts are summed, one declining arm, one bad plate |
+| [SaaS subscriptions](https://github.com/saineshnakra/automated-data-analyst/blob/main/ada/samples/saas-subscriptions.csv) | A revenue drop in April 2025 that anomaly detection finds |
+| [Support tickets](https://github.com/saineshnakra/automated-data-analyst/blob/main/ada/samples/support-tickets.csv) | No money column, and a forecast that doesn't beat no-change and says so |
+| [Ecommerce orders](https://github.com/saineshnakra/automated-data-analyst/blob/main/ada/samples/ecommerce-orders.csv) | Returns as negative rows, so totals have to handle mixed signs |
 
-All four are synthetic, so they carry no privacy or licensing baggage.
-
-## Install it
-
-```bash
-pip install automated-data-analyst          # the engine: pandas, numpy, openpyxl
-pip install 'automated-data-analyst[app]'   # + the browser app
-```
-
-Then either open the app, or use it from your own code:
-
-```bash
-ada app                      # the browser app
-ada analyze orders.csv       # the same findings, in the terminal
-```
-
-## Run it from source
+## Running the web app locally
 
 ```bash
 git clone https://github.com/saineshnakra/automated-data-analyst.git
 cd automated-data-analyst
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-python -m pip install -r requirements.txt
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -e ".[app]"
 streamlit run app.py
 ```
 
-No API key required. The app opens with a built-in demo dataset.
-
-Python: tested on 3.11, 3.12 and 3.13 (the CI matrix); `requires-python` is
-`>=3.11`. To install the exact package versions CI tests against, add
-`-c constraints.txt` to the `pip install` line.
+No API key is needed; the app opens with a demo dataset. `pip install -e
+".[app,ai,dev]"` adds the optional AI layer and the linter. Tested on Python
+3.11, 3.12 and 3.13.
 
 ## Does my data leave my machine?
 
-**Running ADA yourself: no.** Cleaning, schema detection, every chart, and every
-Ask ADA answer are computed locally with pandas, with no network call at all.
+**Running ADA yourself: no.** Cleaning, detection, charts and answers are
+computed locally with pandas, with no network calls.
 
-**Using the hosted demo: your file is uploaded to a Streamlit server**, because
-that is what uploading a file to a website means. It is held in memory for the
-session and never written to a database. If that matters for your data, run ADA
-locally — it is four commands above and needs no key.
+**The hosted web app:** your file is uploaded to the Streamlit server and held
+in memory for the session. It is not written to a database. If that matters,
+run it locally.
 
-An optional AI layer adds two things when you supply a key: a query planner for
-questions the rules cannot parse, and a strategic narrative. The planner shows
-its proposed calculation and waits for your confirmation before ADA executes it
-locally. **Neither ever receives your rows.** They receive column names, types,
-and already-computed evidence — and because an evidence sentence names the
-segment it is about, a segment label such as a customer or product name can
-appear in it. Nothing else from a cell does. Model-generated code is never
-executed.
+**The optional AI layer** (only with an API key) adds a query planner for
+questions the rules can't parse and a written summary. It receives column
+names, types and the computed findings, not rows. Findings can name a group
+(for example a site or a product). A planned query is shown to you and runs
+locally only after you approve it. Model-generated code is never executed.
 
-Full details: [Privacy](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/privacy.md) · [SECURITY.md](https://github.com/saineshnakra/automated-data-analyst/blob/main/SECURITY.md)
+Details: [Privacy](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/privacy.md) · [SECURITY.md](https://github.com/saineshnakra/automated-data-analyst/blob/main/SECURITY.md)
 
 ## Documentation
 
-| Page | What you get |
+| Page | Contents |
 |---|---|
-| [Concepts](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/concepts.md) | The words ADA uses: measure, segment, period, evidence, plan |
-| [How it works](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/how-it-works.md) | Upload to dashboard, step by step |
-| [Architecture](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/architecture.md) | Which file does what, and why |
-| [Reference](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/README.md#reference) | One page per pipeline step |
-| [Development](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/development.md) | Setup, tests, CI, conventions |
-| [FAQ](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/faq.md) | Short answers to common questions |
+| [Concepts](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/concepts.md) | Terms: measure, segment, period, rates and levels, evidence |
+| [How it works](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/how-it-works.md) | The steps from upload to report |
+| [Architecture](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/architecture.md) | Which module does what |
+| [Reference](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/README.md#reference) | One page per step, with the exact rules and thresholds |
+| [Development](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/development.md) | Setup, tests, CI |
+| [FAQ](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/faq.md) | Short answers |
 
-For the design story behind the project, read
+Background on why it refuses rather than guesses:
 [I Built an AI Data Analyst That Tells You When It Hallucinates](https://medium.com/@saineshnakra/i-built-an-ai-data-analyst-that-tells-you-when-it-hallucinates-6051609c3f4a).
 
 ## Contributing
 
-Good places to start: a new question shape for Ask ADA, a new deterministic
-metric, schema-detection fixtures, chart accessibility, adversarial test data.
+Bug reports with a sample file (synthetic is fine) are the most useful thing.
+For code, see [CONTRIBUTING.md](https://github.com/saineshnakra/automated-data-analyst/blob/main/CONTRIBUTING.md),
+the [good first issues](https://github.com/saineshnakra/automated-data-analyst/labels/good%20first%20issue)
+and the [roadmap](https://github.com/saineshnakra/automated-data-analyst/blob/main/ROADMAP.md).
+New analysis rules need a test, including how they behave on thin data.
 
-Read [CONTRIBUTING.md](https://github.com/saineshnakra/automated-data-analyst/blob/main/CONTRIBUTING.md), browse the
-[good first issues](https://github.com/saineshnakra/automated-data-analyst/labels/good%20first%20issue),
-or pick something from the [roadmap](https://github.com/saineshnakra/automated-data-analyst/blob/main/ROADMAP.md).
+If ADA is useful to you, a star helps other people find it.
 
-Every new recommendation needs a test and the calculation that supports it.
-Pull requests are kept to about 100 lines of executable code so they can be
-reviewed properly — CONTRIBUTING explains how to split a larger change.
+## Citing
 
-## Building on ADA?
-
-A link back to this repo is appreciated. If you've shipped something with it,
-[open an issue](https://github.com/saineshnakra/automated-data-analyst/issues/new) and I'll list it here.
-
-ADA is MIT licensed, so you are free to use, change and ship it — commercially
-too. The only thing the licence asks is that the copyright notice travels with
-the code.
-
-**Built with ADA**
-
-- *Yours could be here.*
-
-## Cite ADA
-
-If ADA helped with something you published, there is a `CITATION.cff` in the
-repository root — GitHub turns it into a **Cite this repository** button in the
-sidebar, which will give you BibTeX or APA.
-
-## Star it
-
-You read the whole thing — [that is worth a star](https://github.com/saineshnakra/automated-data-analyst/stargazers).
-ADA has no ads, no launch budget and no growth team; it gets found because
-people who liked it clicked the button.
+There is a `CITATION.cff` in the repository root; GitHub's **Cite this
+repository** button turns it into BibTeX or APA.
 
 ## License
 
 [MIT](https://github.com/saineshnakra/automated-data-analyst/blob/main/LICENSE) · Copyright (c) 2024 Sainesh Nakra
-
-Originally built at [github.com/saineshnakra/automated-data-analyst](https://github.com/saineshnakra/automated-data-analyst).
