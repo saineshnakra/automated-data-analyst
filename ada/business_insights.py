@@ -315,16 +315,23 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
     if segments.empty:
         return ()
 
-    total = float(segments["Value"].sum())
-    if total == 0 or not np.isfinite(total):
-        return ()
-    values = segments["Value"].to_numpy(dtype=float)
     # Shares also need an additive measure: segment churn rates of 10% and 20%
     # don't make one segment two thirds of churn.
     additive = resolve_metric(roles.measure).additive if roles.measure else True
-    shares_hold = _shares_are_meaningful(values) and additive
-    if not shares_hold:
-        # No usable denominator: rank by absolute value and quote no percentages.
+    if not additive:
+        segments = segments.dropna(subset=["Value"])
+        if segments.empty:
+            return ()
+    total = float(segments["Value"].sum())
+    if additive and (total == 0 or not np.isfinite(total)):
+        return ()
+    values = segments["Value"].to_numpy(dtype=float)
+    shares_hold = additive and _shares_are_meaningful(values)
+    if not additive:
+        # Averages rank by value, so -20 °C is the lowest, not the largest.
+        segments = segments.sort_values("Value", ascending=False).reset_index(drop=True)
+    elif not shares_hold:
+        # Mixed signs: no usable denominator, so rank by size and quote no percentages.
         segments = segments.reindex(
             segments["Value"].abs().sort_values(ascending=False).index
         ).reset_index(drop=True)
@@ -776,16 +783,13 @@ def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) 
         )
     if evidence_by_kind := {item.kind: item for item in evidence}:
         if leader := evidence_by_kind.get("leader"):
-            share_quoted = "÷ total" in leader.calculation
-            kpis.append(
-                KPI(
-                    f"Top {roles.dimension}",
-                    leader.value,
-                    "Share contributed by the leader"
-                    if share_quoted
-                    else "Highest of any segment",
-                )
-            )
+            if "÷ total" in leader.calculation:
+                context = "Share contributed by the leader"
+            elif leader.calculation.startswith("mean "):
+                context = "Highest average of any segment"
+            else:
+                context = "Largest in size of any segment"
+            kpis.append(KPI(f"Top {roles.dimension}", leader.value, context))
 
     # Pad towards four tiles from a fixed list, skipping labels already shown;
     # a thin file gets fewer tiles rather than duplicates.
@@ -822,8 +826,11 @@ def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) 
             f"{sentence_case(roles.dimension)}."
             if quotes_a_share
             else (
-                f"{growth.value} latest movement; {leader.subject} has the highest "
-                f"{'average' if not resolve_metric(roles.measure).additive else 'value'}, at {leader.value}."
+                f"{growth.value} latest movement; {leader.subject} has the highest average, "
+                f"at {leader.value}."
+                if not resolve_metric(roles.measure).additive
+                else f"{growth.value} latest movement; {leader.subject} is the largest by size, "
+                f"at {leader.value}."
             )
         )
     elif growth:

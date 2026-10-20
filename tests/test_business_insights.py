@@ -610,5 +610,30 @@ class ShareDenominatorTests(unittest.TestCase):
         self.assertEqual(leader.value, "0.7%")
 
 
+class NegativeLevelTests(unittest.TestCase):
+    def test_the_highest_average_is_the_largest_value_not_the_largest_size(self):
+        months = pd.date_range("2024-01-01", periods=6, freq="MS")
+        rows = [
+            (month, site, temperature)
+            for month in months
+            for site, temperature in (("Arctic", -20.0), ("Coast", 2.0), ("Desert", 12.0))
+        ]
+        brief = analyze_business(pd.DataFrame(rows, columns=["Date", "Site", "Temperature (°C)"]))
+        leader = next(item for item in brief.evidence if item.kind == "leader")
+        self.assertTrue(leader.statement.startswith("Desert has the highest average"), leader.statement)
+        self.assertIn("Arctic has the lowest", leader.statement)
+        top = next(kpi for kpi in brief.kpis if kpi.label == "Top Site")
+        self.assertEqual(top.context, "Highest average of any segment")
+
+    def test_a_mixed_sign_leader_is_described_by_size(self):
+        months = pd.date_range("2024-01-01", periods=6, freq="MS")
+        rows = [(month, region, value) for month in months
+                for region, value in (("North", -5000.0), ("South", 3000.0), ("East", 1000.0))]
+        brief = analyze_business(pd.DataFrame(rows, columns=["Date", "Region", "Profit"]))
+        self.assertIn("North is the largest by size", brief.headline)
+        top = next(kpi for kpi in brief.kpis if kpi.label == "Top Region")
+        self.assertEqual(top.context, "Largest in size of any segment")
+
+
 if __name__ == "__main__":
     unittest.main()
