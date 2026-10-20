@@ -548,13 +548,19 @@ def _explore_frame(
         # Use a count column name the frame lacks, so a user column "Records" can't collide.
         value = next(name for name in ("Records", "Record count", "Rows") if name not in dataframe.columns)
         frame = dataframe.groupby(keys, dropna=True, observed=True).size().reset_index(name=value)
+    elif how == "mean" and spec.color:
+        # Fold the small series on the raw rows, so "Other" is the mean of its rows
+        # rather than an unweighted mean of each series' mean.
+        rows = fold_small_series(dataframe[[*keys, spec.y]].assign(__rows=1), spec.color, "__rows")
+        frame = rows.groupby(keys, dropna=True, observed=True)[spec.y].mean().reset_index()
+        return _cap(frame, spec, spec.y, limit)
     else:
         frame = dataframe.groupby(keys, dropna=True, observed=True)[spec.y].agg(how).reset_index()
         value = spec.y
 
     if spec.color and spec.color in frame.columns:
         frame = fold_small_series(frame, spec.color, value)
-        frame = frame.groupby(keys, dropna=True, observed=True)[value].agg(how).reset_index()
+        frame = frame.groupby(keys, dropna=True, observed=True)[value].sum().reset_index()
     return _cap(frame, spec, value, limit)
 
 

@@ -172,6 +172,17 @@ class FoldSmallSeriesTests(unittest.TestCase):
 
 
 class ExploreFrameTests(unittest.TestCase):
+    def test_the_other_series_of_an_average_is_weighted_by_rows(self):
+        day = pd.Timestamp("2024-01-01")
+        rows = [(day, f"Big{i}", 10.0) for i in range(MAX_SERIES) for _ in range(99)]
+        rows += [(day, "Small", 47.0)] * 5 + [(day, "Rest", 10.0)] * 99
+        frame = pd.DataFrame(rows, columns=["Date", "Site", "pH"])
+        spec = ChartSpec(form="line", x="Date", y="pH", color="Site", aggregation="mean", rationale="")
+        plotted = ui._explore_frame(frame, spec)
+        other = plotted.loc[plotted["Site"].astype(str).str.startswith("Other"), "pH"]
+        # 5 rows at 47 and 99 at 10, not the mean of the two series means (28.5).
+        self.assertAlmostEqual(float(other.iloc[0]), (5 * 47 + 99 * 10) / 104)
+
     def test_a_category_named_records_can_be_explored(self):
         frame = pd.DataFrame(
             {"Date": pd.date_range("2024-01-01", periods=60), "Records": ["x", "y", "z"] * 20,
