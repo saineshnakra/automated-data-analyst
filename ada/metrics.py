@@ -120,6 +120,15 @@ class MetricSpec:
     def combines_as(self) -> str:
         return {"sum": "total", "mean": "average", "count": "count"}[self.aggregation]
 
+    @property
+    def floors_at_zero(self) -> bool:
+        """Whether a forecast may stop at zero when the history never goes below it.
+
+        Amounts, counts and rates cannot be negative. A level can: a temperature
+        falling past 0 °C keeps falling.
+        """
+        return self.unit != "level"
+
 
 def is_level_name(name: str) -> bool:
     """Whether the column name describes a measured level, such as "Water Temp (°C)"."""

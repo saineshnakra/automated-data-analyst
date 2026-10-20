@@ -313,6 +313,16 @@ class AggregationTests(unittest.TestCase):
         trend = ada.analyze(rainfall(), frequency="M", aggregation="sum").trend()
         self.assertEqual((trend.frame["Value"] == 0).sum(), 3)
 
+    def test_a_falling_temperature_may_be_forecast_below_zero(self):
+        frame = pd.DataFrame({
+            "Date": pd.date_range("2024-01-01", periods=12, freq="MS"),
+            "Water Temp (°C)": [16.0 - 1.4 * month + (0.3 if month % 2 else -0.3) for month in range(12)],
+        })
+
+        forecast = ada.analyze(frame).forecast()
+
+        self.assertLess(forecast.values[-1], 0.0)
+        self.assertLess(min(forecast.lower), forecast.values[-1])
 
 
 class OverrideTypeTests(unittest.TestCase):

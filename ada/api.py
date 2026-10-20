@@ -310,7 +310,11 @@ class Analysis:
         series = self.trend()
         if isinstance(series, Refusal):
             return series
-        result = build_forecast(series.frame, horizon=horizon)
+        result = build_forecast(
+            series.frame,
+            horizon=horizon,
+            floor_at_zero=metric_for(self.roles.measure, self.roles).floors_at_zero,
+        )
         if result is None:
             periods = len(series.frame)
             return Refusal(

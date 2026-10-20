@@ -290,7 +290,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                         hovertemplate=f"%{{x|%b %Y}}: %{{y:{_hover_format(trend['Value'])}}}, outside the expected band<extra>Anomaly</extra>",
                     )
                 )
-            forecast = build_forecast(trend)
+            forecast = build_forecast(trend, floor_at_zero=metric.floors_at_zero)
             if forecast:
                 figure.add_trace(
                     go.Scatter(
