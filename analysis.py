@@ -40,57 +40,50 @@ class CleaningSuggestion:
     description: str
 
 
+
 def _parse_numeric_suggestion_values(series: pd.Series) -> pd.Series | None:
-    """Parse a consistently formatted numeric text column without guessing."""
+    """Parse consistently formatted numeric text using the shared number parser."""
     values = series.astype("string").str.strip()
-
-    pattern = re.compile(
-        r"^\s*"
-        r"(?P<open>\()?"
-        r"(?P<currency>[$€£])?"
-        r"\s*"
-        r"(?P<number>\d+(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)"
-        r"\s*"
-        r"(?P<suffix>[A-Za-z%]+(?:\s+[A-Za-z%]+)*)?"
-        r"\s*"
-        r"(?P<close>\))?"
-        r"\s*$"
-    )
-
     parsed: list[float | None] = []
     suffixes: list[str] = []
     currencies: list[str] = []
+
+    currency_pattern = re.compile(r"[$\u20ac\u00a3\u00a5\u20b9]")
 
     for value in values:
         if pd.isna(value):
             parsed.append(None)
             continue
 
-        match = pattern.fullmatch(str(value))
-        if match is None:
+        text = str(value)
+
+        # Keep units separate: parsing "10 kg" as 10.0 would lose information.
+        currency_matches = currency_pattern.findall(text)
+        currencies.append("".join(currency_matches))
+
+        without_currency = currency_pattern.sub("", text).strip()
+        suffix_match = re.search(r"[A-Za-z%]+(?:\s+[A-Za-z%]+)*$", without_currency)
+        suffixes.append(
+            suffix_match.group(0).strip().lower() if suffix_match else ""
+        )
+
+        # The shared parser handles signs, accounting parentheses,
+        # grouping separators, decimal separators, and currency symbols.
+        numeric_text = text
+
+        if suffix_match:
+            numeric_text = text[:suffix_match.start()].strip()
+
+        amount = _read_formatted_number(numeric_text)
+        if amount is None:
             return None
-
-        if bool(match.group("open")) != bool(match.group("close")):
-            return None
-
-        suffix = (match.group("suffix") or "").strip().lower()
-        suffixes.append(suffix)
-
-        currency = match.group("currency") or ""
-        currencies.append(currency)
-
-        number = match.group("number").replace(",", "")
-        amount = float(number)
-
-        if match.group("open"):
-            amount = -amount
 
         parsed.append(amount)
 
-    if len(set(suffixes)) > 1:
+    if len(set(currencies)) > 1 or len(set(suffixes)) > 1:
         return None
 
-    if len(set(currencies)) > 1:
+    if len(set(suffixes)) > 1:
         return None
 
     return pd.Series(parsed, index=series.index, dtype="float64")
@@ -166,7 +159,10 @@ def suggest_cleaning(dataframe: pd.DataFrame) -> list[CleaningSuggestion]:
         protected_numeric_tokens = ("id", "code", "zip", "postal", "phone")
         normalized_name = str(column).lower()
 
-        if any(token in normalized_name for token in protected_numeric_tokens):
+        if re.search(
+            r"\b(?:id|code|zip|postal|phone)\b",
+            normalized_name,
+        ):
             continue
 
         numeric = _parse_numeric_suggestion_values(non_null)
@@ -183,25 +179,28 @@ def suggest_cleaning(dataframe: pd.DataFrame) -> list[CleaningSuggestion]:
                         column=str(column),
                         operation="parse_numeric",
                         description=(
-                            "Parse consistently formatted numeric text, "
-                            "including currency symbols, separators, "
-                            "accounting parentheses, or units."
+                            "Parse consistently formatted numeric text. Currency symbols, "
+                            "separators, accounting parentheses, and consistent units are "
+                            "removed during conversion."
                         ),
                     )
                 )
 
-        split_values = _split_suggestion_values(non_null)
+        # Avoid suggesting a split when the column already has a valid
+        # numeric parsing suggestion. Commas may be thousands separators.
+        if numeric is None:
+            split_values = _split_suggestion_values(non_null)
 
-        if split_values is not None:
-            suggestions.append(
-                CleaningSuggestion(
-                    column=str(column),
-                    operation="split",
-                    description=(
-                        "Split consistently delimited text into separate values."
-                    ),
+            if split_values is not None:
+                suggestions.append(
+                    CleaningSuggestion(
+                        column=str(column),
+                        operation="split",
+                        description=(
+                            "Split consistently delimited text into separate values."
+                        ),
+                    )
                 )
-            )
     return suggestions
 
 def preview_cleaning_suggestion(
@@ -228,7 +227,13 @@ def preview_cleaning_suggestion(
                 "The column no longer matches the suggested split transformation."
             )
 
-        after = split_values.astype("string").agg(" | ".join, axis=1)
+        after = split_values.apply(
+            lambda row: " | ".join(
+                "" if pd.isna(value) else str(value)
+                for value in row
+            ),
+            axis=1,
+        )
 
     else:
         raise ValueError(
@@ -608,7 +613,10 @@ def clean_dataframe(
                 datetime_columns_inferred += 1
                 continue
 
-        if not any(token in normalized_name for token in protected_numeric_tokens):
+        if not re.search(
+            r"\b(?:id|code|zip|postal|phone)\b",
+            normalized_name,
+        ):
             parsed_numeric = pd.to_numeric(cleaned[column], errors="coerce")
             if parsed_numeric.notna().sum() < non_null_before:
                 # Whatever plain parsing could not read, try again allowing the

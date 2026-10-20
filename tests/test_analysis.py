@@ -5,6 +5,7 @@ import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 
 from analysis import (
+    CleaningSuggestion,
     apply_cleaning_suggestion,
     build_markdown_report,
     clean_dataframe,
@@ -334,6 +335,67 @@ class CleanDataframeTests(unittest.TestCase):
                 for suggestion in suggestions
             )
         )
+
+
+    def test_numeric_values_with_thousands_separator_are_not_split(self):
+        frame = pd.DataFrame({"Revenue": ["1,234", "5,678", "9,012"]})
+
+        suggestions = suggest_cleaning(frame)
+
+        self.assertTrue(
+            any(
+                s.column == "Revenue" and s.operation == "parse_numeric"
+                for s in suggestions
+            )
+        )
+        self.assertFalse(
+            any(
+                s.column == "Revenue" and s.operation == "split"
+                for s in suggestions
+            )
+        )
+
+    def test_split_preview_handles_null_values(self):
+        frame = pd.DataFrame(
+            {"Segment": ["West / Enterprise", None, "South / Enterprise"]}
+        )
+        suggestion = CleaningSuggestion(
+            column="Segment",
+            operation="split",
+            description="Split values",
+        )
+
+        preview = preview_cleaning_suggestion(frame, suggestion)
+
+        self.assertEqual(preview.loc[0, "after"], "West | Enterprise")
+        self.assertTrue(pd.isna(frame.loc[1, "Segment"]))
+        self.assertEqual(preview.loc[1, "after"], " | ")
+        self.assertEqual(preview.loc[2, "after"], "South | Enterprise")
+
+    def test_paid_column_is_not_excluded_by_protected_name_filter(self):
+        frame = pd.DataFrame({"Paid": ["100", "200", "300"]})
+
+        suggestions = suggest_cleaning(frame)
+
+        self.assertTrue(
+            any(
+                s.column == "Paid" and s.operation == "parse_numeric"
+                for s in suggestions
+            )
+        )
+
+    def test_numeric_parser_handles_negative_and_accounting_values(self):
+        frame = pd.DataFrame({"Revenue": ["-1,200", "(2,500)", "300"]})
+
+        suggestions = suggest_cleaning(frame)
+        numeric_suggestion = next(
+            s for s in suggestions
+            if s.column == "Revenue" and s.operation == "parse_numeric"
+        )
+
+        cleaned = apply_cleaning_suggestion(frame, numeric_suggestion)
+
+        self.assertEqual(cleaned["Revenue"].tolist(), [-1200.0, -2500.0, 300.0])
 
 class RepeatRowTests(unittest.TestCase):
     """Two identical sales are a busy till, not a data defect."""
