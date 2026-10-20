@@ -3,7 +3,9 @@ import unittest
 import numpy as np
 import pandas as pd
 
+from ada import ui
 from ada.autovis import MAX_SERIES, ChartSpec, fold_small_series, recommend_chart
+from ada.pipeline import prepare_analysis
 
 
 def frame(rows: int = 120) -> pd.DataFrame:
@@ -102,8 +104,6 @@ class SeriesFoldingTests(unittest.TestCase):
         self.assertEqual(set(fold_small_series(small, "Product", "Revenue")["Product"]), {"A", "B"})
 
 
-
-
 class ChartSizeTests(unittest.TestCase):
     def test_two_high_cardinality_categories_do_not_become_a_heatmap(self):
         rows = 4_000
@@ -117,8 +117,7 @@ class ChartSizeTests(unittest.TestCase):
 
         spec = recommend_chart(frame, ["Customer ID", "SKU", "Revenue"])
 
-        # 360,000 cells is not a picture, and it exceeds the websocket limit
-        # before it reaches a screen.
+        # 900 x 400 = 360,000 cells, too many to draw or send to the browser.
         self.assertEqual(spec.form, "table")
         self.assertIn("cell grid", spec.rationale)
 
@@ -155,7 +154,7 @@ class FoldSmallSeriesTests(unittest.TestCase):
         folded = fold_small_series(frame, "Region", "Revenue")
         totals = folded.groupby("Region", observed=True)["Revenue"].sum()
 
-        # The real "Other" segment keeps its own money.
+        # The existing "Other" region keeps its own total; the folded tail is "Other (2)".
         self.assertEqual(totals["Other"], 20_000.0)
         self.assertIn("Other (2)", totals.index)
 
@@ -170,6 +169,21 @@ class FoldSmallSeriesTests(unittest.TestCase):
         folded = fold_small_series(frame, "Product", "Revenue")
 
         self.assertIn("Other", set(folded["Product"]))
+
+
+class ExploreFrameTests(unittest.TestCase):
+    def test_a_category_named_records_can_be_explored(self):
+        frame = pd.DataFrame(
+            {"Date": pd.date_range("2024-01-01", periods=60), "Records": ["x", "y", "z"] * 20,
+             "Revenue": np.arange(60.0)}
+        )
+        prepared = prepare_analysis(frame, row_limit=1000)
+
+        spec = recommend_chart(prepared.dataframe, ["Records"])
+        shown = ui._explore_frame(prepared.dataframe, spec)
+
+        self.assertEqual(len(shown), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

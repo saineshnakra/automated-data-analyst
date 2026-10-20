@@ -7,11 +7,18 @@ from ada.timeseries import (
     MAD_SCALE,
     MEAN_ABS_DEV_SCALE,
     fit_trendline,
+    observed_periods,
     period_grain,
     period_positions,
     robust_scale,
     theil_sen,
 )
+
+
+def month_end_trend(values):
+    return pd.DataFrame(
+        {"Period": pd.date_range("2022-01-31", periods=len(values), freq="ME"), "Value": values}
+    )
 
 
 class PeriodPositionTests(unittest.TestCase):
@@ -153,10 +160,8 @@ class RobustScaleTests(unittest.TestCase):
         self.assertEqual(robust_scale(np.zeros(0)), 0.0)
 
 
-
-
 class ScaleEstimatorAgreementTests(unittest.TestCase):
-    """Switching estimators must not change how surprising a period looks."""
+    """MAD_SCALE and MEAN_ABS_DEV_SCALE each turn their estimator into sigma for normal noise."""
 
     def test_the_fallback_recovers_the_same_sigma_as_the_median_path(self):
         sample = np.random.default_rng(3).normal(0.0, 1.0, 200_000)
@@ -179,6 +184,24 @@ class ScaleEstimatorAgreementTests(unittest.TestCase):
 
     def test_a_series_with_no_variation_has_no_scale(self):
         self.assertEqual(robust_scale(np.zeros(10)), 0.0)
+
+
+class ObservedPeriodsTests(unittest.TestCase):
+    def test_a_frame_with_no_gaps_is_returned_untouched(self):
+        frame = month_end_trend([1.0, 2.0, 3.0])
+        self.assertIs(observed_periods(frame), frame)
+
+    def test_gaps_are_dropped_and_the_rest_kept_in_order(self):
+        frame = month_end_trend([1.0, np.nan, 3.0])
+        kept = observed_periods(frame)
+        self.assertEqual(kept["Value"].tolist(), [1.0, 3.0])
+        self.assertTrue(kept["Period"].is_monotonic_increasing)
+
+    def test_an_empty_or_shapeless_frame_is_survivable(self):
+        self.assertTrue(observed_periods(pd.DataFrame()).empty)
+        odd = pd.DataFrame({"Period": []})
+        self.assertIs(observed_periods(odd), odd)
+
 
 if __name__ == "__main__":
     unittest.main()

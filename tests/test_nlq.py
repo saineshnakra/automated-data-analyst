@@ -4,9 +4,40 @@ import numpy as np
 import pandas as pd
 
 from ada.demo_data import make_demo_data
-from ada.nlq import QueryPlan, answer_question, execute_plan, parse_question, suggested_questions
+from ada.nlq import (
+    QueryPlan,
+    answer_question,
+    execute_plan,
+    parse_question,
+    suggested_questions,
+    unsupported_phrasing,
+)
 from ada.pipeline import prepare_analysis
 from ada.schema import ColumnRoles, detect_roles
+
+MONTHS = pd.date_range("2024-01-01", periods=12, freq="MS")
+
+
+def frame_with(measure: str) -> tuple[pd.DataFrame, ColumnRoles]:
+    frame = pd.DataFrame({
+        "Date": pd.to_datetime(["2025-01-05", "2025-02-05"] * 2),
+        "Team": ["A", "A", "B", "B"],
+        measure: [100.0, 200.0, 300.0, 400.0],
+    })
+    roles = ColumnRoles(date="Date", measure=measure, dimension="Team", identifier=None,
+                        numeric=(measure,), dimensions=("Team",))
+    return frame, roles
+
+
+def rate_frame():
+    frame = pd.DataFrame({
+        "Date": pd.to_datetime(["2025-01-05", "2025-02-05"] * 2),
+        "Region": ["East", "East", "West", "West"],
+        "Churn Rate": [2.0, 3.0, 4.0, 5.0],
+    })
+    roles = ColumnRoles(date="Date", measure="Churn Rate", dimension="Region", identifier=None,
+                        numeric=("Churn Rate",), dimensions=("Region",))
+    return frame, roles
 
 
 class NLQParsingTests(unittest.TestCase):
@@ -148,8 +179,8 @@ class NLQParsingTests(unittest.TestCase):
         self.assertIsNotNone(result)
         plan = parse_question("monthly revenue trend", frame, roles)
         self.assertNotEqual(plan.intent if plan else None, "trend")
+
     def test_asking_for_the_bottom_of_a_ranking_ranks_ascending(self):
-        """"Least" and "fewest" ask for the bottom, not the top."""
         leader = self.ask("top product by revenue").answer
 
         for question in ("what is the least sold product", "which product sells the fewest"):
@@ -161,11 +192,201 @@ class NLQParsingTests(unittest.TestCase):
                 self.assertNotEqual(result.answer, leader)
 
     def test_every_ascending_word_is_also_a_superlative(self):
-        """A word in only one list would rank from the wrong end."""
         from ada.nlq import ASCENDING_WORDS, SUPERLATIVE_WORDS
 
         self.assertTrue(set(ASCENDING_WORDS).issubset(SUPERLATIVE_WORDS))
 
+
+class SuperlativeRankTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        prepared = prepare_analysis(make_demo_data(rows=900), row_limit=900)
+        cls.frame, cls.roles = prepared.dataframe, prepared.detected_roles
+
+    def test_most_ranks_the_named_dimension(self):
+        plan = parse_question("which region made the most revenue", self.frame, self.roles)
+        self.assertIsNotNone(plan, "the question was refused outright")
+        self.assertEqual(plan.intent, "rank")
+        self.assertEqual(plan.dimension, "Region")
+        self.assertFalse(plan.ascending)
+
+    def test_most_and_least_are_symmetric(self):
+        most = parse_question("which region made the most revenue", self.frame, self.roles)
+        least = parse_question("which region made the least revenue", self.frame, self.roles)
+        self.assertEqual(most.intent, least.intent)
+        self.assertEqual(most.dimension, least.dimension)
+        self.assertNotEqual(most.ascending, least.ascending)
+
+    def test_has_is_an_ordinary_function_word(self):
+        answer = answer_question("which region has the highest revenue", self.frame, self.roles)
+        self.assertIsNotNone(answer)
+        self.assertIn("Region", answer.calculation)
+
+    def test_total_revenue_has_no_dimension(self):
+        plan = parse_question("total revenue", self.frame, self.roles)
+        self.assertEqual(plan.intent, "aggregate")
+        self.assertIsNone(plan.dimension)
+
+
+class ColumnNameIntentTests(unittest.TestCase):
+    def test_a_count_column_is_summed_not_counted(self):
+        frame, roles = frame_with("Cell Count")
+        answer = answer_question("total cell count", frame, roles)
+        self.assertIsNotNone(answer)
+        self.assertIn("sum(Cell Count)", answer.calculation, answer.calculation)
+        self.assertIn("1.0K", answer.answer, answer.answer)
+
+    def test_a_count_column_breaks_down_by_its_own_values(self):
+        frame, roles = frame_with("Cell Count")
+        answer = answer_question("cell count by team", frame, roles)
+        self.assertIn("Cell Count", answer.calculation, answer.calculation)
+        self.assertNotIn("row count", answer.calculation, answer.calculation)
+
+    def test_an_explicit_average_beats_the_word_total_in_the_column_name(self):
+        frame, roles = frame_with("Total Sales")
+        answer = answer_question("average total sales", frame, roles)
+        self.assertIn("mean(Total Sales)", answer.calculation, answer.calculation)
+
+    def test_a_growth_column_still_totals_when_asked_for_a_total(self):
+        frame, roles = frame_with("Revenue Growth")
+        plan = parse_question("total revenue growth", frame, roles)
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.intent, "aggregate", f"got {plan.intent}")
+
+    def test_a_change_column_still_totals(self):
+        frame, roles = frame_with("Change Score")
+        plan = parse_question("total change score", frame, roles)
+        self.assertEqual(plan.intent, "aggregate", f"got {plan.intent}")
+
+    def test_the_reader_can_still_ask_for_each_intent(self):
+        """Words in the measure's name are ignored for intent; the rest of the question still sets it."""
+        frame, roles = frame_with("Cell Count")
+        self.assertEqual(parse_question("how many teams", frame, roles).intent, "count")
+        self.assertEqual(parse_question("cell count per month", frame, roles).intent, "trend")
+        self.assertEqual(
+            parse_question("how did cell count change", frame, roles).intent, "growth"
+        )
+        self.assertEqual(parse_question("cell count by team", frame, roles).intent, "breakdown")
+
+    def test_an_ordinary_measure_is_unaffected(self):
+        frame, roles = frame_with("Revenue")
+        self.assertIn("sum(Revenue)", answer_question("total revenue", frame, roles).calculation)
+        self.assertIn("mean(Revenue)", answer_question("average revenue", frame, roles).calculation)
+
+
+class RateMeasureTests(unittest.TestCase):
+    def test_a_rate_growth_reports_points(self):
+        """The monthly mean moves from 3.0 to 4.0: one point, or 33.3% relative."""
+        frame, roles = rate_frame()
+        answer = answer_question("how did churn rate change", frame, roles)
+        self.assertIn("percentage points", answer.answer, answer.answer)
+        self.assertIn("1.0", answer.answer, answer.answer)
+
+    def test_a_rate_trend_reports_points(self):
+        frame, roles = rate_frame()
+        answer = answer_question("churn rate per month", frame, roles)
+        self.assertIn("percentage points", answer.answer, answer.answer)
+
+    def test_growth_and_trend_answers_both_use_points(self):
+        frame, roles = rate_frame()
+        for question in ("how did churn rate change", "churn rate per month"):
+            with self.subTest(question=question):
+                self.assertIn("percentage points", answer_question(question, frame, roles).answer)
+
+    def test_an_additive_measure_still_reports_a_percentage(self):
+        frame, roles = rate_frame()
+        frame = frame.rename(columns={"Churn Rate": "Revenue"})
+        roles = ColumnRoles(date="Date", measure="Revenue", dimension="Region", identifier=None,
+                            numeric=("Revenue",), dimensions=("Region",))
+        answer = answer_question("how did revenue change", frame, roles)
+        self.assertIn("%", answer.answer)
+        self.assertNotIn("percentage points", answer.answer)
+
+    def test_chat_averages_a_rate_unless_told_to_total_it(self):
+        frame = pd.DataFrame(
+            {"Date": MONTHS[:4], "Conversion Rate": [0.1, 0.2, 0.3, 0.4], "Channel": ["a", "b"] * 2}
+        )
+        roles = detect_roles(frame)
+
+        averaged = answer_question("conversion rate", frame, roles)
+        totalled = answer_question("total conversion rate", frame, roles)
+
+        self.assertEqual(averaged.plan.aggregation, "mean")
+        self.assertIn("25.0%", averaged.answer)
+        self.assertEqual(totalled.plan.aggregation, "sum")
+
+
+class RefusedPhrasingTests(unittest.TestCase):
+    def setUp(self):
+        self.frame = pd.DataFrame(
+            {"Month": MONTHS[:4], "Region": ["West", "East", "West", "East"],
+             "Revenue": [100.0, 200.0, 300.0, 400.0]}
+        )
+        self.roles = detect_roles(self.frame)
+
+    def test_unrepresentable_phrasings_are_refused_before_parsing(self):
+        for question in (
+            "Revenue > 200", "Revenue in January and February", "Revenue this year",
+            "Revenue for West or Partner", "total revenue last quarter", "revenue in 2024 and 2025",
+            "revenue at least 300", "revenue over 1000", "revenue more than 50",
+        ):
+            with self.subTest(question=question):
+                self.assertTrue(unsupported_phrasing(question))
+                self.assertIsNone(answer_question(question, self.frame, self.roles))
+
+    def test_plans_the_executor_would_misanswer_are_refused_by_the_parser(self):
+        # These pass the phrasing check; the parser rejects the plan.
+        for question in ("average Revenue monthly", "top 0 Region by Revenue"):
+            with self.subTest(question=question):
+                self.assertFalse(unsupported_phrasing(question))
+                self.assertIsNone(answer_question(question, self.frame, self.roles))
+
+    def test_supported_phrasings_are_not_caught_by_the_refusal(self):
+        for question in ("total revenue", "revenue over time", "top 2 region by revenue",
+                         "revenue by region", "revenue in march 2024"):
+            with self.subTest(question=question):
+                self.assertFalse(unsupported_phrasing(question))
+                self.assertIsNotNone(answer_question(question, self.frame, self.roles))
+
+    def test_naming_the_column_does_not_steal_its_value_from_the_filter(self):
+        answer = answer_question("total Revenue for Region West", self.frame, self.roles)
+
+        self.assertIsNotNone(answer)
+        self.assertIn("$400.00", answer.answer)
+
+    def test_an_explicit_minimum_is_computed_not_summed(self):
+        answer = answer_question("minimum Revenue by Region", self.frame, self.roles)
+
+        self.assertIsNotNone(answer)
+        self.assertEqual(answer.plan.aggregation, "min")
+
+    def test_top_n_applies_to_a_growth_ranking(self):
+        answer = answer_question("top 1 Region growth", self.frame, self.roles)
+
+        self.assertIsNotNone(answer)
+        self.assertEqual(len(answer.table), 1)
+
+
+class RelativeMonthTests(unittest.TestCase):
+    def setUp(self):
+        frame = pd.DataFrame({
+            "Order Date": pd.to_datetime(["2023-12-05", "2024-12-05", "2025-12-05"]),
+            "Region": ["East"] * 3,
+            "Revenue": [100.0, 100.0, 100.0],
+        })
+        prepared = prepare_analysis(frame, row_limit=900)
+        self.frame, self.roles = prepared.dataframe, prepared.detected_roles
+
+    def test_last_december_is_refused_rather_than_summed_across_years(self):
+        """The file has three Decembers, one in each year."""
+        self.assertIsNone(answer_question("revenue last december", self.frame, self.roles))
+
+    def test_next_december_is_refused(self):
+        self.assertIsNone(answer_question("revenue next december", self.frame, self.roles))
+
+    def test_a_plain_month_still_answers(self):
+        answer = answer_question("revenue in december", self.frame, self.roles)
+        self.assertIsNotNone(answer)
 
 
 class TimelineDisclosureTests(unittest.TestCase):
@@ -190,10 +411,7 @@ class TimelineDisclosureTests(unittest.TestCase):
         self.assertNotIn("counted as zero", answer.calculation)
 
 
-
 class TimeScopeTests(unittest.TestCase):
-    """A question about a year must not be answered with the all-time number."""
-
     def setUp(self):
         self.dated = pd.DataFrame(
             {
@@ -213,7 +431,7 @@ class TimeScopeTests(unittest.TestCase):
         answer = execute_plan(plan, self.undated, self.undated_roles)
 
         self.assertIn("no date column", answer.answer)
-        # The all-time total must not be presented as the 2024 total.
+        # 300 is the all-time total.
         self.assertNotIn("300", answer.answer)
 
     def test_may_is_named_in_the_answer_like_every_other_month(self):
@@ -238,10 +456,7 @@ class TimeScopeTests(unittest.TestCase):
         self.assertIn("Order Date in May 2025", answer.answer)
 
 
-
 class ShareOfTotalTests(unittest.TestCase):
-    """A share is only a share when the parts add up to the whole."""
-
     def _roles(self, frame):
         return ColumnRoles(
             date=None, measure="Revenue", dimension="Region",
@@ -269,7 +484,7 @@ class ShareOfTotalTests(unittest.TestCase):
 
         answer = execute_plan(plan, frame, self._roles(frame))
 
-        # Uniform signs, so the shares are real and sum to 100.
+        # All values have the same sign, so shares are defined and sum to 100.
         self.assertIn("Share %", answer.table.columns)
         self.assertAlmostEqual(float(answer.table["Share %"].sum()), 100.0)
         self.assertEqual(
@@ -287,7 +502,7 @@ class ShareOfTotalTests(unittest.TestCase):
 
         answer = execute_plan(plan, frame, self._roles(frame))
 
-        # The denominator is the real total, not the total of the labelled rows.
+        # 1050 includes the 700 from rows with no region.
         self.assertAlmostEqual(float(answer.table["Total Revenue"].sum()), 1050.0)
         self.assertIn("(not recorded)", list(answer.table["Region"]))
 
@@ -301,7 +516,7 @@ class ShareOfTotalTests(unittest.TestCase):
 
         answer = execute_plan(plan, frame, self._roles(frame))
 
-        # Two populations, two rows, each with its own 600.
+        # Blank regions and the literal "(not recorded)" value stay separate, 600 each.
         self.assertEqual(len(answer.table), 2)
         self.assertEqual(set(answer.table["Total Revenue"]), {600.0})
 
@@ -316,10 +531,7 @@ class ShareOfTotalTests(unittest.TestCase):
         self.assertTrue(answer.answer)
 
 
-
-class AnswerHonestyTests(unittest.TestCase):
-    """Every sentence has to match the arithmetic that produced it."""
-
+class AnswerWordingTests(unittest.TestCase):
     def _roles(self, dated=True):
         return ColumnRoles(
             date="Month" if dated else None, measure="Revenue", dimension="Region",
@@ -336,7 +548,7 @@ class AnswerHonestyTests(unittest.TestCase):
 
         self.assertIn("row count", answer.calculation)
         self.assertNotIn("count(Revenue)", answer.calculation)
-        # A count of rows is not money.
+        # A row count is not formatted as currency.
         self.assertNotIn("$", answer.answer)
 
     def test_a_trend_from_zero_quotes_no_percentage(self):
@@ -377,6 +589,7 @@ class AnswerHonestyTests(unittest.TestCase):
 
         self.assertIn("Beta", answer.answer)
         self.assertIn("started from zero", answer.answer)
+
 
 if __name__ == "__main__":
     unittest.main()

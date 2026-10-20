@@ -4,7 +4,14 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 
-from ada.analysis import build_markdown_report, clean_dataframe, column_profile, generate_insights
+from ada.analysis import (
+    _numeric_from_text,
+    _read_formatted_number,
+    build_markdown_report,
+    clean_dataframe,
+    column_profile,
+    generate_insights,
+)
 from ada.schema import (
     DIMENSION_KEYWORDS,
     MEASURE_KEYWORDS,
@@ -40,8 +47,14 @@ class CleanDataframeTests(unittest.TestCase):
     def test_empty_input_is_rejected(self):
         with self.assertRaises(ValueError):
             clean_dataframe(pd.DataFrame())
+
+    def test_a_whitespace_only_column_is_empty(self):
+        dates = pd.date_range("2024-01-01", periods=5, freq="MS")
+        frame = pd.DataFrame({"Date": dates, "Revenue": range(5), "Note": ["  "] * 5})
+
+        self.assertNotIn("Note", clean_dataframe(frame)[0].columns)
+
     def test_a_date_column_is_found_whatever_it_is_called(self):
-        """"Month", "Period", "FY" hold dates too, and gate the whole timeline."""
         frame = pd.DataFrame(
             {"Month": [f"1949-{month:02d}" for month in range(1, 13)], "Passengers": range(12)}
         )
@@ -52,7 +65,6 @@ class CleanDataframeTests(unittest.TestCase):
         self.assertEqual(report.datetime_columns_inferred, 1)
 
     def test_bare_years_stay_numbers(self):
-        """1949 is a year, not the first of January 1949."""
         frame = pd.DataFrame({"Year": ["1949", "1950", "1951"], "Passengers": [1, 2, 3]})
 
         cleaned, _ = clean_dataframe(frame)
@@ -69,10 +81,7 @@ class CleanDataframeTests(unittest.TestCase):
         self.assertFalse(is_datetime64_any_dtype(cleaned["Container"]))
 
 
-
 class RepeatRowTests(unittest.TestCase):
-    """Two identical sales are a busy till, not a data defect."""
-
     def _till(self):
         return pd.DataFrame(
             {
@@ -91,7 +100,7 @@ class RepeatRowTests(unittest.TestCase):
         self.assertEqual(report.duplicate_rows_found, 3)
         self.assertTrue(any("identical rows were kept" in note for note in report.notes))
 
-    def test_a_caller_that_knows_better_can_still_opt_in(self):
+    def test_drop_duplicates_removes_identical_rows(self):
         cleaned, report = clean_dataframe(self._till(), drop_duplicates=True)
 
         self.assertEqual(len(cleaned), 1)
@@ -136,15 +145,24 @@ class TimezoneTests(unittest.TestCase):
         cleaned, report = clean_dataframe(frame)
 
         self.assertFalse(isinstance(cleaned["created_at"].dtype, pd.DatetimeTZDtype))
-        # The wall clock the file was written in is what a report is about.
+        # The local wall-clock time is kept; values are not converted to UTC.
         self.assertEqual(cleaned["created_at"].iloc[0], pd.Timestamp("2024-01-01 00:00:00"))
         self.assertTrue(any("Timezone" in note for note in report.notes))
+
+    def test_mixed_utc_offsets_still_become_a_date_column(self):
+        frame = pd.DataFrame(
+            {"created_at": ["2024-01-15T10:00:00+01:00", "2024-06-15T10:00:00+02:00"] * 10,
+             "Revenue": range(20)}
+        )
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertTrue(pd.api.types.is_datetime64_any_dtype(cleaned["created_at"]))
+        self.assertEqual(detect_roles(cleaned).date, "created_at")
 
 
 class BusinessFormattedNumberTests(unittest.TestCase):
     def test_a_leading_minus_sign_is_never_lost(self):
-        """The one mistake this parser must not be able to make: a refund
-        becoming revenue because the sign was stripped with the punctuation."""
         frame = pd.DataFrame({"Amount": ["-100", "1,000", "-$1,000.00", "$2,000.00", "(48.10)"]})
 
         cleaned, _ = clean_dataframe(frame)
@@ -175,7 +193,6 @@ class BusinessFormattedNumberTests(unittest.TestCase):
         self.assertAlmostEqual(float(cleaned["Amount"].sum()), 1e19, delta=1e4)
         self.assertTrue(any("would not fit" in note for note in report.notes))
 
-
     def test_thousands_separators_do_not_delete_the_largest_values(self):
         frame = pd.DataFrame({"Revenue": ["950.00", "1,203.55", "12,400.10", "88.20"]})
 
@@ -196,6 +213,75 @@ class BusinessFormattedNumberTests(unittest.TestCase):
         cleaned, _ = clean_dataframe(frame)
 
         self.assertTrue(pd.api.types.is_datetime64_any_dtype(cleaned["Month"]))
+
+
+class AccountingNegativeTests(unittest.TestCase):
+    def test_currency_outside_the_parentheses(self):
+        self.assertEqual(_read_formatted_number("$(100)"), -100.0)
+
+    def test_sign_after_the_currency_symbol(self):
+        self.assertEqual(_read_formatted_number("$-100"), -100.0)
+
+    def test_parentheses_win_over_a_leading_plus(self):
+        self.assertEqual(_read_formatted_number("+(100)"), -100.0)
+
+    def test_markers_in_any_order_still_read_as_owed(self):
+        for text in ("-$100", "($100)", "-(100)", "(-100)", "(1,234.50)"):
+            with self.subTest(text=text):
+                self.assertLess(_read_formatted_number(text), 0)
+
+    def test_refund_column_keeps_its_values(self):
+        column = pd.Series(["$1,000.00", "$(250.00)", "$-125.50", "$375.25"])
+        read = _numeric_from_text(column)
+        self.assertEqual(read.notna().sum(), 4)
+        # 1,000.00 - 250.00 - 125.50 + 375.25
+        self.assertAlmostEqual(float(read.sum()), 999.75)
+
+    def test_a_doubled_marker_is_still_refused(self):
+        for text in ("((100))", "--100", "$$100", "(100", "1,2,3", "12 34"):
+            with self.subTest(text=text):
+                self.assertIsNone(_read_formatted_number(text))
+
+    def test_ordinary_numbers_are_unchanged(self):
+        self.assertEqual(_read_formatted_number("100"), 100.0)
+        self.assertEqual(_read_formatted_number("1,234"), 1234.0)
+        self.assertEqual(_read_formatted_number("1234,50"), 1234.5)
+        self.assertEqual(_read_formatted_number("1 234,50"), 1234.5)
+        self.assertEqual(_read_formatted_number("12.5"), 12.5)
+
+
+class NonFiniteValuesTests(unittest.TestCase):
+    def test_an_infinity_is_excluded_from_the_total(self):
+        frame = pd.DataFrame({
+            "Date": pd.to_datetime(["2025-01-05", "2025-02-05", "2025-03-05"]),
+            "Revenue": [1.0, np.inf, 3.0],
+        })
+        cleaned, _ = clean_dataframe(frame)
+        self.assertEqual(float(cleaned["Revenue"].sum()), 4.0)
+        self.assertTrue(pd.isna(cleaned["Revenue"].iloc[1]))
+
+    def test_negative_infinity_too(self):
+        frame = pd.DataFrame({"Revenue": [1.0, -np.inf, 3.0], "Team": list("abc")})
+        cleaned, _ = clean_dataframe(frame)
+        self.assertEqual(float(cleaned["Revenue"].sum()), 4.0)
+
+    def test_the_text_inf_read_as_a_number_is_caught_too(self):
+        """pandas parses the string "inf" into a float infinity."""
+        frame = pd.DataFrame({"Revenue": ["1.0", "inf", "3.0"], "Team": list("abc")})
+        cleaned, _ = clean_dataframe(frame)
+        self.assertEqual(float(cleaned["Revenue"].sum()), 4.0)
+
+    def test_non_finite_cells_are_reported(self):
+        frame = pd.DataFrame({"Revenue": [1.0, np.inf, 3.0], "Team": list("abc")})
+        _, report = clean_dataframe(frame)
+        self.assertEqual(report.non_finite_cells, 1)
+        self.assertTrue(any("Revenue" in note for note in report.notes), report.notes)
+
+    def test_ordinary_numbers_are_untouched(self):
+        frame = pd.DataFrame({"Revenue": [1.0, 2.0, 3.0], "Team": list("abc")})
+        cleaned, report = clean_dataframe(frame)
+        self.assertEqual(float(cleaned["Revenue"].sum()), 6.0)
+        self.assertEqual(report.non_finite_cells, 0)
 
 
 class UniqueColumnNameTests(unittest.TestCase):
@@ -234,9 +320,10 @@ class AnalysisTests(unittest.TestCase):
         report = build_markdown_report(self.cleaned, self.report, insights, "Sales example")
         self.assertIn("# Automated Data Analysis Report", report)
         self.assertIn("No uploaded data was sent to an external AI service", report)
+
+
 class KeywordScoreTests(unittest.TestCase):
     def test_the_last_word_decides_what_a_column_is(self):
-        """"Product Container" is a container, not the product dimension."""
         self.assertGreater(
             _keyword_score("Product Category", DIMENSION_KEYWORDS),
             _keyword_score("Product Container", DIMENSION_KEYWORDS),
@@ -247,7 +334,6 @@ class KeywordScoreTests(unittest.TestCase):
         )
 
     def test_a_trailing_qualifier_does_not_erase_the_keyword(self):
-        """"Revenue USD" is still revenue."""
         self.assertGreater(_keyword_score("Revenue USD", MEASURE_KEYWORDS), 0)
         self.assertEqual(
             _keyword_score("Revenue", MEASURE_KEYWORDS),
@@ -267,7 +353,7 @@ class KeywordScoreTests(unittest.TestCase):
         self.assertNotEqual(detect_roles(frame).dimension, "Product Container")
 
     def test_a_date_is_never_an_identifier(self):
-        """"Order Date" carries an identifier token and unique values."""
+        """"Order Date" contains an identifier word and every value is unique."""
         dates = pd.Series(pd.date_range("2023-01-01", periods=400))
 
         self.assertFalse(looks_like_identifier("Order Date", dates))
@@ -285,7 +371,6 @@ class KeywordScoreTests(unittest.TestCase):
         self.assertIsNone(detect_roles(frame).identifier)
 
     def test_total_reads_as_a_measure(self):
-        """The most common measure name in a business export scored zero."""
         self.assertGreater(_keyword_score("Total", MEASURE_KEYWORDS), 0)
         self.assertGreater(_keyword_score("Turnover", MEASURE_KEYWORDS), 0)
         self.assertGreater(
@@ -298,11 +383,7 @@ class KeywordScoreTests(unittest.TestCase):
         )
 
 
-
-
 class RoleDeterminismTests(unittest.TestCase):
-    """A role is a property of the data, not of the order the columns arrive in."""
-
     def _hr_file(self, order):
         frame = pd.DataFrame(
             {
@@ -365,7 +446,6 @@ class RoleDeterminismTests(unittest.TestCase):
         self.assertEqual(detect_roles(frame).measure, "netRevenue")
 
 
-
 class ExportedIndexTests(unittest.TestCase):
     def test_a_blank_row_does_not_save_the_row_numbers(self):
         frame = pd.DataFrame(
@@ -401,6 +481,7 @@ class UnreadableDateColumnTests(unittest.TestCase):
         roles = detect_roles(clean_dataframe(frame)[0])
 
         self.assertNotEqual(roles.dimension, "Date")
+
 
 if __name__ == "__main__":
     unittest.main()

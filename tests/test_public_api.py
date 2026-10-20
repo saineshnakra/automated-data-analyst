@@ -1,5 +1,3 @@
-"""The surface a pip install promises. These names are a contract."""
-
 import json
 import subprocess
 import sys
@@ -47,7 +45,6 @@ class AnalyzeTests(unittest.TestCase):
         self.assertIn("rows", text)
 
     def test_an_unusable_input_raises_rather_than_refusing(self):
-        """A refusal is ADA declining. An error is input it cannot use."""
         with self.assertRaises(ada.NothingToAnalyze):
             ada.analyze(pd.DataFrame())
         with self.assertRaises(ada.UnreadableData):
@@ -56,7 +53,6 @@ class AnalyzeTests(unittest.TestCase):
             ada.analyze(12345)
 
     def test_errors_are_value_errors(self):
-        """The engine already raises ValueError, so callers catching it still work."""
         self.assertTrue(issubclass(ada.AdaError, ValueError))
 
 
@@ -82,7 +78,7 @@ class RefusalTests(unittest.TestCase):
                 self.assertIn(refusal.code, ada.REFUSAL_CODES)
 
     def test_nothing_found_is_not_the_same_as_could_not_look(self):
-        """Both are falsy, so the type is what tells them apart."""
+        """An empty tuple and a Refusal are both falsy; only the type differs."""
         found = ada.analyze(steady()).anomalies
         self.assertNotIsInstance(found, ada.Refusal)
         self.assertEqual(found, ())
@@ -149,7 +145,7 @@ class SurfaceTests(unittest.TestCase):
 
 
 class NoStreamlitTests(unittest.TestCase):
-    """A library caller must never be made to install or import the app stack."""
+    """Runs the public API in a subprocess where the app and AI packages cannot be imported."""
 
     SCRIPT = textwrap.dedent(
         """
@@ -192,12 +188,8 @@ class NoStreamlitTests(unittest.TestCase):
         self.assertIn("CLEAN", result.stdout)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class CommandLineTests(unittest.TestCase):
-    """The exit codes are the contract a cron job reads."""
+    """Exit codes of `ada check`: 0 nothing flagged, 1 anomaly, 2 unusable input, 3 could not check."""
 
     def run_ada(self, *args: str) -> subprocess.CompletedProcess:
         return subprocess.run(
@@ -225,7 +217,6 @@ class CommandLineTests(unittest.TestCase):
         self.assertIn("anomaly:", result.stdout)
 
     def test_too_little_history_exits_three_not_zero(self):
-        """A job that cannot tell quiet from blind reports quiet when its feed breaks."""
         result = self.run_ada("check", self.write("short.csv", steady(periods=4)), "--frequency", "M")
         self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
         self.assertIn("could not look", result.stderr)
@@ -252,3 +243,7 @@ class CommandLineTests(unittest.TestCase):
 
     def test_samples_lists_the_bundled_files(self):
         self.assertIn("Lab Measurements", self.run_ada("samples").stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()

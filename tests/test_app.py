@@ -14,12 +14,11 @@ from ada.schema import ColumnRoles
 
 
 class _BlockImport:
-    """Make a package unimportable, the way a broken deployment does."""
+    """Make the named packages unimportable inside a with block."""
 
     def __init__(self, *names: str, evict: tuple[str, ...] = ()) -> None:
         self.names = set(names)
-        # A module that already imported the blocked package is cached and
-        # would import again quite happily, so it has to be evicted too.
+        # Modules that already imported a blocked package stay cached, so they are evicted too.
         self.evict = set(evict)
 
     def find_spec(self, name, path=None, target=None):
@@ -44,8 +43,6 @@ class _BlockImport:
 
 
 class DatasetIdentityTests(unittest.TestCase):
-    """An answer must not outlive the table it was computed from."""
-
     def setUp(self):
         import app  # noqa: PLC0415 - importing runs the page once, in bare mode
 
@@ -101,13 +98,8 @@ class SourceSelectionTests(unittest.TestCase):
 
 
 class StaleModuleTests(unittest.TestCase):
-    """A deploy that adds a symbol must not strand a long-lived server process.
-
-    Streamlit re-executes app.py on every rerun but keeps already-imported
-    modules cached. The public app was down for a day because file_io.py
-    gained a function the cached copy did not have. This reproduces that in a
-    subprocess -- one process, two runs, source changed between them.
-    """
+    """Streamlit reruns app.py but keeps imported modules cached. SIM runs the app, adds a
+    function to ada/file_io.py and an import of it to app.py, then runs the app again."""
 
     SIM = textwrap.dedent(
         r"""
@@ -155,14 +147,12 @@ class StaleModuleTests(unittest.TestCase):
 
 
 class OptionalAiLayerTests(unittest.TestCase):
-    """Without a key ADA is a complete product, so it must load without the AI stack."""
-
     def test_the_app_is_whole_when_the_ai_layer_cannot_be_imported(self):
         with _BlockImport("pydantic", "openai", evict=("ada.ai_insights",)):
             app = AppTest.from_file("app.py", default_timeout=90).run()
 
         self.assertFalse(app.exception)
-        # The deterministic product is untouched: every tab, every KPI, every chart.
+        # All six tabs, four KPIs and seven charts still render.
         self.assertEqual(len(app.tabs), 6)
         self.assertEqual(len(app.metric), 4)
         self.assertEqual(len(app.get("plotly_chart")), 7)

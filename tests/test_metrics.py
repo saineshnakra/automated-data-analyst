@@ -1,10 +1,3 @@
-"""The one place a metric says how it combines and which way is good news.
-
-Nothing reads this yet: it is the groundwork the rate fixes are built on, and
-it is separate so the rule itself can be reviewed before the eight surfaces
-that will follow it.
-"""
-
 from __future__ import annotations
 
 import unittest

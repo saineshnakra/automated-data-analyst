@@ -39,19 +39,22 @@ python -m unittest discover -s tests -p "test_nlq.py" -v
 
 | File | Covers |
 |---|---|
-| `test_analysis.py` | Cleaning and profiling |
-| `test_file_io.py` | Parsing, encodings, worksheet handling, rejections |
-| `test_pipeline.py` | Preparation, role overrides, drill-down |
-| `test_trend_series.py` | Grain choice, partial periods, zero-filling |
-| `test_timeseries.py` | Theil–Sen, calendar positions, robust scale |
-| `test_anomalies.py` | Detection and the calibrated threshold |
-| `test_forecasting.py` | Guards, seasonality, backtest |
-| `test_business_insights.py` | Evidence, KPIs, recommendations, formatting |
+| `test_analysis.py` | Cleaning, number and date parsing, non-finite values, profiling |
+| `test_file_io.py` | Parsing, encodings, worksheet handling, rejections, CSV export |
+| `test_schema.py` | Identifier names and date-role choice |
+| `test_pipeline.py` | Preparation, role overrides, drill-down, the row limit |
+| `test_aggregation.py` | Grain choice, rate averaging, empty and partial periods, segment totals |
+| `test_timeseries.py` | Theil–Sen, calendar positions, robust scale, observed periods |
+| `test_anomalies.py` | Detection, the calibrated threshold, blank periods |
+| `test_forecasting.py` | Guards, seasonality, backtest, blank periods |
+| `test_metrics.py` | How a metric combines and which direction is good |
+| `test_formatting.py` | Rate scale and percentage-point changes |
+| `test_business_insights.py` | Evidence, KPIs, recommendations, rate shares, number formatting |
 | `test_significance.py` | Correlation intervals and rank divergence |
-| `test_nlq.py` | Question parsing and plan execution |
-| `test_ai_insights.py` | Typed output and the privacy contract |
-| `test_autovis.py` | Chart-form choice and series folding |
-| `test_bug_bash.py` | Behaviours pinned after walking every customer journey |
+| `test_nlq.py` | Question parsing, refused phrasings and plan execution |
+| `test_ai_insights.py` | Typed output, plan validation and the privacy contract |
+| `test_autovis.py` | Chart-form choice, series folding, the Explore frame |
+| `test_public_api.py` | The `ada` package API and the `ada` command |
 | `test_app.py` | Rendering smoke tests, and that the app survives without the AI layer |
 
 Tests use fake clients for anything model-related, so the suite needs no network
