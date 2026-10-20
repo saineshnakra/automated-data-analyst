@@ -96,6 +96,11 @@ class NumberDisplayTests(unittest.TestCase):
         self.assertEqual(sentence_case("Age"), "age")
         self.assertEqual(sentence_case("Dye Label"), "dye label")
 
+    def test_a_median_of_a_count_column_prints_like_its_counts(self):
+        counts = pd.Series([1_116_330.0, 1_204_567.0, 1_190_002.0])
+
+        self.assertEqual(format_number(1_204_567.5, "Live Cells", column_values=counts), "1.2M")
+
     def test_readings_keep_their_digits(self):
         # "1.1K" would hide that a heart rate of 1,111 is impossible.
         self.assertEqual(format_number(1_111, "Heart rate"), "1,111")

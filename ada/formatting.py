@@ -258,24 +258,23 @@ def _compact_magnitude(absolute: float, *, compact: bool) -> str:
 
 
 def _counts_things(value: float, column: str | None, column_values: pd.Series | None) -> bool:
-    """Whether a figure is a count: a whole number, from a count-named column or no column at all.
+    """Whether a figure is a count, or a mean or median of one: from a count-named column of whole numbers.
 
     A row count has no column. A reading such as a pressure in pascals can be
-    a whole number too, so the name has to say it counts something.
+    a whole number too, so the name has to say it counts something. The column
+    decides when its values are known, so the median of a count column prints
+    like its other figures even when it falls between two whole numbers.
     """
-    if not float(value).is_integer():
-        return False
     if column:
         # Imported here because metrics builds on this module.
         from .metrics import is_additive_name
 
         if not is_additive_name(column):
             return False
-    if column_values is not None:
-        values = _finite_values(column_values)
-        if not values.empty and not _all_whole(values):
-            return False
-    return True
+        if column_values is not None:
+            values = _finite_values(column_values)
+            return values.empty or _all_whole(values)
+    return float(value).is_integer()
 
 
 def _scientific(value: float, digits: int) -> str:
