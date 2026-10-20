@@ -115,7 +115,7 @@ Evidence kinds: `trend`, `driver`, `leader`, `concentration`, `anomaly`,
 **`ui.py`** renders components and styles the Plotly charts.
 **`app.py`** wires the Streamlit page together and holds session state.
 **`pipeline.py`** sits between them, bundling steps 1–3 into one call and
-handling drill-down.
+handling drill-down and slices selected on a chart.
 
 Neither `ui.py` nor `app.py` calculates anything. That is a rule, not a habit —
 see [Architecture](architecture.md).

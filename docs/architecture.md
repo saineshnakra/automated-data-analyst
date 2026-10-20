@@ -33,7 +33,7 @@ engine from a plain Python script or a test, with no browser and no API key.
 |---|---|---|
 | **Presentation** | `app.py`, `ui.py` | Draws things. Calculates nothing. |
 | **Orchestration** | `pipeline.py` | Sequences the engine. Holds no business logic of its own. |
-| **Engine** | `analysis.py`, `schema.py`, `aggregation.py`, `timeseries.py`, `anomalies.py`, `forecasting.py`, `business_insights.py`, `nlq.py`, `autovis.py` | Pure functions over DataFrames. No I/O, no globals. |
+| **Engine** | `analysis.py`, `schema.py`, `aggregation.py`, `timeseries.py`, `anomalies.py`, `forecasting.py`, `business_insights.py`, `nlq.py`, `autovis.py`, `selection.py` | Pure functions over DataFrames. No I/O, no globals. |
 | **Input** | `file_io.py`, `demo_data.py` | Parses and validates. No analysis. |
 | **Output formatting** | `formatting.py` | Decides how a number *looks*. Never changes what it *is*. |
 | **Optional AI** | `ai_insights.py` | The only file allowed to make a network call. Imported defensively: if it or its dependencies fail to load, the rest of the product still runs. |
@@ -44,7 +44,7 @@ engine from a plain Python script or a test, with no browser and no API key.
 |---|---|
 | `app.py` | Streamlit page setup, session state, sidebar, the upload flow |
 | `ui.py` | Reusable render functions and consistent Plotly styling |
-| `pipeline.py` | `prepare_analysis`, role overrides, drill-down focus, audit frames |
+| `pipeline.py` | `prepare_analysis`, role overrides, drill-down focus, chart-selection analysis, audit frames |
 | `file_io.py` | Validated CSV/Excel parsing, worksheet listing |
 | `analysis.py` | Cleaning, the cleaning report, column profiling, Markdown report |
 | `schema.py` | `ColumnRoles` and the role-detection scoring |
@@ -55,6 +55,7 @@ engine from a plain Python script or a test, with no browser and no API key.
 | `business_insights.py` | Evidence cards, KPIs, recommendations, the executive brief |
 | `nlq.py` | Question → `QueryPlan` → local execution |
 | `autovis.py` | Picks the chart form for a set of columns, and the sentence saying why |
+| `selection.py` | Turns a chart selection into filters, states them in words, and sets the slice against the whole |
 | `formatting.py` | `format_number`, `format_period`, column-name helpers |
 | `ai_insights.py` | Typed Responses API calls for the query planner and strategic read |
 | `demo_data.py` | The deterministic synthetic dataset |

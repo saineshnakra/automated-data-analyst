@@ -29,8 +29,8 @@ _PACKAGE = "ada"
 _LOCAL_MODULES = tuple(  # dependency order: a module lists only modules above it
     f"{_PACKAGE}.{name}"
     for name in (
-        "formatting", "schema", "timeseries", "anomalies", "forecasting", "aggregation",
-        "analysis", "autovis", "file_io", "demo_data", "business_insights", "nlq",
+        "formatting", "metrics", "schema", "timeseries", "anomalies", "forecasting", "aggregation",
+        "analysis", "autovis", "file_io", "demo_data", "business_insights", "nlq", "selection",
         "pipeline", "ai_insights", "ui",
     )
 )
@@ -634,7 +634,7 @@ with dashboard_tab:
     render_dashboard(dataframe, roles)
 
 with explore_tab:
-    render_explore(dataframe, roles)
+    render_explore(dataframe, roles, brief)
 
 with evidence_tab:
     render_section_heading(
