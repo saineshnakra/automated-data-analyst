@@ -6,7 +6,7 @@ Every figure comes from a deterministic pandas calculation that is shown beside 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
@@ -70,6 +70,8 @@ from .formatting import (
     with_aggregate,
 )
 from .metrics import MetricSpec, metric_for
+from .quality import QualityIssue, flagged_index, prefers_log_scale, show_value
+from .quality import scan as scan_quality
 from .schema import (
     TIME_PART_TOKENS,
     ColumnRoles,
@@ -1502,52 +1504,314 @@ def _relationship_evidence(
     )
 
 
+#: Share of zeros at which a measure counts as heavy-tailed and no outliers are listed.
+HEAVY_TAIL_ZEROS = 0.5
+#: Values a group needs for its own quartiles; smaller groups use the pooled ones.
+MIN_GROUP_FOR_FENCES = 12
+#: Share of the flagged values that one unbroken run in time must hold to read as a shift.
+SHIFT_RUN_SHARE = 0.5
+MIN_SHIFT_RUN = 5
+
+
 def _outlier_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
+    """Count measure values outside 1.5×IQR, judged the way the measure is shaped.
+
+    A right-skewed positive measure is judged on a log scale, and each group
+    against its own quartiles, so a long tail or one group's level is not
+    called exceptional. A measure that is mostly zeros gets no list at all. When
+    the flagged values form one run in time, the card reports a shift starting
+    then rather than scattered records.
+    """
     if not roles.measure:
         return None
     series = dataframe[roles.measure].dropna()
     if len(series) < 12 or series.nunique() < 4:
         return None
-    first_quartile, third_quartile = series.quantile([0.25, 0.75])
-    iqr = third_quartile - first_quartile
-    if iqr == 0:
+    values = series.to_numpy(dtype=float)
+    zeros = float((values == 0).mean())
+    if zeros >= HEAVY_TAIL_ZEROS:
+        return _heavy_tail_evidence(roles.measure, values, zeros)
+    log = prefers_log_scale(np.sort(values))
+    scaled = pd.Series(np.log10(np.where(values > 0, values, np.nan)) if log else values, index=series.index)
+    groups = _fence_groups(dataframe, roles, series.index)
+    low, high = _fences(scaled, groups)
+    flagged = (scaled < low) | (scaled > high)
+    count = int(flagged.sum())
+    if count == 0:
         return None
-    outlier_count = int(
-        ((series < first_quartile - 1.5 * iqr) | (series > third_quartile + 1.5 * iqr)).sum()
-    )
-    if outlier_count == 0:
-        return None
-    rate = outlier_count / len(series) * 100
+    shift = _shift(dataframe, roles, flagged, groups)
+    if shift is not None:
+        return shift
+    rate = count / len(series) * 100
+    within = f" of their own {sentence_case(roles.dimension)}" if groups is not None else ""
+    on_log = f" on a log scale, since {roles.measure} is right-skewed" if log else ""
+    calculation = "Values below Q1 − 1.5×IQR or above Q3 + 1.5×IQR"
+    if groups is not None:
+        calculation += f", with quartiles taken within each {roles.dimension}"
+    if log:
+        calculation += ", on log10 of the values"
     return Evidence(
         kind="outliers",
         title="Exceptional records",
-        value=f"{outlier_count:,}",
+        value=f"{count:,}",
         statement=(
-            f"{outlier_count:,} {roles.measure} values ({format_percentage(rate)} of non-missing records) "
-            "sit outside the standard 1.5×IQR range."
+            f"{count:,} {roles.measure} values ({format_percentage(rate)} of non-missing records) "
+            f"sit outside 1.5×IQR{within}{on_log}."
         ),
-        calculation="Values below Q1 − 1.5×IQR or above Q3 + 1.5×IQR",
+        calculation=calculation,
         tone="warning",
     )
 
 
-def _quality_evidence(dataframe: pd.DataFrame) -> Evidence | None:
+def _heavy_tail_evidence(measure: str, values: np.ndarray, zeros: float) -> Evidence:
+    """Describe a mostly-zero measure's tail instead of listing its large values as outliers."""
+    top = float(np.percentile(values, 99))
+    return Evidence(
+        kind="outliers",
+        title="Heavy-tailed measure",
+        value=f"{format_percentage(zeros * 100)} zeros",
+        statement=(
+            f"{measure} is heavy-tailed: {format_percentage(zeros * 100)} of its values are 0 and the "
+            f"top 1% reach {show_value(top)} or more. An outlier rule would flag ordinary values here, "
+            "so none are listed; medians describe it better than means."
+        ),
+        calculation="Share of values equal to 0, and the 99th percentile; outlier rules are skipped "
+        f"when {format_percentage(HEAVY_TAIL_ZEROS * 100)} or more of the values are 0",
+        tone="neutral",
+    )
+
+
+def _fence_groups(dataframe: pd.DataFrame, roles: ColumnRoles, index: pd.Index) -> pd.Series | None:
+    """The grouping column's values for ``index``, when there is a grouping to judge within."""
+    if not roles.dimension or roles.dimension not in dataframe.columns:
+        return None
+    groups = dataframe.loc[index, roles.dimension]
+    return groups if groups.nunique() >= 2 else None
+
+
+def _fences(scaled: pd.Series, groups: pd.Series | None) -> tuple[pd.Series, pd.Series]:
+    """Q1 − 1.5×IQR and Q3 + 1.5×IQR for each value, from its group's quartiles where it has enough."""
+    present = scaled.dropna()
+    first, third = present.quantile([0.25, 0.75])
+    low = pd.Series(first - 1.5 * (third - first), index=scaled.index)
+    high = pd.Series(third + 1.5 * (third - first), index=scaled.index)
+    if groups is None:
+        return low, high
+    quartiles = present.groupby(groups.loc[present.index]).quantile([0.25, 0.75]).unstack()
+    sizes = present.groupby(groups.loc[present.index]).size()
+    spread = quartiles[0.75] - quartiles[0.25]
+    usable = (sizes >= MIN_GROUP_FOR_FENCES) & (spread > 0)
+    own_low = groups.map((quartiles[0.25] - 1.5 * spread)[usable])
+    own_high = groups.map((quartiles[0.75] + 1.5 * spread)[usable])
+    return own_low.fillna(low), own_high.fillna(high)
+
+
+def _shift(
+    dataframe: pd.DataFrame, roles: ColumnRoles, flagged: pd.Series, groups: pd.Series | None
+) -> Evidence | None:
+    """Report flagged values that form one unbroken run in time as a shift starting at its first time.
+
+    Rows are put in time order within each group. A run counts when it holds
+    SHIFT_RUN_SHARE of the flagged values and at least MIN_SHIFT_RUN of them.
+    """
+    if not roles.date or roles.date not in dataframe.columns:
+        return None
+    ordered = pd.DataFrame({
+        "time": dataframe.loc[flagged.index, roles.date],
+        "group": groups if groups is not None else 0,
+        "flag": flagged,
+    }).dropna(subset=["time"])
+    ordered = ordered.sort_values(["group", "time"], kind="stable")
+    flags = ordered["flag"].to_numpy(dtype=bool)
+    if not flags.any():
+        return None
+    keys = pd.factorize(ordered["group"])[0]
+    same_group = np.r_[False, keys[1:] == keys[:-1]]
+    starts = flags & ~(np.r_[False, flags[:-1]] & same_group)
+    runs = np.cumsum(starts) * flags
+    lengths = np.bincount(runs)[1:]
+    longest = int(np.argmax(lengths)) + 1
+    length = int(lengths[longest - 1])
+    total = int(flags.sum())
+    if length < max(MIN_SHIFT_RUN, SHIFT_RUN_SHARE * total):
+        return None
+    positions = np.flatnonzero(runs == longest)
+    first, last = ordered.iloc[positions[0]], ordered.iloc[positions[-1]]
+    group_end = positions[-1] == len(ordered) - 1 or keys[positions[-1] + 1] != keys[positions[-1]]
+    begun, ended = _moment(first["time"]), _moment(last["time"])
+    where = ""
+    if groups is not None:
+        label = group_label(roles.dimension, first["group"])
+        where = f" for {label if label != str(first['group']) else f'{roles.dimension} {label}'}"
+    until = "to the end of the record" if group_end else f"until {ended}"
+    return Evidence(
+        kind="outliers",
+        title="Level shift",
+        value=begun,
+        statement=(
+            f"{roles.measure} left its usual range{where} at {begun} and stayed out for {length:,} "
+            f"readings in a row, {until}: {length:,} of the {total:,} values outside 1.5×IQR form this "
+            "one run, so this is a shift starting then rather than scattered entry errors."
+        ),
+        calculation=(
+            "Values below Q1 − 1.5×IQR or above Q3 + 1.5×IQR, put in time order; the longest unbroken "
+            f"run holds at least {format_percentage(SHIFT_RUN_SHARE * 100)} of them"
+        ),
+        tone="warning",
+    )
+
+
+def _moment(value: pd.Timestamp) -> str:
+    """A timestamp at the precision it was recorded: a date, or a date and time."""
+    stamp = pd.Timestamp(value)
+    if stamp == stamp.normalize():
+        return f"{stamp:%d %b %Y}"
+    return f"{stamp:%d %b %Y %H:%M:%S}"
+
+
+#: Data-check issues named on the brief's card, about values and about gaps;
+#: ``Analysis.quality()`` lists them all.
+QUALITY_ISSUES_SHOWN = 3
+GAP_ISSUES_SHOWN = 2
+#: Issues named in the brief's summary as the ones to check first.
+CHECK_FIRST_SHOWN = 2
+
+
+def _leading_issues(issues: tuple[QualityIssue, ...], measure: str | None, limit: int) -> list[QualityIssue]:
+    """The issues to name first: those on the measure, then the rest, in scan order."""
+    ranked = [issue for issue in issues if measure in issue.columns] + [
+        issue for issue in issues if measure not in issue.columns
+    ]
+    return ranked[:limit]
+
+
+def _quality_evidence(
+    dataframe: pd.DataFrame, issues: tuple[QualityIssue, ...] = (), measure: str | None = None
+) -> Evidence | None:
+    """The data checks: the leading issues by name and count, and how complete the table is."""
     total_cells = dataframe.shape[0] * dataframe.shape[1]
     missing_cells = int(dataframe.isna().sum().sum())
-    if total_cells == 0 or missing_cells == 0:
+    if total_cells == 0 or (missing_cells == 0 and not issues):
         return None
     rate = missing_cells / total_cells * 100
+    completeness = (
+        f"{missing_cells:,} cells are missing, leaving the analyzed dataset "
+        f"{format_percentage(100 - rate)} complete."
+    )
+    if not issues:
+        return Evidence(
+            kind="quality",
+            title="Data completeness",
+            value=format_percentage(100 - rate),
+            statement=completeness,
+            calculation="Non-missing cells ÷ all cells",
+            tone="warning" if rate >= 5 else "neutral",
+        )
+    values = tuple(issue for issue in issues if not issue.check.startswith("missing"))
+    gaps = tuple(issue for issue in issues if issue.check.startswith("missing"))
+    shown = _leading_issues(values, measure, QUALITY_ISSUES_SHOWN)
+    shown_gaps = _leading_issues(gaps, measure, GAP_ISSUES_SHOWN)
+    parts = []
+    if shown:
+        parts.append("; ".join(issue.summary for issue in shown) + ".")
+    parts.append(completeness if missing_cells else "No cells are missing.")
+    if shown_gaps:
+        parts.append("Gaps: " + "; ".join(issue.summary for issue in shown_gaps) + ".")
+    more = len(issues) - len(shown) - len(shown_gaps)
+    if more:
+        parts.append(f"{more} more {'is' if more == 1 else 'are'} in the full list of checks.")
+    noun = "issue" if len(issues) == 1 else "issues"
     return Evidence(
         kind="quality",
-        title="Data completeness",
-        value=format_percentage(100 - rate),
-        statement=(
-            f"{missing_cells:,} cells are missing, leaving the analyzed dataset "
-            f"{format_percentage(100 - rate)} complete."
+        title="Data checks",
+        value=f"{len(issues)} {noun}",
+        statement=f"The data checks found {len(issues)} {noun} to look at before trusting these figures. "
+        + " ".join(parts),
+        calculation=(
+            "Every numeric column checked for values outside what its name allows, missing-value "
+            "codes, caps, repeated fill values, values more than 10 robust standard deviations out, "
+            "copied columns, max below min, and gaps that follow a group or another column; "
+            "Analysis.quality() lists every issue with its rule"
         ),
-        calculation="Non-missing cells ÷ all cells",
-        tone="warning" if rate >= 5 else "neutral",
+        tone="warning",
     )
+
+
+def _issues_on_headline(
+    issues: tuple[QualityIssue, ...], roles: ColumnRoles, leader: Evidence | None
+) -> list[QualityIssue]:
+    """Issues that touch the measure or the group the headline names."""
+    def concerns_leader(issue: QualityIssue) -> bool:
+        if leader is None or leader.subject is None or issue.group is None:
+            return False
+        named = issue.group if isinstance(issue.group, tuple) else (issue.group,)
+        return any(
+            leader.subject in (str(group), group_label(roles.dimension, group)) for group in named
+        )
+
+    return [
+        issue
+        for issue in issues
+        if (roles.measure in issue.columns and issue.check != "missing") or concerns_leader(issue)
+    ]
+
+
+def _check_first(issues: tuple[QualityIssue, ...], roles: ColumnRoles, leader: Evidence | None) -> str:
+    """One line naming the issues behind the headline, or "" when none touch it."""
+    relevant = _issues_on_headline(issues, roles, leader)[:CHECK_FIRST_SHOWN]
+    if not relevant:
+        return ""
+    return "Check these first: " + "; ".join(issue.summary for issue in relevant) + "."
+
+
+def _flag_driven_leader(
+    evidence: list[Evidence], dataframe: pd.DataFrame, roles: ColumnRoles, issues: tuple[QualityIssue, ...]
+) -> list[Evidence]:
+    """Say when the leading group's average rests on flagged values, with its median beside it.
+
+    Applies to an averaged measure. The leader's average is recomputed without
+    the values the data checks flagged; when that changes it by more than 5%, or
+    hands the lead to another group, the card says so.
+    """
+    position = next((i for i, item in enumerate(evidence) if item.kind == "leader"), None)
+    if position is None or not roles.measure or not roles.dimension:
+        return evidence
+    if metric_for(roles.measure, roles).additive:
+        return evidence
+    flagged = flagged_index(issues, roles.measure)
+    if flagged.empty:
+        return evidence
+    measure, groups = dataframe[roles.measure], dataframe[roles.dimension]
+    means = measure.groupby(groups).mean().dropna()
+    if means.empty:
+        return evidence
+    top = means.idxmax()
+    leader = evidence[position]
+    if leader.subject not in (str(top), group_label(roles.dimension, top)):
+        return evidence
+    in_top = (groups == top) & measure.notna()
+    hits = flagged.intersection(dataframe.index[in_top])
+    if hits.empty:
+        return evidence
+    kept = ~dataframe.index.isin(flagged)
+    clean = measure[kept].groupby(groups[kept]).mean().dropna()
+    without = float(clean.get(top, np.nan))
+    successor = clean.idxmax() if not clean.empty else top
+    moved = not np.isfinite(without) or abs(means[top] - without) > 0.05 * abs(means[top])
+    if not moved and successor == top:
+        return evidence
+    column_values = measure.dropna()
+    median = format_number(float(measure[in_top].median()), roles.measure, column_values=column_values)
+    shown = ", ".join(show_value(value) for value in measure.loc[hits].head(3))
+    noun = "value" if len(hits) == 1 else "values"
+    note = (
+        f" That average rests on {len(hits):,} flagged {roles.measure} {noun} ({shown}); "
+        f"{group_label(roles.dimension, top)}'s median is {median}"
+    )
+    if successor != top:
+        note += f", and without the flagged values {group_label(roles.dimension, successor)} would lead"
+    evidence[position] = replace(leader, statement=leader.statement + note + ".", tone="warning")
+    return evidence
 
 
 def _shown_evidence(evidence: list[Evidence], limit: int = 6) -> list[Evidence]:
@@ -1691,7 +1955,28 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
         )
 
     outliers = by_kind.get("outliers")
-    if outliers:
+    if outliers and outliers.title == "Level shift":
+        recommendations.append(
+            Recommendation(
+                "Now",
+                "Find what changed when the run began",
+                (
+                    "Match the start of the run to an event (a change in the process, the instrument "
+                    "or the conditions) before treating these values as errors."
+                ),
+                outliers.statement,
+            )
+        )
+    elif outliers and outliers.title == "Heavy-tailed measure":
+        recommendations.append(
+            Recommendation(
+                "Watch",
+                "Compare medians, not means",
+                "Compare groups by their medians or on a log scale; a few large values pull means up.",
+                outliers.statement,
+            )
+        )
+    elif outliers:
         recommendations.append(
             Recommendation(
                 "Watch",
@@ -1705,7 +1990,21 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
         )
 
     quality = by_kind.get("quality")
-    if quality and quality.tone == "warning":
+    if quality and quality.title == "Data checks":
+        # Flagged values qualify every other figure, so they are checked first.
+        recommendations.insert(
+            0,
+            Recommendation(
+                "Fix",
+                "Check the flagged values first",
+                (
+                    "Look at the values the data checks flagged, and decide whether to correct or "
+                    "exclude them, before relying on averages and correlations."
+                ),
+                quality.statement,
+            ),
+        )
+    elif quality and quality.tone == "warning":
         recommendations.append(
             Recommendation(
                 "Fix",
@@ -1811,6 +2110,7 @@ def analyze_business(
     """
     roles = roles or detect_roles(dataframe)
     metric = metric_for(roles.measure, roles)
+    issues = scan_quality(dataframe, roles)
     evidence: list[Evidence] = []
 
     growth = _growth_evidence(dataframe, roles, frequency)
@@ -1820,6 +2120,7 @@ def analyze_business(
     if change_driver:
         evidence.append(change_driver)
     evidence.extend(_segment_evidence(dataframe, roles))
+    evidence = _flag_driven_leader(evidence, dataframe, roles, issues)
     # Both scans work on the same numeric readings, which are slow to pick out of a wide table.
     readings = numeric_readings(dataframe, roles)
     differences = _differences_evidence(dataframe, roles, readings)
@@ -1832,7 +2133,7 @@ def analyze_business(
         _outlier_evidence(dataframe, roles),
         # A scan that found nothing ranks below the findings.
         None if found_difference else differences,
-        _quality_evidence(dataframe),
+        _quality_evidence(dataframe, issues, roles.measure),
     ):
         if optional_evidence:
             evidence.append(optional_evidence)
@@ -1951,6 +2252,8 @@ def analyze_business(
         summary_parts = [_table_description(dataframe, roles)]
     if differences is not None and differences.subject and (leader is None or leader.subject is None):
         summary_parts.append(_first_sentence(differences.statement))
+    if check_first := _check_first(issues, roles, leader):
+        summary_parts.append(check_first)
     if note := _measure_choice_note(roles):
         summary_parts.append(note)
 

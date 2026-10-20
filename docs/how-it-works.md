@@ -118,6 +118,13 @@ Evidence kinds: `trend`, `driver`, `leader`, `concentration`, `differences`,
 calculation. Group comparisons and the relationship scan come from
 `ada/compare.py` ([details](reference/compare.md)).
 
+Before the cards are built, the data checks in `ada/quality.py` scan every
+numeric column for impossible values, missing-value codes, caps, fill values,
+extreme values, copied columns and patterns in the gaps
+([details](reference/quality.md)). The `quality` card lists the leading issues,
+and the summary says which to check first when one touches the measure or the
+leading group.
+
 ## 10. Draw it
 
 `ada/ui.py` renders components and styles the Plotly charts. `app.py` builds

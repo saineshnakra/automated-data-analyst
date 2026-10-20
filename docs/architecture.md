@@ -22,6 +22,7 @@ runs from a script or a test with no browser and no API key.
  analysis.py      │        │         │                  │
  schema.py    anomalies  forecasting  aggregation ──────┘
                   │        │          metrics.py
+                  │        │          quality.py
                   └────────┴─ timeseries.py
                               formatting.py
 
@@ -42,7 +43,7 @@ OpenAI client and Pydantic with the `ai` extra.
 | Presentation | `app.py`, `ada/ui.py` | Draws results. Does not calculate. |
 | Public interface | `ada/api.py`, `ada/cli.py` | Wraps the engine for Python and the shell. No analysis of its own. |
 | Orchestration | `ada/pipeline.py` | Sequences cleaning, role detection and the row limit. |
-| Engine | `analysis.py`, `schema.py`, `metrics.py`, `aggregation.py`, `timeseries.py`, `anomalies.py`, `forecasting.py`, `compare.py`, `business_insights.py`, `nlq.py`, `autovis.py`, `selection.py` | Functions over DataFrames. No network, no global state. |
+| Engine | `analysis.py`, `schema.py`, `metrics.py`, `aggregation.py`, `timeseries.py`, `anomalies.py`, `forecasting.py`, `compare.py`, `quality.py`, `business_insights.py`, `nlq.py`, `autovis.py`, `selection.py` | Functions over DataFrames. No network, no global state. |
 | Input | `ada/file_io.py`, `ada/demo_data.py` | Parses and validates input. No analysis. |
 | Output formatting | `ada/formatting.py` | Decides how a value is displayed, never what it is. |
 | Optional AI | `ada/ai_insights.py` | The only module that makes a network call. `app.py` imports it inside a `try`, so a missing dependency disables the AI features and nothing else. |
@@ -64,6 +65,7 @@ OpenAI client and Pydantic with the `ai` extra.
 | `ada/timeseries.py` | Theil-Sen trendline, calendar positions, robust scale |
 | `ada/anomalies.py` | Anomaly detection and the calibrated threshold table |
 | `ada/forecasting.py` | Baseline forecast, prediction band, backtest |
+| `ada/quality.py` | The data checks: impossible values, codes, caps, fill values, extreme values, copied columns, patterns in missing data; setting a clear code in the measure aside |
 | `ada/business_insights.py` | Evidence cards, KPIs, recommendations, the executive brief |
 | `ada/nlq.py` | Question to `QueryPlan` to local execution |
 | `ada/autovis.py` | Chart form for a set of columns, and the sentence explaining it |

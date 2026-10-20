@@ -252,7 +252,8 @@ class AppSmokeTests(unittest.TestCase):
         )
         # Six dashboard charts, plus the one Explore draws for its default columns.
         self.assertEqual(len(app.get("plotly_chart")), 7)
-        self.assertEqual(len(app.dataframe), 4)
+        # Detected columns, cleaning audit, data checks, cleaned data and data dictionary.
+        self.assertEqual(len(app.dataframe), 5)
 
     def test_drill_down_focuses_the_whole_analysis(self):
         app = AppTest.from_file("app.py", default_timeout=45).run()

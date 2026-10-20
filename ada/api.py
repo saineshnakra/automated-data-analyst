@@ -31,6 +31,8 @@ from .formatting import format_moment, is_undated
 from .metrics import AGGREGATION_CHOICES, metric_for
 from .nlq import QueryAnswer, answer_question, rephrase_hint, suggested_questions, unsupported_phrasing
 from .pipeline import apply_focus, focus_options, prepare_analysis
+from .quality import mask_sentinels, quality_frame
+from .quality import scan as scan_quality
 from .schema import ColumnRoles
 
 #: Rows analyzed by default. Over it, a table with a date keeps its newest
@@ -186,7 +188,12 @@ def analyze(
             ),
         )
     name = source_name or detected_name
-    frame = prepared.dataframe
+    # A clear code such as 999.9 or -100000 in the measure would drive every
+    # average, so it alone is set to missing, with a note; other columns keep theirs.
+    cleaning = prepared.cleaning_report
+    frame, masked = mask_sentinels(prepared.dataframe, roles.measure)
+    if masked:
+        cleaning = replace(cleaning, notes=(*cleaning.notes, masked))
     if roles.focus and dimension is None:
         # A long table's rows measure different things; the brief covers one of them.
         name = f"{name} · {roles.focus}"
@@ -194,7 +201,7 @@ def analyze(
     return Analysis(
         frame=frame,
         roles=replace(roles, focus=None),
-        cleaning=prepared.cleaning_report,
+        cleaning=cleaning,
         rows_not_analyzed=prepared.truncated_rows,
         period=(prepared.analyzed_from, prepared.analyzed_to),
         frequency=frequency,
@@ -288,6 +295,16 @@ class Analysis:
     def profile(self) -> pd.DataFrame:
         """One row per column: type, missing values, distinct values and an example."""
         return column_profile(self.frame)
+
+    def quality(self) -> pd.DataFrame:
+        """Every issue the data checks found, one row each, the most consequential first.
+
+        Columns: ``Check``, ``Columns``, ``Rows`` (cells or rows affected),
+        ``Share %``, ``Detail`` (a plain sentence), ``Rule`` (what fired) and
+        ``Examples``. Nothing is changed by the checks; an empty frame means
+        nothing was flagged. See ``ada/quality.py`` for the rules.
+        """
+        return quality_frame(scan_quality(self.frame, self.roles))
 
     def trend(self, frequency: str | None = None) -> TrendSeries | Refusal:
         """The measure per period. ``.notes`` lists any adjustments made to the periods."""
@@ -435,6 +452,7 @@ class Analysis:
             "headline": self.headline,
             "summary": self.summary,
             "cleaning_notes": list(self.cleaning.notes),
+            "data_checks": self.quality().to_dict(orient="records"),
             "evidence": [
                 {
                     "kind": item.kind,

@@ -276,7 +276,9 @@ unreadable dates, dates built from years, missing-value markers, values past a
 detection limit, lone tokens, unreadable numbers, "not stated" phrases, merged
 label spellings, widened columns, infinities, identical rows).
 `pipeline.prepare_analysis` adds what schema detection concluded about the
-columns (see [Schema detection](schema-detection.md#notes)).
+columns (see [Schema detection](schema-detection.md#notes)), and `ada.analyze`
+adds one more when it sets a clear code in the measure aside; see
+[Data checks](quality.md#codes-in-the-measure).
 
 `pipeline.cleaning_audit_frame` turns the counts into the table shown in the
 app.

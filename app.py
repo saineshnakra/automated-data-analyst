@@ -26,8 +26,8 @@ _PACKAGE = "ada"
 _LOCAL_MODULES = tuple(  # dependency order: each module imports only from those above it
     f"{_PACKAGE}.{name}"
     for name in (
-        "formatting", "metrics", "schema", "timeseries", "anomalies", "forecasting", "aggregation",
-        "analysis", "autovis", "file_io", "demo_data", "business_insights", "nlq", "selection",
+        "formatting", "metrics", "schema", "timeseries", "quality", "anomalies", "forecasting",
+        "aggregation", "analysis", "autovis", "file_io", "demo_data", "business_insights", "nlq", "selection",
         "pipeline", "ai_insights", "ui",
     )
 )
@@ -102,6 +102,8 @@ from ada.pipeline import (  # noqa: E402
     prepare_analysis,
     schema_frame,
 )
+from ada.quality import mask_sentinels, quality_frame  # noqa: E402
+from ada.quality import scan as scan_quality  # noqa: E402
 
 # The AI layer and its dependencies are optional. Any import failure disables
 # only the narrative and the query planner.
@@ -571,6 +573,10 @@ roles = apply_role_selection(
     dimension=selected_dimension,
     aggregation=selected_aggregation,
 )
+# A clear code such as 999.9 in the chosen measure is set aside before anything is computed.
+dataframe, masked = mask_sentinels(dataframe, roles.measure)
+if masked:
+    st.info(masked)
 
 focus_value = None
 focus_label = None
@@ -729,6 +735,10 @@ with data_tab:
             hide_index=True,
             width="stretch",
         )
+
+    with st.expander("Data checks"):
+        st.caption("Values to look at before trusting the figures. None of them was changed.")
+        st.dataframe(quality_frame(scan_quality(dataframe, roles)), hide_index=True, width="stretch")
 
     st.subheader("Cleaned data")
     st.dataframe(dataframe.head(1_000), width="stretch", height=420)

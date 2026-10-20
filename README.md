@@ -14,7 +14,8 @@ that produced it.
 It works on sales exports, but it was also built for research data: lab
 assays, field surveys, instrument logs. It sums only money and counts, averages
 measurements such as temperature, pH or concentration instead of adding them
-up, and reads `NA`, `nd` or `<LOD` in a numeric column as missing.
+up, reads `NA`, `nd` or `<LOD` in a numeric column as missing, and checks every
+column for values that should not drive a result before it reports one.
 
 [**Try the web app**](https://automated-data-analyst.streamlit.app/) (no sign-up, no API key) or `pip install` it.
 
@@ -74,8 +75,17 @@ ada ask orders.csv "which category made the most revenue"
 - **Cleans conservatively and says what it changed**: encodings (UTF-8,
   UTF-16, Latin-1), `;` and tab delimiters, a title line above the header,
   `$1,203.55` and `(48.10)` style numbers, day/month order in dates, missing-value
-  markers, labels spelled differently only in case or accents (`No indica`,
-  `NO INDICA`). Identical rows are counted, not dropped.
+  markers (including a lone `T` for a trace, `<3,87` below a detection limit and
+  "not stated" phrases such as `no indica`), labels spelled differently only in
+  case or accents (`Con riego`, `CON RIEGO`). Identical rows are counted, not
+  dropped; repeated headers and dropped empty columns are named.
+- **Checks the data before trusting it**: every numeric column is scanned for
+  values its name rules out (a percentage over 100, a negative yield, pH past
+  14), codes such as `-999` or `999.9`, values piled up at a limit, filled-in
+  gaps, values far from the rest, copied columns, max below min, and gaps that
+  follow a group or another column. The brief lists the leading issues and
+  says which to check first; `report.quality()` returns them all. Only a clear
+  code in the measure is set aside, with a note.
 - **Detects column roles**: the date, the measure, the grouping column and an
   ID column, from names, values and cardinality. Numeric category codes (a 0/1
   flag, a status, a set dose) group rows instead of being added up; a column of
@@ -170,6 +180,7 @@ report = ada.analyze(df, date="Survey Date", measure="Water Temp (°C)", dimensi
 ada.analyze(df, measure="Rainfall (mm)", aggregation="sum")   # monthly totals, not averages
 
 report.profile()          # one row per column: type, missing, distinct values
+report.quality()          # every data-check issue, with its rows and the rule that fired
 report.evidence           # findings, each with .statement and .calculation
 report.trend()            # the measure per period, with notes on adjustments
 report.segments()         # the measure by group, as a DataFrame

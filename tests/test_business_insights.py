@@ -1281,5 +1281,130 @@ class RelationshipScanCardTests(unittest.TestCase):
         self.assertNotIn("Sex", numeric_readings(frame, roles))
 
 
+def lab_roles(frame: pd.DataFrame, measure: str, dimension: str | None = None, date: str | None = None):
+    numeric = tuple(column for column in frame.columns if pd.api.types.is_numeric_dtype(frame[column]))
+    return ColumnRoles(
+        date=date,
+        measure=measure,
+        dimension=dimension,
+        identifier=None,
+        numeric=numeric,
+        dimensions=(dimension,) if dimension else (),
+        aggregation="mean",
+    )
+
+
+def brief_card(brief, kind: str) -> Evidence | None:
+    return next((item for item in brief.evidence if item.kind == kind), None)
+
+
+class OutlierShapeTests(unittest.TestCase):
+    def test_a_right_skewed_measure_is_judged_on_a_log_scale(self):
+        rng = np.random.default_rng(31)
+        frame = pd.DataFrame({"Latency": rng.lognormal(4, 1, 400)})
+
+        outliers = brief_card(analyze_business(frame, lab_roles(frame, "Latency")), "outliers")
+
+        self.assertTrue(outliers is None or "log scale" in outliers.statement)
+
+    def test_each_group_is_judged_against_its_own_quartiles(self):
+        rng = np.random.default_rng(32)
+        frame = pd.DataFrame({
+            "Station": np.repeat(["Tropic", "Arctic"], 300),
+            "MaxTemp": np.r_[rng.normal(30, 2, 300), rng.normal(-20, 2, 300)],
+        })
+        frame.loc[0, "MaxTemp"] = 45.0
+
+        outliers = brief_card(analyze_business(frame, lab_roles(frame, "MaxTemp", "Station")), "outliers")
+
+        assert outliers is not None
+        self.assertLessEqual(int(outliers.value.replace(",", "")), 10)
+        self.assertIn("of their own station", outliers.statement)
+
+    def test_a_mostly_zero_measure_is_described_as_heavy_tailed(self):
+        rng = np.random.default_rng(33)
+        counts = np.where(rng.random(500) < 0.6, 0.0, rng.lognormal(2, 1.5, 500).round())
+        frame = pd.DataFrame({"Abundance": counts})
+
+        outliers = brief_card(analyze_business(frame, lab_roles(frame, "Abundance")), "outliers")
+
+        assert outliers is not None
+        self.assertEqual(outliers.title, "Heavy-tailed measure")
+        self.assertIn("none are listed", outliers.statement)
+
+    def test_flagged_values_in_one_run_of_time_are_a_shift(self):
+        rng = np.random.default_rng(34)
+        times = pd.date_range("2024-01-01 15:00", periods=600, freq="s")
+        signal = np.r_[rng.normal(100, 3, 500), rng.normal(300, 10, 100)]
+        frame = pd.DataFrame({"Time": times, "MQ139": signal})
+
+        brief = analyze_business(frame, lab_roles(frame, "MQ139", date="Time"))
+        outliers = brief_card(brief, "outliers")
+
+        assert outliers is not None
+        self.assertEqual(outliers.title, "Level shift")
+        self.assertIn("01 Jan 2024 15:08:20", outliers.statement)
+        self.assertIn("to the end of the record", outliers.statement)
+        self.assertNotIn("Review the extreme records", [item.title for item in brief.recommendations])
+
+    def test_scattered_outliers_keep_the_review_recommendation(self):
+        rng = np.random.default_rng(35)
+        times = pd.date_range("2024-01-01", periods=300, freq="D")
+        values = rng.normal(100, 5, 300)
+        values[[20, 140, 260]] = [160.0, 40.0, 170.0]
+        frame = pd.DataFrame({"Day": times, "Reading": values})
+
+        brief = analyze_business(frame, lab_roles(frame, "Reading", date="Day"))
+
+        self.assertEqual(brief_card(brief, "outliers").title, "Exceptional records")
+
+
+class DataCheckTests(unittest.TestCase):
+    def setUp(self):
+        rng = np.random.default_rng(36)
+        groups = np.repeat(["Healthy", "Anaemia", "Leukaemia"], 100)
+        hct = np.r_[rng.normal(45, 3, 100), rng.normal(35, 3, 100), rng.normal(44, 3, 100)]
+        hct[150] = 3715.0  # one impossible record inside the anaemia group
+        self.frame = pd.DataFrame({
+            "Diagnosis": groups,
+            "HCT": hct.round(1),
+            "NEUTp": np.r_[rng.uniform(40, 80, 299), [5317.0]],
+        })
+        self.roles = lab_roles(self.frame, "HCT", "Diagnosis")
+        self.brief = analyze_business(self.frame, self.roles)
+
+    def test_the_card_lists_the_leading_issues_with_counts(self):
+        checks = brief_card(self.brief, "quality")
+
+        assert checks is not None
+        self.assertEqual(checks.title, "Data checks")
+        self.assertIn("HCT: 1 extreme value (3,715)", checks.statement)
+        self.assertIn("NEUTp: 1 value above 100 (5,317)", checks.statement)
+        self.assertEqual(checks.tone, "warning")
+
+    def test_a_flagged_value_cannot_carry_the_leader(self):
+        leader = brief_card(self.brief, "leader")
+
+        # One impossible HCT makes the reading skewed, so groups are compared by
+        # medians and ranks, which the flagged value can't move.
+        self.assertIn("Healthy has the highest median", leader.statement)
+        self.assertNotIn("Anaemia has the highest", self.brief.headline)
+
+    def test_the_summary_says_what_to_check_first(self):
+        self.assertIn("Check these first: HCT: 1 extreme value (3,715)", self.brief.summary)
+
+    def test_checking_the_flags_comes_first_among_the_next_steps(self):
+        self.assertEqual(self.brief.recommendations[0].title, "Check the flagged values first")
+
+    def test_a_clean_table_keeps_the_completeness_card(self):
+        frame = pd.DataFrame({"Group": ["a", "b"] * 20, "Value": np.linspace(1.0, 2.0, 40)})
+        frame.loc[[3, 7, 11], "Value"] = np.nan
+
+        checks = brief_card(analyze_business(frame, lab_roles(frame, "Value", "Group")), "quality")
+
+        assert checks is not None
+        self.assertEqual(checks.title, "Data completeness")
+
+
 if __name__ == "__main__":
     unittest.main()

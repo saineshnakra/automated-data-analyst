@@ -485,8 +485,48 @@ class UndatedTimeTests(unittest.TestCase):
         self.assertEqual((period["from"], period["to"]), ("15:06:28", "15:56:01"))
 
 
-if __name__ == "__main__":
-    unittest.main()
+def gauges() -> pd.DataFrame:
+    """Hourly wind at two stations, four hours logged as the code 999.9, and a humidity over 100%."""
+    hours = pd.date_range("2024-01-01", periods=400, freq="h")
+    speed = [2.0 + (hour % 7) * 0.4 for hour in range(400)]
+    speed[10:14] = [999.9] * 4
+    humidity = [60.0 + (hour % 11) for hour in range(400)]
+    humidity[50] = 180.0
+    return pd.DataFrame({
+        "Time": hours,
+        "Station": ["North", "South"] * 200,
+        "Wind Speed": speed,
+        "Humidity": humidity,
+    })
+
+
+class DataCheckTests(unittest.TestCase):
+    def test_quality_lists_every_issue_as_a_frame(self):
+        report = ada.analyze(gauges(), measure="Humidity")
+
+        table = report.quality()
+
+        self.assertEqual(
+            list(table.columns), ["Check", "Columns", "Rows", "Share %", "Detail", "Rule", "Examples"]
+        )
+        self.assertIn("Impossible values", set(table["Check"]))
+        self.assertIn("Sentinel codes", set(table["Check"]))
+        self.assertEqual(report.to_dict()["data_checks"], table.to_dict(orient="records"))
+
+    def test_a_clear_code_in_the_measure_is_set_aside_and_noted(self):
+        report = ada.analyze(gauges(), measure="Wind Speed")
+
+        self.assertEqual(int(report.frame["Wind Speed"].isna().sum()), 4)
+        self.assertTrue(any("999.9" in note for note in report.cleaning.notes), report.cleaning.notes)
+        self.assertLess(report.frame["Wind Speed"].max(), 10)
+
+    def test_codes_in_other_columns_are_reported_not_changed(self):
+        report = ada.analyze(gauges(), measure="Humidity")
+
+        self.assertEqual(report.frame["Wind Speed"].max(), 999.9)
+
+    def test_a_clean_table_has_an_empty_frame(self):
+        self.assertTrue(ada.analyze(steady()).quality().empty)
 
 
 class ChosenMeasureTests(unittest.TestCase):
@@ -497,3 +537,7 @@ class ChosenMeasureTests(unittest.TestCase):
 
         self.assertNotIn("Mark", report.roles.factors)
         self.assertNotIn("Mark", report.roles.dimensions)
+
+
+if __name__ == "__main__":
+    unittest.main()

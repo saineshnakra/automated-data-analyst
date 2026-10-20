@@ -45,8 +45,8 @@ assembled in this order:
 | `differences` | Which numeric readings differ between groups, largest first, after adjusting for the number of tests | No grouping, no reading, or a scan of fewer than 3 comparisons that found nothing |
 | `anomaly` | The most severe flagged period and how many were flagged, against the band for its time of year when the series has a yearly pattern | Under 8 periods, or nothing flagged |
 | `relationship` | What relates to the measure, then the strongest other pair, or a null result | Fewer than two numeric readings, or no pair with 12 complete rows |
-| `outliers` | Count of measure values outside 1.5 × IQR | No measure, fewer than 12 values or 4 distinct values, IQR of zero, or no outliers |
-| `quality` | Share of populated cells | No missing cells |
+| `outliers` | Measure values outside 1.5 × IQR, judged on the measure's shape and within groups; a shift when they form one run in time; for a mostly-zero measure, its tail instead | No measure, fewer than 12 values or 4 distinct values, or no outliers |
+| `quality` | The data checks' leading issues with counts, and the share of populated cells | No issue and no missing cells |
 
 A `differences` card that found nothing comes after `outliers` rather than
 after the segment cards, so a null result never pushes out a finding. If
@@ -158,6 +158,52 @@ the top-three share instead and warns at 70% or more.
 The card appears only for money and counts of things (whole-numbered values),
 since how concentrated revenue or orders are across products is a real
 question, and how concentrated rainfall is across weather stations is not.
+
+### Outliers
+
+The card counts measure values below Q1 − 1.5 × IQR or above Q3 + 1.5 × IQR,
+measured the way the measure is shaped:
+
+- A non-negative, right-skewed measure (concentrations, latencies, counts) is
+  judged on log10 of its values, when that makes its bulk more symmetric
+  (`prefers_log_scale` in `ada/quality.py`). On the raw scale its long tail
+  would be called exceptional.
+- With a grouping column, each group's values are judged against that group's
+  own quartiles, so a group's level is not mistaken for outliers (arctic and
+  tropical stations). A group with fewer than 12 values (`MIN_GROUP_FOR_FENCES`)
+  or no spread uses the pooled quartiles.
+- When half or more of the values are 0 (`HEAVY_TAIL_ZEROS`), no outliers are
+  listed. The card is titled **Heavy-tailed measure** and gives the share of
+  zeros and the 99th percentile instead.
+- With a date, the flagged values are put in time order within each group.
+  When one unbroken run holds at least half of them and at least five
+  (`SHIFT_RUN_SHARE`, `MIN_SHIFT_RUN`), the card is titled **Level shift**: the
+  measure left its usual range at the run's first time and stayed out, to the
+  end of the record or until its last time. A fire that raises every reading
+  for ten minutes is an event, not a run of entry errors.
+
+### Data checks
+
+Before the cards are built, `ada/quality.py` scans every numeric column; see
+[Data checks](quality.md). When it finds anything, the `quality` card is
+titled **Data checks**, its value is the number of issues, and it names the
+three leading issues about values (`QUALITY_ISSUES_SHOWN`) and the two leading
+ones about gaps (`GAP_ISSUES_SHOWN`), the measure's first, each with its
+counts, followed by how complete the table is. `Analysis.quality()` lists them
+all. With no issue, the card is the earlier **Data completeness** card,
+skipped when nothing is missing.
+
+Two more sentences come from the same checks:
+
+- **Check these first.** When an issue touches the measure, or the group the
+  headline names, the summary ends with up to two of them
+  (`CHECK_FIRST_SHOWN`).
+- **A leader carried by flagged values.** For an averaged measure, the leading
+  group's average is recomputed without the values the checks flagged
+  (impossible values, codes, extreme values, survey codes). When that moves it
+  by more than 5%, or hands the lead to another group, the leading-group card,
+  and the headline built from it, say how many flagged values the average rests
+  on, give the group's median, and name the group that would lead without them.
 
 ### Group differences
 
@@ -297,8 +343,11 @@ the evidence card it comes from.
 | `leader`, summed measure | Compare the largest group, named, with the others |
 | `anomaly` | Explain the flagged periods |
 | `relationship` | Test the relationship |
+| `outliers`, a level shift | Find what changed when the run began |
+| `outliers`, a heavy-tailed measure | Compare medians, not means |
 | `outliers` | Review the extreme records |
-| `quality`, warning (5% or more missing) | Look into the missing values |
+| `quality`, data checks | Check the flagged values first (placed first, since flagged values qualify every other figure) |
+| `quality`, warning (5% or more missing), no other issue | Look into the missing values |
 
 The driver is named only when it moved in the same direction as the total. With
 no qualifying evidence, a single "Add a date or a grouping column"
