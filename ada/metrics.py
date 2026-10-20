@@ -15,41 +15,37 @@ from dataclasses import dataclass
 
 from .formatting import is_percentage, normalized_name, percentage_outranks_currency
 
-# A measure where going up is bad. Whole-word: "Cost" and "Refund Amount"
-# count, "Cost Savings" does not.
+# Words that make a rise bad news when they lead or end a measure's name.
 ADVERSE_MEASURE_TOKENS = frozenset({
     "cost", "costs", "expense", "expenses", "spend", "churn", "refund", "refunds",
     "returns", "loss", "losses", "overdue", "delay", "delays", "hours", "tickets",
     "complaints", "defects", "errors", "bounce", "debt", "outstanding",
 })
-# A measure whose first word settles it as good news whatever follows:
-# "Revenue After Returns" is revenue.
-FAVOURABLE_MEASURE_TOKENS = frozenset({
-    "revenue", "sales", "profit", "income", "margin", "bookings", "mrr", "arr", "gmv",
-    "orders", "units", "conversion", "conversions", "retention", "signups", "leads",
-})
+# Any of these anywhere in the name makes a rise good news: "Cost Savings".
 FAVOURABLE_OVERRIDES = frozenset({"savings", "saved", "recovered", "avoided"})
+# Words that start a qualifier. "Revenue After Returns" is judged on "Revenue".
+QUALIFIER_WORDS = frozenset({"after", "before", "less", "minus", "excluding", "excl"})
 
 
 def increase_is_welcome(measure: str | None) -> bool:
     """Whether a rise in this measure is good news.
 
-    The first word decides when it is itself a known measure -- "Revenue After
-    Returns" is revenue, "Refund Amount" is a refund. Otherwise the head noun
-    decides: "Customer Acquisition Cost" is a cost. A word in the middle is a
-    qualifier and does not flip the reading.
+    The name is cut at the first qualifier word, then its first and last words
+    decide: "Refund Amount" and "Sales Returns" are bad news when they rise,
+    "Revenue After Returns" is not.
     """
     if not measure:
         return True
     words = normalized_name(measure).split()
-    if not words or any(word in FAVOURABLE_OVERRIDES for word in words):
+    if any(word in FAVOURABLE_OVERRIDES for word in words):
         return True
-    first, last = words[0], words[-1]
-    if first in FAVOURABLE_MEASURE_TOKENS:
+    for position, word in enumerate(words):
+        if word in QUALIFIER_WORDS and position > 0:
+            words = words[:position]
+            break
+    if not words:
         return True
-    if first in ADVERSE_MEASURE_TOKENS:
-        return False
-    return last not in ADVERSE_MEASURE_TOKENS
+    return words[0] not in ADVERSE_MEASURE_TOKENS and words[-1] not in ADVERSE_MEASURE_TOKENS
 
 
 @dataclass(frozen=True)

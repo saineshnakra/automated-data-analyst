@@ -107,7 +107,7 @@ the measure slot, and to power the "Distinct X" KPI.
 values in the app's "Tune ADA's schema detection" panel. `"None"` clears a role.
 The dashboard re-renders; nothing is rebuilt from scratch.
 
-`schema.override_roles` does the same thing for programmatic callers.
+From Python, pass `date=`, `measure=` or `dimension=` to `ada.analyze`.
 
 ## Edge cases
 

@@ -33,7 +33,6 @@ LIME = "#C7F36B"  # Brand accent for surfaces and text. Too light to be a data m
 # four to a colour-blind reader, so series past the fourth fold into "Other".
 SERIES_COLORS = ("#635BFF", "#0E8F6E", "#B5761B", "#D64A73")
 LEAF = "#5C8A1B"  # single-hue magnitude, replacing LIME which sat at 1.24:1
-OTHER_GRAY = "#98A2B3"
 # Polarity, for up-versus-down. Green/red is the one pair a deuteranope cannot
 # read -- the previous #26A17B/#E35D6A sat at 5.4 separation against a 8 floor.
 RISE, FALL = "#1B6FB5", "#B5761B"

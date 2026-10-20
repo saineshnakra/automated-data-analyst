@@ -32,13 +32,12 @@ class MetricSpecTests(unittest.TestCase):
         self.assertEqual(counted.combines_as, "count")
 
     def test_direction_of_good_is_read_from_the_whole_name(self):
-        # "Cost Savings" is not a cost, and "Revenue After Returns" is not a
-        # return. A substring test on either would get both backwards.
-        self.assertTrue(increase_is_welcome("Revenue After Returns"))
-        self.assertTrue(increase_is_welcome("Cost Savings"))
-        self.assertTrue(increase_is_welcome("Units"))
-        self.assertFalse(increase_is_welcome("Cost"))
-        self.assertFalse(increase_is_welcome("Refund Amount"))
+        for name in ("Revenue", "Units", "Cost Savings", "Revenue After Returns", "Defects Avoided"):
+            with self.subTest(name=name):
+                self.assertTrue(increase_is_welcome(name))
+        for name in ("Cost", "Refund Amount", "Sales Returns", "Customer Acquisition Cost", "Churn Rate"):
+            with self.subTest(name=name):
+                self.assertFalse(increase_is_welcome(name))
 
     def test_an_unnamed_metric_is_not_assumed_to_be_bad_news(self):
         self.assertTrue(increase_is_welcome(None))

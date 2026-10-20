@@ -256,20 +256,3 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
         numeric=tuple(numeric),
         dimensions=tuple(dimensions),
     )
-
-
-def override_roles(
-    roles: ColumnRoles,
-    *,
-    date: str | None = None,
-    measure: str | None = None,
-    dimension: str | None = None,
-) -> ColumnRoles:
-    return ColumnRoles(
-        date=date if date is not None else roles.date,
-        measure=measure if measure is not None else roles.measure,
-        dimension=dimension if dimension is not None else roles.dimension,
-        identifier=roles.identifier,
-        numeric=roles.numeric,
-        dimensions=roles.dimensions,
-    )

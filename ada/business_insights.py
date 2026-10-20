@@ -20,11 +20,9 @@ from .formatting import (
     format_number,
     format_percentage,
     format_period,
-    is_percentage,
     normalized_name,
-    percentage_outranks_currency,
 )
-from .metrics import resolve_metric
+from .metrics import increase_is_welcome, resolve_metric
 from .schema import TIME_PART_TOKENS, ColumnRoles, detect_roles, looks_like_identifier
 from .timeseries import robust_scale
 
@@ -74,29 +72,6 @@ def _period_changes(values: np.ndarray) -> np.ndarray:
     previous, current = values[:-1], values[1:]
     usable = previous != 0
     return (current[usable] - previous[usable]) / np.abs(previous[usable]) * 100
-
-
-# A measure where going up is bad. Whole-word, head-noun style: "Cost" and
-# "Refund Amount" count, "Cost Savings" does not.
-ADVERSE_MEASURE_TOKENS = frozenset({
-    "cost", "costs", "expense", "expenses", "spend", "churn", "refund", "refunds",
-    "returns", "loss", "losses", "overdue", "delay", "delays", "hours", "tickets",
-    "complaints", "defects", "errors", "bounce", "debt", "outstanding",
-})
-FAVOURABLE_OVERRIDES = frozenset({"savings", "saved", "recovered"})
-
-
-def increase_is_welcome(measure: str | None) -> bool:
-    """Whether a rise in this measure is good news."""
-    if not measure:
-        return True
-    words = normalized_name(measure).split()
-    if not words or any(word in FAVOURABLE_OVERRIDES for word in words):
-        return True
-    # The head noun decides, and so does a leading one: "Refund Amount" is a
-    # refund before it is an amount. A word in the middle -- "Revenue After
-    # Returns" -- is a qualifier and does not flip the reading.
-    return words[-1] not in ADVERSE_MEASURE_TOKENS and words[0] not in ADVERSE_MEASURE_TOKENS
 
 
 def _movement_in_context(values: np.ndarray, change: float) -> str:
@@ -760,8 +735,7 @@ def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) 
         average = float(measure_values.mean())
         # Adding percentages up produces a number with no meaning: eleven
         # months of margin do not total 1,189% of anything.
-        rate_like = is_percentage(roles.measure) and percentage_outranks_currency(roles.measure)
-        if not rate_like:
+        if resolve_metric(roles.measure).additive:
             kpis.append(
                 KPI(
                     f"Total {roles.measure}",
