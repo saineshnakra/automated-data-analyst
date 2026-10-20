@@ -193,6 +193,11 @@ class FactorTests(unittest.TestCase):
         self.assertIn(roles.measure, ("bmi", "weight_kg"))
         self.assertEqual(roles.numeric[:2], ("bmi", "weight_kg"))
 
+    def test_a_constant_column_is_listed_after_the_quantities(self):
+        frame = self.frame.assign(attention_check=6)[["attention_check", "bmi", "gender"]]
+
+        self.assertEqual(detect_roles(frame).numeric, ("bmi", "attention_check", "gender"))
+
     def test_a_label_name_can_be_the_grouping(self):
         self.assertEqual(detect_roles(self.frame).dimension, "Status")
 

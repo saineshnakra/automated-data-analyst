@@ -25,8 +25,9 @@ class ColumnRoles:
     measure: str | None
     dimension: str | None
     identifier: str | None
-    #: Numeric columns that can be measured, quantities first and then factors.
-    #: Identifiers are left out: a row key is a number but not a quantity.
+    #: Numeric columns that can be measured: quantities first, then codes,
+    #: labels and constant columns. Identifiers are left out: a row key is a
+    #: number but not a quantity.
     numeric: tuple[str, ...]
     dimensions: tuple[str, ...]
     #: "sum" or "mean" when the user has said how the measure combines; None
@@ -464,6 +465,11 @@ def _places_rows(name: str, series: pd.Series) -> bool:
         return True
     named = words[-1] in TIME_PART_WORDS or is_design_name(name) or is_entity_name(name)
     return named and not bool((series.dropna() % 1 != 0).any())
+
+
+def _not_a_quantity(name: str, series: pd.Series, factor: bool) -> bool:
+    """Whether a numeric column is a code, a label or a constant rather than something to measure."""
+    return factor or _places_rows(name, series) or series.nunique(dropna=True) <= 1
 
 
 def _plural(word: str) -> bool:
@@ -1023,7 +1029,9 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
         numeric=tuple(
             sorted(
                 numeric,
-                key=lambda column: column in in_factors or _places_rows(column, dataframe[column]),
+                key=lambda column: column not in in_matrix and _not_a_quantity(
+                    column, dataframe[column], column in in_factors
+                ),
             )
         ),
         dimensions=tuple(dimensions),

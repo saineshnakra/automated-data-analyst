@@ -11,7 +11,7 @@ The output is a `ColumnRoles`:
 | Field | What it holds |
 |---|---|
 | `measure`, `date`, `dimension`, `identifier` | The picked roles |
-| `numeric` | Numeric columns that can be measured: quantities first, then category codes. Identifiers are left out |
+| `numeric` | Numeric columns that can be measured: quantities first, then category codes, labels and constant columns. Identifiers are left out |
 | `dimensions` | Every column that can be the grouping, text or numeric |
 | `factors` | Numeric columns that hold category codes, such as a 0/1 flag, a status code or a set dose. They are in `dimensions` too |
 | `flags` | The factors holding only 0 and 1 |
