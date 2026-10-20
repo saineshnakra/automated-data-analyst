@@ -58,7 +58,7 @@ the headline, the trend, driver and anomaly findings, `anomalies` and
 | None | Row count, or distinct values of a `count_column` |
 
 See [Concepts](../concepts.md#amounts-rates-and-levels) for which measures are
-averaged.
+averaged, and for the `aggregation` override that sets it by hand.
 
 ## Timeline adjustments
 

@@ -8,7 +8,8 @@ depends on it, and the user can correct it in the app.
 
 The output is a `ColumnRoles`: `measure`, `date`, `dimension` and
 `identifier`, plus the full `numeric` and `dimensions` lists used for the
-override dropdowns.
+override dropdowns. Its `aggregation` is `None` unless the user says how the
+measure combines (see below).
 
 ## Three signals
 
@@ -128,6 +129,14 @@ In Python, pass `date=`, `measure=` or `dimension=` to `ada.analyze`. On the
 command line, `ada schema FILE` prints the detected roles, and `--date`,
 `--measure` and `--dimension` override them. A date override may name a
 column of whole years (1000 to 2999), which is read as 1 January of each year.
+
+How the measure combines is overridden the same way: **Combine rows by**
+(Total or Average) in the app, `aggregation="sum"` or `"mean"` in
+`ada.analyze`, and `--aggregation` on the command line. It is stored on
+`ColumnRoles.aggregation`, and every module reads it through
+`metrics.metric_for`, which applies it only to the active measure. `ada schema`
+prints the measure with how it combines, for example `Resolution Hours
+(mean)`.
 
 ## Edge cases
 

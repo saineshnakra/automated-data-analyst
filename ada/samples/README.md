@@ -10,7 +10,7 @@ Each one exercises a different part of the analysis.
 |---|---|---|---|
 | `lab-measurements.csv` | 936 | Weekly cell-culture assay by treatment arm | A rate averaged while the count beside it is summed, one arm declining, one bad plate |
 | `saas-subscriptions.csv` | 216 | Monthly MRR by plan and region | A revenue drop in April 2025 that anomaly detection finds, and a forecast that beats no change |
-| `support-tickets.csv` | 2,400 | Support tickets by team and priority | No money column, and a forecast whose backtest is worse than no change |
+| `support-tickets.csv` | 2,400 | Support tickets by team and priority | No money column, so resolution hours are averaged rather than summed, and a forecast that only just beats no change |
 | `ecommerce-orders.csv` | 4,000 | Orders by category and channel | Returns as negative rows, so totals and shares have to handle mixed signs |
 
 ## Using them
@@ -43,10 +43,14 @@ The files are installed with the package.
 
 **`support-tickets.csv`**
 - ADA picks `Resolution Hours` as the measure, since there is no revenue
-  column.
-- The forecast backtest reports a MASE above 1, and the app states that the
-  forecast is no better than assuming no change.
-- Ask *"average resolution hours by team"* and *"how many tickets?"*.
+  column, and averages it: hours are neither money nor a count, and a sum of
+  resolution times means little. A rise is still flagged as bad news, because
+  the name ends in `hours`.
+- The forecast backtest reports MASE 0.96, only just better than assuming no
+  change.
+- Ask *"average resolution hours by team"*, *"how many tickets?"* and
+  *"reopened by team"*, which averages the 0/1 `Reopened` flag into a reopen
+  rate.
 
 **`ecommerce-orders.csv`**
 - About 7% of rows are returns, with negative units and revenue.

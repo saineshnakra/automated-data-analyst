@@ -1,16 +1,29 @@
 """Resolve how a measure aggregates and whether a rise in it is good news.
 
-Every surface asks here instead of re-reading the column name, so they agree that
-rates and measured levels (temperature, pH, concentration) are averaged, not
-summed, and have no meaningful shares or waterfall.
+Every surface asks here instead of re-reading the column name, so they agree on
+what a measure is. Only money and counts of things are summed: a reading such
+as a temperature, a concentration or a price is averaged, since adding it up
+across rows gives no meaningful quantity, and an unfamiliar name is averaged
+too, because the mean of an amount still reads sensibly while the sum of a
+reading does not.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from .formatting import is_currency, is_percentage, normalized_name, percentage_outranks_currency
+from .formatting import (
+    CURRENCY_CODES,
+    is_currency,
+    is_percentage,
+    normalized_name,
+    percentage_outranks_currency,
+)
+
+if TYPE_CHECKING:  # Only for annotations; schema needs nothing from here.
+    from .schema import ColumnRoles
 
 # Words that make a rise bad news when they lead or end a measure's name.
 ADVERSE_MEASURE_TOKENS = frozenset({
@@ -27,11 +40,33 @@ LEVEL_WORDS = frozenset({
     "median", "age", "bmi", "height", "length", "width", "depth", "diameter", "velocity",
     "speed", "voltage", "elevation", "altitude", "latitude", "longitude",
 })
+# Amounts of money and counts of things, whose rows add up to a total.
+ADDITIVE_WORDS = frozenset({
+    "amount", "amounts", "total", "totals", "cost", "costs", "spend", "spending",
+    "expense", "expenses", "expenditure", "expenditures", "profit", "profits", "income",
+    "earnings", "fee", "fees", "payment", "payments", "fare", "fares", "tip", "tips",
+    "tax", "taxes", "donation", "donations", "quantity", "quantities", "qty", "units",
+    "count", "counts", "orders", "visits", "sessions", "clicks", "impressions", "views",
+    "pageviews", "downloads", "installs", "signups", "registrations", "subscriptions",
+    "tickets", "calls", "messages", "emails", "cases", "infections", "deaths", "births",
+    "admissions", "discharges", "patients", "passengers", "trips", "flights", "customers",
+    "users", "accounts", "transactions", "items", "bookings", "reservations", "leads",
+    "conversions", "purchases", "applications", "enrollments", "responses", "shipments",
+    "deliveries", "incidents", "defects", "errors", "complaints", "refunds", "returns",
+    "cells", "colonies", "individuals", "specimens", "sightings", "abundance", "population",
+    "visitors", "arrivals", "departures",
+})
+# Head words of a per-unit price, which is averaged although it is money.
+PRICE_WORDS = frozenset({"price", "prices"})
+# How a measure may be told to combine, overriding what its name implies.
+AGGREGATION_CHOICES = ("sum", "mean")
 # Unit annotations that mark a level: a concentration or density (mg/L, cells/mL,
 # g/cm3), degrees, ppm/ppb, and molar units (mM, µM). Currency names never match.
 _LEVEL_UNIT = re.compile(
     r"[(\[][^)\]]*(?:/\s*(?:[mµudn]?[lL]|[mµunk]?g|c?m[23²³])\b|°|\bpp[mbt]\b|\b[mµun]M\b)[^)\]]*[)\]]"
 )
+# A trailing unit or annotation is not part of the name proper: "Price (USD)" is a price.
+_ANNOTATION = re.compile(r"\s*[(\[][^)\]]*[)\]]\s*$")
 # Optical density readings: "OD", "OD600".
 _OPTICAL_DENSITY = re.compile(r"^od\d*$")
 # Any of these anywhere in the name makes a rise good news: "Cost Savings".
@@ -94,23 +129,65 @@ def is_level_name(name: str) -> bool:
     return not is_currency(name) and bool(_LEVEL_UNIT.search(str(name)))
 
 
-def resolve_metric(name: str | None) -> MetricSpec:
+def _name_words(name: str) -> list[str]:
+    """Whole words of the name, without a trailing annotation or currency code."""
+    words = re.findall(r"[a-z0-9]+", normalized_name(_ANNOTATION.sub("", str(name))))
+    while len(words) > 1 and words[-1] in CURRENCY_CODES:
+        words.pop()
+    return words
+
+
+def is_additive_name(name: str) -> bool:
+    """Whether the name marks an amount of money or a count of things.
+
+    A per-unit figure is not one, even when it is money: "Unit Price",
+    "Revenue per User" and "Spending per Capita" are averaged. A price that is
+    also called a total ("Total Price") is still summed.
+    """
+    words = _name_words(name)
+    if not words or "per" in words:
+        return False
+    named = bool(set(words) & ADDITIVE_WORDS)
+    if words[-1] in PRICE_WORDS:
+        return named
+    return named or is_currency(name)
+
+
+def resolve_metric(name: str | None, aggregation: str | None = None) -> MetricSpec:
     """Decide a measure's aggregation, unit and direction from its column name.
 
     Percentage-named columns are averaged as rates and measured levels
-    (see ``is_level_name``) as levels; other columns are summed as amounts.
-    No name means a row count.
+    (see ``is_level_name``) as levels. Money and counts (see
+    ``is_additive_name``) are summed as amounts, and anything else is averaged
+    as a level. No name means a row count.
+
+    ``aggregation`` ("sum" or "mean") overrides the choice for a name that
+    misleads. The unit follows it: a column told to sum is an amount, and one
+    told to average is a level unless it is already a rate.
     """
     if not name:
         return MetricSpec(name=None, aggregation="count", unit="count", increase_is_welcome=True)
     if is_percentage(name) and percentage_outranks_currency(name):
-        return MetricSpec(
-            name=name, aggregation="mean", unit="rate", increase_is_welcome=increase_is_welcome(name)
-        )
-    if is_level_name(name):
-        return MetricSpec(
-            name=name, aggregation="mean", unit="level", increase_is_welcome=increase_is_welcome(name)
-        )
+        combined, unit = "mean", "rate"
+    elif is_level_name(name):
+        combined, unit = "mean", "level"
+    elif is_additive_name(name):
+        combined, unit = "sum", "amount"
+    else:
+        combined, unit = "mean", "level"
+    if aggregation is not None and aggregation != combined:
+        combined, unit = aggregation, "amount" if aggregation == "sum" else "level"
     return MetricSpec(
-        name=name, aggregation="sum", unit="amount", increase_is_welcome=increase_is_welcome(name)
+        name=name, aggregation=combined, unit=unit, increase_is_welcome=increase_is_welcome(name)
     )
+
+
+def metric_for(column: str | None, roles: ColumnRoles | None = None) -> MetricSpec:
+    """How ``column`` combines, with the roles' override applied when it is their measure.
+
+    Callers that hold the roles ask here rather than ``resolve_metric``, so an
+    override set in the app, the CLI or ``ada.analyze`` reaches the trend, the
+    breakdown, the brief, the charts and the answers alike.
+    """
+    override = roles.aggregation if roles is not None and column and column == roles.measure else None
+    return resolve_metric(column, override)

@@ -12,9 +12,9 @@ forecast. Every number comes from pandas and is shown with the calculation
 that produced it.
 
 It works on sales exports, but it was also built for research data: lab
-assays, field surveys, instrument logs. It averages measurements such as
-temperature, pH or concentration instead of summing them, and reads `NA`, `nd`
-or `<LOD` in a numeric column as missing.
+assays, field surveys, instrument logs. It sums only money and counts, averages
+measurements such as temperature, pH or concentration instead of adding them
+up, and reads `NA`, `nd` or `<LOD` in a numeric column as missing.
 
 [**Try the web app**](https://automated-data-analyst.streamlit.app/) (no sign-up, no API key) or `pip install` it.
 
@@ -35,7 +35,7 @@ print(report)
 
 ```text
 lab-measurements.csv — 936 rows, 02 Sep 2024 to 23 Feb 2026
-  date=Run Date  measure=Viability %  segment=Treatment
+  date=Run Date  measure=Viability % (mean)  segment=Treatment
 
 +0.1 pts latest movement; Control has the highest average, at 91.6%.
 ...
@@ -57,7 +57,7 @@ From the command line:
 ```bash
 ada analyze measurements.csv          # the same report
 ada analyze measurements.csv --json   # as JSON
-ada schema measurements.csv           # which column ADA used for what
+ada schema measurements.csv           # which column ADA used for what, and how it combines
 ada ask orders.csv "which category made the most revenue"
 ```
 
@@ -70,10 +70,13 @@ ada ask orders.csv "which category made the most revenue"
 - **Detects column roles**: the date, the measure, the grouping column and an
   ID column, from names, types and cardinality. Override any of them with
   `ada.analyze(df, measure="OD600")` or in the app.
-- **Knows what can be added up**: amounts and counts are summed; rates
-  (`Viability %`, `Churn Rate`) and measured levels (`Water Temp (°C)`, `pH`,
-  `Concentration (mg/L)`) are averaged. Averages get no totals and no "share of
-  total", and a change in a rate is reported in percentage points.
+- **Knows what can be added up**: money and counts are summed; rates
+  (`Viability %`, `Churn Rate`), measured levels (`Water Temp (°C)`, `pH`,
+  `Concentration (mg/L)`), per-unit prices and anything it doesn't recognise as
+  money or a count (`CO2`, `mpg`) are averaged. Averages get no totals and no
+  "share of total", and a change in a rate is reported in percentage points.
+  When the name misleads, `aggregation="sum"` or `"mean"` (or **Combine rows
+  by** in the app) says how the measure combines.
 - **Builds a timeline**: picks a period grain the data can fill, drops a final
   period the data only partly covers, and notes both under the chart. A
   `Year` column (with a `Month` column, if there is one) counts as a date.
@@ -113,6 +116,7 @@ is the step before that.
 
 ```python
 report = ada.analyze(df, date="Survey Date", measure="Water Temp (°C)", dimension="Site")
+ada.analyze(df, measure="Rainfall (mm)", aggregation="sum")   # monthly totals, not averages
 
 report.profile()          # one row per column: type, missing, distinct values
 report.evidence           # findings, each with .statement and .calculation
@@ -159,7 +163,10 @@ ada check saas-subscriptions.csv --frequency M
 
 Pass `--frequency` (or `frequency=` in Python) for anything scheduled, so the
 period grain doesn't change from one run to the next. The headline, the
-findings, the anomalies and the forecast all use that grain.
+findings, the anomalies and the forecast all use that grain. `--aggregation sum`
+or `mean` fixes how the measure combines in the same way. A period with no rows
+counts as zero for a summed measure and is skipped for an averaged one, so a
+gap in a feed of readings is not flagged as a drop to zero.
 
 ## Sample datasets
 
@@ -169,7 +176,7 @@ All synthetic. Pick one in the web app or load it with `ada.sample(name)`.
 |---|---|
 | [Lab measurements](https://github.com/saineshnakra/automated-data-analyst/blob/main/ada/samples/lab-measurements.csv) | A cell-culture assay by treatment: viability averaged while live-cell counts are summed, one declining arm, one bad plate |
 | [SaaS subscriptions](https://github.com/saineshnakra/automated-data-analyst/blob/main/ada/samples/saas-subscriptions.csv) | A revenue drop in April 2025 that anomaly detection finds |
-| [Support tickets](https://github.com/saineshnakra/automated-data-analyst/blob/main/ada/samples/support-tickets.csv) | No money column, and a forecast that doesn't beat no-change and says so |
+| [Support tickets](https://github.com/saineshnakra/automated-data-analyst/blob/main/ada/samples/support-tickets.csv) | No money column, so resolution hours are averaged rather than summed |
 | [Ecommerce orders](https://github.com/saineshnakra/automated-data-analyst/blob/main/ada/samples/ecommerce-orders.csv) | Returns as negative rows, so totals have to handle mixed signs |
 
 ## Running the web app locally

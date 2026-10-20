@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 
 import numpy as np
 import pandas as pd
@@ -6,6 +7,7 @@ import pandas as pd
 from ada import ui
 from ada.autovis import MAX_SERIES, ChartSpec, fold_small_series, recommend_chart
 from ada.pipeline import prepare_analysis
+from ada.schema import detect_roles
 
 
 def frame(rows: int = 120) -> pd.DataFrame:
@@ -268,6 +270,18 @@ class AggregationDefaultTests(unittest.TestCase):
         spec = recommend_chart(frame, ["Date", "Revenue"])
         self.assertEqual(spec.form, "area")
         self.assertEqual(spec.aggregation, "sum")
+
+    def test_the_roles_override_reaches_the_chart_of_their_measure_only(self):
+        frame = pd.DataFrame({
+            "Date": pd.date_range("2024-01-01", periods=12, freq="MS"),
+            "Rainfall (mm)": np.linspace(20, 80, 12),
+            "pH": np.linspace(6.8, 7.4, 12),
+        })
+        roles = replace(detect_roles(frame), measure="Rainfall (mm)", aggregation="sum")
+
+        self.assertEqual(recommend_chart(frame, ["Date", "Rainfall (mm)"]).form, "line")
+        self.assertEqual(recommend_chart(frame, ["Date", "Rainfall (mm)"], roles=roles).form, "area")
+        self.assertEqual(recommend_chart(frame, ["Date", "pH"], roles=roles).aggregation, "mean")
 
 
 if __name__ == "__main__":

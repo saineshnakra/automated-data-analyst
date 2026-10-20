@@ -19,7 +19,7 @@ from pandas.api.types import is_datetime64_any_dtype
 from .aggregation import preferred_frequency
 from .autovis import ChartSpec
 from .formatting import format_change, format_number, format_percentage
-from .metrics import resolve_metric
+from .metrics import metric_for
 from .nlq import ValueFilter
 from .schema import ColumnRoles
 
@@ -438,7 +438,7 @@ def compare_slice(
 
     measure = roles.measure if roles.measure and roles.measure in whole.columns else None
     if measure:
-        spec = resolve_metric(measure)
+        spec = metric_for(measure, roles)
         whole_values = pd.to_numeric(whole[measure], errors="coerce").dropna()
         part_values = pd.to_numeric(part[measure], errors="coerce").dropna()
         if spec.additive:

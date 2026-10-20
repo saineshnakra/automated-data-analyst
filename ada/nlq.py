@@ -8,14 +8,14 @@ emit the same plan shape for questions the rules cannot parse.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 import pandas as pd
 
-from .aggregation import TrendSeries, build_trend, measure_aggregation, preferred_frequency, unlabelled_label
+from .aggregation import TrendSeries, build_trend, preferred_frequency, unlabelled_label
 from .formatting import format_change, format_number, format_values_apart, sentence_case
-from .metrics import resolve_metric
+from .metrics import metric_for
 from .schema import ColumnRoles
 
 Intent = Literal["aggregate", "count", "rank", "breakdown", "trend", "growth"]
@@ -192,9 +192,19 @@ def _without_columns(question: str, columns: tuple[str | None, ...]) -> str:
     return " ".join(blanked.split())
 
 
-def _unit(measure: str | None) -> str:
+def _unit(measure: str | None, roles: ColumnRoles) -> str:
     """The measure's unit from the metric contract: amount, rate, level or count."""
-    return resolve_metric(measure).unit if measure else "count"
+    return metric_for(measure, roles).unit
+
+
+def _scoped_roles(roles: ColumnRoles, measure: str | None, dimension: str | None) -> ColumnRoles:
+    """The roles with a plan's own measure and grouping.
+
+    An aggregation override belongs to the measure it was set for, so it is
+    kept only when the plan asks about that measure.
+    """
+    aggregation = roles.aggregation if measure == roles.measure else None
+    return replace(roles, measure=measure, dimension=dimension, aggregation=aggregation)
 
 
 def _match_column(question: str, columns: list[str]) -> str | None:
@@ -395,9 +405,9 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
     }
 
     ungrouped = {**base, "filters": filters_including_dimension}
-    # Same default as the dashboard: rates average, amounts sum. An explicit
-    # "total" or "sum" still sums.
-    default_aggregation = measure_aggregation(base["measure"])
+    # Same default as the dashboard: rates and levels average, amounts sum. An
+    # explicit "total" or "sum" still sums.
+    default_aggregation = metric_for(base["measure"], roles).aggregation
 
     if wants_count and not wants_growth:
         if dimension and wants_breakdown:
@@ -650,14 +660,7 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
 
     if plan.intent == "trend":
         assert roles.date is not None
-        scoped_roles = ColumnRoles(
-            date=roles.date,
-            measure=plan.measure,
-            dimension=None,
-            identifier=roles.identifier,
-            numeric=roles.numeric,
-            dimensions=roles.dimensions,
-        )
+        scoped_roles = _scoped_roles(roles, plan.measure, None)
         grain = plan.grain or preferred_frequency(working[roles.date])
         series = build_trend(working, scoped_roles, frequency=grain)
         trend = series.frame
@@ -672,7 +675,8 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
         grain_name = {"D": "day", "W": "week", "M": "month", "Q": "quarter", "Y": "year"}.get(grain, "period")
         # Rates move in points and levels by a plain difference (see format_change).
         column = working[plan.measure].dropna() if plan.measure else None
-        size = format_change(first, last, plan.measure, _unit(plan.measure), column, signed=True)
+        unit = _unit(plan.measure, scoped_roles)
+        size = format_change(first, last, plan.measure, unit, column, signed=True)
         movement = (
             f"{size} across {len(trend)} {grain_name}s"
             if size
@@ -709,14 +713,7 @@ def _execute_growth(
 ) -> QueryAnswer:
     assert roles.date is not None
     measure = plan.measure
-    scoped_roles = ColumnRoles(
-        date=roles.date,
-        measure=measure,
-        dimension=plan.dimension,
-        identifier=roles.identifier,
-        numeric=roles.numeric,
-        dimensions=roles.dimensions,
-    )
+    scoped_roles = _scoped_roles(roles, measure, plan.dimension)
     series = build_trend(working, scoped_roles, frequency=plan.grain)
     trend = series.frame
     if len(trend) < 2:
@@ -735,7 +732,7 @@ def _execute_growth(
         )
         frame = frame.assign(__period=frame[roles.date].dt.to_period(grain).dt.to_timestamp())
         frame = frame[frame["__period"].isin([previous_period, current_period])]
-        relative = not measure or resolve_metric(measure).additive
+        relative = metric_for(measure, scoped_roles).additive
         if not measure:
             pivot = frame.groupby([plan.dimension, "__period"]).size().unstack(fill_value=0)
         elif relative:
@@ -759,7 +756,7 @@ def _execute_growth(
             }
         )
         if not relative:
-            return _rank_level_changes(plan, result, working, scope, applied)
+            return _rank_level_changes(plan, result, working, scoped_roles, scope, applied)
         # Growth from zero is undefined, so those segments leave the ranking but
         # are still named in the answer.
         from_nothing = result[(result["Previous"] == 0) & (result["Latest"] != 0)]
@@ -819,7 +816,7 @@ def _execute_growth(
         )
 
     previous, current = float(trend.iloc[-2]["Value"]), float(trend.iloc[-1]["Value"])
-    unit = _unit(measure)
+    unit = _unit(measure, scoped_roles)
     column = working[measure].dropna() if measure else None
     size = format_change(previous, current, measure, unit, column)
     if size is None:
@@ -860,12 +857,13 @@ def _rank_level_changes(
     plan: QueryPlan,
     result: pd.DataFrame,
     working: pd.DataFrame,
+    roles: ColumnRoles,
     scope: str,
     applied: list[str],
 ) -> QueryAnswer:
     """Rank segments of a rate or level measure by the change in their average."""
     measure = plan.measure
-    unit = _unit(measure)
+    unit = _unit(measure, roles)
     column = working[measure].dropna()
     result["Change"] = result["Latest"] - result["Previous"]
     result = result.sort_values("Change", ascending=plan.ascending).reset_index(drop=True)
@@ -937,7 +935,7 @@ def suggested_questions(dataframe: pd.DataFrame, roles: ColumnRoles) -> list[str
         if first_word in {"average", "avg", "mean", "median", "total"}:
             suggestions.append(roles.measure)
         else:
-            suggestions.append(f"{resolve_metric(roles.measure).combines_as.capitalize()} {roles.measure}")
+            suggestions.append(f"{metric_for(roles.measure, roles).combines_as.capitalize()} {roles.measure}")
     if roles.measure and roles.dimension:
         suggestions.append(f"Top 5 {roles.dimension} by {roles.measure}")
     if roles.measure and roles.date:

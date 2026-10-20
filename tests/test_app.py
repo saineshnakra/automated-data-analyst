@@ -230,6 +230,19 @@ class AppSmokeTests(unittest.TestCase):
         self.assertIn("Focus · Enterprise", rendered)
         self.assertIn("Segment · Region", rendered)
 
+    def test_combining_rows_follows_the_metric_and_can_be_switched(self):
+        app = AppTest.from_file("app.py", default_timeout=45).run()
+        combine = next(box for box in app.selectbox if box.label == "Combine rows by")
+        self.assertEqual(combine.value, "Total")
+        self.assertIn("Total Revenue", " ".join(str(block.value) for block in app.markdown))
+
+        combine.set_value("Average").run()
+
+        self.assertFalse(app.exception)
+        rendered = " ".join(str(block.value) for block in app.markdown)
+        self.assertNotIn("Total Revenue", rendered)
+        self.assertIn("Average Revenue", rendered)
+
     def test_ask_ada_answers_a_question(self):
         app = AppTest.from_file("app.py", default_timeout=45).run()
         app.chat_input[0].set_value("top 3 products by revenue").run()

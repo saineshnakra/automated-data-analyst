@@ -12,7 +12,6 @@ import pandas as pd
 
 from .aggregation import (
     build_trend,
-    measure_aggregation,
     segment_frame,
     segment_period_change,
 )
@@ -26,7 +25,7 @@ from .formatting import (
     normalized_name,
     sentence_case,
 )
-from .metrics import increase_is_welcome, resolve_metric
+from .metrics import increase_is_welcome, metric_for
 from .schema import (
     TIME_PART_TOKENS,
     ColumnRoles,
@@ -132,7 +131,8 @@ def _growth_evidence(
     values = trend["Value"].to_numpy(dtype=float)
     previous = float(values[-2])
     current = float(values[-1])
-    unit = resolve_metric(roles.measure).unit
+    metric = metric_for(roles.measure, roles)
+    unit = metric.unit
     measure_values = dataframe[roles.measure].dropna() if roles.measure else None
     moved = format_change(previous, current, roles.measure, unit, measure_values)
     if moved is None:
@@ -207,7 +207,8 @@ def _change_driver_evidence(
     driver_change = float(grouped.loc[driver_key, "Change"])
     direction = "increased" if driver_change > 0 else "decreased"
     sign = "+" if driver_change > 0 else "-"
-    unit = resolve_metric(roles.measure).unit
+    metric = metric_for(roles.measure, roles)
+    unit = metric.unit
     if unit in ("rate", "level"):
         size = format_change(previous_value, current_value, roles.measure, unit, measure_values)
         short = f"{size.split()[0]} pts" if unit == "rate" else size
@@ -222,7 +223,7 @@ def _change_driver_evidence(
         f"{roles.measure} {direction} by {size}, from {start} to {end}."
     )
 
-    if not resolve_metric(roles.measure).additive:
+    if not metric.additive:
         # Changes in segment averages don't add up to the change in the overall average.
         statement = movement
         calculation = (
@@ -336,7 +337,7 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
 
     # Shares also need an additive measure: segment churn rates of 10% and 20%
     # don't make one segment two thirds of churn.
-    additive = resolve_metric(roles.measure).additive if roles.measure else True
+    additive = metric_for(roles.measure, roles).additive
     if not additive:
         segments = segments.dropna(subset=["Value"])
         if segments.empty:
@@ -653,13 +654,14 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
     by_kind = {item.kind: item for item in evidence}
     group = sentence_case(roles.dimension) if roles.dimension else "group"
 
+    metric = metric_for(roles.measure, roles)
     trend = by_kind.get("trend")
     driver = by_kind.get("driver")
     # Name the driver only when it moved with the total; a segment that grew
     # while the total fell didn't cause the fall.
     if driver and trend and driver.tone != trend.tone:
         driver = None
-    adverse = "decline" if increase_is_welcome(roles.measure) else "increase"
+    adverse = "decline" if metric.increase_is_welcome else "increase"
     if trend and trend.tone == "negative":
         recommendations.append(
             Recommendation(
@@ -708,7 +710,7 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
                 concentration.statement,
             )
         )
-    elif leader and not resolve_metric(roles.measure).additive:
+    elif leader and not metric.additive:
         recommendations.append(
             Recommendation(
                 "Next",
@@ -810,6 +812,7 @@ def analyze_business(
     Without it the grain follows how often the data was recorded.
     """
     roles = roles or detect_roles(dataframe)
+    metric = metric_for(roles.measure, roles)
     evidence: list[Evidence] = []
 
     growth = _growth_evidence(dataframe, roles, frequency)
@@ -834,7 +837,7 @@ def analyze_business(
         total = float(measure_values.sum())
         average = float(measure_values.mean())
         # Only additive measures get a total; summing monthly margin % is meaningless.
-        if resolve_metric(roles.measure).additive:
+        if metric.additive:
             kpis.append(
                 KPI(
                     f"Total {roles.measure}",
@@ -906,7 +909,7 @@ def analyze_business(
             else (
                 f"{growth.value} latest movement; {leader.subject} has the highest average, "
                 f"at {leader.value}."
-                if not resolve_metric(roles.measure).additive
+                if not metric.additive
                 else f"{growth.value} latest movement; {leader.subject} is the largest by size, "
                 f"at {leader.value}."
             )
@@ -918,15 +921,13 @@ def analyze_business(
         headline = leader.statement
     elif roles.measure:
         measure_values = dataframe[roles.measure].dropna()
-        combined = (
-            measure_values.mean() if measure_aggregation(roles.measure) == "mean" else measure_values.sum()
-        )
+        combined = measure_values.mean() if metric.aggregation == "mean" else measure_values.sum()
         total_measure = format_number(
             float(combined),
             roles.measure,
             column_values=measure_values,
         )
-        verb = "averages" if measure_aggregation(roles.measure) == "mean" else "totals"
+        verb = "averages" if metric.aggregation == "mean" else "totals"
         headline = f"{roles.measure} {verb} {total_measure} across the analyzed data."
     else:
         headline = f"{len(dataframe):,} records are ready for operational review."

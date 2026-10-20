@@ -18,7 +18,7 @@ from .autovis import fold_small_series, recommend_chart
 from .business_insights import BusinessBrief
 from .forecasting import build_forecast, describe_backtest
 from .formatting import format_number, format_period
-from .metrics import resolve_metric
+from .metrics import metric_for
 from .nlq import QueryAnswer
 from .pipeline import analyze_selection
 from .schema import ColumnRoles, is_design_name, is_entity_name
@@ -248,9 +248,9 @@ def _hover_format(values) -> str:
     return ",.0f" if not finite.empty and finite.median() >= 100 else ",.2f"
 
 
-def _trend_figure(frame: pd.DataFrame, measure: str | None, **options) -> go.Figure:
+def _trend_figure(frame: pd.DataFrame, averaged: bool, **options) -> go.Figure:
     """Period values as a filled area for totals, or a plain line for averages."""
-    if measure and not resolve_metric(measure).additive:
+    if averaged:
         figure = px.line(frame, x="Period", y="Value", markers=True, color_discrete_sequence=[ACCENT], **options)
         figure.update_traces(line={"width": 3})
         return figure
@@ -260,6 +260,7 @@ def _trend_figure(frame: pd.DataFrame, measure: str | None, **options) -> go.Fig
 
 
 def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
+    metric = metric_for(roles.measure, roles)
     series = build_trend(dataframe, roles)
     trend = series.frame
     segments = segment_frame(dataframe, roles)
@@ -268,7 +269,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
         if not trend.empty:
             figure = _trend_figure(
                 trend,
-                roles.measure,
+                not metric.additive,
                 title=f"{roles.measure or 'Records'} over time",
                 labels=axis_names(roles, series.frequency),
             )
@@ -342,7 +343,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
     movement_columns = st.columns(2, gap="medium")
     with movement_columns[0]:
         drivers = driver_frame(dataframe, roles)
-        if not drivers.empty and roles.measure and not resolve_metric(roles.measure).additive:
+        if not drivers.empty and not metric.additive:
             # Changes in group averages don't add up to the overall change, so
             # they are shown side by side rather than stacked into a total.
             changes = go.Figure(
@@ -458,7 +459,9 @@ def _chat_answer_figure(result: QueryAnswer) -> go.Figure | None:
     if table is None or table.empty or result.chart is None:
         return None
     if result.chart == "line" and {"Period", "Value"}.issubset(table.columns):
-        figure = _trend_figure(table, result.plan.measure, title=result.plan.measure or "Records")
+        # The plan carries the aggregation the trend was built with.
+        averaged = bool(result.plan.measure) and result.plan.aggregation == "mean"
+        figure = _trend_figure(table, averaged, title=result.plan.measure or "Records")
         return style_chart(figure, height=320)
     category = table.columns[0]
     value = next((name for name in ("Change %", "Change") if name in table.columns), table.columns[1])
@@ -679,7 +682,7 @@ def render_explore(dataframe: pd.DataFrame, roles: ColumnRoles, brief: BusinessB
         )
         return
 
-    spec = recommend_chart(dataframe, chosen)
+    spec = recommend_chart(dataframe, chosen, roles=roles)
     if spec.form == "none":
         st.info(spec.rationale)
         return

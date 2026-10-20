@@ -79,11 +79,13 @@ class QueryPlan:
 If none match, `parse_question` returns `None`. That triggers the AI planner
 (when a key is set) or the suggestion list.
 
-Without an aggregation word, the measure's default is used: a sum for an
-amount, a mean for a rate or level (see
-[Concepts](../concepts.md#amounts-rates-and-levels)). A trend question whose
-aggregation word differs from that default ("average revenue monthly") is
-refused, because the trend executor always uses the default.
+Without an aggregation word, the measure's default is used: a sum for money
+and counts, a mean for anything else, or whatever the `aggregation` override
+says for the active measure (see
+[Concepts](../concepts.md#amounts-rates-and-levels)). A question about another
+column uses that column's own default. A trend question whose aggregation word
+differs from the default ("average revenue monthly") is refused, because the
+trend executor always uses the default.
 
 ### Unrecognized words
 

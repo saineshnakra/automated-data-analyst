@@ -4,6 +4,7 @@
     ada schema measurements.csv
     ada ask orders.csv "which category made the most revenue"
     ada check metrics.csv --measure signups --frequency W
+    ada check rainfall.csv --measure "Rainfall (mm)" --aggregation sum
     ada samples
     ada app
 
@@ -26,6 +27,7 @@ from pathlib import Path
 
 from . import __version__
 from .api import AdaError, Refusal, analyze, sample, samples
+from .metrics import AGGREGATION_CHOICES, metric_for
 
 EXIT_QUIET = 0
 EXIT_FLAGGED = 1
@@ -41,6 +43,7 @@ def _load(args: argparse.Namespace):
         measure=getattr(args, "measure", None),
         dimension=getattr(args, "dimension", None),
         frequency=getattr(args, "frequency", None),
+        aggregation=getattr(args, "aggregation", None),
     )
 
 
@@ -54,9 +57,10 @@ def _schema(args: argparse.Namespace) -> int:
     """Print the detected column roles and any cleaning notes."""
     report = _load(args)
     roles = report.roles
+    measure = roles.measure and f"{roles.measure} ({metric_for(roles.measure, roles).aggregation})"
     print(f"{report.source_name} — {report.rows_analyzed:,} rows")
     for label, value in (
-        ("date", roles.date), ("measure", roles.measure),
+        ("date", roles.date), ("measure", measure),
         ("segment", roles.dimension), ("identifier", roles.identifier),
     ):
         print(f"  {label:11} {value or '(none detected)'}")
@@ -134,6 +138,10 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--measure", help="override the detected measure column")
         sub.add_argument("--dimension", help="override the detected segment column")
         sub.add_argument("--frequency", choices=list("DWMQY"), help="pin the period grain")
+        sub.add_argument(
+            "--aggregation", choices=AGGREGATION_CHOICES,
+            help="combine the measure's rows as a total (sum) or an average (mean)",
+        )
         return sub
 
     with_source("analyze", "read a table and print what is in it").add_argument(

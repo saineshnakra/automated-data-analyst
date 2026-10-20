@@ -27,6 +27,7 @@ from .business_insights import BusinessBrief, analyze_business, build_business_r
 from .file_io import list_sample_datasets as _list_sample_datasets
 from .file_io import read_tabular_file
 from .forecasting import Forecast, build_forecast
+from .metrics import AGGREGATION_CHOICES, metric_for
 from .nlq import QueryAnswer, answer_question, suggested_questions, unsupported_phrasing
 from .pipeline import apply_focus, focus_options, prepare_analysis
 from .schema import ColumnRoles
@@ -121,6 +122,7 @@ def analyze(
     measure: str | None = None,
     dimension: str | None = None,
     frequency: str | None = None,
+    aggregation: str | None = None,
     row_limit: int = DEFAULT_ROW_LIMIT,
     sheet: str | None = None,
     source_name: str | None = None,
@@ -137,9 +139,17 @@ def analyze(
     often the data was recorded. Fix it for scheduled jobs so the grain
     doesn't change between runs.
 
+    ``aggregation`` says how the measure combines across rows: ``"sum"`` for a
+    total, ``"mean"`` for an average. Without it, money and counts are summed
+    and anything else is averaged, judged from the column name.
+
     Raises :class:`AdaError` if the input can't be used, including an override
     that names a column the table doesn't have.
     """
+    if aggregation is not None and aggregation not in AGGREGATION_CHOICES:
+        raise AdaError(
+            f"aggregation must be 'sum' (a total) or 'mean' (an average), not {aggregation!r}."
+        )
     frame, detected_name = _frame_from(data, sheet)
     try:
         prepared = prepare_analysis(frame, row_limit=row_limit, date=date)
@@ -160,7 +170,7 @@ def analyze(
         raise AdaError(f"{date!r} could not be read as dates, so it can't be the date column.")
     if measure is not None and not pd.api.types.is_numeric_dtype(cleaned[measure]):
         raise AdaError(f"{measure!r} is not numeric, so it can't be the measure.")
-    roles = replace(prepared.detected_roles, **overrides)
+    roles = replace(prepared.detected_roles, **overrides, aggregation=aggregation)
     return Analysis(
         frame=prepared.dataframe,
         roles=roles,
@@ -379,6 +389,8 @@ class Analysis:
                 "measure": self.roles.measure,
                 "dimension": self.roles.dimension,
                 "identifier": self.roles.identifier,
+                # How the measure was combined: sum, mean, or count when there is none.
+                "aggregation": metric_for(self.roles.measure, self.roles).aggregation,
             },
             "headline": self.headline,
             "summary": self.summary,
@@ -412,9 +424,11 @@ class Analysis:
         start, end = self.period
         dated = start is not None and end is not None
         span = f"{start:%d %b %Y} to {end:%d %b %Y}" if dated else "no date range"
+        roles = self.roles
+        combined = f" ({metric_for(roles.measure, roles).aggregation})" if roles.measure else ""
         lines = [
             f"{self.source_name} — {self.rows_analyzed:,} rows, {span}",
-            f"  date={self.roles.date}  measure={self.roles.measure}  segment={self.roles.dimension}",
+            f"  date={roles.date}  measure={roles.measure}{combined}  segment={roles.dimension}",
             "",
             self.headline,
         ]

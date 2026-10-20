@@ -67,8 +67,8 @@ how many rows were skipped and the date range analyzed.
 `ada/aggregation.py` · [details](reference/periods.md)
 
 The only module that decides what a period is. It picks a grain from the span
-of the dates and from how often rows are recorded, then totals (or, for a rate
-or level, averages) the measure per period. It excludes a trailing period the
+of the dates and from how often rows are recorded, then totals (money and
+counts) or averages (everything else) the measure per period. It excludes a trailing period the
 data only partly covers and fills empty periods.
 
 The result is a `TrendSeries`: the frame, the grain, and notes describing the

@@ -618,6 +618,65 @@ class LevelQuestionTests(unittest.TestCase):
         self.assertIn("Average Water Temp (°C)", suggested_questions(self.frame, self.roles))
 
 
+class UnfamiliarMeasureTests(unittest.TestCase):
+    def test_the_highest_group_of_an_unfamiliar_reading_is_by_its_average(self):
+        # Three USA cars against one Japanese car: a total would crown the USA.
+        frame = pd.DataFrame({"origin": ["usa", "usa", "usa", "japan"], "mpg": [15.0, 16.0, 17.0, 32.0]})
+
+        result = answer_question("which origin has the highest mpg", frame, detect_roles(frame))
+
+        self.assertEqual(result.plan.aggregation, "mean")
+        self.assertTrue(result.answer.startswith("japan is the leading origin by average mpg"), result.answer)
+
+    def test_a_daily_price_trend_by_year_averages_the_days(self):
+        days = pd.date_range("2020-01-01", "2021-12-31", freq="D")
+        frame = pd.DataFrame({"Date": days, "Price": np.where(days.year == 2020, 100.0, 110.0)})
+
+        result = answer_question("yearly Price trend", frame, detect_roles(frame))
+
+        self.assertIn("moved from $100.00 to $110.00", result.answer)
+
+
+class AggregationOverrideTests(unittest.TestCase):
+    def setUp(self):
+        months = pd.date_range("2024-01-01", periods=4, freq="MS")
+        self.frame = pd.DataFrame(
+            {
+                "Date": np.repeat(months, 2),
+                "Gauge": ["North", "South"] * 4,
+                "Rainfall (mm)": [10.0, 20.0, 12.0, 22.0, 14.0, 24.0, 16.0, 26.0],
+                "Water Temp": [5.0, 7.0, 5.5, 7.5, 6.0, 8.0, 6.5, 8.5],
+            }
+        )
+        detected = detect_roles(self.frame)
+        self.roles = ColumnRoles(
+            date="Date", measure="Rainfall (mm)", dimension="Gauge", identifier=None,
+            numeric=detected.numeric, dimensions=detected.dimensions, aggregation="sum",
+        )
+
+    def ask(self, question):
+        return answer_question(question, self.frame, self.roles)
+
+    def test_the_measure_follows_the_override(self):
+        breakdown = self.ask("rainfall by gauge")
+        self.assertEqual(breakdown.plan.aggregation, "sum")
+        self.assertIn("Total Rainfall (mm)", breakdown.table.columns)
+
+        trend = self.ask("monthly rainfall trend")
+        self.assertIn("moved from 30 to 42", trend.answer)
+        self.assertIn("Total Rainfall (mm)", suggested_questions(self.frame, self.roles))
+
+    def test_a_summed_measure_grows_by_a_percentage(self):
+        self.assertIn("up 10.5%", self.ask("how did rainfall change").answer)
+
+    def test_another_measure_keeps_its_own_aggregation(self):
+        result = self.ask("water temp by gauge")
+        self.assertEqual(result.plan.aggregation, "mean")
+
+        trend = self.ask("monthly water temp trend")
+        self.assertIn("moved from 6 to 7.50", trend.answer)
+
+
 class PluralAndWordMatchTests(unittest.TestCase):
     def test_an_ies_plural_matches_a_y_column(self):
         frame = pd.DataFrame({"Category": list("abcabcabca"), "Revenue": [float(i) for i in range(10)]})

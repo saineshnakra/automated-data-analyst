@@ -45,7 +45,7 @@ python -m unittest discover -s tests -p "test_nlq.py" -v
 | `test_timeseries.py` | Theil–Sen, calendar positions, robust scale, observed periods |
 | `test_anomalies.py` | Detection, the calibrated threshold, blank periods |
 | `test_forecasting.py` | Guards, seasonality, backtest, blank periods |
-| `test_metrics.py` | Amounts, rates and levels, and which direction is good |
+| `test_metrics.py` | Amounts, rates and levels, the aggregation override, and which direction is good |
 | `test_formatting.py` | Number display, rate scale, changes in points and differences |
 | `test_business_insights.py` | Evidence, KPIs, recommendations, rate shares, number formatting |
 | `test_significance.py` | Correlation intervals and rank divergence |

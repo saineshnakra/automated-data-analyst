@@ -9,6 +9,16 @@ import pandas as pd
 import ada
 
 
+def rainfall(periods: int = 24) -> pd.DataFrame:
+    """Two gauges a month reading 10 and 20 mm, three months of the record missing."""
+    months = pd.date_range("2023-01-01", periods=periods, freq="MS").delete([7, 8, 15])
+    return pd.DataFrame({
+        "Date": months.repeat(2),
+        "Gauge": ["North", "South"] * len(months),
+        "Rainfall (mm)": [10.0, 20.0] * len(months),
+    })
+
+
 def steady(periods: int = 24) -> pd.DataFrame:
     return pd.DataFrame({
         "Date": pd.date_range("2024-01-01", periods=periods, freq="MS"),
@@ -244,6 +254,19 @@ class CommandLineTests(unittest.TestCase):
     def test_samples_lists_the_bundled_files(self):
         self.assertIn("Lab Measurements", self.run_ada("samples").stdout)
 
+    def test_the_aggregation_flag_changes_how_the_measure_combines(self):
+        path = self.write("rain.csv", rainfall())
+
+        default = self.run_ada("schema", path)
+        summed = self.run_ada("schema", path, "--aggregation", "sum")
+        analyzed = self.run_ada("analyze", path, "--aggregation", "sum", "--json")
+        refused = self.run_ada("analyze", path, "--aggregation", "median")
+
+        self.assertIn("Rainfall (mm) (mean)", default.stdout)
+        self.assertIn("Rainfall (mm) (sum)", summed.stdout)
+        self.assertEqual(json.loads(analyzed.stdout)["roles"]["aggregation"], "sum")
+        self.assertEqual(refused.returncode, 2)
+
 
 class OverrideTests(unittest.TestCase):
     def test_an_unknown_override_column_raises(self):
@@ -259,6 +282,37 @@ class OverrideTests(unittest.TestCase):
     def test_profile_has_a_row_per_column(self):
         profile = ada.analyze(steady()).profile()
         self.assertEqual(profile["Column"].tolist(), ["Date", "Team", "Revenue"])
+
+
+class AggregationTests(unittest.TestCase):
+    def test_a_reading_is_averaged_unless_told_otherwise(self):
+        averaged = ada.analyze(rainfall())
+        summed = ada.analyze(rainfall(), aggregation="sum")
+
+        self.assertEqual(averaged.to_dict()["roles"]["aggregation"], "mean")
+        self.assertEqual(summed.to_dict()["roles"]["aggregation"], "sum")
+        self.assertEqual(averaged.segments()["Value"].tolist(), [20.0, 10.0])
+        self.assertEqual(summed.segments()["Value"].tolist(), [420.0, 210.0])
+        self.assertIn("measure=Rainfall (mm) (mean)", str(averaged))
+
+    def test_the_override_survives_a_focus(self):
+        focused = ada.analyze(rainfall(), aggregation="sum").focus("North")
+        self.assertEqual(focused.roles.aggregation, "sum")
+
+    def test_an_unknown_aggregation_is_refused_plainly(self):
+        with self.assertRaisesRegex(ValueError, "'sum' \\(a total\\) or 'mean' \\(an average\\)"):
+            ada.analyze(rainfall(), aggregation="median")
+
+    def test_months_without_rows_are_not_anomalies_of_an_averaged_reading(self):
+        report = ada.analyze(rainfall(), frequency="M")
+
+        self.assertEqual(report.trend().filled_periods, 3)
+        self.assertEqual(report.anomalies, ())
+
+    def test_a_summed_override_counts_months_without_rows_as_zero(self):
+        trend = ada.analyze(rainfall(), frequency="M", aggregation="sum").trend()
+        self.assertEqual((trend.frame["Value"] == 0).sum(), 3)
+
 
 
 class OverrideTypeTests(unittest.TestCase):

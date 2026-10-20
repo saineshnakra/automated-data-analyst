@@ -44,6 +44,21 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(selected.measure, "Profit")
         self.assertEqual(selected.dimension, "Region")
         self.assertEqual(selected.numeric, prepared.detected_roles.numeric)
+        self.assertIsNone(selected.aggregation)
+
+    def test_the_chosen_way_to_combine_rows_is_kept_through_a_focus(self):
+        prepared = prepare_analysis(make_demo_data(rows=600), row_limit=600)
+        selected = apply_role_selection(
+            prepared.detected_roles, date="Order Date", measure="Revenue", dimension="Product",
+            aggregation="mean",
+        )
+
+        _, focused_roles = apply_focus(prepared.dataframe, selected, "Enterprise")
+
+        self.assertEqual(selected.aggregation, "mean")
+        self.assertEqual(focused_roles.aggregation, "mean")
+        schema = schema_frame(focused_roles).set_index("Role")
+        self.assertEqual(schema.loc["Combine rows by", "Column"], "Average")
 
     def test_focus_options_rank_by_frequency(self):
         prepared = prepare_analysis(make_demo_data(rows=600), row_limit=600)
@@ -82,6 +97,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(audit.columns.tolist(), ["Operation", "Count"])
         self.assertEqual(schema.columns.tolist(), ["Role", "Column"])
         self.assertIn("Primary metric", schema["Role"].tolist())
+        self.assertEqual(schema.set_index("Role").loc["Combine rows by", "Column"], "Total")
 
 
 class RowLimitTests(unittest.TestCase):

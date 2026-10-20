@@ -13,7 +13,8 @@ choice, so the decision can be tested without a browser.
 
 Columns are classified as date, numeric (measure) or category, and the first
 matching row below applies. Values are aggregated the way the measure is
-(a mean for a rate or level, a sum otherwise; see
+(a sum for money and counts, a mean otherwise, or the `aggregation` override
+when the charted column is the active measure; see
 [Concepts](../concepts.md#amounts-rates-and-levels)).
 
 | Selection | Form | Reason |

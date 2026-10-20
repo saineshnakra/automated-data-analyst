@@ -24,6 +24,9 @@ class ColumnRoles:
     identifier: str | None
     numeric: tuple[str, ...]
     dimensions: tuple[str, ...]
+    #: "sum" or "mean" when the user has said how the measure combines; None
+    #: follows its name. Read it through ``metrics.metric_for``.
+    aggregation: str | None = None
 
 
 MEASURE_KEYWORDS = {
