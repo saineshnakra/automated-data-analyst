@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from ada.aggregation import driver_frame, heatmap_frame, segment_frame, trend_frame
+from ada.aggregation import driver_frame, heatmap_frame, segment_frame, segment_period_change, trend_frame
 from ada.business_insights import (
     Evidence,
     _shown_evidence,
@@ -633,6 +633,38 @@ class NegativeLevelTests(unittest.TestCase):
         self.assertIn("North is the largest by size", brief.headline)
         top = next(kpi for kpi in brief.kpis if kpi.label == "Top Region")
         self.assertEqual(top.context, "Largest in size of any segment")
+
+
+class FixedFrequencyTests(unittest.TestCase):
+    def setUp(self):
+        days = pd.date_range("2022-01-01", "2024-12-31", freq="D")
+        values = 100 + np.random.default_rng(0).normal(0, 5, len(days))
+        values[(days >= "2023-06-01") & (days < "2023-07-01")] = 300
+        self.frame = pd.DataFrame({
+            "Date": days,
+            "Site": ["A", "B"] * (len(days) // 2) + ["A"] * (len(days) % 2),
+            "Rainfall": values,
+        })
+        self.roles = detect_roles(self.frame)
+
+    def evidence(self, frequency=None) -> dict[str, Evidence]:
+        brief = analyze_business(self.frame, self.roles, frequency=frequency)
+        return {item.kind: item for item in brief.evidence}
+
+    def test_three_years_of_days_default_to_quarters(self):
+        evidence = self.evidence()
+        self.assertIn("(Q4 2024)", evidence["trend"].statement)
+        self.assertTrue(evidence["anomaly"].statement.startswith("Q2 2023"))
+
+    def test_a_fixed_frequency_sets_the_grain_of_every_period_finding(self):
+        evidence = self.evidence("M")
+        self.assertIn("(Dec 2024)", evidence["trend"].statement)
+        self.assertTrue(evidence["anomaly"].statement.startswith("Jun 2023"))
+        # The driver compares the same two months as the trend, not two quarters.
+        grouped, previous, current = segment_period_change(self.frame, self.roles, "M")
+        self.assertEqual((previous, current), (pd.Timestamp("2024-11-01"), pd.Timestamp("2024-12-01")))
+        self.assertEqual(evidence["driver"].subject, str(grouped["Change"].abs().idxmax()))
+        self.assertNotEqual(evidence["driver"].subject, self.evidence()["driver"].subject)
 
 
 def relationship_of(frame: pd.DataFrame) -> Evidence | None:

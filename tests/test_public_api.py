@@ -285,6 +285,24 @@ class OverrideTypeTests(unittest.TestCase):
             ada.analyze(frame, date="model_year")
 
 
+class FrequencyTests(unittest.TestCase):
+    def setUp(self):
+        days = pd.date_range("2022-01-01", "2024-12-31", freq="D")
+        self.frame = pd.DataFrame({"date": days, "precipitation": [float(day.day % 7) for day in days]})
+
+    def test_the_headline_uses_the_requested_grain(self):
+        self.assertIn("(Q4 2024)", ada.analyze(self.frame).headline)
+        monthly = ada.analyze(self.frame, frequency="M")
+        self.assertIn("(Dec 2024)", monthly.headline)
+        trend = next(item for item in monthly.evidence if item.kind == "trend")
+        self.assertIn("(Dec 2024)", trend.statement)
+
+    def test_the_headline_and_the_trend_agree_on_the_periods(self):
+        monthly = ada.analyze(self.frame, frequency="M")
+        self.assertEqual(monthly.trend().frequency, "M")
+        self.assertEqual(len(monthly.trend().frame), 36)
+
+
 class YearTimelineTests(unittest.TestCase):
     def setUp(self):
         years = range(1880, 2024)

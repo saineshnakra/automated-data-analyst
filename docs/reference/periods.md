@@ -45,7 +45,9 @@ cleaning dates to 1 January of each year (see
 Callers can fix the grain instead: `build_trend(..., frequency="W")`,
 `ada.analyze(..., frequency="W")`, or a grain word in an Ask ADA question
 ("daily", "monthly"). A fixed grain is useful for scheduled jobs, so it does not
-change between runs.
+change between runs. With `ada.analyze`, the fixed grain applies everywhere:
+the headline, the trend, driver and anomaly findings, `anomalies` and
+`forecast()` all use the same periods.
 
 ## How each period's value is computed
 

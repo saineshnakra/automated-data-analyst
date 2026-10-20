@@ -13,10 +13,8 @@ import pandas as pd
 from .aggregation import (
     build_trend,
     measure_aggregation,
-    preferred_frequency,
     segment_frame,
     segment_period_change,
-    trend_frame,
 )
 from .anomalies import detect_anomalies
 from .formatting import (
@@ -122,8 +120,10 @@ def _movement_in_context(values: np.ndarray, change: float, describe=format_perc
     return f" {verdict}; this series typically moves about {describe(typical)} per period."
 
 
-def _growth_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
-    series = build_trend(dataframe, roles)
+def _growth_evidence(
+    dataframe: pd.DataFrame, roles: ColumnRoles, frequency: str | None = None
+) -> Evidence | None:
+    series = build_trend(dataframe, roles, frequency)
     trend = series.frame
     if len(trend) < 2:
         return None
@@ -181,9 +181,11 @@ def _growth_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | 
     )
 
 
-def _change_driver_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
+def _change_driver_evidence(
+    dataframe: pd.DataFrame, roles: ColumnRoles, frequency: str | None = None
+) -> Evidence | None:
     """Identify the segment contributing most to the latest net movement."""
-    result = segment_period_change(dataframe, roles)
+    result = segment_period_change(dataframe, roles, frequency)
     if result is None:
         return None
     grouped, previous_period, current_period = result
@@ -256,13 +258,17 @@ def _change_driver_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evid
     )
 
 
-def _anomaly_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
+def _anomaly_evidence(
+    dataframe: pd.DataFrame, roles: ColumnRoles, frequency: str | None = None
+) -> Evidence | None:
     if not roles.date:
         return None
-    anomalies = detect_anomalies(trend_frame(dataframe, roles))
+    series = build_trend(dataframe, roles, frequency)
+    anomalies = detect_anomalies(series.frame)
     if not anomalies:
         return None
-    grain = preferred_frequency(dataframe[roles.date])
+    # Label at the series' own grain, which a fixed frequency may have set.
+    grain = series.frequency
     worst = anomalies[0]
     measure = roles.measure or "Records"
     measure_values = dataframe[roles.measure].dropna() if roles.measure else None
@@ -786,20 +792,29 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
     return tuple(recommendations[:4])
 
 
-def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) -> BusinessBrief:
-    """Create an executive brief from explainable calculations and rule-based interpretation."""
+def analyze_business(
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles | None = None,
+    frequency: str | None = None,
+) -> BusinessBrief:
+    """Create an executive brief from explainable calculations and rule-based interpretation.
+
+    ``frequency`` fixes the period grain (``D W M Q Y``) for the trend, driver and
+    anomaly findings, so they match a trend or forecast built at that grain.
+    Without it the grain follows how often the data was recorded.
+    """
     roles = roles or detect_roles(dataframe)
     evidence: list[Evidence] = []
 
-    growth = _growth_evidence(dataframe, roles)
+    growth = _growth_evidence(dataframe, roles, frequency)
     if growth:
         evidence.append(growth)
-    change_driver = _change_driver_evidence(dataframe, roles)
+    change_driver = _change_driver_evidence(dataframe, roles, frequency)
     if change_driver:
         evidence.append(change_driver)
     evidence.extend(_segment_evidence(dataframe, roles))
     for optional_evidence in (
-        _anomaly_evidence(dataframe, roles),
+        _anomaly_evidence(dataframe, roles, frequency),
         _relationship_evidence(dataframe, roles),
         _outlier_evidence(dataframe, roles),
         _quality_evidence(dataframe),

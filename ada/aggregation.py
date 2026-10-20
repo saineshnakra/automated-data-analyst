@@ -315,13 +315,16 @@ def unlabelled_label(existing) -> str:
 
 
 def segment_period_change(
-    dataframe: pd.DataFrame, roles: ColumnRoles
+    dataframe: pd.DataFrame, roles: ColumnRoles, frequency: str | None = None
 ) -> tuple[pd.DataFrame, pd.Timestamp, pd.Timestamp] | None:
-    """Per-segment totals for the latest two periods, or None when unavailable."""
+    """Per-segment totals for the latest two periods, or None when unavailable.
+
+    ``frequency`` fixes the grain; without it the trend's own grain is used.
+    """
     if not roles.date or not roles.measure or not roles.dimension:
         return None
 
-    series = build_trend(dataframe, roles)
+    series = build_trend(dataframe, roles, frequency)
     trend = series.frame
     if len(trend) < 2:
         return None

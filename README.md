@@ -158,7 +158,8 @@ ada check saas-subscriptions.csv --frequency M
 | `3` | could not check: no date column or too few periods |
 
 Pass `--frequency` (or `frequency=` in Python) for anything scheduled, so the
-period grain doesn't change from one run to the next.
+period grain doesn't change from one run to the next. The headline, the
+findings, the anomalies and the forecast all use that grain.
 
 ## Sample datasets
 

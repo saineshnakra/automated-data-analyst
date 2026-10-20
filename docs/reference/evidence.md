@@ -31,7 +31,10 @@ Evidence says what moved; recommendations say where to look.
 ## Evidence kinds
 
 Each kind has its own function, which returns nothing when the data does not
-support it. Cards are assembled in this order:
+support it. The `trend`, `driver` and `anomaly` cards share one period grain:
+the one passed as `analyze_business(..., frequency="M")`, or otherwise the one
+chosen from the dates (see [Periods](periods.md#choosing-the-grain)). Cards are
+assembled in this order:
 
 | Kind | Reports | Skipped when |
 |---|---|---|
