@@ -629,7 +629,9 @@ class UnfamiliarMeasureTests(unittest.TestCase):
         result = answer_question("which origin has the highest mpg", frame, detect_roles(frame))
 
         self.assertEqual(result.plan.aggregation, "mean")
-        self.assertTrue(result.answer.startswith("japan is the leading origin by average mpg"), result.answer)
+        self.assertTrue(
+            result.answer.startswith("japan has the highest average mpg of any origin"), result.answer
+        )
 
     def test_a_daily_price_trend_by_year_averages_the_days(self):
         days = pd.date_range("2020-01-01", "2021-12-31", freq="D")
@@ -1065,6 +1067,32 @@ class ConsistentAggregationTests(unittest.TestCase):
         plan = parse_question("temp by timepoint", frame, detect_roles(frame))
 
         self.assertEqual((plan.measure, plan.aggregation), ("Temp (°C)", "mean"))
+
+
+class RankingWordingTests(unittest.TestCase):
+    def test_groups_tied_at_the_top_are_all_named(self):
+        frame = pd.DataFrame({"Site": ["North", "South", "East"] * 4, "pH": [7.0, 7.0, 6.5] * 4})
+
+        answer = answer_question("which site has the highest pH", frame, detect_roles(frame))
+
+        self.assertTrue(answer.answer.startswith("North and South tie for the highest average pH"))
+
+    def test_a_symbol_keeps_its_case_and_a_total_is_not_named_twice(self):
+        frame = pd.DataFrame({"Station": ["A", "B"] * 6, "Total Rain": [1.5, 0.5] * 6, "Ca": [13.4, 4.8] * 6})
+        roles = detect_roles(frame)
+
+        rain = answer_question("total rain by station", frame, roles)
+        calcium = answer_question("average Ca by station", frame, roles)
+
+        self.assertNotIn("total total", rain.answer.lower())
+        self.assertIn("average Ca", calcium.answer)
+
+    def test_a_coded_band_is_not_answered_in_dollars(self):
+        frame = pd.DataFrame({"income": [1.0, 5.0, 12.0, 15.0] * 5})
+
+        answer = answer_question("average income", frame, detect_roles(frame))
+
+        self.assertNotIn("$", answer.answer)
 
 
 if __name__ == "__main__":

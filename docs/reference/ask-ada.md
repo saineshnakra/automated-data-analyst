@@ -191,6 +191,12 @@ Other behaviour:
   (timepoint 0, 1, 2, ...) rather than by value, up to 50 of them, and is drawn
   as a line. A ranking ("which timepoint has the highest signal") still sorts
   by value.
+- A breakdown or ranking answer names the first group the way the brief does:
+  "timepoint 5 has the highest average signal of any timepoint, at 10".
+  A numeric group carries its column name (`group_label`), groups tied with
+  the first are all named ("North and South tie for the highest average pH"),
+  and an aggregate the column name already has is not repeated ("total rain",
+  not "total total rain").
 - Ranking periods ("which month had the highest wind") builds the trend at
   that grain with `build_trend` and names the highest or lowest period with its
   value. Periods left empty for a rate or level are skipped. "Which month had

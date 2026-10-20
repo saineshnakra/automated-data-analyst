@@ -11,6 +11,7 @@ import re
 from dataclasses import dataclass, replace
 from typing import Literal
 
+import numpy as np
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 
@@ -21,7 +22,16 @@ from .business_insights import (
     describe_correlation,
     measure_correlation,
 )
-from .formatting import format_change, format_number, format_period, format_values_apart, sentence_case
+from .formatting import (
+    format_change,
+    format_number,
+    format_period,
+    format_values_apart,
+    group_label,
+    list_names,
+    sentence_case,
+    with_aggregate,
+)
 from .metrics import metric_for
 from .schema import ColumnRoles
 
@@ -910,8 +920,9 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
             question="",
             plan=plan,
             answer=(
-                f"{label} {plan.measure}{_phrase(applied)} is "
-                f"{format_number(value, plan.measure)}, calculated from {rows:,} rows."
+                f"{with_aggregate(label, plan.measure)}{_phrase(applied)} is "
+                f"{format_number(value, plan.measure, column_values=working[plan.measure].dropna())}, "
+                f"calculated from {rows:,} rows."
             ),
             calculation=f"{plan.aggregation}({plan.measure}){scope}",
         )
@@ -925,7 +936,9 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
     if plan.intent in ("rank", "breakdown"):
         assert plan.dimension is not None
         label = AGGREGATION_LABELS[plan.aggregation]
-        value_label = f"{label} {plan.measure}" if plan.measure and plan.aggregation != "count" else "Rows"
+        value_label = (
+            with_aggregate(label, plan.measure) if plan.measure and plan.aggregation != "count" else "Rows"
+        )
         grouped = _grouped_frame(working, plan, value_label)
         # Numbered groups (timepoint 0, 1, 2...) are listed in their own order, up
         # to GROUPING_LIMIT of them; a ranking still sorts them by value.
@@ -945,22 +958,22 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
         share_note = f" ({leader['Share %']:.1f}% of the total)" if "Share %" in table.columns else ""
         # Format a row count as a plain number, not in the measure's unit.
         counted = value_label == "Rows"
-        value_text = format_number(leader_value, None if counted else plan.measure)
-        if numbered:
-            if counted:
-                most = "fewest rows" if plan.ascending else "most rows"
-            else:
-                most = f"{'lowest' if plan.ascending else 'highest'} {sentence_case(value_label)}"
-            answer = (
-                f"{plan.dimension} {_group_label(leader[plan.dimension])} has the {most}"
-                f"{_phrase(applied)} at {value_text}{share_note}."
-            )
+        value_text = (
+            format_number(leader_value)
+            if counted
+            else format_number(leader_value, plan.measure, column_values=working[plan.measure].dropna())
+        )
+        if counted:
+            most = "fewest rows" if plan.ascending else "most rows"
         else:
-            direction = "lowest" if plan.ascending else "leading"
-            answer = (
-                f"{leader[plan.dimension]} is the {direction} {plan.dimension} by "
-                f"{sentence_case(value_label)}{_phrase(applied)} at {value_text}{share_note}."
-            )
+            most = f"{'lowest' if plan.ascending else 'highest'} {sentence_case(value_label)}"
+        # Every group level with the first is named, so a tie is not reported as one winner.
+        tied = grouped[np.isclose(grouped[value_label].astype(float), leader_value, rtol=1e-9, atol=0.0)]
+        names = [group_label(plan.dimension, value) for value in tied[plan.dimension]]
+        answer = (
+            f"{list_names(names)} {'has' if len(names) == 1 else 'tie for'} the {most} of any "
+            f"{plan.dimension}{_phrase(applied)}, at {value_text}{share_note}."
+        )
         showing = f"{len(table)} of {len(grouped)}" if len(table) < len(grouped) and ordered else len(table)
         return QueryAnswer(
             question="",
@@ -1020,13 +1033,6 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
         return _execute_growth(plan, working, roles, scope, applied)
 
     raise ValueError(f"Unsupported intent: {plan.intent}")
-
-
-def _group_label(value: object) -> str:
-    """A group value as it reads in a sentence: 24.0 reads as 24."""
-    if isinstance(value, float) and value.is_integer():
-        return str(int(value))
-    return str(value)
 
 
 def _execute_correlation(
@@ -1115,7 +1121,7 @@ def _rank_periods(
         period = f"The week of {period}"
     direction = "lowest" if plan.ascending else "highest"
     label = AGGREGATION_LABELS[plan.aggregation]
-    described = sentence_case(f"{label} {plan.measure}") if plan.measure else "row count"
+    described = sentence_case(with_aggregate(label, plan.measure)) if plan.measure else "row count"
     return QueryAnswer(
         question="",
         plan=plan,
@@ -1198,7 +1204,7 @@ def _execute_growth(
                 answer=(
                     f"No {plan.dimension} has a growth rate this period, because every one "
                     f"of them started from zero. The largest new arrival is "
-                    f"{newest[plan.dimension]} at "
+                    f"{group_label(plan.dimension, newest[plan.dimension])} at "
                     f"{format_number(float(newest['Latest']), measure)}."
                 ),
                 calculation=(
@@ -1221,15 +1227,17 @@ def _execute_growth(
         leader = result.iloc[0]
         start, end = format_values_apart(float(leader["Previous"]), float(leader["Latest"]), column=measure)
         answer = (
-            f"{leader[plan.dimension]} {_ranked_move(leader['Change %'], plan.ascending)}"
-            f"{_phrase(applied)}: {leader['Change %']:+.1f}% ({start} → {end}) in the latest period."
+            f"{group_label(plan.dimension, leader[plan.dimension])} "
+            f"{_ranked_move(leader['Change %'], plan.ascending)}{_phrase(applied)}: "
+            f"{leader['Change %']:+.1f}% ({start} → {end}) in the latest period."
         )
         if not from_nothing.empty:
             newest = from_nothing.loc[from_nothing["Latest"].abs().idxmax()]
-            names = ", ".join(str(name) for name in from_nothing[plan.dimension])
+            names = ", ".join(group_label(plan.dimension, name) for name in from_nothing[plan.dimension])
             answer += (
                 f" {len(from_nothing)} segment(s) are left out of the ranking because they "
-                f"started from zero ({names}); the largest is {newest[plan.dimension]} at "
+                f"started from zero ({names}); the largest is "
+                f"{group_label(plan.dimension, newest[plan.dimension])} at "
                 f"{format_number(float(newest['Latest']), measure)}."
             )
         return QueryAnswer(
@@ -1310,8 +1318,9 @@ def _rank_level_changes(
     size = format_change(previous, latest, measure, unit, column, signed=True)
     start, end = format_values_apart(previous, latest, column=measure)
     answer = (
-        f"{leader[plan.dimension]} {_ranked_move(latest - previous, plan.ascending)}"
-        f"{_phrase(applied)}: {size} ({start} → {end}) in the latest period."
+        f"{group_label(plan.dimension, leader[plan.dimension])} "
+        f"{_ranked_move(latest - previous, plan.ascending)}{_phrase(applied)}: "
+        f"{size} ({start} → {end}) in the latest period."
     )
     unit_label = "percentage points" if unit == "rate" else "difference"
     return QueryAnswer(
