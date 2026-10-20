@@ -154,7 +154,20 @@ unless the name already says it: `Total` and `Total Rain` give `Total Rain`,
 | `Q` | `Q3 2026` |
 | `W`, `D` | `05 Sep 2026` |
 | `Y` | `2026` |
+| `h`, `min` | `05 Sep 2026 14:00` |
+| `s` | `05 Sep 2026 14:00:05` |
 | any other | `Sep 2026` |
+
+### Times with no calendar date
+
+A column of clock times with no date, or of elapsed time, is placed on
+`UNDATED_DAY` (1 January 1900, the date `strptime` gives a bare time) so it
+sorts and groups like any timestamp. `is_undated` recognises these, and
+labels on them never show that date: `15:47`, `15:47:03`, `day 2 00:15` once
+a log passes midnight, `day 3` at a daily grain. `format_moment` writes one
+end of a date range the same way (`05 Mar 2024`, or `15:06:28`). Real
+readings from 1900 at a grain finer than a day would be labelled as undated
+too.
 
 ## Known gaps
 

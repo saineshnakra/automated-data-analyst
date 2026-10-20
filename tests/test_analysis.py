@@ -11,7 +11,10 @@ from ada.analysis import (
     clean_dataframe,
     column_profile,
     generate_insights,
+    separate_stacked_logs,
+    set_aside_coarser_rows,
 )
+from ada.formatting import format_moment, is_undated
 from ada.schema import (
     DIMENSION_KEYWORDS,
     MEASURE_KEYWORDS,
@@ -638,6 +641,220 @@ class LeadingZeroTests(unittest.TestCase):
     def test_decimals_below_one_are_still_numbers(self):
         cleaned, _ = clean_dataframe(pd.DataFrame({"OD600": ["0.81", "0.05", "NA", "1.20"]}))
         self.assertEqual(cleaned["OD600"].dtype.kind, "f")
+
+
+class ClockTimeTests(unittest.TestCase):
+    def setUp(self):
+        times = pd.date_range("2024-01-01 15:06:28", periods=120, freq="s").strftime("%H:%M:%S")
+        self.frame = pd.DataFrame({"Time": times, "Signal": np.arange(120.0)})
+
+    def test_times_of_day_are_never_given_a_date(self):
+        cleaned, report = clean_dataframe(self.frame)
+
+        times = cleaned["Time"]
+        self.assertTrue(is_datetime64_any_dtype(times))
+        self.assertTrue(times.map(is_undated).all())
+        self.assertEqual(times.iloc[0].strftime("%H:%M:%S"), "15:06:28")
+        self.assertNotEqual(times.iloc[0].normalize(), pd.Timestamp.today().normalize())
+        note = next(note for note in report.notes if note.startswith("Time holds"))
+        self.assertIn("no calendar date (15:06:28 to 15:08:27)", note)
+
+    def test_a_log_that_passes_midnight_moves_on_to_the_next_day(self):
+        frame = pd.DataFrame(
+            {"Clock": ["23:59:58", "23:59:59", "00:00:00", "00:00:01"], "Value": [1, 2, 3, 4]}
+        )
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertTrue(cleaned["Clock"].is_monotonic_increasing)
+        self.assertEqual(format_moment(cleaned["Clock"].iloc[-1]), "day 2 00:00:01")
+        self.assertTrue(any("passing midnight 1 time" in note for note in report.notes))
+
+    def test_a_bare_time_in_a_column_of_dates_is_not_read_as_today(self):
+        frame = pd.DataFrame({"Date": [
+            "2024-03-01 10:00", "2024-03-02 11:00", "2024-03-03 12:00", "2024-03-04 13:00", "15:47",
+        ]})
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertTrue(pd.isna(cleaned["Date"].iloc[-1]))
+        self.assertEqual(report.unparsed_date_cells, 1)
+
+    def test_a_date_column_and_a_time_column_combine_into_one(self):
+        frame = pd.DataFrame({
+            "Date": ["2024-03-01", "2024-03-01", "2024-03-02"],
+            "Time": ["23:00:00", "23:30:00", "00:15:00"],
+            "Reading": [1.0, 2.0, 3.0],
+        })
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertNotIn("Time", cleaned.columns)
+        expected = pd.to_datetime(["2024-03-01 23:00", "2024-03-01 23:30", "2024-03-02 00:15"])
+        self.assertEqual(cleaned["Date"].tolist(), expected.tolist())
+        self.assertTrue(any("combined into one column, Date" in note for note in report.notes))
+
+
+class ElapsedTimeTests(unittest.TestCase):
+    def test_elapsed_seconds_become_the_time_axis(self):
+        frame = pd.DataFrame(
+            {"Time (s)": [0.0, 0.5, 1.0, 1.5, 2.0], "Absorbance": [0.1, 0.2, 0.3, 0.4, 0.5]}
+        )
+
+        cleaned, report = clean_dataframe(frame)
+
+        times = cleaned["Time (s)"]
+        self.assertTrue(is_datetime64_any_dtype(times))
+        self.assertEqual(times.iloc[-1] - times.iloc[0], pd.Timedelta(seconds=2))
+        self.assertTrue(times.map(is_undated).all())
+        self.assertTrue(any("counts seconds from the start" in note for note in report.notes))
+        self.assertEqual(detect_roles(cleaned).date, "Time (s)")
+
+    def test_minutes_are_counted_in_minutes(self):
+        frame = pd.DataFrame({"elapsed_min": [0, 5, 10, 15], "OD600": [0.1, 0.2, 0.4, 0.8]})
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["elapsed_min"].iloc[-1].strftime("%H:%M"), "00:15")
+
+    def test_a_duration_measured_per_row_is_not_a_time_axis(self):
+        frame = pd.DataFrame({
+            "Time to failure (h)": [30.0, 12.0, 45.0, 8.0],
+            "Time (s)": [3.0, 1.0, 2.0, 5.0],
+        })
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertFalse(is_datetime64_any_dtype(cleaned["Time to failure (h)"]))
+        # Not in time order, so a per-row duration rather than a log.
+        self.assertFalse(is_datetime64_any_dtype(cleaned["Time (s)"]))
+
+    def test_a_requested_elapsed_column_without_a_unit_counts_seconds(self):
+        frame = pd.DataFrame({"t": [3, 1, 2], "Signal": [1.0, 2.0, 3.0]})
+
+        cleaned, _ = clean_dataframe(frame, date="t")
+
+        self.assertEqual(cleaned["t"].iloc[0].strftime("%H:%M:%S"), "00:00:03")
+
+
+class MixedDateFormatTests(unittest.TestCase):
+    def test_iso_dates_with_and_without_a_time_both_parse(self):
+        frame = pd.DataFrame(
+            {"Datetime": ["2015-01-01 01:00:00", "2015-01-01 02:00:00", "2019-04-02", "2019-04-03"]}
+        )
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["Datetime"].notna().sum(), 4)
+        self.assertEqual(report.unparsed_date_cells, 0)
+
+
+class PerValueCleaningTests(unittest.TestCase):
+    def test_whole_numbers_held_as_text_stay_whole(self):
+        frame = pd.DataFrame({"Count": ["1", "2", "3", "2"], "Site": ["a", "b", "a", "b"]})
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(str(cleaned["Count"].dtype), "int64")
+
+    def test_repeated_values_are_trimmed_and_parsed_alike(self):
+        frame = pd.DataFrame({
+            "Amount": [" $1,200.50 ", "$1,200.50", None, "(30)"] * 50,
+            "Store": ["North", "South"] * 100,
+        })
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["Amount"].iloc[:2].tolist(), [1200.5, 1200.5])
+        self.assertTrue(pd.isna(cleaned["Amount"].iloc[2]))
+        self.assertEqual(cleaned["Amount"].iloc[3], -30.0)
+
+
+def hourly_log(start, hours, value=1.0, seed=0):
+    rng = np.random.default_rng(seed)
+    return pd.DataFrame({
+        "Datetime": pd.date_range(start, periods=hours, freq="h"),
+        "PM2.5": value + rng.random(hours),
+    })
+
+
+def hourly_then_daily():
+    hourly = hourly_log("2024-01-01 01:00", 24 * 30)
+    daily = pd.DataFrame({"Datetime": pd.date_range("2024-01-01", periods=30, freq="D"), "PM2.5": 1.0})
+    return pd.concat([hourly, daily], ignore_index=True)
+
+
+class CoarserRowsTests(unittest.TestCase):
+    def test_daily_summaries_after_hourly_rows_are_set_aside(self):
+        kept, note = set_aside_coarser_rows(hourly_then_daily(), "Datetime")
+
+        self.assertEqual(len(kept), 24 * 30)
+        self.assertIn("The last 30 rows give Datetime as a date with no time of day", note)
+
+    def test_a_reading_at_midnight_stays_with_the_hourly_rows(self):
+        kept, _ = set_aside_coarser_rows(hourly_then_daily(), "Datetime")
+
+        self.assertEqual(kept["Datetime"].iloc[-1], pd.Timestamp("2024-01-31 00:00"))
+
+    def test_an_hourly_log_alone_is_untouched(self):
+        frame = hourly_log("2024-01-01", 24 * 30)
+
+        kept, note = set_aside_coarser_rows(frame, "Datetime")
+
+        self.assertEqual(len(kept), len(frame))
+        self.assertEqual(note, "")
+
+
+class StackedLogTests(unittest.TestCase):
+    def test_a_log_that_starts_again_gets_a_block_column(self):
+        frame = pd.concat(
+            [hourly_log("2024-01-01", 500, 1.0), hourly_log("2024-01-01", 500, 2.0)],
+            ignore_index=True,
+        )
+
+        labelled, block, note = separate_stacked_logs(frame, "Datetime")
+
+        self.assertEqual(block, "Block")
+        self.assertEqual(
+            labelled["Block"].iloc[[0, 499, 500, 999]].tolist(),
+            ["Block 1", "Block 1", "Block 2", "Block 2"],
+        )
+        self.assertIn("holds 2 logs one after another", note)
+        self.assertIn("500 timestamps appear in more than one of them", note)
+        self.assertEqual(detect_roles(labelled).dimension, "Block")
+
+    def test_a_file_sorted_by_site_is_already_labelled(self):
+        frame = pd.concat(
+            [hourly_log("2024-01-01", 500).assign(Site=site) for site in ("North", "South", "East")],
+            ignore_index=True,
+        )
+
+        labelled, block, note = separate_stacked_logs(frame, "Datetime")
+
+        self.assertIsNone(block)
+        self.assertNotIn("Block", labelled.columns)
+        self.assertEqual(note, "")
+
+    def test_a_short_step_back_is_not_a_new_log(self):
+        frame = hourly_log("2024-01-01", 1000)
+        frame.loc[600, "Datetime"] = frame.loc[598, "Datetime"]
+
+        _, block, note = separate_stacked_logs(frame, "Datetime")
+
+        self.assertIsNone(block)
+        self.assertEqual(note, "")
+
+    def test_readings_recorded_side_by_side_get_a_note(self):
+        stamps = pd.date_range("2024-01-01", periods=500, freq="min")
+        frame = pd.DataFrame({
+            "ts": np.repeat(stamps, 2),
+            "CO2": np.tile([400.0, 900.0], 500) + np.arange(1000) % 7,
+        })
+
+        _, block, note = separate_stacked_logs(frame, "ts")
+
+        self.assertIsNone(block)
+        self.assertIn("appear 2 times with different readings", note)
 
 
 if __name__ == "__main__":

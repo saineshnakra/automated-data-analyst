@@ -479,8 +479,43 @@ def format_percentage(value: float, *, signed: bool = False) -> str:
     return f"{value:+.1f}%" if signed else f"{value:.1f}%"
 
 
+#: The day that times with no calendar date are placed on, so a clock reading
+#: or an elapsed time sorts and groups like any timestamp. It is the date strptime
+#: gives a bare time; labels on it show the time alone, never this date.
+UNDATED_DAY = pd.Timestamp("1900-01-01")
+# How far past UNDATED_DAY a clock or elapsed-time axis may run and still read as undated.
+UNDATED_SPAN = pd.Timedelta(days=366)
+CLOCK_FORMATS = {"h": "%H:%M", "min": "%H:%M", "s": "%H:%M:%S"}
+
+
+def is_undated(moment) -> bool:
+    """Whether a timestamp is a time with no calendar date (see ``UNDATED_DAY``)."""
+    if moment is None or pd.isna(moment):
+        return False
+    stamp = pd.Timestamp(moment)
+    return UNDATED_DAY <= stamp < UNDATED_DAY + UNDATED_SPAN
+
+
+def _undated_label(period: pd.Timestamp, grain: str) -> str:
+    """Label a time with no calendar date: "15:47", "day 2 00:15", "day 3" or "week 2"."""
+    day = (period.normalize() - UNDATED_DAY).days + 1
+    if grain in CLOCK_FORMATS:
+        clock = period.strftime(CLOCK_FORMATS[grain])
+        return clock if day == 1 else f"day {day} {clock}"
+    if grain == "D":
+        return f"day {day}"
+    return f"week {(day - 1) // 7 + 1}"
+
+
 def format_period(period: pd.Timestamp, grain: str) -> str:
-    """Label a period for its grain: "Q3 2024", "05 Mar 2024", "2024" or "Mar 2024"."""
+    """Label a period for its grain: "Q3 2024", "05 Mar 2024", "2024", "Mar 2024" or "05 Mar 2024 14:00".
+
+    A time with no calendar date is labelled by its clock time alone ("15:47").
+    """
+    if is_undated(period):
+        return _undated_label(pd.Timestamp(period), grain)
+    if grain in CLOCK_FORMATS:
+        return period.strftime(f"%d %b %Y {CLOCK_FORMATS[grain]}")
     if grain == "Q":
         return f"Q{period.quarter} {period.year}"
     if grain in ("W", "D"):
@@ -488,3 +523,11 @@ def format_period(period: pd.Timestamp, grain: str) -> str:
     if grain == "Y":
         return period.strftime("%Y")
     return period.strftime("%b %Y")
+
+
+def format_moment(moment: pd.Timestamp) -> str:
+    """Write one timestamp for a date range: "05 Mar 2024", or "15:06:28" with no calendar date."""
+    stamp = pd.Timestamp(moment)
+    if is_undated(stamp):
+        return _undated_label(stamp, "s")
+    return stamp.strftime("%d %b %Y")
