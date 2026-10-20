@@ -53,9 +53,12 @@ at most three watchouts.
 
 - it sets `answerable: false` (the model is instructed to do this rather than
   guess)
-- it names a measure or dimension column that does not exist
+- it names a measure, dimension or partner column that does not exist
 - it asks for a `trend` or `growth` intent with no date column, or with an
-  aggregation other than `sum`
+  aggregation other than the one those executors use: the measure's own (a sum
+  for an amount, a mean for a rate or level)
+- it asks for a `correlation` without two different numeric columns in
+  `measure` and `partner`
 - it asks to `aggregate` with no measure
 - it asks for a non-count aggregation of a non-numeric column
 - it asks to `rank` or `breakdown` with no usable dimension
@@ -71,7 +74,8 @@ whole plan is discarded. Pydantic bounds the fields: `top_n` 1 to 50, `year`
 1900 to 2100, `month` 1 to 12, at most 4 filters of up to 120 characters each.
 
 Fields the chosen intent's executor would ignore (a dimension on an aggregate,
-`top_n` outside `rank`, a grain outside `trend` and `growth`) are cleared.
+`top_n` outside `rank`, a grain outside `trend` and `growth`, a partner outside
+`correlation`) are cleared.
 
 ## Approval
 

@@ -86,13 +86,17 @@ ada ask orders.csv "which category made the most revenue"
 - **Forecasts with a backtest**: a trendline plus month-of-year seasonality,
   scored on held-out periods against a no-change forecast. It refuses to run on
   too little history.
-- **Answers plain-English questions** ("average pH by site", "which treatment
-  fell most") by turning them into a fixed query plan that pandas runs. A
-  question it can't represent is refused rather than answered approximately.
+- **Answers plain-English questions** ("average pH by site", "mean signal by
+  timepoint", "which month had the highest wind", "is pH correlated with
+  temperature") by turning them into a fixed query plan that pandas runs. A
+  question it can't represent is refused rather than answered approximately;
+  one that names only part of a column ("body" for `body_mass_g`) is refused
+  with the columns it may mean.
 - **Reports correlations with a 95% interval**, the sample size and a rank
-  correlation check, and says that the pair was picked as the strongest of
-  several. Participant numbers, plate positions and near-duplicate pairs (a
-  reading and its adjusted copy) are left out.
+  correlation check. In the brief it says that the pair was picked as the
+  strongest of several; ask about a pair and it reports the same figures for
+  that pair. Participant numbers, plate positions and near-duplicate pairs (a
+  reading and its adjusted copy) are left out of the brief's pick.
 - **Analyzes a slice you select**: draw a box or lasso on the Explore chart, or
   click some bars, and get the same analysis for those rows beside the whole.
 
