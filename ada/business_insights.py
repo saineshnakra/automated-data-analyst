@@ -194,12 +194,17 @@ def _change_driver_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evid
     current_value = float(grouped.loc[driver_key, current_period])
     driver_change = float(grouped.loc[driver_key, "Change"])
     direction = "increased" if driver_change > 0 else "decreased"
-    sign = "+" if driver_change > 0 else "−"
+    sign = "+" if driver_change > 0 else "-"
+    unit = resolve_metric(roles.measure).unit
+    if unit in ("rate", "level"):
+        size = format_change(previous_value, current_value, roles.measure, unit, measure_values)
+        short = f"{size.split()[0]} pts" if unit == "rate" else size
+    else:
+        size = short = format_number(abs(driver_change), roles.measure, column_values=measure_values)
 
     movement = (
         f"{driver_name} moved the most of any {sentence_case(roles.dimension)}: "
-        f"{roles.measure} {direction} by "
-        f"{format_number(abs(driver_change), roles.measure, column_values=measure_values)}, "
+        f"{roles.measure} {direction} by {size}, "
         f"from {format_number(previous_value, roles.measure, column_values=measure_values)} to "
         f"{format_number(current_value, roles.measure, column_values=measure_values)}."
     )
@@ -236,7 +241,7 @@ def _change_driver_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evid
     return Evidence(
         kind="driver",
         title="Largest change driver",
-        value=f"{sign}{format_number(abs(driver_change), roles.measure, column_values=measure_values)}",
+        value=f"{sign}{short}",
         statement=statement,
         calculation=calculation,
         tone="positive" if (driver_change > 0) == increase_is_welcome(roles.measure) else "negative",
@@ -269,7 +274,7 @@ def _anomaly_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence |
             f"{len(anomalies)} {plural} outside the trendline band."
         ),
         calculation=(
-            "Period totals vs Theil–Sen trendline ± a band calibrated so that only "
+            "Period values vs Theil–Sen trendline ± a band calibrated so that only "
             "1 stable series in 20 raises a flag"
         ),
         tone="warning",

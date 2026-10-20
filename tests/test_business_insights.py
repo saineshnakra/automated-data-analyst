@@ -580,6 +580,18 @@ class LevelMeasureTests(unittest.TestCase):
             self.assertNotIn(word, text)
 
 
+class RateDriverTests(unittest.TestCase):
+    def test_a_rate_driver_moves_in_points(self):
+        months = pd.date_range("2024-01-01", periods=6, freq="MS")
+        rows = []
+        for index, month in enumerate(months):
+            rows += [(month, "A", 20.0 + (3.0 if index == 5 else 0.0)), (month, "B", 10.0)]
+        brief = analyze_business(pd.DataFrame(rows, columns=["Month", "Team", "Conversion Rate"]))
+        driver = next(item for item in brief.evidence if item.kind == "driver")
+        self.assertEqual(driver.value, "+3.0 pts")
+        self.assertIn("increased by 3.0 percentage points", driver.statement)
+
+
 class DriverToneTests(unittest.TestCase):
     def test_a_rising_cost_driver_is_named_in_the_recommendation(self):
         months = pd.date_range("2024-01-01", periods=6, freq="MS")
