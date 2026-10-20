@@ -93,6 +93,8 @@ class NumberDisplayTests(unittest.TestCase):
                 self.assertEqual(sentence_case(name), name)
         self.assertEqual(sentence_case("Average Ca"), "average Ca")
         self.assertEqual(sentence_case("Co2 Level"), "Co2 level")
+        self.assertEqual(sentence_case("Age"), "age")
+        self.assertEqual(sentence_case("Dye Label"), "dye label")
 
     def test_readings_keep_their_digits(self):
         # "1.1K" would hide that a heart rate of 1,111 is impossible.

@@ -392,13 +392,18 @@ def format_values_apart(
 # Capitalised words this short are more often symbols or codes ("Ca", "Na",
 # "Gp", "Hgb") than ordinary words, so sentence_case leaves them as written.
 MAX_SYMBOL_LETTERS = 3
+# Short words common in column names that are ordinary words, not codes.
+SHORT_ORDINARY_WORDS = frozenset({
+    "age", "air", "day", "dry", "dye", "fat", "gas", "low", "max", "min", "net", "new",
+    "old", "raw", "run", "sea", "set", "sex", "sum", "wet", "year",
+})
 
 
 def _is_ordinary_word(word: str) -> bool:
-    """A capitalised word with nothing else in capitals, no digits and more than three letters."""
+    """A capitalised word with nothing else in capitals or digits, long enough not to be a code."""
     letters = sum(character.isalpha() for character in word)
     return (
-        letters > MAX_SYMBOL_LETTERS
+        (letters > MAX_SYMBOL_LETTERS or word.lower() in SHORT_ORDINARY_WORDS)
         and word[:1].isupper()
         and word[1:].islower()
         and not any(character.isdigit() for character in word)
