@@ -171,14 +171,23 @@ def analyze(
     if measure is not None and not pd.api.types.is_numeric_dtype(cleaned[measure]):
         raise AdaError(f"{measure!r} is not numeric, so it can't be the measure.")
     roles = replace(prepared.detected_roles, **overrides, aggregation=aggregation)
+    if measure is not None:
+        # The runners-up were for ADA's own pick; a chosen measure has none.
+        roles = replace(roles, measure_alternatives=())
+    name = source_name or detected_name
+    frame = prepared.dataframe
+    if roles.focus and dimension is None:
+        # A long table's rows measure different things; the brief covers one of them.
+        name = f"{name} · {roles.focus}"
+        frame, roles = apply_focus(frame, roles, roles.focus)
     return Analysis(
-        frame=prepared.dataframe,
-        roles=roles,
+        frame=frame,
+        roles=replace(roles, focus=None),
         cleaning=prepared.cleaning_report,
         rows_not_analyzed=prepared.truncated_rows,
         period=(prepared.analyzed_from, prepared.analyzed_to),
         frequency=frequency,
-        source_name=source_name or detected_name,
+        source_name=name,
     )
 
 

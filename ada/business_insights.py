@@ -781,10 +781,12 @@ def describe_correlation(correlation: Correlation, scope: str = "") -> str:
 
 
 def _relationship_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
+    factors = set(roles.factors)
     usable = [
         column
         for column in roles.numeric
-        if not looks_like_identifier(column, dataframe[column])
+        if column not in factors
+        and not looks_like_identifier(column, dataframe[column])
         and not is_design_name(column)
         and not is_entity_name(column)
         and not any(token == normalized_name(column) for token in TIME_PART_TOKENS)

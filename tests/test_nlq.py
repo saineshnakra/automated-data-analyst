@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 
 import numpy as np
 import pandas as pd
@@ -829,6 +830,15 @@ class NumericGroupingTests(unittest.TestCase):
         self.assertEqual((answer.plan.measure, answer.plan.dimension), ("signal", "timepoint"))
         self.assertEqual(answer.plan.aggregation, "mean")
         self.assertIn("timepoint 5 has the highest average signal", answer.answer)
+
+    def test_a_numeric_code_among_the_segments_still_groups(self):
+        frame, roles = timepoint_frame()
+        roles = replace(roles, dimensions=("Region", "timepoint"), factors=("timepoint",))
+
+        for question in ("mean signal by timepoint", "which timepoint has the highest signal"):
+            with self.subTest(question=question):
+                answer = answer_question(question, frame, roles)
+                self.assertEqual((answer.plan.measure, answer.plan.dimension), ("signal", "timepoint"))
 
     def test_numbered_groups_keep_their_order_past_the_breakdown_limit(self):
         frame, roles = timepoint_frame()

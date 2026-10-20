@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 
 import pandas as pd
 
@@ -87,6 +88,45 @@ class PipelineTests(unittest.TestCase):
             dataframe, roles = apply_focus(prepared.dataframe, prepared.detected_roles, focus)
             self.assertEqual(len(dataframe), len(prepared.dataframe))
             self.assertEqual(roles, prepared.detected_roles)
+
+    def test_changing_a_role_drops_what_was_detected_for_it(self):
+        detected = replace(
+            prepare_analysis(make_demo_data(rows=100), row_limit=100).detected_roles,
+            measure_alternatives=("Profit",), focus="Core",
+        )
+
+        kept = apply_role_selection(
+            detected, date="None", measure=detected.measure, dimension=detected.dimension
+        )
+        changed = apply_role_selection(detected, date="None", measure="Profit", dimension="Region")
+
+        self.assertEqual((kept.measure_alternatives, kept.focus), (("Profit",), "Core"))
+        self.assertEqual((changed.measure_alternatives, changed.focus), ((), None))
+
+    def test_a_focus_is_spent_once_applied(self):
+        prepared = prepare_analysis(make_demo_data(rows=200), row_limit=200)
+        roles = replace(prepared.detected_roles, focus="Core")
+
+        _, focused_roles = apply_focus(prepared.dataframe, roles, "Core")
+
+        self.assertIsNone(focused_roles.focus)
+
+    def test_what_detection_concluded_is_listed_with_the_cleaning_notes(self):
+        raw = pd.DataFrame({"Treatment": ["A", "B"] * 20, "Reopened": [0, 1, 0, 0] * 10,
+                            "Hours": [float(index % 7) + 0.5 for index in range(40)]})
+
+        notes = prepare_analysis(raw, row_limit=100).cleaning_report.notes
+
+        self.assertTrue(any("categories, not quantities: Reopened." in note for note in notes))
+
+    def test_a_matrix_is_measured_by_its_row_mean(self):
+        raw = pd.DataFrame({f"S{index}": [index + row for row in range(10)] for index in range(25)})
+        raw.insert(0, "Gene", [f"gene {row}" for row in range(10)])
+
+        prepared = prepare_analysis(raw, row_limit=100)
+
+        self.assertEqual(prepared.detected_roles.measure, "Row mean (25 columns)")
+        self.assertEqual(prepared.dataframe["Row mean (25 columns)"].iloc[0], 12.0)
 
     def test_audit_and_schema_frames_are_export_ready(self):
         prepared = prepare_analysis(make_demo_data(rows=80), row_limit=80)

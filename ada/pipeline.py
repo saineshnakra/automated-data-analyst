@@ -10,7 +10,7 @@ from .aggregation import preferred_frequency
 from .analysis import CleaningReport, clean_dataframe
 from .business_insights import BusinessBrief, Evidence, analyze_business
 from .metrics import metric_for
-from .schema import ColumnRoles, detect_roles
+from .schema import ColumnRoles, add_row_summary, detect_roles
 from .selection import Selection, SliceComparison, compare_slice
 
 
@@ -61,7 +61,10 @@ def prepare_analysis(
     """Clean the data, keep the most recent slice of it, and detect its schema.
 
     ``date`` names a column the caller wants as the date, so cleaning can turn
-    a column of years into dates before the schema is detected.
+    a column of years into dates before the schema is detected. A matrix table
+    gains a per-row mean to measure (see ``schema.add_row_summary``). What
+    detection concluded about the columns is added to the cleaning notes, so
+    every surface that lists the notes explains the roles too.
     """
     dataframe, cleaning_report = clean_dataframe(raw_dataframe, date=date)
     roles = detect_roles(dataframe)
@@ -71,6 +74,10 @@ def prepare_analysis(
     if len(dataframe) < available:
         # Re-detect so the numeric and dimension candidates describe the kept rows.
         roles = detect_roles(dataframe)
+    dataframe, roles = add_row_summary(dataframe, roles)
+    cleaning_report = replace(
+        cleaning_report, notes=tuple(dict.fromkeys((*cleaning_report.notes, *roles.notes)))
+    )
 
     dated = roles.date is not None and roles.date in dataframe.columns
     span = dataframe[roles.date].dropna() if dated else pd.Series(dtype="datetime64[ns]")
@@ -92,12 +99,18 @@ def apply_role_selection(
     dimension: str,
     aggregation: str | None = None,
 ) -> ColumnRoles:
+    chosen = None if dimension == "None" else dimension
+    picked = None if measure == "None" else measure
     return replace(
         detected,
         date=None if date == "None" else date,
-        measure=None if measure == "None" else measure,
-        dimension=None if dimension == "None" else dimension,
+        measure=picked,
+        dimension=chosen,
         aggregation=aggregation,
+        # The runners-up were for the detected measure, and the focus is a value
+        # of the detected grouping, so each lapses when its role is changed.
+        measure_alternatives=detected.measure_alternatives if picked == detected.measure else (),
+        focus=detected.focus if chosen == detected.dimension else None,
     )
 
 
@@ -114,7 +127,11 @@ def apply_focus(
     roles: ColumnRoles,
     focus: str | None,
 ) -> tuple[pd.DataFrame, ColumnRoles]:
-    """Drill into one segment value and regroup by the next useful dimension."""
+    """Drill into one segment value and regroup by the next useful dimension.
+
+    The returned roles have no ``focus`` left to apply, since the rows already
+    hold only that value.
+    """
     if not focus or not roles.dimension:
         return dataframe, roles
     filtered = dataframe[dataframe[roles.dimension].astype(str) == focus]
@@ -130,7 +147,7 @@ def apply_focus(
         ),
         None,
     )
-    return filtered.reset_index(drop=True), replace(roles, dimension=replacement)
+    return filtered.reset_index(drop=True), replace(roles, dimension=replacement, focus=None)
 
 
 @dataclass(frozen=True)

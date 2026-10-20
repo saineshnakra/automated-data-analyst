@@ -146,5 +146,22 @@ class AggregationOverrideTests(unittest.TestCase):
         self.assertEqual(metric_for("Rainfall (mm)"), resolve_metric("Rainfall (mm)"))
 
 
+class FlagMeasureTests(unittest.TestCase):
+    def roles(self, aggregation=None):
+        return ColumnRoles(
+            date=None, measure="Reopened Count", dimension=None, identifier=None,
+            numeric=("Reopened Count",), dimensions=("Reopened Count",), aggregation=aggregation,
+            factors=("Reopened Count",), flags=("Reopened Count",),
+        )
+
+    def test_a_flag_averages_to_a_share_whatever_its_name(self):
+        spec = metric_for("Reopened Count", self.roles())
+        self.assertEqual((spec.aggregation, spec.unit), ("mean", "rate"))
+        self.assertFalse(spec.direction_known)
+
+    def test_an_override_can_still_count_the_ones(self):
+        self.assertEqual(metric_for("Reopened Count", self.roles("sum")).aggregation, "sum")
+
+
 if __name__ == "__main__":
     unittest.main()

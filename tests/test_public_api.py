@@ -305,6 +305,42 @@ class OverrideTests(unittest.TestCase):
         profile = ada.analyze(steady()).profile()
         self.assertEqual(profile["Column"].tolist(), ["Date", "Team", "Revenue"])
 
+    def test_a_chosen_measure_has_no_runners_up(self):
+        frame = pd.DataFrame({
+            "HGB": [13.0 + index / 10 for index in range(30)],
+            "HCT": [40.0 + index / 7 for index in range(30)],
+        })
+        self.assertTrue(ada.analyze(frame).roles.measure_alternatives)
+        self.assertEqual(ada.analyze(frame, measure="HGB").roles.measure_alternatives, ())
+
+
+def long_readings() -> pd.DataFrame:
+    """Readings of three parameters in three units, one per row."""
+    levels = {"Ammonia": ("mg/l", 0.2), "pH": ("phunits", 7.5), "Conductivity": ("us/cm", 450.0)}
+    return pd.DataFrame([
+        {"Site": f"Site {site % 3}", "Parameter": parameter, "Unit": unit,
+         "Result": level * (1 + 0.01 * site + 0.03 * repeat)}
+        for site in range(12)
+        for parameter, (unit, level) in levels.items()
+        for repeat in range(3 if parameter == "Ammonia" else 2)
+    ])
+
+
+class LongTableTests(unittest.TestCase):
+    def test_the_brief_covers_the_most_common_parameter_only(self):
+        report = ada.analyze(long_readings())
+
+        self.assertTrue((report.frame["Parameter"] == "Ammonia").all())
+        self.assertEqual(report.roles.dimension, "Site")
+        self.assertIn("Ammonia", report.source_name)
+        self.assertTrue(any("never combined" in note for note in report.cleaning.notes))
+
+    def test_naming_the_grouping_keeps_every_row(self):
+        report = ada.analyze(long_readings(), dimension="Site")
+
+        self.assertEqual(len(report.frame), len(long_readings()))
+        self.assertIsNone(report.roles.focus)
+
 
 class AggregationTests(unittest.TestCase):
     def test_a_reading_is_averaged_unless_told_otherwise(self):

@@ -50,6 +50,9 @@ assembled in this order:
 If more than six cards qualify, the first six are shown. A `quality` card that
 falls past the sixth replaces the sixth, since it qualifies every other figure.
 
+The `driver` and `leader` cards name a group of a numeric grouping with its
+column (`Status 2`, not a bare `2`; see `formatting.group_label`).
+
 ### Movement in context
 
 The `trend` card gives the change in the measure's own terms: a percentage of
@@ -120,7 +123,7 @@ The strongest numeric pair is reported only when all of these hold:
 |---|---|
 | Absolute Pearson correlation | At least 0.45 (`MATERIAL_CORRELATION`) |
 | Complete pairs | At least 12 (`MIN_CORRELATION_PAIRS`); a pair with fewer is not considered |
-| Columns | Not identifiers, not experimental-design labels (`Replicate`, `Plate`, `Row`, `Column`, ...), not labels for the unit a row belongs to (`subject`, `participant`, `patient`, `animal`, `mouse`, `rat`, `donor`, `individual`, `specimen`, or an id-like word; `is_entity_name` in `ada/schema.py`), not named exactly as a time part (`year`, `month`, ...) |
+| Columns | Not identifiers, not category codes (`ColumnRoles.factors`: a 0/1 flag, a status code, a set dose), not experimental-design labels (`Replicate`, `Plate`, `Row`, `Column`, ...), not labels for the unit a row belongs to (`subject`, `participant`, `patient`, `animal`, `mouse`, `rat`, `donor`, `individual`, `specimen`, `station`, `site`, `plot`, or an id-like word; `is_entity_name` in `ada/schema.py`), not named exactly as a time part (`year`, `month`, ...) |
 | Not a near-duplicate | See below |
 
 A participant numbered 1 to 20 with three rows each is not unique enough to

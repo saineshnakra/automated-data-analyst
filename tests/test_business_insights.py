@@ -57,6 +57,34 @@ class RoleDetectionTests(unittest.TestCase):
         self.assertEqual(roles.identifier, "Customer ID")
 
 
+class FactorEvidenceTests(unittest.TestCase):
+    def setUp(self):
+        rng = np.random.default_rng(2)
+        status = np.repeat([0, 1, 2], 40)
+        self.frame = pd.DataFrame({
+            "Status": status,
+            "Signal": status * 10 + rng.normal(0, 1, 120),
+            "Noise": rng.normal(0, 1, 120),
+        })
+        self.roles = ColumnRoles(
+            date=None, measure="Signal", dimension="Status", identifier=None,
+            numeric=("Signal", "Noise", "Status"), dimensions=("Status",), factors=("Status",),
+        )
+
+    def test_a_factor_is_left_out_of_the_strongest_relationship(self):
+        evidence = analyze_business(self.frame, self.roles).evidence
+
+        relationships = [item.statement for item in evidence if item.kind == "relationship"]
+        self.assertFalse(any("Status" in statement for statement in relationships))
+
+    def test_a_numeric_group_is_named_with_its_column(self):
+        evidence = analyze_business(self.frame, self.roles).evidence
+        leader = next(item for item in evidence if item.kind == "leader")
+
+        self.assertTrue(leader.statement.startswith("Status 2 has the highest average Signal"))
+        self.assertEqual(leader.subject, "Status 2")
+
+
 class BusinessAnalysisTests(unittest.TestCase):
     def setUp(self):
         self.dataframe = make_demo_data(rows=1_200)

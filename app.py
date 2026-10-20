@@ -585,10 +585,15 @@ if focus_values:
     everything = f"All {roles.dimension} values"
     # A numeric code reads as "Status 2" rather than a bare "2".
     focus_labels = dict(zip(focus_values, group_names(dataframe, roles.dimension, focus_values), strict=True))
+    # A long table's rows measure different things, so they are never pooled:
+    # the brief starts on the detected focus and offers no "all" option.
+    pooled = [] if roles.focus in focus_values else [everything]
+    focus_choices = [*pooled, *focus_values]
     focus_columns = st.columns([0.34, 0.66])
     choice = focus_columns[0].selectbox(
         f"Drill into one {roles.dimension}",
-        [everything, *focus_values],
+        focus_choices,
+        index=focus_choices.index(roles.focus) if roles.focus in focus_choices else 0,
         format_func=lambda value: focus_labels.get(value, value),
         help="Focus the brief, dashboard, chat, and exports on a single slice. "
         "ADA regroups the slice by the next useful segment.",

@@ -66,9 +66,15 @@ ada ask orders.csv "which category made the most revenue"
 - **Cleans conservatively and says what it changed**: encodings (UTF-8,
   UTF-16, Latin-1), `;` and tab delimiters, a title line above the header,
   `$1,203.55` and `(48.10)` style numbers, day/month order in dates, missing-value
-  markers. Identical rows are counted, not dropped.
+  markers, labels spelled differently only in case or accents (`No indica`,
+  `NO INDICA`). Identical rows are counted, not dropped.
 - **Detects column roles**: the date, the measure, the grouping column and an
-  ID column, from names, types and cardinality. Override any of them with
+  ID column, from names, values and cardinality. Numeric category codes (a 0/1
+  flag, a status, a set dose) group rows instead of being added up; a column of
+  unique row numbers is an ID; a running total such as a rain gauge's is never
+  the measure. A long table (one column naming the parameter, one holding the
+  result) is analyzed one parameter at a time, and a matrix of sample or
+  channel columns is measured by its row mean. Override any role with
   `ada.analyze(df, measure="OD600")` or in the app.
 - **Knows what can be added up**: money and counts are summed; rates
   (`Viability %`, `Churn Rate`), measured levels (`Water Temp (°C)`, `pH`,

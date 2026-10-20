@@ -87,11 +87,12 @@ censored value such as `<0.1`) do not count against the 95%. If the column
 converts, they become missing and a note lists them.
 
 A column whose name ends in a key word (`id`, `code`, `zip`, `postcode`,
-`phone`, `number`, `no`, `#` and others; `is_identifier_name` in
+`phone`, `number`, `no`, `#`, `notation` and others; `is_identifier_name` in
 `ada/schema.py`) is not converted when its values are whole numbers, since
 they are keys; decimals under such a name are measurements and are converted.
-A column with a value that has a leading zero (`02134`, `007`) is never
-converted.
+`no` counts only after another word or with a mark (`Order No`, `No.`), so a
+column of nitric oxide readings named `NO` is numeric. A column with a value
+that has a leading zero (`02134`, `007`) is never converted.
 
 **Dates in other columns.** Dates also arrive in columns called `Month`,
 `Period` or `FY`. For a column with any other name, the first 50 values must
@@ -152,7 +153,8 @@ inferred, identical rows found and removed, unreadable date values and
 infinite values. Its `notes` hold the sentences shown above the dashboard
 (date-order assumptions, timezones, unreadable dates, dates built from years,
 missing-value markers, merged label spellings, widened columns, infinities,
-identical rows).
+identical rows). `pipeline.prepare_analysis` adds what schema detection
+concluded about the columns (see [Schema detection](schema-detection.md#notes)).
 
 `pipeline.cleaning_audit_frame` turns the counts into the table shown in the
 app.
@@ -166,7 +168,7 @@ app.
 | Column that is 90% numeric | Left as text (below 95%) |
 | `Order Date` that is 85% parseable | Converted (above 80%), with the unreadable count reported |
 | `Customer ID` holding numbers | Left as text |
-| `Sample Code` holding decimals | Converted to numbers |
+| `NO` or `Sample Code` holding decimals | Converted to numbers |
 | `Yes`, `YES` and `yes` in one column | Merged into the most common spelling, with a note |
 | `Year` holding 1880 to 2023, and no date column | Converted to 1 January of each year, with a note |
 | `year` and `month` (`January` ...), and no date column | Combined into a monthly `year-month` column |
