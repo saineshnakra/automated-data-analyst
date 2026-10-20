@@ -171,7 +171,7 @@ class AnomalyEvidenceTests(unittest.TestCase):
         self.assertIn("Sep 2024", anomaly.statement)
         self.assertIn("trendline", anomaly.calculation)
         self.assertTrue(
-            any("anomalous periods" in item.title.lower() for item in brief.recommendations)
+            any("flagged periods" in item.title.lower() for item in brief.recommendations)
         )
 
 

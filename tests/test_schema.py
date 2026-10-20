@@ -4,7 +4,7 @@ import unittest
 
 import pandas as pd
 
-from ada.schema import IDENTIFIER_NAME_WORDS, detect_roles, is_identifier_name
+from ada.schema import IDENTIFIER_NAME_WORDS, detect_roles, is_design_name, is_identifier_name
 
 
 class IdentifierNameTests(unittest.TestCase):
@@ -54,6 +54,19 @@ class RoleDeterminismTests(unittest.TestCase):
 
         self.assertEqual(detect_roles(frame).date, "Order Date")
         self.assertEqual(detect_roles(frame[["Ship Date", "Order Date", "Revenue"]]).date, "Order Date")
+
+
+class DesignColumnTests(unittest.TestCase):
+    def test_a_replicate_number_is_not_picked_as_the_measure(self):
+        frame = pd.DataFrame({
+            "Treatment": ["Control", "Drug"] * 6,
+            "Replicate": [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6],
+            "Yield": [4.1, 3.2, 4.0, 3.1, 4.3, 3.3, 3.9, 3.0, 4.2, 3.4, 4.0, 3.2],
+        })
+        self.assertEqual(detect_roles(frame).measure, "Yield")
+        self.assertTrue(is_design_name("Replicate"))
+        self.assertTrue(is_design_name("Plate"))
+        self.assertFalse(is_design_name("Run Date"))
 
 
 if __name__ == "__main__":

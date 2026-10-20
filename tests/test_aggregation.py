@@ -3,7 +3,14 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from ada.aggregation import build_trend, measure_aggregation, preferred_frequency, segment_frame, trend_frame
+from ada.aggregation import (
+    build_trend,
+    heatmap_frame,
+    measure_aggregation,
+    preferred_frequency,
+    segment_frame,
+    trend_frame,
+)
 from ada.schema import ColumnRoles, detect_roles
 
 MONTHS = pd.date_range("2024-01-01", periods=12, freq="MS")
@@ -265,6 +272,27 @@ class SegmentDenominatorTests(unittest.TestCase):
         segments = segment_frame(frame, roles)
 
         self.assertAlmostEqual(float(segments["Value"].sum()), float(frame["Revenue"].sum()))
+
+
+class HeatmapTests(unittest.TestCase):
+    def test_an_averaged_measure_leaves_empty_cells_blank(self):
+        frame = pd.DataFrame({
+            "Date": pd.to_datetime(["2024-01-05", "2024-02-05", "2024-01-06"]),
+            "Site": ["North", "North", "South"],
+            "pH": [7.1, 7.3, 6.9],
+        })
+        roles = ColumnRoles(date="Date", measure="pH", dimension="Site", identifier=None,
+                            numeric=("pH",), dimensions=("Site",))
+        grid = heatmap_frame(frame, roles, frequency="M")
+        self.assertTrue(np.isnan(grid.loc["South", pd.Timestamp("2024-02-01")]))
+        self.assertAlmostEqual(grid.loc["North", pd.Timestamp("2024-01-01")], 7.1)
+
+    def test_segment_frame_can_keep_every_segment(self):
+        frame = pd.DataFrame({"Store": [f"S{i}" for i in range(150)], "Revenue": [1.0] * 150})
+        roles = ColumnRoles(date=None, measure="Revenue", dimension="Store", identifier=None,
+                            numeric=("Revenue",), dimensions=("Store",))
+        self.assertEqual(len(segment_frame(frame, roles, limit=None)), 150)
+        self.assertEqual(len(segment_frame(frame, roles)), 12)
 
 
 if __name__ == "__main__":

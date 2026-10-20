@@ -93,7 +93,7 @@ class NLQParsingTests(unittest.TestCase):
         self.assertEqual(result.plan.intent, "growth")
         self.assertEqual(result.plan.dimension, "Product")
         self.assertIn("Change %", result.table.columns)
-        self.assertIn("fastest", result.answer)
+        self.assertIn("rose most", result.answer)
 
     def test_count_distinct_entities(self):
         result = self.ask("how many orders are there?")
@@ -589,6 +589,46 @@ class AnswerWordingTests(unittest.TestCase):
 
         self.assertIn("Beta", answer.answer)
         self.assertIn("started from zero", answer.answer)
+
+
+class LevelQuestionTests(unittest.TestCase):
+    def setUp(self):
+        months = pd.date_range("2024-01-01", periods=6, freq="MS")
+        rows = []
+        for index, month in enumerate(months):
+            rows.append((month, "North", 14.0 - (2.0 if index == 5 else 0.0)))
+            rows.append((month, "South", 12.0 + (0.5 if index == 5 else 0.0)))
+        self.frame = pd.DataFrame(rows, columns=["Survey Date", "Site", "Water Temp (°C)"])
+        self.roles = detect_roles(self.frame)
+
+    def ask(self, question):
+        return answer_question(question, self.frame, self.roles)
+
+    def test_growth_of_a_level_is_a_difference(self):
+        result = self.ask("water temp growth")
+        self.assertIn("down 0.75", result.answer)
+        self.assertIn("period average", result.calculation)
+
+    def test_segments_of_a_level_rank_by_change_in_average(self):
+        result = self.ask("which site grew fastest")
+        self.assertIn("South rose most: +0.5 (12 → 12.50)", result.answer)
+        self.assertIn("Change", result.table.columns)
+
+    def test_the_suggested_question_averages_a_level(self):
+        self.assertIn("Average Water Temp (°C)", suggested_questions(self.frame, self.roles))
+
+
+class PluralAndWordMatchTests(unittest.TestCase):
+    def test_an_ies_plural_matches_a_y_column(self):
+        frame = pd.DataFrame({"Category": list("abcabcabca"), "Revenue": [float(i) for i in range(10)]})
+        result = answer_question("top 2 categories by revenue", frame, detect_roles(frame))
+        self.assertEqual(result.plan.dimension, "Category")
+
+    def test_a_column_name_does_not_flip_the_ranking(self):
+        frame = pd.DataFrame({"Store": ["A", "A", "B", "B"], "Lowest Price": [1.0, 2.0, 10.0, 20.0]})
+        result = answer_question("which store has the highest lowest price", frame, detect_roles(frame))
+        self.assertFalse(result.plan.ascending)
+        self.assertTrue(result.answer.startswith("B "))
 
 
 if __name__ == "__main__":

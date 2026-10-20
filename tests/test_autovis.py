@@ -185,5 +185,25 @@ class ExploreFrameTests(unittest.TestCase):
         self.assertEqual(len(shown), 3)
 
 
+class AggregationDefaultTests(unittest.TestCase):
+    def test_an_averaged_measure_over_time_is_a_line(self):
+        frame = pd.DataFrame({
+            "Date": pd.date_range("2024-01-01", periods=12, freq="MS"),
+            "pH": np.linspace(6.8, 7.4, 12),
+        })
+        spec = recommend_chart(frame, ["Date", "pH"])
+        self.assertEqual(spec.form, "line")
+        self.assertEqual(spec.aggregation, "mean")
+
+    def test_an_amount_keeps_the_filled_area(self):
+        frame = pd.DataFrame({
+            "Date": pd.date_range("2024-01-01", periods=12, freq="MS"),
+            "Revenue": np.linspace(100, 200, 12),
+        })
+        spec = recommend_chart(frame, ["Date", "Revenue"])
+        self.assertEqual(spec.form, "area")
+        self.assertEqual(spec.aggregation, "sum")
+
+
 if __name__ == "__main__":
     unittest.main()

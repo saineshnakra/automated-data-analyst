@@ -268,8 +268,8 @@ def trend_frame(
     return build_trend(dataframe, roles, frequency).frame
 
 
-def segment_frame(dataframe: pd.DataFrame, roles: ColumnRoles, limit: int = 12) -> pd.DataFrame:
-    """Rank the selected business segment by the selected measure or record count."""
+def segment_frame(dataframe: pd.DataFrame, roles: ColumnRoles, limit: int | None = 12) -> pd.DataFrame:
+    """Rank the grouping column's values by the measure, or by record count; ``limit=None`` keeps all."""
     if not roles.dimension:
         return pd.DataFrame(columns=["Segment", "Value"])
 
@@ -292,7 +292,8 @@ def segment_frame(dataframe: pd.DataFrame, roles: ColumnRoles, limit: int = 12) 
             .size()
             .rename(columns={"__segment": "Segment", "size": "Value"})
         )
-    return result.sort_values("Value", ascending=False).head(limit).reset_index(drop=True)
+    result = result.sort_values("Value", ascending=False)
+    return (result if limit is None else result.head(limit)).reset_index(drop=True)
 
 
 UNLABELLED_SEGMENT = "(not recorded)"
@@ -406,12 +407,13 @@ def heatmap_frame(
     frequency = frequency or _period_frequency(working["__date"])
     working["Period"] = working["__date"].dt.to_period(frequency).dt.to_timestamp()
     if roles.measure:
-        pivot = (
-            working.groupby(["__segment", "Period"])["__measure"]
-            .agg(measure_aggregation(roles.measure))
-            .unstack(fill_value=0)
-        )
+        metric = resolve_metric(roles.measure)
+        grouped = working.groupby(["__segment", "Period"])["__measure"].agg(metric.aggregation)
+        # An averaged measure has no value in an empty cell, so it stays blank.
+        pivot = grouped.unstack(fill_value=0) if metric.additive else grouped.unstack()
+        order = pivot.sum(axis=1) if metric.additive else pivot.mean(axis=1)
     else:
         pivot = working.groupby(["__segment", "Period"]).size().unstack(fill_value=0)
+        order = pivot.sum(axis=1)
     pivot.index.name = roles.dimension
-    return pivot.loc[pivot.sum(axis=1).sort_values(ascending=False).index]
+    return pivot.loc[order.sort_values(ascending=False).index]

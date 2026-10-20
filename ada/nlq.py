@@ -14,7 +14,7 @@ from typing import Literal
 import pandas as pd
 
 from .aggregation import TrendSeries, build_trend, measure_aggregation, preferred_frequency, unlabelled_label
-from .formatting import format_number, format_rate_change
+from .formatting import format_change, format_number, sentence_case
 from .metrics import resolve_metric
 from .schema import ColumnRoles
 
@@ -156,9 +156,14 @@ def _norm(text: str) -> str:
 
 
 def _word_variants(normalized_name: str) -> set[str]:
+    """The name with simple English plurals added or removed ("category", "categories")."""
     variants = {normalized_name, f"{normalized_name}s", f"{normalized_name}es"}
     if normalized_name.endswith("s"):
         variants.add(normalized_name[:-1])
+    if re.search(r"[^aeiou]y$", normalized_name):
+        variants.add(f"{normalized_name[:-1]}ies")
+    if normalized_name.endswith("ies"):
+        variants.add(f"{normalized_name[:-3]}y")
     return variants
 
 
@@ -187,9 +192,9 @@ def _without_columns(question: str, columns: tuple[str | None, ...]) -> str:
     return " ".join(blanked.split())
 
 
-def _is_rate(measure: str | None) -> bool:
-    """Whether this measure moves in percentage points rather than percent."""
-    return bool(measure) and resolve_metric(measure).unit == "rate"
+def _unit(measure: str | None) -> str:
+    """The measure's unit from the metric contract: amount, rate, level or count."""
+    return resolve_metric(measure).unit if measure else "count"
 
 
 def _match_column(question: str, columns: list[str]) -> str | None:
@@ -401,9 +406,9 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
         return QueryPlan(intent="count", aggregation="count", count_column=countable, **ungrouped)
 
     if wants_growth and roles.date:
-        wants_ranked_growth = superlative or any(word in q for word in ("which", "fastest", "slowest"))
+        wants_ranked_growth = superlative or bool(re.search(r"\b(which|fastest|slowest)\b", intent_text))
         rank_dimension = dimension or (roles.dimension if wants_ranked_growth else None)
-        ascending = bool(re.search(ASCENDING_PATTERN, q))
+        ascending = bool(re.search(ASCENDING_PATTERN, intent_text))
         top_n = int(top_match.group(2)) if top_match else None
         return QueryPlan(
             intent="growth", dimension=rank_dimension, ascending=ascending, top_n=top_n, **base
@@ -415,7 +420,7 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
             ascending = top_match.group(1) == "bottom"
         else:
             top_n = 1
-            ascending = bool(re.search(ASCENDING_PATTERN, q))
+            ascending = bool(re.search(ASCENDING_PATTERN, intent_text))
         return QueryPlan(
             intent="rank",
             aggregation=_grouped_aggregation(aggregation, explicit_extreme, default_aggregation),
@@ -624,7 +629,7 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
         # Format a row count as a plain number, not in the measure's unit.
         counted = value_label == "Rows"
         answer = (
-            f"{leader[plan.dimension]} is the {direction} {plan.dimension} by {value_label.lower()}"
+            f"{leader[plan.dimension]} is the {direction} {plan.dimension} by {sentence_case(value_label)}"
             f"{_phrase(applied)} at "
             f"{format_number(leader_value, None if counted else plan.measure)}{share_note}."
         )
@@ -665,21 +670,14 @@ def execute_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -
             )
         first, last = float(trend.iloc[0]["Value"]), float(trend.iloc[-1]["Value"])
         grain_name = {"D": "day", "W": "week", "M": "month", "Q": "quarter", "Y": "year"}.get(grain, "period")
-        # Rates move in percentage points: 3% to 4% is +1 point, not +33.3%.
-        if _is_rate(plan.measure):
-            column = dataframe[plan.measure].dropna() if plan.measure in dataframe else None
-            direction = "+" if last >= first else "-"
-            movement = (
-                f"{direction}{format_rate_change(last - first, column)} "
-                f"across {len(trend)} {grain_name}s"
-            )
-        else:
-            # Percent change from a zero start is undefined, so it is omitted.
-            movement = (
-                f"{(last - first) / abs(first) * 100:+.1f}% across {len(trend)} {grain_name}s"
-                if first
-                else f"across {len(trend)} {grain_name}s, from a starting period of zero"
-            )
+        # Rates move in points and levels by a plain difference (see format_change).
+        column = working[plan.measure].dropna() if plan.measure else None
+        size = format_change(first, last, plan.measure, _unit(plan.measure), column, signed=True)
+        movement = (
+            f"{size} across {len(trend)} {grain_name}s"
+            if size
+            else f"across {len(trend)} {grain_name}s, from a starting period of zero"
+        )
         answer = (
             f"{plan.measure or 'Records'} per {grain_name}{_phrase(applied)} moved from "
             f"{format_number(first, plan.measure)} to {format_number(last, plan.measure)} "
@@ -737,10 +735,15 @@ def _execute_growth(
         )
         frame = frame.assign(__period=frame[roles.date].dt.to_period(grain).dt.to_timestamp())
         frame = frame[frame["__period"].isin([previous_period, current_period])]
-        if measure:
+        relative = not measure or resolve_metric(measure).additive
+        if not measure:
+            pivot = frame.groupby([plan.dimension, "__period"]).size().unstack(fill_value=0)
+        elif relative:
             pivot = frame.groupby([plan.dimension, "__period"])[measure].sum().unstack(fill_value=0.0)
         else:
-            pivot = frame.groupby([plan.dimension, "__period"]).size().unstack(fill_value=0)
+            # Average rates and levels per segment; a segment absent from either
+            # period has no change to rank.
+            pivot = frame.groupby([plan.dimension, "__period"])[measure].mean().unstack().dropna()
         if previous_period not in pivot.columns or current_period not in pivot.columns:
             return QueryAnswer(
                 question="",
@@ -755,6 +758,8 @@ def _execute_growth(
                 "Latest": pivot[current_period].to_numpy(dtype=float),
             }
         )
+        if not relative:
+            return _rank_level_changes(plan, result, working, scope, applied)
         # Growth from zero is undefined, so those segments leave the ranking but
         # are still named in the answer.
         from_nothing = result[(result["Previous"] == 0) & (result["Latest"] != 0)]
@@ -788,9 +793,9 @@ def _execute_growth(
         if plan.top_n:
             result = result.head(plan.top_n)
         leader = result.iloc[0]
-        direction = "slowest" if plan.ascending else "fastest"
         answer = (
-            f"{leader[plan.dimension]} moved {direction}{_phrase(applied)}: {leader['Change %']:+.1f}% "
+            f"{leader[plan.dimension]} {_ranked_move(leader['Change %'], plan.ascending)}"
+            f"{_phrase(applied)}: {leader['Change %']:+.1f}% "
             f"({format_number(float(leader['Previous']), measure)} → "
             f"{format_number(float(leader['Latest']), measure)}) in the latest period."
         )
@@ -815,35 +820,83 @@ def _execute_growth(
         )
 
     previous, current = float(trend.iloc[-2]["Value"]), float(trend.iloc[-1]["Value"])
-    if previous == 0:
+    unit = _unit(measure)
+    column = working[measure].dropna() if measure else None
+    size = format_change(previous, current, measure, unit, column)
+    if size is None:
         return QueryAnswer(
             question="",
             plan=plan,
-            answer="The previous period is zero, so a growth rate is undefined.",
-            calculation=f"growth undefined for zero base{scope}",
+            answer="The previous period is zero or missing, so the change is undefined.",
+            calculation=f"change undefined for a zero or missing base{scope}",
         )
-    if _is_rate(measure):
-        column = working[measure].dropna() if measure and measure in working else None
-        direction = "up" if current >= previous else "down"
-        answer = (
-            f"{measure}{_phrase(applied)} is {direction} "
-            f"{format_rate_change(current - previous, column)} versus the prior "
-            f"period ({format_number(previous, measure)} → {format_number(current, measure)})."
-        )
+    direction = "up" if current >= previous else "down"
+    answer = (
+        f"{measure or 'Records'}{_phrase(applied)} is {direction} {size} versus the prior "
+        f"period ({format_number(previous, measure)} → {format_number(current, measure)})."
+    )
+    if unit in ("rate", "level"):
+        formula = f"latest − previous period average{scope}"
     else:
-        change = (current - previous) / abs(previous) * 100
-        direction = "up" if change >= 0 else "down"
-        answer = (
-            f"{measure or 'Records'}{_phrase(applied)} is {direction} {abs(change):.1f}% versus the "
-            f"prior period ({format_number(previous, measure)} → {format_number(current, measure)})."
-        )
+        formula = f"(latest − previous) ÷ |previous| on period {'totals' if measure else 'counts'}{scope}"
     return QueryAnswer(
         question="",
         plan=plan,
         answer=answer,
-        calculation=_with_notes(f"(latest − previous) ÷ |previous| on period sums{scope}", series),
+        calculation=_with_notes(formula, series),
         table=trend,
         chart="line",
+    )
+
+
+def _ranked_move(change: float, ascending: bool) -> str:
+    """Describe the top of a change ranking: "rose most", "fell least" and so on."""
+    if ascending:
+        return "fell most" if change < 0 else "rose least"
+    return "rose most" if change >= 0 else "fell least"
+
+
+def _rank_level_changes(
+    plan: QueryPlan,
+    result: pd.DataFrame,
+    working: pd.DataFrame,
+    scope: str,
+    applied: list[str],
+) -> QueryAnswer:
+    """Rank segments of a rate or level measure by the change in their average."""
+    measure = plan.measure
+    unit = _unit(measure)
+    column = working[measure].dropna()
+    result["Change"] = result["Latest"] - result["Previous"]
+    result = result.sort_values("Change", ascending=plan.ascending).reset_index(drop=True)
+    if plan.top_n:
+        result = result.head(plan.top_n)
+    if result.empty:
+        return QueryAnswer(
+            question="",
+            plan=plan,
+            answer=f"No {plan.dimension} has values in both of the latest two periods.",
+            calculation=f"per-{plan.dimension} change unavailable{scope}",
+        )
+    leader = result.iloc[0]
+    previous, latest = float(leader["Previous"]), float(leader["Latest"])
+    size = format_change(previous, latest, measure, unit, column, signed=True)
+    answer = (
+        f"{leader[plan.dimension]} {_ranked_move(latest - previous, plan.ascending)}"
+        f"{_phrase(applied)}: {size} "
+        f"({format_number(previous, measure)} → {format_number(latest, measure)}) in the latest period."
+    )
+    unit_label = "percentage points" if unit == "rate" else "difference"
+    return QueryAnswer(
+        question="",
+        plan=plan,
+        answer=answer,
+        calculation=(
+            f"per-{plan.dimension} average {measure}: latest − previous period, "
+            f"ranked by {unit_label}{scope}"
+        ),
+        table=result.head(BREAKDOWN_LIMIT),
+        chart="bar",
     )
 
 
@@ -879,7 +932,7 @@ def suggested_questions(dataframe: pd.DataFrame, roles: ColumnRoles) -> list[str
     """Return up to four starter questions the rule-based parser can answer."""
     suggestions: list[str] = []
     if roles.measure:
-        suggestions.append(f"Total {roles.measure}")
+        suggestions.append(f"{resolve_metric(roles.measure).combines_as.capitalize()} {roles.measure}")
     if roles.measure and roles.dimension:
         suggestions.append(f"Top 5 {roles.dimension} by {roles.measure}")
     if roles.measure and roles.date:

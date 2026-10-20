@@ -14,7 +14,7 @@ from ada.business_insights import (
 from ada.demo_data import make_demo_data
 from ada.formatting import format_number
 from ada.pipeline import prepare_analysis
-from ada.schema import detect_roles
+from ada.schema import ColumnRoles, detect_roles
 
 MONTHS = pd.date_range("2024-01-01", periods=12, freq="MS")
 
@@ -152,7 +152,8 @@ class BusinessAnalysisTests(unittest.TestCase):
         # Summed, the four margins would read 136%, so a rate gets an average and no total.
         self.assertNotIn("Total Gross Margin", kpi_labels)
         self.assertIn("Average Gross Margin", kpi_labels)
-        self.assertIn("Gross Margin increased 10.7%", report)
+        # A rate moves in points: 28% to 31% is 3 points, not +10.7%.
+        self.assertIn("Gross Margin increased by 3.0 percentage points", report)
         self.assertIn("from 28.0% to 31.0%", report)
 
     def test_negative_latest_period_prioritizes_diagnosis(self):
@@ -233,7 +234,7 @@ class BusinessAnalysisTests(unittest.TestCase):
 
         self.assertFalse([item for item in brief.evidence if item.kind == "concentration"])
         leader = next(item for item in brief.evidence if item.kind == "leader")
-        self.assertIn("no share of the total can be quoted", leader.statement)
+        self.assertIn("shares of the total are not shown", leader.statement)
         self.assertNotIn("%", leader.statement)
 
     def test_an_all_negative_measure_ranks_by_size_of_the_loss(self):
@@ -475,8 +476,7 @@ class AdditiveMeasureTests(unittest.TestCase):
 
     def test_an_additive_leader_still_quotes_a_share(self):
         leader = next(e for e in self.brief.evidence if e.kind == "leader")
-        self.assertIn("contributing", leader.statement, leader.statement)
-        self.assertIn("66.7%", leader.statement, leader.statement)
+        self.assertIn("with 66.7% of revenue", leader.statement, leader.statement)
 
     def test_an_additive_measure_keeps_its_concentration_card(self):
         self.assertIn("concentration", [e.kind for e in self.brief.evidence])
@@ -536,6 +536,67 @@ class ColumnNameCollisionTests(unittest.TestCase):
         prepared = prepare_analysis(frame, row_limit=1000)
 
         self.assertTrue(prepared.analyze().headline)
+
+
+def site_temperatures() -> pd.DataFrame:
+    """Two sites over six months; the last month is 2 °C colder at North."""
+    months = pd.date_range("2024-01-01", periods=6, freq="MS")
+    rows = []
+    for index, month in enumerate(months):
+        rows.append((month, "North", 14.0 - (2.0 if index == 5 else 0.0)))
+        rows.append((month, "South", 12.0))
+    return pd.DataFrame(rows, columns=["Survey Date", "Site", "Water Temp (°C)"])
+
+
+class LevelMeasureTests(unittest.TestCase):
+    def setUp(self):
+        self.brief = analyze_business(site_temperatures())
+        self.evidence = {item.kind: item for item in self.brief.evidence}
+
+    def test_the_change_is_a_difference_not_a_percentage(self):
+        trend = self.evidence["trend"]
+        self.assertEqual(trend.value, "-1")
+        self.assertIn("decreased by 1 in the latest complete period", trend.statement)
+        self.assertIn("from 13 to 12", trend.statement)
+        self.assertNotIn("%", trend.value)
+
+    def test_segments_are_compared_by_average_without_shares(self):
+        leader = self.evidence["leader"]
+        self.assertIn("highest average Water Temp (°C)", leader.statement)
+        self.assertIn("South has the lowest", leader.statement)
+        self.assertNotIn("concentration", self.evidence)
+
+    def test_the_driver_quotes_no_share_of_the_net_change(self):
+        self.assertNotIn("net movement", self.evidence["driver"].statement)
+
+    def test_no_total_kpi_for_a_level(self):
+        labels = [kpi.label for kpi in self.brief.kpis]
+        self.assertNotIn("Total Water Temp (°C)", labels)
+        self.assertIn("Average Water Temp (°C)", labels)
+
+    def test_recommendations_use_no_business_vocabulary(self):
+        text = " ".join(f"{item.title} {item.action}" for item in self.brief.recommendations).lower()
+        for word in ("pricing", "customer", "channel", "revenue", "playbook"):
+            self.assertNotIn(word, text)
+
+
+class DriverToneTests(unittest.TestCase):
+    def test_a_rising_cost_driver_is_named_in_the_recommendation(self):
+        months = pd.date_range("2024-01-01", periods=6, freq="MS")
+        rows = []
+        for index, month in enumerate(months):
+            rows += [(month, "Ops", 100.0 + (60.0 if index == 5 else 0.0)), (month, "Sales", 50.0)]
+        brief = analyze_business(pd.DataFrame(rows, columns=["Month", "Team", "Cost"]))
+        self.assertEqual(brief.recommendations[0].title, "Start with Ops")
+
+
+class ShareDenominatorTests(unittest.TestCase):
+    def test_shares_use_every_segment(self):
+        frame = pd.DataFrame({"Store": [f"S{i:03d}" for i in range(150)], "Revenue": [1.0] * 150})
+        roles = ColumnRoles(date=None, measure="Revenue", dimension="Store", identifier=None,
+                            numeric=("Revenue",), dimensions=("Store",))
+        leader = next(item for item in analyze_business(frame, roles).evidence if item.kind == "leader")
+        self.assertEqual(leader.value, "0.7%")
 
 
 if __name__ == "__main__":

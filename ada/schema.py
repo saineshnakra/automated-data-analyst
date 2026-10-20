@@ -75,6 +75,8 @@ MODIFIER_WEIGHT = 2 / 3
 
 IDENTIFIER_TOKENS = ("id", "uuid", "key", "code", "number", "invoice", "order")
 TIME_PART_TOKENS = ("year", "month", "week", "day", "hour", "minute", "quarter")
+# Experimental-design columns are numbered but hold labels, not quantities.
+DESIGN_TOKENS = frozenset({"replicate", "rep", "batch", "plate", "well", "run", "trial", "block", "lane"})
 
 # Head words that mark a column as a key rather than a quantity. Such columns stay
 # text through reading and cleaning, so an account number 00042 keeps its zeros.
@@ -112,6 +114,12 @@ def is_identifier_name(name: str) -> bool:
     """
     words = _head_words(name)
     return bool(words) and words[-1] in IDENTIFIER_NAME_WORDS
+
+
+def is_design_name(name: str) -> bool:
+    """Whether the name marks an experimental-design label such as "Replicate" or "Plate"."""
+    words = _head_words(name)
+    return bool(words) and words[-1] in DESIGN_TOKENS
 
 
 def _named_like_a_date(name: str) -> bool:
@@ -171,7 +179,7 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
         default=None,
     )
 
-    measure_candidates: list[tuple[int, float, str]] = []
+    measure_candidates: list[tuple[int, float, float, str]] = []
     for column in numeric:
         series = dataframe[column]
         name = normalized_name(column)
@@ -179,6 +187,8 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
         if looks_like_identifier(column, series):
             score -= 20
         if any(token == name or name.endswith(f" {token}") for token in TIME_PART_TOKENS):
+            score -= 15
+        if is_design_name(column):
             score -= 15
         non_null_ratio = float(series.notna().mean())
         # Amounts carry fractions; postal codes and counters do not. A weak

@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 
+from .metrics import resolve_metric
+
 # Series past MAX_SERIES fold into "Other" (extra hues are hard to tell apart);
 # categories past MAX_BARS render as a table.
 MAX_SERIES = 4
@@ -86,21 +88,27 @@ def recommend_chart(
     dataframe: pd.DataFrame,
     columns: list[str],
     *,
-    aggregation: str = "sum",
+    aggregation: str | None = None,
 ) -> ChartSpec:
-    """Pick the form that suits these columns, and say why."""
+    """Pick the form that suits these columns, and say why.
+
+    ``aggregation`` defaults to the measure's own (``metrics.resolve_metric``):
+    a mean for rates and levels, a sum otherwise.
+    """
     columns = [column for column in columns if column in dataframe.columns]
     if not columns:
         return ChartSpec(form="none", rationale="Pick a column to chart.")
 
     groups = _classify(dataframe, columns)
     dates, numbers, categories = groups["datetime"], groups["numeric"], groups["category"]
+    if aggregation is None:
+        aggregation = resolve_metric(numbers[0]).aggregation if numbers else "sum"
     notes: list[str] = []
 
     if len(numbers) > 1:
         notes.append(
             f"Charting {numbers[0]} only. Two measures on one chart would need two "
-            "scales, which makes their lines comparable by accident rather than by fact."
+            "scales, and lines on different scales are easy to misread as comparable."
         )
 
     # A date with a measure is always a trend, whatever else was picked.
@@ -112,8 +120,8 @@ def recommend_chart(
             if distinct > MAX_SERIES:
                 notes.append(
                     f"{segment} has {distinct} values; the {MAX_SERIES} largest are drawn "
-                    "and the rest are grouped as Other, because more lines than that stop "
-                    "being tellable apart."
+                    "and the rest are grouped as Other, because more lines than that are hard "
+                    "to tell apart."
                 )
             return ChartSpec(
                 form="line",
@@ -127,15 +135,23 @@ def recommend_chart(
                 ),
                 notes=tuple(notes),
             )
+        if aggregation == "mean":
+            # Filling down to zero suggests an accumulating quantity, which an
+            # average (a rate, a temperature) is not.
+            return ChartSpec(
+                form="line",
+                x=date,
+                y=measure,
+                aggregation=aggregation,
+                rationale=f"The average {measure} per period as a single line.",
+                notes=tuple(notes),
+            )
         return ChartSpec(
             form="area",
             x=date,
             y=measure,
             aggregation=aggregation,
-            rationale=(
-                f"{measure} over time as a single filled series, because there is one "
-                "thing to follow and the shape of the movement is the point."
-            ),
+            rationale=f"{measure} over time as a single filled series, since there is one series to follow.",
             notes=tuple(notes),
         )
 
@@ -180,8 +196,8 @@ def recommend_chart(
                 y=measure,
                 aggregation=aggregation,
                 rationale=(
-                    f"{category} has {distinct} values. Past about {MAX_BARS} bars nobody "
-                    "reads the chart, so the numbers are shown as a table instead."
+                    f"{category} has {distinct} values. More than about {MAX_BARS} bars are "
+                    "hard to read, so the numbers are shown as a table instead."
                 ),
                 notes=tuple(notes),
             )
@@ -218,8 +234,8 @@ def recommend_chart(
             y=None,
             aggregation="count",
             rationale=(
-                "Records per period. With no measure chosen, how often something "
-                "happened is the only honest thing to plot."
+                "Records per period. With no measure chosen, the number of records is "
+                "what can be plotted."
             ),
             notes=tuple(notes),
         )

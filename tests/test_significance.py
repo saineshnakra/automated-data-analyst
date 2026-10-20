@@ -69,7 +69,7 @@ class CorrelationEvidenceTests(unittest.TestCase):
         self.assertIn("95% CI", relationship.statement)
         self.assertIn("n = 300", relationship.statement)
         self.assertNotIn("cannot be told apart", relationship.statement)
-        self.assertIn("not proof of causation", relationship.statement)
+        self.assertIn("not as evidence of cause", relationship.statement)
 
     def test_a_correlation_from_a_thin_sample_is_reported_as_inconclusive(self):
         """With n = 13, r is 0.55 but its 95% interval (-0.003 to 0.84) includes zero."""

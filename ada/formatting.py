@@ -41,8 +41,9 @@ PERCENTAGE_TOKENS = {"rate", "margin", "ratio"}
 MAX_PLAUSIBLE_PERCENTAGE = 1_000.0
 
 
-# Split camelCase so "netRevenue" normalizes like "net_revenue".
-_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+# Split camelCase so "netRevenue" normalizes like "net_revenue" and "customerID"
+# like "customer id", without splitting short units such as "pH".
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z][a-z])|(?<=[a-z])(?=[A-Z]{2,})")
 
 
 def normalized_name(name: str) -> str:
@@ -109,6 +110,35 @@ def format_rate_change(delta: float, column_values: pd.Series | None) -> str:
         return "an unmeasurable amount"
     points = delta * 100 if rate_scale(column_values, delta) == "fraction" else delta
     return f"{abs(points):.1f} percentage points"
+
+
+def format_change(
+    previous: float,
+    current: float,
+    column: str | None,
+    unit: str,
+    column_values: pd.Series | None = None,
+    *,
+    signed: bool = False,
+) -> str | None:
+    """Size of the move from ``previous`` to ``current`` in the measure's own terms.
+
+    Amounts and counts change by a percentage of the previous value, rates by
+    percentage points, and levels (temperature, pH) by the plain difference.
+    Returns None when the change is undefined: a non-finite value, or a
+    percentage change from zero.
+    """
+    if not (np.isfinite(previous) and np.isfinite(current)):
+        return None
+    delta = current - previous
+    sign = ("-" if delta < 0 else "+") if signed else ""
+    if unit == "rate":
+        return sign + format_rate_change(delta, column_values)
+    if unit == "level":
+        return sign + format_number(abs(delta), column, column_values=column_values)
+    if previous == 0:
+        return None
+    return sign + format_percentage(abs(delta) / abs(previous) * 100)
 
 
 def _column_reads_as_percentage(value: float, column_values: pd.Series | None) -> bool:
@@ -226,7 +256,23 @@ def format_number(
     if float(value).is_integer():
         return f"{int(value):,}"
 
+    # Three significant figures below 1, so 0.0012 doesn't print as 0.00.
+    if abs(value) < 1:
+        return f"{value:.3g}"
+
     return f"{value:,.2f}"
+
+
+def sentence_case(name: str) -> str:
+    """Lowercase the ordinary capitalised words of a column name for use mid-sentence.
+
+    "Water Temp (°C)" becomes "water temp (°C)"; acronyms and units such as
+    "SKU", "OD600" and "pH" are left alone.
+    """
+    return " ".join(
+        word.lower() if word[:1].isupper() and word[1:].islower() else word
+        for word in str(name).split()
+    )
 
 
 def format_percentage(value: float, *, signed: bool = False) -> str:

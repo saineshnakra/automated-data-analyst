@@ -18,6 +18,7 @@ from .autovis import fold_small_series, recommend_chart
 from .business_insights import BusinessBrief
 from .forecasting import build_forecast, describe_backtest
 from .formatting import format_number, format_period
+from .metrics import resolve_metric
 from .nlq import QueryAnswer
 from .schema import ColumnRoles
 
@@ -167,7 +168,7 @@ def render_evidence(brief: BusinessBrief, *, limit: int | None = None) -> None:
     evidence = brief.evidence[:limit] if limit else brief.evidence
     if not evidence:
         st.markdown(
-            '<div class="empty-state">No strong signal yet. Open “Tune detection” and select a date, metric, and segment.</div>',
+            '<div class="empty-state">No strong signal yet. Open “Tune ADA\'s schema detection” and pick a date, metric and grouping column.</div>',
             unsafe_allow_html=True,
         )
         return
@@ -239,6 +240,17 @@ def style_chart(figure: go.Figure, *, height: int = 390) -> go.Figure:
     return figure
 
 
+def _trend_figure(frame: pd.DataFrame, measure: str | None, **options) -> go.Figure:
+    """Period values as a filled area for totals, or a plain line for averages."""
+    if measure and not resolve_metric(measure).additive:
+        figure = px.line(frame, x="Period", y="Value", markers=True, color_discrete_sequence=[ACCENT], **options)
+        figure.update_traces(line={"width": 3})
+        return figure
+    figure = px.area(frame, x="Period", y="Value", markers=True, color_discrete_sequence=[ACCENT], **options)
+    figure.update_traces(line={"width": 3}, fillcolor="rgba(99,91,255,.11)")
+    return figure
+
+
 def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
     series = build_trend(dataframe, roles)
     trend = series.frame
@@ -246,16 +258,12 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
     chart_columns = st.columns(2, gap="medium")
     with chart_columns[0]:
         if not trend.empty:
-            figure = px.area(
+            figure = _trend_figure(
                 trend,
-                x="Period",
-                y="Value",
-                markers=True,
+                roles.measure,
                 title=f"{roles.measure or 'Records'} over time",
                 labels=axis_names(roles, series.frequency),
-                color_discrete_sequence=[ACCENT],
             )
-            figure.update_traces(line={"width": 3}, fillcolor="rgba(99,91,255,.11)")
             anomalies = detect_anomalies(trend)
             if anomalies:
                 figure.add_trace(
@@ -270,7 +278,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                             "color": "#E35D6A",
                             "line": {"width": 2, "color": "white"},
                         },
-                        hovertemplate="%{x|%b %Y}: %{y:,.0f} — outside the expected band<extra>Anomaly</extra>",
+                        hovertemplate="%{x|%b %Y}: %{y:,.0f}, outside the expected band<extra>Anomaly</extra>",
                     )
                 )
             forecast = build_forecast(trend)
@@ -294,7 +302,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                         mode="lines",
                         name="Forecast",
                         line={"width": 2.5, "dash": "dash", "color": "#8B5CF6"},
-                        hovertemplate="%{x|%b %Y}: %{y:,.0f} — baseline forecast<extra></extra>",
+                        hovertemplate="%{x|%b %Y}: %{y:,.0f} (forecast)<extra></extra>",
                     )
                 )
             st.plotly_chart(style_chart(figure), width="stretch", config={"displayModeBar": False})
@@ -339,7 +347,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                     hovertemplate="%{x}: %{delta:+,.0f}<extra></extra>",
                 )
             )
-            waterfall.update_layout(title=f"What moved {roles.measure} — latest vs previous period")
+            waterfall.update_layout(title=f"What moved {roles.measure}: latest vs previous period")
             st.plotly_chart(style_chart(waterfall), width="stretch", config={"displayModeBar": False})
         else:
             st.markdown(
@@ -415,18 +423,10 @@ def _chat_answer_figure(result: QueryAnswer) -> go.Figure | None:
     if table is None or table.empty or result.chart is None:
         return None
     if result.chart == "line" and {"Period", "Value"}.issubset(table.columns):
-        figure = px.area(
-            table,
-            x="Period",
-            y="Value",
-            markers=True,
-            title=result.plan.measure or "Records",
-            color_discrete_sequence=[ACCENT],
-        )
-        figure.update_traces(line={"width": 3}, fillcolor="rgba(99,91,255,.11)")
+        figure = _trend_figure(table, result.plan.measure, title=result.plan.measure or "Records")
         return style_chart(figure, height=320)
     category = table.columns[0]
-    value = "Change %" if "Change %" in table.columns else table.columns[1]
+    value = next((name for name in ("Change %", "Change") if name in table.columns), table.columns[1])
     figure = px.bar(
         table.sort_values(value),
         x=value,
@@ -472,7 +472,7 @@ def render_chat_fallback(suggestions: list[str]) -> None:
     """Render the reply for a question that maps to no local calculation."""
     st.markdown(
         "I map questions to transparent calculations, and I could not map that one. "
-        "Try naming a metric, a segment, or a time scope — for example:"
+        "Try naming a metric, a segment, or a time scope, for example:"
     )
     st.markdown("\n".join(f"- {suggestion}" for suggestion in suggestions))
 
@@ -499,11 +499,12 @@ def _explore_frame(
         return dataframe[columns].dropna().head(20_000)
 
     grouping = [column for column in (spec.x, spec.y, spec.color) if column]
-    # A heatmap and its fallback table (for grids too large to draw) both sum a
-    # measure across two categories.
+    how = "mean" if spec.aggregation == "mean" else "sum"
+    # A heatmap and its fallback table (for grids too large to draw) both
+    # aggregate a measure across two categories.
     if spec.color and spec.x and spec.y and spec.form in ("heatmap", "table"):
         keys = [spec.y, spec.x]
-        grid = dataframe.groupby(keys, dropna=True, observed=True)[spec.color].sum().reset_index()
+        grid = dataframe.groupby(keys, dropna=True, observed=True)[spec.color].agg(how).reset_index()
         if spec.form == "table":
             return grid.nlargest(limit, spec.color).reset_index(drop=True)
         return grid
@@ -517,12 +518,12 @@ def _explore_frame(
         value = next(name for name in ("Records", "Record count", "Rows") if name not in dataframe.columns)
         frame = dataframe.groupby(keys, dropna=True, observed=True).size().reset_index(name=value)
     else:
-        frame = dataframe.groupby(keys, dropna=True, observed=True)[spec.y].sum().reset_index()
+        frame = dataframe.groupby(keys, dropna=True, observed=True)[spec.y].agg(how).reset_index()
         value = spec.y
 
     if spec.color and spec.color in frame.columns:
         frame = fold_small_series(frame, spec.color, value)
-        frame = frame.groupby(keys, dropna=True, observed=True)[value].sum().reset_index()
+        frame = frame.groupby(keys, dropna=True, observed=True)[value].agg(how).reset_index()
     return _cap(frame, spec, value, limit)
 
 
@@ -537,6 +538,9 @@ def _explore_figure(frame: pd.DataFrame, spec) -> go.Figure | None:
                 frame, x=spec.x, y=value, color=spec.color, markers=True,
                 color_discrete_sequence=list(SERIES_COLORS),
             )
+            figure.update_traces(line={"width": 2})
+        elif spec.form == "line":
+            figure = px.line(frame, x=spec.x, y=value, markers=True, color_discrete_sequence=[ACCENT])
             figure.update_traces(line={"width": 2})
         else:
             figure = px.area(frame, x=spec.x, y=value, color_discrete_sequence=[ACCENT])
