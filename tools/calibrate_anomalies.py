@@ -19,7 +19,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from timeseries import fit_trendline, robust_scale  # noqa: E402
+from ada.timeseries import fit_trendline, robust_scale  # noqa: E402
 
 FALSE_ALARM_RATE = 0.05
 LENGTHS = (8, 10, 12, 16, 20, 26, 34, 45, 60, 80, 110, 150, 220, 320)
