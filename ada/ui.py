@@ -541,7 +541,8 @@ def render_chat_answer(result: QueryAnswer, *, key: str) -> None:
 def render_chat_fallback(suggestions: list[str], hint: str | None = None) -> None:
     """Render the reply for a question that maps to no local calculation.
 
-    ``hint`` names the column the question may have meant, from ``rephrase_hint``.
+    ``hint`` is the reason from ``rephrase_hint``: the part of the question ADA
+    could not use, or the column the question may have meant.
     """
     st.markdown(
         "I map questions to transparent calculations, and I could not map that one. "

@@ -99,22 +99,32 @@ class RefusalTests(unittest.TestCase):
 
     def test_ask_tells_the_two_refusals_apart(self):
         report = ada.analyze(ada.sample())
-        self.assertEqual(report.ask("revenue greater than 200").code, "unsupported_phrasing")
+        self.assertEqual(report.ask("revenue this year").code, "unsupported_phrasing")
         self.assertEqual(
             report.ask("revenue divided by the moon phase").code, "unrepresentable_question"
         )
 
-    def test_a_refusal_names_the_column_a_partial_name_may_mean(self):
+    def test_a_refusal_names_the_columns_a_partial_name_may_mean(self):
         report = ada.analyze(pd.DataFrame({
             "island": ["Biscoe", "Dream"] * 10,
             "bill_depth_mm": [18.0 + index / 10 for index in range(20)],
             "body_mass_g": [3_500.0 + index * 40 for index in range(20)],
+            "body_length_mm": [400.0 + index for index in range(20)],
         }))
 
         refusal = report.ask("average body by island")
 
         self.assertEqual(refusal.code, "unrepresentable_question")
-        self.assertIn("Did you mean body_mass_g?", refusal.message)
+        self.assertIn("Did you mean body_mass_g or body_length_mm?", refusal.message)
+
+    def test_an_answer_says_when_the_row_limit_left_rows_out(self):
+        frame = pd.DataFrame({"group": ["a", "b"] * 30, "value": range(60)})
+
+        answer = ada.analyze(frame, row_limit=40).ask("average value by group")
+        refusal = ada.analyze(frame, row_limit=40).ask("average value for zz9")
+
+        self.assertIn("The row limit left out 20 rows", answer.answer)
+        self.assertIn("the row limit left out 20 others", refusal.message)
 
     def test_ask_answers_a_supported_question_with_its_calculation(self):
         answer = ada.analyze(ada.sample()).ask("total revenue")

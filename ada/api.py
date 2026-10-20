@@ -344,10 +344,10 @@ class Analysis:
                 "unsupported_phrasing",
                 "ADA has no way to represent that question, so it will not guess at a near one.",
             )
-        answer = answer_question(question, self.frame, self.roles)
+        answer = answer_question(question, self.frame, self.roles, rows_not_analyzed=self.rows_not_analyzed)
         if answer is None:
             message = "ADA could not build a plan for that question against this table."
-            hint = rephrase_hint(question, self.frame, self.roles)
+            hint = rephrase_hint(question, self.frame, self.roles, rows_not_analyzed=self.rows_not_analyzed)
             return Refusal("unrepresentable_question", f"{message} {hint}" if hint else message)
         return answer
 

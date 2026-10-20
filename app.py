@@ -322,8 +322,13 @@ def dataset_fingerprint(dataframe: pd.DataFrame, roles, source_name: str) -> str
     return hashlib.sha256("|".join(parts).encode()).hexdigest()
 
 
-def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str, api_key: str) -> None:
-    """Chat over the analyzed dataset; every answer is a local calculation."""
+def render_ask_ada(
+    dataframe: pd.DataFrame, roles, source_name: str, api_key: str, rows_not_analyzed: int = 0
+) -> None:
+    """Chat over the analyzed dataset; every answer is a local calculation.
+
+    ``rows_not_analyzed`` is how many rows the row limit left out; answers say so.
+    """
     fingerprint = dataset_fingerprint(dataframe, roles, source_name)
     if st.session_state.get("chat_fingerprint") != fingerprint:
         st.session_state.chat_fingerprint = fingerprint
@@ -344,7 +349,7 @@ def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str, api_key: st
         st.session_state.pending_ai_plan = None
         pending = None
     if question:
-        result = answer_question(question, dataframe, roles)
+        result = answer_question(question, dataframe, roles, rows_not_analyzed=rows_not_analyzed)
         if result is not None:
             st.session_state.chat_history.append({"question": question, "result": result})
         elif api_key and pending is None:
@@ -376,6 +381,7 @@ def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str, api_key: st
                 dataframe,
                 roles,
                 approved=True,
+                rows_not_analyzed=rows_not_analyzed,
             )
             if result is not None:
                 st.session_state.chat_history.append(
@@ -403,7 +409,8 @@ def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str, api_key: st
             elif entry["result"] is not None:
                 render_chat_answer(entry["result"], key=str(position))
             else:
-                render_chat_fallback(suggestions, rephrase_hint(entry["question"], dataframe, roles))
+                hint = rephrase_hint(entry["question"], dataframe, roles, rows_not_analyzed=rows_not_analyzed)
+                render_chat_fallback(suggestions, hint)
 
 
 inject_styles()
@@ -654,7 +661,7 @@ with ask_tab:
         "supplied a key, is the question itself sent to the planner, which returns a plan "
         "for you to approve, never an answer.",
     )
-    render_ask_ada(dataframe, roles, source_name, api_key)
+    render_ask_ada(dataframe, roles, source_name, api_key, rows_not_analyzed=prepared.truncated_rows)
 
 with dashboard_tab:
     render_section_heading(
