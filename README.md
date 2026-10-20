@@ -88,6 +88,8 @@ ada ask orders.csv "which category made the most revenue"
 - **Reports correlations with a 95% interval**, the sample size and a rank
   correlation check, and says that the pair was picked as the strongest of
   several.
+- **Analyzes a slice you select**: draw a box or lasso on the Explore chart, or
+  click some bars, and get the same analysis for those rows beside the whole.
 
 The web app accepts files up to 25 MB. By default the most recent 250,000 rows
 are analyzed (`row_limit=` changes that).
