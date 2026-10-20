@@ -512,21 +512,58 @@ def render_chat_fallback(suggestions: list[str]) -> None:
     st.markdown("\n".join(f"- {suggestion}" for suggestion in suggestions))
 
 
-def _cap(frame: pd.DataFrame, spec, value: str, limit: int) -> pd.DataFrame:
-    """Trim to ``limit`` rows for drawing.
+# Points the Explore chart draws along one axis.
+EXPLORE_POINTS = 400
+# A long date axis steps up through these until the whole range fits.
+EXPLORE_GRAINS = ("D", "W", "M", "Q", "Y")
 
-    A datetime x axis keeps its most recent rows; any other chart keeps its
-    largest values.
+
+def _fit_date_axis(
+    dataframe: pd.DataFrame, spec, *, limit: int = EXPLORE_POINTS
+) -> tuple[pd.DataFrame, str | None]:
+    """Group a date axis by the finest period that fits ``limit`` points.
+
+    Drawing only the latest dates would drop the start of a long series without
+    a word, so dates step up through days, weeks, months, quarters and years
+    until the whole range fits. Returns the rows with each date moved to its
+    period's start, and a caption saying what a point is, or, when even years
+    don't fit, how many are shown.
+    """
+    if not (spec.x and spec.x in dataframe.columns and is_datetime64_any_dtype(dataframe[spec.x])):
+        return dataframe, None
+    dates = dataframe[spec.x]
+    distinct = int(dates.nunique())
+    if distinct <= limit:
+        return dataframe, None
+    for grain in EXPLORE_GRAINS:
+        periods = dates.dt.to_period(grain).dt.to_timestamp()
+        count = int(periods.nunique())
+        if count <= limit:
+            break
+    name = GRAIN_NAMES[grain].lower()
+    if count > limit:
+        caption = f"Showing the latest {limit:,} of {count:,} {name}s; earlier ones are not drawn."
+    else:
+        caption = f"{spec.x} has {distinct:,} dates, so each point is one {name} and the whole range fits."
+    return dataframe.assign(**{spec.x: periods}), caption
+
+
+def _cap(frame: pd.DataFrame, spec, value: str, limit: int) -> pd.DataFrame:
+    """Trim to ``limit`` points for drawing.
+
+    A datetime x axis keeps its most recent ``limit`` dates, each with all its
+    series; any other chart keeps its largest values.
     """
     if len(frame) <= limit:
         return frame
     if spec.x and spec.x in frame.columns and is_datetime64_any_dtype(frame[spec.x]):
-        return frame.nlargest(limit, spec.x).sort_values(spec.x).reset_index(drop=True)
+        latest = frame[spec.x].drop_duplicates().nlargest(limit)
+        return frame[frame[spec.x].isin(latest)].sort_values(spec.x).reset_index(drop=True)
     return frame.nlargest(limit, value).reset_index(drop=True)
 
 
 def _explore_frame(
-    dataframe: pd.DataFrame, spec, *, limit: int = 400
+    dataframe: pd.DataFrame, spec, *, limit: int = EXPLORE_POINTS
 ) -> pd.DataFrame:
     """Aggregate the raw rows into what the recommended chart plots."""
     if spec.form in ("scatter", "histogram"):
@@ -647,7 +684,8 @@ def render_explore(dataframe: pd.DataFrame, roles: ColumnRoles, brief: BusinessB
         st.info(spec.rationale)
         return
 
-    frame = _explore_frame(dataframe, spec)
+    rows, axis_note = _fit_date_axis(dataframe, spec)
+    frame = _explore_frame(rows, spec)
     event = None
     if spec.form == "stat":
         present = dataframe[spec.y].dropna() if spec.y else pd.Series(dtype="float64")
@@ -670,7 +708,7 @@ def render_explore(dataframe: pd.DataFrame, roles: ColumnRoles, brief: BusinessB
         f'<p class="calculation">WHY THIS CHART · {escape(spec.rationale)}</p>',
         unsafe_allow_html=True,
     )
-    for note in spec.notes:
+    for note in (*spec.notes, *([axis_note] if axis_note else [])):
         st.caption(note)
     if event:
         render_selection(dataframe, roles, selection_from_event(event, spec, dataframe), chosen, brief)

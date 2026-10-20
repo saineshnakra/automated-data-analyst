@@ -304,6 +304,16 @@ class AppSmokeTests(unittest.TestCase):
                 picker.set_value(columns).run()
                 self.assertFalse(app.exception)
 
+    def test_explore_says_how_it_fitted_a_long_date_range(self):
+        app = AppTest.from_file("app.py", default_timeout=45).run()
+        picker = next(box for box in app.multiselect if box.label == "Columns to chart")
+
+        picker.set_value(["Order Date", "Revenue"]).run()
+
+        self.assertFalse(app.exception)
+        captions = " ".join(str(block.value) for block in app.caption)
+        self.assertIn("so each point is one week and the whole range fits", captions)
+
 
 if __name__ == "__main__":
     unittest.main()

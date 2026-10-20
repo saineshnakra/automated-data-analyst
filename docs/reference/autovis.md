@@ -42,6 +42,15 @@ colour-blind reader.
 compare sizes use a single hue. Distinct hues are used only when the series
 themselves are being compared.
 
+**The whole date range.** A date axis carries at most 400 points
+(`EXPLORE_POINTS` in `ada/ui.py`). When there are more dates than that, they
+are grouped by the finest period that fits, stepping up from days to weeks,
+months, quarters and years (`_fit_date_axis`), and a caption says what each
+point is. A monthly series from 1958 to 2020 is drawn by quarter from its first
+reading, rather than as its latest 400 months. If even years don't fit, the
+latest 400 are drawn and the caption says how many periods are shown out of how
+many. A line per category keeps every series at each date it draws.
+
 ## Colours
 
 The data-mark palette in `ada/ui.py` is checked against the light chart
