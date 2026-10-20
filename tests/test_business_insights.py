@@ -459,8 +459,7 @@ class RateMeasureTests(unittest.TestCase):
 
     def test_a_rate_headline_still_names_the_leader_level(self):
         headline = self.brief.headline
-        self.assertIn("20.0%", headline, headline)
-        self.assertIn("team", headline.lower(), headline)
+        self.assertIn("B has the highest average, at 20.0%", headline, headline)
 
     def test_the_headline_averages_a_rate_with_a_matching_number(self):
         # Without a date there is no trend card, so the headline falls back to the rate's average.

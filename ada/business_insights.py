@@ -371,6 +371,7 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
             statement=statement,
             calculation=calculation,
             tone="positive" if shares_hold else ("neutral" if not additive else "warning"),
+            subject=str(leader["Segment"]),
         ),
         # Concentration needs shares; omit the card rather than print nan%.
         *(
@@ -821,8 +822,8 @@ def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) 
             f"{sentence_case(roles.dimension)}."
             if quotes_a_share
             else (
-                f"{growth.value} latest movement, and the highest "
-                f"{sentence_case(roles.dimension)} at {leader.value}."
+                f"{growth.value} latest movement; {leader.subject} has the highest "
+                f"{'average' if not resolve_metric(roles.measure).additive else 'value'}, at {leader.value}."
             )
         )
     elif growth:
