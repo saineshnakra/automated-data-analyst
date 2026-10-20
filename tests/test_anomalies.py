@@ -3,10 +3,10 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from anomalies import CRITICAL_VALUES, FALSE_ALARM_RATE, critical_value, detect_anomalies
-from business_insights import analyze_business
-from formatting import format_period
-from schema import detect_roles
+from ada.anomalies import CRITICAL_VALUES, FALSE_ALARM_RATE, critical_value, detect_anomalies
+from ada.business_insights import analyze_business
+from ada.formatting import format_period
+from ada.schema import detect_roles
 
 
 def make_trend(values):

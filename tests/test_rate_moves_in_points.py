@@ -4,8 +4,8 @@ import unittest
 
 import pandas as pd
 
-from nlq import answer_question
-from schema import ColumnRoles
+from ada.nlq import answer_question
+from ada.schema import ColumnRoles
 
 
 def rate_frame():

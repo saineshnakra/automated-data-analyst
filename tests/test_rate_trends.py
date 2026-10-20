@@ -13,8 +13,8 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from aggregation import build_trend
-from schema import detect_roles
+from ada.aggregation import build_trend
+from ada.schema import detect_roles
 
 
 class RateTrendTests(unittest.TestCase):

@@ -6,11 +6,11 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from aggregation import preferred_frequency
-from analysis import CleaningReport, clean_dataframe
-from business_insights import BusinessBrief, Evidence, analyze_business
-from schema import ColumnRoles, detect_roles
-from selection import Selection, SliceComparison, compare_slice
+from .aggregation import preferred_frequency
+from .analysis import CleaningReport, clean_dataframe
+from .business_insights import BusinessBrief, Evidence, analyze_business
+from .schema import ColumnRoles, detect_roles
+from .selection import Selection, SliceComparison, compare_slice
 
 
 @dataclass(frozen=True)

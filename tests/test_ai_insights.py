@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from ai_insights import (
+from ada.ai_insights import (
     MODEL_PRESETS,
     AIAction,
     AINarrative,
@@ -20,10 +20,10 @@ from ai_insights import (
     narrative_to_markdown,
     plan_query_with_ai,
 )
-from business_insights import analyze_business
-from demo_data import make_demo_data
-from nlq import QueryPlan, execute_plan
-from schema import detect_roles
+from ada.business_insights import analyze_business
+from ada.demo_data import make_demo_data
+from ada.nlq import QueryPlan, execute_plan
+from ada.schema import detect_roles
 
 
 class FakeResponses:
@@ -400,7 +400,7 @@ class AIQueryPlannerTests(unittest.TestCase):
     def test_rejected_plan_is_not_executed(self):
         plan = QueryPlan(intent="aggregate", aggregation="sum", measure="Revenue", source="ai")
 
-        with patch("ai_insights.execute_plan") as execute:
+        with patch("ada.ai_insights.execute_plan") as execute:
             self.assertIsNone(
                 execute_approved_ai_plan(
                     "total revenue",

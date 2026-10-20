@@ -4,9 +4,9 @@ import unittest
 
 import pandas as pd
 
-from demo_data import make_demo_data
-from nlq import answer_question, parse_question
-from pipeline import prepare_analysis
+from ada.demo_data import make_demo_data
+from ada.nlq import answer_question, parse_question
+from ada.pipeline import prepare_analysis
 
 
 class MostNamesTheDimensionTests(unittest.TestCase):

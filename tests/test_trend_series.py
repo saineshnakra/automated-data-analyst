@@ -3,8 +3,8 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from aggregation import build_trend, preferred_frequency, trend_frame
-from schema import detect_roles
+from ada.aggregation import build_trend, preferred_frequency, trend_frame
+from ada.schema import detect_roles
 
 
 def daily_sales(start, end, *, amount=100.0, seed=5):

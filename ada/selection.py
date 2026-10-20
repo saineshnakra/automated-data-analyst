@@ -21,12 +21,12 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 
-from aggregation import preferred_frequency
-from autovis import ChartSpec
-from formatting import format_number, format_percentage
-from metrics import resolve_metric
-from nlq import ValueFilter
-from schema import ColumnRoles
+from .aggregation import preferred_frequency
+from .autovis import ChartSpec
+from .formatting import format_number, format_percentage
+from .metrics import resolve_metric
+from .nlq import ValueFilter
+from .schema import ColumnRoles
 
 # Below this many records an average, or a share of a segment mix, is mostly
 # noise: one unusual row moves it by a fifth. The count and the total are still

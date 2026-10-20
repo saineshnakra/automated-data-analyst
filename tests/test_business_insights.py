@@ -3,11 +3,11 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from aggregation import driver_frame, heatmap_frame, segment_frame, trend_frame
-from business_insights import analyze_business, build_business_report
-from demo_data import make_demo_data
-from formatting import format_number
-from schema import detect_roles
+from ada.aggregation import driver_frame, heatmap_frame, segment_frame, trend_frame
+from ada.business_insights import analyze_business, build_business_report
+from ada.demo_data import make_demo_data
+from ada.formatting import format_number
+from ada.schema import detect_roles
 
 
 class RoleDetectionTests(unittest.TestCase):

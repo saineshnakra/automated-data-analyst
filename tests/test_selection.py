@@ -4,13 +4,13 @@ import numpy as np
 import pandas as pd
 import pandas.testing as pdt
 
-from aggregation import preferred_frequency
-from autovis import ChartSpec
-from business_insights import analyze_business
-from demo_data import make_demo_data
-from nlq import ValueFilter
-from pipeline import analyze_selection, prepare_analysis
-from selection import (
+from ada.aggregation import preferred_frequency
+from ada.autovis import ChartSpec
+from ada.business_insights import analyze_business
+from ada.demo_data import make_demo_data
+from ada.nlq import ValueFilter
+from ada.pipeline import analyze_selection, prepare_analysis
+from ada.selection import (
     MIN_SLICE_RECORDS,
     RangeFilter,
     RegionFilter,

@@ -4,8 +4,8 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 
-from analysis import build_markdown_report, clean_dataframe, column_profile, generate_insights
-from schema import (
+from ada.analysis import build_markdown_report, clean_dataframe, column_profile, generate_insights
+from ada.schema import (
     DIMENSION_KEYWORDS,
     MEASURE_KEYWORDS,
     _keyword_score,

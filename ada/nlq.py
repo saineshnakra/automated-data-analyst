@@ -15,10 +15,10 @@ from typing import Literal
 
 import pandas as pd
 
-from aggregation import TrendSeries, build_trend, measure_aggregation, preferred_frequency, unlabelled_label
-from formatting import format_number, format_rate_change
-from metrics import resolve_metric
-from schema import ColumnRoles
+from .aggregation import TrendSeries, build_trend, measure_aggregation, preferred_frequency, unlabelled_label
+from .formatting import format_number, format_rate_change
+from .metrics import resolve_metric
+from .schema import ColumnRoles
 
 Intent = Literal["aggregate", "count", "rank", "breakdown", "trend", "growth"]
 Aggregation = Literal["sum", "mean", "median", "min", "max", "count"]

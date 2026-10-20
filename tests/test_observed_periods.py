@@ -20,9 +20,9 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from anomalies import detect_anomalies
-from forecasting import build_forecast
-from timeseries import observed_periods
+from ada.anomalies import detect_anomalies
+from ada.forecasting import build_forecast
+from ada.timeseries import observed_periods
 
 
 def trend(values):

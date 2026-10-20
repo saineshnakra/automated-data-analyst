@@ -10,7 +10,7 @@ from pathlib import Path
 import pandas as pd
 from streamlit.testing.v1 import AppTest
 
-from schema import ColumnRoles
+from ada.schema import ColumnRoles
 
 
 class _BlockImport:
@@ -32,7 +32,9 @@ class _BlockImport:
         self.dropped = {
             key: sys.modules.pop(key)
             for key in list(sys.modules)
-            if key.split(".")[0] in self.names | self.evict
+            if key.split(".")[0] in self.names
+            or key in self.evict
+            or any(key.startswith(f"{name}.") for name in self.evict)
         }
         return self
 
@@ -118,15 +120,15 @@ class StaleModuleTests(unittest.TestCase):
             except SystemExit:
                 pass
         run()
-        with open("file_io.py", "a") as handle:
+        with open("ada/file_io.py", "a") as handle:
             handle.write("\n\ndef brand_new_export(frame):\n    return 'fresh'\n")
         src = open("app.py").read().replace(
-            "from file_io import list_excel_sheets,",
-            "from file_io import brand_new_export, list_excel_sheets,",
+            "from ada.file_io import list_excel_sheets,",
+            "from ada.file_io import brand_new_export, list_excel_sheets,",
         )
         open("app.py", "w").write(src)
         run()
-        import file_io
+        import ada.file_io as file_io
         print("FRESH" if hasattr(file_io, "brand_new_export") else "STALE")
         """
     )
@@ -136,7 +138,7 @@ class StaleModuleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as scratch:
             for path in root.glob("*.py"):
                 shutil.copy(path, scratch)
-            for folder in ("samples", ".streamlit", "assets"):
+            for folder in ("ada", ".streamlit", "assets"):
                 if (root / folder).exists():
                     shutil.copytree(root / folder, Path(scratch) / folder)
             result = subprocess.run(
@@ -156,7 +158,7 @@ class OptionalAiLayerTests(unittest.TestCase):
     """Without a key ADA is a complete product, so it must load without the AI stack."""
 
     def test_the_app_is_whole_when_the_ai_layer_cannot_be_imported(self):
-        with _BlockImport("pydantic", "openai", evict=("ai_insights",)):
+        with _BlockImport("pydantic", "openai", evict=("ada.ai_insights",)):
             app = AppTest.from_file("app.py", default_timeout=90).run()
 
         self.assertFalse(app.exception)

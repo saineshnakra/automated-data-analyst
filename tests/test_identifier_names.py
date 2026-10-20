@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import unittest
 
-from schema import IDENTIFIER_NAME_WORDS, is_identifier_name
+from ada.schema import IDENTIFIER_NAME_WORDS, is_identifier_name
 
 
 class IdentifierNameTests(unittest.TestCase):

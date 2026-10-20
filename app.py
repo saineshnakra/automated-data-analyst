@@ -25,15 +25,19 @@ from streamlit.errors import StreamlitSecretNotFoundError
 # was loaded is reloaded, leaves first so dependants rebind to fresh code.
 # ---------------------------------------------------------------------------
 _HERE = Path(__file__).resolve().parent
-_LOCAL_MODULES = (  # dependency order: a module lists only modules above it
-    "formatting", "schema", "timeseries", "anomalies", "forecasting", "aggregation",
-    "analysis", "autovis", "file_io", "demo_data", "business_insights", "nlq",
-    "pipeline", "ai_insights", "ui",
+_PACKAGE = "ada"
+_LOCAL_MODULES = tuple(  # dependency order: a module lists only modules above it
+    f"{_PACKAGE}.{name}"
+    for name in (
+        "formatting", "metrics", "schema", "timeseries", "anomalies", "forecasting", "aggregation",
+        "analysis", "autovis", "file_io", "demo_data", "business_insights", "nlq", "selection",
+        "pipeline", "ai_insights", "ui",
+    )
 )
 
 
 def _source_digest(name: str) -> str:
-    path = _HERE / f"{name}.py"
+    path = _HERE.joinpath(*name.split(".")).with_suffix(".py")
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else ""
 
 
@@ -87,12 +91,12 @@ def build_identifier() -> str:
     return "src-" + digest.hexdigest()[:7]
 
 
-from analysis import column_profile  # noqa: E402 - the refresh above must run first
-from business_insights import BusinessBrief, analyze_business, build_business_report  # noqa: E402
-from demo_data import make_demo_data  # noqa: E402
-from file_io import list_excel_sheets, list_sample_datasets, read_tabular_file, safe_csv  # noqa: E402
-from nlq import QueryPlan, answer_question, suggested_questions  # noqa: E402
-from pipeline import (  # noqa: E402
+from ada.analysis import column_profile  # noqa: E402 - the refresh above must run first
+from ada.business_insights import BusinessBrief, analyze_business, build_business_report  # noqa: E402
+from ada.demo_data import make_demo_data  # noqa: E402
+from ada.file_io import list_excel_sheets, list_sample_datasets, read_tabular_file, safe_csv  # noqa: E402
+from ada.nlq import QueryPlan, answer_question, suggested_questions  # noqa: E402
+from ada.pipeline import (  # noqa: E402
     apply_focus,
     apply_role_selection,
     cleaning_audit_frame,
@@ -106,7 +110,7 @@ from pipeline import (  # noqa: E402
 # including the deterministic analysis that is the reason to open ADA without
 # a key at all. A failure here disables the two optional calls and nothing else.
 try:  # noqa: E402
-    from ai_insights import (
+    from ada.ai_insights import (
         DEFAULT_PRESET,
         MODEL_PRESETS,
         AINarrative,
@@ -123,7 +127,7 @@ except Exception as error:  # noqa: BLE001 - any import failure must degrade, no
     AI_LAYER_ERROR = f"{type(error).__name__}: {error}"
     DEFAULT_PRESET, MODEL_PRESETS, AINarrative = "", {}, ()
 
-from ui import (  # noqa: E402
+from ada.ui import (  # noqa: E402
     inject_styles,
     render_ai_narrative,
     render_brief,

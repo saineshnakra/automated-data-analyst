@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import unittest
 
-from metrics import increase_is_welcome, resolve_metric
+from ada.metrics import increase_is_welcome, resolve_metric
 
 
 class MetricSpecTests(unittest.TestCase):

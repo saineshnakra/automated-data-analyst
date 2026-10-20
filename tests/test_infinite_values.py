@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from analysis import clean_dataframe
+from ada.analysis import clean_dataframe
 
 
 class NonFiniteValuesTests(unittest.TestCase):

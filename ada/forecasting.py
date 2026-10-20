@@ -26,7 +26,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from timeseries import fit_trendline, observed_periods, period_grain, robust_scale
+from .timeseries import fit_trendline, observed_periods, period_grain, robust_scale
 
 MIN_PERIODS = 8
 MIN_SEASONAL_PERIODS = 18

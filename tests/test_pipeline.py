@@ -1,7 +1,7 @@
 import unittest
 
-from demo_data import make_demo_data
-from pipeline import (
+from ada.demo_data import make_demo_data
+from ada.pipeline import (
     apply_focus,
     apply_role_selection,
     cleaning_audit_frame,

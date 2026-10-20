@@ -4,7 +4,7 @@ import unittest
 
 import pandas as pd
 
-from analysis import _numeric_from_text, _read_formatted_number
+from ada.analysis import _numeric_from_text, _read_formatted_number
 
 
 class AccountingNegativeTests(unittest.TestCase):
