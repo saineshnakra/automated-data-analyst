@@ -20,9 +20,10 @@ table or as a note.
 | 7 | Infer dates in date-named columns | See below |
 | 8 | Infer numbers | See below |
 | 9 | Infer dates in other columns | See below |
-| 10 | Widen overflowing integers | An integer column whose total would overflow int64 becomes float64 |
-| 11 | Replace infinities | `inf` and `-inf` in float columns become missing |
-| 12 | Count identical rows | Counted and kept |
+| 10 | Build dates from years | See below |
+| 11 | Widen overflowing integers | An integer column whose total would overflow int64 becomes float64 |
+| 12 | Replace infinities | `inf` and `-inf` in float columns become missing |
+| 13 | Count identical rows | Counted and kept |
 
 If nothing is left, `clean_dataframe` raises `ValueError` rather than
 returning an empty frame.
@@ -92,7 +93,8 @@ value that has a leading zero (`02134`, `007`).
 **Dates in other columns.** Dates also arrive in columns called `Month`,
 `Period` or `FY`. For a column with any other name, the first 50 values must
 parse as dates at a 95% rate, and then 95% of the whole column. Numbers are
-tried first, so a column of bare years stays numeric.
+tried first, so a column of bare years stays numeric here; the next step
+decides whether it is a timeline.
 
 Dates use a lower bar because real date columns often mix formats. A column
 that is 5% unparseable as numbers is probably not numeric.
@@ -101,6 +103,33 @@ that is 5% unparseable as numbers is probably not numeric.
 also keeps such columns as text from the start: see
 [Reading files](reading-files.md).
 
+## Dates from years
+
+Annual data often has a `year` column of plain numbers and no date. When no
+column is a date after inference, a numeric column becomes one if all of these
+hold:
+
+- its name ends in `year`, `years` or `yr` (`Year`, `survey_yr`)
+- every value is a whole number from 1800 to 2100 (`DETECTED_YEARS`)
+- it has at least two distinct values
+
+Each year becomes 1 January of that year, and a note says so. If a column
+named `month`, `months` or `mon` holds month names (`January`), abbreviations
+(`Jan`) or the numbers 1 to 12 for every row with a year, the two are combined
+into one column of monthly dates, named after both (`year-month`), and the
+month column is dropped. When several columns qualify, the one whose name is
+only the year word wins, then the first alphabetically.
+
+The name and the range both matter. `model_year` holding 70 to 82 is not a
+year, and a count that happens to fall between 1800 and 2100 is not a year
+unless its name says so.
+
+A column passed as the date (`ada.analyze(df, date="Season")`) is converted
+whatever its name, as long as every value is a whole number from 1000 to 2999
+(`REQUESTED_YEARS`). It is used alone, without a month column. Years outside
+what a timestamp can hold (about 1678 to 2261) become missing and are reported
+as unreadable dates.
+
 ## The cleaning report
 
 `CleaningReport` records the original and final row and column counts, and a
@@ -108,8 +137,8 @@ count for each operation: empty rows, empty columns and index columns removed,
 text columns whose values trimming changed, numeric and datetime columns
 inferred, identical rows found and removed, unreadable date values and
 infinite values. Its `notes` hold the sentences shown above the dashboard
-(date-order assumptions, timezones, unreadable dates, missing-value markers,
-widened columns, infinities, identical rows).
+(date-order assumptions, timezones, unreadable dates, dates built from years,
+missing-value markers, widened columns, infinities, identical rows).
 
 `pipeline.cleaning_audit_frame` turns the counts into the table shown in the
 app.
@@ -123,6 +152,9 @@ app.
 | Column that is 90% numeric | Left as text (below 95%) |
 | `Order Date` that is 85% parseable | Converted (above 80%), with the unreadable count reported |
 | `Customer ID` holding numbers | Left as text |
+| `Year` holding 1880 to 2023, and no date column | Converted to 1 January of each year, with a note |
+| `year` and `month` (`January` ...), and no date column | Combined into a monthly `year-month` column |
+| `model_year` holding 70 to 82 | Left as numbers |
 | A cell reading `inf` | Treated as missing, with a note |
 
 ## Changing this

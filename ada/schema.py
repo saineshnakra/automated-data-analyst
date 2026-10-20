@@ -86,6 +86,12 @@ IDENTIFIER_NAME_WORDS = frozenset({
     "mobile", "tel", "fax", "sku", "number", "no", "#", "key", "uuid",
 })
 
+# Head words of columns holding calendar years and months. A table with no date
+# column but a year (and perhaps a month) is still a timeline; cleaning builds
+# its dates from these.
+YEAR_NAME_WORDS = frozenset({"year", "years", "yr"})
+MONTH_NAME_WORDS = frozenset({"month", "months", "mon"})
+
 
 # A trailing unit or annotation is not the head noun: "Revenue (USD)" is scored on "Revenue".
 _ANNOTATION = re.compile(r"\s*[(\[][^)\]]*[)\]]\s*$")
@@ -121,6 +127,18 @@ def is_design_name(name: str) -> bool:
     """Whether the name marks an experimental-design label such as "Replicate" or "Plate"."""
     words = _head_words(name)
     return bool(words) and words[-1] in DESIGN_TOKENS
+
+
+def is_year_name(name: str) -> bool:
+    """Whether the name marks a column of calendar years, such as "Year" or "survey_yr"."""
+    words = _head_words(name)
+    return bool(words) and words[-1] in YEAR_NAME_WORDS
+
+
+def is_month_name(name: str) -> bool:
+    """Whether the name marks a column of calendar months, such as "Month"."""
+    words = _head_words(name)
+    return bool(words) and words[-1] in MONTH_NAME_WORDS
 
 
 def _named_like_a_date(name: str) -> bool:

@@ -54,9 +54,15 @@ def _most_recent(dataframe: pd.DataFrame, date_column: str | None, row_limit: in
     return dataframe.tail(row_limit)
 
 
-def prepare_analysis(raw_dataframe: pd.DataFrame, *, row_limit: int) -> PreparedAnalysis:
-    """Clean the data, keep the most recent slice of it, and detect its schema."""
-    dataframe, cleaning_report = clean_dataframe(raw_dataframe)
+def prepare_analysis(
+    raw_dataframe: pd.DataFrame, *, row_limit: int, date: str | None = None
+) -> PreparedAnalysis:
+    """Clean the data, keep the most recent slice of it, and detect its schema.
+
+    ``date`` names a column the caller wants as the date, so cleaning can turn
+    a column of years into dates before the schema is detected.
+    """
+    dataframe, cleaning_report = clean_dataframe(raw_dataframe, date=date)
     roles = detect_roles(dataframe)
 
     available = len(dataframe)

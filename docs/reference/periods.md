@@ -38,7 +38,9 @@ rules each suggest a grain, and the coarser one wins.
 Five monthly readings over four months would be seventeen weeks by span alone,
 twelve of them empty. Taking the coarser grain keeps them monthly. Annual
 readings stay yearly rather than becoming quarters with three empty periods
-each year.
+each year. That includes a table with a `Year` column and no date, which
+cleaning dates to 1 January of each year (see
+[Cleaning](cleaning.md#dates-from-years)).
 
 Callers can fix the grain instead: `build_trend(..., frequency="W")`,
 `ada.analyze(..., frequency="W")`, or a grain word in an Ask ADA question

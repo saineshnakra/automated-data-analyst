@@ -270,6 +270,40 @@ class OverrideTypeTests(unittest.TestCase):
         with self.assertRaisesRegex(ada.AdaError, "is not numeric"):
             ada.analyze(steady(), measure="Team")
 
+    def test_a_date_override_accepts_a_column_of_years(self):
+        frame = pd.DataFrame({"Season": range(1950, 1970), "Catch": [float(n) for n in range(20)]})
+
+        report = ada.analyze(frame, date="Season")
+
+        self.assertEqual(report.roles.date, "Season")
+        self.assertEqual(report.period, (pd.Timestamp("1950-01-01"), pd.Timestamp("1969-01-01")))
+
+    def test_a_date_override_still_refuses_numbers_that_are_not_years(self):
+        frame = pd.DataFrame({"model_year": [70, 71, 82] * 4, "mpg": [18.0, 15.0, 31.0] * 4})
+
+        with self.assertRaisesRegex(ada.AdaError, "could not be read as dates"):
+            ada.analyze(frame, date="model_year")
+
+
+class YearTimelineTests(unittest.TestCase):
+    def setUp(self):
+        years = range(1880, 2024)
+        self.report = ada.analyze(pd.DataFrame({
+            "year": years,
+            "temp": [round(0.008 * (year - 1880) + 0.1 * ((year * 7) % 5 - 2), 2) for year in years],
+        }))
+
+    def test_a_year_column_is_the_timeline_at_a_yearly_grain(self):
+        self.assertEqual(self.report.roles.date, "year")
+        trend = self.report.trend()
+        self.assertEqual(trend.frequency, "Y")
+        self.assertEqual(len(trend.frame), 144)
+        self.assertIn("(2023)", self.report.headline)
+
+    def test_anomalies_and_the_forecast_run_on_a_yearly_series(self):
+        self.assertNotIsInstance(self.report.anomalies, ada.Refusal)
+        self.assertNotIsInstance(self.report.forecast(), ada.Refusal)
+
 
 if __name__ == "__main__":
     unittest.main()

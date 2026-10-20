@@ -9,9 +9,10 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
+from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_dtype
 
-from .schema import is_identifier_name
+from .formatting import normalized_name
+from .schema import is_identifier_name, is_month_name, is_year_name
 
 
 @dataclass(frozen=True)
@@ -339,6 +340,88 @@ def _drop_non_finite(frame: pd.DataFrame) -> dict[str, int]:
     return counts
 
 
+# Years a column may hold to become dates. A column the caller names as the date
+# may hold any four-digit year; one found on its own needs a year-like name and a
+# plausible modern year, so a count that happens to look like a year is left alone.
+REQUESTED_YEARS = (1000, 2999)
+DETECTED_YEARS = (1800, 2100)
+
+_MONTHS = (
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+)
+MONTH_NUMBERS = {
+    name: number for number, month in enumerate(_MONTHS, start=1) for name in (month, month[:3])
+} | {"sept": 9}
+
+
+def _whole_years(series: pd.Series, bounds: tuple[int, int]) -> bool:
+    """True for a numeric column whose values are all whole numbers within ``bounds``."""
+    if is_bool_dtype(series) or not is_numeric_dtype(series):
+        return False
+    values = series.dropna()
+    return (
+        not values.empty
+        and bool((values % 1 == 0).all())
+        and bool(values.between(*bounds).all())
+    )
+
+
+def _month_numbers(series: pd.Series) -> pd.Series:
+    """Months written as names ("March", "Mar") or as numbers 1-12; anything else is NaN."""
+    text = series.astype("string").str.strip().str.lower().str.rstrip(".")
+    named = text.map(MONTH_NUMBERS, na_action="ignore").astype("float64")
+    numbered = pd.to_numeric(text, errors="coerce").astype("float64")
+    return named.fillna(numbered.where(numbered.isin(range(1, 13))))
+
+
+def _year_columns(frame: pd.DataFrame, requested: str | None) -> tuple[str, str | None] | None:
+    """Choose the year column, and a month column to go with it, to build dates from.
+
+    A column the caller asked for as the date is used alone. Otherwise one is
+    found only when the table has no date column: a year-named column of whole
+    years in DETECTED_YEARS with at least two distinct values. A month-named
+    column readable for every row with a year is paired with it, so monthly
+    rows get monthly dates.
+    """
+    if requested in frame.columns and _whole_years(frame[requested], REQUESTED_YEARS):
+        return requested, None
+    if any(is_datetime64_any_dtype(frame[column]) for column in frame.columns):
+        return None
+    candidates = [
+        column
+        for column in frame.columns
+        if is_year_name(column)
+        and _whole_years(frame[column], DETECTED_YEARS)
+        and frame[column].nunique() >= 2
+    ]
+    if not candidates:
+        return None
+    # A bare "Year" before "Model Year"; then the name, so column order never decides.
+    year = min(candidates, key=lambda column: (len(normalized_name(column).split()), column))
+    dated = frame[year].notna()
+    month = next(
+        (
+            column
+            for column in frame.columns
+            if column != year
+            and is_month_name(column)
+            and _month_numbers(frame[column])[dated].notna().all()
+        ),
+        None,
+    )
+    return year, month
+
+
+def _first_days(years: pd.Series, months: pd.Series | None = None) -> pd.Series:
+    """1 January of each year, or the first of each month when ``months`` is given.
+
+    Years outside what a timestamp can hold (about 1678 to 2261) become missing.
+    """
+    parts = pd.DataFrame({"year": years, "month": 1 if months is None else months, "day": 1})
+    return pd.to_datetime(parts, errors="coerce")
+
+
 def _missing_marker_note(column: str, marked: pd.Series) -> str:
     examples = list(dict.fromkeys(marked.astype(str).str.strip()))
     shown = ", ".join(f'"{value}"' for value in examples[:4]) + (", ..." if len(examples) > 4 else "")
@@ -347,13 +430,15 @@ def _missing_marker_note(column: str, marked: pd.Series) -> str:
 
 
 def clean_dataframe(
-    dataframe: pd.DataFrame, *, drop_duplicates: bool = False
+    dataframe: pd.DataFrame, *, drop_duplicates: bool = False, date: str | None = None
 ) -> tuple[pd.DataFrame, CleaningReport]:
     """Clean the frame conservatively and return it with a report of what changed.
 
     Identical rows are counted but kept, because repeated records are common in
-    real data. Pass ``drop_duplicates=True`` to remove them. Raises ValueError if
-    the input, or what remains after cleaning, has no rows or columns.
+    real data. Pass ``drop_duplicates=True`` to remove them. ``date`` names the
+    column the caller wants as the date; if it holds whole years, they become
+    1 January of each year. Raises ValueError if the input, or what remains
+    after cleaning, has no rows or columns.
     """
     if dataframe.empty or len(dataframe.columns) == 0:
         raise ValueError("The CSV does not contain any rows and columns to analyze.")
@@ -439,7 +524,8 @@ def clean_dataframe(
 
         if not named_like_a_date:
             # Detect dates in columns without a date-like name ("Month", "FY").
-            # Numbers are tried first, so a column of bare years stays numeric.
+            # Numbers are tried first, so bare years stay numbers here; only a
+            # year-named column is turned into dates, after this loop.
             # A sample is checked first because most text columns are not dates.
             sample = cleaned[column].dropna().head(date_sample_size)
             if len(sample) and _speculative_dates(sample).notna().mean() >= unnamed_date_ratio:
@@ -449,6 +535,29 @@ def clean_dataframe(
                         notes.append(_ordering_note(column, ordering))
                     cleaned[column] = _drop_timezone(parsed_dates)
                     datetime_columns_inferred += 1
+
+    # Runs after inference, so year columns held as text have become numbers.
+    year_columns = _year_columns(cleaned, date)
+    if year_columns:
+        year, month = year_columns
+        dates = _first_days(cleaned[year], _month_numbers(cleaned[month]) if month else None)
+        if dates.notna().any():
+            unreadable = int(cleaned[year].notna().sum() - dates.notna().sum())
+            cleaned[year] = dates
+            datetime_columns_inferred += 1
+            if month:
+                combined = f"{year}-{month}"
+                combined = year if combined in cleaned.columns else combined
+                cleaned = cleaned.drop(columns=[month]).rename(columns={year: combined})
+                notes.append(
+                    f"{year} and {month} were combined into one date column, {combined}, "
+                    "on the first day of each month."
+                )
+            else:
+                notes.append(f"{year} holds whole years, so it was read as dates on 1 January of each year.")
+            if unreadable:
+                unparsed_date_cells += unreadable
+                notes.append(f"{unreadable} {year} values could not be read as dates.")
 
     # Runs after inference, which can create new int64 columns.
     if _widen_columns_that_would_overflow(cleaned):

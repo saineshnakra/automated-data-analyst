@@ -23,8 +23,9 @@ So names, types and distinct-value counts are combined.
 
 ## Picking the date
 
-Only datetime columns are considered (after cleaning has inferred them). They
-are ranked by:
+Only datetime columns are considered (after cleaning has inferred them,
+including a `Year` column it has turned into dates; see
+[Cleaning](cleaning.md#dates-from-years)). They are ranked by:
 
 1. Name contains `date`, `time` or `created`.
 2. The event that creates a row ahead of later events: a name with `order`,
@@ -116,13 +117,14 @@ re-renders without re-reading or re-cleaning the file.
 
 In Python, pass `date=`, `measure=` or `dimension=` to `ada.analyze`. On the
 command line, `ada schema FILE` prints the detected roles, and `--date`,
-`--measure` and `--dimension` override them.
+`--measure` and `--dimension` override them. A date override may name a
+column of whole years (1000 to 2999), which is read as 1 January of each year.
 
 ## Edge cases
 
 | Situation | Behavior |
 |---|---|
-| No datetime column | `date` is `None`; trend, anomalies and forecast are skipped |
+| No datetime column and no year column | `date` is `None`; trend, anomalies and forecast are skipped |
 | No numeric column | `measure` is `None`; ADA counts records instead |
 | Every text column is near-unique | `dimension` is `None`; no segment analysis |
 | Several plausible measures | Highest score wins; the user can override |

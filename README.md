@@ -75,7 +75,8 @@ ada ask orders.csv "which category made the most revenue"
   `Concentration (mg/L)`) are averaged. Averages get no totals and no "share of
   total", and a change in a rate is reported in percentage points.
 - **Builds a timeline**: picks a period grain the data can fill, drops a final
-  period the data only partly covers, and notes both under the chart.
+  period the data only partly covers, and notes both under the chart. A
+  `Year` column (with a `Month` column, if there is one) counts as a date.
 - **Flags anomalies**: periods outside a band around a Theil-Sen trendline. The
   band is calibrated by simulation so a stable series raises a false alarm in
   about one analysis in twenty.

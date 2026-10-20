@@ -131,7 +131,8 @@ def analyze(
 
     ADA picks a date column, a measure, a grouping column and an identifier
     on its own; ``date``, ``measure`` and ``dimension`` override that choice
-    (``ada schema FILE`` prints what was picked). ``frequency`` fixes the
+    (``ada schema FILE`` prints what was picked). A ``date`` column of whole
+    years is read as 1 January of each year. ``frequency`` fixes the
     period grain to one of ``D W M Q Y``; without it the grain follows how
     often the data was recorded. Fix it for scheduled jobs so the grain
     doesn't change between runs.
@@ -141,7 +142,7 @@ def analyze(
     """
     frame, detected_name = _frame_from(data, sheet)
     try:
-        prepared = prepare_analysis(frame, row_limit=row_limit)
+        prepared = prepare_analysis(frame, row_limit=row_limit, date=date)
     except ValueError as error:
         raise NothingToAnalyze(str(error)) from error
 
