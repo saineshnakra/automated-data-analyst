@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 import warnings
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -422,6 +423,59 @@ def _first_days(years: pd.Series, months: pd.Series | None = None) -> pd.Series:
     return pd.to_datetime(parts, errors="coerce")
 
 
+def _holds_decimals(values: pd.Series) -> bool:
+    """True when the text reads as numbers, nearly all of them, and some have a fractional part.
+
+    Missing-value markers ("NA", "<LOD") are left out of the count.
+    """
+    present = values[~_missing_markers(values)].dropna()
+    numbers = pd.to_numeric(present, errors="coerce").dropna()
+    return len(numbers) >= 0.95 * max(len(present), 1) and bool((numbers % 1 != 0).any())
+
+
+# Text columns with more distinct values than this are free text, not labels to merge.
+MAX_LABELS_TO_MERGE = 20_000
+
+
+def _label_key(value: str) -> str:
+    """A label compared without case, accents or spacing: "No indica" and "NO INDICA" match."""
+    decomposed = unicodedata.normalize("NFKD", value)
+    plain = "".join(char for char in decomposed if not unicodedata.combining(char))
+    return " ".join(plain.casefold().split())
+
+
+def _merge_label_variants(series: pd.Series, column: str) -> tuple[pd.Series, str | None]:
+    """Write labels that differ only in case, accents or spacing one way, the most common one.
+
+    "NO INDICA", "No indica" and "no Indica" are one answer; left apart, they
+    split one group into three in every breakdown. Returns the series and a
+    note, or the series unchanged and None.
+    """
+    counts = series.dropna().value_counts()
+    labels = [label for label in counts.index if isinstance(label, str)]
+    if not 2 <= len(labels) <= MAX_LABELS_TO_MERGE:
+        return series, None
+    spellings: dict[str, list[str]] = {}
+    for label in labels:
+        # Most common first, so each group's first spelling is the one kept.
+        spellings.setdefault(_label_key(label), []).append(label)
+    merged = [group for group in spellings.values() if len(group) > 1]
+    if not merged:
+        return series, None
+    mapping = {variant: group[0] for group in merged for variant in group[1:]}
+    changed = int(series.isin(list(mapping)).sum())
+    largest = max(merged, key=lambda group: int(counts[group].sum()))
+    shown = " and ".join(f'"{variant}"' for variant in largest[1:3])
+    others = ""
+    if len(merged) > 1:
+        others = f", and {len(merged) - 1:,} other label{'s' if len(merged) > 2 else ''} likewise"
+    note = (
+        f"{changed:,} {column} values spelled differently only in case, accents or spacing were "
+        f'merged: {shown} became "{largest[0]}"{others}.'
+    )
+    return series.replace(mapping), note
+
+
 def _missing_marker_note(column: str, marked: pd.Series) -> str:
     examples = list(dict.fromkeys(marked.astype(str).str.strip()))
     shown = ", ".join(f'"{value}"' for value in examples[:4]) + (", ..." if len(examples) > 4 else "")
@@ -503,7 +557,10 @@ def clean_dataframe(
         values = cleaned[column]
         # "02134" or "007" is a code: converting it would drop the leading zero.
         leading_zero = values.astype("string").str.match(r"^0\d").fillna(False).astype(bool).any()
-        if not is_identifier_name(column) and not leading_zero:
+        # Whole numbers under a key name ("Order No") are keys; decimals under one
+        # are measurements whatever the name says.
+        keys = is_identifier_name(column) and not _holds_decimals(values)
+        if not keys and not leading_zero:
             markers = _missing_markers(values)
             readable = non_null_before - int(markers.sum())
             parsed_numeric = pd.to_numeric(values.mask(markers), errors="coerce")
@@ -558,6 +615,14 @@ def clean_dataframe(
             if unreadable:
                 unparsed_date_cells += unreadable
                 notes.append(f"{unreadable} {year} values could not be read as dates.")
+
+    # Runs after inference, so only columns that stayed text are merged. Keys
+    # keep their case: "ab12" and "AB12" may be two accounts.
+    for column in cleaned.select_dtypes(include=["object", "string"]).columns:
+        if not is_identifier_name(column):
+            cleaned[column], merge_note = _merge_label_variants(cleaned[column], column)
+            if merge_note:
+                notes.append(merge_note)
 
     # Runs after inference, which can create new int64 columns.
     if _widen_columns_that_would_overflow(cleaned):

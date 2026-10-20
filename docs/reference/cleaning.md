@@ -21,9 +21,10 @@ table or as a note.
 | 8 | Infer numbers | See below |
 | 9 | Infer dates in other columns | See below |
 | 10 | Build dates from years | See below |
-| 11 | Widen overflowing integers | An integer column whose total would overflow int64 becomes float64 |
-| 12 | Replace infinities | `inf` and `-inf` in float columns become missing |
-| 13 | Count identical rows | Counted and kept |
+| 11 | Merge label spellings | See below |
+| 12 | Widen overflowing integers | An integer column whose total would overflow int64 becomes float64 |
+| 13 | Replace infinities | `inf` and `-inf` in float columns become missing |
+| 14 | Count identical rows | Counted and kept |
 
 If nothing is left, `clean_dataframe` raises `ValueError` rather than
 returning an empty frame.
@@ -87,8 +88,10 @@ converts, they become missing and a note lists them.
 
 A column whose name ends in a key word (`id`, `code`, `zip`, `postcode`,
 `phone`, `number`, `no`, `#` and others; `is_identifier_name` in
-`ada/schema.py`) is never converted to numbers, and neither is a column with a
-value that has a leading zero (`02134`, `007`).
+`ada/schema.py`) is not converted when its values are whole numbers, since
+they are keys; decimals under such a name are measurements and are converted.
+A column with a value that has a leading zero (`02134`, `007`) is never
+converted.
 
 **Dates in other columns.** Dates also arrive in columns called `Month`,
 `Period` or `FY`. For a column with any other name, the first 50 values must
@@ -130,6 +133,16 @@ whatever its name, as long as every value is a whole number from 1000 to 2999
 what a timestamp can hold (about 1678 to 2261) become missing and are reported
 as unreadable dates.
 
+## Label spellings
+
+Text labels that differ only in case, accents or spacing are one label:
+`NO INDICA`, `No indica` and `no Indica` would otherwise split one group into
+three in every breakdown. In each text column left after inference, such
+spellings are written the way the most common one is, and a note gives the
+count and an example. Key columns (see above) keep their spelling, since
+`ab12` and `AB12` may be two accounts, and a column with more than 20,000
+distinct values is free text and is left alone.
+
 ## The cleaning report
 
 `CleaningReport` records the original and final row and column counts, and a
@@ -138,7 +151,8 @@ text columns whose values trimming changed, numeric and datetime columns
 inferred, identical rows found and removed, unreadable date values and
 infinite values. Its `notes` hold the sentences shown above the dashboard
 (date-order assumptions, timezones, unreadable dates, dates built from years,
-missing-value markers, widened columns, infinities, identical rows).
+missing-value markers, merged label spellings, widened columns, infinities,
+identical rows).
 
 `pipeline.cleaning_audit_frame` turns the counts into the table shown in the
 app.
@@ -152,6 +166,8 @@ app.
 | Column that is 90% numeric | Left as text (below 95%) |
 | `Order Date` that is 85% parseable | Converted (above 80%), with the unreadable count reported |
 | `Customer ID` holding numbers | Left as text |
+| `Sample Code` holding decimals | Converted to numbers |
+| `Yes`, `YES` and `yes` in one column | Merged into the most common spelling, with a note |
 | `Year` holding 1880 to 2023, and no date column | Converted to 1 January of each year, with a note |
 | `year` and `month` (`January` ...), and no date column | Combined into a monthly `year-month` column |
 | `model_year` holding 70 to 82 | Left as numbers |

@@ -587,6 +587,41 @@ class IdentifierNameCleaningTests(unittest.TestCase):
         cleaned, _ = clean_dataframe(frame)
         self.assertEqual(cleaned["Account Number"].tolist(), ["00042", "00017"])
 
+    def test_whole_numbers_under_a_key_name_stay_text(self):
+        cleaned, _ = clean_dataframe(pd.DataFrame({"Order No": ["1001", "1002", "1003"]}))
+        self.assertEqual(cleaned["Order No"].tolist(), ["1001", "1002", "1003"])
+
+    def test_decimals_under_a_key_name_are_read_as_numbers(self):
+        frame = pd.DataFrame({"NO": ["36.57", "12.10", "NA"], "Sample Code": ["1.5", "2.25", "3.0"]})
+        cleaned, _ = clean_dataframe(frame)
+        self.assertEqual(cleaned["NO"].dtype.kind, "f")
+        self.assertEqual(cleaned["Sample Code"].tolist(), [1.5, 2.25, 3.0])
+
+
+class LabelVariantTests(unittest.TestCase):
+    def test_labels_differing_only_in_case_accents_or_spacing_are_merged(self):
+        frame = pd.DataFrame({
+            "Tiempo": ["NO INDICA"] * 4 + ["No indica", "no Indica", "de 1 a 5 años", "De 1 a 5  anos"],
+            "MO": [1.0] * 8,
+        })
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(
+            cleaned["Tiempo"].value_counts().to_dict(), {"NO INDICA": 6, "de 1 a 5 años": 2}
+        )
+        note = next(note for note in report.notes if note.startswith("3 Tiempo values"))
+        self.assertIn('"No indica" and "no Indica" became "NO INDICA"', note)
+        self.assertIn("1 other label likewise", note)
+
+    def test_distinct_labels_and_keys_are_left_alone(self):
+        frame = pd.DataFrame({"Region": ["North", "South"] * 3, "Account ID": ["ab12", "AB12", "cd34"] * 2})
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(sorted(cleaned["Account ID"].unique()), ["AB12", "ab12", "cd34"])
+        self.assertFalse(any("spelled differently" in note for note in report.notes))
+
 
 class LeadingZeroTests(unittest.TestCase):
     def test_codes_with_leading_zeros_stay_text(self):
