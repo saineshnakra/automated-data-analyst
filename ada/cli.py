@@ -87,7 +87,7 @@ def _check(args: argparse.Namespace) -> int:
         return EXIT_QUIET
     for item in found:
         key = f"anomaly:{item.period:%Y-%m-%d}"
-        print(f"{key}  {item.direction} to {item.value:,.2f}, expected about {item.expected:,.2f}")
+        print(f"{key}  {item.value:,.2f}, {item.direction} the expected {item.expected:,.2f}")
     return EXIT_FLAGGED
 
 
