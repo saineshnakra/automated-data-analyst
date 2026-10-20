@@ -97,6 +97,10 @@ class PlateLayoutTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertTrue(is_design_name(name))
 
+    def test_a_position_on_its_own_is_not_a_layout(self):
+        self.assertFalse(is_design_name("Position"))
+        self.assertFalse(is_design_name("Player Position"))
+
 
 class ResearchMeasureTests(unittest.TestCase):
     def test_an_outcome_beats_the_temperature_it_was_measured_at(self):

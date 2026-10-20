@@ -45,7 +45,7 @@ Only numeric columns are considered. Each gets a score:
 | Name matches a measure keyword | +4 to +14 for the last word; two thirds of the weight for a keyword elsewhere in the name |
 | Looks like an identifier | −20 |
 | Name is, or ends with, a time part (`year`, `month`, `week`, `day`, `hour`, `minute`, `quarter`) | −15 |
-| Last word is an experimental-design label (`replicate`, `rep`, `batch`, `plate`, `well`, `run`, `trial`, `block`, `lane`, `row`, `column`, `col`, `position`) | −15 |
+| Last word is an experimental-design label (`replicate`, `rep`, `batch`, `plate`, `well`, `run`, `trial`, `block`, `lane`, `row`, `column`, `col`, or `position` after one of these) | −15 |
 | Any word is a coordinate (`latitude`, `longitude`, `lat`, `lon`, `lng`) | −15 |
 | Any word is a condition usually recorded beside the outcome (`temp`, `temperature`, `humidity`, `wind`, `air`) | −3 |
 

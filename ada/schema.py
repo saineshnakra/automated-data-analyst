@@ -86,7 +86,7 @@ TIME_PART_TOKENS = ("year", "month", "week", "day", "hour", "minute", "quarter")
 # rows and columns lay out where a sample sat, not what was measured.
 DESIGN_TOKENS = frozenset({
     "replicate", "rep", "batch", "plate", "well", "run", "trial", "block", "lane",
-    "row", "column", "col", "position",
+    "row", "column", "col",
 })
 # Conditions recorded beside an outcome, and rarely the outcome itself. Any word
 # of the name counts, so "air_temp_c" matches.
@@ -148,8 +148,14 @@ def is_identifier_name(name: str) -> bool:
 
 
 def is_design_name(name: str) -> bool:
-    """Whether the name marks an experimental-design label such as "Replicate" or "Plate"."""
+    """Whether the name marks an experimental-design label such as "Replicate" or "Plate".
+
+    "Position" counts only after a design word ("Well Position"), since on its
+    own it is as likely a player's or an employee's role.
+    """
     words = _head_words(name)
+    if words[-2:-1] and words[-1] == "position":
+        return words[-2] in DESIGN_TOKENS
     return bool(words) and words[-1] in DESIGN_TOKENS
 
 
