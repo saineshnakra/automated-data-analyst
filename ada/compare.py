@@ -655,15 +655,27 @@ def combined_groupings(dataframe: pd.DataFrame, groupings: list[str]) -> dict[st
     A cell code such as "T0" for contour Top at depth 0-10 explains at least as
     much as either factor, which says nothing about which factor matters.
     """
+    # Each column as integer codes, -1 for missing, so a candidate is checked
+    # with array operations rather than a groupby per pair of columns.
+    codes = {grouping: pd.factorize(dataframe[grouping])[0].astype(np.int64) for grouping in groupings}
+    levels = {grouping: int(codes[grouping].max()) + 1 for grouping in groupings}
     found: dict[str, tuple[str, str]] = {}
     for grouping in groupings:
         for first, second in itertools.combinations([g for g in groupings if g != grouping], 2):
-            data = dataframe[[grouping, first, second]].dropna()
-            if data.empty or data[grouping].nunique() < 3:
+            # A combination has more levels than either part and at most their product.
+            if not max(levels[first], levels[second]) < levels[grouping] <= levels[first] * levels[second]:
                 continue
-            forward = data.groupby(grouping, observed=True)[[first, second]].nunique().max().max() == 1
-            backward = data.groupby([first, second], observed=True)[grouping].nunique().max() == 1
-            if forward and backward and data[first].nunique() > 1 and data[second].nunique() > 1:
+            kept = (codes[grouping] >= 0) & (codes[first] >= 0) & (codes[second] >= 0)
+            cells = codes[grouping][kept]
+            if cells.size == 0 or np.unique(cells).size < 3:
+                continue
+            pairs = codes[first][kept] * levels[second] + codes[second][kept]
+            if np.unique(codes[first][kept]).size < 2 or np.unique(codes[second][kept]).size < 2:
+                continue
+            # One pair per level and one level per pair: as many distinct (level,
+            # pair) couples as distinct levels and as distinct pairs.
+            couples = np.unique(cells * (levels[first] * levels[second]) + pairs).size
+            if couples == np.unique(cells).size == np.unique(pairs).size:
                 found[grouping] = (first, second)
                 break
     return found
@@ -1258,15 +1270,20 @@ def cap_flag(flag: pd.Series, values: pd.Series) -> CapFlag | None:
     """
     if flag.name == values.name or not pd.api.types.is_numeric_dtype(values):
         return None
-    data = pd.DataFrame({"flag": flag.to_numpy(), "value": values.to_numpy()}).dropna()
-    if data.empty or data["flag"].nunique() != 2 or data["value"].nunique() < 3:
+    # Codes and floats rather than a frame per pair: the scan calls this for
+    # every reading against every two-valued grouping.
+    codes = pd.factorize(flag)[0]
+    numbers = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
+    kept = (codes >= 0) & ~np.isnan(numbers)
+    codes, numbers = codes[kept], numbers[kept]
+    if numbers.size == 0 or np.unique(codes).size != 2 or np.unique(numbers).size < 3:
         return None
-    for edge, value in (("maximum", data["value"].max()), ("minimum", data["value"].min())):
-        at_edge = data["value"] == value
+    for edge, value in (("maximum", numbers.max()), ("minimum", numbers.min())):
+        at_edge = numbers == value
         if at_edge.sum() < 2:
             continue
-        marked = data.loc[at_edge, "flag"].unique()
-        if len(marked) == 1 and not data.loc[~at_edge, "flag"].isin(marked).any():
+        marked = np.unique(codes[at_edge])
+        if marked.size == 1 and not np.isin(codes[~at_edge], marked).any():
             return CapFlag(str(flag.name), str(values.name), float(value), edge, int(at_edge.sum()))
     return None
 
