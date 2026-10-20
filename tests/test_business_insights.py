@@ -216,7 +216,7 @@ class BusinessAnalysisTests(unittest.TestCase):
         self.assertNotIn("driver", [item.kind for item in brief.evidence])
         trend = next(item for item in brief.evidence if item.kind == "trend")
         self.assertIn("No region value reported in both periods", trend.statement)
-        self.assertIn("East reported in Apr 2025 but not May 2025", trend.statement)
+        self.assertIn("East reported in Apr 2025 but not in May 2025", trend.statement)
 
     def test_offsetting_segments_are_measured_against_all_movement(self):
         """West rises by 1,000 and East falls by 980, so the net movement is only 20."""
@@ -1026,7 +1026,7 @@ class PeriodComparisonTests(unittest.TestCase):
         trend = evidence_of(stations_by_quarter(), "trend")
 
         self.assertIn("compares the 2 station values that reported in both periods", trend.statement)
-        self.assertIn("South reported in Q3 1945 but not Q4 1945", trend.statement)
+        self.assertIn("South reported in Q3 1945 but not in Q4 1945", trend.statement)
         self.assertIn("With every station included it went from", trend.statement)
         self.assertIn("decreased by 10 ", trend.statement)
         self.assertIn("within the range usual for the time of year", trend.statement)

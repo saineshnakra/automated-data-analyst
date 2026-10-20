@@ -300,14 +300,18 @@ def _matched_note(
 ) -> str:
     """Say which groups the latest change was measured on, and what all of them showed."""
     dimension = sentence_case(roles.dimension or "group")
+    # "in Q3 1945", but "at 15:55" for a clock time.
+    when = "at" if series.frequency in ("s", "min", "h") else "in"
     previous, latest = (
         format_period(series.frame.iloc[position]["Period"], series.frequency) for position in (-2, -1)
     )
     changes = []
     if matched.stopped:
-        changes.append(f"{_listed(matched.stopped, roles.dimension)} reported in {previous} but not {latest}")
+        stopped = _listed(matched.stopped, roles.dimension)
+        changes.append(f"{stopped} reported {when} {previous} but not {when} {latest}")
     if matched.started:
-        changes.append(f"{_listed(matched.started, roles.dimension)} reported in {latest} but not {previous}")
+        started = _listed(matched.started, roles.dimension)
+        changes.append(f"{started} reported {when} {latest} but not {when} {previous}")
     if not matched.groups:
         return (
             f" No {dimension} value reported in both periods ({'; '.join(changes)}), so this "
@@ -452,10 +456,10 @@ def _change_driver_evidence(
     left_out = grouped.attrs.get("left_out", ())
     if left_out:
         # Their change is reporting starting or stopping, not a move in the measure.
-        noun = "value" if len(left_out) == 1 else "values"
+        noun, verb = ("value", "is") if len(left_out) == 1 else ("values", "are")
         statement += (
             f" {len(left_out):,} {sentence_case(roles.dimension)} {noun} with figures in only one "
-            f"of the two periods ({_listed(left_out, roles.dimension)}) are left out."
+            f"of the two periods ({_listed(left_out, roles.dimension)}) {verb} left out."
         )
         calculation += "; only segments with figures in both periods"
 
@@ -1299,7 +1303,7 @@ def analyze_business(
 ) -> BusinessBrief:
     """Create an executive brief from explainable calculations and rule-based interpretation.
 
-    ``frequency`` fixes the period grain (``D W M Q Y``) for the trend, driver and
+    ``frequency`` fixes the period grain (``s min h D W M Q Y``) for the trend, driver and
     anomaly findings, so they match a trend or forecast built at that grain.
     Without it the grain follows how often the data was recorded.
     """
