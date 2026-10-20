@@ -300,8 +300,8 @@ def _matched_note(
 ) -> str:
     """Say which groups the latest change was measured on, and what all of them showed."""
     dimension = sentence_case(roles.dimension or "group")
-    # "in Q3 1945", but "at 15:55" for a clock time.
-    when = "at" if series.frequency in ("s", "min", "h") else "in"
+    # "in Q3 1945", "in the week of 20 Jan 2025", but "at 15:55" for a clock time.
+    when = {"s": "at", "min": "at", "h": "at", "W": "in the week of"}.get(series.frequency, "in")
     previous, latest = (
         format_period(series.frame.iloc[position]["Period"], series.frequency) for position in (-2, -1)
     )
@@ -787,10 +787,12 @@ def _coverage_note(dataframe: pd.DataFrame, roles: ColumnRoles, groups: list) ->
             continue
         first, last = coverage.loc[group, "From"], coverage.loc[group, "To"]
         if (last - first) < PARTIAL_COVERAGE_SHARE * span:
-            notes.append(
-                f"{group_label(roles.dimension, group)} only has figures from "
-                f"{format_moment(first)} to {format_moment(last)}"
+            dates = (
+                f"on {format_moment(first)}"
+                if format_moment(first) == format_moment(last)
+                else f"from {format_moment(first)} to {format_moment(last)}"
             )
+            notes.append(f"{group_label(roles.dimension, group)} only has figures {dates}")
     if not notes:
         return ""
     covers = "its figure covers" if len(notes) == 1 else "their figures cover"
