@@ -113,8 +113,10 @@ a no-change forecast. With too little history it returns nothing.
 Builds the `BusinessBrief`: a headline, up to four KPIs, up to six evidence
 cards and up to four prioritized recommendations.
 
-Evidence kinds: `trend`, `driver`, `leader`, `concentration`, `anomaly`,
-`relationship`, `outliers`, `quality`. Each card carries its calculation.
+Evidence kinds: `trend`, `driver`, `leader`, `concentration`, `differences`,
+`anomaly`, `relationship`, `outliers`, `quality`. Each card carries its
+calculation. Group comparisons and the relationship scan come from
+`ada/compare.py` ([details](reference/compare.md)).
 
 ## 10. Draw it
 

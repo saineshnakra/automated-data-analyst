@@ -37,11 +37,19 @@ print(report)
 lab-measurements.csv — 936 rows, 02 Sep 2024 to 23 Feb 2026
   date=Run Date  measure=Viability % (mean)  segment=Treatment
 
-+0.1 pts latest movement; Control has the highest average, at 91.6%.
++0.1 pts latest movement; Control has the highest median, at 91.9%.
 ...
-  91.6%  Highest average by treatment
-      Control has the highest average Viability %, at 91.6%. Compound B has the lowest, at 84.8%.
-      calc: mean Viability % per Treatment; averages are not split into shares
+  91.9%  Highest median by treatment
+      Viability % differs across Treatment: Control has the highest median, 91.9%, and Compound B
+      the lowest, 85.1% (n = 232 and 233). Treatment explains 64% of the variation in its ranks
+      (ε² = 0.64, Kruskal-Wallis, p < 0.001); a value from Control is the larger in 98% of pairs
+      against Compound B. Medians and ranks are used because it is strongly skewed.
+      calc: median Viability % per Treatment; Kruskal-Wallis with ε² = H ÷ (n − 1); checked with
+      Welch's ANOVA; highest vs lowest median; ranks because it is strongly skewed
+  1 of 1  What differs between groups
+      Live Cells differs across Treatment: medians from 1.1M (Compound B) to 1.2M (Compound C),
+      ε² = 0.08. It is the only comparison made.
+      calc: each numeric reading compared across Treatment: ...
   1  Anomalous periods
       Jul 2025 is the sharpest anomaly: viability % reached 81.5%, below the expected 88.1%–90.1% range.
       1 period sits outside the trendline band.
@@ -111,19 +119,29 @@ ada ask orders.csv "which category made the most revenue"
   assuming no change.
 - **Answers plain-English questions** ("average pH by site", "mean signal by
   timepoint", "which month had the highest wind", "is pH correlated with
-  temperature", "how many samples have pH below 5.5", "what share have
-  diabetes", "average PM2.5 by hour") by turning them into a fixed query plan
-  that pandas runs. Every column, value, grouping and condition the question
+  temperature", "does pH differ by site", "what correlates with strength",
+  "how many samples have pH below 5.5", "what share have diabetes", "average
+  PM2.5 by hour") by turning them into a fixed query plan that pandas runs. Every column, value, grouping and condition the question
   names must reach the plan; otherwise the question is refused with the part
   ADA couldn't use, rather than answered approximately. A short name that fits
   one column ("strength" for `Concrete compressive strength (MPa)`) is used
   and the answer says so. Each answer states its filters, how many rows it
   used and whether the row limit left rows out.
-- **Reports correlations with a 95% interval**, the sample size and a rank
-  correlation check. In the brief it says that the pair was picked as the
-  strongest of several; ask about a pair and it reports the same figures for
-  that pair. Participant numbers, plate positions and near-duplicate pairs (a
-  reading and its adjusted copy) are left out of the brief's pick.
+- **Tests group differences**: a measure compared across groups gets the n per
+  group, Welch's test with a Mann-Whitney check (or Welch's ANOVA and
+  Kruskal-Wallis for more groups) and an effect size, by medians and ranks when
+  the data are skewed or capped. A gap within the noise reads as "no clear
+  difference", never as a ranking. A scan of every reading across every
+  grouping names the largest differences, with p-values adjusted for the
+  number of tests, and repeated rows of one subject count once.
+- **Reports what relates to the measure**: every numeric column's Pearson and
+  Spearman r with the measure, with a 95% interval and the sample size, then
+  the strongest other pair, or a plain "none of N pairs reaches |r| = 0.3".
+  A total and its items, a mean of other columns, a censoring flag and its
+  capped reading, near-duplicates, participant numbers and plate positions
+  are left out and listed. It says when a correlation rests on one record,
+  and when it reverses within groups.
+  Ask about a pair and it reports the same figures for that pair.
 - **Analyzes a slice you select**: draw a box or lasso on the Explore chart, or
   click some bars, and get the same analysis for those rows beside the whole.
 
@@ -139,10 +157,11 @@ or a random sample of one without, and every answer says which.
 ## What it doesn't do
 
 It describes one table. It has no domain knowledge and is not a statistics
-package: no hypothesis tests, no study design, no multiple-comparison
-correction. The recommendations it prints are suggestions for what to look at
-next, not causal claims. If you need a p-value for a specific comparison, ADA
-is the step before that.
+package: it runs a fixed set of tests (group comparisons and correlations)
+and knows nothing of the study design behind them, such as paired or nested
+measurements beyond one value per subject, or covariates to adjust for. The
+recommendations it prints are suggestions for what to look at next, not
+causal claims. For a confirmatory analysis, ADA is the step before that.
 
 ## Using it from Python
 

@@ -29,7 +29,8 @@ under the original wording.
 ```python
 @dataclass(frozen=True)
 class QueryPlan:
-    intent: Intent            # aggregate | count | rank | breakdown | trend | growth | correlation | missing
+    intent: Intent            # aggregate | count | rank | breakdown | trend | growth |
+                              # correlation | compare | correlates | missing
     aggregation: Aggregation  # sum | mean | median | min | max | count
     measure: str | None
     dimension: str | None
@@ -62,6 +63,48 @@ A `Condition` is a column, an operator (`=`, `<`, `<=`, `>`, `>=` or
 | `growth` | Latest period against the previous one | "Which region grew fastest?" |
 | `correlation` | How two numeric columns move together | "Is flipper length correlated with body mass?" |
 | `missing` | Missing values per column, or in one column | "Which columns have missing values?" |
+| `compare` | Whether a reading differs between groups, with a test and an effect size | "Does pH differ by site?", "Is troponin higher in positive than negative?" |
+| `correlates` | Every numeric column ranked by how strongly it relates to one | "What correlates with strength?" |
+
+## Comparing groups, and what correlates with a column
+
+Before the steps below, `_comparison_plan` reads these question shapes, with
+their own small grammar (difference and direction words, "than", nouns such
+as "patients" or "variables") on top of the usual one:
+
+| Question | Plan |
+|---|---|
+| "does X differ by Y", "is X different between Y", "does X vary across Y", "compare X across Y" | `compare` X across every group of Y |
+| "is X higher in A than B", "is X lower for A than B" | `compare` X between groups A and B of one column, kept as a filter in the order named; the direction asked is stored as the plan's `aggregation` (`max` for higher, `min` for lower) |
+| "is X higher in condition 2 than condition 1" | The same, for the numbered groups of a numeric column |
+| "what correlates with X", "what is most related to X", "which variables are most correlated with X" | `correlates` of X |
+
+The grouping column is the one named after "by", "across", "between",
+"among" or "in" (a segment, or a numeric column with 2 to 50 values), or the
+column whose values the question names. Values of other columns filter the
+rows. Without a numeric column named, the detected measure is compared.
+"compare X across Y" for a summed measure such as revenue asks for each
+group's total, so it becomes a `breakdown`; words of difference still ask for
+the test. A question naming two numeric columns ("is x related to y") stays a
+`correlation`, and anything this grammar can't read goes on to the steps
+below.
+
+A `compare` answer is the brief's group comparison (see
+[Comparing groups](compare.md)): the n, mean and median per group, Welch's
+test with a Mann-Whitney check for two groups or Welch's ANOVA with a
+Kruskal-Wallis check for more, an effect size, and "no clear difference"
+when the test can't tell the groups apart. A skewed or capped reading is
+compared by medians and ranks, and a repeating subject column counts each
+subject once per group. A directed question gets its answer first: "Yes.",
+"No, the other way round." or "Not clearly." The table has one row per group
+and is drawn as a bar chart.
+
+A `correlates` answer ranks every numeric reading against X as the brief's
+relationship card does, by the larger of |Spearman r| and |Pearson r| without
+the most influential record, and leaves out columns built from X or from the
+same items. It states the strongest with the usual correlation wording and
+checks, or says nothing reaches |r| = 0.3. The table lists each column's
+Pearson r, 95% interval, Spearman r and n, drawn as a bar chart.
 
 ## How the parser reads a question
 
@@ -345,7 +388,8 @@ Other behaviour:
 - A correlation reports Pearson r with its 95% interval (Fisher transform), the
   number of complete pairs and the Spearman rank correlation, in the same
   wording as the brief's relationship card (see
-  [Evidence](evidence.md#correlation)). The pair was named by the reader, so
+  [Evidence](evidence.md#relationships)), including whether it rests on one
+  record or a few extreme ones. The pair was named by the reader, so
   nothing is said about picking it from several; the answer ends by saying a
   correlation alone is not evidence of cause. Fewer than 12 complete pairs
   (`MIN_CORRELATION_PAIRS`) gives an answer saying so instead of an r. The

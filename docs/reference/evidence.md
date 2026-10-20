@@ -40,14 +40,17 @@ assembled in this order:
 |---|---|---|
 | `trend` | Latest period-over-period change on the groups present in both periods, compared with the series' usual movement or with the time of year | No date, fewer than 2 periods, or a percentage change from a previous period of zero |
 | `driver` | The segment that moved the measure most between the last two periods | No date, measure or segment |
-| `leader` | For a summed measure, the group with the largest share of the total ("Largest share by ..."), or with the most rows when there is no measure ("Most rows by ..."); for an averaged measure, the groups with the highest and lowest average ("Highest average by ..."); for mixed-sign values, the largest by size with no share | No segment, or a total of zero |
+| `leader` | For a summed measure, the group with the largest share of the total ("Largest share by ..."), or with the most rows when there is no measure ("Most rows by ..."). For an averaged measure, a comparison of the groups with its test and effect size (see below). For mixed-sign values, the largest by size with no share | No segment, or a total of zero |
 | `concentration` | Effective number of segments, and the top-three share | Shares are not meaningful (averaged measure or mixed signs), or the measure is neither money nor a count of things |
+| `differences` | Which numeric readings differ between groups, largest first, after adjusting for the number of tests | No grouping, no reading, or a scan of fewer than 3 comparisons that found nothing |
 | `anomaly` | The most severe flagged period and how many were flagged, against the band for its time of year when the series has a yearly pattern | Under 8 periods, or nothing flagged |
-| `relationship` | Strongest numeric correlation, with a confidence interval | See below |
+| `relationship` | What relates to the measure, then the strongest other pair, or a null result | Fewer than two numeric readings, or no pair with 12 complete rows |
 | `outliers` | Count of measure values outside 1.5 × IQR | No measure, fewer than 12 values or 4 distinct values, IQR of zero, or no outliers |
 | `quality` | Share of populated cells | No missing cells |
 
-If more than six cards qualify, the first six are shown. A `quality` card that
+A `differences` card that found nothing comes after `outliers` rather than
+after the segment cards, so a null result never pushes out a finding. If
+more than six cards qualify, the first six are shown. A `quality` card that
 falls past the sixth replaces the sixth, since it qualifies every other figure.
 
 The `driver` and `leader` cards name a group of a numeric grouping with its
@@ -156,41 +159,90 @@ The card appears only for money and counts of things (whole-numbered values),
 since how concentrated revenue or orders are across products is a real
 question, and how concentrated rainfall is across weather stations is not.
 
-### Correlation
+### Group differences
 
-The strongest numeric pair is reported only when all of these hold:
+A gap between two group averages says nothing without the spread and the
+sample behind it, so for an averaged measure the `leader` card compares the
+groups with `compare_groups` (see [Comparing groups](compare.md)): the n,
+mean and median per group, Welch's test with a Mann-Whitney check for two
+groups or Welch's ANOVA with a Kruskal-Wallis check for more, and an effect
+size. A skewed or capped measure is compared by medians and ranks. When a
+subject column repeats, each subject counts once per group.
 
-| Requirement | Value |
+| Result | Card |
 |---|---|
-| Absolute Pearson correlation | At least 0.45 (`MATERIAL_CORRELATION`) |
-| Complete pairs | At least 12 (`MIN_CORRELATION_PAIRS`); a pair with fewer is not considered |
-| Columns | Not identifiers, not category codes (`ColumnRoles.factors`: a 0/1 flag, a status code, a set dose), not experimental-design labels (`Replicate`, `Plate`, `Row`, `Column`, ...), not labels for the unit a row belongs to (`subject`, `participant`, `patient`, `animal`, `mouse`, `rat`, `donor`, `individual`, `specimen`, `station`, `site`, `plot`, or an id-like word; `is_entity_name` in `ada/schema.py`), not named exactly as a time part (`year`, `month`, ...) |
-| Not a near-duplicate | See below |
+| Clear difference | Title "Highest average by *group*" (or "Highest median by *group*" when medians are compared), the top group's mean or median as the value, and "X is higher in A than in B" or the highest and lowest groups, naming any tied with them |
+| No clear difference, or a negligible one | Title "No clear difference by *group*", the effect size as the value, and the groups' figures; no group is called highest, no KPI names a top group, and the headline says there is no clear difference |
 
-A participant numbered 1 to 20 with three rows each is not unique enough to
-look like an identifier, but its number is a label, so it is left out by name
-whatever its values. The same goes for a plate's `Column`, which correlates
-with a dose only because the dilution series was laid out across the plate.
+When too few groups have two values to test, the card falls back to naming the
+highest and lowest average and says the gap can't be tested.
 
-**Near-duplicates.** A pair with an absolute Pearson correlation of 0.99 or
-more (`NEAR_DUPLICATE_CORRELATION`) is usually one quantity twice: a reading
-and its adjusted copy, or a size in two directions that always match. Such a
-pair is not chosen as the relationship. If any were set aside, the card ends
-with one sentence naming up to three of them (`NEAR_DUPLICATES_NAMED`) and
-saying they probably measure the same thing or one is derived from another.
-If no other pair qualifies, there is no card. A pair whose rank correlation is
-more than 0.25 below its Pearson figure is not a near-duplicate, since a few
-extreme records produce that figure; it stays in and is reported with that
-caveat.
+The `differences` card compares every numeric reading across the grouping
+column and the other groupings with 2 to 12 levels (`MAX_SCAN_LEVELS`),
+including numeric codes listed in `ColumnRoles.factors`, with
+`scan_differences`. Readings are the numeric columns that are not identifiers,
+codes, design labels, time parts, yes/no flags or numbers for a grouping's
+levels (a `Group` 1 to 12 beside its `Gp` label). A grouping made of two others
+(a cell code for contour and depth) is replaced by those two, and the subject
+column is never a grouping.
 
-The card gives a 95% confidence interval from the Fisher transform, and the
-sample size. If the interval includes zero, the card says the sample cannot
-rule out no relationship. If Spearman rank correlation differs from Pearson by
-more than 0.25 (`RANK_DIVERGENCE`), the card says so: a stronger rank
-correlation means a consistent but curved relationship, a weaker one means a
-few extreme records produce the linear figure. It also notes that the pair was
-picked as the strongest of several and that the interval is not adjusted for
-that selection.
+- P-values are Holm-adjusted for every comparison run, and the calculation says
+  how many.
+- The card leads with the largest clear difference, names the next two with
+  their effect sizes, and its value is the count of clear differences ("3 of 7").
+- With nothing clear it says so and names the largest effect.
+- With several groupings it adds the share of the measure's variance each one
+  explains: "Of the variance in Ca, Depth explains 76%, Contour 5%".
+- The measure across the grouping column is left to the `leader` card when the
+  measure is averaged.
+
+When the `leader` card finds no clear difference and the `differences` card
+finds one, the headline and summary lead with the difference found.
+
+### Relationships
+
+The `relationship` card ranks what relates to the measure first, then the
+strongest pair among the other columns, using `scan_relationships` (see
+[Comparing groups](compare.md#relationships)):
+
+1. Every numeric reading is correlated with the measure. The card states the
+   strongest with its Pearson r, 95% interval by the Fisher transform, n and
+   rank-correlation checks, and lists the next two with their Pearson and
+   Spearman r and n.
+2. It then states the strongest pair among the other columns.
+3. A correlation reaches the card at |r| of 0.3 (`NOTABLE_CORRELATION`); below
+   that the card says none of N columns reaches it and names the closest.
+   Over 1,000 rows and 10 or more pairs, a table whose strongest correlation
+   is under 0.05 is called worth a check of how its values were produced.
+4. It always says how many pairs were scanned, and that the ones shown were
+   picked from them, so they are leads to check rather than evidence of cause.
+   When a picked correlation could arise by chance once every correlation
+   tried is allowed for (a Bonferroni bound), it says so.
+
+Pairs are ranked by the larger of |Spearman r| and |Pearson r without the
+pair's most influential record|, so a single impossible record can neither
+make nor hide the strongest pair. Pairs related by construction are left out
+and listed in the calculation: a column and the columns it is built from (a
+total and its items, a mean, a difference), a flag that only marks another
+column's cap, same-stem names above |r| = 0.95, and near-duplicates
+(|r| ≥ 0.99 with ranks that agree, such as a reading and its adjusted copy).
+Near-duplicates are also named in the statement: up to three of them
+(`NEAR_DUPLICATES_NAMED`), saying they probably measure the same thing or one
+is derived from another.
+
+Each pair the card states is checked:
+
+| Check | Statement |
+|---|---|
+| The 95% interval includes zero | The sample cannot rule out no relationship |
+| Dropping one record moves r by more than 0.2 | "It rests on one record: without the one where HCT is 3,715 and MCH is 3,117, r is -0.01" |
+| Spearman r more than 0.25 above Pearson r (`RANK_DIVERGENCE`) | Extreme records hide the relationship, with r without them, when dropping records over 5 robust SDs out closes the gap; otherwise the relationship is consistent but not a straight line |
+| Spearman r more than 0.25 below Pearson r | A few extreme records drive the linear figure, with r without the most extreme when that is known |
+| The r within the groups of a grouping differs in sign, or by 0.3 or more | "Within each dye the relationship runs the other way: r = -0.97 once each dye's own means are removed", or that it is stronger or weaker within groups |
+
+Participant numbers, plate positions and other labels are not readings, so
+they never enter the scan. Wide tables are scanned on the measure and the 299
+most variable other columns, and the calculation says so.
 
 ## KPIs
 
@@ -200,7 +252,8 @@ Added in this order, up to four:
 2. Average measure
 3. Latest movement (when there is a `trend` card)
 4. The `leader` card's figure, labelled with its title ("Highest average by
-   site", "Largest share by category") and naming the group
+   site", "Largest share by category") and naming the group; left out when the
+   groups show no clear difference
 
 A label never repeats an aggregate the column name already has: the total of
 `Total Rain` is labelled `Total Rain`, not `Total Total Rain`
@@ -239,7 +292,8 @@ the evidence card it comes from.
 | `trend`, negative | Start with the driver segment, or find where the adverse change started |
 | `trend`, positive or neutral | Check whether the change holds |
 | `concentration`, warning | Check how much rests on the largest group, named |
-| `leader`, averaged measure | Compare the highest and lowest group against the spread within each |
+| `leader`, averaged measure, clear difference | Find out what sets the top group apart |
+| `leader`, averaged measure, no clear difference | Don't rank the groups on the measure |
 | `leader`, summed measure | Compare the largest group, named, with the others |
 | `anomaly` | Explain the flagged periods |
 | `relationship` | Test the relationship |
