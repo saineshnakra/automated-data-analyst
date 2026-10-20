@@ -630,7 +630,7 @@ with dashboard_tab:
     render_dashboard(dataframe, roles)
 
 with explore_tab:
-    render_explore(dataframe, roles)
+    render_explore(dataframe, roles, brief)
 
 with evidence_tab:
     render_section_heading(

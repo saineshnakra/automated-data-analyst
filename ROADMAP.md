@@ -95,7 +95,7 @@ Where a reader drives instead of reading, rather than only being read to.
 - [Manual pivot builder](https://github.com/saineshnakra/automated-data-analyst/issues/27) — shelves for x, y, colour and filter, with the recommendation as the starting point rather than the only option
 - [Search the space of column pairs](https://github.com/saineshnakra/automated-data-analyst/issues/28) — findings ADA does not currently look for, scored with a correction for how many candidates were examined
 - [Suggest cleaning steps](https://github.com/saineshnakra/automated-data-analyst/issues/29) — offer the transform that would make a column usable, preview it, apply only on confirmation
-- [Select points and analyze the slice](https://github.com/saineshnakra/automated-data-analyst/issues/30) — drill into what a reader can see rather than only into a dropdown value
+- **Select points and analyze the slice** *(shipped, [#30](https://github.com/saineshnakra/automated-data-analyst/issues/30))* — box, lasso, a time range or clicked bars on the Explore chart become a stated filter, analyzed against the whole, with the rules in [docs/reference/selection.md](docs/reference/selection.md)
 
 ### Not on this roadmap
 
