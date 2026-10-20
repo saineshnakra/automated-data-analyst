@@ -18,7 +18,9 @@ from streamlit.errors import StreamlitSecretNotFoundError
 
 # Streamlit reruns this file but keeps imported modules in sys.modules until the
 # process restarts, which can span several deploys. Before any local import,
-# reload the local modules whose source on disk has changed.
+# reload the local modules whose source on disk has changed. Each loaded module
+# is stamped with the digest of the source it was loaded from, on the module
+# object itself, so the record survives Streamlit clearing its caches.
 _HERE = Path(__file__).resolve().parent
 _PACKAGE = "ada"
 _LOCAL_MODULES = tuple(  # dependency order: each module imports only from those above it
@@ -29,6 +31,7 @@ _LOCAL_MODULES = tuple(  # dependency order: each module imports only from those
         "pipeline", "ai_insights", "ui",
     )
 )
+_STAMP = "__ada_source_digest__"
 
 
 def _source_digest(name: str) -> str:
@@ -36,18 +39,18 @@ def _source_digest(name: str) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else ""
 
 
-@st.cache_resource(show_spinner=False)
-def _loaded_digests() -> dict[str, str]:
-    """Source digest of each local module at the last refresh, shared across reruns."""
-    return {}
+def _stamp_loaded_modules() -> None:
+    for name in _LOCAL_MODULES:
+        if name in sys.modules and not hasattr(sys.modules[name], _STAMP):
+            setattr(sys.modules[name], _STAMP, _source_digest(name))
 
 
 def _refresh_stale_modules() -> None:
-    loaded = _loaded_digests()
     stale = [
         name
         for name in _LOCAL_MODULES
-        if name in sys.modules and loaded.get(name) not in ("", None, _source_digest(name))
+        if name in sys.modules
+        and getattr(sys.modules[name], _STAMP, None) not in (None, _source_digest(name))
     ]
     if stale:
         # Reload from the first stale module onwards, so a module that did
@@ -56,8 +59,8 @@ def _refresh_stale_modules() -> None:
         for name in _LOCAL_MODULES[first:]:
             if name in sys.modules:
                 importlib.reload(sys.modules[name])
-    for name in _LOCAL_MODULES:
-        loaded[name] = _source_digest(name)
+                setattr(sys.modules[name], _STAMP, _source_digest(name))
+    _stamp_loaded_modules()
 
 
 _refresh_stale_modules()
@@ -138,6 +141,8 @@ from ada.ui import (  # noqa: E402
     render_recommendations,
     render_section_heading,
 )
+
+_stamp_loaded_modules()
 
 SAMPLE_NOTES = {
     "Lab Measurements": "Weekly cell-culture assay by treatment arm. Viability is averaged while live-cell counts are summed; one arm declines and one plate reads badly.",

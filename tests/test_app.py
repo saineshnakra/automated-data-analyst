@@ -146,6 +146,52 @@ class StaleModuleTests(unittest.TestCase):
         self.assertIn("FRESH", result.stdout, result.stdout[-2000:])
 
 
+class StaleModuleCacheTests(unittest.TestCase):
+    """An edited engine module is reloaded even when Streamlit's caches were cleared,
+    which happens when a deploy changes a cached function's source."""
+
+    SIM = textwrap.dedent(
+        r"""
+        import sys, runpy, warnings, logging, io, contextlib
+        warnings.filterwarnings("ignore"); logging.disable(logging.CRITICAL)
+        import streamlit as st
+        def run():
+            try:
+                with contextlib.redirect_stderr(io.StringIO()):
+                    runpy.run_path("app.py", run_name="__main__")
+            except SystemExit:
+                pass
+        run()
+        with open("ada/business_insights.py", "a") as handle:
+            handle.write("\n\nDEPLOY_MARKER = 'fresh'\n")
+        st.cache_resource.clear()
+        st.cache_data.clear()
+        run()
+        import ada.business_insights as business_insights
+        print("FRESH" if hasattr(business_insights, "DEPLOY_MARKER") else "STALE")
+        """
+    )
+
+    def test_an_edited_module_is_reloaded_after_the_caches_are_cleared(self):
+        root = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory() as scratch:
+            shutil.copy(root / "app.py", scratch)
+            for folder in ("ada", ".streamlit", "assets"):
+                if (root / folder).exists():
+                    shutil.copytree(root / folder, Path(scratch) / folder)
+            result = subprocess.run(
+                [sys.executable, "-c", self.SIM],
+                cwd=scratch,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                env={**os.environ, "PYTHONPATH": scratch},
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+        self.assertIn("FRESH", result.stdout, result.stdout[-2000:])
+
+
 class OptionalAiLayerTests(unittest.TestCase):
     def test_the_app_is_whole_when_the_ai_layer_cannot_be_imported(self):
         with _BlockImport("pydantic", "openai", evict=("ada.ai_insights",)):
