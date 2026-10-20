@@ -1,19 +1,19 @@
-## What problem does this solve?
+## Problem
 
-<!-- Describe the user problem and why it matters. -->
+<!-- The user problem and why it matters. -->
 
-## What changed?
+## Change
 
-<!-- Keep the implementation summary focused. -->
+<!-- What changed, briefly. Behaviour before and after. -->
 
-## Evidence and trust boundaries
+## Calculations and privacy
 
-<!-- Name any calculation, interpretation, external call, privacy boundary, or cost change. -->
+<!-- Any calculation, interpretation, external call, privacy boundary or cost change this touches. Write "None" if there is none. -->
 
-## Verification
+## Checks
 
 - [ ] `ruff check .`
-- [ ] `python -m unittest discover -s tests -v`
-- [ ] New or changed analytical behavior has tests
+- [ ] `python -m unittest discover -s tests`
+- [ ] New or changed analytical behaviour has tests
 - [ ] UI changes include screenshots
-- [ ] No credentials, private datasets, or generated build output are committed
+- [ ] No credentials, private data or build output committed

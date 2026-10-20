@@ -1,125 +1,156 @@
 # Evidence and recommendations
 
-**Code:** `business_insights.py` → `analyze_business`
+**Code:** `analyze_business` in `ada/business_insights.py`
 **Tests:** `tests/test_business_insights.py`, `tests/test_significance.py`
 
-Turns the calculated frames into what the user actually reads: a headline, four
-KPIs, evidence cards, and prioritized next steps.
+Turns the calculated frames into the brief the user reads: a headline, KPIs,
+evidence cards and prioritized next steps.
 
-## The split that matters
+## Evidence and recommendations are separate
 
 | | Evidence | Recommendation |
 |---|---|---|
 | What it is | Something ADA calculated | Something ADA suggests |
-| Claim strength | Fact about your data | Interpretation, never proof of cause |
-| Always carries | The exact calculation | The evidence it rests on |
+| Claim | A fact about the data | Interpretation, never a cause |
+| Carries | The calculation | The evidence statement it rests on |
 | Type | `Evidence` | `Recommendation` |
 
-Nothing in ADA says "X caused Y". Evidence says what moved; recommendations say
-where to look.
+Evidence says what moved; recommendations say where to look.
 
 ## The output: `BusinessBrief`
 
 | Field | Contents |
 |---|---|
-| `headline` | One sentence, built from the strongest available signals |
-| `summary` | A short plain-English paragraph |
+| `headline` | One sentence from the strongest available signals |
+| `summary` | A short paragraph |
 | `roles` | The `ColumnRoles` used |
-| `kpis` | Exactly 4 `KPI`s |
+| `kpis` | Up to 4 `KPI`s |
 | `evidence` | Up to 6 `Evidence` cards |
-| `recommendations` | Prioritized `Recommendation`s |
+| `recommendations` | Up to 4 `Recommendation`s |
 
-## The evidence kinds
+## Evidence kinds
 
-Each is produced by its own function and skipped when the data does not support
-it. Order below is the order they are assembled.
+Each kind has its own function, which returns nothing when the data does not
+support it. Cards are assembled in this order:
 
-| Kind | What it reports | Skipped when |
+| Kind | Reports | Skipped when |
 |---|---|---|
-| `trend` | Latest period-over-period movement, in context of the series' own volatility | No date or measure |
-| `driver` | Which segment moved the measure most, and whether gross movement offsets | No segment |
-| `leader` | Largest segment and its share | No segment |
-| `concentration` | How concentrated the measure is across segments | Total is zero, or the segment values are mixed-sign (a share of a signed total is not a share) |
-| `leader` | *(mixed signs)* Largest segment by size, with no share quoted | — |
-| `anomaly` | The most severe flagged period | Under 8 periods, or nothing flagged |
-| `relationship` | Strongest numeric correlation, with a confidence interval | See thresholds below |
-| `outliers` | Share of extreme measure values | No measure |
-| `quality` | Data completeness | Nothing missing worth reporting |
+| `trend` | Latest period-over-period change, compared with the series' usual movement | No date, fewer than 2 periods, or a percentage change from a previous period of zero |
+| `driver` | The segment that moved the measure most between the last two periods | No date, measure or segment |
+| `leader` | The largest segment and its share of the total; for an averaged measure or mixed-sign values, the largest by size with no share | No segment, or a total of zero |
+| `concentration` | Effective number of segments, and the top-three share | Shares are not meaningful (averaged measure or mixed signs) |
+| `anomaly` | The most severe flagged period and how many were flagged | Under 8 periods, or nothing flagged |
+| `relationship` | Strongest numeric correlation, with a confidence interval | See below |
+| `outliers` | Count of measure values outside 1.5 × IQR | No measure, fewer than 12 values or 4 distinct values, IQR of zero, or no outliers |
+| `quality` | Share of populated cells | No missing cells |
+
+If more than six cards qualify, the first six are shown. A `quality` card that
+falls past the sixth replaces the sixth, since it qualifies every other figure.
 
 ### Movement in context
 
-A metric that routinely swings 30% has not told you anything by swinging 30%
-again. So the `trend` card compares the latest change against the series' own
-typical movement, and says which it is. Needs at least **5 periods**
-(`MIN_PERIODS_FOR_VOLATILITY`) to have a sense of typical.
+The `trend` card gives the change in the measure's own terms: a percentage of
+the previous period for an amount or count, percentage points for a rate, and
+the plain difference for a level (a percentage of a temperature in °C means
+nothing).
+
+It then compares the latest change with the series' own period-over-period
+changes, measured the same way. It reports whether the change is within normal
+variation, larger or quieter than usual, or unusually large or quiet, based on
+its distance from the median change in robust-scale units (under 1, under 2,
+2 or more). It needs at least five earlier changes
+(`MIN_PERIODS_FOR_VOLATILITY`). When the last period ends short of typical
+coverage but was not excluded, the card says part of the change may be
+missing data.
+
+The card's tone follows the measure's meaning: a rising cost or ticket count is
+negative (`increase_is_welcome` in `ada/metrics.py`).
 
 ### Offsetting movement
 
-When gross movement across segments is much larger than the net change — the
-threshold is a net that is under **25%** of gross (`OFFSETTING_NET_RATIO`) — the
-`driver` card says so. "Up 2% overall" hides "one region up 40%, another down
-38%", and those are very different situations.
+When the net change across segments is under 25% of the gross movement
+(`OFFSETTING_NET_RATIO`), the `driver` card says the segments largely offset
+each other and gives the driver's share of gross movement rather than of the
+net. "Up 2% overall" can hide one region up 40% and another down 38%.
 
 ### Concentration
 
-Measured as **effective segments** rather than a raw top-N share, so it does not
-depend on how many groups happen to exist. Below **3.0** effective segments the
-measure is called concentrated. A top-three share of **70%** or more is toned as
-a warning.
+Measured as effective segments, 1 ÷ the Herfindahl index (the sum of squared
+shares), so it does not depend on how many groups exist. Below 3.0 effective
+segments (`CONCENTRATED_EFFECTIVE_SEGMENTS`) the card is a warning. For an
+all-negative measure, where effective segments are undefined, the card reports
+the top-three share instead and warns at 70% or more.
 
-### Correlation, reported honestly
+### Correlation
 
 The strongest numeric pair is reported only when all of these hold:
 
 | Requirement | Value |
 |---|---|
-| Absolute correlation | ≥ **0.45** (`MATERIAL_CORRELATION`) |
-| Complete pairs | ≥ **12** (`MIN_CORRELATION_PAIRS`) |
-| Columns | Not identifiers, not time parts |
+| Absolute Pearson correlation | At least 0.45 (`MATERIAL_CORRELATION`) |
+| Complete pairs | At least 12 (`MIN_CORRELATION_PAIRS`) |
+| Columns | Not identifiers, not experimental-design labels (`Replicate`, `Plate`, ...), not named exactly as a time part (`year`, `month`, ...) |
 
-It ships with a 95% confidence interval via the Fisher transform and the sample
-size. If the interval spans zero, the card says the sample cannot rule out no
-relationship at all.
+The card gives a 95% confidence interval from the Fisher transform, and the
+sample size. If the interval includes zero, the card says the sample cannot
+rule out no relationship. If Spearman rank correlation differs from Pearson by
+more than 0.25 (`RANK_DIVERGENCE`), the card says so: a stronger rank
+correlation means a consistent but curved relationship, a weaker one means a
+few extreme records produce the linear figure. It also notes that the pair was
+picked as the strongest of several and that the interval is not adjusted for
+that selection.
 
-There is also a rank check: when Pearson and rank correlation diverge by more
-than **0.25** (`RANK_DIVERGENCE`), the relationship is likely driven by a few
-outliers, and the card says so.
+## KPIs
 
-This is the difference between "correlation 0.62" and something a reader can
-weigh.
+Added in this order, up to four:
 
-## The four KPIs
-
-Filled in this order until there are four:
-
-1. Total measure
+1. Total measure (summed measures only)
 2. Average measure
-3. Latest movement (if a trend card exists)
-4. Top segment share (if a leader card exists)
+3. Latest movement (when there is a `trend` card)
+4. Top segment: its share, or its value when no share can be quoted
 
-If fewer than four are available, ADA falls back to distinct identifiers, then
-records analyzed, then data completeness. There are always exactly four, so the
-layout never breaks.
+Remaining slots are filled from: distinct identifiers, records analyzed, data
+completeness. A label already shown is skipped, so a file with little
+structure gets fewer tiles rather than duplicates.
 
 ## Recommendations
 
-`_recommendations` maps evidence to actions with a priority. Each one names the
-calculation it came from. A recommendation with no supporting evidence is not
-produced — that is the whole design.
+`_recommendations` maps evidence to actions. Each action has a priority
+(`Now`, `Next`, `Test`, `Watch` or `Fix`), and its rationale is the statement of
+the evidence card it comes from.
+
+| Evidence | Recommendation |
+|---|---|
+| `trend`, negative | Start with the driver segment, or find where the adverse change started |
+| `trend`, positive | Check whether the change holds |
+| `concentration`, warning | Check how much rests on the leader |
+| `leader`, averaged measure | Compare the highest and lowest group against the spread within each |
+| `leader`, summed measure | Compare the leading group with the rest |
+| `anomaly` | Explain the flagged periods |
+| `relationship` | Test the relationship |
+| `outliers` | Review the extreme records |
+| `quality`, warning (5% or more missing) | Look into the missing values |
+
+The driver is named only when it moved in the same direction as the total. With
+no qualifying evidence, a single "Add a date or a grouping column"
+recommendation explains which columns would enable the analysis.
 
 ## The Markdown report
 
 `build_business_report` renders the brief as a downloadable Markdown executive
-brief, including the calculation behind every card.
+brief, with the calculation under each card. `ada.Analysis.to_markdown()`
+returns the same report, and `to_dict()` returns the brief as JSON-ready data.
 
 ## Changing this
 
 A new evidence card needs:
 
-1. A function returning `Evidence | None` — `None` when the data cannot support it
-2. A `calculation` string a reader could reproduce by hand
-3. A test for the happy path **and** the skip path
-4. Honest degradation: no history, one segment, all zeros, negative values
+1. A function returning `Evidence | None`, with `None` when the data cannot
+   support it.
+2. A `calculation` string a reader could reproduce by hand.
+3. Tests for the case where it appears and the case where it is skipped.
+4. Defined behaviour for no history, one segment, all zeros and negative
+   values.
 
-If a heuristic can produce a misleading result, add the edge case to the tests
-and state the limitation in the card's own text.
+If a heuristic can produce a misleading result, add the case to the tests and
+state the limitation in the card's text.

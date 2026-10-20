@@ -1,144 +1,139 @@
 # How it works
 
-The path from an uploaded file to a dashboard, in the order it actually happens.
-Each step names the module that owns it, so you can jump straight to the code.
+The path from an uploaded file to a dashboard, in order. Each step names the
+module that owns it.
 
 ```mermaid
 flowchart TD
-    A["1 Read the file<br/>file_io.py"] --> B["2 Clean it<br/>analysis.py"]
-    B --> C["3 Detect column roles<br/>schema.py"]
-    C --> D["4 Build the timeline<br/>aggregation.py"]
-    D --> E["5 Fit the trendline<br/>timeseries.py"]
-    E --> F["6 Find anomalies<br/>anomalies.py"]
-    E --> G["7 Forecast<br/>forecasting.py"]
-    D --> H["8 Build evidence + actions<br/>business_insights.py"]
+    A["1 Read the file<br/>ada/file_io.py"] --> B["2 Clean it<br/>ada/analysis.py"]
+    B --> C["3 Detect column roles<br/>ada/schema.py"]
+    C --> R["4 Apply the row limit<br/>ada/pipeline.py"]
+    R --> D["5 Build the timeline<br/>ada/aggregation.py"]
+    D --> E["6 Fit the trendline<br/>ada/timeseries.py"]
+    E --> F["7 Find anomalies<br/>ada/anomalies.py"]
+    E --> G["8 Forecast<br/>ada/forecasting.py"]
+    D --> H["9 Build evidence and actions<br/>ada/business_insights.py"]
     F --> H
-    G --> H
-    H --> I["9 Draw it<br/>ui.py, app.py"]
-    C --> J["Ask ADA<br/>nlq.py"]
+    H --> I["10 Draw it<br/>ada/ui.py, app.py"]
+    G --> I
+    R --> J["Ask ADA<br/>ada/nlq.py"]
 ```
 
----
+`ada.analyze` runs steps 1 to 4 when called and computes the rest on demand.
 
 ## 1. Read the file
 
-**`file_io.py`** · [details](reference/reading-files.md)
+`ada/file_io.py` · [details](reference/reading-files.md)
 
-Accepts `.csv`, `.xlsx`, and `.xlsm`. CSV delimiters are sniffed, so comma,
-semicolon, and tab all work. If an Excel workbook has several sheets, you pick
-one — ADA analyzes a single sheet at a time.
+Accepts `.csv`, `.xlsx` and `.xlsm`. A CSV may be comma, semicolon, tab or pipe
+separated. For a workbook with several sheets, the app asks which one to
+analyze; ADA analyzes one sheet at a time.
 
-Two hard limits, both set in `app.py`:
-
-- **25 MB** per file (`MAX_UPLOAD_BYTES`)
-- **250,000 rows** analyzed (`MAX_ANALYSIS_ROWS`) — extra rows are dropped and
-  the app says how many
+The app refuses files over 25 MB (`MAX_UPLOAD_BYTES` in `app.py`).
 
 ## 2. Clean it
 
-**`analysis.py` → `clean_dataframe`** · [details](reference/cleaning.md)
+`clean_dataframe` in `ada/analysis.py` · [details](reference/cleaning.md)
 
-Conservative, reversible-in-spirit tidying: duplicate column names made unique,
-fully empty rows and columns dropped, leftover "exported index" columns dropped,
-text trimmed, and text columns converted to numbers or dates when nearly all
-values convert cleanly.
+Makes column names unique, drops fully empty rows and columns and exported
+index columns, trims text, and converts text columns to numbers or dates when
+nearly all values convert. Identical rows are counted and kept.
 
-Every change is counted in a `CleaningReport`, which the app shows as a cleaning
-audit table. Nothing is silently altered.
+Each change is counted in a `CleaningReport`, which the app shows as the
+cleaning audit table, with notes for date-order assumptions and similar
+decisions.
 
 ## 3. Detect column roles
 
-**`schema.py` → `detect_roles`** · [details](reference/schema-detection.md)
+`detect_roles` in `ada/schema.py` · [details](reference/schema-detection.md)
 
-Picks the measure, date, segment, and identifier using column names, data types,
-and how many distinct values each column has. No single signal is trusted alone.
+Picks the measure, date, segment and identifier from column names, data types
+and distinct-value counts. Any role can be overridden in the app's "Tune ADA's
+schema detection" panel, or with `date=`, `measure=` and `dimension=` in
+`ada.analyze`.
 
-You can override any of these in the app's "Tune ADA's schema detection" panel
-without rebuilding anything.
+## 4. Apply the row limit
 
-## 4. Build the timeline
+`prepare_analysis` in `ada/pipeline.py`
 
-**`aggregation.py`** · [details](reference/periods.md)
+At most 250,000 rows are analyzed (`MAX_ANALYSIS_ROWS` in `app.py`,
+`DEFAULT_ROW_LIMIT` in `ada/api.py`). ADA keeps the most recent rows by the
+detected date column, or the last rows of the file when there is no date. If
+the cut splits the oldest period, that period is dropped too. The app reports
+how many rows were skipped and the date range analyzed.
 
-This is the only place in the codebase that decides what a period is.
+## 5. Build the timeline
 
-It chooses a grain (weekly, monthly, quarterly) from both the span of your dates
-and how often rows are actually recorded, then totals the measure per period. It
-excludes a trailing period the data only partly covers, and counts empty periods
-as zero.
+`ada/aggregation.py` · [details](reference/periods.md)
 
-The result is a `TrendSeries`: the frame, the grain, and notes describing both
-adjustments.
+The only module that decides what a period is. It picks a grain from the span
+of the dates and from how often rows are recorded, then totals (or, for a rate
+or level, averages) the measure per period. It excludes a trailing period the
+data only partly covers and fills empty periods.
 
-Other frames are built here too — segment totals, the movement waterfall, and
-the segment × period heatmap.
+The result is a `TrendSeries`: the frame, the grain, and notes describing the
+adjustments. Segment totals, the movement waterfall and the segment × period
+heatmap are built here too.
 
-## 5. Fit the trendline
+## 6. Fit the trendline
 
-**`timeseries.py`** · [details](reference/periods.md#the-trendline)
+`ada/timeseries.py` · [details](reference/periods.md#the-trendline)
 
-Fits a Theil–Sen line on calendar positions, and measures the typical spread of
-the residuals robustly. Both anomaly detection and the forecast build on this
-one fit, so they always agree about what "expected" means.
+Fits a Theil-Sen line on calendar positions and measures the spread of the
+residuals with a robust scale. Anomaly detection and the forecast both use this
+fit.
 
-## 6. Find anomalies
+## 7. Find anomalies
 
-**`anomalies.py`** · [details](reference/anomalies.md)
+`ada/anomalies.py` · [details](reference/anomalies.md)
 
-Flags periods that sit further from the trendline than a calibrated band.
-Needs at least 8 periods. Reports the observed value, the expected value, the
-expected range, and how far out it was.
+Flags periods further from the trendline than a calibrated band. Needs at least
+8 periods. Each flag carries the observed value, the expected value and range,
+the direction and the severity.
 
-## 7. Forecast
+## 8. Forecast
 
-**`forecasting.py`** · [details](reference/forecasting.md)
+`ada/forecasting.py` · [details](reference/forecasting.md)
 
-Extends the trendline forward, optionally with month-of-year seasonality. Needs
-at least 8 periods, never forecasts further than half the history you have, and
-ships with a backtest that says outright when the forecast was no better than
-assuming nothing changes.
+Extends the trendline, with month-of-year seasonality when there is enough
+monthly history. Needs at least 8 periods and forecasts at most half the
+history length. Each forecast includes a backtest that states whether it beat
+a no-change forecast. With too little history it returns nothing.
 
-If history is too thin, it returns nothing rather than guessing.
+## 9. Build evidence and recommendations
 
-## 8. Build evidence and recommendations
+`analyze_business` in `ada/business_insights.py` · [details](reference/evidence.md)
 
-**`business_insights.py` → `analyze_business`** · [details](reference/evidence.md)
-
-Assembles the `BusinessBrief`: a headline, four KPIs, up to six evidence cards,
-and prioritized recommendations.
+Builds the `BusinessBrief`: a headline, up to four KPIs, up to six evidence
+cards and up to four prioritized recommendations.
 
 Evidence kinds: `trend`, `driver`, `leader`, `concentration`, `anomaly`,
-`relationship`, `outliers`, `quality`. Each carries its own calculation string.
+`relationship`, `outliers`, `quality`. Each card carries its calculation.
 
-## 9. Draw it
+## 10. Draw it
 
-**`ui.py`** renders components and styles the Plotly charts.
-**`app.py`** wires the Streamlit page together and holds session state.
-**`pipeline.py`** sits between them, bundling steps 1–3 into one call and
-handling drill-down.
-
-Neither `ui.py` nor `app.py` calculates anything. That is a rule, not a habit —
-see [Architecture](architecture.md).
+`ada/ui.py` renders components and styles the Plotly charts. `app.py` builds
+the Streamlit page and holds session state. Neither calculates anything; see
+[Architecture](architecture.md).
 
 ---
 
 ## The Ask ADA path
 
-Questions do not go through the dashboard pipeline. They take their own route,
-starting from the same cleaned data and detected roles.
+Questions start from the same cleaned data and roles as the dashboard.
 
 ```mermaid
 flowchart LR
-    Q["Your question"] --> P["Rule parser<br/>nlq.parse_question"]
-    P -->|understood| PLAN["QueryPlan"]
-    P -->|not understood| AI["Optional AI planner<br/>ai_insights.plan_query_with_ai"]
-    AI --> PLAN
+    Q["Question"] --> P["Rule parser<br/>nlq.parse_question"]
+    P -->|plan| PLAN["QueryPlan"]
+    P -->|no plan| AI["Optional AI planner<br/>ai_insights.plan_query_with_ai"]
+    AI --> OK["User approves<br/>the described plan"]
+    OK --> PLAN
     PLAN --> X["Executed locally with pandas<br/>nlq.execute_plan"]
-    X --> ANS["Answer + the calculation behind it"]
+    X --> ANS["Answer and calculation"]
 ```
 
-The AI planner is a fallback only, it needs an API key, it sees column names and
-types but never your rows, and its answers are badged in the interface. Both
-paths end in the same local executor.
-
-Details: [Ask ADA](reference/ask-ada.md).
+The AI planner runs only when the rules cannot parse a question and an API key
+is set. It sees column names, types and roles, not rows. Its plan is validated,
+described in one sentence, and run only if the user approves it. Both paths end
+in the same executor. See [Ask ADA](reference/ask-ada.md).

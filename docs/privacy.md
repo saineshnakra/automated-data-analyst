@@ -1,50 +1,52 @@
 # Privacy
 
-This page describes what ADA does with your data. For reporting a vulnerability,
-see [SECURITY.md](../SECURITY.md).
+What ADA does with your data. To report a vulnerability, see
+[SECURITY.md](../SECURITY.md).
 
-## The short version
+## Summary
 
-**Where "local" means depends on where ADA is running.** Run it on your own
-machine and nothing leaves it: cleaning, schema detection, every chart, every
-evidence card and every Ask ADA answer are computed in-process with pandas, and
-without an API key ADA makes no network call at all.
+**Running ADA yourself.** Nothing leaves the machine. Cleaning, schema
+detection, charts, evidence cards and Ask ADA answers are computed in-process
+with pandas. Without an API key, ADA makes no network call.
 
-**On the hosted demo, your upload reaches a Streamlit server.** That is what
-uploading to a website is. It lives in memory for the session and is never
-written to a database. Run ADA locally if that matters for your data.
+**The hosted demo.** Your upload is sent to a Streamlit server, held in memory
+for the session, and not written to a database. Run ADA locally if your data
+should not leave your machine.
 
-**With an API key, two optional calls become available.** Both send column
-schema and already-computed evidence. **Neither sends your rows.** An evidence
-sentence names the segment it describes, so a segment label — a customer name,
-a product name — can travel inside it. No other cell value does.
+**With an API key.** Two optional features become available. Both send the
+column schema and already-computed evidence, and neither sends your rows. An
+evidence sentence names the segment it describes, so a segment label such as a
+customer or product name can be included in it. No other cell value is sent.
 
-## What stays local, always
+## What always runs locally
 
-| | Where it runs |
+| Step | Where it runs |
 |---|---|
 | File parsing | Local |
 | Cleaning and type inference | Local |
 | Schema detection | Local |
-| Every chart and every KPI | Local |
+| Charts and KPIs | Local |
 | Anomaly detection and forecasting | Local |
 | Evidence and recommendations | Local |
-| Ask ADA — parsing **and** execution | Local |
+| Ask ADA parsing and execution | Local |
 
-Every Ask ADA answer the rule parser can plan is computed with no model call at
-all.
+A question the rule parser can plan is answered with no model call.
 
-## What the optional AI calls receive
+## What the optional AI features receive
 
-Both are opt-in, button-triggered, and require a key.
+Both need a key, and neither runs on page load.
 
-**Query planner** — runs only when the rule parser cannot read a question:
+**Query planner.** Runs only when the rule parser cannot read a question. It
+receives:
 
 - the question you typed
-- for each column: its name, its type (`numeric` / `datetime` / `category`), and
-  its detected role
+- for each column, its name, its type (`numeric`, `datetime` or `category`)
+  and its detected role
 
-**Strategic read** — runs only when you press the button:
+The plan it returns is described to you in one sentence and runs locally only
+after you approve it.
+
+**AI summary.** Runs only when you press **Generate AI summary**. It receives:
 
 - the business context you typed, if any
 - the detected schema
@@ -52,66 +54,62 @@ Both are opt-in, button-triggered, and require a key.
 - the evidence cards, with their calculations
 - the deterministic recommendations
 
-Everything in the second list is already on your screen before the call is made.
+Everything in the second list is already on screen before the call.
 
 ## What is never sent
 
-- Uploaded rows
-- Your rows — not a sample, not a preview, not the first five
-- Cell values, with one exception stated above: the segment labels an
-  evidence sentence names, such as a customer or product name
-- The question you type stays local unless the rule parser cannot read it and
-  you have supplied a key; then the question itself goes to the planner
-- Your file, its name, or its bytes
+- Your rows, or any sample or preview of them
+- Cell values, except the segment labels that evidence sentences name
+- Your file, its name or its bytes
+- The question you typed, unless the rule parser cannot read it and a key is
+  set; then the question goes to the planner
 
-The payload builders (`build_query_schema`, `build_ai_payload` in
-`ai_insights.py`) construct their output from DataFrame *structure* and computed
-results. `tests/test_ai_insights.py` asserts on the exact payload, so the
-guarantee is enforced by the test suite.
+The payload builders (`build_query_schema`, `build_planner_payload` and
+`build_ai_payload` in `ada/ai_insights.py`) work from DataFrame structure and
+computed results. `tests/test_ai_insights.py` puts distinctive values in
+non-segment columns and asserts they appear in neither payload.
 
 ## Request settings
 
 | Setting | Value |
 |---|---|
 | Prompt storage | Disabled (`store=False`) |
-| Identity | A hashed anonymous session identifier, for abuse controls |
+| Identity | A hashed, anonymous session identifier (`safety_identifier`) |
 | Output cap | 500 tokens for plans, 1,400 for the narrative |
 | Timeout | 25 seconds, 1 retry |
-| Trigger | Button press only — nothing fires on page load |
-| Caching | Per evidence payload, to avoid accidental repeat spend |
+| Trigger | A question the rules cannot parse, or a button press |
+| Caching | The narrative is cached per evidence payload for the session |
 
-## Model output is not trusted
+## Model output is validated
 
-Model output is parsed into a typed Pydantic schema. A query plan is then
-validated against your actual data: unknown columns are rejected, filter values
-must match real values, and impossible intents are refused. Anything that fails
-is dropped rather than repaired.
+Model output is parsed into Pydantic models. A query plan is then checked
+against the data: unknown columns are rejected, filter values must match
+values in the column, and plans that cannot run as stated are refused. A plan
+that fails a check is discarded, not repaired.
 
-**Model-generated code is never executed.** The model picks parameters for a
-fixed local executor.
+Model-generated code is never executed. The model chooses parameters for a
+fixed local executor. See [The optional AI layer](reference/ai-layer.md) for
+the full list of checks.
 
-See [The optional AI layer](reference/ai-layer.md) for the full validation list.
-
-## Where your key lives
+## Where the API key is kept
 
 | Method | Scope |
 |---|---|
-| Sidebar field | Typed in the browser, posted to the server running ADA, and held in that session's memory — never written to disk. On the hosted demo, that server is Streamlit's |
-| `OPENAI_API_KEY` env var | The deployment |
-| `.streamlit/secrets.toml` | The deployment — gitignored, never commit it |
+| Sidebar field | Sent from the browser to the server running ADA and held in that session's memory; not written to disk. On the hosted demo, that server is Streamlit's. |
+| `OPENAI_API_KEY` environment variable | The deployment |
+| `.streamlit/secrets.toml` | The deployment. The file is gitignored; do not commit it. |
 
-On a public deployment, prefer letting visitors bring their own key. An
-owner-funded key on a public app needs authentication and spending controls.
+On a public deployment, let visitors supply their own key. A key paid for by
+the deployment owner needs authentication and spending controls.
 
 ## Self-hosting
 
-ADA is a standard Streamlit app with no database. Nothing is written to disk.
+ADA has no database and writes nothing to disk.
 
-Parsed uploads are held in a bounded in-memory cache — at most eight files, for
-up to an hour — so that re-running the page does not re-parse the same file.
-That cache belongs to the server process, not to your browser session, and it
-is why "nothing is persisted" is worth stating precisely rather than loosely.
-Restarting the app clears it.
+Parsed uploads are kept in an in-memory cache (at most eight files, each for up
+to an hour) so that a page rerun does not parse the same file again. The cache
+belongs to the server process, not to a browser session, and a restart clears
+it.
 
-Running ADA yourself means the deterministic path involves no third party at
-all, and that cache lives on your own machine.
+Self-hosted, the deterministic path involves no third party, and that cache is
+on your own machine.

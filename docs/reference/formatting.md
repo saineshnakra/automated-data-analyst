@@ -1,62 +1,89 @@
 # Formatting
 
-**Code:** `formatting.py` · **Tests:** in `tests/test_business_insights.py`
+**Code:** `ada/formatting.py` · **Tests:** `tests/test_formatting.py`, `tests/test_business_insights.py`
 
-Decides how numbers and dates are written down. Deliberately kept apart from the
+Decides how numbers and dates are written. Kept separate from the
 calculations.
 
 ## The rule
 
-**Formatting changes how a value looks. It never changes what the value is.**
-
-Changing a display should never be able to change a result. That is why this
-module is separate from the analysis modules, and why it holds no state.
-
-Every module that displays a number — the dashboard, the evidence cards, the
-chat answers, the Markdown report — calls the same two functions, so a figure
-reads identically everywhere it appears.
+Formatting changes how a value looks, never what it is. The module holds no
+state, and every surface that displays a number (the dashboard, evidence
+cards, Ask ADA answers, the Markdown report) calls the same functions, so a
+figure reads the same everywhere.
 
 ## `format_number(value, column=None, *, compact=True, column_values=None)`
 
-`column_values` is the whole column the figure came from. It is what settles
-questions that cannot be answered one value at a time — whether a percentage
-column stores `0.25` or `25`, and whether a column named like a rate is really
-holding money.
+`column_values` is the whole column the figure came from. It settles questions
+that one value cannot: whether a percentage column stores `0.25` or `25`, and
+whether a column named like a rate holds money.
 
 | Input | Output |
 |---|---|
 | `1_250_000, "Revenue"` | `$1.2M` |
 | `1.5e12, "Revenue"` | `$1.5T` |
 | `-1_200, "Expense Amount"` | `-$1.2K` |
+| `2_500, "Revenue EUR"` | `€2.5K` |
 | `12_000, "Units"` | `12.0K` |
 | `1_250, "Orders"` | `1.2K` |
 | `45, "Units"` | `45` |
 | `45.5, "Score"` | `45.50` |
+| `0.0012, "Absorbance"` | `0.0012` |
 | `0.33, "Profit Margin %"` | `33.0%` |
-| `float("nan")` | `—` |
+| `float("nan")` | an em dash (U+2014) |
 
-What it does:
+In order:
 
-1. Non-finite values become an em dash
-2. Currency columns get a `$` prefix
-3. When `compact`, values are scaled to `K`, `M`, or `B` at 1,000 / 1,000,000 /
-   1,000,000,000
-4. Whole numbers in non-currency columns print without decimals
-5. Everything else prints with 2 decimals and thousands separators
+1. A non-finite value becomes an em dash.
+2. A percentage column (see below) is printed with one decimal and `%`.
+3. A currency column gets its symbol before the number and the sign before the
+   symbol.
+4. With `compact`, values from 1,000 up are scaled to `K`, `M`, `B` or `T` with
+   one decimal; from 10^15 up, scientific notation is used.
+5. Whole numbers in other columns print without decimals.
+6. Values below 1 print with three significant figures, so `0.0012` does not
+   become `0.00`.
+7. Everything else prints with two decimals and thousands separators.
 
 ## Currency detection
 
-`is_currency` checks whether the normalized column name contains any of:
+`is_currency` checks whether any whole word of the normalized column name is
+one of:
 
-`revenue`, `sales`, `gmv`, `profit`, `amount`, `income`, `spend`, `cost`,
-`expense`, `price`, `balance`
+`revenue`, `mrr`, `arr`, `turnover`, `sales`, `gmv`, `profit`, `amount`,
+`income`, `spend`, `cost`, `expense`, `price`, `balance`
+
+or a currency code (`usd`, `eur`, `gbp`). `currency_symbol` picks `€` or `£`
+when the name contains that code or symbol, and `$` otherwise.
+
+## Percentages
+
+`is_percentage` is true for a name containing `%` or the word `rate`,
+`margin` or `ratio`.
+
+A name can carry both signals: `Profit Margin %` contains a currency word and
+a percentage one. A `%` sign, or a percentage word as the last word, makes it a
+percentage, so `Profit Margin` is a margin and `Margin Amount` is an amount.
+Matching is on whole words, so `rate` does not match `Corporate Revenue` and
+`eur` does not match `Europe Sales`.
+
+The scale is decided once per column from `column_values`, not per value: if
+every value is between 0 and 1, the column stores fractions (`0.25` is 25%);
+otherwise it stores points (`25` is 25%). If any value in a rate-named column
+exceeds `MAX_PLAUSIBLE_PERCENTAGE` (1,000), the column is printed as plain
+numbers instead of `1250000.0%`.
+
+`format_rate_change` writes a change in a rate as percentage points
+("20.0 percentage points"), since 20% to 40% is 20 points but a 100% relative
+increase.
 
 ## `normalized_name(name)`
 
-Lowercases, turns `_` and `-` into spaces, and collapses runs of whitespace.
-Used here and in `schema.py`, so both compare column names the same way. It
-compares meaning rather than punctuation: `Total_Revenue` and `total revenue`
-are the same column name.
+Lowercases, splits camelCase (`netRevenue` becomes `net revenue`, `customerID`
+becomes `customer id`, `pH` is left whole), turns `_` and `-` into spaces, and
+collapses whitespace. `ada/schema.py` and `ada/metrics.py` use it too, so
+column names are compared the same way everywhere: `Total_Revenue` and
+`total revenue` are the same name.
 
 ## `format_period(period, grain)`
 
@@ -65,39 +92,18 @@ are the same column name.
 | `Q` | `Q3 2026` |
 | `W`, `D` | `05 Sep 2026` |
 | `Y` | `2026` |
-| anything else | `Sep 2026` |
-
-Periods are named the way a reader would say them out loud.
-
-## Percentages and currencies
-
-Both are implemented, and both were harder than they looked.
-
-**Which reading wins.** A name can carry both signals: `Profit Margin %` holds
-a currency word and a percentage one. An explicit `%`, or a percentage word in
-the **head** position, settles it — so `Profit Margin` is a margin and
-`Margin Amount` is an amount. Matching is on whole words, so `rate` does not
-match `Corporate Revenue` and `eur` does not match `Europe Sales`.
-
-**0–1 versus 0–100** is settled **once per column** from `column_values`, never
-per value. Deciding per value rendered one column as `551.3%` on one row and
-`1.4K` on the next. The same column-level rule catches a column named like a
-ratio that is really holding money: above `MAX_PLAUSIBLE_PERCENTAGE` the whole
-column falls through to plain numbers rather than printing `1250000.0%`.
-
-**Sign placement.** A debt is `-$1.2M`, not `$-1.2M` — the minus belongs to the
-amount, not the currency.
+| any other | `Sep 2026` |
 
 ## Known gaps
 
-- A rate column gets no *total* KPI, because adding percentages up means
-  nothing. Its average still appears.
+- A rate or level column gets no total KPI, because its values do not add up.
+  Its average still appears.
 
 ## Changing this
 
-Whatever is added here:
+Any change here:
 
-- must not rescale stored data — only the printed string changes
-- must be consistent within a column, whatever the sign or magnitude of a value
-- must keep ambiguous columns behaving as they do today
-- needs tests for negatives, zero, whole numbers, and the compact boundaries
+- must not rescale stored data; only the printed string changes
+- must be consistent within a column, whatever the sign or size of a value
+- must not change how existing ambiguous columns are formatted
+- needs tests for negatives, zero, whole numbers and the compact boundaries

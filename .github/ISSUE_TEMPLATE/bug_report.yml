@@ -5,7 +5,7 @@ labels: [bug]
 body:
   - type: markdown
     attributes:
-      value: Thanks for helping make ADA more reliable. Use synthetic data and remove private information.
+      value: Use synthetic data and remove private information before posting.
   - type: textarea
     id: problem
     attributes:
@@ -28,11 +28,14 @@ body:
     attributes:
       label: Area
       options:
-        - Schema detection or cleaning
-        - Business evidence or recommendation
-        - Dashboard or interface
-        - File upload or export
-        - Optional AI strategy layer
+        - File reading or export
+        - Cleaning or schema detection
+        - Periods, anomalies or forecast
+        - Evidence or recommendations
+        - Ask ADA
+        - Dashboard or Explore tab
+        - Python API or ada command
+        - Optional AI features
         - Deployment or documentation
     validations:
       required: true
@@ -40,7 +43,7 @@ body:
     id: environment
     attributes:
       label: Browser and environment
-      placeholder: Chrome 128, hosted app or local Python 3.11
+      placeholder: Chrome 128 on the hosted app, or Python 3.12 locally
   - type: textarea
     id: sample
     attributes:
