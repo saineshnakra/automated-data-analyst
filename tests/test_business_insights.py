@@ -259,7 +259,7 @@ class BusinessAnalysisTests(unittest.TestCase):
         frame = pd.DataFrame(
             {
                 "Date": pd.date_range("2024-01-01", periods=40, freq="D"),
-                "Revenue": [100.0] * 40,
+                "Revenue": [90.0 if index // 10 % 2 else 110.0 for index in range(40)],
                 "Product": [f"SKU {index % 10}" for index in range(40)],
             }
         )

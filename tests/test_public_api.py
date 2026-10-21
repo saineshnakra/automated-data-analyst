@@ -30,7 +30,7 @@ def steady(periods: int = 24) -> pd.DataFrame:
 class AnalyzeTests(unittest.TestCase):
 
     def test_a_dataframe_in_an_analysis_out(self):
-        report = ada.analyze(steady())
+        report = ada.analyze(steady().assign(Revenue=lambda frame: 100.0 + frame.index % 3))
         self.assertIsInstance(report, ada.Analysis)
         self.assertEqual(report.rows_analyzed, 24)
         self.assertEqual(report.roles.measure, "Revenue")

@@ -1204,7 +1204,7 @@ class NothingLeftOutTests(unittest.TestCase):
 
     def test_a_text_column_is_not_swapped_for_the_default_measure(self):
         frame = pd.DataFrame({"Date": pd.date_range("2024-01-01", periods=60, freq="D"),
-                              "Precip": ["T", "0", "1.2"] * 20, "Snow": np.arange(60, dtype=float)})
+                              "Precip": ["T", "0", "1.2"] * 20, "Snow": np.arange(60) / 2})
         roles = detect_roles(frame)
         question = "average Precip by month"
 
