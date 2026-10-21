@@ -19,15 +19,35 @@ from functools import cached_property
 
 import numpy as np
 import pandas as pd
+from pandas.api.types import is_bool_dtype, is_numeric_dtype
 from scipy import stats
+from statsmodels.regression.linear_model import OLS
+from statsmodels.stats.multitest import multipletests
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+from statsmodels.stats.proportion import confint_proportions_2indep
 
 from .formatting import format_number, format_values_apart, group_label, list_names, normalized_name
 from .metrics import metric_for
-from .schema import COORDINATE_TOKENS, ColumnRoles, is_entity_name
+from .schema import COORDINATE_TOKENS, LABEL_NAME_WORDS, ColumnRoles, is_design_name, is_entity_name
 
 ALPHA = 0.05
 # A group needs two values to have a spread to test against.
 MIN_GROUP_SIZE = 2
+# Groups smaller than this are compared but never named as the highest or the
+# lowest, and a difference resting on one is not called clear: a few values can
+# sit far from the rest by chance.
+MIN_NAMED_GROUP = 5
+# Welch's test weights each group by its own variance, which fewer values than
+# this estimate too poorly, so such comparisons pool the variance instead
+# (Student's t-test, one-way ANOVA).
+MIN_WELCH_GROUP = 3
+# Beyond this many records even a trivial gap passes a test.
+LARGE_SAMPLE = 1_000
+# A reading with at least this share of zeros is compared on its means and on
+# the share of values that are not zero, since every group's median is 0.
+ZERO_HEAVY = 0.5
+# Below this rank correlation a trend across ordered levels is too small to matter.
+NEGLIGIBLE_TREND = 0.1
 # Within-group skewness from which medians and ranks describe a reading better than means.
 SKEWED = 2.0
 # Skewness from fewer values than this is too unstable to act on.
@@ -48,6 +68,13 @@ MAX_SCAN_LEVELS = 12
 # Wider tables are scanned on their most variable columns, and longer ones on a sample of rows.
 MAX_SCAN_COLUMNS = 300
 SCAN_ROWS = 50_000
+# A difference scan over more readings than MAX_SCAN_COLUMNS is a screen: every
+# reading is tested, up to this many cells, and p-values control the false
+# discovery rate rather than the chance of any false finding.
+SCREEN_CELLS = 20_000_000
+HOLM = "Holm"
+FALSE_DISCOVERY = "Benjamini-Hochberg"
+ADJUSTED = {HOLM: "Holm-adjusted", FALSE_DISCOVERY: "false-discovery-rate adjusted"}
 
 MIN_CORRELATION_PAIRS = 12
 NEAR_DUPLICATE_CORRELATION = 0.99
@@ -120,6 +147,48 @@ class GroupStats:
     mean: float
     median: float
     sd: float
+    #: Share of the group's values that are not zero.
+    nonzero: float = float("nan")
+
+
+@dataclass(frozen=True)
+class OrderedTrend:
+    """A reading's rank correlation with the numeric levels of a grouping: a dose, a depth, a speed.
+
+    An unordered test asks whether any level differs; this asks whether the
+    reading rises or falls as the level does, which is the question for a dose
+    or a distance and has more power when the answer is yes.
+    """
+
+    measure: str
+    grouping: str
+    #: Spearman's rank correlation between the level and the reading.
+    rho: float
+    p_value: float
+    n: int
+    levels: int
+    adjusted_p: float | None = None
+    tests: int = 1
+    correction: str = HOLM
+
+    @property
+    def decisive_p(self) -> float:
+        return self.p_value if self.adjusted_p is None else self.adjusted_p
+
+    @property
+    def explained(self) -> float:
+        return self.rho**2
+
+    @property
+    def verdict(self) -> str:
+        """"clear", "negligible" (a passing test on a trivial trend) or "none"."""
+        if not self.decisive_p < ALPHA:
+            return "none"
+        return "negligible" if abs(self.rho) < NEGLIGIBLE_TREND else "clear"
+
+    @property
+    def direction(self) -> str:
+        return "rises" if self.rho > 0 else "falls"
 
 
 @dataclass(frozen=True)
@@ -127,10 +196,11 @@ class GroupComparison:
     """A reading compared across the groups of one column.
 
     ``groups`` runs from the highest centre to the lowest: the mean, or the
-    median when ``uses_ranks`` is set because the reading is skewed or capped.
-    The first and last groups are the two compared for two groups, and the pair
-    that differs most otherwise; ``difference``, ``hedges_g`` and
-    ``superiority`` describe that pair.
+    median when ``uses_ranks`` is set because the reading is skewed or capped
+    (the mean again when most values are zero). ``named`` holds the positions
+    of the two groups compared: the two there are, or the highest and lowest
+    among groups of at least MIN_NAMED_GROUP values; ``difference``,
+    ``hedges_g`` and ``superiority`` describe that pair.
     """
 
     measure: str
@@ -158,30 +228,51 @@ class GroupComparison:
     dropped: tuple[str, ...] = ()
     adjusted_p: float | None = None
     tests: int = 1
+    correction: str = HOLM
+    #: A group has fewer than MIN_WELCH_GROUP values, so the test on means pools the variance.
+    pooled: bool = False
+    named: tuple[int, int] = (0, -1)
+    #: Share of the reading's values that are zero.
+    zero_share: float = 0.0
+    #: Chi-squared p-value for the share of non-zero values across the groups, for a zero-heavy reading.
+    presence_p: float | None = None
+    trend: OrderedTrend | None = None
+    #: Share of the table's rows with both the reading and the grouping recorded.
+    coverage: float = 1.0
 
     @property
     def higher(self) -> GroupStats:
-        return self.groups[0]
+        return self.groups[self.named[0]]
 
     @property
     def lower(self) -> GroupStats:
-        return self.groups[-1]
+        return self.groups[self.named[1]]
 
     @property
     def two_groups(self) -> bool:
         return len(self.groups) == 2
 
     @property
+    def zero_heavy(self) -> bool:
+        return self.zero_share >= ZERO_HEAVY
+
+    @property
     def test(self) -> str:
-        if self.two_groups:
-            return "Mann-Whitney" if self.uses_ranks else "Welch's t-test"
-        return "Kruskal-Wallis" if self.uses_ranks else "Welch ANOVA"
+        if self.uses_ranks:
+            return "Mann-Whitney" if self.two_groups else "Kruskal-Wallis"
+        return self._means_test
 
     @property
     def check(self) -> str:
-        if self.two_groups:
-            return "Welch's t-test" if self.uses_ranks else "Mann-Whitney"
-        return "Welch ANOVA" if self.uses_ranks else "Kruskal-Wallis"
+        if self.uses_ranks:
+            return self._means_test
+        return "Mann-Whitney" if self.two_groups else "Kruskal-Wallis"
+
+    @property
+    def _means_test(self) -> str:
+        if self.pooled:
+            return "Student's t-test" if self.two_groups else "one-way ANOVA"
+        return "Welch's t-test" if self.two_groups else "Welch ANOVA"
 
     @property
     def explained_name(self) -> str:
@@ -192,16 +283,58 @@ class GroupComparison:
         return self.p_value if self.adjusted_p is None else self.adjusted_p
 
     @property
+    def check_decisive_p(self) -> float:
+        """The check's p-value, adjusted by the same factor as the main test's."""
+        return _adjusted_like(self.check_p_value, self.p_value, self.adjusted_p, self.tests)
+
+    @property
+    def trivial(self) -> bool:
+        """Whether the gap is below the conventional "small" effect, however small its p-value."""
+        if self.two_groups and not self.uses_ranks and np.isfinite(self.hedges_g):
+            return abs(self.hedges_g) < SMALL_HEDGES
+        return self.explained < NEGLIGIBLE_EXPLAINED
+
+    @property
+    def thin(self) -> bool:
+        """Whether one of the two groups compared has fewer than MIN_NAMED_GROUP values."""
+        return min(self.higher.n, self.lower.n) < MIN_NAMED_GROUP
+
+    @property
     def verdict(self) -> str:
-        """"clear", "negligible" (a passing test on a trivial gap) or "none"."""
-        if not self.decisive_p < ALPHA:
-            return "none"
-        if self.explained < NEGLIGIBLE_EXPLAINED:
-            return "negligible"
-        return "clear"
+        """"clear"; "negligible" (a passing test on a trivial gap); "thin" (a passing test
+        that rests on a group of fewer than MIN_NAMED_GROUP values); "disputed" (the main
+        test passes and its check does not); or "none"."""
+        return _verdict(self.decisive_p, self.check_decisive_p, self.trivial, self.thin)
+
+    @property
+    def total(self) -> int:
+        return sum(group.n for group in self.groups)
 
     def centre(self, group: GroupStats) -> float:
-        return group.median if self.uses_ranks else group.mean
+        return group.median if self.uses_ranks and not self.zero_heavy else group.mean
+
+
+SMALL_HEDGES = HEDGES_SIZES[-1][0]
+
+
+def _adjusted_like(p: float, raw: float, adjusted: float | None, tests: int) -> float:
+    """``p`` scaled by the factor that turned ``raw`` into ``adjusted``, so a check is judged alike."""
+    if adjusted is None:
+        return p
+    factor = adjusted / raw if raw > 0 else float(tests)
+    return float(min(1.0, p * max(factor, 1.0)))
+
+
+def _verdict(p: float, check_p: float, trivial: bool, thin: bool) -> str:
+    if not p < ALPHA:
+        return "none"
+    if trivial:
+        return "negligible"
+    if thin:
+        return "thin"
+    if not check_p < ALPHA:
+        return "disputed"
+    return "clear"
 
 
 @dataclass(frozen=True)
@@ -215,6 +348,8 @@ class _Omnibus:
     sd: np.ndarray
     mean_rank: np.ndarray
     welch_p: np.ndarray
+    #: The classical one-way ANOVA (Student's t-test for two groups), which pools the variance.
+    anova_p: np.ndarray
     rank_p: np.ndarray
     eta2: np.ndarray
     epsilon2: np.ndarray
@@ -224,6 +359,8 @@ class _Omnibus:
     maximum: np.ndarray
     minimum: np.ndarray
     distinct: np.ndarray
+    #: Values that are not zero, per group and column.
+    nonzero: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -261,10 +398,11 @@ def _omnibus(block: pd.DataFrame, groups: pd.Series) -> _Omnibus:
     """Compare every column of ``block`` across ``groups`` in one pass.
 
     Every group must hold at least two values of every column. Welch's ANOVA is
-    the test on means (with two groups it equals Welch's t-test), Kruskal-Wallis
-    the test on ranks (with two groups the Mann-Whitney test, by the normal
-    approximation with ties corrected). Group sums come from products with a
-    one-hot group matrix, so the cost grows with rows times columns.
+    the test on means (with two groups it equals Welch's t-test), with the
+    classical ANOVA beside it for groups too small for Welch's weights;
+    Kruskal-Wallis is the test on ranks (with two groups the Mann-Whitney test,
+    by the normal approximation with ties corrected). Group sums come from
+    products with a one-hot group matrix, so the cost grows with rows times columns.
     """
     codes, levels = pd.factorize(groups, sort=True)
     k = len(levels)
@@ -294,6 +432,9 @@ def _omnibus(block: pd.DataFrame, groups: pd.Series) -> _Omnibus:
         spread = (((1 - weights / weight_sum) ** 2) / (n - 1)).sum(axis=0)
         welch_f = between / (1 + 2 * (k - 2) / (k**2 - 1) * spread)
         welch_p = stats.f.sf(welch_f, k - 1, (k**2 - 1) / (3 * spread))
+        ss_within = (deviation**2).sum(axis=0)
+        anova_f = (ss_total - ss_within) / (k - 1) / (ss_within / (total - k))
+        anova_p = stats.f.sf(anova_f, k - 1, total - k)
 
         rank_sum = member.T @ np.where(present, ranked.ranks, 0.0)
         h = (12 / (total * (total + 1)) * (rank_sum**2 / n).sum(axis=0) - 3 * (total + 1)) / (
@@ -315,6 +456,7 @@ def _omnibus(block: pd.DataFrame, groups: pd.Series) -> _Omnibus:
         sd=np.sqrt(variance),
         mean_rank=rank_sum / n,
         welch_p=np.nan_to_num(welch_p, nan=1.0),
+        anova_p=np.nan_to_num(anova_p, nan=1.0),
         rank_p=np.nan_to_num(rank_p, nan=1.0),
         eta2=np.nan_to_num(eta2, nan=0.0),
         epsilon2=np.clip(np.nan_to_num(epsilon2, nan=0.0), 0.0, 1.0),
@@ -324,6 +466,7 @@ def _omnibus(block: pd.DataFrame, groups: pd.Series) -> _Omnibus:
         maximum=np.nanmax(values, axis=0),
         minimum=np.nanmin(values, axis=0),
         distinct=ranked.distinct,
+        nonzero=member.T @ (present & (filled != 0)),
     )
 
 
@@ -355,25 +498,108 @@ def _robust_on_rows(values: pd.Series) -> bool:
     return bool(len(present) >= SKEW_MIN_VALUES and np.isfinite(skew) and abs(skew) >= SKEWED)
 
 
-def _pair(first: np.ndarray, second: np.ndarray) -> tuple[float, float, float, float, float]:
-    """Difference in means with its Welch 95% interval, Hedges' g, and the share of pairs ``first`` wins."""
+def _hedges(n1: float, n2: float, mean1: float, mean2: float, sd1: float, sd2: float) -> float:
+    """Hedges' g between two groups from their summaries, or NaN when neither varies."""
+    pooled = np.sqrt(((n1 - 1) * sd1**2 + (n2 - 1) * sd2**2) / (n1 + n2 - 2))
+    # Groups that barely vary inside themselves leave g undefined, not astronomically large.
+    scale = max(abs(mean1), abs(mean2), 1.0)
+    if not pooled > NO_SPREAD * scale:
+        return float("nan")
+    return float((mean1 - mean2) / pooled * (1 - 3 / (4 * (n1 + n2) - 9)))
+
+
+def _pair(
+    first: np.ndarray, second: np.ndarray, *, pooled: bool = False
+) -> tuple[float, float, float, float, float]:
+    """Difference in means with its 95% interval, Hedges' g, and the share of pairs ``first`` wins.
+
+    The interval is Welch's, or uses the pooled variance when ``pooled`` is set
+    because a group is too small to estimate its own.
+    """
     n1, n2 = len(first), len(second)
     difference = float(first.mean() - second.mean())
     var1, var2 = float(first.var(ddof=1)), float(second.var(ddof=1))
-    error = np.sqrt(var1 / n1 + var2 / n2)
-    if error > 0:
-        df = error**4 / ((var1 / n1) ** 2 / (n1 - 1) + (var2 / n2) ** 2 / (n2 - 1))
-        margin = float(stats.t.ppf(0.975, df) * error)
+    if pooled:
+        shared = ((n1 - 1) * var1 + (n2 - 1) * var2) / (n1 + n2 - 2)
+        error, df = np.sqrt(shared * (1 / n1 + 1 / n2)), n1 + n2 - 2
     else:
-        margin = 0.0
-    pooled = np.sqrt(((n1 - 1) * var1 + (n2 - 1) * var2) / (n1 + n2 - 2))
-    # Groups that barely vary inside themselves leave g undefined, not astronomically large.
-    scale = max(abs(float(first.mean())), abs(float(second.mean())), 1.0)
-    spread = pooled > NO_SPREAD * scale
-    hedges = difference / pooled * (1 - 3 / (4 * (n1 + n2) - 9)) if spread else float("nan")
+        error = np.sqrt(var1 / n1 + var2 / n2)
+        df = error**4 / ((var1 / n1) ** 2 / (n1 - 1) + (var2 / n2) ** 2 / (n2 - 1)) if error > 0 else 1.0
+    margin = float(stats.t.ppf(0.975, df) * error) if error > 0 else 0.0
+    hedges = _hedges(n1, n2, float(first.mean()), float(second.mean()), np.sqrt(var1), np.sqrt(var2))
     ranks = stats.rankdata(np.concatenate([first, second]))
     superiority = (ranks[:n1].sum() - n1 * (n1 + 1) / 2) / (n1 * n2)
-    return difference, difference - margin, difference + margin, float(hedges), float(superiority)
+    return difference, difference - margin, difference + margin, hedges, float(superiority)
+
+
+@dataclass(frozen=True)
+class _Judged:
+    """What decides one column's comparison, read off the omnibus arrays without the raw values."""
+
+    shape: str
+    uses_ranks: bool
+    pooled: bool
+    zero_share: float
+    #: Group indices from the highest centre to the lowest.
+    order: list
+    #: Positions in ``order`` of the two groups compared.
+    named: tuple[int, int]
+    p: float
+    check_p: float
+    explained: float
+    trivial: bool
+    thin: bool
+
+
+def _judge(omnibus: _Omnibus, column: int, measure: str) -> _Judged:
+    """Pick the test, the groups to name and the effect for one column of ``omnibus``.
+
+    Ranks replace means for a skewed or capped reading, but a reading that is
+    mostly zeros is still ranked and named by its means, since every median is
+    0. The highest and lowest named are the extremes among groups with
+    MIN_NAMED_GROUP values or more, when at least two have that many.
+    """
+    shape = _shape(omnibus, column, measure)
+    uses_ranks = bool(shape)
+    sizes = omnibus.n[:, column]
+    present = float(sizes.sum())
+    zero_share = 1 - float(omnibus.nonzero[:, column].sum()) / present if present else 0.0
+    if omnibus.distinct[column] < 3:
+        zero_share = 0.0
+    by_mean = not uses_ranks or zero_share >= ZERO_HEAVY
+    centre = omnibus.mean[:, column] if by_mean else omnibus.median[:, column]
+    order = sorted(
+        range(len(omnibus.levels)),
+        key=lambda index: (centre[index], omnibus.mean_rank[index, column]),
+        reverse=True,
+    )
+    large = [position for position, index in enumerate(order) if sizes[index] >= MIN_NAMED_GROUP]
+    named = (large[0], large[-1]) if len(large) >= 2 else (0, len(order) - 1)
+    pooled = bool(sizes.min() < MIN_WELCH_GROUP)
+    means_p = float(omnibus.anova_p[column] if pooled else omnibus.welch_p[column])
+    ranked = float(omnibus.rank_p[column])
+    explained = float(omnibus.epsilon2[column] if uses_ranks else omnibus.eta2[column])
+    top, bottom = order[named[0]], order[named[1]]
+    trivial = explained < NEGLIGIBLE_EXPLAINED
+    if len(order) == 2 and not uses_ranks:
+        g = _hedges(
+            sizes[top], sizes[bottom], omnibus.mean[top, column], omnibus.mean[bottom, column],
+            omnibus.sd[top, column], omnibus.sd[bottom, column],
+        )
+        trivial = abs(g) < SMALL_HEDGES if np.isfinite(g) else trivial
+    return _Judged(
+        shape=shape,
+        uses_ranks=uses_ranks,
+        pooled=pooled,
+        zero_share=zero_share,
+        order=order,
+        named=named,
+        p=ranked if uses_ranks else means_p,
+        check_p=means_p if uses_ranks else ranked,
+        explained=explained,
+        trivial=trivial,
+        thin=bool(min(sizes[top], sizes[bottom]) < MIN_NAMED_GROUP),
+    )
 
 
 def _comparison(
@@ -385,46 +611,269 @@ def _comparison(
     grouping: str,
     **extra,
 ) -> GroupComparison:
-    shape = _shape(omnibus, column, measure)
-    uses_ranks = bool(shape)
-    centre = omnibus.median[:, column] if uses_ranks else omnibus.mean[:, column]
-    order = sorted(
-        range(len(omnibus.levels)),
-        key=lambda index: (centre[index], omnibus.mean_rank[index, column]),
-        reverse=True,
-    )
+    judged = _judge(omnibus, column, measure)
+    order = judged.order
+    sizes = omnibus.n[:, column]
     summaries = tuple(
         GroupStats(
             value=omnibus.levels[index],
             label=group_label(grouping, omnibus.levels[index]),
-            n=int(omnibus.n[index, column]),
+            n=int(sizes[index]),
             mean=float(omnibus.mean[index, column]),
             median=float(omnibus.median[index, column]),
             sd=float(omnibus.sd[index, column]),
+            nonzero=float(omnibus.nonzero[index, column] / sizes[index]),
         )
         for index in order
     )
-    top, bottom = omnibus.levels[order[0]], omnibus.levels[order[-1]]
-    first = values[groups == top].dropna().to_numpy(dtype=float)
-    second = values[groups == bottom].dropna().to_numpy(dtype=float)
-    mean_difference, low, high, hedges, superiority = _pair(first, second)
-    welch, ranked = float(omnibus.welch_p[column]), float(omnibus.rank_p[column])
+    top, bottom = order[judged.named[0]], order[judged.named[1]]
+    first = values[groups == omnibus.levels[top]].dropna().to_numpy(dtype=float)
+    second = values[groups == omnibus.levels[bottom]].dropna().to_numpy(dtype=float)
+    mean_difference, low, high, hedges, superiority = _pair(first, second, pooled=judged.pooled)
+    zero_heavy = judged.zero_share >= ZERO_HEAVY
+    medians = omnibus.median[:, column]
+    presence = None
+    if zero_heavy:
+        presence = _rate_test(omnibus.nonzero[:, column], sizes)[1]
     return GroupComparison(
         measure=measure,
         grouping=grouping,
         groups=summaries,
-        uses_ranks=uses_ranks,
-        shape=shape,
-        p_value=ranked if uses_ranks else welch,
-        check_p_value=welch if uses_ranks else ranked,
-        explained=float(omnibus.epsilon2[column] if uses_ranks else omnibus.eta2[column]),
-        difference=float(centre[order[0]] - centre[order[-1]]) if uses_ranks else mean_difference,
+        uses_ranks=judged.uses_ranks,
+        shape=judged.shape,
+        p_value=judged.p,
+        check_p_value=judged.check_p,
+        explained=judged.explained,
+        difference=(
+            float(medians[top] - medians[bottom])
+            if judged.uses_ranks and not zero_heavy
+            else mean_difference
+        ),
         low=low,
         high=high,
         hedges_g=hedges,
         superiority=superiority,
+        pooled=judged.pooled,
+        named=(judged.named[0], judged.named[1] % len(order)),
+        zero_share=judged.zero_share,
+        presence_p=presence,
         **extra,
     )
+
+
+CHI_SQUARED = "chi-squared test"
+FISHER = "Fisher's exact test"
+
+
+def _rate_test(events: np.ndarray, sizes: np.ndarray) -> tuple[str, float, float]:
+    """Test whether a share differs across groups: the test's name, its p-value and Cramér's V.
+
+    Pearson's chi-squared test on the groups-by-outcome table
+    (``scipy.stats.chi2_contingency``), or, for two groups with an expected
+    count below 5, where chi-squared is unreliable, Fisher's exact test
+    (``scipy.stats.fisher_exact``).
+    """
+    events = np.asarray(events, dtype=float)
+    sizes = np.asarray(sizes, dtype=float)
+    table = np.column_stack([events, sizes - events])[sizes > 0].round().astype(int)
+    if table.shape[0] < 2 or (table.sum(axis=0) == 0).any():
+        return CHI_SQUARED, 1.0, 0.0
+    statistic, p, _, expected = stats.chi2_contingency(table, correction=False)
+    cramers_v = float(np.sqrt(statistic / table.sum()))
+    if table.shape[0] == 2 and expected.min() < 5:
+        return FISHER, float(stats.fisher_exact(table)[1]), cramers_v
+    return CHI_SQUARED, float(p), cramers_v
+
+
+# Values that mark the "yes" and "no" of a two-valued text outcome.
+YES_WORDS = frozenset({"yes", "y", "true", "positive", "present", "pass"})
+NO_WORDS = frozenset({"no", "n", "false", "negative", "absent", "fail"})
+# Below this Cramér's V an association is too small to matter (Cohen's "small" is 0.1).
+NEGLIGIBLE_ASSOCIATION = 0.1
+
+
+def outcome_event(values: pd.Series) -> object | None:
+    """The value a yes/no column counts (1, True or "yes"), or None when the column is not one."""
+    present = values.dropna()
+    levels = list(present.unique())
+    if len(levels) != 2:
+        return None
+    if is_bool_dtype(present):
+        return True
+    if is_numeric_dtype(present):
+        return 1 if set(levels) == {0, 1} else None
+    words = {str(level).strip().casefold(): level for level in levels}
+    yes = [level for word, level in words.items() if word in YES_WORDS]
+    no = [level for word, level in words.items() if word in NO_WORDS]
+    return yes[0] if len(yes) == 1 and len(no) == 1 else None
+
+
+@dataclass(frozen=True)
+class RateGroup:
+    value: object
+    label: str
+    n: int
+    events: int
+
+    @property
+    def rate(self) -> float:
+        return self.events / self.n if self.n else float("nan")
+
+
+@dataclass(frozen=True)
+class RateComparison:
+    """How often a yes/no outcome is "yes" in each group of another column.
+
+    ``groups`` runs from the highest rate to the lowest. ``named`` holds the
+    positions of the two groups compared: the two there are, or the highest and
+    lowest among groups of at least MIN_NAMED_GROUP rows. ``difference`` is
+    their risk difference, with Newcombe's 95% interval in ``low`` and ``high``.
+    """
+
+    outcome: str
+    event: object
+    grouping: str
+    groups: tuple[RateGroup, ...]
+    test: str
+    p_value: float
+    cramers_v: float
+    difference: float
+    low: float
+    high: float
+    named: tuple[int, int] = (0, -1)
+    adjusted_p: float | None = None
+    tests: int = 1
+    correction: str = HOLM
+
+    @property
+    def higher(self) -> RateGroup:
+        return self.groups[self.named[0]]
+
+    @property
+    def lower(self) -> RateGroup:
+        return self.groups[self.named[1]]
+
+    @property
+    def event_label(self) -> str:
+        return group_label(self.outcome, self.event)
+
+    @property
+    def decisive_p(self) -> float:
+        return self.p_value if self.adjusted_p is None else self.adjusted_p
+
+    @property
+    def verdict(self) -> str:
+        """"clear", "negligible", "thin" or "none", as for ``GroupComparison``."""
+        thin = min(self.higher.n, self.lower.n) < MIN_NAMED_GROUP
+        trivial = self.cramers_v < NEGLIGIBLE_ASSOCIATION
+        return _verdict(self.decisive_p, self.decisive_p, trivial, thin)
+
+
+def compare_rates(dataframe: pd.DataFrame, outcome: str, grouping: str) -> RateComparison | None:
+    """Compare how often the yes/no ``outcome`` is "yes" across the groups of ``grouping``.
+
+    Each group gets its rate and n; the test is chi-squared, or Fisher's exact
+    test for two small groups; the highest and lowest rates get their risk
+    difference with Newcombe's 95% interval
+    (``statsmodels.stats.proportion.confint_proportions_2indep``). Returns None
+    when ``outcome`` is not a yes/no column or fewer than two groups have two rows.
+    """
+    if outcome == grouping or outcome not in dataframe.columns or grouping not in dataframe.columns:
+        return None
+    event = outcome_event(dataframe[outcome])
+    if event is None:
+        return None
+    data = dataframe[[outcome, grouping]].dropna()
+    hits = (data[outcome] == event).groupby(data[grouping], observed=True).agg(["size", "sum"])
+    hits = hits[hits["size"] >= MIN_GROUP_SIZE]
+    if len(hits) < 2:
+        return None
+    rates = hits["sum"] / hits["size"]
+    hits = hits.loc[rates.sort_values(ascending=False, kind="stable").index]
+    groups = tuple(
+        RateGroup(value=value, label=group_label(grouping, value), n=int(row["size"]), events=int(row["sum"]))
+        for value, row in hits.iterrows()
+    )
+    large = [position for position, group in enumerate(groups) if group.n >= MIN_NAMED_GROUP]
+    named = (large[0], large[-1]) if len(large) >= 2 else (0, len(groups) - 1)
+    test, p, cramers_v = _rate_test(hits["sum"].to_numpy(), hits["size"].to_numpy())
+    first, second = groups[named[0]], groups[named[1]]
+    low, high = confint_proportions_2indep(
+        first.events, first.n, second.events, second.n, method="newcomb", compare="diff"
+    )
+    return RateComparison(
+        outcome=outcome,
+        event=event,
+        grouping=grouping,
+        groups=groups,
+        test=test,
+        p_value=p,
+        cramers_v=cramers_v,
+        difference=first.rate - second.rate,
+        low=float(low),
+        high=float(high),
+        named=named,
+    )
+
+
+def _points(share: float) -> str:
+    return f"{share * 100:.1f}"
+
+
+def describe_rates(comparison: RateComparison) -> str:
+    """State whether the share of "yes" differs across the groups, with each group's rate and n."""
+    c = comparison
+    high, low = c.higher, c.lower
+    test = f"{c.test}, {_adjusted_p_text(c.p_value, c.adjusted_p, c.correction)}"
+    effect = f"Cramér's V = {c.cramers_v:.2f}"
+    gap = (
+        f"a difference of {_points(c.difference)} percentage points (95% CI {_points(c.low)} to "
+        f"{_points(c.high)})"
+    )
+    share = f"The share of rows with {c.event_label}"
+    rates = (
+        f"{high.rate:.1%} in {high.label} (n = {high.n:,}) against {low.rate:.1%} in {low.label} "
+        f"(n = {low.n:,})"
+    )
+    verdict = c.verdict
+    if verdict == "clear":
+        if len(c.groups) == 2:
+            text = f"{share} is {rates}: {gap}; {test}; {effect}."
+        else:
+            text = (
+                f"{share} differs across {c.grouping}: highest {rates}, {gap}; {test} across all "
+                f"{len(c.groups)} groups; {effect}."
+            )
+    elif verdict == "negligible":
+        text = f"{share} differs across {c.grouping} only by a negligible amount: {rates} ({test}; {effect})."
+    elif verdict == "thin":
+        small = high if high.n <= low.n else low
+        text = (
+            f"{share} is {rates} ({test}), but {small.n:,} rows in {small.label} are too few to call "
+            "the difference clear."
+        )
+    else:
+        text = f"{share} shows no clear difference across {c.grouping}: {rates} ({test}; {effect})."
+    small = [group.label for group in c.groups if group.n < MIN_NAMED_GROUP]
+    if small and verdict != "thin":
+        text += f" Not ranked, with fewer than {MIN_NAMED_GROUP} rows: {list_names(small)}."
+    return text
+
+
+def rate_calculation(comparison: RateComparison) -> str:
+    """The calculation behind ``describe_rates``."""
+    c = comparison
+    function = "scipy.stats.fisher_exact" if c.test == FISHER else "scipy.stats.chi2_contingency"
+    steps = [
+        f"rows with {c.event_label} ÷ rows per {c.grouping}",
+        f"{c.test} on the {len(c.groups)}×2 table ({function}), Cramér's V",
+        "risk difference of the highest and lowest rate with Newcombe's 95% interval "
+        "(statsmodels confint_proportions_2indep)",
+    ]
+    if c.adjusted_p is not None:
+        method = "fdr_bh" if c.correction == FALSE_DISCOVERY else "holm"
+        steps.append(f"p {ADJUSTED[c.correction]} for {c.tests} tests (statsmodels multipletests, {method})")
+    return "; ".join(steps)
 
 
 def _testing_sample(
@@ -492,30 +941,91 @@ def compare_groups(
     g and a Mann-Whitney check; more groups get Welch's ANOVA, eta squared, a
     Kruskal-Wallis check and the pair that differs most. A skewed or capped
     reading is compared by medians and ranks instead. Groups with fewer than
-    two values are left out and named in ``dropped``. With ``entity`` (a
-    subject or sample column) each entity counts once per group.
+    two values are left out and named in ``dropped``; a group with fewer than
+    MIN_WELCH_GROUP switches the test on means to the pooled-variance one, and
+    groups with fewer than MIN_NAMED_GROUP are never named as the highest or
+    lowest. A grouping of three or more numeric levels also gets a rank trend
+    test in ``trend``. With ``entity`` (a subject or sample column) each entity
+    counts once per group.
     """
     if measure == grouping or measure not in dataframe.columns or grouping not in dataframe.columns:
         return None
     readings, groups, fields = _testing_sample(dataframe, [measure], grouping, entity)
-    return _single(readings[measure], groups, measure, grouping, fields)
+    comparison = _single(readings[measure], groups, measure, grouping, fields)
+    if comparison is not None and ordered_levels(dataframe[grouping], grouping):
+        comparison = replace(comparison, trend=_ordered_trend(readings[measure], groups, measure, grouping))
+    return comparison
+
+
+# A trend test needs this many values before its p-value means much.
+MIN_TREND_VALUES = 10
+
+
+def ordered_levels(values: pd.Series, name: str) -> bool:
+    """Whether a grouping's levels are numbers on a scale, like a dose, a depth or a speed.
+
+    Three or more numeric levels, under a name that does not mark labels:
+    status 2 is not more of anything than status 1, nor plot 7 than plot 3.
+    """
+    if is_bool_dtype(values) or not is_numeric_dtype(values) or values.nunique(dropna=True) < 3:
+        return False
+    words = re.findall(r"[a-z]+", normalized_name(re.sub(r"\([^)]*\)|\[[^\]]*\]", "", str(name))))
+    if words and words[-1] in LABEL_NAME_WORDS:
+        return False
+    return not (is_entity_name(name) or is_design_name(name))
+
+
+def _spearman(first: np.ndarray, second: np.ndarray) -> float:
+    with np.errstate(divide="ignore", invalid="ignore"):
+        value = np.corrcoef(stats.rankdata(first), stats.rankdata(second))[0, 1]
+    return float(value) if np.isfinite(value) else 0.0
+
+
+def _ordered_trend(values: pd.Series, groups: pd.Series, measure: str, grouping: str) -> OrderedTrend | None:
+    """Spearman's rank correlation between a reading and the numeric levels it was grouped by."""
+    data = pd.DataFrame({
+        "value": pd.to_numeric(pd.Series(values.to_numpy()), errors="coerce"),
+        "level": pd.to_numeric(pd.Series(groups.to_numpy()), errors="coerce"),
+    }).dropna()
+    if len(data) < MIN_TREND_VALUES or data["level"].nunique() < 3 or data["value"].nunique() < 2:
+        return None
+    rho = _spearman(data["level"].to_numpy(), data["value"].to_numpy())
+    return OrderedTrend(
+        measure=measure,
+        grouping=grouping,
+        rho=rho,
+        p_value=correlation_p(rho, len(data)),
+        n=len(data),
+        levels=int(data["level"].nunique()),
+    )
 
 
 def holm_adjust(p_values: np.ndarray) -> np.ndarray:
-    """Holm's step-down adjustment, which keeps the chance of any false finding at the stated level."""
+    """Holm's step-down adjustment, which keeps the chance of any false finding at the stated level.
+
+    Computed by ``statsmodels.stats.multitest.multipletests(method="holm")``.
+    """
     p = np.asarray(p_values, dtype=float)
-    order = np.argsort(p)
-    scaled = np.minimum(1.0, p[order] * (len(p) - np.arange(len(p))))
-    adjusted = np.empty_like(p)
-    adjusted[order] = np.maximum.accumulate(scaled)
-    return adjusted
+    return multipletests(p, method="holm")[1] if p.size else p
+
+
+def benjamini_hochberg(p_values: np.ndarray) -> np.ndarray:
+    """Benjamini-Hochberg q-values, which keep the expected share of false findings among those named.
+
+    A screen of thousands of readings expects some true differences, and Holm's
+    guard against any false one would hide nearly all of them. Computed by
+    ``statsmodels.stats.multitest.multipletests(method="fdr_bh")``.
+    """
+    p = np.asarray(p_values, dtype=float)
+    return multipletests(p, method="fdr_bh")[1] if p.size else p
 
 
 @dataclass(frozen=True)
 class DifferenceScan:
     """Every reading compared across every grouping, with p-values adjusted for the number of tests."""
 
-    #: The largest clear differences, by share of variance explained.
+    #: The largest clear findings: well-covered ones first, then by share of variance explained.
+    #: A finding is a clear difference, or a clear trend across ordered levels (``trend``).
     named: tuple[GroupComparison, ...]
     #: The largest difference found, clear or not.
     largest: GroupComparison | None
@@ -538,6 +1048,14 @@ class DifferenceScan:
     #: Readings never compared: coordinates, which place a row, and compass directions,
     #: whose mean means nothing.
     placed: tuple[str, ...] = ()
+    #: HOLM, or FALSE_DISCOVERY for a screen of more than MAX_SCAN_COLUMNS readings.
+    correction: str = HOLM
+    #: Tests with an unadjusted p-value below ALPHA, against ALPHA × tested expected by chance.
+    passing: int = 0
+    #: Trend tests among ``tested``, one for each reading against each ordered numeric grouping.
+    trends: int = 0
+    #: Reading and grouping pairs compared; ``tested`` adds the trend tests.
+    compared: int = 0
 
     @property
     def sampled(self) -> bool:
@@ -552,6 +1070,44 @@ def _explained_share(values: pd.Series, groups: pd.Series) -> float:
         return 0.0
     means = data.groupby("group", observed=True)["value"].transform("mean")
     return float(((means - data["value"].mean()) ** 2).sum()) / total
+# Below this share of the table's rows a scan finding is listed after the better-covered ones.
+WELL_COVERED = 0.2
+
+
+@dataclass
+class _Entry:
+    """One reading against one grouping in a scan, built into a comparison only when reported."""
+
+    explained: float
+    p: float
+    check_p: float
+    trivial: bool
+    thin: bool
+    coverage: float
+    #: A built comparison, or the omnibus, column position and fields that build one.
+    item: object
+    values: pd.Series
+    groups: pd.Series
+    #: (rho, p-value) of the trend test, for an ordered numeric grouping.
+    trend: tuple[float, float] | None = None
+
+
+def _trend_screen(block: pd.DataFrame, groups: pd.Series) -> dict[str, tuple[float, float]]:
+    """Spearman's rho and its p-value for every column of ``block`` against the numeric levels in ``groups``.
+
+    Ranks come from one sort per column over all its values, so with missing
+    values rho is a close screen; a reported trend is recomputed exactly.
+    """
+    levels = pd.to_numeric(groups, errors="coerce").to_numpy(dtype=float)
+    values = np.column_stack([levels, block.to_numpy(dtype=float)])
+    rho, counts = pairwise_correlations(_rank_columns(values).ranks)
+    found = {}
+    for index, column in enumerate(block.columns, start=1):
+        pairs, value = int(counts[0, index]), float(rho[0, index])
+        present = ~np.isnan(values[:, index]) & ~np.isnan(levels)
+        if pairs >= MIN_TREND_VALUES and np.isfinite(value) and np.unique(levels[present]).size >= 3:
+            found[column] = (value, correlation_p(value, pairs))
+    return found
 
 
 def scan_differences(
@@ -566,28 +1122,35 @@ def scan_differences(
     """Compare each reading across each grouping and rank the differences by size.
 
     ``skip`` holds (reading, grouping) pairs reported elsewhere or related by
-    construction. P-values are Holm-adjusted over every test run, so the
-    scan's chance of naming any difference that isn't there stays at 5%. A
-    reading that barely varies within the groups of a grouping is an
-    attribute of the group and is not compared across it; coordinates and
-    compass directions are never compared. Very wide tables are scanned on
-    their MAX_SCAN_COLUMNS most variable readings, and very long ones on a
-    fixed random sample of SCAN_ROWS rows, which still detects any difference
-    large enough to report.
+    construction. A grouping of three or more numeric levels also gets a trend
+    test for each reading. A finding is judged as ``GroupComparison.verdict``
+    judges one comparison, after the p-values are adjusted over every test run:
+    by Holm, so the scan's chance of naming any difference that isn't there
+    stays at 5%, or, for a screen of more than MAX_SCAN_COLUMNS readings, by
+    Benjamini-Hochberg, so the expected share of false findings among those
+    named stays at 5%. A reading that barely varies within the groups of a
+    grouping is an attribute of the group and is not compared across it;
+    coordinates and compass directions are never compared. A screen tests every
+    reading up to SCREEN_CELLS cells, then its most variable ones. Very long
+    tables are scanned on a fixed random sample of SCAN_ROWS rows, which still
+    detects any difference large enough to report. Findings resting on under
+    WELL_COVERED of the rows are listed after the others.
     """
     placed = tuple(
         reading for reading in readings if is_coordinate(reading) or is_angle(reading, dataframe[reading])
     )
     readings = [reading for reading in readings if reading not in placed]
     available = len(readings)
-    if available > MAX_SCAN_COLUMNS:
-        variance = dataframe[readings].var()
-        kept = set(variance.nlargest(MAX_SCAN_COLUMNS).index)
-        readings = [reading for reading in readings if reading in kept]
     rows = len(dataframe)
     if rows > SCAN_ROWS:
         dataframe = dataframe.sample(SCAN_ROWS, random_state=0)
-    entries: list[tuple[float, float, object]] = []
+    correction = FALSE_DISCOVERY if available > MAX_SCAN_COLUMNS else HOLM
+    budget = max(MAX_SCAN_COLUMNS, SCREEN_CELLS // max(len(dataframe), 1))
+    if available > budget:
+        variance = dataframe[readings].var()
+        kept = set(variance.nlargest(budget).index)
+        readings = [reading for reading in readings if reading in kept]
+    entries: list[_Entry] = []
     flagged: list[tuple[str, str]] = []
     recoded: list[tuple[str, str]] = []
     attributes: list[tuple[str, str]] = []
@@ -605,6 +1168,8 @@ def scan_differences(
         columns = [reading for reading in columns if reading not in marks]
         if not columns:
             continue
+        recorded = dataframe[columns].notna().to_numpy() & dataframe[grouping].notna().to_numpy()[:, None]
+        coverage = dict(zip(columns, recorded.mean(axis=0).tolist(), strict=True))
         block, groups, fields = _testing_sample(dataframe, columns, grouping, entity)
         used_entity = fields.get("entity", used_entity)
         sizes = groups.value_counts()
@@ -612,6 +1177,7 @@ def scan_differences(
         block, groups = block[kept], groups[kept]
         if groups.nunique() < 2:
             continue
+        trends = _trend_screen(block, groups) if ordered_levels(dataframe[grouping], grouping) else {}
         present = block.notna().groupby(groups, observed=True).sum()
         regular = [
             column
@@ -629,11 +1195,19 @@ def scan_differences(
                 if omnibus.eta2[index] >= ATTRIBUTE_EXPLAINED:
                     attributes.append((column, grouping))
                     continue
-                pending = (omnibus, index, block[column], groups, column, grouping, fields)
-                uses_ranks = bool(_shape(omnibus, index, column))
-                explained = omnibus.epsilon2[index] if uses_ranks else omnibus.eta2[index]
-                p = omnibus.rank_p[index] if uses_ranks else omnibus.welch_p[index]
-                entries.append((float(explained), float(p), pending))
+                judged = _judge(omnibus, index, column)
+                entries.append(_Entry(
+                    explained=judged.explained,
+                    p=judged.p,
+                    check_p=judged.check_p,
+                    trivial=judged.trivial,
+                    thin=judged.thin,
+                    coverage=coverage[column],
+                    item=(omnibus, index, column, grouping, fields),
+                    values=block[column],
+                    groups=groups,
+                    trend=trends.get(column),
+                ))
         for column in columns:
             if column in regular:
                 continue
@@ -642,29 +1216,80 @@ def scan_differences(
                 continue
             single = _single(block[column], groups, column, grouping, fields)
             if single is not None:
-                entries.append((single.explained, single.p_value, single))
+                entries.append(_Entry(
+                    explained=single.explained,
+                    p=single.p_value,
+                    check_p=single.check_p_value,
+                    trivial=single.trivial,
+                    thin=single.thin,
+                    coverage=coverage[column],
+                    item=single,
+                    values=block[column],
+                    groups=groups,
+                    trend=trends.get(column),
+                ))
     if not entries:
         return None
 
-    adjusted = holm_adjust(np.array([p for _, p, _ in entries]))
-    tests = len(entries)
-    ranked = sorted(range(tests), key=lambda index: entries[index][0], reverse=True)
+    p_values = [entry.p for entry in entries]
+    trend_at: dict[int, int] = {}
+    for position, entry in enumerate(entries):
+        if entry.trend is not None:
+            trend_at[position] = len(p_values)
+            p_values.append(entry.trend[1])
+    tests = len(p_values)
+    raw = np.array(p_values)
+    adjusted = (benjamini_hochberg if correction == FALSE_DISCOVERY else holm_adjust)(raw)
 
-    def build(index: int) -> GroupComparison:
-        item = entries[index][2]
+    def strength(position: int) -> float:
+        """The share of variance behind the entry's clear findings, or -1 when it has none."""
+        entry = entries[position]
+        found = []
+        check = _adjusted_like(entry.check_p, entry.p, adjusted[position], tests)
+        if _verdict(adjusted[position], check, entry.trivial, entry.thin) == "clear":
+            found.append(entry.explained)
+        if position in trend_at and adjusted[trend_at[position]] < ALPHA:
+            rho = entry.trend[0]
+            if abs(rho) >= NEGLIGIBLE_TREND:
+                found.append(rho**2)
+        return max(found, default=-1.0)
+
+    strengths = [strength(position) for position in range(len(entries))]
+    clear = [position for position in range(len(entries)) if strengths[position] >= 0]
+    clear.sort(
+        key=lambda position: (entries[position].coverage >= WELL_COVERED, strengths[position]), reverse=True
+    )
+    largest = max(range(len(entries)), key=lambda position: entries[position].explained)
+
+    def build(position: int) -> GroupComparison:
+        entry = entries[position]
+        item = entry.item
         if not isinstance(item, GroupComparison):
-            omnibus, column_index, values, groups, column, grouping, fields = item
-            item = _comparison(omnibus, column_index, values, groups, column, grouping, **fields)
-        return replace(item, adjusted_p=float(adjusted[index]), tests=tests)
+            omnibus, column_index, column, grouping, fields = item
+            item = _comparison(omnibus, column_index, entry.values, entry.groups, column, grouping, **fields)
+        trend = None
+        if position in trend_at:
+            trend = _ordered_trend(entry.values, entry.groups, item.measure, item.grouping)
+            if trend is not None:
+                screened = entry.trend[1]
+                trend = replace(
+                    trend,
+                    adjusted_p=_adjusted_like(trend.p_value, screened, adjusted[trend_at[position]], tests),
+                    tests=tests,
+                    correction=correction,
+                )
+        return replace(
+            item,
+            adjusted_p=float(adjusted[position]),
+            tests=tests,
+            correction=correction,
+            trend=trend,
+            coverage=entry.coverage,
+        )
 
-    clear = [
-        index
-        for index in ranked
-        if adjusted[index] < ALPHA and entries[index][0] >= NEGLIGIBLE_EXPLAINED
-    ]
     return DifferenceScan(
-        named=tuple(build(index) for index in clear[:limit]),
-        largest=build(ranked[0]),
+        named=tuple(build(position) for position in clear[:limit]),
+        largest=build(largest),
         tested=tests,
         clear=len(clear),
         readings=tuple(readings),
@@ -676,23 +1301,32 @@ def scan_differences(
         rows=rows,
         attributes=tuple(attributes),
         placed=placed,
+        correction=correction,
+        passing=int((raw < ALPHA).sum()),
+        trends=len(trend_at),
+        compared=len(entries),
     )
 
 
 def variance_explained(
-    dataframe: pd.DataFrame, measure: str, groupings: list[str]
+    dataframe: pd.DataFrame, measure: str, groupings: list[str], *, entity: str | None = None
 ) -> tuple[tuple[str, float], ...]:
-    """Share of the measure's variance each grouping explains on its own (eta squared), largest first."""
+    """Share of the measure's variance each grouping explains on its own (eta squared), largest first.
+
+    With ``entity``, each entity counts once per group, as in ``compare_groups``,
+    so the shares match the comparisons beside them.
+    """
     shares = []
     for grouping in groupings:
-        data = dataframe[[grouping, measure]].dropna()
-        if data[grouping].nunique() < 2:
+        readings, groups, _ = _testing_sample(dataframe, [measure], grouping, entity)
+        data = pd.DataFrame({"value": readings[measure].to_numpy(), "group": groups.to_numpy()}).dropna()
+        if data["group"].nunique() < 2:
             continue
-        values = data[measure]
+        values = data["value"].astype(float)
         total = float(((values - values.mean()) ** 2).sum())
         if total == 0:
             continue
-        means = values.groupby(data[grouping], observed=True).transform("mean")
+        means = values.groupby(data["group"], observed=True).transform("mean")
         shares.append((grouping, float(((means - values.mean()) ** 2).sum()) / total))
     return tuple(sorted(shares, key=lambda item: item[1], reverse=True))
 
@@ -1137,17 +1771,29 @@ def grouping_rules(
 def entity_column(dataframe: pd.DataFrame, roles: ColumnRoles) -> str | None:
     """The column naming the unit each row belongs to, when some unit has several rows.
 
-    The identifier, or a column named like one ("Subject", "Patient ID"); a
-    column of unique values describes one row each and needs no reduction.
+    The identifier, or a column named like one ("Subject", "Patient ID"), whose
+    values can name units: text, or whole-number codes that repeat. A column
+    of unique values describes one row each and needs no reduction, and a
+    decimal reading named like a unit ("NO", nitric oxide) or a column that
+    could be the measure is a measurement, not a unit.
     """
+    measures = {roles.measure, roles.date, *(getattr(roles, "measure_alternatives", ()) or ())}
     candidates = [roles.identifier, *(column for column in dataframe.columns if is_entity_name(column))]
     for column in dict.fromkeys(column for column in candidates if column):
-        if column not in dataframe.columns or column in (roles.measure, roles.date):
+        if column not in dataframe.columns or column in measures:
             continue
         values = dataframe[column].dropna()
-        if values.nunique() >= 2 and bool(values.duplicated().any()):
+        if values.nunique() >= 2 and bool(values.duplicated().any()) and _names_units(values):
             return column
     return None
+
+
+def _names_units(values: pd.Series) -> bool:
+    """Whether a column's values can label units: text, or whole numbers far fewer than its rows."""
+    if is_bool_dtype(values) or not is_numeric_dtype(values):
+        return True
+    numbers = values.to_numpy(dtype=float)
+    return bool(np.all(numbers % 1 == 0)) and values.nunique() <= 0.5 * len(values)
 
 
 # --- Describing a comparison --------------------------------------------------
@@ -1188,9 +1834,15 @@ def effect_text(comparison: GroupComparison) -> str:
     return f"{comparison.explained_name} = {comparison.explained:.2f}"
 
 
+def _adjusted_p_text(p: float, adjusted: float | None, correction: str) -> str:
+    if adjusted is None:
+        return format_p(p)
+    return f"{ADJUSTED[correction]} {format_p(adjusted)}"
+
+
 def _test_text(comparison: GroupComparison) -> str:
-    adjusted = "Holm-adjusted " if comparison.adjusted_p is not None else ""
-    return f"{comparison.test}, {adjusted}{format_p(comparison.decisive_p)}"
+    adjusted = _adjusted_p_text(comparison.p_value, comparison.adjusted_p, comparison.correction)
+    return f"{comparison.test}, {adjusted}"
 
 
 def _tied(comparison: GroupComparison, centre: float) -> list[str]:
@@ -1198,21 +1850,105 @@ def _tied(comparison: GroupComparison, centre: float) -> list[str]:
     return [group.label for group in comparison.groups if np.isclose(comparison.centre(group), centre)]
 
 
+def centre_word(comparison: GroupComparison, *, plural: bool = False) -> str:
+    """What each group's figure is: "mean", "median", or "mean of per-Bird medians" after a reduction.
+
+    With an entity, each group's figure summarises one value per entity, which
+    is not the plain mean of its rows that a table or a KPI shows.
+    """
+    word = "median" if comparison.uses_ranks and not comparison.zero_heavy else "mean"
+    word += "s" if plural else ""
+    if comparison.entity:
+        word += f" of per-{comparison.entity} {comparison.entity_summary}s"
+    return word
+
+
+def _unranked(comparison: GroupComparison, column_values: pd.Series | None) -> str:
+    """Name the groups too small to rank whose figures sit beyond the named highest and lowest."""
+    c = comparison
+    top, bottom = c.centre(c.higher), c.centre(c.lower)
+    beyond = [
+        group for group in c.groups
+        if group.n < MIN_NAMED_GROUP and (c.centre(group) > top or c.centre(group) < bottom)
+    ]
+    if not beyond or c.thin:
+        return ""
+    word = centre_word(c)
+    named = [
+        f"{group.label} ({word} "
+        f"{format_number(c.centre(group), c.measure, column_values=column_values)}, n = {group.n:,})"
+        for group in beyond[:3]
+    ]
+    if len(beyond) > 3:
+        named.append(f"{len(beyond) - 3} more")
+    return f" Not ranked, with fewer than {MIN_NAMED_GROUP} values: {list_names(named, limit=len(named))}."
+
+
+def _zero_text(comparison: GroupComparison) -> str:
+    """For a reading that is mostly zeros, the share of non-zero values in each group and its test."""
+    c = comparison
+    if not c.zero_heavy or c.presence_p is None:
+        return ""
+    candidates = [group for group in c.groups if group.n >= MIN_NAMED_GROUP] or list(c.groups)
+    ranked = sorted(candidates, key=lambda group: group.nonzero)
+    low, high = ranked[0], ranked[-1]
+    text = (
+        f" {c.zero_share:.0%} of {c.measure} values are 0, so every median is 0 and the groups are "
+        f"compared by their means and by the share of values that are not 0: from {low.nonzero:.1%} "
+        f"({low.label}) to {high.nonzero:.1%} ({high.label}) (chi-squared test, {format_p(c.presence_p)})."
+    )
+    if c.uses_ranks:
+        text += f" The test on all values uses ranks because {c.shape}."
+    return text
+
+
+def trend_sentence(trend: OrderedTrend) -> str:
+    """Whether the reading rises or falls across the ordered levels of its grouping."""
+    figures = (
+        f"Spearman ρ = {trend.rho:.2f}, "
+        f"{_adjusted_p_text(trend.p_value, trend.adjusted_p, trend.correction)}, n = {trend.n:,}"
+    )
+    if trend.verdict == "clear":
+        return (
+            f"{trend.measure} {trend.direction} as {trend.grouping} increases across its {trend.levels} "
+            f"levels ({figures})."
+        )
+    if trend.verdict == "negligible":
+        return (
+            f"Across the {trend.levels} levels of {trend.grouping}, {trend.measure} {trend.direction} "
+            f"only by a negligible amount ({figures})."
+        )
+    return (
+        f"Across the {trend.levels} ordered levels of {trend.grouping}, {trend.measure} shows no clear "
+        f"trend ({figures})."
+    )
+
+
+def _disagreement(comparison: GroupComparison) -> str:
+    c = comparison
+    return (
+        f"{c.test} gives {format_p(c.decisive_p)} but {c.check} gives {format_p(c.check_decisive_p)}, "
+        f"and when the two tests disagree the gap is not called clear ({effect_text(c)})"
+    )
+
+
 def describe_comparison(comparison: GroupComparison, column_values: pd.Series | None = None) -> str:
     """State whether the reading differs across the groups, with the sizes, test and effect behind it.
 
     A difference the test can't tell from noise is written as "no clear
-    difference", never as a ranking, and one that passes the test but explains
-    under 1% of the variance is called negligible.
+    difference", never as a ranking. So is one whose check disagrees, or one
+    resting on a group of fewer than MIN_NAMED_GROUP values. One that passes
+    but falls short of a small effect is called negligible.
     """
     c = comparison
-    word = "median" if c.uses_ranks else "mean"
+    word = centre_word(c)
     high, low = c.higher, c.lower
     first, second = format_values_apart(
         c.centre(high), c.centre(low), column=c.measure, column_values=column_values
     )
     sizes = f"n = {high.n:,} and {low.n:,}"
     verdict = c.verdict
+    small = high if high.n <= low.n else low
     if c.two_groups:
         quoted = f"{word} {first} vs {second} ({sizes})"
         interval = (
@@ -1230,17 +1966,23 @@ def describe_comparison(comparison: GroupComparison, column_values: pd.Series | 
                     f", a difference of {_amount(c.difference, c, column_values)} (95% CI {interval}); "
                     f"{effect_text(c)}, a {size_word(c)} difference ({_test_text(c)})."
                 )
-            if c.check_p_value < ALPHA:
-                text += f" {c.check} agrees ({format_p(c.check_p_value)})."
-            else:
-                text += (
-                    f" {c.check} does not confirm it ({format_p(c.check_p_value)}), so treat it with care."
-                )
+            text += f" {c.check} agrees ({format_p(c.check_p_value)})."
         elif verdict == "negligible":
             text = (
                 f"{c.measure} differs between {high.label} and {low.label} only by a negligible "
-                f"amount: {quoted}, {effect_text(c)} ({_test_text(c)}). With this many records "
-                "even a trivial gap passes the test."
+                f"amount: {quoted}, {effect_text(c)} ({_test_text(c)})."
+            )
+            if c.total > LARGE_SAMPLE:
+                text += " With this many records even a trivial gap passes the test."
+        elif verdict == "thin":
+            text = (
+                f"{c.measure} looks higher in {high.label} than in {low.label} ({quoted}; {_test_text(c)}), "
+                f"but {small.n:,} values in {small.label} are too few to call the difference clear."
+            )
+        elif verdict == "disputed":
+            text = (
+                f"{c.measure} shows no clear difference between {high.label} and {low.label}: {quoted}. "
+                f"{_disagreement(c)}."
             )
         else:
             text = (
@@ -1260,8 +2002,9 @@ def describe_comparison(comparison: GroupComparison, column_values: pd.Series | 
                     f"({_test_text(c)}; {effect_text(c)})."
                 )
     else:
+        words = centre_word(c, plural=True)
         span = (
-            f"{word}s run from {second} ({low.label}, n = {low.n:,}) to {first} "
+            f"{words} run from {second} ({low.label}, n = {low.n:,}) to {first} "
             f"({high.label}, n = {high.n:,})"
         )
         variation = "of its variance" if not c.uses_ranks else "of the variation in its ranks"
@@ -1288,12 +2031,30 @@ def describe_comparison(comparison: GroupComparison, column_values: pd.Series | 
                 f"{c.explained:.1%} {variation} ({c.explained_name} = {c.explained:.3f}, "
                 f"{_test_text(c)}): {span}."
             )
+            if c.total > LARGE_SAMPLE:
+                text += " With this many records even a trivial gap passes the test."
+        elif verdict == "thin":
+            text = (
+                f"{c.measure} differs across {c.grouping} by the test ({_test_text(c)}; {effect_text(c)}), "
+                f"but fewer than two groups have {MIN_NAMED_GROUP} or more values, too few to call the "
+                f"difference clear: {span}."
+            )
+        elif verdict == "disputed":
+            text = (
+                f"{c.measure} shows no clear difference across the {len(c.groups)} {c.grouping} groups: "
+                f"{_disagreement(c)}. The {span}."
+            )
         else:
             text = (
                 f"{c.measure} shows no clear difference across the {len(c.groups)} {c.grouping} groups "
                 f"({_test_text(c)}; {effect_text(c)}): {span}."
             )
-    if c.uses_ranks:
+    text += _unranked(c, column_values)
+    if c.trend is not None:
+        text += " " + trend_sentence(c.trend)
+    if c.zero_heavy:
+        text += _zero_text(c)
+    elif c.uses_ranks:
         text += f" Medians and ranks are used because {c.shape}."
     if c.entity:
         text += f" Each {c.entity} counts once per group."
@@ -1307,85 +2068,123 @@ def describe_comparison(comparison: GroupComparison, column_values: pd.Series | 
     return text
 
 
+def leads_with_trend(comparison: GroupComparison) -> bool:
+    """Whether a comparison's finding is its trend across ordered levels rather than a difference."""
+    trend = comparison.trend
+    return comparison.verdict != "clear" and trend is not None and trend.verdict == "clear"
+
+
 def lead_sentence(comparison: GroupComparison, column_values: pd.Series | None = None) -> str:
-    """One sentence naming a clear difference and the groups' centres, for a headline."""
+    """One sentence naming a clear finding, the groups' centres and their sizes, for a headline."""
     c = comparison
-    word = "median" if c.uses_ranks else "mean"
+    coverage = ""
+    if c.coverage < 0.5:
+        coverage = f" Only {c.coverage:.0%} of rows record both {c.measure} and {c.grouping}."
+    if leads_with_trend(c):
+        trend = c.trend
+        return (
+            f"{c.measure} {trend.direction} as {c.grouping} increases: Spearman ρ = {trend.rho:.2f} across "
+            f"{trend.levels} levels (n = {trend.n:,}).{coverage}"
+        )
+    word = centre_word(c)
     first, second = format_values_apart(
         c.centre(c.higher), c.centre(c.lower), column=c.measure, column_values=column_values
     )
     if c.two_groups:
         return (
             f"{c.measure} is higher in {c.higher.label} than in {c.lower.label}: {word} {first} vs "
-            f"{second} (n = {c.higher.n:,} and {c.lower.n:,})."
+            f"{second} (n = {c.higher.n:,} and {c.lower.n:,}).{coverage}"
         )
     return (
-        f"{c.measure} differs across {c.grouping}: {word}s from {second} ({c.lower.label}) to "
-        f"{first} ({c.higher.label}), {c.explained_name} = {c.explained:.2f}."
+        f"{c.measure} differs across {c.grouping}: {centre_word(c, plural=True)} from {second} "
+        f"({c.lower.label}, n = {c.lower.n:,}) to {first} ({c.higher.label}, n = {c.higher.n:,}), "
+        f"{c.explained_name} = {c.explained:.2f}.{coverage}"
     )
 
 
 def effect_clause(comparison: GroupComparison) -> str:
     """The effect and p-value of a comparison in a few words: "Hedges' g = 0.50, p < 0.001"."""
     c = comparison
-    if c.two_groups and c.uses_ranks:
-        effect = f"{c.higher.label} larger in {c.superiority:.0%} of pairs"
+    if leads_with_trend(c):
+        trend = c.trend
+        effect, raw, adjusted = f"Spearman ρ = {trend.rho:.2f}", trend.p_value, trend.adjusted_p
     else:
-        effect = effect_text(c)
-    raw, adjusted = format_p(c.p_value), format_p(c.decisive_p)
-    if adjusted == raw:
-        return f"{effect}, {adjusted}"
+        if c.two_groups and c.uses_ranks:
+            effect = f"{c.higher.label} larger in {c.superiority:.0%} of pairs"
+        else:
+            effect = effect_text(c)
+        raw, adjusted = c.p_value, c.adjusted_p
+    shown, decisive = format_p(raw), format_p(raw if adjusted is None else adjusted)
+    if decisive == shown:
+        return f"{effect}, {decisive}"
     # A sizeable effect next to "p > 0.99" reads as a contradiction unless the adjustment shows.
-    return f"{effect}; {raw}, Holm-adjusted {adjusted.removeprefix('p ')}"
+    return f"{effect}; {shown}, {ADJUSTED[c.correction]} {decisive.removeprefix('p ')}"
 
 
 def comparison_calculation(comparison: GroupComparison) -> str:
     """The calculation behind ``describe_comparison``, step by step."""
     c = comparison
-    word = "median" if c.uses_ranks else "mean"
+    word = "median" if c.uses_ranks and not c.zero_heavy else "mean"
     steps = [f"{word} {c.measure} per {c.grouping}"]
+    means = c._means_test
     if c.two_groups and c.uses_ranks:
         steps.append(
             "Mann-Whitney test on ranks, with the share of cross-group pairs in which the higher "
-            "group's value is the larger; checked with Welch's t-test"
+            f"group's value is the larger; checked with {means}"
         )
     elif c.two_groups:
         steps.append(
-            "difference in means with a Welch 95% CI and Welch's t-test, Hedges' g; checked with "
-            "the Mann-Whitney test"
+            f"difference in means with a 95% CI and {means}, Hedges' g; checked with the Mann-Whitney test"
         )
     elif c.uses_ranks:
         steps.append(
-            "Kruskal-Wallis with ε² = H ÷ (n − 1); checked with Welch's ANOVA; highest vs lowest median"
+            f"Kruskal-Wallis with ε² = H ÷ (n − 1); checked with {means}; highest vs lowest {word}"
         )
     else:
         steps.append(
-            "Welch's ANOVA with η² as the between-group share of the total sum of squares; checked with "
-            "Kruskal-Wallis; Hedges' g for the highest vs lowest mean"
+            f"{means} with η² as the between-group share of the total sum of squares; checked with "
+            f"Kruskal-Wallis; Hedges' g for the highest vs lowest mean"
         )
+    if c.pooled:
+        steps.append(f"variances pooled because a group has fewer than {MIN_WELCH_GROUP} values")
+    steps.append("p-values from scipy.stats distributions")
+    if any(group.n < MIN_NAMED_GROUP for group in c.groups):
+        steps.append(f"groups with fewer than {MIN_NAMED_GROUP} values are not named as highest or lowest")
     if c.uses_ranks:
         steps.append(f"ranks because {c.shape}")
+    if c.zero_heavy:
+        steps.append("share of values that are not 0 per group, chi-squared test")
+    if c.trend is not None:
+        steps.append(f"trend: Spearman's ρ between the {c.grouping} level and {c.measure}")
     if c.entity:
         steps.append(f"one value per {c.entity} in each group (its {c.entity_summary}) before testing")
     if c.adjusted_p is not None:
-        steps.append(f"p Holm-adjusted for {c.tests} test{'' if c.tests == 1 else 's'}")
+        method = "fdr_bh" if c.correction == FALSE_DISCOVERY else "holm"
+        steps.append(
+            f"p {ADJUSTED[c.correction]} for {c.tests} test{'' if c.tests == 1 else 's'} "
+            f"(statsmodels multipletests, {method})"
+        )
     return "; ".join(steps)
 
 
 def comparison_table(comparison: GroupComparison) -> pd.DataFrame:
     """One row per group, highest centre first: the centre, n, the other centre and the SD."""
-    word, other = ("Median", "Mean") if comparison.uses_ranks else ("Mean", "Median")
-    return pd.DataFrame(
+    by_median = comparison.uses_ranks and not comparison.zero_heavy
+    word, other = ("Median", "Mean") if by_median else ("Mean", "Median")
+    table = pd.DataFrame(
         {
             comparison.grouping: [group.label for group in comparison.groups],
             f"{word} {comparison.measure}": [comparison.centre(group) for group in comparison.groups],
             "n": [group.n for group in comparison.groups],
             f"{other} {comparison.measure}": [
-                group.mean if comparison.uses_ranks else group.median for group in comparison.groups
+                group.mean if by_median else group.median for group in comparison.groups
             ],
             "SD": [group.sd for group in comparison.groups],
         }
     )
+    if comparison.zero_heavy:
+        table["Share not 0"] = [group.nonzero for group in comparison.groups]
+    return table
 
 
 # --- Relationships ------------------------------------------------------------
@@ -2647,4 +3446,137 @@ def scan_relationships(
         angles=built.angles,
         rows=built.rows,
         set_aside=tuple(set_aside),
+    )
+
+
+# --- Joint model --------------------------------------------------------------
+
+# Predictors in one model, and rows needed per predictor for its coefficients to settle.
+MAX_MODEL_TERMS = 6
+ROWS_PER_TERM = 10
+# A variance inflation factor above this means a predictor is largely a mix of the others.
+MAX_VIF = 5.0
+# Rows a model is fitted on; longer tables use a fixed random sample.
+MODEL_ROWS = 50_000
+
+
+@dataclass(frozen=True)
+class ModelTerm:
+    """One predictor's coefficient in a joint model, beside its correlation on its own."""
+
+    name: str
+    coefficient: float
+    low: float
+    high: float
+    p_value: float
+    #: The coefficient in standard deviations of the measure per standard deviation of the predictor.
+    standardized: float
+    #: Pearson r of the predictor with the measure on the model's rows.
+    pairwise: float
+    vif: float
+
+    @property
+    def reversed(self) -> bool:
+        """Whether a clear coefficient points the other way from the predictor's own clear correlation."""
+        return (
+            self.p_value < ALPHA
+            and abs(self.pairwise) >= NOTABLE_CORRELATION
+            and np.sign(self.coefficient) != np.sign(self.pairwise)
+        )
+
+
+@dataclass(frozen=True)
+class JointModel:
+    """An ordinary least-squares fit of a measure on several readings at once.
+
+    Each coefficient is the change in the measure per unit of its reading with
+    the other readings held fixed. When readings move together, that can differ
+    in size and even in sign from the reading's correlation on its own.
+    """
+
+    measure: str
+    terms: tuple[ModelTerm, ...]
+    intercept: float
+    n: int
+    r2: float
+    adjusted_r2: float
+    residual_sd: float
+    #: Rows with the measure and every predictor recorded; above MODEL_ROWS the fit used a sample.
+    rows: int = 0
+
+    @property
+    def best_single(self) -> ModelTerm:
+        """The predictor that relates most to the measure on its own."""
+        return max(self.terms, key=lambda term: abs(term.pairwise))
+
+    @property
+    def collinear(self) -> tuple[str, ...]:
+        """Predictors whose variance inflation factor exceeds MAX_VIF."""
+        return tuple(term.name for term in self.terms if term.vif > MAX_VIF)
+
+    @property
+    def reversed(self) -> tuple[ModelTerm, ...]:
+        return tuple(term for term in self.terms if term.reversed)
+
+    @property
+    def predictors(self) -> tuple[str, ...]:
+        return tuple(term.name for term in self.terms)
+
+
+def fit_joint_model(frame: pd.DataFrame, measure: str, predictors: list[str]) -> JointModel | None:
+    """Fit ``measure`` on up to MAX_MODEL_TERMS of ``predictors`` together, by ordinary least squares.
+
+    The fit uses the rows where the measure and every predictor are recorded
+    and needs ROWS_PER_TERM of them per predictor. Predictors are taken in the
+    order given; one that does not vary, or that the earlier ones reproduce
+    exactly, is dropped. Coefficients with 95% intervals, R² and adjusted R²
+    come from ``statsmodels`` OLS, and each predictor's variance inflation
+    factor from ``statsmodels.stats.outliers_influence.variance_inflation_factor``.
+    Returns None with fewer than two usable predictors or too few rows.
+    """
+    chosen = [
+        column for column in dict.fromkeys(predictors) if column != measure and column in frame.columns
+    ][:MAX_MODEL_TERMS]
+    if measure not in frame.columns or len(chosen) < 2:
+        return None
+    data = frame[[measure, *chosen]].apply(pd.to_numeric, errors="coerce").dropna()
+    rows = len(data)
+    if rows > MODEL_ROWS:
+        data = data.sample(MODEL_ROWS, random_state=0)
+    kept: list[str] = []
+    for column in chosen:
+        if data[column].nunique() < 2:
+            continue
+        design = np.column_stack([np.ones(len(data)), data[[*kept, column]].to_numpy(dtype=float)])
+        if np.linalg.matrix_rank(design) == design.shape[1]:
+            kept.append(column)
+    if len(kept) < 2 or len(data) < ROWS_PER_TERM * len(kept) or data[measure].nunique() < 2:
+        return None
+    target = data[measure].to_numpy(dtype=float)
+    design = np.column_stack([np.ones(len(data)), data[kept].to_numpy(dtype=float)])
+    fit = OLS(target, design).fit()
+    intervals = fit.conf_int(ALPHA)
+    spread = data[kept].std().to_numpy(dtype=float)
+    terms = tuple(
+        ModelTerm(
+            name=column,
+            coefficient=float(fit.params[index]),
+            low=float(intervals[index][0]),
+            high=float(intervals[index][1]),
+            p_value=float(fit.pvalues[index]),
+            standardized=float(fit.params[index] * spread[index - 1] / target.std(ddof=1)),
+            pairwise=float(np.corrcoef(data[column].to_numpy(dtype=float), target)[0, 1]),
+            vif=float(variance_inflation_factor(design, index)),
+        )
+        for index, column in enumerate(kept, start=1)
+    )
+    return JointModel(
+        measure=measure,
+        terms=terms,
+        intercept=float(fit.params[0]),
+        n=len(data),
+        r2=float(fit.rsquared),
+        adjusted_r2=float(fit.rsquared_adj),
+        residual_sd=float(np.sqrt(fit.mse_resid)),
+        rows=rows,
     )

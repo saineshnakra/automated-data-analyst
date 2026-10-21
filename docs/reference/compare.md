@@ -6,11 +6,15 @@
 Two questions come up with almost any table: does a reading differ between
 groups, and what moves with it? This module answers both with the sample, the
 test and the effect size behind the answer. The brief's `leader`,
-`differences` and `relationship` cards (see [Evidence](evidence.md)) and the
-comparison questions in [Ask ADA](ask-ada.md) all use it. scipy supplies the
-t, F and chi-squared distributions; the statistics themselves are computed
-here, so a one-reading comparison and a scan of hundreds of readings give the
-same numbers.
+`differences`, `rates`, `model` and `relationship` cards (see
+[Evidence](evidence.md)) and the comparison questions in [Ask ADA](ask-ada.md)
+all use it. The group tests are computed here for every column at once, with
+the t, F and chi-squared distributions from `scipy.stats`, so a one-reading
+comparison and a scan of hundreds of readings give the same numbers; they
+match `scipy.stats.ttest_ind`, `f_oneway`, `mannwhitneyu` and `kruskal`. The
+multiple-testing adjustments, the rate interval and the joint model come from
+`statsmodels`, and the rate tests from `scipy.stats`. See
+[Credits](../credits.md).
 
 ## Comparing a reading across groups
 
@@ -28,6 +32,14 @@ values (`MIN_GROUP_SIZE`) is left out and named. A group with no spread at all
 gets a variance floor far below anything measurable, so Welch's tests stay
 defined.
 
+### Small groups
+
+| Rule | Why |
+|---|---|
+| A group with fewer than 3 values (`MIN_WELCH_GROUP`) switches the test on means to the pooled-variance one: Student's t-test, or the one-way ANOVA | Welch's test weights each group by its own variance, which two values estimate so poorly that a tight pair can carry a p of 0.0003 where the classical ANOVA gives 0.18 |
+| Groups with fewer than 5 values (`MIN_NAMED_GROUP`) are never named as the highest or lowest | The highest and lowest are taken among groups with 5 or more values, and the smaller groups beyond them are listed as "Not ranked, with fewer than 5 values: CLL (mean −1.09, n = 2)" |
+| A difference resting on a group of fewer than 5 is not called clear | The verdict is `thin` |
+
 ### Medians and ranks for skewed or capped readings
 
 The comparison switches to medians and ranks when the reading is:
@@ -43,6 +55,26 @@ share of cross-group pairs in which the higher group's value is the larger
 ("a value from positive is the larger in 89% of pairs"). Welch's test becomes
 the check. The statement says why ranks were used.
 
+### Readings that are mostly zero
+
+When half or more of a reading's values are 0 (`ZERO_HEAVY`), as for rain per
+interval, every group's median is 0 and "medians from 0 to 0" says nothing.
+Such a reading is named and ordered by its group means, and each group also
+gets the share of its values that are not 0, compared with a chi-squared test.
+The statement gives both; the table adds a `Share not 0` column.
+
+### Ordered numeric levels
+
+A grouping of three or more numeric levels whose name does not mark labels (a
+speed, a depth, a dose; not `Status`, `Group`, `Plot` or `Block`) also gets a
+trend test (`ordered_levels`): Spearman's rank correlation between the level
+and the reading, with its p-value from the t approximation, which matches
+`scipy.stats.spearmanr`. It needs 10 values (`MIN_TREND_VALUES`). The
+statement says whether the reading rises or falls as the level increases
+("Elongation falls as welding speed increases across its 5 levels"), or that
+there is no clear trend. A trend uses the order of the levels, so it can be
+clear when the unordered test is not.
+
 Both rank tests use the normal approximation with ties corrected, so a scan
 and a single comparison agree.
 
@@ -50,27 +82,36 @@ and a single comparison agree.
 
 | Verdict | When | Wording |
 |---|---|---|
-| `clear` | p below 0.05 and at least 1% of the variance explained | "X is higher in A than in B", or "X differs across G" with the highest and lowest group |
-| `negligible` | p below 0.05 but under 1% of the variance explained (`NEGLIGIBLE_EXPLAINED`) | "differs only by a negligible amount"; with enough records a trivial gap passes any test |
+| `clear` | p below 0.05, at least a small effect, both groups compared with 5 or more values, and the check agrees | "X is higher in A than in B", or "X differs across G" with the highest and lowest group |
+| `negligible` | p below 0.05 but less than a small effect: Hedges' g under 0.2 for two groups compared by means, otherwise under 1% of the variance (`NEGLIGIBLE_EXPLAINED`) | "differs only by a negligible amount"; above 1,000 records (`LARGE_SAMPLE`) it adds that with this many records a trivial gap passes any test |
+| `thin` | p below 0.05 but a group compared has fewer than 5 values | "looks higher", and too few values to call the difference clear |
+| `disputed` | p below 0.05 but the check's p (adjusted by the same factor in a scan) is not | "shows no clear difference", naming both p-values and saying the two tests disagree |
 | `none` | p of 0.05 or more | "shows no clear difference", with the interval or the range of the groups; never a ranking |
 
 For two groups compared by means, p below 0.05 is the same as a 95% interval
 for the difference that excludes zero. Effect sizes are named by the usual
 cut-offs: Hedges' g of 0.2, 0.5 and 0.8 (small, medium, large) and a share of
-variance of 0.01, 0.06 and 0.14.
+variance of 0.01, 0.06 and 0.14. A card quotes one effect size in one unit:
+when rows are reduced to one value per entity, so are the variance shares
+beside the comparison.
 
 ### One value per subject
 
 Repeated readings of one subject are not independent evidence. With `entity`
 (a subject, patient or sample column), each entity contributes one value per
 group: its mean, or its median for a reading that is skewed or capped. The
-statement says "Each Bird counts once per group". When the same entity appears
+statement says "Each Bird counts once per group", and names each group's
+figure for what it is: "the highest mean of per-Bird medians", not a plain
+mean that a table of rows would show (`centre_word`). When the same entity appears
 in more than one group (each subject saw both objects), the groups are not
 independent and the statement says the p-value is only a guide.
 
 `entity_column(dataframe, roles)` picks the entity: the identifier, or a column
 named like one (`is_entity_name` in `ada/schema.py`, such as `Subject` or
-`Patient ID`), provided some value repeats.
+`Patient ID`), provided some value repeats and the values can label units:
+text, or whole numbers with at most half as many distinct values as rows. A
+decimal reading named like a unit (`NO`, nitric oxide) is a measurement, and
+so is the measure or a close alternative to it.
 
 ### Describing it
 
@@ -85,12 +126,19 @@ one row per group (the centre, n, the other centre and the SD). P-values read
 `scan_differences(dataframe, readings, groupings, entity=None, skip=())`
 compares each reading across each grouping and returns a `DifferenceScan`.
 
-- P-values are Holm-adjusted over every test run, so the chance of naming any
+- P-values are Holm-adjusted over every test run
+  (`statsmodels.stats.multitest.multipletests`), so the chance of naming any
   difference that isn't there stays at 5%.
-- A difference is named when its adjusted p is below 0.05 and it explains at
-  least 1% of the variance. The named ones come largest first, ranked by eta
-  squared, or epsilon squared on ranks. The largest effect is kept even when
-  nothing is clear, for a null result.
+- Each reading against a grouping of ordered numeric levels also gets a trend
+  test, counted among the tests.
+- A difference is named when it is `clear` by the same rules as a single
+  comparison, after the adjustment, or when its trend is clear. The named
+  ones come largest first, ranked by eta squared, epsilon squared on ranks or
+  ρ² for a trend, with those resting on under 20% of the table's rows
+  (`WELL_COVERED`) listed after the rest. Each comparison carries its
+  `coverage`, and its headline sentence says when few rows record both
+  columns. The largest effect is kept even when nothing is clear, for a null
+  result.
 - A two-valued grouping that only marks where the reading hit its cap (a
   censoring flag set exactly on the rows at 3,600 s) is left out, since it
   separates the groups by definition.
@@ -104,14 +152,21 @@ compares each reading across each grouping and returns a `DifferenceScan`.
   coordinate places a row, and the mean of an angle means nothing.
 - `skip` holds pairs reported elsewhere, such as the measure across the
   grouping column, which has its own card, and pairs related by construction.
-- Wide tables are scanned on their 300 most variable readings
-  (`MAX_SCAN_COLUMNS`), and tables longer than 50,000 rows (`SCAN_ROWS`) on a
-  fixed random sample of that many rows. A difference large enough to report
-  shows in either.
+- A table with more than 300 readings (`MAX_SCAN_COLUMNS`), such as a gene
+  expression matrix, is a screen. Every reading is tested, up to 20 million
+  cells (`SCREEN_CELLS`, then the most variable readings), and the p-values
+  are Benjamini-Hochberg adjusted instead (`benjamini_hochberg`), which keeps
+  the expected share of false findings among those named at 5%. Holm's guard
+  against any false finding would hide nearly every true difference in a
+  screen. `passing` counts the tests with an unadjusted p below 0.05, to set
+  beside the 5% that chance alone would give.
+- Tables longer than 50,000 rows (`SCAN_ROWS`) are scanned on a fixed random
+  sample of that many rows. A difference large enough to report shows in it.
 
-`variance_explained(dataframe, measure, groupings)` gives the share of the
-measure's variance each grouping explains on its own (eta squared). In a soil
-survey, depth explains 76% of calcium and contour 5%.
+`variance_explained(dataframe, measure, groupings, entity=None)` gives the
+share of the measure's variance each grouping explains on its own (eta
+squared), with one value per entity in each group when `entity` is given. In a
+soil survey, depth explains 76% of calcium and contour 5%.
 `combined_groupings` finds a grouping that is the combination of two others
 (each level of a cell code such as `T0` is exactly one contour and one depth);
 it explains at least as much as either factor, which says nothing about which
@@ -149,6 +204,49 @@ another) can separate a reading almost perfectly for other reasons, so it
 must separate it on every row. Readings are screened on 1,000 rows
 (`RULE_SCREEN_ROWS`) and a likely rule is then checked on every row, or on the
 same sample of 50,000 rows the scan uses.
+
+## Comparing rates
+
+`compare_rates(dataframe, outcome, grouping)` compares how often a yes/no
+outcome is "yes" across the groups of another column and returns a
+`RateComparison`, or `None`. The outcome is a 0/1 column, a boolean, or a
+two-valued text column of yes and no words (`outcome_event`).
+
+| Part | How |
+|---|---|
+| Each group | The rate and n |
+| Test | Pearson's chi-squared test on the groups-by-outcome table (`scipy.stats.chi2_contingency`, no continuity correction); for two groups with an expected count below 5, Fisher's exact test (`scipy.stats.fisher_exact`) |
+| Effect | Cramér's V; under 0.1 is negligible |
+| Gap | The highest rate minus the lowest, among groups of 5 or more rows, with Newcombe's 95% interval (`statsmodels.stats.proportion.confint_proportions_2indep`) |
+
+The verdicts are those of a group comparison. `describe_rates` writes "The
+share of rows with Result 1 is 55.7% in Gender 1 (n = 740) against 30.5% in
+Gender 0 (n = 681): a difference of 25.1 percentage points (95% CI 20.1 to
+30.0)" and `rate_calculation` the calculation.
+
+## A joint model
+
+`fit_joint_model(frame, measure, predictors)` fits the measure on up to 6
+predictors at once (`MAX_MODEL_TERMS`) by ordinary least squares and returns a
+`JointModel`, or `None` with fewer than two usable predictors or fewer than 10
+rows per predictor (`ROWS_PER_TERM`). Ask uses it for "what predicts X".
+
+- It uses the rows where the measure and every predictor are recorded, or a
+  fixed random sample of 50,000 of them (`MODEL_ROWS`).
+- Predictors are taken in the order given; one that does not vary, or that the
+  earlier ones reproduce exactly, is dropped.
+- Coefficients with 95% intervals and p-values, R², adjusted R² and the
+  residual SD come from `statsmodels` OLS. Each `ModelTerm` also carries its
+  standardised coefficient, the predictor's own Pearson r with the measure on
+  the same rows, and its variance inflation factor from
+  `statsmodels.stats.outliers_influence.variance_inflation_factor`.
+- `collinear` names the predictors with a VIF above 5 (`MAX_VIF`): largely a
+  mix of the others, so their separate coefficients are unstable.
+- `reversed` names the predictors whose clear coefficient points the other way
+  from their own correlation of 0.3 or more: the pairwise figure partly
+  stands for the readings that travel with it.
+
+A coefficient is an association with the others held fixed, not a cause.
 
 ## Relationships
 

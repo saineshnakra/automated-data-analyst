@@ -1,0 +1,61 @@
+# Credits
+
+ADA is a thin layer of rules and wording over open-source scientific Python.
+The libraries below do the computing; ADA decides what to compute, checks it
+and says it in plain words. Each calculation line in the brief names the
+method and the library function behind the figure, so a reader can reproduce
+it. If you publish results from ADA, please cite the libraries that produced
+them.
+
+ADA is MIT-licensed and depends only on permissively licensed libraries.
+
+## The analysis package
+
+| Library | Licence | What ADA uses it for |
+|---|---|---|
+| [pandas](https://pandas.pydata.org) | BSD-3-Clause | Reading CSV and Excel files, cleaning, grouping and every aggregation |
+| [NumPy](https://numpy.org) | BSD-3-Clause | The array arithmetic behind the vectorised group tests, correlations and trendlines |
+| [SciPy](https://scipy.org) | BSD-3-Clause | The t, F, chi-squared and normal distributions behind every p-value; `scipy.stats.chi2_contingency` and `fisher_exact` for rate comparisons; ranks |
+| [statsmodels](https://www.statsmodels.org) | BSD-3-Clause | Holm and Benjamini-Hochberg adjustments (`multipletests`); Newcombe's interval for a difference in rates (`confint_proportions_2indep`); ordinary least squares for the joint model, with `variance_inflation_factor` for collinearity |
+| [openpyxl](https://openpyxl.readthedocs.io) | MIT | Reading `.xlsx` files through pandas |
+
+## The app
+
+| Library | Licence | What ADA uses it for |
+|---|---|---|
+| [Streamlit](https://streamlit.io) | Apache-2.0 | The web app in `app.py` and `ada/ui.py` |
+| [Plotly](https://plotly.com/python/) | MIT | The charts in the app |
+
+The optional AI layer uses the [OpenAI Python library](https://github.com/openai/openai-python)
+(Apache-2.0) and [Pydantic](https://docs.pydantic.dev) (MIT).
+
+## How to cite them
+
+- **NumPy:** Harris, C. R., Millman, K. J., van der Walt, S. J. et al. (2020).
+  Array programming with NumPy. *Nature* 585, 357–362.
+  https://doi.org/10.1038/s41586-020-2649-2
+- **SciPy:** Virtanen, P., Gommers, R., Oliphant, T. E. et al. (2020). SciPy
+  1.0: fundamental algorithms for scientific computing in Python. *Nature
+  Methods* 17, 261–272. https://doi.org/10.1038/s41592-019-0686-2
+- **pandas:** McKinney, W. (2010). Data structures for statistical computing
+  in Python. *Proceedings of the 9th Python in Science Conference*, 56–61.
+  https://doi.org/10.25080/Majora-92bf1922-00a; and The pandas development
+  team, pandas-dev/pandas: Pandas, Zenodo.
+  https://doi.org/10.5281/zenodo.3509134
+- **statsmodels:** Seabold, S. and Perktold, J. (2010). statsmodels:
+  Econometric and statistical modeling with Python. *Proceedings of the 9th
+  Python in Science Conference*, 92–96.
+  https://doi.org/10.25080/Majora-92bf1922-011
+
+## Methods
+
+The methods ADA applies, with the papers that introduced them:
+
+| Method | Where | Reference |
+|---|---|---|
+| Welch's t-test and ANOVA | Group comparisons | Welch, B. L. (1947), *Biometrika* 34, 28–35; Welch, B. L. (1951), *Biometrika* 38, 330–336 |
+| Hedges' g | Group comparisons | Hedges, L. V. (1981), *Journal of Educational Statistics* 6, 107–128 |
+| Holm's adjustment | Scans of many comparisons | Holm, S. (1979), *Scandinavian Journal of Statistics* 6, 65–70 |
+| Benjamini-Hochberg false discovery rate | Screens of hundreds of readings | Benjamini, Y. and Hochberg, Y. (1995), *Journal of the Royal Statistical Society B* 57, 289–300 |
+| Newcombe's interval for a difference in proportions | Rate comparisons | Newcombe, R. G. (1998), *Statistics in Medicine* 17, 873–890 |
+| Theil-Sen slope | Trendlines, anomalies, forecasts | Theil, H. (1950), *Indagationes Mathematicae* 12; Sen, P. K. (1968), *JASA* 63, 1379–1389 |

@@ -44,6 +44,7 @@ follows and its edge cases.
 | [Development](development.md) | Setup, tests, linting, CI, conventions |
 | [Privacy](privacy.md) | What stays local and what can leave the machine |
 | [FAQ](faq.md) | Short answers to common questions |
+| [Credits](credits.md) | The libraries ADA builds on, their licences, and how to cite them |
 
 Project files at the repository root: [CONTRIBUTING](../CONTRIBUTING.md),
 [ROADMAP](../ROADMAP.md), [SECURITY](../SECURITY.md),

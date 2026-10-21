@@ -884,8 +884,9 @@ class GroupWordingTests(unittest.TestCase):
         frame = pd.DataFrame({"Gp": ["T0", "D6", "D3"] * 4, "Ca": [13.4, 4.8, 8.0] * 4})
         leader = self.leader(frame, roles_for(frame, "Ca", "Gp"))
 
-        self.assertIn("13.40", leader.statement)
-        self.assertIn("(n = 4 and 4)", leader.statement)
+        self.assertIn("13.40 (T0, n = 4)", leader.statement)
+        self.assertIn("too few to call the difference clear", leader.statement)
+        self.assertIsNone(leader.subject)
 
     def test_well_filled_groups_quote_no_row_counts(self):
         frame = pd.DataFrame({"Site": ["A", "B"] * 40, "pH": [7.1, 6.9] * 40})

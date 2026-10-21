@@ -1,29 +1,40 @@
 import unittest
+from dataclasses import replace
 
 import numpy as np
 import pandas as pd
 from scipy import stats
+from statsmodels.stats.proportion import confint_proportions_2indep
 
 from ada.compare import (
     MAX_SCAN_COLUMNS,
     SCAN_ROWS,
+    benjamini_hochberg,
     cap_flag,
+    centre_word,
     combined_groupings,
     compare_groups,
+    compare_rates,
     comparison_calculation,
     comparison_table,
     construction,
     date_part,
     describe_comparison,
+    describe_rates,
     entity_column,
     find_derivation,
     find_standardised,
+    fit_joint_model,
     grouping_rules,
     holm_adjust,
     is_angle,
+    lead_sentence,
     most_influential,
     nested_within,
+    ordered_levels,
+    outcome_event,
     pairwise_correlations,
+    rate_calculation,
     scan_differences,
     scan_relationships,
     variance_explained,
@@ -804,6 +815,320 @@ class GroupingLayoutTests(unittest.TestCase):
         assert within is not None
         self.assertEqual([level for level, _, _ in within.per_group], ["1", "2"])
         self.assertEqual([rows for _, _, rows in within.per_group], [200, 200])
+
+
+class SmallGroupTests(unittest.TestCase):
+    def test_a_group_of_two_switches_the_test_to_pooled_variances(self):
+        rng = np.random.default_rng(30)
+        frame = pd.DataFrame({
+            "Shoulder": np.r_[np.repeat(["14", "16", "18", "20"], 7), ["22", "22"]],
+            "Charpy": np.r_[rng.normal(6, 1.5, 28), [9.25, 8.70]],
+        })
+
+        comparison = compare_groups(frame, "Charpy", "Shoulder")
+
+        assert comparison is not None
+        self.assertTrue(comparison.pooled)
+        self.assertEqual(comparison.test, "one-way ANOVA")
+        groups = [part["Charpy"] for _, part in frame.groupby("Shoulder")]
+        self.assertAlmostEqual(comparison.p_value, stats.f_oneway(*groups).pvalue, places=10)
+        self.assertIn("variances pooled", comparison_calculation(comparison))
+
+    def test_a_tiny_group_is_never_named_as_the_extreme(self):
+        rng = np.random.default_rng(31)
+        frame = pd.DataFrame({
+            "Cancer": np.r_[["PAAD"] * 27, ["LUAD"] * 30, ["CLL"] * 2],
+            "Z": np.r_[rng.normal(0.7, 0.4, 27), rng.normal(0.0, 0.4, 30), [-1.1, -1.08]],
+        })
+
+        comparison = compare_groups(frame, "Z", "Cancer")
+
+        assert comparison is not None
+        self.assertEqual((comparison.higher.label, comparison.lower.label), ("PAAD", "LUAD"))
+        self.assertEqual(comparison.groups[-1].label, "CLL")
+        self.assertEqual(comparison.verdict, "clear")
+        self.assertIn("Not ranked, with fewer than 5 values: CLL", describe_comparison(comparison))
+
+    def test_a_difference_resting_on_two_values_is_not_clear(self):
+        frame = pd.DataFrame({"Nudibranchs": [1] * 2 + [0] * 108, "Crabs": [9.0, 11.0] + [0.0, 1.0] * 54})
+
+        comparison = compare_groups(frame, "Crabs", "Nudibranchs")
+
+        assert comparison is not None
+        self.assertLess(comparison.p_value, 0.05)
+        self.assertEqual(comparison.verdict, "thin")
+        statement = describe_comparison(comparison)
+        self.assertIn("too few to call the difference clear", statement)
+        self.assertNotIn("is higher in", statement)
+
+    def test_a_check_that_disagrees_makes_the_difference_not_clear(self):
+        comparison = compare_groups(two_groups(3.0), "Score", "Arm")
+        assert comparison is not None
+
+        disputed = replace(comparison, check_p_value=0.31)
+
+        self.assertEqual(disputed.verdict, "disputed")
+        statement = describe_comparison(disputed)
+        self.assertIn("shows no clear difference", statement)
+        self.assertIn("Mann-Whitney gives p = 0.31", statement)
+        self.assertIn("disagree", statement)
+
+
+class EffectSizeTests(unittest.TestCase):
+    def test_a_small_effect_in_unequal_groups_is_not_negligible(self):
+        frame = pd.DataFrame({
+            "MSI": ["stable"] * 900 + ["unstable"] * 100,
+            "Z": np.r_[np.linspace(-1.7, 1.7, 900) + 0.29, np.linspace(-1.7, 1.7, 100)],
+        })
+
+        comparison = compare_groups(frame, "Z", "MSI")
+
+        assert comparison is not None
+        self.assertLess(comparison.explained, 0.01)
+        self.assertGreater(abs(comparison.hedges_g), 0.2)
+        self.assertEqual(comparison.verdict, "clear")
+        self.assertIn("a small difference", describe_comparison(comparison))
+
+    def test_the_large_sample_caveat_needs_a_large_sample(self):
+        values = np.tile(np.linspace(-1.7, 1.7, 500), 2) + np.repeat([0.15, 0.0], 500)
+        frame = pd.DataFrame({"Arm": np.repeat(["A", "B"], 500), "Score": values})
+
+        comparison = compare_groups(frame, "Score", "Arm")
+
+        assert comparison is not None
+        self.assertEqual(comparison.verdict, "negligible")
+        self.assertNotIn("With this many records", describe_comparison(comparison))
+
+
+class ZeroHeavyTests(unittest.TestCase):
+    def test_a_mostly_zero_reading_is_compared_on_means_and_the_share_above_zero(self):
+        rng = np.random.default_rng(33)
+        rain = np.where(rng.random(600) < 0.9, 0.0, rng.exponential(2.0, 600))
+        rain[:300] *= 2
+        frame = pd.DataFrame({"Station": np.repeat(["Oak", "Foster"], 300), "Rain": rain})
+
+        comparison = compare_groups(frame, "Rain", "Station")
+
+        assert comparison is not None
+        self.assertTrue(comparison.zero_heavy)
+        self.assertIsNotNone(comparison.presence_p)
+        self.assertEqual(comparison.centre(comparison.higher), comparison.higher.mean)
+        statement = describe_comparison(comparison)
+        self.assertIn("share of values that are not 0", statement)
+        self.assertNotIn("median 0 vs 0", statement)
+        self.assertIn("Share not 0", comparison_table(comparison).columns)
+
+
+class OrderedTrendTests(unittest.TestCase):
+    def test_a_numeric_setting_gets_a_trend_test(self):
+        rng = np.random.default_rng(34)
+        speed = np.repeat([20, 30, 40, 50, 60], 6)
+        elongation = 20 - 0.1 * speed + rng.normal(0, 1.5, 30)
+        frame = pd.DataFrame({"Welding speed": speed, "Elongation": elongation})
+
+        comparison = compare_groups(frame, "Elongation", "Welding speed")
+
+        assert comparison is not None and comparison.trend is not None
+        rho, p = stats.spearmanr(frame["Welding speed"], frame["Elongation"])
+        self.assertAlmostEqual(comparison.trend.rho, rho, places=10)
+        self.assertAlmostEqual(comparison.trend.p_value, p, places=6)
+        self.assertEqual(comparison.trend.verdict, "clear")
+        self.assertIn("Elongation falls as Welding speed increases", describe_comparison(comparison))
+
+    def test_labels_named_as_groups_get_no_trend(self):
+        frame = pd.DataFrame({"Status": np.repeat([0, 1, 2], 10), "TVOC": np.arange(30.0)})
+
+        comparison = compare_groups(frame, "TVOC", "Status")
+
+        assert comparison is not None
+        self.assertIsNone(comparison.trend)
+        self.assertFalse(ordered_levels(frame["Status"], "Status"))
+
+    def test_a_scan_finds_a_trend_the_unordered_test_misses(self):
+        rng = np.random.default_rng(35)
+        dose = np.repeat([0, 1, 2, 3, 4], 8)
+        frame = pd.DataFrame({
+            "Dose": dose,
+            "Response": 0.5 * dose + rng.normal(0, 1, 40),
+            **{f"Noise{index}": rng.normal(0, 1, 40) for index in range(8)},
+        })
+
+        scan = scan_differences(frame, ["Response", *[f"Noise{index}" for index in range(8)]], ["Dose"])
+
+        assert scan is not None
+        self.assertEqual(scan.trends, 9)
+        self.assertEqual(scan.tested, 18)
+        found = [item for item in scan.named if item.measure == "Response"]
+        self.assertTrue(found)
+        self.assertEqual(found[0].trend.verdict, "clear")
+        self.assertEqual(found[0].verdict, "none")
+        self.assertIn("Response rises as Dose increases", lead_sentence(found[0]))
+
+
+class EntitySummaryTests(unittest.TestCase):
+    def test_a_per_entity_figure_says_what_it_is(self):
+        rng = np.random.default_rng(36)
+        birds = np.repeat(np.arange(16), 6)
+        frame = pd.DataFrame({
+            "Bird": birds.astype(str),
+            "Phenotype": np.where(birds < 8, "bold", "shy"),
+            "Time": rng.normal(100, 10, 96) + np.where(birds < 8, 30, 0),
+        })
+
+        comparison = compare_groups(frame, "Time", "Phenotype", entity="Bird")
+
+        assert comparison is not None
+        self.assertEqual(centre_word(comparison), "mean of per-Bird means")
+        self.assertIn("mean of per-Bird means", describe_comparison(comparison))
+
+    def test_variance_shares_count_each_entity_once(self):
+        frame = pd.DataFrame({
+            "Cell": ["a"] * 10 + ["b"] * 10 + ["c", "d"],
+            "Type": ["x"] * 10 + ["y"] * 10 + ["x", "y"],
+            "Z": np.r_[np.linspace(0, 9, 10), np.linspace(1, 10, 10), [4.0, 6.0]],
+        })
+
+        per_row = dict(variance_explained(frame, "Z", ["Type"]))["Type"]
+        per_cell = dict(variance_explained(frame, "Z", ["Type"], entity="Cell"))["Type"]
+
+        self.assertNotAlmostEqual(per_row, per_cell)
+        means = pd.Series([4.5, 4.0, 5.5, 6.0])
+        types = pd.Series(["x", "x", "y", "y"])
+        expected = ((means.groupby(types).transform("mean") - means.mean()) ** 2).sum() / (
+            (means - means.mean()) ** 2
+        ).sum()
+        self.assertAlmostEqual(per_cell, expected, places=10)
+
+    def test_a_decimal_reading_is_never_the_unit(self):
+        rng = np.random.default_rng(37)
+        frame = pd.DataFrame({"NO": rng.normal(20, 5, 50).round(2), "O3": rng.normal(40, 5, 50)})
+        frame.loc[1, "NO"] = frame.loc[0, "NO"]
+        roles = ColumnRoles(date=None, measure="O3", dimension=None, identifier=None,
+                            numeric=("NO", "O3"), dimensions=())
+
+        self.assertIsNone(entity_column(frame, roles))
+
+
+class ScreenTests(unittest.TestCase):
+    def test_a_wide_screen_tests_every_reading_with_a_false_discovery_rate(self):
+        rng = np.random.default_rng(38)
+        genes = pd.DataFrame(rng.normal(0, 1, (120, 400)), columns=[f"Gene_{index}" for index in range(400)])
+        genes.iloc[:60, :10] += 1.5
+        genes["Diagnosis"] = ["AML"] * 60 + ["ALL"] * 60
+
+        scan = scan_differences(genes, [f"Gene_{index}" for index in range(400)], ["Diagnosis"], limit=20)
+
+        assert scan is not None
+        self.assertEqual(scan.correction, "Benjamini-Hochberg")
+        self.assertEqual(len(scan.readings), 400)
+        self.assertGreaterEqual(scan.clear, 10)
+        self.assertIn("false-discovery-rate adjusted", comparison_calculation(scan.named[0]))
+        self.assertIn("fdr_bh", comparison_calculation(scan.named[0]))
+
+    def test_benjamini_hochberg_matches_the_textbook_values(self):
+        adjusted = benjamini_hochberg(np.array([0.01, 0.04, 0.03, 0.5]))
+        np.testing.assert_allclose(adjusted, [0.04, 0.05333333, 0.05333333, 0.5])
+
+    def test_a_finding_on_few_rows_is_listed_after_a_well_covered_one(self):
+        rng = np.random.default_rng(39)
+        size = 400
+        frame = pd.DataFrame({
+            "Arm": ["A", "B"] * (size // 2),
+            "Common": rng.normal(0, 1, size) + np.tile([0.8, 0.0], size // 2),
+            "Rare": rng.normal(0, 1, size) + np.tile([3.0, 0.0], size // 2),
+        })
+        frame.loc[40:, "Rare"] = np.nan
+
+        scan = scan_differences(frame, ["Common", "Rare"], ["Arm"])
+
+        assert scan is not None
+        self.assertEqual([item.measure for item in scan.named], ["Common", "Rare"])
+        self.assertLess(scan.named[1].coverage, 0.2)
+
+
+class RateTests(unittest.TestCase):
+    def setUp(self):
+        self.frame = pd.DataFrame({
+            "Gender": [0] * 681 + [1] * 740,
+            "Result": [1] * 208 + [0] * 473 + [1] * 412 + [0] * 328,
+        })
+
+    def test_rates_match_scipy_and_statsmodels(self):
+        comparison = compare_rates(self.frame, "Result", "Gender")
+
+        assert comparison is not None
+        self.assertEqual(comparison.higher.label, "Gender 1")
+        self.assertAlmostEqual(comparison.higher.rate, 412 / 740)
+        table = np.array([[412, 328], [208, 473]])
+        chi2, p, _, _ = stats.chi2_contingency(table, correction=False)
+        self.assertAlmostEqual(comparison.p_value, p, places=12)
+        self.assertAlmostEqual(comparison.cramers_v, np.sqrt(chi2 / table.sum()), places=12)
+        low, high = confint_proportions_2indep(412, 740, 208, 681, method="newcomb", compare="diff")
+        self.assertAlmostEqual(comparison.low, low)
+        self.assertAlmostEqual(comparison.high, high)
+        self.assertEqual(comparison.verdict, "clear")
+        statement = describe_rates(comparison)
+        self.assertIn("55.7% in Gender 1 (n = 740) against 30.5% in Gender 0 (n = 681)", statement)
+        self.assertIn("percentage points (95% CI", statement)
+        self.assertIn("scipy.stats.chi2_contingency", rate_calculation(comparison))
+
+    def test_small_counts_use_fishers_exact_test(self):
+        frame = pd.DataFrame({"Arm": ["A"] * 8 + ["B"] * 8, "Event": [1] * 6 + [0] * 2 + [1] * 1 + [0] * 7})
+
+        comparison = compare_rates(frame, "Event", "Arm")
+
+        assert comparison is not None
+        self.assertEqual(comparison.test, "Fisher's exact test")
+        self.assertAlmostEqual(comparison.p_value, stats.fisher_exact([[6, 2], [1, 7]])[1], places=12)
+
+    def test_yes_no_text_counts_yes(self):
+        self.assertEqual(outcome_event(pd.Series(["Yes", "No", "No"])), "Yes")
+        self.assertEqual(outcome_event(pd.Series([True, False])), True)
+        self.assertIsNone(outcome_event(pd.Series([1, 2, 1])))
+        self.assertIsNone(outcome_event(pd.Series(["North", "South"])))
+
+
+class JointModelTests(unittest.TestCase):
+    def test_coefficients_and_fit_match_least_squares(self):
+        rng = np.random.default_rng(40)
+        frame = pd.DataFrame(rng.uniform(0, 10, (300, 3)), columns=["T", "H", "SM"])
+        noise = rng.normal(0, 1, 300)
+        frame["Growth"] = 0.7 + 1.2 * frame["T"] + 0.8 * frame["H"] + 0.5 * frame["SM"] + noise
+
+        model = fit_joint_model(frame, "Growth", ["H", "T", "SM"])
+
+        assert model is not None
+        design = np.column_stack([np.ones(300), frame[["H", "T", "SM"]].to_numpy()])
+        coefficients, *_ = np.linalg.lstsq(design, frame["Growth"].to_numpy(), rcond=None)
+        np.testing.assert_allclose([term.coefficient for term in model.terms], coefficients[1:], rtol=1e-8)
+        residual = frame["Growth"].to_numpy() - design @ coefficients
+        total = ((frame["Growth"] - frame["Growth"].mean()) ** 2).sum()
+        self.assertAlmostEqual(model.r2, 1 - (residual**2).sum() / total, places=10)
+        self.assertLess(model.adjusted_r2, model.r2)
+        self.assertGreater(model.r2, model.best_single.pairwise**2 + 0.1)
+        self.assertEqual(model.collinear, ())
+        self.assertTrue(all(term.low < term.coefficient < term.high for term in model.terms))
+
+    def test_a_confounded_reading_can_reverse_sign(self):
+        rng = np.random.default_rng(41)
+        family = rng.normal(0, 1, 400)
+        cobalt = family + rng.normal(0, 0.3, 400)
+        nickel = family + rng.normal(0, 0.3, 400)
+        strength = 3 * nickel - 0.8 * cobalt + rng.normal(0, 0.5, 400)
+        frame = pd.DataFrame({"co": cobalt, "ni": nickel, "strength": strength})
+
+        model = fit_joint_model(frame, "strength", ["ni", "co"])
+
+        assert model is not None
+        self.assertEqual([term.name for term in model.reversed], ["co"])
+        self.assertEqual(set(model.collinear), {"ni", "co"})
+
+    def test_too_few_rows_per_predictor_fit_nothing(self):
+        rng = np.random.default_rng(42)
+        frame = pd.DataFrame(rng.normal(size=(25, 4)), columns=["y", "a", "b", "c"])
+
+        self.assertIsNone(fit_joint_model(frame, "y", ["a", "b", "c"]))
+        self.assertIsNotNone(fit_joint_model(frame, "y", ["a", "b"]))
 
 
 if __name__ == "__main__":

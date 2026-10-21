@@ -33,8 +33,9 @@ runs from a script or a test with no browser and no API key.
 
 Only `app.py`, `ada/ui.py` and the `ada app` subcommand import Streamlit, and
 `ada app` imports it only when run. The installed package depends on pandas,
-numpy, scipy and openpyxl; Streamlit and Plotly come with the `app` extra, and the
-OpenAI client and Pydantic with the `ai` extra.
+numpy, scipy, statsmodels and openpyxl; Streamlit and Plotly come
+with the `app` extra, and the OpenAI client and Pydantic with the `ai` extra.
+[Credits](credits.md) says what each library does for ADA and how to cite it.
 
 ## Layers
 
