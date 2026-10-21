@@ -746,9 +746,79 @@ class MatrixTests(unittest.TestCase):
         self.assertEqual(roles.measure, "Row mean (30 columns)")
         self.assertAlmostEqual(frame.loc[0, roles.measure], self.frame.iloc[0, 1:].mean())
 
+    def test_counts_spread_across_named_sample_columns_are_a_matrix(self):
+        samples = [
+            "CL3", "CC1", "SV1", "M31Fcsw", "AQC1cm", "AQC4cm", "NP2", "TRRsed1", "TS28", "Even1", "Even2",
+        ]
+        counts = np.random.default_rng(31).poisson(30, (60, len(samples)))
+        counts[:, 4] *= 20
+        frame = pd.DataFrame(counts, columns=samples)
+        frame.insert(0, "OTU", [f"OTU{549000 + index}" for index in range(60)])
+
+        detected = detect_roles(frame)
+        _, roles = add_row_summary(frame, detected)
+
+        self.assertEqual(detected.table_shape, "matrix")
+        self.assertEqual(roles.measure, "Row mean (11 columns)")
+        note = next(note for note in roles.notes if note.startswith("This table looks like a matrix"))
+        self.assertIn("columns of counts", note)
+        self.assertIn("common scale", note)
+
+    def test_a_few_count_columns_beside_readings_are_not_a_matrix(self):
+        frame = pd.DataFrame({
+            "Station": [f"S{index}" for index in range(40)],
+            "Crabs": np.arange(40) % 4,
+            "Seastars": np.arange(40) % 3,
+            "Water Temp": readings(40),
+        })
+
+        self.assertEqual(detect_roles(frame).table_shape, "flat")
+
     def test_a_wide_table_of_named_measures_is_not_a_matrix(self):
         names = "abcdefghijklmnopqrstuvwxy"
         frame = pd.DataFrame({f"marker_{name}": readings(30, seed=seed) for seed, name in enumerate(names)})
+
+        self.assertEqual(detect_roles(frame).table_shape, "flat")
+
+
+class StackedTableTests(unittest.TestCase):
+    def setUp(self):
+        food = pd.DataFrame({
+            "source_table": "food",
+            "food_item": [f"item {index}" for index in range(40)],
+            "food_category": ["Fish", "Salt", "Water", "Honey"] * 10,
+            "particles_per_g": readings(40, centre=5),
+            "reference": [f"study {index % 7}" for index in range(40)],
+        })
+        blood = pd.DataFrame({
+            "source_table": "blood",
+            "biomarker": ["CRP", "aPTT", "Fibrinogen"] * 3,
+            "overall_mean": readings(9, centre=100),
+            "p_value_group": np.linspace(0.01, 0.5, 9),
+            "unit": ["mg/dl", "s", "mg/dl"] * 3,
+        })
+        self.frame = pd.concat([food, blood], ignore_index=True)
+
+    def test_the_largest_of_stacked_tables_is_the_focus(self):
+        roles = detect_roles(self.frame)
+
+        self.assertEqual(roles.table_shape, "stacked")
+        self.assertEqual(roles.dimension, "source_table")
+        self.assertEqual(roles.focus, "food")
+        self.assertEqual(roles.measure, "particles_per_g")
+        self.assertEqual(roles.dimensions[0], "food_category")
+        note = next(note for note in roles.notes if note.startswith("This file stacks 2 tables"))
+        self.assertIn("blood (9)", note)
+
+    def test_a_column_filled_only_on_some_rows_is_no_stack(self):
+        frame = pd.DataFrame({
+            "Status": ["Completed"] * 30 + ["Returned"] * 10,
+            "Revenue": readings(40, centre=100),
+            "Units": [1, 2, 3, 4] * 10,
+            "Region": ["N", "S"] * 20,
+            "Refund Amount": [np.nan] * 30 + list(readings(10, centre=40)),
+            "Return Reason": [None] * 30 + ["Damaged", "Late"] * 5,
+        })
 
         self.assertEqual(detect_roles(frame).table_shape, "flat")
 

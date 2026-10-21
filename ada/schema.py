@@ -324,6 +324,16 @@ LOPSIDED_GROUPING = 0.9
 NEARLY_CONSTANT = 0.8
 MIN_MATRIX_COLUMNS = 20
 MATRIX_SHARE = 0.75
+# A stacked table owns a column recorded on at least OWNED_SHARE of its rows
+# that another table records on at most ABSENT_SHARE of its rows.
+MAX_STACKED_TABLES = 20
+OWNED_SHARE = 0.5
+ABSENT_SHARE = 0.02
+STACKED_COLUMN_SHARE = 1 / 3
+# Columns of counts make a matrix without numbered names from this many on,
+# when their typical sizes sit within this factor of one another.
+MIN_COUNT_MATRIX_COLUMNS = 10
+MATRIX_SCALE_SPREAD = 1000
 MIN_RUNNING_TOTAL_ROWS = 20
 RUNNING_TOTAL_RISING = 0.95
 # A running total that resets falls to this share of its last value or less.
@@ -926,6 +936,32 @@ def _matrix_columns(numeric: list[str]) -> list[str]:
     return numbered
 
 
+def _count_matrix_columns(dataframe: pd.DataFrame, numeric: list[str]) -> list[str]:
+    """The count columns of a table that is mostly a matrix of counts, whatever their names, or [].
+
+    Twenty-six samples of read counts named AQC1cm, CC1 … Even3, beside an id
+    on each row, are one kind of reading spread across columns too. They must
+    be MIN_COUNT_MATRIX_COLUMNS or more columns of whole numbers of at least
+    zero, most of the numeric columns, with typical sizes within
+    MATRIX_SCALE_SPREAD of one another.
+    """
+    if len(numeric) < MIN_COUNT_MATRIX_COLUMNS:
+        return []
+    counts = [
+        column
+        for column in numeric
+        if not is_bool_dtype(dataframe[column])
+        and _counts_of_things(_sample(dataframe[column]))
+        and _sample(dataframe[column]).nunique() > 2
+    ]
+    if len(counts) < MIN_COUNT_MATRIX_COLUMNS or len(counts) < MATRIX_SHARE * len(numeric):
+        return []
+    means = dataframe[counts].mean().to_numpy(dtype=float)
+    if not (means > 0).all() or means.max() > MATRIX_SCALE_SPREAD * means.min():
+        return []
+    return counts
+
+
 def row_summary_name(columns: int) -> str:
     """Name of the per-row mean a matrix table is measured by."""
     return f"Row mean ({columns:,} columns)"
@@ -933,24 +969,33 @@ def row_summary_name(columns: int) -> str:
 
 def _prefix_groups(columns: list[str]) -> list[tuple[str, int]]:
     """Name prefixes that split the matrix columns into a few groups, such as A* and B*."""
-    prefixes = Counter(
-        _NUMBERED_NAME.match(str(column).strip()).group(1).upper() for column in columns
-    )
+    matches = [_NUMBERED_NAME.match(str(column).strip()) for column in columns]
+    if not all(matches):
+        return []
+    prefixes = Counter(match.group(1).upper() for match in matches)
     groups = [(prefix, count) for prefix, count in prefixes.most_common() if prefix]
     if 2 <= len(groups) <= 6 and all(count >= 3 for _, count in groups):
         return groups
     return []
 
 
-def _matrix_note(columns: list[str], label: str | None) -> str:
+def _matrix_note(dataframe: pd.DataFrame, columns: list[str], label: str | None, counts: bool) -> str:
     rows = label or "row"
+    kind = "columns of counts" if counts else "numeric columns"
     note = (
-        f"This table looks like a matrix: {len(columns):,} numeric columns of one kind, named "
+        f"This table looks like a matrix: {len(columns):,} {kind} of one kind, named "
         f"{columns[0]} … {columns[-1]}, with one row per {rows}. No single column is the "
         f"measure, so ADA follows each row's mean across them ({row_summary_name(len(columns))}). "
         f"To compare the columns themselves, reshape the table to long form first: one row per "
         f"{rows} and column, with the value in a single column."
     )
+    if counts:
+        totals = dataframe[columns].sum().to_numpy(dtype=float)
+        if totals.min() > 0 and totals.max() >= 2 * totals.min():
+            note += (
+                f" The columns' totals differ up to {totals.max() / totals.min():,.0f}-fold, so put "
+                "them on a common scale, such as shares of each column's total, before comparing them."
+            )
     groups = _prefix_groups(columns)
     if groups:
         listed = ", ".join(f"{prefix}* ({count})" for prefix, count in groups)
@@ -1428,8 +1473,79 @@ def _factors(
     return factors, [column for column in factors if kinds[column] == "flag"]
 
 
+def _stacked_tables(dataframe: pd.DataFrame) -> tuple[str, str] | None:
+    """The column naming which stacked table each row belongs to, and the largest table, or None.
+
+    A file that stacks a table of foods on a table of blood markers holds each
+    table's columns only on that table's rows. A text column with 2 to
+    MAX_STACKED_TABLES values qualifies when its largest table and another each
+    own at least two columns the other lacks, together at least
+    STACKED_COLUMN_SHARE of the file's columns. A table whose rows merely leave
+    a few columns blank, such as a refund amount filled only on returned
+    orders, does not.
+    """
+    sample = _sample(dataframe)
+    present = sample.notna()
+    others = len(dataframe.columns) - 1
+    if others < 4 or int((~present).any().sum()) < 4:
+        return None
+    for column in dataframe.columns:
+        series = sample[column]
+        if is_numeric_dtype(series) or is_datetime64_any_dtype(series) or series.isna().mean() > 0.05:
+            continue
+        counts = series.value_counts()
+        if not 2 <= len(counts) <= MAX_STACKED_TABLES:
+            continue
+        shares = present.drop(columns=column).groupby(series).mean()
+        largest = shares.loc[counts.index[0]]
+        for table in counts.index[1:]:
+            other = shares.loc[table]
+            own = int(((largest >= OWNED_SHARE) & (other <= ABSENT_SHARE)).sum())
+            theirs = int(((other >= OWNED_SHARE) & (largest <= ABSENT_SHARE)).sum())
+            if own >= 2 and theirs >= 2 and own + theirs >= STACKED_COLUMN_SHARE * others:
+                return column, str(counts.index[0])
+    return None
+
+
+def _stacked_note(dataframe: pd.DataFrame, column: str, focus: str) -> str:
+    counts = dataframe[column].astype(str).value_counts()
+    others = [table for table in counts.index if table != focus]
+    listed = ", ".join(f"{table} ({counts[table]:,})" for table in others[:NAMED_IN_NOTES])
+    more = f", and {len(others) - NAMED_IN_NOTES:,} more" if len(others) > NAMED_IN_NOTES else ""
+    return (
+        f"This file stacks {len(counts):,} tables, named in {column}, each with its own columns, so "
+        f"their rows are never combined. The brief covers {focus}, the largest ({counts[focus]:,} "
+        f"rows); the others are {listed}{more}. Filter the table to one of them to analyze it instead."
+    )
+
+
 def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
-    """Infer likely roles from names, values, and cardinality."""
+    """Infer likely roles from names, values, and cardinality.
+
+    A file that stacks several tables (see ``_stacked_tables``) is read as its
+    largest table, which becomes the ``focus`` of the column naming the tables,
+    much as a long table's commonest parameter is.
+    """
+    stacked = _stacked_tables(dataframe)
+    if stacked is None:
+        return _detect_roles(dataframe)
+    column, focus = stacked
+    part = dataframe[dataframe[column].astype(str) == focus]
+    roles = _detect_roles(part[[name for name in part.columns if part[name].notna().any()]])
+    # The focus is applied later (``pipeline.apply_focus``) and regroups by the
+    # first other dimension, so the table's own grouping goes first.
+    follow = [roles.dimension] if roles.dimension else []
+    return replace(
+        roles,
+        dimension=column,
+        dimensions=(*follow, *(name for name in roles.dimensions if name not in follow), column),
+        table_shape="stacked",
+        focus=focus,
+        notes=(_stacked_note(dataframe, column, focus), *roles.notes),
+    )
+
+
+def _detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
     numeric = dataframe.select_dtypes(include=np.number).columns.tolist()
     # A date that never changes, such as a compilation stamp, places no row in time.
     date_columns = [
@@ -1453,11 +1569,17 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
     )
 
     matrix = _matrix_columns(numeric)
-    in_matrix = set(matrix)
+    numbered = set(matrix)
     identifiers = _identifier_columns(
-        dataframe, [column for column in dataframe.columns if column not in in_matrix]
+        dataframe, [column for column in dataframe.columns if column not in numbered]
     )
     identifier = identifiers[0] if identifiers else None
+    # Counts spread across columns are a matrix even without numbered names,
+    # when an id or a label names each row.
+    counted_matrix = not matrix and identifier is not None
+    if counted_matrix:
+        matrix = _count_matrix_columns(dataframe, [column for column in numeric if column not in identifiers])
+    in_matrix = set(matrix)
     notes.extend(
         _identifier_note(column, dataframe[column])
         for column in identifiers
@@ -1573,7 +1695,7 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
     elif matrix:
         table_shape = "matrix"
         measure, measure_alternatives = None, ()
-        notes.append(_matrix_note(matrix, identifier))
+        notes.append(_matrix_note(dataframe, matrix, identifier, counted_matrix))
 
     return ColumnRoles(
         date=date,
@@ -1600,7 +1722,7 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
 
 
 def add_row_summary(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[pd.DataFrame, ColumnRoles]:
-    """Give a matrix table each row's mean across its numbered columns, as its measure.
+    """Give a matrix table each row's mean across its matrix columns, as its measure.
 
     A matrix has no single column to headline, so the brief follows the row
     mean, named for what it is. Other tables are returned unchanged.
@@ -1608,6 +1730,8 @@ def add_row_summary(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[pd.Dat
     if roles.table_shape != "matrix" or roles.measure:
         return dataframe, roles
     block = _matrix_columns(list(roles.numeric))
+    if not block and roles.identifier:
+        block = _count_matrix_columns(dataframe, list(roles.numeric))
     if not block:
         return dataframe, roles
     name = row_summary_name(len(block))
