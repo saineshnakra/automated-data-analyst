@@ -1298,6 +1298,7 @@ def numeric_readings(dataframe: pd.DataFrame, roles: ColumnRoles) -> list[str]:
         for column in roles.numeric
         if column in dataframe.columns
         and column not in groupings
+        and column not in roles.non_readings
         and not looks_like_identifier(column, dataframe[column])
         and not is_design_name(column)
         and not is_entity_name(column)

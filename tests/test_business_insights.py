@@ -1280,6 +1280,18 @@ class RelationshipScanCardTests(unittest.TestCase):
 
         self.assertNotIn("Sex", numeric_readings(frame, roles))
 
+    def test_directions_coordinates_and_an_age_in_months(self):
+        frame = pd.DataFrame({
+            "Age_months": [12 + index % 55 for index in range(110)],
+            "Wind Direction": [10, 350, 180, 90, 270] * 22,
+            "easting": [300_000 + index * 37 % 500 for index in range(110)],
+            "Shannon_Index": np.linspace(2.5, 3.2, 110),
+        })
+
+        readings = numeric_readings(frame, detect_roles(frame))
+
+        self.assertEqual(sorted(readings), ["Age_months", "Shannon_Index"])
+
 
 def lab_roles(frame: pd.DataFrame, measure: str, dimension: str | None = None, date: str | None = None):
     numeric = tuple(column for column in frame.columns if pd.api.types.is_numeric_dtype(frame[column]))

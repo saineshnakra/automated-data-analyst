@@ -179,9 +179,14 @@ OUTCOME_LABEL_WORDS = frozenset({
 })
 # Coordinates are continuous numbers, but never a quantity to total or trend.
 COORDINATE_TOKENS = frozenset({
-    "latitude", "longitude", "lat", "lon", "lng", "easting", "northing", "gps",
-    "coordinate", "coordinates",
+    "latitude", "longitude", "lat", "lon", "lng", "easting", "northing", "gps", "utm",
+    "coordinate", "coordinates", "coord", "coords",
 })
+# Last words of a column of compass directions or angles round a circle, where
+# 359° sits next to 0°: "Wind Direction", "Heading", "slope aspect", "WD".
+DIRECTION_WORDS = frozenset({"direction", "dir", "bearing", "heading", "azimuth", "aspect", "wd"})
+# Words of a column that flags the quality of other readings: "QN_3", "qc_code".
+QUALITY_FLAG_WORDS = frozenset({"qn", "qc", "qa", "qf"})
 # Head words of what goes into a mix or a dose rather than what comes out: in a
 # table of cement, water and slag in kg/m³ and a strength in MPa, the strength
 # is the result.
@@ -611,6 +616,60 @@ def _not_a_quantity(name: str, series: pd.Series, factor: bool) -> bool:
     return factor or _places_rows(name, series) or series.nunique(dropna=True) <= 1
 
 
+def is_angle_column(name: str, series: pd.Series) -> bool:
+    """Whether the column holds compass directions or angles round a circle, such as "Wind Direction".
+
+    The last word must name a direction (see DIRECTION_WORDS) and the values
+    fall within 0 to 360. Since 359° sits next to 0°, an average or a linear
+    correlation of such a column means nothing.
+    """
+    words = _head_words(name)
+    if not words or words[-1] not in DIRECTION_WORDS or not is_numeric_dtype(series) or is_bool_dtype(series):
+        return False
+    values = series.dropna()
+    return not values.empty and float(values.min()) >= 0 and float(values.max()) <= 360
+
+
+def is_quality_flag(name: str, columns) -> bool:
+    """Whether the column flags the quality of other readings rather than recording one.
+
+    "QN_3", "qc_code" and "quality_flag" do. A name ending in "flag" counts
+    only after the name of another of ``columns`` ("TMK_flag" beside "TMK"),
+    since "Fraud_Flag" alone is an outcome to compare.
+    """
+    words = [word for word in _head_words(name) if not word.isdigit()]
+    if not words:
+        return False
+    if set(words) & QUALITY_FLAG_WORDS:
+        return True
+    if len(words) > 1 and words[0] in {"quality", "qual"} and words[-1] in {"flag", "flags", "code", "codes"}:
+        return True
+    if len(words) > 1 and words[-1] in {"flag", "flags"}:
+        stem = words[:-1]
+        return any(_head_words(other) == stem for other in columns if other != name)
+    return False
+
+
+def _non_reading_note(quality: list[str], places: list[str], angles: list[str], sequences: list[str]) -> str:
+    def told(columns: list[str], verb: str, rest: str) -> str:
+        """The columns, then "which" and the verb agreeing with how many there are."""
+        return f"{_named(columns)}, which {verb + 's' if len(columns) == 1 else verb} {rest}"
+
+    parts = []
+    if sequences:
+        parts.append(told(
+            sequences, "hold", "a different whole number on every row in order, as a key or a date "
+            "written as a number does",
+        ))
+    if quality:
+        parts.append(told(quality, "flag", "the quality of other readings"))
+    if places:
+        parts.append(told(places, "place", "each row on a map"))
+    if angles:
+        parts.append(told(angles, "hold", "compass directions, on which 359° sits next to 0°"))
+    return "Not measured, compared or correlated as readings: " + "; ".join(parts) + "."
+
+
 def _plural(word: str) -> bool:
     return len(word) > 3 and word.endswith("s") and not word.endswith(("ss", "us", "is"))
 
@@ -624,9 +683,12 @@ def _named_as_quantity(name: str) -> bool:
 
 
 def _named_as_label(name: str) -> bool:
-    """Whether the name marks group labels: a status, a condition, a site or a plate row."""
+    """Whether the name marks group labels: a status, a condition, a site, a plate row or "id_reef"."""
     words = _head_words(name)
-    return bool(words) and (words[-1] in LABEL_NAME_WORDS or is_entity_name(name) or is_design_name(name))
+    keyed = len(words) > 1 and words[0] in {"id", "code"}
+    return bool(words) and (
+        words[-1] in LABEL_NAME_WORDS or is_entity_name(name) or is_design_name(name) or keyed
+    )
 
 
 def _factor_kind(name: str, series: pd.Series, scale_item: bool = False) -> str | None:
@@ -1588,11 +1650,32 @@ def _detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
     keys = set(identifiers)
     numeric = [column for column in numeric if column not in keys]
     in_numeric = set(numeric)
+    # Columns that flag the quality of other readings or place a row on a map
+    # or a compass are never the measure, a grouping or a reading to compare.
+    quality = [
+        column for column in dataframe.columns
+        if column not in keys and column not in in_matrix and is_quality_flag(column, dataframe.columns)
+    ]
+    places = [
+        column for column in numeric
+        if column not in in_matrix and set(_head_words(column)) & COORDINATE_TOKENS
+    ]
+    angles = [
+        column for column in numeric
+        if column not in in_matrix and column not in places and is_angle_column(column, dataframe[column])
+    ]
+    sequences = [
+        column for column in numeric
+        if column not in in_matrix and column not in places and _numbers_rows(column, dataframe[column])
+    ]
+    set_aside = {*quality, *places, *angles, *sequences}
+    if set_aside:
+        notes.append(_non_reading_note(quality, places, angles, sequences))
 
     text_columns: list[str] = []
     text_dimensions: list[str] = []
     for column in dataframe.columns:
-        if column == date or column in in_numeric or column in keys:
+        if column == date or column in in_numeric or column in keys or column in set_aside:
             continue
         series = dataframe[column]
         if _named_like_a_date(column) or is_datetime64_any_dtype(series):
@@ -1603,7 +1686,9 @@ def _detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
             text_dimensions.append(column)
 
     factors, flags = _factors(
-        dataframe, [column for column in numeric if column not in in_matrix], text_dimensions
+        dataframe,
+        [column for column in numeric if column not in in_matrix and column not in set_aside],
+        text_dimensions,
     )
     if date:
         # Beside a date, a month or year column only repeats the timeline.
@@ -1643,7 +1728,10 @@ def _detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
     # A first pick, by name alone, to follow running totals through each group.
     dimension = ranked_dimensions[0] if ranked_dimensions else None
 
-    candidates = [column for column in numeric if column not in in_factors and column not in in_matrix]
+    candidates = [
+        column for column in numeric
+        if column not in in_factors and column not in in_matrix and column not in set_aside
+    ]
     order = _reading_order(dataframe, date, dimension)
     groups = pd.factorize(dataframe[dimension])[0][order] if dimension else np.zeros(len(order))
     counters = [
@@ -1706,8 +1794,8 @@ def _detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
         numeric=tuple(
             sorted(
                 numeric,
-                key=lambda column: column not in in_matrix and _not_a_quantity(
-                    column, dataframe[column], column in in_factors
+                key=lambda column: column not in in_matrix and (
+                    column in set_aside or _not_a_quantity(column, dataframe[column], column in in_factors)
                 ),
             )
         ),
@@ -1718,6 +1806,10 @@ def _detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
         table_shape=table_shape,
         focus=focus,
         notes=tuple(notes),
+        non_readings=tuple(
+            column for column in numeric
+            if column in set_aside or (column not in in_matrix and is_time_part(column, dataframe[column]))
+        ),
     )
 
 

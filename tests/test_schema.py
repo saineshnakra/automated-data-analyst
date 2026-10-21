@@ -10,10 +10,12 @@ from ada.schema import (
     MEASURE_KEYWORDS,
     add_row_summary,
     detect_roles,
+    is_angle_column,
     is_design_name,
     is_entity_name,
     is_identifier_name,
     is_month_name,
+    is_quality_flag,
     is_time_part,
     is_year_name,
     looks_like_identifier,
@@ -779,6 +781,64 @@ class MatrixTests(unittest.TestCase):
         frame = pd.DataFrame({f"marker_{name}": readings(30, seed=seed) for seed, name in enumerate(names)})
 
         self.assertEqual(detect_roles(frame).table_shape, "flat")
+
+
+class NonReadingTests(unittest.TestCase):
+    def test_compass_directions_are_set_aside(self):
+        frame = pd.DataFrame({
+            "Wind Direction": [10, 350, 180, 90, 270] * 8,
+            "Aspect Ratio": readings(40, centre=2),
+            "Air Temperature": readings(40, seed=4, centre=15),
+        })
+
+        roles = detect_roles(frame)
+
+        self.assertTrue(is_angle_column("Wind Direction", frame["Wind Direction"]))
+        self.assertFalse(is_angle_column("Aspect Ratio", frame["Aspect Ratio"]))
+        self.assertEqual(roles.non_readings, ("Wind Direction",))
+        self.assertNotEqual(roles.measure, "Wind Direction")
+        self.assertEqual(roles.numeric[-1], "Wind Direction")
+
+    def test_quality_flags_are_never_groupings_or_readings(self):
+        frame = pd.DataFrame({
+            "TMK": readings(60, centre=10),
+            "TMK_flag": [1, 1, 3] * 20,
+            "QN_4": [1, 10, 9] * 20,
+            "RSKF": [0, 6, 7, 8] * 15,
+        })
+
+        roles = detect_roles(frame)
+
+        self.assertEqual(set(roles.non_readings), {"TMK_flag", "QN_4"})
+        self.assertEqual(roles.factors, ("RSKF",))
+        self.assertEqual(roles.dimension, "RSKF")
+        self.assertTrue(any("flag the quality of other readings" in note for note in roles.notes))
+
+    def test_a_flag_that_names_an_outcome_is_still_a_grouping(self):
+        frame = pd.DataFrame({"Fraud_Flag": [0, 1, 0, 0] * 10, "Amount": readings(40, centre=80)})
+
+        self.assertFalse(is_quality_flag("Fraud_Flag", frame.columns))
+        self.assertEqual(detect_roles(frame).flags, ("Fraud_Flag",))
+
+    def test_map_coordinates_and_numbered_rows_are_set_aside(self):
+        frame = pd.DataFrame({
+            "result": readings(40, centre=1),
+            "MESS_DATUM": pd.date_range("2020-01-01", periods=40).strftime("%Y%m%d").astype(int),
+            "sample.samplingPoint.easting": np.arange(40) * 113 % 997 + 300_000,
+            "x_coord": readings(40, seed=5, centre=500),
+        })
+
+        roles = detect_roles(frame)
+
+        self.assertEqual(
+            set(roles.non_readings), {"MESS_DATUM", "sample.samplingPoint.easting", "x_coord"}
+        )
+        self.assertEqual(roles.measure, "result")
+
+    def test_an_id_before_the_name_marks_a_code(self):
+        frame = pd.DataFrame({"id_reef": [index % 15 + 1 for index in range(150)], "quantity": readings(150)})
+
+        self.assertEqual(detect_roles(frame).factors, ("id_reef",))
 
 
 class StackedTableTests(unittest.TestCase):
