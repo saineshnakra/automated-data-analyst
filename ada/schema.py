@@ -41,15 +41,22 @@ class ColumnRoles:
     #: Columns that came close to being the measure, best first. Set only when
     #: the pick was a close call, so the reader can be told it was a judgement.
     measure_alternatives: tuple[str, ...] = ()
-    #: "flat"; "long" when one column names what each row's value measures; or
+    #: "flat"; "long" when one column names what each row's value measures;
     #: "matrix" when the table is mostly numeric columns of one kind, such as
-    #: samples or spectral channels.
+    #: samples or spectral channels; or "stacked" when one column names which
+    #: of several tables, each with its own columns, a row belongs to.
     table_shape: str = "flat"
     #: The value of ``dimension`` the brief covers. A long table's rows measure
-    #: different things, often in different units, so they are never combined.
+    #: different things, often in different units, so they are never combined;
+    #: a stacked file's tables hold different columns.
     focus: str | None = None
     #: What ADA concluded about the columns, in plain sentences.
     notes: tuple[str, ...] = ()
+    #: Numeric columns that place or describe a row rather than measure it:
+    #: coordinates, compass directions, quality flags and parts of a date. They
+    #: stay in ``numeric`` so questions can name them, but are never the
+    #: measure, a grouping or a reading to compare or correlate.
+    non_readings: tuple[str, ...] = ()
 
 
 MEASURE_KEYWORDS = {
@@ -213,18 +220,45 @@ DESIGN_LEVEL_WORDS = frozenset({
     "dose", "dosage", "concentration", "conc", "age", "day", "time", "timepoint", "hour",
     "week", "frequency", "freq",
 })
+# Words that put a column of whole numbers on a rating scale.
+RATING_WORDS = frozenset({
+    "rating", "ratings", "likert", "scale", "satisfaction", "agreement", "likelihood",
+})
+# A rating scale steps in whole numbers from 0 or 1 up to at most this, using
+# at least MIN_SCALE_POINTS of its points: 0 to 10, 1 to 7, 1 to 5.
+MAX_SCALE_TOP = 10
+MIN_SCALE_POINTS = 5
+# Columns sharing one rating scale are the items of a questionnaire.
+MIN_SCALE_ITEMS = 3
+MAX_SWEEP_LEVELS = 100
+# A setting swept in equal steps is used about equally often at every level.
+SWEEP_BALANCE = 0.5
 
 # Head words of columns holding calendar years and months. A table with no date
 # column but a year (and perhaps a month) is still a timeline; cleaning builds
 # its dates from these.
 YEAR_NAME_WORDS = frozenset({"year", "years", "yr"})
-MONTH_NAME_WORDS = frozenset({"month", "months", "mon"})
+MONTH_NAME_WORDS = frozenset({"month", "months", "mon", "mo"})
 # Parts of a date held in their own column. Beside a date column they repeat it,
 # so they are not offered as the grouping.
 TIME_PART_WORDS = (
     frozenset(TIME_PART_TOKENS) | YEAR_NAME_WORDS | MONTH_NAME_WORDS
-    | frozenset({"mo", "da", "dy", "wk", "qtr", "doy", "dow", "weekday"})
+    | frozenset({"da", "dy", "wk", "qtr", "doy", "dow", "weekday"})
 )
+# The whole numbers each part of a date takes, by the words that name it.
+CALENDAR_RANGES = (
+    (MONTH_NAME_WORDS, (1, 12)),
+    (frozenset({"day", "da", "dy"}), (1, 31)),
+    (frozenset({"hour"}), (0, 24)),
+    (frozenset({"minute"}), (0, 59)),
+    (frozenset({"week", "wk"}), (0, 53)),
+    (frozenset({"quarter", "qtr"}), (1, 4)),
+    (frozenset({"doy"}), (1, 366)),
+    (frozenset({"dow", "weekday"}), (0, 7)),
+)
+MONTH_ABBREVIATIONS = frozenset({
+    "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+})
 
 # Names of a column numbering the rows. Unique whole numbers under such a name
 # are a key whatever their order.
@@ -253,8 +287,10 @@ _UNIT_MARKS = re.compile(r"[/%°µ]|^(?:[mµunk]?g|[mµ]?l|[mck]?m|s|min|h|ppm|p
 _NUMBERED_NAME = re.compile(r"^(\D*?)[\s_.-]*(\d+(?:\.\d+)?)$")
 
 MIN_ROWS_FOR_KEY = 20
-# Most levels a numeric code may have: the same cap as a text grouping.
+# Up to this many levels, any column whose values repeat can group rows; past
+# it, most groups must hold MIN_ROWS_PER_GROUP rows (see ``_groups_rows``).
 MAX_LABEL_LEVELS = 100
+MIN_ROWS_PER_GROUP = 3
 MAX_GROUPING_SHARE = 0.65
 MAX_CODE_LEVELS = 12
 MAX_DESIGN_LEVELS = 15
@@ -311,9 +347,12 @@ def is_identifier_name(name: str) -> bool:
     "No #"): a bare "NO" is as likely nitric oxide or a yes/no answer.
     """
     words = _head_words(name)
-    if words == ["no"] and not re.search(r"[.#]", str(name)):
-        return False
-    return bool(words) and words[-1] in IDENTIFIER_NAME_WORDS
+    return bool(words) and words[-1] in IDENTIFIER_NAME_WORDS and not _bare_no(name, words)
+
+
+def _bare_no(name: str, words: list[str]) -> bool:
+    """Whether the name is "No" alone with no mark, as likely nitric oxide or a yes/no answer as a number."""
+    return words == ["no"] and not re.search(r"[.#]", str(name))
 
 
 def is_design_name(name: str) -> bool:
@@ -329,21 +368,74 @@ def is_design_name(name: str) -> bool:
 
 
 def is_entity_name(name: str) -> bool:
-    """Whether the name labels the unit a row belongs to, such as "Subject", "Station" or "Patient ID"."""
+    """Whether the name labels the unit a row belongs to, such as "Subject", "Station" or "Patient ID".
+
+    A bare "NO" is not one (see ``is_identifier_name``): it is as likely a
+    reading of nitric oxide.
+    """
     words = _head_words(name)
-    return bool(words) and words[-1] in ENTITY_NAME_WORDS
+    return bool(words) and words[-1] in ENTITY_NAME_WORDS and not _bare_no(name, words)
 
 
-def is_year_name(name: str) -> bool:
-    """Whether the name marks a column of calendar years, such as "Year" or "survey_yr"."""
+def is_year_name(name: str, values: pd.Series | None = None) -> bool:
+    """Whether the name marks a column of calendar years, such as "Year" or "survey_yr".
+
+    With ``values``, they must look like years too (see ``is_time_part``), so
+    "Age_years" holding 1 to 80 is an age.
+    """
     words = _head_words(name)
-    return bool(words) and words[-1] in YEAR_NAME_WORDS
+    return bool(words) and words[-1] in YEAR_NAME_WORDS and (values is None or is_time_part(name, values))
 
 
-def is_month_name(name: str) -> bool:
-    """Whether the name marks a column of calendar months, such as "Month"."""
+def is_month_name(name: str, values: pd.Series | None = None) -> bool:
+    """Whether the name marks a column of calendar months, such as "Month".
+
+    With ``values``, they must be months too, 1 to 12 or month names, so
+    "Age_months" holding 12 to 66 is an age.
+    """
     words = _head_words(name)
-    return bool(words) and words[-1] in MONTH_NAME_WORDS
+    return bool(words) and words[-1] in MONTH_NAME_WORDS and (values is None or is_time_part(name, values))
+
+
+def _calendar_range(words: list[str]) -> tuple[int, int] | None:
+    """The whole numbers a part of a date named by ``words`` can take: 1 to 12 for a month."""
+    head = words[-1]
+    if head in YEAR_NAME_WORDS:
+        # A two-digit year ("YR" 40 to 45) only under a bare singular name:
+        # "Years" alone is as likely years of service.
+        return (0, 2999) if words in (["yr"], ["year"]) else (1000, 2999)
+    for part_words, bounds in CALENDAR_RANGES:
+        if head in part_words:
+            return bounds
+    return None
+
+
+def is_time_part(name: str, values: pd.Series | None = None) -> bool:
+    """Whether the column holds a part of a date, such as a month, a day of the month or a year.
+
+    The last word must name the part ("Month", "MO", "DA", "survey_yr"). With
+    ``values``, numbers must fall within that part's range: months 1 to 12,
+    days 1 to 31, hours 0 to 23, years 1000 to 2999. "Age_months" holding
+    12 to 66 or "Duration Hours" up to 200 are amounts of time, not parts of a
+    date. Text is judged by the name, except that a month column must hold month
+    names.
+    """
+    words = _head_words(name)
+    if not words or words[-1] not in TIME_PART_WORDS:
+        return False
+    if values is None:
+        return True
+    present = _sample(values).dropna()
+    if present.empty:
+        return False
+    if not is_numeric_dtype(present) or is_bool_dtype(present):
+        if words[-1] not in MONTH_NAME_WORDS:
+            return True
+        return bool(present.astype(str).str.strip().str[:3].str.lower().isin(MONTH_ABBREVIATIONS).all())
+    bounds = _calendar_range(words)
+    if bounds is None or not bool((present % 1 == 0).all()):
+        return False
+    return bool(bounds[0] <= present.min() and present.max() <= bounds[1])
 
 
 def _named_like_a_date(name: str) -> bool:
@@ -405,7 +497,7 @@ def _is_row_key(name: str, series: pd.Series, *, first: bool) -> bool:
         return False
     words = set(_head_words(name))
     named = bool(words & ROW_KEY_WORDS)
-    if not named and (not first or words & QUANTITY_WORDS or words & TIME_PART_WORDS):
+    if not named and (not first or words & QUANTITY_WORDS or is_time_part(name, series)):
         return False
     if len(series) < MIN_ROWS_FOR_KEY or series.isna().any():
         return False
@@ -463,7 +555,7 @@ def _places_rows(name: str, series: pd.Series) -> bool:
         return False
     if set(words) & COORDINATE_TOKENS:
         return True
-    named = words[-1] in TIME_PART_WORDS or is_design_name(name) or is_entity_name(name)
+    named = is_time_part(name, series) or is_design_name(name) or is_entity_name(name)
     return named and not bool((series.dropna() % 1 != 0).any())
 
 
@@ -490,36 +582,187 @@ def _named_as_label(name: str) -> bool:
     return bool(words) and (words[-1] in LABEL_NAME_WORDS or is_entity_name(name) or is_design_name(name))
 
 
-def _factor_kind(name: str, series: pd.Series) -> str | None:
+def _factor_kind(name: str, series: pd.Series, scale_item: bool = False) -> str | None:
     """Say whether a numeric column holds category codes, and on what evidence.
 
     "flag" is a 0/1 column. "label" is a column of whole numbers named like a
-    label (Status, Group, Station), which may have up to MAX_LABEL_LEVELS
-    values. "code" is weaker evidence: two values, or up to MAX_CODE_LEVELS
-    whole numbers each repeated many times, under a name that is not a count
-    or an amount. None means a quantity.
+    label (Status, Group, Station), with enough rows in most groups (see
+    ``_groups_rows``). "code" is weaker evidence: two values, or up to
+    MAX_CODE_LEVELS whole numbers each repeated many times, under a name that
+    is not a count or an amount, on a column that is not a rating item
+    (``scale_item``, see ``_scale_items``). None means a quantity.
     """
-    if is_bool_dtype(series) or _sample(series).nunique() > MAX_LABEL_LEVELS:
+    if is_bool_dtype(series):
+        return None
+    if _sample(series).nunique() > MAX_LABEL_LEVELS and not _named_as_label(name):
         return None
     levels = int(series.nunique(dropna=True))
-    if levels < 2 or levels > MAX_LABEL_LEVELS:
+    if levels < 2:
         return None
     values = series.dropna()
     if levels == 2 and set(values.unique()) <= {0, 1}:
         return "flag"
     if not bool((values % 1 == 0).all()):
         return None
-    if _named_as_label(name) and len(values) >= 2 * levels:
+    if _named_as_label(name) and len(values) >= 2 * levels and _groups_rows(values):
         return "label"
     # A reading named as one ("Humidity", "pH", "Score") is a quantity even when
-    # it was recorded in whole numbers with few values.
-    if _named_as_quantity(name) or is_level_name(name) or is_percentage(name):
+    # it was recorded in whole numbers with few values, and so is an item
+    # answered on a rating scale.
+    if _named_as_quantity(name) or is_level_name(name) or is_percentage(name) or scale_item:
         return None
     if levels == 2 and len(values) >= 3 * levels:
         return "code"
     if levels <= MAX_CODE_LEVELS and len(values) >= MIN_ROWS_PER_LEVEL * levels:
         return "code"
     return None
+
+
+def _groups_rows(series: pd.Series) -> bool:
+    """Whether a column's values can group its rows: at least two, most of them on several rows.
+
+    Up to MAX_LABEL_LEVELS values, any column whose values repeat enough (see
+    MAX_GROUPING_SHARE) qualifies. Beyond that, most groups need at least
+    MIN_ROWS_PER_GROUP rows, so 101 districts of 3 to 20 samples each group a
+    table, while names that each appear once or twice do not.
+    """
+    values = series.dropna()
+    levels = int(values.nunique())
+    if levels < 2 or levels > MAX_GROUPING_SHARE * len(values):
+        return False
+    if levels <= MAX_LABEL_LEVELS:
+        return True
+    counts = values.value_counts().to_numpy()
+    return float((counts >= MIN_ROWS_PER_GROUP).mean()) >= 0.5
+
+
+def _family_stem(name: str) -> str | None:
+    """The stem a numbered column shares with its siblings: "rdb" for "RDB2", "rp" for "RP_1".
+
+    Headerless columns read as "Unnamed: 3" are numbered by position, not as a family.
+    """
+    match = _NUMBERED_NAME.match(str(name).strip())
+    if not match:
+        return None
+    stem = normalized_name(match.group(1)).strip(" :")
+    if not re.search(r"[a-z]", stem) or stem.startswith("unnamed"):
+        return None
+    return stem
+
+
+def _scale(series: pd.Series) -> tuple[int, int] | None:
+    """The rating scale a column of whole numbers sits on, as its (bottom, top), or None.
+
+    The bottom is 0 or 1, the top at most MAX_SCALE_TOP, and at least
+    MIN_SCALE_POINTS points are used. A scale of 1 to 7 whose answers happen to
+    start at 2 is still 1 to 7.
+    """
+    values = series.dropna()
+    if values.empty or not bool((values % 1 == 0).all()):
+        return None
+    low, high = float(values.min()), float(values.max())
+    if low < 0 or high > MAX_SCALE_TOP or values.nunique() < MIN_SCALE_POINTS:
+        return None
+    return (0 if low == 0 else 1), int(high)
+
+
+def _scale_items(dataframe: pd.DataFrame, numeric: list[str]) -> set[str]:
+    """Columns of whole numbers answered on a scale, which are quantities however few their values.
+
+    A questionnaire's items share a numbered stem ("RDB1" to "RDB3", "RP_1" to
+    "RP_3") or one rating scale with at least MIN_SCALE_ITEMS other columns
+    (1 to 7), or are named as ratings ("Satisfaction"). A lone column of codes
+    1 to 6, such as marital status, is none of these.
+    """
+    samples = {column: _sample(dataframe[column]) for column in numeric}
+    whole = [
+        column for column in numeric
+        if not is_bool_dtype(samples[column]) and bool((samples[column].dropna() % 1 == 0).all())
+    ]
+    stems = Counter(_family_stem(column) for column in numeric)
+    scales = {column: _scale(samples[column]) for column in whole}
+    shared = Counter(scale for scale in scales.values() if scale)
+    items = set()
+    for column in whole:
+        stem, scale = _family_stem(column), scales[column]
+        in_family = stem is not None and stems[stem] >= 2 and samples[column].nunique() >= 3
+        rated = scale is not None and (
+            shared[scale] >= MIN_SCALE_ITEMS or bool(set(_head_words(column)) & RATING_WORDS)
+        )
+        if in_family or rated:
+            items.add(column)
+    return items
+
+
+def _counts_of_things(series: pd.Series) -> bool:
+    values = series.dropna()
+    return not values.empty and bool((values >= 0).all() and (values % 1 == 0).all())
+
+
+def _sibling_counts(dataframe: pd.DataFrame, numeric: list[str]) -> set[str]:
+    """0/1 columns that count something, as the sibling columns recorded with them do.
+
+    Five animal counts per quadrat, three of which never pass 1, are counts
+    all the same: they sit in one block with a count that does, side by side
+    under count names ("Crabs", "Seastars") or missing on exactly the same rows.
+    A yes/no column such as "Antibiotics" beside "Probiotics" stays a flag,
+    since neither ever passes 1.
+    """
+    counts = {
+        column for column in numeric
+        if not is_bool_dtype(dataframe[column])
+        and _named_as_quantity(column)
+        and _counts_of_things(dataframe[column])
+    }
+    blocks: list[list[str]] = [[]]
+    for column in dataframe.columns:
+        if column in counts:
+            blocks[-1].append(column)
+        elif blocks[-1]:
+            blocks.append([])
+    by_gaps: dict[bytes, list[str]] = {}
+    for column in counts:
+        missing = dataframe[column].isna().to_numpy()
+        if 0 < missing.sum() < len(missing):
+            by_gaps.setdefault(np.packbits(missing).tobytes(), []).append(column)
+    blocks += by_gaps.values()
+    found: set[str] = set()
+    for block in blocks:
+        if len(block) >= 2 and any(dataframe[column].max() > 1 for column in block):
+            found |= {column for column in block if set(dataframe[column].dropna().unique()) <= {0, 1}}
+    return found
+
+
+def _resolution(values: np.ndarray) -> float:
+    """The unit the values are recorded in: 1 for whole numbers, 0.1 for one decimal place."""
+    for decimals in range(7):
+        scaled = values * 10.0**decimals
+        if np.allclose(scaled, np.round(scaled), rtol=0, atol=1e-6):
+            return 10.0**-decimals
+    return 0.0
+
+
+def _is_sweep(name: str, series: pd.Series) -> bool:
+    """Whether the column steps through evenly spaced settings, each used about equally often.
+
+    A frequency swept from 100 to 590 GHz in steps of 10, or a transect read
+    every 5 m, is a setting of the study rather than a reading. A reading rounded
+    to its resolution (humidity in whole percent, a share to one decimal) steps
+    by that resolution, and is not used equally often at every level.
+    """
+    if is_bool_dtype(series) or _named_as_quantity(name):
+        return False
+    values = _sample(series).dropna()
+    counts = values.value_counts()
+    if not 3 <= len(counts) <= MAX_SWEEP_LEVELS:
+        return False
+    if counts.min() < MIN_ROWS_PER_LEVEL or counts.min() < SWEEP_BALANCE * counts.max():
+        return False
+    levels = np.sort(counts.index.to_numpy(dtype=float))
+    steps = np.diff(levels)
+    if not np.allclose(steps, steps[0], rtol=1e-6, atol=0):
+        return False
+    return bool(steps[0] >= 2 * _resolution(levels) > 0)
 
 
 def _crossed(series: pd.Series, grouping: pd.Series) -> bool:
@@ -605,7 +848,7 @@ def _running_total(name: str, values: np.ndarray, groups: np.ndarray) -> bool:
     enough without a reset.
     """
     words = _head_words(name)
-    if words and words[-1] in TIME_PART_WORDS:
+    if is_time_part(name, pd.Series(values)):
         return False
     present = ~np.isnan(values)
     values, groups = values[present], groups[present]
@@ -886,13 +1129,20 @@ def _factors(
 ) -> tuple[list[str], list[str]]:
     """The numeric columns holding category codes, and the 0/1 flags among them.
 
-    Weak evidence (a short run of whole numbers, a design level) is dropped
-    when it would leave nothing to measure: marks out of 10 are the quantity
-    of a table that has nothing else.
+    Weak evidence (a short run of whole numbers, a design level, a swept
+    setting) is dropped when it would leave nothing to measure: marks out of 10
+    are the quantity of a table that has nothing else. Rating items and counts
+    read like their siblings are never codes (see ``_scale_items`` and
+    ``_sibling_counts``).
     """
-    kinds = {column: _factor_kind(column, dataframe[column]) for column in numeric}
+    items = _scale_items(dataframe, numeric)
+    counted = _sibling_counts(dataframe, numeric)
+    kinds = {
+        column: None if column in counted else _factor_kind(column, dataframe[column], column in items)
+        for column in numeric
+    }
     found = {column for column, kind in kinds.items() if kind}
-    rest = [column for column in numeric if column not in found]
+    rest = [column for column in numeric if column not in found and column not in items | counted]
     groupings = [dataframe[column] for column in [*text_dimensions, *found]]
     # Rows repeat a recipe or a sample across the levels of a design column.
     groupings += [
@@ -901,7 +1151,7 @@ def _factors(
         if _sample(dataframe[column]).nunique() <= len(_sample(dataframe[column])) / 2
     ][:10]
     for column in rest:
-        if _is_design_level(column, dataframe[column], groupings):
+        if _is_design_level(column, dataframe[column], groupings) or _is_sweep(column, dataframe[column]):
             kinds[column] = "code"
             found.add(column)
     if len(found) == len(numeric):
@@ -956,14 +1206,16 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
             # Date-named columns are never segments, even when they didn't parse as dates.
             continue
         text_columns.append(column)
-        unique = int(series.nunique(dropna=True))
-        non_null = int(series.notna().sum())
-        if 2 <= unique <= MAX_LABEL_LEVELS and unique / max(non_null, 1) <= MAX_GROUPING_SHARE:
+        if _groups_rows(series):
             text_dimensions.append(column)
 
     factors, flags = _factors(
         dataframe, [column for column in numeric if column not in in_matrix], text_dimensions
     )
+    if date:
+        # Beside a date, a month or year column only repeats the timeline.
+        factors = [column for column in factors if not is_time_part(column, dataframe[column])]
+        flags = [column for column in flags if column in factors]
     if factors:
         notes.append(_factor_note(dataframe, factors, flags))
     in_factors = set(factors)
@@ -973,7 +1225,7 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
     dimension_candidates: list[tuple[int, int, str]] = []
     for column in dimensions:
         words = _head_words(column)
-        if date and words and words[-1] in TIME_PART_WORDS:
+        if date and is_time_part(column, dataframe[column]):
             # Beside a date, a month or year column only repeats the timeline.
             continue
         series = dataframe[column]

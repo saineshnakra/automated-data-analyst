@@ -13,6 +13,9 @@ from ada.schema import (
     is_design_name,
     is_entity_name,
     is_identifier_name,
+    is_month_name,
+    is_time_part,
+    is_year_name,
     looks_like_identifier,
 )
 
@@ -153,6 +156,33 @@ class EntityNameTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertFalse(is_entity_name(name))
 
+    def test_a_bare_no_is_nitric_oxide_not_an_entity(self):
+        self.assertFalse(is_entity_name("NO"))
+        for name in ("No.", "Specimen No", "Station No #"):
+            with self.subTest(name=name):
+                self.assertTrue(is_entity_name(name))
+
+
+class CalendarPartTests(unittest.TestCase):
+    def test_a_month_name_needs_month_values(self):
+        self.assertTrue(is_month_name("MO", pd.Series([1, 6, 12])))
+        self.assertTrue(is_month_name("Month", pd.Series(["Jan", "February", "Mar"])))
+        self.assertFalse(is_month_name("Age_months", pd.Series([12, 30, 66])))
+        self.assertTrue(is_month_name("Age_months"))
+
+    def test_a_year_name_needs_year_values(self):
+        self.assertTrue(is_year_name("survey_yr", pd.Series([1999, 2004])))
+        self.assertTrue(is_year_name("YR", pd.Series([40, 45])))
+        self.assertFalse(is_year_name("Age_years", pd.Series([3, 41, 80])))
+        self.assertFalse(is_year_name("Years", pd.Series([1, 12, 30])))
+
+    def test_an_age_in_months_is_a_reading_not_a_part_of_the_date(self):
+        frame = pd.DataFrame({"Age_months": [12 + index % 55 for index in range(220)]})
+
+        self.assertFalse(is_time_part("Age_months", frame["Age_months"]))
+        self.assertFalse(is_time_part("Duration Hours", pd.Series([3, 48, 200])))
+        self.assertTrue(is_time_part("DA", pd.Series([1, 15, 31])))
+
 
 class IdentifierNamePunctuationTests(unittest.TestCase):
     def test_key_names_with_punctuation_or_symbols(self):
@@ -245,6 +275,86 @@ class FactorTests(unittest.TestCase):
 
         self.assertIn("Concentration", roles.factors)
         self.assertIn(roles.measure, ("R", "B"))
+
+    def test_numbered_rating_items_stay_quantities(self):
+        rng = np.random.default_rng(21)
+        frame = pd.DataFrame({
+            "condition": ["A", "B", "C", "D"] * 30,
+            "fsi_high": [0, 1] * 60,
+            "RDB1": rng.integers(0, 11, 120),
+            "RDB2": rng.integers(0, 11, 120),
+            "Realism_1": rng.integers(2, 8, 120),
+            "Realism_2": rng.integers(2, 8, 120),
+            "risky_decision": readings(120, centre=5),
+        })
+
+        roles = detect_roles(frame)
+
+        self.assertEqual(roles.factors, ("fsi_high",))
+        for column in ("RDB1", "RDB2", "Realism_1", "Realism_2"):
+            with self.subTest(column=column):
+                self.assertNotIn(column, roles.dimensions)
+
+    def test_columns_sharing_a_rating_scale_are_items_but_a_lone_code_is_not(self):
+        rng = np.random.default_rng(22)
+        frame = pd.DataFrame({
+            "success_likelihood": rng.integers(1, 8, 120),
+            "direct_riskiness": rng.integers(1, 8, 120),
+            "perceived_harm": rng.integers(1, 8, 120),
+            "marital": rng.integers(1, 7, 120),
+            "bmi": readings(120),
+        })
+
+        roles = detect_roles(frame)
+
+        self.assertEqual(roles.factors, ("marital",))
+
+    def test_counts_beside_a_count_that_passes_one_are_not_flags(self):
+        def counts(ones: int) -> list[float]:
+            return [1.0] * ones + [0.0] * (110 - ones) + [np.nan] * 10
+
+        frame = pd.DataFrame({
+            "Location_m": [step * 5 for step in range(10)] * 12,
+            "Nudibranchs": counts(2),
+            "Crabs": [75.0, 36.0, 3.0, 2.0] + [1.0] * 8 + [0.0] * 98 + [np.nan] * 10,
+            "Octopuses": counts(3),
+            "Side": ["Left", "Right"] * 60,
+        })
+
+        roles = detect_roles(frame)
+
+        self.assertEqual(roles.flags, ())
+        self.assertNotIn("Nudibranchs", roles.dimensions)
+        self.assertEqual(roles.measure, "Crabs")
+
+    def test_two_yes_no_columns_side_by_side_stay_flags(self):
+        frame = pd.DataFrame({
+            "Antibiotics": [0, 1, 0] * 40,
+            "Probiotics": [1, 0] * 60,
+            "Shannon_Index": readings(120, centre=3),
+        })
+
+        self.assertEqual(detect_roles(frame).flags, ("Antibiotics", "Probiotics"))
+
+    def test_a_swept_setting_is_a_design_factor_not_a_measure(self):
+        rng = np.random.default_rng(23)
+        frequency = np.tile(np.arange(100, 600, 10), 12).astype(float)
+        frame = pd.DataFrame({
+            "Frequency (GHz)": frequency,
+            "Sample": np.repeat(list("ABCDEFGHIJKL"), 50),
+            "HG (mV)": np.round(frequency / 3 + rng.normal(0, 5, frequency.size), 2),
+            "LG (mV)": np.round(frequency / 9 + rng.normal(0, 5, frequency.size), 2),
+        })
+
+        roles = detect_roles(frame)
+
+        self.assertIn("Frequency (GHz)", roles.factors)
+        self.assertNotIn("Frequency (GHz)", (roles.measure, *roles.measure_alternatives))
+
+    def test_a_reading_rounded_to_whole_numbers_is_not_a_sweep(self):
+        frame = pd.DataFrame({"Humidity": [40 + index % 41 for index in range(410)], "Rain": readings(410)})
+
+        self.assertEqual(detect_roles(frame).factors, ())
 
     def test_a_short_scale_is_the_quantity_when_nothing_else_is_measured(self):
         frame = pd.DataFrame({"Class": ["A", "B"] * 30, "Mark": [3, 5, 7, 9, 10, 6] * 10})
@@ -494,14 +604,16 @@ class GroupingChoiceTests(unittest.TestCase):
 
         self.assertEqual(detect_roles(frame).dimension, "PHENOTYPE")
 
-    def test_a_month_column_beside_a_date_is_not_the_grouping(self):
+    def test_a_month_column_beside_a_date_is_not_a_grouping(self):
         days = pd.date_range("2024-01-01", periods=120, freq="D")
         frame = pd.DataFrame({"Date": days, "MO": days.month, "MaxTemp": readings(120)})
 
         roles = detect_roles(frame)
 
-        self.assertIn("MO", roles.factors)
+        self.assertNotIn("MO", roles.factors)
+        self.assertNotIn("MO", roles.dimensions)
         self.assertIsNone(roles.dimension)
+        self.assertEqual(roles.measure, "MaxTemp")
 
 
 if __name__ == "__main__":
