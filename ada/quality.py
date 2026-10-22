@@ -337,7 +337,7 @@ SAMPLE_WORDS = frozenset({
 })
 _COUNT_OF = frozenset({"n", "number", "num", "no", "count", "total"})
 # Columns ADA adds itself, such as a matrix table's row mean.
-_BUILT_NAME = re.compile(r"^Row mean \([\d,]+ columns\)$")
+_BUILT_NAME = re.compile(r"^Row (?:mean|SD) \([\d,]+ columns\)$")
 
 
 @dataclass(frozen=True)

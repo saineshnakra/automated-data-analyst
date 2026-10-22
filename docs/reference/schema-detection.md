@@ -54,7 +54,7 @@ by:
 Three kinds of column key or label the rows, and the first found wins:
 
 1. **A key name.** One of the name's words is `id`, `uuid`, `key`, `code`,
-   `number`, `invoice` or `order` (as a whole word), the last word is not a
+   `number`, `invoice`, `order` or `barcode` (as a whole word), the last word is not a
    measure keyword, at least 80% of the values are distinct, and the values are
    whole numbers or text. A `Reynolds Number` with decimals is a measurement.
 2. **A row key by its values.** Unique whole numbers on every row, under a
@@ -65,7 +65,9 @@ Three kinds of column key or label the rows, and the first found wins:
    is unique too.
 3. **A row label.** A text column with a different value on every row, such
    as a taxon or a file name. Sentences are unique too but label nothing, so
-   values of more than six words do not count.
+   values of more than six words do not count. A header can mislead: a column
+   named `time` whose values are codes with letters (gene names `YAL001C` …)
+   rather than times labels the rows, and its note says so.
 
 Identifiers are left out of `numeric`, so they are never the measure, never in
 the strongest-relationship scan and never offered as something to correlate.
@@ -88,15 +90,17 @@ A numeric column is a factor, a category code rather than a quantity, when:
 |---|---|
 | A 0/1 flag | Exactly the values 0 and 1, whatever the name, unless it is a count like its siblings (see below) |
 | A label name | Whole numbers, each used twice on average, that can group rows (see [Picking the segment](#picking-the-segment)), under a label word (`status`, `condition`, `group`, `treatment`, `label`, `class`, `stage`, `phase`, `sex`, `gender`, `race`, `ethnicity`, `phenotype`, `genotype`, `type`, `category`, `diagnosis`, `arm`, `cohort`), a design label (see below), an entity (`subject`, `patient`, `station`, `site`, `plot`, a key word) or a name starting with `id` or `code` (`id_reef`). So 159 weather stations, each with hundreds of days, are a label |
-| A short code | Two values, or up to 12 whole numbers each used about five times or more, such as race, education or an income band |
+| A short code | Two values, or up to 12 whole numbers each used about five times or more, such as race, education or an income band, recorded on at least a fifth of the rows. Six or more whole numbers on a grid coarser than one (blood pressure 50, 60 … 180) are a reading rounded to that grid, not a code (`_on_a_grid`) |
 | A design level | Up to 15 levels, each used about five times or more, under a word such as `dose`, `concentration`, `age`, `day`, `time` or `frequency`, and varying within the groups of another column: a set concentration crossed with dyes, a curing age crossed with recipes |
 | A swept setting | 3 to 100 evenly spaced levels, each used about equally often (the rarest at least half as often as the commonest, and five times or more), stepping by more than the values' own resolution: a frequency swept from 100 to 590 GHz in steps of 10, a transect read every 5 m. A reading rounded to whole percent steps by its resolution and is not used equally at every level |
 
 A name that marks a count or an amount keeps a short code a quantity: a count
 word anywhere (`count`, `number`, `num`, `qty`, `quantity`, `amount`, `total`),
 a plural last word (`Cylinders`, `Visits`), or a last word such as `size`,
-`children`, `score`, `rating`, `price` or an outcome word. A 0/1 flag stays a
-flag even then.
+`children`, `score`, `rating`, `price` or an outcome word. So does a unit in
+brackets (`O content (wppm)`, `Pin Dia (mm)`; not a range such as
+`(40 - 100)` or codes such as `(Y/N)`), so design inputs measured in units are
+read alike. A 0/1 flag stays a flag even then.
 
 Rating items stay quantities too, however few their values. A column of whole
 numbers is an item when it shares a numbered stem with another column
@@ -175,6 +179,15 @@ several units or the result's typical size differs tenfold or more between
 parameters. A unit column holding several units, with no parameter column, is
 used as the parameter.
 
+Failing both, a column is the parameter when its rows behave like one,
+whatever its name (`pollutant_id`): a text column with 2 to 30 values across
+which the result's typical size differs tenfold or more, beside an entity
+column with more values (`station`) such that each entity holds at most one
+row per parameter on 95% of rows and half the entities or more hold several
+parameters (`_parameter_by_rows`). Money and counts are never split this
+way, since revenue by category is one quantity however much the categories
+differ.
+
 The table is then `"long"`: the parameter column is the grouping, the most
 common parameter recorded in one unit is the `focus`, and a note names it and
 the next most common ones. `ada.analyze` applies the focus, so the brief, the
@@ -199,8 +212,12 @@ compare. For counts it also says how far the columns' totals differ and to put
 them on a common scale before comparing them. `pipeline.prepare_analysis`
 then adds each row's mean across the matrix columns, named
 `Row mean (60 columns)`, and uses it as the measure (`schema.add_row_summary`).
-`schema.row_summary_columns` gives the columns that mean is built from, so the
-relationship card does not report any of them as relating to it.
+When the rows have been centred, as log ratios and z-scores are (a typical
+row's mean under a tenth of its standard deviation), the mean would only show
+that normalisation, so ADA follows each row's standard deviation instead,
+named `Row SD (23 columns)`, and the note says why.
+`schema.row_summary_columns` gives the columns either summary is built from,
+so the relationship card does not report any of them as relating to it.
 
 ### Summary statistics
 
@@ -328,7 +345,10 @@ A column that climbs like a gauge or a meter, such as a weather station's
 period means nothing. Within each group of the grouping, in date order, it
 must rise many times for each fall, and its falls must be resets to a tenth of
 the last value or less. A name such as `Cumulative Cases` (`cumulative`,
-`cum`, `running`, `accumulated`, `ytd`, `odometer`) is enough without a reset.
+`cum`, `running`, `accumulated`, `ytd`, `odometer`) is enough without a reset,
+and so is counting up by exactly one at half the steps or more while falling
+back at no more than 1% of them, as a packet or frame counter numbers the
+messages a device sends. A money column is never read as such a counter.
 Rainfall that falls back to zero after each shower rises and falls as often,
 so it does not qualify, and neither does a day-of-month column. A sibling
 column recording each reading's own amount (`Interval Rain`, `Hourly ...`,

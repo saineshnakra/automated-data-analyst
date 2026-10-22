@@ -8,6 +8,7 @@ reliable alone: "Order Number" is numeric but not a measure, a column of 0s and
 from __future__ import annotations
 
 import re
+import warnings
 from collections import Counter
 from dataclasses import dataclass, replace
 
@@ -16,7 +17,7 @@ import pandas as pd
 from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_dtype
 
 from .formatting import format_number, is_currency, is_percentage, normalized_name
-from .metrics import ADDITIVE_WORDS, LEVEL_WORDS, is_level_name
+from .metrics import ADDITIVE_WORDS, LEVEL_WORDS, is_additive_name, is_level_name
 
 
 @dataclass(frozen=True)
@@ -146,7 +147,7 @@ DIMENSION_KEYWORDS = {
 # What a keyword earlier in the name is worth against one at the end.
 MODIFIER_WEIGHT = 2 / 3
 
-IDENTIFIER_TOKENS = ("id", "uuid", "key", "code", "number", "invoice", "order")
+IDENTIFIER_TOKENS = ("id", "uuid", "key", "code", "number", "invoice", "order", "barcode")
 TIME_PART_TOKENS = ("year", "month", "week", "day", "hour", "minute", "quarter")
 # Experimental-design columns are numbered but hold labels, not quantities. Plate
 # rows and columns lay out where a sample sat, not what was measured.
@@ -229,7 +230,7 @@ CHECK_WORDS = frozenset({"realism", "attention", "manipulation"})
 # Whole-word match, so "Paid Amount" is not an id.
 IDENTIFIER_NAME_WORDS = frozenset({
     "id", "ids", "code", "codes", "zip", "zipcode", "postal", "postcode", "phone", "telephone",
-    "mobile", "tel", "fax", "sku", "number", "no", "#", "key", "uuid", "notation",
+    "mobile", "tel", "fax", "sku", "number", "no", "#", "key", "uuid", "notation", "barcode",
 })
 
 # Head words that name the unit a row belongs to rather than a quantity: subject 12
@@ -346,6 +347,12 @@ MAX_LABEL_LEVELS = 100
 MIN_ROWS_PER_GROUP = 3
 MAX_GROUPING_SHARE = 0.65
 MAX_CODE_LEVELS = 12
+# A short code must be recorded on at least this share of rows: a reading filled
+# on a handful of rows takes few values there without being a category.
+MIN_CODE_COVERAGE = 0.2
+# Whole numbers on a coarse grid with at least this many levels are a reading
+# rounded to that grid, such as blood pressure to the nearest 10 mm Hg.
+MIN_GRID_LEVELS = 6
 MAX_DESIGN_LEVELS = 15
 MIN_ROWS_PER_LEVEL = 5
 # A grouping whose largest group holds more than this splits off a sliver.
@@ -368,6 +375,10 @@ MIN_RUNNING_TOTAL_ROWS = 20
 RUNNING_TOTAL_RISING = 0.95
 # A running total that resets falls to this share of its last value or less.
 RESET_FRACTION = 0.1
+# A counter steps up by exactly one at this share of its steps or more, and
+# falls back at no more than this share.
+COUNTING_STEPS = 0.5
+COUNTER_FALLS = 0.01
 RUNNING_TOTAL_WORDS = frozenset({"cumulative", "cum", "running", "accumulated", "ytd", "odometer"})
 TOTAL_WORDS = frozenset({"total", "totals"}) | RUNNING_TOTAL_WORDS
 INTERVAL_WORDS = frozenset({"interval", "incremental", "increment", "hourly", "daily", "period", "delta"})
@@ -591,16 +602,21 @@ def _is_row_label(name: str, series: pd.Series) -> bool:
     """Whether a text column names each row once, as a taxon or a file name does.
 
     Sentences are unique too but label nothing, so values of more than a few
-    words do not count.
+    words do not count. A column named like a date counts only when its values
+    are codes with letters in them rather than dates ("time" over gene names
+    YAL001C ...), since the header can mislead.
     """
-    if is_numeric_dtype(series) or is_datetime64_any_dtype(series) or _named_like_a_date(name):
+    if is_numeric_dtype(series) or is_datetime64_any_dtype(series):
         return False
     present = series.dropna()
     if len(present) < MIN_ROWS_FOR_KEY or len(present) < 0.9 * len(series):
         return False
     if present.nunique() != len(present):
         return False
-    words = present.head(200).astype(str).str.split().str.len()
+    head = present.head(200).astype(str)
+    if _named_like_a_date(name) and not bool(head.str.contains(r"[A-Za-z]{2}").mean() >= 0.9):
+        return False
+    words = head.str.split().str.len()
     return float(words.median()) <= 6
 
 
@@ -723,8 +739,10 @@ def _factor_kind(name: str, series: pd.Series, scale_item: bool = False) -> str 
     label (Status, Group, Station), with enough rows in most groups (see
     ``_groups_rows``). "code" is weaker evidence: two values, or up to
     MAX_CODE_LEVELS whole numbers each repeated many times, under a name that
-    is not a count or an amount, on a column that is not a rating item
-    (``scale_item``, see ``_scale_items``). None means a quantity.
+    is not a count, an amount or a unit, on a column that is not a rating item
+    (``scale_item``, see ``_scale_items``), is recorded on MIN_CODE_COVERAGE of
+    the rows or more, and is not a reading rounded to a grid (see
+    ``_on_a_grid``). None means a quantity.
     """
     if is_bool_dtype(series):
         return None
@@ -740,16 +758,33 @@ def _factor_kind(name: str, series: pd.Series, scale_item: bool = False) -> str 
         return None
     if _named_as_label(name) and len(values) >= 2 * levels and _groups_rows(values):
         return "label"
-    # A reading named as one ("Humidity", "pH", "Score") is a quantity even when
-    # it was recorded in whole numbers with few values, and so is an item
-    # answered on a rating scale.
-    if _named_as_quantity(name) or is_level_name(name) or is_percentage(name) or scale_item:
+    # A reading named as one ("Humidity", "pH", "Score") or measured in a unit
+    # ("O content (wppm)") is a quantity even when it was recorded in whole
+    # numbers with few values, and so is an item answered on a rating scale.
+    named = _named_as_quantity(name) or is_level_name(name) or is_percentage(name) or _has_unit(name)
+    if named or scale_item:
+        return None
+    if _on_a_grid(values) or len(values) < MIN_CODE_COVERAGE * len(series):
         return None
     if levels == 2 and len(values) >= 3 * levels:
         return "code"
     if levels <= MAX_CODE_LEVELS and len(values) >= MIN_ROWS_PER_LEVEL * levels:
         return "code"
     return None
+
+
+def _on_a_grid(values: pd.Series) -> bool:
+    """Whether whole numbers sit on a grid coarser than one, over many of its steps.
+
+    Blood pressure written to the nearest 10 (50, 60 … 180) is a reading
+    rounded to a grid; codes 1 to 6 step by one, and a few set levels (0, 10,
+    20) are too few to tell.
+    """
+    levels = np.unique(values.to_numpy(dtype=float)).astype(np.int64)
+    if len(levels) < MIN_GRID_LEVELS:
+        return False
+    step = int(np.gcd.reduce(levels - levels[0]))
+    return step >= 2
 
 
 def _groups_rows(series: pd.Series) -> bool:
@@ -932,6 +967,15 @@ def _sample(series: pd.Series) -> pd.Series:
     return series.iloc[::step]
 
 
+# Rows sampled, evenly, for checks of how columns relate that a few thousand rows settle.
+RELATION_SAMPLE = 5_000
+
+
+def _thin(data: pd.DataFrame | pd.Series) -> pd.DataFrame | pd.Series:
+    """Every k-th row, so at most about RELATION_SAMPLE rows remain."""
+    return data.iloc[:: max(1, len(data) // RELATION_SAMPLE)]
+
+
 def _information(series: pd.Series) -> float:
     """How much a column says, as the entropy of its values in bits.
 
@@ -1022,7 +1066,9 @@ def _running_total(name: str, values: np.ndarray, groups: np.ndarray) -> bool:
     rises many times for each fall, and the falls are resets back to near zero.
     Rainfall per hour rises and falls back as often, so it does not qualify,
     and neither does a day of the month. A name such as "Cumulative Cases" is
-    enough without a reset.
+    enough without a reset, and so is counting up by one at most steps while
+    almost never falling, as a packet or frame counter numbers the messages a
+    device sends. Money is never counted up that way.
     """
     words = _head_words(name)
     if is_time_part(name, pd.Series(values)):
@@ -1039,7 +1085,14 @@ def _running_total(name: str, values: np.ndarray, groups: np.ndarray) -> bool:
         return False
     if set(words) & RUNNING_TOTAL_WORDS:
         return True
-    return bool(((current < previous) & (current <= RESET_FRACTION * previous)).any())
+    # A counter of messages falls back almost never and steps up by one; money never counts so.
+    counting = (
+        not is_currency(name)
+        and falls <= COUNTER_FALLS * len(current)
+        and bool(np.all(values % 1 == 0))
+        and float(np.mean(current - previous == 1)) >= COUNTING_STEPS
+    )
+    return counting or bool(((current < previous) & (current <= RESET_FRACTION * previous)).any())
 
 
 def _sibling_interval(counter: str, candidates: list[str]) -> str | None:
@@ -1097,6 +1150,35 @@ def row_summary_name(columns: int) -> str:
     return f"Row mean ({columns:,} columns)"
 
 
+def row_spread_name(columns: int) -> str:
+    """Name of the per-row standard deviation a matrix of centred rows is measured by."""
+    return f"Row SD ({columns:,} columns)"
+
+
+# Rows whose mean is typically under this share of their own standard deviation
+# have been centred, as log ratios and z-scores are.
+CENTRED_ROWS = 0.1
+
+
+def _rows_centred(dataframe: pd.DataFrame, columns: list[str]) -> float | None:
+    """How far a typical row's mean sits from zero, as a share of its spread, when rows look centred.
+
+    A gene's log ratios across time points average near zero by
+    construction, so their mean only shows the normalisation, while their
+    spread says how much the gene moves. None when the rows are not centred.
+    """
+    values = _sample(dataframe[columns]).to_numpy(dtype=float)
+    with np.errstate(invalid="ignore", divide="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        means = np.nanmean(values, axis=1)
+        spreads = np.nanstd(values, axis=1, ddof=1)
+    usable = np.isfinite(means) & (spreads > 0)
+    if int(usable.sum()) < MIN_ROWS_FOR_KEY:
+        return None
+    share = float(np.median(np.abs(means[usable]) / spreads[usable]))
+    return share if share < CENTRED_ROWS else None
+
+
 def row_summary_columns(roles: ColumnRoles, dataframe: pd.DataFrame | None = None) -> list[str]:
     """The columns averaged into the row mean ``add_row_summary`` made the measure, or [].
 
@@ -1110,7 +1192,7 @@ def row_summary_columns(roles: ColumnRoles, dataframe: pd.DataFrame | None = Non
     block = _matrix_columns(numeric)
     if not block and roles.identifier and dataframe is not None:
         block = _count_matrix_columns(dataframe, numeric)
-    return block if roles.measure == row_summary_name(len(block)) else []
+    return block if roles.measure in (row_summary_name(len(block)), row_spread_name(len(block))) else []
 
 
 def _prefix_groups(columns: list[str]) -> list[tuple[str, int]]:
@@ -1126,14 +1208,25 @@ def _prefix_groups(columns: list[str]) -> list[tuple[str, int]]:
 
 
 def _matrix_note(dataframe: pd.DataFrame, columns: list[str], label: str | None, counts: bool) -> str:
-    rows = label or "row"
     kind = "columns of counts" if counts else "numeric columns"
+    # A label under a date-like header ("time" over gene names) is named as what it holds.
+    rows = f"value of {label}" if label and _named_like_a_date(label) else label
+    each = f", with one row per {rows}" if rows else ""
+    centred = None if counts else _rows_centred(dataframe, columns)
+    if centred is None:
+        follows = f"so ADA follows each row's mean across them ({row_summary_name(len(columns))})"
+    else:
+        follows = (
+            f"and each row's values are centred near zero, as log ratios or z-scores are (a typical "
+            f"row's mean is {centred:.0%} of its standard deviation), so the row mean would only show "
+            f"that normalisation. ADA follows each row's standard deviation across them instead "
+            f"({row_spread_name(len(columns))}), which says how much the row moves"
+        )
     note = (
         f"This table looks like a matrix: {len(columns):,} {kind} of one kind, named "
-        f"{columns[0]} … {columns[-1]}, with one row per {rows}. No single column is the "
-        f"measure, so ADA follows each row's mean across them ({row_summary_name(len(columns))}). "
+        f"{columns[0]} … {columns[-1]}{each}. No single column is the measure, {follows}. "
         f"To compare the columns themselves, reshape the table to long form first: one row per "
-        f"{rows} and column, with the value in a single column."
+        f"{rows or 'original row'} and column, with the value in a single column."
     )
     if counts:
         totals = dataframe[columns].sum().to_numpy(dtype=float)
@@ -1172,6 +1265,42 @@ def _spans_scales(dataframe: pd.DataFrame, parameter: str, measure: str) -> bool
     return len(medians) >= 2 and float(medians.max() / medians.min()) >= LONG_SCALE_SPREAD
 
 
+# A parameter found by how the rows behave names at most this many things measured.
+MAX_PARAMETER_LEVELS = 30
+# Each entity holds one row per parameter on this share of rows or more, and
+# this share of entities hold more than one parameter.
+PAIR_UNIQUE_SHARE = 0.95
+REPEATING_ENTITIES = 0.5
+
+
+def _parameter_by_rows(dataframe: pd.DataFrame, measure: str, text_columns: list[str]) -> str | None:
+    """A column naming what each row measures, found by how the rows behave rather than by its name.
+
+    In a table of stations and pollutants, "pollutant_id" holds OZONE, PM2.5,
+    NO2 and the rest: each station has one row per pollutant, most stations
+    have several, and the reading's typical size differs tenfold between them.
+    Money and counts are never split this way, since revenue by category is
+    one quantity whatever the sizes.
+    """
+    if is_additive_name(measure) or is_currency(measure):
+        return None
+    data = dataframe[dataframe[measure].notna()]
+    levels = {column: int(data[column].nunique()) for column in text_columns}
+    for column in text_columns:
+        if not 2 <= levels[column] <= MAX_PARAMETER_LEVELS or not _spans_scales(data, column, measure):
+            continue
+        for entity in text_columns:
+            if entity == column or levels[entity] <= levels[column]:
+                continue
+            pairs = data[[entity, column]].dropna()
+            if pairs.empty or float(1 - pairs.duplicated().mean()) < PAIR_UNIQUE_SHARE:
+                continue
+            spread = pairs.groupby(entity)[column].nunique()
+            if float((spread >= 2).mean()) >= REPEATING_ENTITIES:
+                return column
+    return None
+
+
 def _long_layout(
     dataframe: pd.DataFrame, measure: str | None, text_columns: list[str]
 ) -> tuple[str | None, str | None]:
@@ -1179,7 +1308,9 @@ def _long_layout(
 
     A text column named like a parameter qualifies when the measure takes very
     different sizes across its values, or a unit column holds several units.
-    A unit column alone, with several units, is used as the parameter.
+    A unit column alone, with several units, is used as the parameter. Failing
+    both, a column whose rows behave like parameters qualifies whatever its
+    name (see ``_parameter_by_rows``).
     """
     if measure is None:
         return None, None
@@ -1206,6 +1337,8 @@ def _long_layout(
         parameter = None
     if units and not parameter and not _looks_like_units(dataframe[units]):
         units = None
+    if not parameter and not units:
+        parameter = _parameter_by_rows(dataframe, measure, text_columns)
     return parameter or units, units
 
 
@@ -1285,6 +1418,11 @@ def _identifier_note(column: str, series: pd.Series) -> str:
         return (
             f"{column} holds a different whole number on every row, so it is read as a row "
             "identifier, not a quantity."
+        )
+    if _named_like_a_date(column):
+        return (
+            f"{column} holds a different code on every row, not times, so despite its name it is read "
+            "as the row label."
         )
     return f"{column} is different on every row, so it is read as the row label."
 
@@ -1516,23 +1654,26 @@ def _mean_of_others(dataframe: pd.DataFrame, columns: list[str]) -> str | None:
     """
     if not 4 <= len(columns) <= MAX_MEAN_CANDIDATES:
         return None
-    values = _sample(dataframe[columns]).astype("float64")
+    values = _thin(dataframe[columns]).to_numpy(dtype=float)
     if len(values) < MIN_ROWS_FOR_KEY:
         return None
-    totals = values.sum(axis=1, min_count=1)
-    counts = values.notna().sum(axis=1)
-    for column in columns:
-        own = values[column]
-        others = (totals - own.fillna(0)) / (counts - own.notna())
-        both = own.notna() & others.notna()
+    present = ~np.isnan(values)
+    filled = np.where(present, values, 0.0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        # Each column against the mean of the others on its row.
+        others = (filled.sum(axis=1, keepdims=True) - filled) / (present.sum(axis=1, keepdims=True) - present)
+    for index, column in enumerate(columns):
+        both = present[:, index] & np.isfinite(others[:, index])
         if int(both.sum()) < MIN_ROWS_FOR_KEY:
             continue
+        own, rest = values[both, index], others[both, index]
         # The interquartile range, so a few huge values cannot make any gap look small.
-        quartiles = own[both].quantile([0.25, 0.75]).to_numpy()
-        spread = float(quartiles[1] - quartiles[0])
-        if not spread > 0 or float(own[both].corr(others[both])) < MEAN_OF_OTHERS_CORRELATION:
+        low, high = np.percentile(own, [25, 75])
+        if not high > low or own.std() == 0 or rest.std() == 0:
             continue
-        if float((own[both] - others[both]).abs().median()) <= MEAN_OF_OTHERS_TOLERANCE * spread:
+        if float(np.corrcoef(own, rest)[0, 1]) < MEAN_OF_OTHERS_CORRELATION:
+            continue
+        if float(np.median(np.abs(own - rest))) <= MEAN_OF_OTHERS_TOLERANCE * (high - low):
             return column
     return None
 
@@ -1564,7 +1705,7 @@ def _separations(dataframe: pd.DataFrame, columns: list[str], outcome: str) -> d
     The same figure as ``_explained``, worked out for many columns at once on
     an even sample of the rows where the outcome is recorded.
     """
-    data = _sample(dataframe[[*columns, outcome]])
+    data = _thin(dataframe[[*columns, outcome]])
     data = data[data[outcome].notna()]
     codes = pd.factorize(data[outcome])[0]
     ranks = data[columns].rank().to_numpy(dtype=float)
@@ -1597,7 +1738,7 @@ def _sets_outcome(values: pd.Series, outcome: pd.Series) -> float | None:
     outcome was derived from by a threshold places nearly every row; a merely
     related one does not.
     """
-    data = pd.DataFrame({"x": values.to_numpy(), "y": outcome.to_numpy()}).dropna()
+    data = pd.DataFrame({"x": _thin(values).to_numpy(), "y": _thin(outcome).to_numpy()}).dropna()
     codes = pd.factorize(data["y"])[0]
     if len(data) < MIN_ROWS_FOR_KEY or codes.max(initial=-1) != 1:
         return None
@@ -2429,7 +2570,9 @@ def add_row_summary(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[pd.Dat
     """Give a matrix table each row's mean across its matrix columns, as its measure.
 
     A matrix has no single column to headline, so the brief follows the row
-    mean, named for what it is. Other tables are returned unchanged.
+    mean, named for what it is. When the rows have been centred (see
+    ``_rows_centred``) it follows each row's standard deviation instead. Other
+    tables are returned unchanged.
     """
     if roles.table_shape != "matrix" or roles.measure:
         return dataframe, roles
@@ -2438,9 +2581,15 @@ def add_row_summary(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[pd.Dat
         block = _count_matrix_columns(dataframe, list(roles.numeric))
     if not block:
         return dataframe, roles
-    name = row_summary_name(len(block))
+    counts = bool(roles.identifier) and bool(_count_matrix_columns(dataframe, block))
+    if not counts and _rows_centred(dataframe, block) is not None:
+        name = row_spread_name(len(block))
+        summary = dataframe[block].std(axis=1)
+    else:
+        name = row_summary_name(len(block))
+        summary = dataframe[block].mean(axis=1)
     if name not in dataframe.columns:
-        dataframe = pd.concat([dataframe, dataframe[block].mean(axis=1).rename(name)], axis=1)
+        dataframe = pd.concat([dataframe, summary.rename(name)], axis=1)
     numeric = roles.numeric if name in roles.numeric else (*roles.numeric, name)
     return dataframe, replace(roles, measure=name, numeric=numeric)
 

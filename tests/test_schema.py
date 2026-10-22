@@ -422,6 +422,35 @@ class IdentifierContentTests(unittest.TestCase):
         self.assertTrue(looks_like_identifier("Order Number", pd.Series(range(1000, 1020))))
 
 
+class IdentifierByContentTests(unittest.TestCase):
+    def test_a_barcode_unique_on_every_row_is_an_identifier_not_a_reading(self):
+        frame = pd.DataFrame({
+            "ID": [str(index) for index in range(60)],
+            "barcode": np.arange(4256, 4316),
+            "esr1": readings(60, centre=0),
+        })
+
+        roles = detect_roles(frame)
+
+        self.assertNotIn("barcode", roles.numeric)
+
+    def test_codes_under_a_date_like_header_label_the_rows(self):
+        frame = pd.DataFrame({
+            "time": [f"YAL{index:03d}C" for index in range(40)],
+            "expression": readings(40, centre=0),
+        })
+
+        roles = detect_roles(frame)
+
+        self.assertEqual(roles.identifier, "time")
+        self.assertTrue(any("despite its name" in note for note in roles.notes))
+
+    def test_unique_times_written_as_text_are_not_a_row_label(self):
+        frame = pd.DataFrame({"time": [f"10:{index:02d}" for index in range(40)], "Level": readings(40)})
+
+        self.assertIsNone(detect_roles(frame).identifier)
+
+
 class MeasureTieTests(unittest.TestCase):
     def test_a_tie_goes_to_the_column_with_more_information(self):
         rng = np.random.default_rng(1)
@@ -597,11 +626,15 @@ class OutcomeTests(unittest.TestCase):
         frame = pd.DataFrame({
             "id": [f"P{index}" for index in range(120)],
             "fasting_ability": self.label,
-            "weight": self.noise,
+            "gender": ["F", "M", "M"] * 40,
+            "body_mass_index": self.noise,
             "glucose": self.separating,
         })
 
-        self.assertEqual(detect_roles(frame).dimension, "fasting_ability")
+        roles = detect_roles(frame)
+
+        self.assertEqual(roles.dimension, "fasting_ability")
+        self.assertEqual(roles.measure, "glucose")
 
     def test_a_reading_the_outcome_was_cut_from_is_not_the_measure(self):
         frame = pd.DataFrame({
@@ -635,6 +668,37 @@ class OutcomeTests(unittest.TestCase):
 
         self.assertNotIn("names the label", " ".join(detect_roles(frame).notes))
         self.assertFalse(any("reads as the label" in note for note in detect_roles(frame).notes))
+
+
+class QuantityNotCodeTests(unittest.TestCase):
+    def test_a_reading_in_a_unit_stays_a_reading_however_few_its_values(self):
+        frame = pd.DataFrame({
+            "O content (wppm)": np.repeat([100, 250, 400, 700, 900, 1200, 1500, 2000, 2500, 3000], 6),
+            "YS (MPa)": readings(60, centre=900),
+        })
+
+        self.assertNotIn("O content (wppm)", detect_roles(frame).factors)
+
+    def test_a_reading_rounded_to_a_coarse_grid_is_a_quantity(self):
+        rng = np.random.default_rng(16)
+        frame = pd.DataFrame({
+            "bp": rng.choice([50, 60, 70, 80, 90, 100, 110, 120, 140, 180], 300, p=[
+                0.02, 0.12, 0.3, 0.3, 0.12, 0.08, 0.02, 0.02, 0.01, 0.01,
+            ]),
+            "al": rng.integers(0, 6, 300),
+            "hemo": readings(300, centre=12),
+        })
+
+        roles = detect_roles(frame)
+
+        self.assertNotIn("bp", roles.factors)
+        self.assertIn("al", roles.factors)
+
+    def test_a_reading_filled_on_a_few_rows_is_not_a_category(self):
+        values = [np.nan] * 170 + [193.0, 199.0, 212.0, 307.0, 523.0] * 6
+        frame = pd.DataFrame({"al": values, "COND": readings(200, centre=300)})
+
+        self.assertNotIn("al", detect_roles(frame).factors)
 
 
 class ExperimentUnitTests(unittest.TestCase):
@@ -849,6 +913,21 @@ class RunningTotalTests(unittest.TestCase):
 
         self.assertFalse(any("keeps climbing" in note for note in roles.notes))
 
+    def test_a_counter_that_steps_up_by_one_is_never_the_measure_even_without_a_reset(self):
+        rng = np.random.default_rng(5)
+        packets = 48_991 + np.arange(300) + np.cumsum(rng.random(300) < 0.05)
+        packets[150] = packets[149] - 7
+        frame = pd.DataFrame({
+            "Time": pd.date_range("2024-05-01", periods=300, freq="5min"),
+            "Packet Count": packets,
+            "Sound Level (dBA)": rng.integers(40, 90, 300),
+        })
+
+        roles = detect_roles(frame)
+
+        self.assertEqual(roles.measure, "Sound Level (dBA)")
+        self.assertTrue(any(note.startswith("Packet Count keeps climbing") for note in roles.notes))
+
 
 class LongTableTests(unittest.TestCase):
     def setUp(self):
@@ -889,6 +968,31 @@ class LongTableTests(unittest.TestCase):
 
     def test_an_ab_test_group_is_not_a_parameter(self):
         frame = pd.DataFrame({"Test Group": ["A", "B"] * 30, "Revenue": readings(60, centre=100)})
+
+        self.assertEqual(detect_roles(frame).table_shape, "flat")
+
+    def test_a_parameter_column_with_an_unexpected_name_is_found_by_how_its_rows_behave(self):
+        levels = {"OZONE": 40.0, "PM10": 100.0, "NH3": 6.0, "SO2": 12.0}
+        rng = np.random.default_rng(17)
+        frame = pd.DataFrame([
+            {"state": f"State {station % 5}", "station": f"Station {station}", "pollutant_id": pollutant,
+             "pollutant_avg": round(level * rng.uniform(0.7, 1.3), 1)}
+            for station in range(30)
+            for pollutant, level in levels.items()
+        ])
+
+        roles = detect_roles(frame)
+
+        self.assertEqual(roles.table_shape, "long")
+        self.assertEqual(roles.dimension, "pollutant_id")
+
+    def test_revenue_by_store_and_category_is_not_split_by_category(self):
+        levels = {"Furniture": 4000.0, "Books": 40.0, "Toys": 300.0}
+        frame = pd.DataFrame([
+            {"Store": f"Store {store}", "Category": category, "Revenue": level * (1 + store / 50)}
+            for store in range(30)
+            for category, level in levels.items()
+        ])
 
         self.assertEqual(detect_roles(frame).table_shape, "flat")
 
@@ -943,6 +1047,33 @@ class MatrixTests(unittest.TestCase):
         })
 
         self.assertEqual(detect_roles(frame).table_shape, "flat")
+
+    def test_centred_rows_are_followed_by_their_spread_not_their_mean(self):
+        rng = np.random.default_rng(9)
+        values = rng.normal(0, 0.4, (60, 23))
+        minutes = [str(10 * (index + 4)) for index in range(23)]
+        frame = pd.DataFrame(values - values.mean(axis=1, keepdims=True), columns=minutes)
+        frame.insert(0, "time", [f"Y{chr(65 + index % 26)}L{index:03d}C" for index in range(60)])
+
+        detected = detect_roles(frame)
+        summarised, roles = add_row_summary(frame, detected)
+
+        self.assertEqual(detected.identifier, "time")
+        self.assertEqual(roles.measure, "Row SD (23 columns)")
+        self.assertAlmostEqual(summarised.loc[0, roles.measure], frame.iloc[0, 1:].std())
+        note = next(note for note in roles.notes if note.startswith("This table looks like a matrix"))
+        self.assertIn("centred near zero", note)
+        self.assertNotIn("one row per row", note)
+        self.assertEqual(len(row_summary_columns(roles, summarised)), 23)
+
+    def test_a_matrix_without_row_labels_does_not_say_one_row_per_row(self):
+        genes = [f"Gene_{index}" for index in range(30)]
+        frame = pd.DataFrame(np.random.default_rng(10).poisson(5, (40, 30)), columns=genes)
+
+        notes = detect_roles(frame).notes
+        note = next(note for note in notes if note.startswith("This table looks like a matrix"))
+
+        self.assertNotIn("one row per row", note)
 
     def test_a_wide_table_of_named_measures_is_not_a_matrix(self):
         names = "abcdefghijklmnopqrstuvwxy"
