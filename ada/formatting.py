@@ -530,3 +530,27 @@ def format_moment(moment: pd.Timestamp) -> str:
     if is_undated(stamp):
         return _undated_label(stamp, "s")
     return stamp.strftime("%d %b %Y")
+
+
+def holds_undated(values: pd.Series) -> bool:
+    """Whether a column holds timestamps, all of them times with no calendar date."""
+    if not pd.api.types.is_datetime64_any_dtype(values):
+        return False
+    present = values.dropna()
+    return not present.empty and is_undated(present.min()) and is_undated(present.max())
+
+
+def show_undated(frame: pd.DataFrame) -> pd.DataFrame:
+    """A copy of a table for display with times that have no calendar date written as times.
+
+    Such times sit on ``UNDATED_DAY``; shown as they are, a table would print
+    a date nobody recorded. Each becomes its clock time ("15:06:28", or
+    "day 2 00:15:00" past midnight). Returns ``frame`` itself when no column holds them.
+    """
+    undated = [column for column in frame.columns if holds_undated(frame[column])]
+    if not undated:
+        return frame
+    shown = frame.copy()
+    for column in undated:
+        shown[column] = frame[column].map(lambda stamp: None if pd.isna(stamp) else format_moment(stamp))
+    return shown

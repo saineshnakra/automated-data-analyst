@@ -484,6 +484,19 @@ class UndatedTimeTests(unittest.TestCase):
         period = self.report.to_dict()["period"]
         self.assertEqual((period["from"], period["to"]), ("15:06:28", "15:56:01"))
 
+    def test_segments_give_each_group_its_times_without_the_stand_in_date(self):
+        stamps = pd.date_range("2024-01-01 15:06:28", periods=600, freq="s")
+        report = ada.analyze(pd.DataFrame({
+            "Time": stamps.strftime("%H:%M:%S"),
+            "Phase": ["warm-up"] * 200 + ["burn"] * 400,
+            "Signal": [100.0 + (n > 200) * 200 + n % 5 for n in range(600)],
+        }), dimension="Phase")
+
+        segments = report.segments().set_index("Segment")
+
+        self.assertEqual(segments.loc["warm-up", "From"], "15:06:28")
+        self.assertEqual(segments.loc["burn", "To"], "15:16:27")
+
 
 def gauges() -> pd.DataFrame:
     """Hourly wind at two stations, four hours logged as the code 999.9, and a humidity over 100%."""

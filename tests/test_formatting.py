@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from ada.formatting import (
+    UNDATED_DAY,
     format_change,
     format_number,
     format_rate_change,
@@ -16,8 +17,25 @@ from ada.formatting import (
     normalized_name,
     rate_scale,
     sentence_case,
+    show_undated,
     with_aggregate,
 )
+
+
+class UndatedDisplayTests(unittest.TestCase):
+    def test_times_with_no_calendar_date_show_as_times(self):
+        times = UNDATED_DAY + pd.to_timedelta([54_388, 57_000, 90_000], unit="s")
+        frame = pd.DataFrame({"From": times, "Value": [1, 2, 3]})
+
+        shown = show_undated(frame)
+
+        self.assertEqual(shown["From"].tolist(), ["15:06:28", "15:50:00", "day 2 01:00:00"])
+        self.assertEqual(frame["From"].dtype.kind, "M")
+
+    def test_real_dates_are_left_alone(self):
+        frame = pd.DataFrame({"Date": pd.to_datetime(["2024-01-01", "2024-02-01"]), "Value": [1, 2]})
+
+        self.assertIs(show_undated(frame), frame)
 
 
 class RateScaleTests(unittest.TestCase):

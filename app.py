@@ -92,6 +92,7 @@ from ada.analysis import column_profile  # noqa: E402 - the refresh above must r
 from ada.business_insights import BusinessBrief, analyze_business, build_business_report  # noqa: E402
 from ada.demo_data import make_demo_data  # noqa: E402
 from ada.file_io import list_excel_sheets, list_sample_datasets, read_tabular_file, safe_csv  # noqa: E402
+from ada.formatting import show_undated  # noqa: E402
 from ada.metrics import metric_for  # noqa: E402
 from ada.nlq import QueryPlan, answer_question, rephrase_hint, suggested_questions  # noqa: E402
 from ada.pipeline import (  # noqa: E402
@@ -741,7 +742,7 @@ with data_tab:
         st.dataframe(quality_frame(scan_quality(dataframe, roles)), hide_index=True, width="stretch")
 
     st.subheader("Cleaned data")
-    st.dataframe(dataframe.head(1_000), width="stretch", height=420)
+    st.dataframe(show_undated(dataframe.head(1_000)), width="stretch", height=420)
     st.caption("Preview limited to 1,000 rows. The download includes every analyzed row.")
     st.subheader("Data dictionary")
     st.dataframe(column_profile(dataframe), hide_index=True, width="stretch")

@@ -17,7 +17,7 @@ from .anomalies import detect_anomalies
 from .autovis import fold_small_series, recommend_chart
 from .business_insights import BusinessBrief
 from .forecasting import build_forecast, describe_backtest
-from .formatting import format_number, format_period, group_label, is_undated
+from .formatting import format_number, format_period, group_label, holds_undated, is_undated, show_undated
 from .metrics import metric_for
 from .nlq import QueryAnswer
 from .pipeline import analyze_selection
@@ -568,7 +568,7 @@ def render_chat_answer(result: QueryAnswer, *, key: str) -> None:
         )
     if result.table is not None and not result.table.empty:
         with st.expander("See the numbers"):
-            st.dataframe(result.table, hide_index=True, width="stretch", key=f"chat_table_{key}")
+            st.dataframe(show_undated(result.table), hide_index=True, width="stretch", key=f"chat_table_{key}")
     st.markdown(
         f'<p class="calculation chat-calc">CALC · {escape(result.calculation)}</p>',
         unsafe_allow_html=True,
@@ -728,6 +728,10 @@ def _explore_figure(frame: pd.DataFrame, spec) -> go.Figure | None:
     figure.update_layout(title=title)
     if spec.form in ("column", "bar"):
         figure.update_traces(marker_line_width=0)
+    # Times with no calendar date are labelled by the clock, never by their stand-in date.
+    vertical = spec.form in ("line", "area", "column", "scatter", "histogram")
+    if vertical and spec.x in frame.columns and holds_undated(frame[spec.x]):
+        figure = _undated_axis(figure, frame[spec.x])
     return style_chart(figure, height=380)
 
 
@@ -775,7 +779,7 @@ def render_explore(dataframe: pd.DataFrame, roles: ColumnRoles, brief: BusinessB
             return
         st.metric(spec.y or "Value", format_number(float(present.iloc[0]), spec.y))
     elif spec.form == "table":
-        st.dataframe(frame, hide_index=True, width="stretch")
+        st.dataframe(show_undated(frame), hide_index=True, width="stretch")
     else:
         figure = _explore_figure(frame, spec)
         if figure is not None:

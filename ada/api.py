@@ -27,7 +27,7 @@ from .business_insights import BusinessBrief, analyze_business, build_business_r
 from .file_io import list_sample_datasets as _list_sample_datasets
 from .file_io import read_tabular_file
 from .forecasting import Forecast, build_forecast
-from .formatting import format_moment, is_undated
+from .formatting import format_moment, is_undated, show_undated
 from .metrics import AGGREGATION_CHOICES, metric_for
 from .nlq import QueryAnswer, answer_question, rephrase_hint, suggested_questions, unsupported_phrasing
 from .pipeline import apply_focus, focus_options, prepare_analysis
@@ -379,7 +379,8 @@ class Analysis:
             return Refusal("no_dimension_column", "This table has no segment column to group by.")
         frame = segment_frame(self.frame, self.roles, limit=limit)
         if self.roles.date:
-            frame = frame.join(group_coverage(self.frame, self.roles), on="Segment")
+            # Times with no calendar date show as the time of day, not on their stand-in date.
+            frame = frame.join(show_undated(group_coverage(self.frame, self.roles)), on="Segment")
         return frame
 
     def ask(self, question: str) -> QueryAnswer | Refusal:

@@ -169,6 +169,12 @@ end of a date range the same way (`05 Mar 2024`, or `15:06:28`). Real
 readings from 1900 at a grain finer than a day would be labelled as undated
 too.
 
+Tables show such times the same way. `show_undated(frame)` writes every
+column of them as clock times (`15:06:28`, `day 2 00:15:00`) for display, and
+is applied to `Analysis.segments()` (its `From` and `To`), the app's answer
+tables, the Explore table and the cleaned-data preview. An Explore chart with
+such a time axis is labelled by the clock, like the trend chart.
+
 ## Known gaps
 
 - A rate or level column gets no total KPI, because its values do not add up.
