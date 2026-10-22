@@ -203,9 +203,21 @@ is shaped:
   Each group's values are judged against that group's own quartiles, so a
   group's level is not mistaken for outliers (arctic and tropical stations,
   resonant frequencies). A group with fewer than 12 values
-  (`MIN_GROUP_FOR_FENCES`) or no spread uses the pooled quartiles.
+  (`MIN_GROUP_FOR_FENCES`) or no spread uses the pooled quartiles. A grouping
+  cut from the reading itself (health bands of an index, a largest-of label;
+  `GroupingRule` in `ada/compare.py`) is never used for it. The grouping is
+  named only when some group had quartiles of its own; otherwise the
+  calculation says the quartiles were pooled, and a reading judged within a
+  different grouping from the lead's names it in "Also beyond chance".
 - A count of subjects or samples is skipped, and so is a reading a quarter of
-  whose values are one value: its IQR measures that pile, not the spread.
+  whose values are one value: its IQR measures that pile, not the spread. A
+  reading the data checks find piled in a sliver of its range (`pile` in
+  `ada/quality.py`) is skipped too, and the card names it under "Not counted".
+- When more than 5% of a reading's values lie outside the fences
+  (`HEAVY_TAIL_SHARE`), the card says they are part of the reading's shape,
+  long tails or a second cluster, rather than a handful of exceptional records,
+  and when that reading leads, the card is titled **Long tails** instead of
+  **Exceptional records**.
 - A normal sample puts about 0.70% of its values outside the fences, so a
   reading's count is reported only when a normal sample of its size would reach
   it with under 1% chance (binomial, `OUTLIER_CHANCE`). One value in 104 is what
@@ -216,9 +228,10 @@ is shaped:
   the lead reading narrows its IQR.
 - Cells the data checks flagged as impossible, codes, fill values, swapped or
   stuck are left out, and the calculation says how many.
-- For a reading with more than 50,000 values, the scale, the quartiles and the
-  choice of grouping come from a random sample of 50,000 of them
-  (`FENCE_SAMPLE_ROWS`); the values are counted on every row.
+- For a reading with more than 50,000 values, the scale, the pooled quartiles
+  and the choice of grouping come from a random sample of 50,000 of them
+  (`FENCE_SAMPLE_ROWS`); each group's quartiles come from all its rows, and the
+  values are counted on every row.
 - When half or more of the measure's values are 0 (`HEAVY_TAIL_ZEROS`), no
   outliers are listed. The card is titled **Heavy-tailed measure** and gives the
   share of zeros and the 99th percentile instead.
@@ -236,7 +249,11 @@ Before the cards are built, `ada/quality.py` scans every numeric column; see
 titled **Data checks**, its value is the number of issues, and it names the
 three issues about values (`QUALITY_ISSUES_SHOWN`) and the two about gaps
 (`GAP_ISSUES_SHOWN`) that cover the most rows, each with its counts, followed by
-how complete the table is. `Analysis.quality()` lists them
+how complete the table is. Descriptions of the table (a constant column, a
+reading mostly 0, a narrow pile; `INFO_CHECKS`) come after the issues about
+values. For one part of a stacked file, completeness counts only that part's
+own columns and says how many columns of the other tables, empty throughout
+it, were left out. `Analysis.quality()` lists them
 all. With no issue, the card is the earlier **Data completeness** card,
 skipped when nothing is missing.
 
@@ -247,11 +264,15 @@ More comes from the same checks:
   simulated-looking data do (`CHECK_FIRST_SHARE`), or is any other issue about
   values covering a quarter of its column or more (`CHECK_FIRST_BROAD`, such as
   fill values in 61% of rows), the summary ends with up to two of them
-  (`CHECK_FIRST_SHOWN`), those covering the most rows first.
+  (`CHECK_FIRST_SHOWN`), ranked as the card ranks them. Issues still in the
+  data come before codes cleaning already set to missing, which no longer
+  touch any figure: when such a code qualifies, the card's leading open issue
+  takes its place. A description of the table is never named here.
 - **Cells left out.** The relationship scan, the group comparisons and the
   outlier count run on a copy of the table with the cells the checks found
   can't be readings blanked (`statistics_frame` in `ada/quality.py`): impossible
-  values, codes, fill values, swapped and stuck readings. Each of those cards
+  values, codes, fill values, swapped and stuck readings, failed records, rows
+  of zeros and placeholder cells. Each of those cards
   ends its calculation with how many cells were left out.
 - **A leader carried by flagged values.** For an averaged measure, the leading
   group's average is recomputed without the values the checks flagged
