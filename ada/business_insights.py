@@ -2243,6 +2243,38 @@ def set_aside_note(scan: RelationshipScan) -> str:
     return f" Left out of the ranking for {scan.measure}: {'; '.join(clauses)}."
 
 
+# Words naming a column as a total over a row's items, and the columns so named that make a family.
+TOTAL_WORDS = frozenset({"total", "sum"})
+TOTAL_FAMILY = 2
+
+
+def _totals_note(first: str, second: str, columns: list[str]) -> str:
+    """A sentence when both columns belong to one family of totals over the same items, or "".
+
+    "density_Total" and "allelectrons_Total" both sum over the atoms of a
+    formula, so both grow with the formula's size and correlate partly for
+    that reason, which is not a relationship between density and electrons.
+    """
+
+    def total_word(name: str) -> str | None:
+        words = normalized_name(name).split()
+        found = [word for word in words if word in TOTAL_WORDS]
+        return found[0] if len(found) == 1 and len(words) > 1 else None
+
+    word = total_word(first)
+    if word is None or total_word(second) != word:
+        return ""
+    family = [column for column in columns if total_word(column) == word]
+    if len(family) < TOTAL_FAMILY:
+        return ""
+    others = [column for column in family if column not in (first, second)]
+    alike = f" (as {_joined_names(others[:3])} {'is' if len(others) == 1 else 'are'})" if others else ""
+    return (
+        f" Both are totals over the items of each row{alike}, so both grow with how many items a row sums "
+        "over, and part of this correlation comes from that."
+    )
+
+
 def _chance_note(pair: Pair, tests: int) -> str:
     """Say so when a picked correlation could be chance once every test run is allowed for."""
     if tests > 1 and min(1.0, pair.p_value * tests) >= 0.05:
@@ -2362,8 +2394,9 @@ def _relationship_evidence(
             lead, within = _scanned_pair(frame, roles, notable[0], rules, built)
             value = f"r = {lead.pearson:.2f}"
             reported += 1
-            parts.append(f"{describe_correlation(lead)}{within}")
-            if not lead.low <= 0 <= lead.high:
+            totals = _totals_note(lead.first, lead.second, list(scan.columns))
+            parts.append(f"{describe_correlation(lead)}{within}{totals}")
+            if not lead.low <= 0 <= lead.high and not totals:
                 headline = _first_sentence(describe_correlation(lead))
             if scan.measure_tests > 1:
                 parts.append(
@@ -2401,8 +2434,9 @@ def _relationship_evidence(
         reported += 1
         lead_in = "Among the other columns, the strongest pair: " if scan.measure else ""
         chance = _chance_note(others[0], scan.pair_tests)
-        parts.append(f"{lead_in}{describe_correlation(pair)}{within}{chance}")
-        if not scan.measure and not chance and not pair.low <= 0 <= pair.high:
+        totals = _totals_note(pair.first, pair.second, list(scan.columns))
+        parts.append(f"{lead_in}{describe_correlation(pair)}{within}{totals}{chance}")
+        if not scan.measure and not chance and not totals and not pair.low <= 0 <= pair.high:
             headline = _first_sentence(describe_correlation(pair))
     elif scan.others:
         strongest = scan.others[0]

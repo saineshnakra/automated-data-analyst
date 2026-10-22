@@ -2001,6 +2001,24 @@ class DefinedGroupingTests(unittest.TestCase):
         self.assertEqual(grouping_set_by(frame, roles, "humidity", "categori"), "")
 
 
+class TotalsFamilyTests(unittest.TestCase):
+    def test_two_totals_over_the_same_items_get_a_caution_and_no_headline(self):
+        rng = np.random.default_rng(75)
+        atoms = rng.integers(1, 12, 400)
+        frame = pd.DataFrame({
+            "density_Total": atoms * rng.uniform(2, 8, 400),
+            "electrons_Total": atoms * rng.uniform(5, 30, 400),
+            "density_Average": rng.uniform(2, 8, 400),
+        })
+
+        brief = analyze_business(frame, roles_for(frame, "density_Total", None))
+
+        relationship = brief_card(brief, "relationship")
+        assert relationship is not None
+        self.assertIn("Both are totals over the items of each row", relationship.statement)
+        self.assertEqual(relationship.lead, "")
+
+
 class LogisticCardTests(unittest.TestCase):
     def test_a_yes_no_measure_gets_odds_ratios_from_its_readings(self):
         rng = np.random.default_rng(73)
