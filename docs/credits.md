@@ -76,6 +76,18 @@ The methods ADA applies, with the papers that introduced them:
 | Kolmogorov-Smirnov distance | Data checks: columns that look simulated | Kolmogorov, A. N. (1933), *Giornale dell'Istituto Italiano degli Attuari* 4, 83–91; Smirnov, N. (1948), *Annals of Mathematical Statistics* 19, 279–281 |
 | Theil-Sen slope | Trendlines, anomalies, forecasts | Theil, H. (1950), *Indagationes Mathematicae* 12; Sen, P. K. (1968), *JASA* 63, 1379–1389 |
 
+## Paper figures
+
+| Library or method | Licence or reference | What ADA uses it for |
+|---|---|---|
+| [Matplotlib](https://matplotlib.org) | Matplotlib licence (PSF-based) | Drawing every figure and writing PDF, SVG, PNG and EPS; Hunter, J. D. (2007), *Computing in Science & Engineering* 9, 90–95 |
+| [Pillow](https://python-pillow.org) | MIT-CMU | Writing TIFF files as RGB with LZW compression, through Matplotlib's own dependency |
+| Okabe–Ito colours | Okabe, M. and Ito, K. (2008), *Color Universal Design*, https://jfly.uni-koeln.de/color/ | The group colours, in an order that keeps neighbours apart for colour-blind readers |
+| van der Corput sequence | van der Corput, J. G. (1935), *Proceedings of the Koninklijke Akademie van Wetenschappen te Amsterdam* 38, 813–821 | Spreading the points of each group sideways the same way at every build, scaled by `scipy.stats.gaussian_kde` |
+| Normal Q–Q plot | Wilk, M. B. and Gnanadesikan, R. (1968), *Biometrika* 55, 1–17 | The model checks, through `scipy.stats.probplot` |
+| t confidence interval | `scipy.stats.t.interval` with `scipy.stats.sem` | Means and their intervals when an analysis gives none |
+| Confidence band for the mean | `statsmodels` OLS `get_prediction().summary_frame()` | The band in the scatter figure |
+
 ## Checking a rebuild
 
 `ada verify` compares each number in a rebuilt CSV file with the one on disk

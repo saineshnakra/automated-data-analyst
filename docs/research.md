@@ -193,6 +193,58 @@ def dose_curve(data, study):
 They run on the processed data, are saved in the study's formats, and are
 recorded in `provenance.json` with the script's checksum.
 
+### Figures
+
+Every figure shows each observation, not only a summary, with the means and
+their confidence intervals drawn in black beside or over the points. Each
+`figures:` entry has an `id` and a `type`, and may name `x`, `y`, `by`, the
+`analysis` it illustrates, a `title`, a `caption` placed before ADA's own, and
+`width_mm` or `height_mm`.
+
+| Type | What it draws |
+|---|---|
+| `groups` | Every observation per group, spread sideways so none hide each other, with the group mean and its confidence interval. `by` splits each group again. |
+| `paired` | A line per subject joining its conditions, the condition means, and a second panel with each subject's difference and the mean difference. |
+| `longitudinal` | A light line per subject over time, and the mean with its interval at each time point per group (`by`). |
+| `scatter` | Points, the least-squares line and its confidence band for the mean, coloured by `by`. |
+| `missingness` | The share of missing values per variable, and a map of rows by variables up to 2,000 rows. |
+| `diagnostics` | Residuals against fitted values and a normal Q–Q plot, for an analysis with residuals. |
+| `panel` | The figures named in `panels`, side by side, lettered A, B, C. They are not drawn again on their own. |
+
+With an `analysis`, the points are the rows the analysis used and the means
+and intervals are the analysis's own. Without a `figures:` list, ADA draws one
+figure per analysis: groups for a comparison of independent or clustered
+groups, paired for conditions measured within each subject, longitudinal for
+change over time and scatter for a numeric predictor. Planned analyses go in
+the paper and exploratory ones in the supplement, with a missing-values figure
+when any variable has missing values, and model checks for each analysis with
+residuals.
+
+Each figure comes with `<id>.source.csv`, holding every point drawn (with its
+`source_row`) and every mean, interval and n, without the columns under
+`sharing.withhold`. Its caption says what a point, a line and an error bar
+are, the confidence level, n per group, the rows left out, the linked test,
+and whether the analysis was planned.
+
+`output.journal` sets the size, resolution and fonts from the journal's
+author guidelines; `output.width_mm`, `height_mm`, `dpi`, `font` and
+`font_size` override them.
+
+| Preset | Widths (mm) | Max height (mm) | dpi | Text |
+|---|---|---|---|---|
+| `default` | 85, 170 | 225 | 300 | Arial 8 pt |
+| `plos` | 132 (text column), 190.5 (most); at least 66.8 | 222.3 | 300 | Arial 8 pt, nothing smaller |
+| `nature` | 89, 120 or 136, 183 | 170 | 450 | Arial 7 pt (5 to 7), panels a, b, c |
+| `cell` | 85, 114, 174 | 225 | 500 | Arial 8 pt (6 to 8) |
+| `science` | 90, up to 144, 184 | 199 | 600 | Myriad or Helvetica 8 pt (at least 6), panels 9 pt |
+| `elife` | 100, 200 | 200 | 300 | Arial 8 pt |
+
+Where a guideline gives no number (the height for Cell and eLife, fonts for
+eLife), the preset uses a conservative one. TIFF files are RGB without an
+alpha channel and LZW-compressed. EPS cannot hold transparency, so a study
+that asks for EPS gets opaque tints in every format. A rebuild gives the same
+bytes in every format.
+
 ## What `ada build` writes
 
 ```
