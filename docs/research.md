@@ -224,8 +224,14 @@ made it, the calculation in words, references, and the versions of Python and
 every package involved.
 
 Each build compares itself with the previous record. `CHANGES.md` names every
-asset that changed and why: which part of `study.yml`, the input data, the
-rows used, or a package version, with the old and new headline numbers.
+asset that changed and why: which part of `study.yml`, the input data, a
+custom script, or a version of ADA, Python or a package. For each it gives the
+rows used and the headline numbers, old → new, and the files that differ, and
+it names the assets that stayed the same. Entries are numbered, not dated.
+
+Neither file holds a date or anything else that changes from one build to the
+next, and Word files are written with fixed dates inside, so rebuilding an
+unchanged study gives the same bytes and `git diff` stays quiet.
 
 ## Verifying
 

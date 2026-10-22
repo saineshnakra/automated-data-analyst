@@ -204,7 +204,40 @@ def write_docx(tables: list[Table], path: Path) -> None:
         for note in table.notes:
             paragraph = document.add_paragraph()
             paragraph.add_run(note).font.size = Pt(8)
+    save_docx(document, path)
+
+
+#: The date stamped on every part of a Word file, so the same content gives the same bytes.
+DOCX_TIMESTAMP = (2000, 1, 1, 0, 0, 0)
+
+
+def save_docx(document, path: Path) -> None:
+    """Save a python-docx ``Document`` so the same content gives the same file at every build."""
+    _stable_properties(document)
     document.save(path)
+    stable_docx(path)
+
+
+def stable_docx(path: Path) -> None:
+    """Rewrite a Word file with a fixed date on each part of its zip archive.
+
+    python-docx stamps every part with the time of saving, so two builds of the
+    same table would otherwise differ in bytes and show up in ``git diff``.
+    """
+    import io  # noqa: PLC0415
+    import zipfile  # noqa: PLC0415
+
+    with zipfile.ZipFile(path) as source:
+        parts = [(info.filename, info.external_attr, source.read(info)) for info in source.infolist()]
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as target:
+        for name, attributes, content in parts:
+            info = zipfile.ZipInfo(name, date_time=DOCX_TIMESTAMP)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = 3
+            info.external_attr = attributes
+            target.writestr(info, content)
+    path.write_bytes(buffer.getvalue())
 
 
 def _stable_properties(document) -> None:

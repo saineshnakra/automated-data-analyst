@@ -153,8 +153,7 @@ def build(study: Study | str | Path = "study.yml", out: Path | None = None) -> B
 
     record = provenance.manifest(study, out, result.assets, processed, result.custom)
     result.changes = provenance.compare(before, record)
-    unchanged = len(record["assets"]) - sum(1 for change in result.changes if change.status != "removed")
-    provenance.write_changes(out, provenance.changes_markdown(result.changes, before, record, unchanged))
+    provenance.write_changes(out, provenance.changes_markdown(result.changes, before, record))
     provenance.write_manifest(out, record)
     return result
 
