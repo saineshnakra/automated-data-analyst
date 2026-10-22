@@ -2212,10 +2212,13 @@ def _relationship_evidence(
             closest = scan.correlates[0]
             figures = _figures(frame, closest, scan.sampled)
             parts.append(
-                f"{closest.second} does not relate to {measure}: {figures}."
-                if scan.measure_tests == 1
-                else f"None of the {scan.measure_tests:,} columns tested against {measure} reaches "
-                f"|r| = {NOTABLE_CORRELATION}; the closest is {closest.second} ({figures})."
+                (
+                    f"{closest.second} does not relate to {measure}: {figures}."
+                    if scan.measure_tests == 1
+                    else f"None of the {scan.measure_tests:,} columns tested against {measure} reaches "
+                    f"|r| = {NOTABLE_CORRELATION}; the closest is {closest.second} ({figures})."
+                )
+                + set_aside_note(scan)
             )
     others = [pair for pair in scan.others if pair.strength >= NOTABLE_CORRELATION]
     if others:

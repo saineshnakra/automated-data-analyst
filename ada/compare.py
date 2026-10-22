@@ -112,6 +112,31 @@ DERIVATION_ROWS = 2_000
 # Rows that must hold a column and all its candidate parts: this many, and this share of the column.
 DERIVATION_MIN_ROWS = 12
 DERIVATION_MIN_SHARE = 0.1
+# Powers a product or ratio of columns may take (BMI divides weight by height
+# squared), the parts it may have, and the candidates tried for it.
+EXPONENTS = (-3.0, -2.0, -1.0, -0.5, 0.5, 1.0, 2.0, 3.0)
+MAX_PRODUCT_PARTS = 3
+PRODUCT_CANDIDATES = 6
+# Above this many positive readings a table is a matrix of one kind of value,
+# whose columns are not products of one another, and the search is skipped.
+PRODUCT_TARGETS = 100
+# One-to-one functions a column may be of another (lcond = log10 of COND), and
+# how closely their ranks must agree for the pair to be checked.
+TRANSFORMS = {
+    "log10": np.log10,
+    "ln": np.log,
+    "log2": np.log2,
+    "log10p": lambda values: np.log10(values + 1),
+    "ln1p": np.log1p,
+    "sqrt": np.sqrt,
+    "square": np.square,
+    "reciprocal": np.reciprocal,
+}
+TRANSFORM_NAMES = {
+    "log10": "log10({})", "ln": "ln({})", "log2": "log2({})", "log10p": "log10({} + 1)",
+    "ln1p": "ln({} + 1)", "sqrt": "√{}", "square": "{}²", "reciprocal": "1 ÷ {}",
+}
+TRANSFORM_RANKS = 0.995
 # Words that qualify a name rather than say what was measured, so sharing one
 # ("CorrectTotal", "IncorrectTotal") does not make two columns one quantity.
 GENERIC_NAME_WORDS = frozenset({
@@ -2478,8 +2503,10 @@ class Derivation:
     intercept: float
     #: "sum", "mean", "difference", "combination", "complement" (the column and its
     #: parts add up to a fixed total), "maximum" or "minimum" (the largest or
-    #: smallest of the parts), or "standardised" (a z-score of its part, within
-    #: each group of ``within`` when that is set).
+    #: smallest of the parts), "standardised" (a z-score of its part, within
+    #: each group of ``within`` when that is set), "transform" (``function`` of
+    #: its one part, such as its log10), or "product" (the parts raised to the
+    #: powers in ``coefficients`` and multiplied, times e to the ``intercept``).
     kind: str
     #: Share of the rows holding the column and its parts on which the formula holds.
     share: float = 1.0
@@ -2490,8 +2517,14 @@ class Derivation:
     within: str | None = None
     #: Rows where the column reads 0 although every part is blank: a placeholder, not a value.
     blank_rows: int = 0
+    #: For a "transform", the function of the part: "log10", "ln", "sqrt" and so on.
+    function: str = ""
 
     def describe(self) -> str:
+        if self.kind == "transform":
+            return f"{self.column} = {TRANSFORM_NAMES[self.function].format(self.parts[0])}"
+        if self.kind == "product":
+            return f"{self.column} = {_product_formula(self.parts, self.coefficients, self.intercept)}"
         if self.kind == "sum":
             return f"{self.column} = {' + '.join(self.parts)}"
         if self.kind == "mean":
@@ -2559,6 +2592,12 @@ def _count_rows(count: int) -> str:
     return f"{count:,} row{'' if count == 1 else 's'}"
 
 
+def _nearest_exponent(weight: float) -> float:
+    """The power from EXPONENTS nearest ``weight``, when it is within 2% of it."""
+    nearest = min(EXPONENTS, key=lambda power: abs(power - weight))
+    return nearest if abs(weight - nearest) <= 0.02 * max(1.0, abs(weight)) else weight
+
+
 def _simple_fraction(weight: float) -> float:
     """The nearest fraction with a denominator up to 12, when it is within 2% of ``weight``."""
     for denominator in range(1, 13):
@@ -2611,7 +2650,12 @@ def _tolerance(values: np.ndarray) -> tuple[float, float]:
 
 
 def find_derivation(
-    frame: pd.DataFrame, column: str, candidates: list[str], steps: dict[str, float] | None = None
+    frame: pd.DataFrame,
+    column: str,
+    candidates: list[str],
+    steps: dict[str, float] | None = None,
+    *,
+    exponents: bool = False,
 ) -> Derivation | None:
     """Whether ``column`` is a fixed combination of a few of ``candidates``: a sum, a mean, a difference.
 
@@ -2621,7 +2665,9 @@ def find_derivation(
     needs three distinct rows per term, so a few rows can't be matched by
     chance, however often they repeat.
     ``steps`` caches the step each column was recorded at, when many columns
-    are searched over the same rows.
+    are searched over the same rows. With ``exponents`` the columns are logs
+    and the weights must be powers from EXPONENTS, so a match is a product
+    or a ratio of at most MAX_PRODUCT_PARTS columns (see ``find_product``).
     """
     # A part recorded on only some rows (acidity measured only on acid soils)
     # still shows the identity on the rows that have it, so candidates are
@@ -2688,7 +2734,8 @@ def find_derivation(
             coefficients = np.linalg.lstsq(design[close], target[close], rcond=None)[0]
         residual = target - design @ coefficients
         limit = allowance(indices, coefficients[1:])
-        snapped = np.array([_simple_fraction(weight) for weight in coefficients[1:]])
+        snap = _nearest_exponent if exponents else _simple_fraction
+        snapped = np.array([snap(weight) for weight in coefficients[1:]])
         simple_limit = allowance(indices, snapped)
         offset = float(np.median(target - design[:, 1:] @ snapped))
         offset = 0.0 if abs(offset) <= simple_limit else offset
@@ -2724,7 +2771,14 @@ def find_derivation(
                 return None
             parts = tuple(candidates[index] for index, keep in zip(chosen, used, strict=True) if keep)
             weights = weights[used]
-            kind = _classify(weights, float(coefficients[0]), limit)
+            if exponents:
+                # Powers other than the few that formulas use (BMI divides by height
+                # squared) are a fit to the rows, not a formula.
+                if len(parts) > MAX_PRODUCT_PARTS or not np.isin(np.round(weights, 9), EXPONENTS).all():
+                    return None
+                kind = "product"
+            else:
+                kind = _classify(weights, float(coefficients[0]), limit)
             if kind == "combination" and not reproduces(residual, limit, simple=False):
                 return None
             return Derivation(
@@ -2868,6 +2922,71 @@ def find_standardised(
     if within is None:
         return None
     return Derivation(column, (), (), 0.0, "standardised", share=share, within=within)
+
+
+def find_transform(frame: pd.DataFrame, column: str, source: str) -> Derivation | None:
+    """Whether ``column`` is a one-to-one function of ``source``: its log10, natural log, square root.
+
+    A log or a square root keeps the order of the values but bends their
+    spacing, so the pair's ranks agree exactly while Pearson r can be well
+    below 1; their correlation is built in all the same. The function must
+    reproduce the column on DERIVED_SHARE of its distinct rows.
+    """
+    pair = frame[[column, source]].apply(pd.to_numeric, errors="coerce").dropna().drop_duplicates()
+    if len(pair) < DERIVATION_MIN_ROWS or pair[column].nunique() < RULE_MIN_VALUES:
+        return None
+    target = pair[column].to_numpy(dtype=float)
+    values = pair[source].to_numpy(dtype=float)
+    tolerance, spread = _tolerance(target)
+    if not spread > 0:
+        return None
+    for name, function in TRANSFORMS.items():
+        with np.errstate(all="ignore"):
+            made = function(values)
+        valid = np.isfinite(made)
+        if valid.mean() < DERIVED_SHARE:
+            continue
+        residual = target[valid] - made[valid]
+        if _reproduces(target[valid], residual, tolerance, spread, DERIVED_SHARE):
+            share = float(np.mean(np.abs(residual) <= tolerance))
+            return Derivation(column, (source,), (1.0,), 0.0, "transform", share=share, function=name)
+    return None
+
+
+def find_product(frame: pd.DataFrame, column: str, candidates: list[str]) -> Derivation | None:
+    """Whether ``column`` is a product or ratio of powers of a few ``candidates``: BMI = weight ÷ height².
+
+    On logs a product is a sum, so the search for a sum of logs with powers
+    from EXPONENTS finds it; the constant factor (10,000 for a height in cm)
+    is the intercept. Only positive values have logs, so the others are left
+    out of the fit.
+    """
+    columns = [column, *candidates]
+    numbers = frame[columns].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+    with np.errstate(all="ignore"):
+        logs = np.where(numbers > 0, np.log(numbers), np.nan)
+    logs = pd.DataFrame(logs, columns=columns, index=frame.index)
+    return find_derivation(logs, column, candidates, exponents=True)
+
+
+def _product_formula(parts: tuple[str, ...], powers: tuple[float, ...], log_factor: float) -> str:
+    """ "weight_kg ÷ height_cm² × 10,000" for a product of powers of columns and a constant factor."""
+
+    def term(part: str, power: float) -> str:
+        size = abs(power)
+        if size == 0.5:
+            return f"√{part}"
+        return part + {1.0: "", 2.0: "²", 3.0: "³"}.get(size, f"^{size:g}")
+
+    above = [term(part, power) for part, power in zip(parts, powers, strict=True) if power > 0]
+    below = [term(part, power) for part, power in zip(parts, powers, strict=True) if power < 0]
+    formula = " × ".join(above) if above else "1"
+    if below:
+        formula += " ÷ " + (below[0] if len(below) == 1 else f"({' × '.join(below)})")
+    factor = float(f"{np.exp(log_factor):.3g}")
+    if abs(log_factor) > 1e-3:
+        formula += f" × {format_number(factor, compact=False)}"
+    return formula
 
 
 @dataclass(frozen=True)
@@ -3231,6 +3350,64 @@ def _summaries(
     return found
 
 
+def _products(
+    frame: pd.DataFrame, columns: list[str], targets: set[int], family: list[int]
+) -> dict[str, Derivation]:
+    """Positive columns that are a product or ratio of powers of columns before them (``find_product``).
+
+    Candidates are the columns whose logs correlate most with the target's,
+    from at most DERIVATION_ROWS rows; a table of more than PRODUCT_TARGETS
+    positive readings is skipped.
+    """
+    values = frame.to_numpy(dtype=float)
+    with np.errstate(all="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        positive = np.nanmin(values, axis=0) > 0
+    indices = np.flatnonzero(positive)
+    wanted = [index for index in sorted(targets) if positive[index]]
+    if len(indices) < 3 or not wanted or len(wanted) > PRODUCT_TARGETS:
+        return {}
+    rows = np.linspace(0, len(values) - 1, min(len(values), DERIVATION_ROWS)).astype(int)
+    logs, _ = pairwise_correlations(np.log(values[np.ix_(rows, indices)]))
+    local = {index: place for place, index in enumerate(indices)}
+    found = {}
+    for index in wanted:
+        strength = np.nan_to_num(np.abs(logs[local[index]]), nan=-1.0)
+        candidates = [
+            columns[indices[place]]
+            for place in np.argsort(-strength)
+            if indices[place] < index and family[indices[place]] != family[index] and strength[place] > 0
+        ][:PRODUCT_CANDIDATES]
+        if len(candidates) >= 2:
+            derivation = find_product(frame, columns[index], candidates)
+            if derivation is not None:
+                found[columns[index]] = derivation
+    return found
+
+
+def _transforms(
+    frame: pd.DataFrame, columns: list[str], targets: set[int], spearman: np.ndarray, family: list[int]
+) -> dict[str, Derivation]:
+    """Columns that are a log, a square root or another one-to-one function of another (``find_transform``).
+
+    Only pairs whose ranks agree to TRANSFORM_RANKS are checked. The later
+    column is tried as the function of the earlier first, since computed
+    columns are usually appended.
+    """
+    found: dict[str, Derivation] = {}
+    first, second = np.where(np.triu(np.abs(np.nan_to_num(spearman)) >= TRANSFORM_RANKS, k=1))
+    for i, j in zip(first, second, strict=True):
+        if family[i] == family[j] or columns[i] in found or columns[j] in found:
+            continue
+        for derived, source in ((j, i), (i, j)):
+            if derived in targets:
+                transform = find_transform(frame, columns[derived], columns[source])
+                if transform is not None:
+                    found[columns[derived]] = transform
+                    break
+    return found
+
+
 def _checked(dataframe: pd.DataFrame, derivation: Derivation) -> tuple[Derivation, pd.Index]:
     """The derivation with its exceptions counted on every row, and the rows holding a placeholder 0.
 
@@ -3445,6 +3622,15 @@ def construction(
     targets = {screened.index(column) for column in columns}
     derived = _derivations(thinned, screened, targets, pearson, counts, family)
     remaining = {index for index in targets if screened[index] not in derived}
+    derived.update(_products(thinned, screened, remaining, family))
+    remaining = {index for index in remaining if screened[index] not in derived}
+    transforms = _transforms(thinned, screened, remaining, spearman, family)
+    derived.update(transforms)
+    remaining = {index for index in remaining if screened[index] not in derived}
+    # A log or a square root of a column is that quantity on another scale, one family with it.
+    for column, found in transforms.items():
+        joined, into = family[screened.index(column)], family[screened.index(found.parts[0])]
+        family = [into if member == joined else member for member in family]
     for column, found in _summaries(dataframe, thinned, screened, remaining, pearson, family).items():
         derived[column] = replace(found, parts=tuple(sorted(found.parts, key=order.__getitem__)))
     for item in known:

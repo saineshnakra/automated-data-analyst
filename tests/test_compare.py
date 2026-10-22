@@ -24,6 +24,7 @@ from ada.compare import (
     describe_rates,
     entity_column,
     find_derivation,
+    find_product,
     find_standardised,
     fit_joint_model,
     grouping_rules,
@@ -721,6 +722,40 @@ class RelationshipScanTests(unittest.TestCase):
         assert scan is not None
         self.assertTrue(scan.sampled)
         self.assertEqual(scan.correlates[0].pairs, SCAN_ROWS)
+
+
+class TransformTests(unittest.TestCase):
+    def test_a_log_of_a_reading_is_that_reading_on_another_scale(self):
+        rng = np.random.default_rng(48)
+        conductivity = rng.lognormal(5, 1, 400).round(1)
+        frame = pd.DataFrame({
+            "COND": conductivity,
+            "lcond": np.log10(conductivity),
+            "pH": rng.normal(7, 0.5, 400),
+        })
+
+        built = construction(frame, list(frame.columns), "COND")
+
+        assert built is not None
+        self.assertEqual(built.derivation("lcond").describe(), "lcond = log10(COND)")
+        self.assertEqual(built.relation("COND", "lcond"), "copy")
+        scan = scan_relationships(frame, list(frame.columns), "COND", built=built)
+        self.assertNotIn("lcond", [pair.second for pair in scan.correlates])
+        self.assertFalse(any("lcond" in (pair.first, pair.second) for pair in scan.others))
+
+    def test_a_ratio_of_powers_is_found_and_named(self):
+        rng = np.random.default_rng(49)
+        weight = rng.normal(80, 15, 500).round(1)
+        height = rng.normal(170, 10, 500).round(1)
+        frame = pd.DataFrame({"weight_kg": weight, "height_cm": height, "age": rng.integers(20, 80, 500)})
+        frame["bmi"] = (weight / (height / 100) ** 2).round(2)
+        frame.loc[:9, "bmi"] = 40.0
+
+        found = find_product(frame, "bmi", ["weight_kg", "height_cm", "age"])
+
+        assert found is not None
+        self.assertEqual(found.describe(), "bmi = weight_kg ÷ height_cm² × 10,000")
+        self.assertIsNone(find_product(frame, "age", ["weight_kg", "height_cm"]))
 
 
 class SummaryFamilyTests(unittest.TestCase):
