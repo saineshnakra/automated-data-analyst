@@ -2991,27 +2991,48 @@ def _execute_trend(
     # Rates move in points and levels by a plain difference (see format_change).
     column = working[plan.measure].dropna() if plan.measure else None
     unit = _unit(plan.measure, scoped_roles)
-    size = format_change(first, last, plan.measure, unit, column, signed=True)
-    movement = (
-        f"{size} across {len(trend)} {grain_name}s"
-        if size
-        else f"across {len(trend)} {grain_name}s, from a starting period of zero"
-    )
-    start, end = format_values_apart(first, last, column=plan.measure)
+    # Periods from the first to the last with a value: empty ones before a
+    # reading starts are not part of its record.
+    spanned = (
+        pd.Period(pd.Timestamp(present.iloc[-1]["Period"]), grain)
+        - pd.Period(pd.Timestamp(present.iloc[0]["Period"]), grain)
+    ).n + 1
     counted = f"Distinct {plan.count_column}" if plan.count_column else "Records"
     named = plan.measure or counted
     first_period = _period_words(present.iloc[0]["Period"], grain)
     last_period = _period_words(present.iloc[-1]["Period"], grain)
+    yearly = _complete_years(present, grain)
+    if len(yearly) >= SLOPE_YEARS:
+        # A seasonal series compares whole years, not a summer with an autumn.
+        first, last = float(yearly.iloc[0]), float(yearly.iloc[-1])
+        first_period, last_period = str(yearly.index[0]), str(yearly.index[-1])
+        spanned, grain_name = len(yearly), "complete year"
+    size = format_change(first, last, plan.measure, unit, column, signed=True)
+    movement = (
+        f"{size} across {spanned} {grain_name}s"
+        if size
+        else f"across {spanned} {grain_name}s, from a starting period of zero"
+    )
+    start, end = format_values_apart(first, last, column=plan.measure)
+    per = GRAIN_NAMES.get(grain, "period")
+    shown_as = ", averaged over each complete year," if len(yearly) >= SLOPE_YEARS else f" per {per}"
     answer = (
-        f"{named} per {grain_name}{_phrase(applied)} moved from {start} to {end} ({movement}), "
+        f"{named}{shown_as}{_phrase(applied)} moved from {start} to {end} ({movement}), "
         f"from {first_period} to {last_period}."
     )
+    if plan.measure:
+        # Say when the reading's own record starts after the table's.
+        dates = working[roles.date].dropna()
+        recorded = working.loc[working[plan.measure].notna(), roles.date].dropna()
+        if not recorded.empty and pd.Period(recorded.min(), grain) > pd.Period(dates.min(), grain):
+            answer += f" {named} is recorded only from {_period_words(present.iloc[0]['Period'], grain)}."
     if present["Value"].nunique() == 1:
         # A series that never moves has no slope, peak or low worth naming.
         answer = (
-            f"{named} per {grain_name}{_phrase(applied)} is "
-            f"{format_number(first, plan.measure, column_values=column)} in every {grain_name} with a value, "
-            f"from {first_period} to {last_period}."
+            f"{named} per {per}{_phrase(applied)} is "
+            f"{format_number(first, plan.measure, column_values=column)} in every {per} with a value, "
+            f"from {_period_words(present.iloc[0]['Period'], grain)} to "
+            f"{_period_words(present.iloc[-1]['Period'], grain)}."
         )
         slope, slope_calculation = "", ""
     else:
@@ -3025,7 +3046,7 @@ def _execute_trend(
             f"{format_number(float(low['Value']), plan.measure, column_values=column)}, in "
             f"{_period_words(low['Period'], grain)}."
         )
-    calculation = f"{plan.aggregation}({plan.measure or 'rows'}) grouped per {grain_name}{scope}"
+    calculation = f"{plan.aggregation}({plan.measure or 'rows'}) grouped per {per}{scope}"
     if slope_calculation:
         calculation += f"; {slope_calculation}"
     if leading:
@@ -3067,29 +3088,39 @@ def _without_leading_partial(trend: pd.DataFrame, dates: pd.Series, grain: str) 
     return trend.iloc[1:].reset_index(drop=True), note
 
 
+def _complete_years(present: pd.DataFrame, grain: str) -> pd.Series:
+    """The average of each year with nine in ten of its periods recorded, over three or more years.
+
+    Empty for a yearly grain, a grain with no periods per year, or a span
+    shorter than SLOPE_YEARS.
+    """
+    periods = pd.DatetimeIndex(present["Period"])
+    per_year = PERIODS_PER_YEAR.get(grain)
+    if not per_year or grain == "Y" or (periods[-1] - periods[0]).days / 365.25 < SLOPE_YEARS:
+        return pd.Series(dtype=float)
+    frame = pd.DataFrame({"year": periods.year, "value": present["Value"].to_numpy(dtype=float)})
+    counts = frame.groupby("year")["value"].count()
+    full = counts[counts >= 0.9 * per_year].index
+    return frame[frame["year"].isin(full)].groupby("year")["value"].mean()
+
+
 def _trend_slope(
     present: pd.DataFrame, grain: str, measure: str | None, column: pd.Series | None
 ) -> tuple[str, str]:
     """The Theil-Sen slope of a trend as a sentence and its calculation, per year where that makes sense."""
     periods = pd.DatetimeIndex(present["Period"])
     values = present["Value"].to_numpy(dtype=float)
-    per_year = PERIODS_PER_YEAR.get(grain)
-    years = (periods[-1] - periods[0]).days / 365.25
-    if per_year and grain != "Y" and years >= SLOPE_YEARS:
-        frame = pd.DataFrame({"year": periods.year, "value": values})
-        counts = frame.groupby("year")["value"].count()
-        full = counts[counts >= 0.9 * per_year].index
-        yearly = frame[frame["year"].isin(full)].groupby("year")["value"].mean()
-        if len(yearly) >= SLOPE_YEARS:
-            positions = yearly.index.to_numpy(dtype=float)
-            slope, _ = theil_sen(positions, yearly.to_numpy())
-            text = _per_year_text(slope, len(yearly), measure, column)
-            verdict, tested = _slope_verdict(positions, yearly.to_numpy(), measure, column)
-            return (
-                f" The Theil-Sen trend is {text}, fitted on the yearly averages of {len(yearly)} "
-                f"complete years{verdict}",
-                f"Theil-Sen slope over the yearly averages of {len(yearly)} complete years{tested}",
-            )
+    yearly = _complete_years(present, grain)
+    if len(yearly) >= SLOPE_YEARS:
+        positions = yearly.index.to_numpy(dtype=float)
+        slope, _ = theil_sen(positions, yearly.to_numpy())
+        text = _per_year_text(slope, len(yearly), measure, column)
+        verdict, tested = _slope_verdict(positions, yearly.to_numpy(), measure, column)
+        return (
+            f" The Theil-Sen trend is {text}, fitted on the yearly averages of {len(yearly)} "
+            f"complete years{verdict}",
+            f"Theil-Sen slope over the yearly averages of {len(yearly)} complete years{tested}",
+        )
     # Positions at the answer's own grain: re-inferred from the periods that
     # hold values, sparse months can read as quarters.
     positions = period_positions(periods, grain)

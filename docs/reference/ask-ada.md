@@ -524,7 +524,12 @@ Other behaviour:
   once three or more are covered, so seasons can't tilt it; per decade too
   over 20 years) with its 95% interval and Mann-Kendall p-value
   (`timeseries.trend_test`), and its peak and low. An interval that spans
-  zero is "no clear trend". The slope is per period of the answer's own grain,
+  zero is "no clear trend". Once three or more complete years are covered,
+  the start and end it quotes are the first and last complete years'
+  averages, so a seasonal series does not compare a summer with an autumn.
+  It counts only the periods from the first to the last with a value, and
+  says when the reading's own record starts after the table's ("pm25 is
+  recorded only from 2021"). The slope is per period of the answer's own grain,
   so sparse months are not re-read as quarters. A series with one value
   throughout is stated once ("is 100.0% in every year") with no slope, peak or
   low. A first period the data starts

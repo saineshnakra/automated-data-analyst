@@ -2004,6 +2004,27 @@ class TrendSlopeTests(unittest.TestCase):
         self.assertIn("95% CI", answer.answer)
         self.assertIn("no clear trend", answer.answer)
 
+    def test_a_reading_that_starts_late_counts_only_its_own_years(self):
+        days = pd.date_range("2010-01-01", "2024-12-31", freq="7D")
+        late = np.where(days.year >= 2021, 80.0 + days.year - 2021, np.nan)
+        frame = pd.DataFrame({"Date": days, "o3": 50.0, "pm25": late})
+        roles = replace(detect_roles(frame), date="Date", measure="o3")
+
+        answer = answer_question("pm25 per year", frame, roles)
+
+        self.assertIn("across 4 years", answer.answer)
+        self.assertIn("pm25 is recorded only from 2021", answer.answer)
+
+    def test_a_seasonal_series_compares_whole_years(self):
+        months = pd.date_range("2018-01-01", periods=60, freq="MS")
+        frame = pd.DataFrame({"Date": months, "TMK": 10 + 8 * np.cos(2 * np.pi * (months.month - 7) / 12)})
+        roles = replace(detect_roles(frame), date="Date", measure="TMK")
+
+        answer = answer_question("TMK trend by quarter", frame, roles)
+
+        self.assertIn("TMK, averaged over each complete year, moved from 10.00 to 10.00", answer.answer)
+        self.assertIn("across 5 complete years", answer.answer)
+
     def test_a_series_that_never_moves_is_stated_once(self):
         frame = pd.DataFrame({"Year": [2005 + index for index in range(11)], "Index": [100.0] * 11})
         frame["Year"] = pd.to_datetime(frame["Year"].astype(str))

@@ -2040,6 +2040,28 @@ class MonthlySeriesTests(unittest.TestCase):
         self.assertIn("Analysis.long_form()", monthly.statement)
 
 
+class SnapshotAndUndatedTests(unittest.TestCase):
+    def test_one_timestamp_on_every_row_is_called_a_snapshot(self):
+        frame = pd.DataFrame({
+            "last_update": pd.Timestamp("2025-02-14 17:00"),
+            "state": ["Delhi", "Bihar"] * 20,
+            "pollutant_avg": np.linspace(20, 90, 40),
+        })
+
+        brief = analyze_business(frame, roles_for(frame, "pollutant_avg", "state"))
+
+        self.assertIn("Every row is stamped 14 Feb 2025 17:00:00: the table is a snapshot", brief.summary)
+        self.assertNotIn("No date", brief.summary)
+
+    def test_rows_without_a_date_are_counted_in_the_summary(self):
+        days = list(pd.date_range("2020-01-01", periods=40, freq="7D")) + [pd.NaT] * 3
+        frame = pd.DataFrame({"Date": days, "Oxygen": np.linspace(5, 9, 43)})
+
+        brief = analyze_business(frame, roles_for(frame, "Oxygen", None, date="Date"))
+
+        self.assertIn("3 rows have no Date, so the figures over time leave them out", brief.summary)
+
+
 class SameTimeLastYearTests(unittest.TestCase):
     def test_a_winter_rise_back_to_last_winters_level_is_not_unusual(self):
         quarters = pd.date_range("2022-07-01", "2025-01-01", freq="QS")

@@ -62,6 +62,14 @@ after the segment cards, so a null result never pushes out a finding. If
 more than eight cards qualify, the first eight are shown. A `quality` card that
 falls past the eighth replaces the eighth, since it qualifies every other figure.
 
+### Snapshots and undated rows
+
+A table whose only date column holds one value has no timeline; the summary
+says so ("Every row is stamped 14 Feb 2025 17:00:00: the table is a snapshot,
+so there is no timeline") instead of saying no date column was found. Rows
+with no date are left out of every figure over time, and the summary counts
+them ("5 rows have no Date, so the figures over time leave them out").
+
 ### Exact repeats
 
 When over 10% of the rows (`REPEATED_SHARE`) exactly repeat another row and the

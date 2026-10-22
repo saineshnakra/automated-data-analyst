@@ -4296,10 +4296,35 @@ def _table_description(dataframe: pd.DataFrame, roles: ColumnRoles) -> str:
     if roles.dimension:
         groups = dataframe[roles.dimension].nunique(dropna=True)
         sentences.append(f"Groups: the {groups:,} values of {roles.dimension}.")
-    missing = [name for name, column in (("date", roles.date), ("grouping", roles.dimension)) if not column]
+    stamp = None if roles.date else _snapshot_stamp(dataframe)
+    if stamp:
+        sentences.append(f"Every row is stamped {stamp}: the table is a snapshot, so there is no timeline.")
+    missing = [
+        name for name, column in (("date", roles.date or stamp), ("grouping", roles.dimension)) if not column
+    ]
     if missing:
         sentences.append(f"No {' or '.join(missing)} column was found.")
     return " ".join(sentences)
+
+
+def _snapshot_stamp(dataframe: pd.DataFrame) -> str | None:
+    """The one moment every row of a table is stamped with, when its only date column holds a single value."""
+    for column in dataframe.select_dtypes("datetime").columns:
+        values = dataframe[column].dropna()
+        if not values.empty and values.nunique() == 1:
+            return _moment(values.iloc[0])
+    return None
+
+
+def _undated_note(dataframe: pd.DataFrame, roles: ColumnRoles) -> str:
+    """Say how many rows have no date, since every figure over time leaves them out, or ""."""
+    if not roles.date:
+        return ""
+    undated = int(dataframe[roles.date].isna().sum())
+    if not undated:
+        return ""
+    plural = "rows have" if undated > 1 else "row has"
+    return f"{undated:,} {plural} no {roles.date}, so the figures over time leave them out."
 
 
 def _first_sentence(statement: str) -> str:
@@ -4624,6 +4649,8 @@ def analyze_business(
             summary_parts.insert(1, item.statement)
     if design:
         summary_parts.append(design.sentence)
+    if undated := _undated_note(dataframe, roles):
+        summary_parts.append(undated)
     if repeats:
         share = format_percentage(repeats / len(dataframe) * 100)
         summary_parts.append(
