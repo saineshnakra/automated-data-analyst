@@ -205,7 +205,10 @@ grouping that could make or hide it, and returns a `Stratified`, or None:
 | A channel | Explaining half the measure or more on its own (`CHANNEL_EXPLAINED`), balanced or not: which joint an angle comes from |
 
 Confounders come first, ranked by the product of their two links, with
-`prefer` (the table's main grouping) winning among them. Each level holding
+`prefer` (the table's main grouping) winning among them. The stratum is
+chosen on a fixed sample of 10,000 rows of a longer table
+(`STRATUM_SCREEN_ROWS`), and the levels are compared on the scans' fixed
+sample of 50,000 (`sampled` gives the table's rows when they were). Each level holding
 two or more groups gets its own comparison; a level holding one group is
 named (`single`). `retained(pooled)` is the gap within the levels as a share
 of the pooled one, weighting each level by its size: the difference between
