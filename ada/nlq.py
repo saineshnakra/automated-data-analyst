@@ -34,6 +34,8 @@ from .business_insights import (
     tested_rows,
 )
 from .compare import (
+    ADJUSTED,
+    ADJUSTED_BY,
     MIN_NAMED_GROUP,
     NOTABLE_CORRELATION,
     SCAN_ROWS,
@@ -48,6 +50,7 @@ from .compare import (
     effect_text,
     entity_column,
     format_p,
+    grouping_rules,
     outcome_event,
     rate_calculation,
     scan_differences,
@@ -67,7 +70,7 @@ from .formatting import (
 from .metrics import metric_for
 from .quality import MASKED_CHECKS, VALUE_CHECKS, QualityIssue, prefers_log_scale, show_value
 from .quality import scan as scan_quality
-from .schema import ColumnRoles, row_summary_columns, running_total_columns
+from .schema import ColumnRoles, detect_roles, row_summary_columns, running_total_columns
 from .timeseries import period_positions, theil_sen
 
 Intent = Literal[
@@ -392,6 +395,9 @@ class QueryPlan:
     split: float | None = None
     #: Readings a comparison holds fixed: "does VB differ by feed after accounting for time".
     adjusted_for: tuple[str, ...] = ()
+    #: The unit each value is first combined within before the groups are compared:
+    #: "average quantity per transect by protection_status".
+    per: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1089,6 +1095,13 @@ def _plain_match(value: _Value, question: str, cued: bool) -> bool:
     return True
 
 
+def _typed_in_case(value: _Value, question: str) -> bool:
+    """Whether a value with capitals is typed exactly as the data spells it: "ALL", not "all"."""
+    return value.raw != value.raw.lower() and bool(
+        re.search(rf"(?<![0-9A-Za-z]){re.escape(value.raw)}(?![0-9A-Za-z])", question)
+    )
+
+
 def _cued(reading: _Reading, start: int) -> bool:
     """Whether the word before ``start`` marks a filter: "for Top", "where ... is Open"."""
     before = reading.original[:start].split()
@@ -1127,12 +1140,18 @@ def _claim_values(
                 window = run[index:index + size]
                 words = tuple(word for _, _, word in window)
                 ordinary = [word for word in words if word not in QUERY_GRAMMAR and word not in ENTITY_NOUNS]
-                if not ordinary and not _cued(reading, window[0][0]):
-                    continue
-                if not exact_only and sum(len(word) for word in ordinary) < 3:
-                    continue
-                found, exact = _values_named(words, vocabulary, exact_only=exact_only)
                 cued = _cued(reading, window[0][0])
+                if not ordinary and not cued:
+                    # A value spelled like a query word is still a value when typed in its own
+                    # capitals: "between AML and ALL".
+                    found, exact = _values_named(words, vocabulary, exact_only=True)
+                    found = [value for value in found if _typed_in_case(value, reading.question)]
+                    if not found:
+                        continue
+                elif not exact_only and sum(len(word) for word in ordinary) < 3:
+                    continue
+                else:
+                    found, exact = _values_named(words, vocabulary, exact_only=exact_only)
                 found = [value for value in found if _plain_match(value, reading.question, cued)]
                 if not found:
                     continue
@@ -2561,6 +2580,8 @@ def _plan_from_reading(reading: _Reading, dataframe: pd.DataFrame, roles: Column
             {**_scope(reading), "filters": filters_including_dimension},
         )
 
+    if (per_unit := _per_unit_plan(reading, dataframe, roles)) is not None:
+        return per_unit
     pair = _grouping_pair(reading, dataframe, roles)
     if pair:
         return _crosstab_plan(reading, dataframe, roles, pair)
@@ -2781,6 +2802,121 @@ def _plan_from_reading(reading: _Reading, dataframe: pd.DataFrame, roles: Column
         # A question that only states conditions ("pH below 5", "West") counts the rows meeting them.
         return QueryPlan(intent="count", aggregation="count", **{**ungrouped, "measure": None})
     return None
+
+
+def _per_unit_plan(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> QueryPlan | None:
+    """Plan "average quantity per transect by protection_status": each unit's total, compared across groups.
+
+    The column after "per" is the unit each value is first combined within;
+    the column after "by" groups those units. None for other questions.
+    """
+    q, mentioned = reading.text, reading.mentioned
+    unit = next((column for column, start in mentioned.items() if _follows(q, start, "per")), None)
+    if unit is None:
+        return None
+    groupings = [
+        column for column, start in mentioned.items()
+        if column != unit and _follows(q, start, r"(?:by|across|among|between)")
+    ]
+    if len(groupings) != 1 or not _groups_rows(groupings[0], dataframe, roles):
+        return None
+    grouping = groupings[0]
+    measures = [column for column in mentioned if column not in (unit, grouping)]
+    if len(measures) > 1 or (measures and not _is_measurement(dataframe[measures[0]])):
+        return None
+    measure = measures[0] if measures else roles.measure
+    if measure is None or measure in (unit, grouping):
+        return None
+    if _unit_keys(dataframe, unit, grouping, roles) is None:
+        reading.refusal = (
+            f"{_two_groupings([unit, grouping]).removesuffix('.')}: {grouping} changes within a {unit}, "
+            f"and no other column holds it fixed for each {unit}, so the {unit}s can't be grouped by it."
+        )
+        return None
+    aggregation = next(
+        (AGGREGATION_WORDS[word] for word in AGGREGATION_WORDS if re.search(rf"\b{word}\b", reading.unnamed)),
+        "mean",
+    )
+    return QueryPlan(
+        intent="breakdown", aggregation=_grouped_aggregation(aggregation, False, "mean"), measure=measure,
+        dimension=grouping, per=(unit,), **_scope(reading),
+    )
+
+
+def _unit_keys(frame: pd.DataFrame, unit: str, grouping: str, roles: ColumnRoles) -> list[str] | None:
+    """The columns that pick out one unit: the unit alone, or with the column its numbers restart within.
+
+    Transects numbered 1 to 6 on every reef are 88 transects, not 6: the unit
+    is the reef and the transect together. That column is the one that keeps
+    the grouping fixed within each unit and splits the rows into the most
+    units, among those with repeated rows; a name beats a numeric code on a tie.
+    None when no column keeps the grouping fixed within each unit.
+    """
+    present = frame.dropna(subset=[unit, grouping])
+    if bool((present.groupby(unit, observed=True)[grouping].nunique() <= 1).all()):
+        return [unit]
+    best: tuple[int, bool, str] | None = None
+    for column in present.columns:
+        if column in (unit, grouping, roles.date):
+            continue
+        series = present[column]
+        numeric = _is_measurement(series)
+        if is_datetime64_any_dtype(series) or (numeric and not bool((series.dropna() % 1 == 0).all())):
+            continue
+        if not 2 <= series.nunique() <= len(present) / 2:
+            continue
+        pairs = present[[column, unit]].dropna().drop_duplicates()
+        if len(pairs) > len(present) / 2:
+            continue
+        if int(present.groupby([column, unit], observed=True)[grouping].nunique().max()) > 1:
+            continue
+        candidate = (len(pairs), not numeric, column)
+        if best is None or candidate[:2] > best[:2]:
+            best = candidate
+    return [best[2], unit] if best else None
+
+
+def _execute_per_unit(
+    plan: QueryPlan, working: pd.DataFrame, roles: ColumnRoles, scope: str, applied: list[str]
+) -> QueryAnswer:
+    """Combine the measure within each unit, then compare the units across the groups."""
+    assert plan.measure is not None and plan.dimension is not None
+    unit = plan.per[0]
+    keys = _unit_keys(working, unit, plan.dimension, roles)
+    if keys is None:
+        return QueryAnswer(
+            question="", plan=plan,
+            answer=(
+                f"{plan.dimension} changes within a {unit}, and no other column holds it fixed for each "
+                f"{unit}, so the {unit}s can't be grouped by {plan.dimension}."
+            ),
+            calculation=f"{plan.dimension} must be one value within each {unit}{scope}",
+        )
+    data = working.dropna(subset=[*keys, plan.dimension])
+    additive = metric_for(plan.measure, roles).additive
+    grouped = data.groupby(keys, observed=True)
+    values = grouped[plan.measure].sum(min_count=1) if additive else grouped[plan.measure].mean()
+    units = pd.DataFrame({plan.dimension: grouped[plan.dimension].first(), plan.measure: values})
+    units = units.reset_index(drop=True)
+    result = _execute_grouping(
+        replace(plan, per=(), filters=(), conditions=(), year=None, month=None), units,
+        replace(roles, identifier=None, date=None), "", applied,
+    )
+    combined = "total" if additive else "average"
+    named = " and ".join(keys)
+    # A suggestion to ask for the median keeps the unit the answer is per.
+    asked = result.answer.replace(
+        f'"median {plan.measure} by {plan.dimension}"',
+        f'"median {plan.measure} per {unit} by {plan.dimension}"',
+    )
+    answer = (
+        f"{asked} Each value is the {combined} {plan.measure} of one {unit} ({named} together, "
+        f"{len(units):,} in all), so the {plan.dimension} groups are compared {unit} by {unit}, not "
+        "record by record."
+    )
+    combine = "sum" if additive else "mean"
+    calculation = f"{combine}({plan.measure}) per {named}, then {result.calculation}{scope}"
+    return replace(result, plan=plan, answer=answer, calculation=calculation)
 
 
 def _split_plan(
@@ -3829,6 +3965,9 @@ def _run_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -> Q
     if plan.intent == "rank" and plan.dimension is None and plan.grain:
         return _rank_periods(plan, working, roles, scope, applied)
 
+    if plan.per:
+        return _execute_per_unit(plan, working, roles, scope, applied)
+
     if plan.intent in ("rank", "breakdown"):
         return _execute_grouping(plan, working, roles, scope, applied)
 
@@ -4762,6 +4901,9 @@ def _group_difference_line(
         return ""
     if not 2 <= len(rankable) <= GROUPING_LIMIT:
         return ""
+    if not (plan.time_part or plan.bins) and (rule := _set_by(working, plan.measure, plan.dimension, roles)):
+        made = f"so its groups differ in {plan.measure} by how they are made; no test is run"
+        return f" {sentence_case(rule)}, {made}."
     key = "__group"
     entity = entity_column(working, roles)
     entity = entity if entity not in (None, plan.dimension, plan.measure) else None
@@ -4793,6 +4935,25 @@ def _group_difference_line(
     if comparison.verdict == "negligible":
         return f" The {groups} differ only by a negligible amount ({evidence})."
     return f" The {groups} do differ ({evidence})."
+
+
+def _set_by(working: pd.DataFrame, measure: str, grouping: str, roles: ColumnRoles) -> str | None:
+    """How ``grouping`` is cut from ``measure``, when it is (``compare.grouping_rules``), or None.
+
+    "categori is set by max: BAIK up to 50, ..." or "critical names the
+    largest of pm25, pm10 and o3": comparing the reading across such groups
+    only restates how they were made, so the brief tests none of them.
+    """
+    if grouping not in working.columns or measure not in working.columns:
+        return None
+    keys = {re.sub(r"[^a-z0-9]", "", str(level).lower()) for level in working[grouping].dropna().unique()}
+    named = [
+        column for column in roles.numeric
+        if column in working.columns and re.sub(r"[^a-z0-9]", "", str(column).lower()) in keys
+    ]
+    readings = list(dict.fromkeys([measure, *named]))
+    rules = grouping_rules(working, readings, [grouping], date=roles.date)
+    return next((rule.describe() for rule in rules if measure in rule.readings), None)
 
 
 def _skew_note(plan: QueryPlan, working: pd.DataFrame, leaders: list, groups: pd.Series) -> str:
@@ -5253,6 +5414,10 @@ def _execute_compare(
         frame = working.assign(**{plan.dimension: _binned(working[plan.dimension], plan.bins)})
     if plan.split is not None:
         frame = working.assign(**{plan.dimension: _split_labels(working[plan.dimension], plan.split)})
+    if not (plan.bins or plan.split is not None) and (
+        rule := _set_by(working, plan.measure, plan.dimension, roles)
+    ):
+        return _defined_difference(plan, working, rule, scope, applied)
     comparison = compare_groups(frame, plan.measure, plan.dimension, entity=entity_column(working, roles))
     if comparison is None:
         return QueryAnswer(
@@ -5388,6 +5553,36 @@ def _execute_adjusted(plan: QueryPlan, working: pd.DataFrame, scope: str, applie
     )
     return QueryAnswer(
         question="", plan=plan, answer=answer, calculation=calculation, table=table.round(6), chart="bar"
+    )
+
+
+def _defined_difference(
+    plan: QueryPlan, working: pd.DataFrame, rule: str, scope: str, applied: list[str]
+) -> QueryAnswer:
+    """Answer a comparison across a grouping cut from the measure itself: the means, and how it was cut."""
+    assert plan.measure is not None and plan.dimension is not None
+    means = working.groupby(plan.dimension, observed=True)[plan.measure].agg(["mean", "count"])
+    means = means[means["count"] > 0].sort_values("mean", ascending=False)
+    values = working[plan.measure].dropna()
+
+    def shown(name: object) -> str:
+        row = means.loc[name]
+        number = format_number(float(row["mean"]), plan.measure, column_values=values)
+        return f"{number} in {group_label(plan.dimension, name)} (n = {int(row['count']):,})"
+
+    answer = (
+        f"{sentence_case(rule)}, so {plan.measure} differs across {plan.dimension} by how the groups are "
+        "made, "
+        f"not as a finding, and no test is run. Means{_phrase(applied)} run from {shown(means.index[0])} "
+        f"down to {shown(means.index[-1])}."
+    )
+    table = means.rename(columns={"mean": f"Mean {plan.measure}", "count": "n"}).reset_index()
+    return QueryAnswer(
+        question="", plan=plan, answer=answer,
+        calculation=(
+            f"mean {plan.measure} per {plan.dimension}; the rule from compare.grouping_rules{scope}"
+        ),
+        table=table.round(6), chart="bar",
     )
 
 
@@ -5701,13 +5896,20 @@ def _share_difference(comparison: RateComparison) -> str:
 def _execute_column_differences(
     plan: QueryPlan, working: pd.DataFrame, roles: ColumnRoles, scope: str, applied: list[str]
 ) -> QueryAnswer:
-    """Compare each column of a set across the plan's groups, with p-values Holm-adjusted over every test."""
+    """Compare each column of a set across the plan's groups, with p-values adjusted over every test.
+
+    The adjustment is the scan's own (Holm, or the false-discovery rate for a
+    screen of very many columns), and is named as the brief names it.
+    """
     assert plan.dimension is not None
     columns = [column for column in plan.columns if column in working.columns and column != plan.dimension]
     entity = entity_column(working, roles)
     scan = scan_differences(working, columns, [plan.dimension], entity=entity, limit=10)
     groups = next((item.values for item in plan.filters if item.column == plan.dimension), ())
     between = f"between {_and_listed(list(groups))}" if groups else f"across {plan.dimension}"
+    # The groups named are the comparison, not a narrowing of the rows to state again.
+    picked = {_describe_filter(item) for item in plan.filters if item.column == plan.dimension}
+    applied = [text for text in applied if text not in picked]
     if scan is None or scan.largest is None:
         return QueryAnswer(
             question="", plan=plan,
@@ -5718,9 +5920,10 @@ def _execute_column_differences(
     if scan.available > len(scan.readings):
         tested += f" (the {len(scan.readings):,} most variable of {scan.available:,})"
     largest = scan.largest
+    adjusted = ADJUSTED[scan.correction]
     if scan.named:
         shown = "; ".join(
-            f"{item.measure} ({lead_clause(item)}, Holm-adjusted {format_p(item.decisive_p)})"
+            f"{item.measure} ({lead_clause(item)}, {adjusted} {format_p(item.decisive_p)})"
             for item in scan.named[:5]
         )
         answer = (
@@ -5732,20 +5935,20 @@ def _execute_column_differences(
             f"None of the {tested} differs clearly {between}{_phrase(applied)} once the p-values are "
             f"adjusted for {scan.tested:,} tests. The largest gap is in {largest.measure} "
             f"({lead_clause(largest)}, "
-            f"{format_p(largest.p_value)} before adjustment, Holm-adjusted {format_p(largest.decisive_p)})."
+            f"{format_p(largest.p_value)} before adjustment, {adjusted} {format_p(largest.decisive_p)})."
         )
     table = pd.DataFrame({
         "Column": [item.measure for item in (scan.named or (largest,))],
         "Higher group": [item.higher.label for item in (scan.named or (largest,))],
         "Effect": [effect_text(item) for item in (scan.named or (largest,))],
         "p": [item.p_value for item in (scan.named or (largest,))],
-        "Holm-adjusted p": [item.decisive_p for item in (scan.named or (largest,))],
+        f"{adjusted[0].upper()}{adjusted[1:]} p": [item.decisive_p for item in (scan.named or (largest,))],
     })
     return QueryAnswer(
         question="", plan=plan, answer=answer,
         calculation=(
             f"each column compared {between} (Welch's t-test or ANOVA, or rank tests for skewed columns), "
-            f"p-values Holm-adjusted over {scan.tested:,} tests{scope}"
+            f"p-values {adjusted} over {scan.tested:,} tests ({ADJUSTED_BY[scan.correction]}){scope}"
         ),
         table=table,
     )
@@ -6208,6 +6411,8 @@ def answer_question(
         _remember_checks(dataframe, roles, checks)
     if whole is not None and (wider := _whole_table_answer(question, whole, rows_not_analyzed)):
         return wider
+    if whole is not None and (elsewhere := _part_answer(question, dataframe, whole, rows_not_analyzed)):
+        return elsewhere
     plan = parse_question(question, dataframe, roles)
     if plan is None:
         return None
@@ -6229,6 +6434,137 @@ def answer_question(
         table=result.table,
         chart=result.chart,
     )
+
+
+def _named_columns(question: str, frame: pd.DataFrame) -> list[str]:
+    return list(_mentions(_norm(_question_text(question)), _name_index(frame.columns)))
+
+
+def _parts_recording(whole: WholeTable, columns: list[str]) -> list[str]:
+    """The values of the parameter whose rows record every one of ``columns``, in table order."""
+    frame = whole.frame
+    recorded = frame[columns].notna().groupby(frame[whole.parameter].astype(str), sort=False).any()
+    return [str(part) for part, row in recorded.iterrows() if bool(row.all())]
+
+
+def _part_frame(whole: WholeTable, part: str) -> tuple[pd.DataFrame, ColumnRoles]:
+    """The rows of one part of the file, with roles regrouped for it as the brief would."""
+    # Imported here because the pipeline itself builds on this module.
+    from .pipeline import apply_focus
+
+    roles = replace(whole.roles, dimension=whole.parameter, focus=None)
+    return apply_focus(whole.frame, roles, part)
+
+
+def _answer_in_part(
+    question: str, whole: WholeTable, part: str, rows_not_analyzed: int
+) -> tuple[QueryAnswer | None, pd.DataFrame, ColumnRoles, WholeTable | None]:
+    """Answer within one part of a stacked file, with the roles detected on that part's own columns.
+
+    Another part has its own columns, which the roles detected for the part
+    the brief follows know nothing of. A part that is itself a long table (a
+    unit beside each value) follows one of its values, as the brief would.
+    Returns the answer with the frame, roles and long table it came from.
+    """
+    # Imported here because the pipeline itself builds on this module.
+    from .pipeline import apply_focus
+
+    frame, _ = _part_frame(whole, part)
+    frame = frame.loc[:, frame.notna().any().to_numpy()]
+    roles = detect_roles(frame)
+    inner = None
+    plan = parse_question(question, frame, replace(roles, focus=None)) if roles.focus else None
+    # Only values in different units need the one-unit view; counting rows does not.
+    if roles.focus and roles.dimension and (plan is None or plan.measure or plan.partner):
+        inner = WholeTable(frame, replace(roles, focus=None), roles.dimension, roles.focus)
+        frame, roles = apply_focus(frame, roles, roles.focus)
+    roles = replace(roles, focus=None)
+    found = answer_question(question, frame, roles, rows_not_analyzed=rows_not_analyzed, whole=inner)
+    return found, frame, roles, inner
+
+
+def _named_parts(question: str, whole: WholeTable) -> list[str]:
+    """The parts of the file other than the focus that the question names by their value."""
+    q = _norm(_question_text(question))
+    parts = whole.frame[whole.parameter].dropna().astype(str).unique()
+    return [
+        part for part in parts
+        if part != whole.focus and (text := _norm(part)) and re.search(_word_regex(text), q)
+    ]
+
+
+def _part_answer(
+    question: str, dataframe: pd.DataFrame, whole: WholeTable, rows_not_analyzed: int
+) -> QueryAnswer | None:
+    """Answer within the one other part of the file that records the columns a question names.
+
+    A file stacking several tables keeps each table's columns empty in the
+    others. When the question names a column with no values in the part the
+    brief follows, and exactly one other part records every column it names,
+    the answer comes from that part and says so.
+    """
+    named = [column for column in _named_columns(question, whole.frame) if column != whole.parameter]
+    empty = [column for column in named if column in dataframe.columns and dataframe[column].isna().all()]
+    if not empty:
+        return None
+    parts = [part for part in _parts_recording(whole, named) if part != whole.focus]
+    if len(parts) != 1:
+        return None
+    found, frame, _, _ = _answer_in_part(question, whole, parts[0], rows_not_analyzed)
+    if found is None:
+        return None
+    verb = "is" if len(empty) == 1 else "are"
+    rows = int((whole.frame[whole.parameter].astype(str) == parts[0]).sum())
+    note = (
+        f" {_and_listed(empty)} {verb} only recorded in the rows with {whole.parameter} = {parts[0]} "
+        f"({rows:,} rows), so this answer covers that part of the file, not the "
+        f"{whole.parameter} = {whole.focus} part the brief follows."
+    )
+    return replace(found, answer=found.answer + note)
+
+
+def _part_reason(question: str, dataframe: pd.DataFrame, whole: WholeTable) -> str | None:
+    """Why a question can't be answered in the part of the file the brief follows, when that is the reason.
+
+    A column it names may have no values there, recorded only in other parts,
+    or a single value there although the file holds several.
+    """
+    named = [column for column in _named_columns(question, whole.frame) if column != whole.parameter]
+    focus = f"the {whole.parameter} = {whole.focus} part the brief follows"
+    if len(parts := _named_parts(question, whole)) == 1:
+        # The question names its part, so the reason comes from that part's own rows.
+        _, frame, roles, inner = _answer_in_part(question, whole, parts[0], 0)
+        return rephrase_hint(question, frame, roles, whole=inner)
+    for column in named:
+        if column not in dataframe.columns:
+            continue
+        values = dataframe[column].dropna()
+        if values.empty:
+            parts = [part for part in _parts_recording(whole, [column]) if part != whole.focus]
+            if not parts:
+                return f"{column} has no values anywhere in the file."
+            others = [other for other in named if other != column]
+            together = [part for part in _parts_recording(whole, named)] if others else parts
+            where = _listed_capped(parts, 4)
+            if others and not together:
+                return (
+                    f"{column} has no values in {focus}; it is recorded only where {whole.parameter} is "
+                    f"{where}, and no part of the file records {_and_listed(named)} together."
+                )
+            return (
+                f"{column} has no values in {focus}; it is recorded where {whole.parameter} is {where}. "
+                f'Name one, as in "{question.strip().rstrip("?")} for {whole.parameter} {parts[0]}".'
+            )
+        everywhere = whole.frame[column].dropna()
+        if values.nunique() == 1 and everywhere.nunique() > 1:
+            parts = whole.frame[whole.parameter].dropna().astype(str).unique()
+            others = [part for part in parts if part != whole.focus]
+            return (
+                f"{column} is {values.iloc[0]} on every row of {focus}, so it has nothing to group or "
+                f"compare there; the whole file has {everywhere.nunique():,} values of it. Name another "
+                f"{whole.parameter} ({_listed_capped(others, 4)}) to ask within it."
+            )
+    return None
 
 
 def _scope_words(plan: QueryPlan) -> list[str]:
@@ -6257,7 +6593,12 @@ def _whole_table_answer(question: str, whole: WholeTable, rows_not_analyzed: int
     frame, roles = whole.frame, replace(whole.roles, focus=None)
     plan = parse_question(question, frame, roles)
     if plan is None:
-        return None
+        # A question naming one other part of a stacked file is answered within it.
+        parts = _named_parts(question, whole)
+        if len(parts) != 1:
+            return None
+        found, *_ = _answer_in_part(question, whole, parts[0], rows_not_analyzed)
+        return found
     picked = next((item.values for item in plan.filters if item.column == whole.parameter), ())
     grouped = whole.parameter in (plan.dimension, plan.second_dimension)
     if not grouped and (not picked or tuple(picked) == (whole.focus,)):
@@ -6267,8 +6608,11 @@ def _whole_table_answer(question: str, whole: WholeTable, rows_not_analyzed: int
     except ValueError:
         return None
     answer = result.answer
-    if grouped and plan.intent in ("rank", "breakdown") and result.table is not None:
-        # Values of different parameters are in different units, so none of them "leads".
+    if grouped and plan.intent in ("rank", "breakdown") and result.table is not None and (
+        plan.aggregation != "count" and plan.measure
+    ):
+        # Values of different parameters are in different units, so none of them "leads";
+        # a count of rows is the same unit in every part, and is ranked as usual.
         groups = plan.dimension if plan.dimension == whole.parameter else plan.second_dimension
         label = "row count" if plan.aggregation == "count" else with_aggregate(
             _aggregation_label(plan), str(plan.measure)
@@ -6278,7 +6622,7 @@ def _whole_table_answer(question: str, whole: WholeTable, rows_not_analyzed: int
             f"{whole.parameter} is measured on its own scale, often in its own unit, so they are listed, "
             "not ranked against each other."
         )
-    elif grouped:
+    elif grouped and plan.aggregation != "count" and plan.measure:
         answer += (
             f" Each {whole.parameter} is measured on its own scale, often in its own unit, so compare each "
             "only with itself, not with the others."
@@ -6327,6 +6671,8 @@ def rephrase_hint(
     if not q:
         return None
     if whole is not None:
+        if (part := _part_reason(question, dataframe, whole)):
+            return part
         dataframe, roles = whole.frame, replace(whole.roles, focus=None)
     reason = _plan_question(question, dataframe, roles, rows_not_analyzed)[1]
     if reason:

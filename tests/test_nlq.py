@@ -2124,6 +2124,91 @@ class CorrelatesWordingTests(unittest.TestCase):
         self.assertIn("1 of the 13 DDO values sits outside", answer.answer)
 
 
+class WideScanAndGroupingRuleTests(unittest.TestCase):
+    def test_a_screen_of_many_columns_names_its_false_discovery_adjustment(self):
+        rng = np.random.default_rng(7)
+        frame = pd.DataFrame(rng.normal(2.5, 0.5, size=(120, 400)), columns=[f"Gene_{n}" for n in range(400)])
+        frame["Diagnosis"] = np.repeat(["AML", "ALL", "Healthy"], 40)
+        roles = detect_roles(frame)
+
+        answer = answer_question("which genes differ between AML and ALL", frame, roles)
+
+        self.assertEqual(answer.plan.filters[0].values, ("AML", "ALL"))
+        self.assertIn("between AML and ALL", answer.answer)
+        self.assertIn("false-discovery-rate adjusted", answer.answer)
+        self.assertNotIn("Holm", answer.answer + answer.calculation)
+
+    def test_a_grouping_cut_from_the_measure_gets_its_rule_not_a_test(self):
+        values = np.linspace(5, 300, 200)
+        cuts = [values <= 50, values <= 100, values <= 200]
+        band = np.select(cuts, ["good", "moderate", "unhealthy"], "severe")
+        frame = pd.DataFrame({"max": values, "categori": band, "station": np.tile(["a", "b"], 100)})
+        roles = detect_roles(frame)
+
+        breakdown = answer_question("average max by categori", frame, roles)
+        compared = answer_question("does max differ by categori", frame, roles)
+
+        self.assertIn("categori is set by max", breakdown.answer)
+        self.assertNotIn("Welch", breakdown.answer)
+        self.assertIn("no test is run", compared.answer)
+
+
+class StackedTableTests(unittest.TestCase):
+    def setUp(self):
+        rng = np.random.default_rng(8)
+        food = pd.DataFrame({"source_table": "food", "food_category": rng.choice(["fish", "salt"], 40),
+                             "particles": rng.poisson(30, 40).astype(float)})
+        organs = pd.DataFrame({"source_table": "organs", "organ_system": rng.choice(["skin", "liver"], 20),
+                               "sample_size": rng.integers(10, 200, 20).astype(float)})
+        blood = pd.DataFrame({"source_table": "blood", "p_value": rng.uniform(0, 1, 8)})
+        self.frame = pd.concat([food, organs, blood], ignore_index=True)
+        roles = detect_roles(self.frame)
+        self.whole = WholeTable(self.frame, roles, "source_table", "food")
+        self.focused = self.frame[self.frame["source_table"] == "food"].reset_index(drop=True)
+        self.roles = replace(roles, dimension="food_category")
+
+    def ask(self, question):
+        return answer_question(question, self.focused, self.roles, whole=self.whole)
+
+    def test_columns_recorded_in_one_other_part_are_answered_there(self):
+        answer = self.ask("average sample_size by organ_system")
+
+        self.assertEqual(answer.plan.dimension, "organ_system")
+        self.assertIn("only recorded in the rows with source_table = organs (20 rows)", answer.answer)
+
+    def test_a_column_in_another_part_gives_the_real_reason(self):
+        question = "correlation between particles and p_value"
+
+        self.assertIsNone(self.ask(question))
+        hint = rephrase_hint(question, self.focused, self.roles, whole=self.whole)
+        self.assertIn("p_value has no values in the source_table = food part the brief follows", hint)
+        self.assertNotIn("not numeric", hint)
+
+    def test_rows_per_part_are_counted_and_ranked(self):
+        answer = self.ask("how many rows per source_table")
+
+        self.assertTrue(answer.answer.startswith("food has the most rows of any source_table, at 40"))
+        self.assertNotIn("own scale", answer.answer)
+
+
+class PerUnitTests(unittest.TestCase):
+    def test_a_measure_per_unit_by_a_grouping_compares_the_units(self):
+        rows = []
+        for reef, status in (("North", "NTZ"), ("South", "OA"), ("East", "OA"), ("West", "NTZ")):
+            for transect in range(1, 7):
+                for fish in range(5):
+                    rows.append({"reef": reef, "protection_status": status, "transect": transect,
+                                 "quantity": float(fish + (5 if status == "NTZ" else 1))})
+        frame = pd.DataFrame(rows)
+
+        question = "average quantity per transect by protection_status"
+        answer = answer_question(question, frame, detect_roles(frame))
+
+        self.assertEqual(answer.plan.per, ("transect",))
+        self.assertIn("reef and transect together, 24 in all", answer.answer)
+        self.assertEqual(answer.table["n"].tolist(), [12, 12])
+
+
 class RefusalHintTests(unittest.TestCase):
     def test_only_the_unknown_words_are_quoted_as_typed(self):
         frame, roles = summary_frame()
