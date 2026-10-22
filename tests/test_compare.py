@@ -36,6 +36,7 @@ from ada.compare import (
     outcome_event,
     pairwise_correlations,
     rate_calculation,
+    same_stem,
     scan_differences,
     scan_relationships,
     variance_explained,
@@ -1068,6 +1069,13 @@ class ScreenTests(unittest.TestCase):
         assert scan is not None
         self.assertEqual([item.measure for item in scan.named], ["Common", "Rare"])
         self.assertLess(scan.named[1].coverage, 0.2)
+
+
+class StemTests(unittest.TestCase):
+    def test_a_column_and_its_copy_share_a_stem(self):
+        self.assertTrue(same_stem("diabetes", "diabetes.1"))
+        self.assertTrue(same_stem("MaxTemp", "Temp"))
+        self.assertFalse(same_stem("Calcium (cmol(+)/kg)", "Sodium (cmol(+)/kg)"))
 
 
 class RateTests(unittest.TestCase):

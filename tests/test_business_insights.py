@@ -1884,5 +1884,74 @@ class MatchedUnitTests(unittest.TestCase):
         self.assertIn("+1", trend.value)
 
 
+class OutcomeChoiceTests(unittest.TestCase):
+    def test_who_was_studied_is_not_an_outcome(self):
+        rng = np.random.default_rng(66)
+        gender = np.repeat([0, 1], 300)
+        frame = pd.DataFrame({
+            "gender": gender,
+            "activity": rng.normal(10, 3, 600),
+            "smoker": (rng.random(600) < np.where(gender == 1, 0.6, 0.3)).astype(int),
+        })
+        roles = roles_for(frame, "activity", "gender", factors=("smoker",))
+
+        rates = brief_card(analyze_business(frame, roles), "rates")
+
+        assert rates is not None
+        self.assertTrue(rates.title.startswith("Rate of smoker 1 by gender"), rates.title)
+
+
+class QuietTimelineTests(unittest.TestCase):
+    def test_a_quiet_movement_outranks_a_correlation_between_two_readings(self):
+        rng = np.random.default_rng(69)
+        days = pd.date_range("2020-01-01", periods=720, freq="D")
+        low = rng.normal(10, 2, 720)
+        frame = pd.DataFrame({"Date": days, "MAX": low + 8 + rng.normal(0, 1, 720), "MIN": low})
+
+        brief = analyze_business(frame, roles_for(frame, "MAX", None, date="Date"))
+
+        self.assertTrue(brief.headline.startswith("No clear change in MAX"), brief.headline)
+        self.assertIsNotNone(brief_card(brief, "relationship"))
+
+
+class DatePartTests(unittest.TestCase):
+    def test_parts_of_the_date_are_not_compared_as_groupings(self):
+        rng = np.random.default_rng(67)
+        days = pd.date_range("2020-01-01", periods=730, freq="D")
+        frame = pd.DataFrame({
+            "Date": days,
+            "MO": days.month,
+            "Station": ["a", "b"] * 365,
+            "Temp": 15 + 10 * np.sin(days.dayofyear / 58) + rng.normal(0, 1, 730),
+        })
+        roles = roles_for(frame, "Temp", "Station", date="Date", factors=("MO",))
+
+        differences = brief_card(analyze_business(frame, roles), "differences")
+
+        text = "" if differences is None else differences.statement + differences.calculation
+        self.assertNotIn("across MO", text)
+        self.assertNotIn("by MO", text)
+
+
+class InputImbalanceTests(unittest.TestCase):
+    def test_inputs_that_differ_between_groups_are_named_as_an_imbalance(self):
+        rng = np.random.default_rng(68)
+        age = np.repeat([3, 7, 28, 91], 40)
+        plasticizer = np.where(age == 91, 12.0, 2.0) + rng.normal(0, 1, 160)
+        frame = pd.DataFrame({
+            "Age": age,
+            "Superplasticizer": plasticizer,
+            "Water": rng.normal(180, 10, 160),
+            "Strength": 20 + 0.3 * age + 2 * plasticizer + rng.normal(0, 3, 160),
+        })
+        roles = roles_for(frame, "Strength", "Age")
+
+        leader = brief_card(analyze_business(frame, roles), "leader")
+
+        assert leader is not None
+        self.assertIn("The inputs differ across Age too: Superplasticizer", leader.statement)
+        self.assertNotIn("Water (", leader.statement)
+
+
 if __name__ == "__main__":
     unittest.main()

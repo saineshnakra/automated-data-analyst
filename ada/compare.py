@@ -2824,6 +2824,11 @@ def cap_flag(flag: pd.Series, values: pd.Series) -> CapFlag | None:
     return None
 
 
+def same_stem(first: str, second: str) -> bool:
+    """Whether two column names share a word that says what was measured ("diabetes", "diabetes.1")."""
+    return bool(_stems(first) & _stems(second))
+
+
 def _stems(name: str) -> set[str]:
     """The words of a name that say what was measured, without its units or bracketed notes.
 

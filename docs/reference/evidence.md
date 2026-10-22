@@ -293,6 +293,14 @@ own: contractor shows no clear difference (...); fsi_high differs, median 5.33
 (fsi_high 0, n = 115) against 4.67 (fsi_high 1, n = 116), ...". When the cells
 are not clear but a factor is, the factor leads the headline.
 
+When the table holds the inputs of a mix or a dose (readings named with
+`INPUT_WORDS` in `ada/schema.py`, such as cement, water or dose), they are
+compared across the same groups, and when any differ clearly the card says
+the groups were not given the same inputs: "The inputs differ across Age of
+testing (day) too: Super-plasticizer (kg/m3) (ε² = 0.26), Water (kg/m3) (η² =
+0.24) and Fly Ash (kg/m3) (ε² = 0.24). The groups were not given the same
+inputs, so the comparison of strength is partly a comparison of inputs."
+
 When too few groups have two values to test, the card falls back to naming the
 highest and lowest average and says the gap can't be tested.
 
@@ -303,7 +311,9 @@ including numeric codes listed in `ColumnRoles.factors`, with
 codes, design labels, time parts, yes/no flags or numbers for a grouping's
 levels (a `Group` 1 to 12 beside its `Gp` label). A grouping made of two others
 (a cell code for contour and depth) is replaced by those two, and the subject
-column is never a grouping.
+column is never a grouping. Nor, in a table with a date, is a column holding a
+part of it (a year, month or day number): the cycle over the year belongs to
+the timeline.
 
 The groupings are taken design factors first: the grouping column, then text
 labels, then two-level codes, then other codes by how few levels they have, so
@@ -359,10 +369,15 @@ When a yes/no column (0/1, true/false, or yes/no words) sits beside a grouping,
 the `rates` card compares how often it is "yes" across the groups
 (`compare_rates`; see [Comparing groups](compare.md#comparing-rates)). The
 outcome is the grouping column when that is yes/no, and otherwise the last
-yes/no column in the table, where outcomes usually sit. It is compared across
-every other grouping, Holm-adjusted for their number; a grouping in which
-every group is all yes or all no is another code for the outcome and is left
-out. The card appears when a rate differs clearly, and gives each group's rate
+yes/no column in the table, where outcomes usually sit. A column that
+describes who or what was studied, or how it was assigned (its last word is
+sex, gender, race, ethnicity, treatment, arm, cohort, condition, group, block,
+batch, phase, site or visit; `NOT_OUTCOME_WORDS`), is never the outcome: the
+share of women among smokers is the sample's makeup. The outcome is compared
+across every other grouping, Holm-adjusted for their number; a grouping in
+which every group is all yes or all no, or one named for the same thing
+(`diabetes` beside `diabetes.1`; `same_stem`), is another code for the outcome
+and is left out. The card appears when a rate differs clearly, and gives each group's rate
 and n, the chi-squared or Fisher test, Cramér's V and the risk difference with
 its interval: "The share of rows with Result 1 is 55.7% in Gender 1 (n = 740)
 against 30.5% in Gender 0 (n = 681): a difference of 25.1 percentage points
@@ -496,8 +511,10 @@ The headline comes from the most informative finding:
 2. Otherwise a latest movement within the usual variation is no clear change
    and gives way to the first finding of: the measure's own clear group
    comparison (or a clear factor of it), a change in level, a clear rate
-   difference, the largest difference found ("Largest difference found: ..."),
-   a joint model, and a relationship whose interval excludes zero.
+   difference, and the largest difference found ("Largest difference found:
+   ..."). Without a date, a joint model and then a relationship whose interval
+   excludes zero can lead too; over time a quiet movement says more than a
+   correlation between two readings.
 3. With no finding, a quiet movement reads "No clear change in AQI in May 2023
    (+2.27, within the usual range)", and a table without a date leads with its
    group comparison, even a null one.

@@ -75,6 +75,7 @@ from .compare import (
     nested_within,
     outcome_event,
     rate_calculation,
+    same_stem,
     scan_differences,
     scan_relationships,
     variance_explained,
@@ -111,7 +112,9 @@ from .quality import (
 )
 from .quality import scan as scan_quality
 from .schema import (
+    INPUT_WORDS,
     TIME_PART_TOKENS,
+    TIME_PART_WORDS,
     ColumnRoles,
     detect_roles,
     is_design_name,
@@ -1084,6 +1087,10 @@ def _group_difference_evidence(
         differing = [factor for factor in factors if factor.verdict == "clear"]
         if differing and not clear:
             lead = lead_sentence(max(differing, key=lambda factor: factor.explained), values)
+    imbalance = _input_imbalance(dataframe, roles, entity)
+    if imbalance:
+        statement += imbalance
+        calculation += "; inputs compared across the same groups, Holm-adjusted"
     if note:
         calculation += note
     return Evidence(
@@ -1106,6 +1113,31 @@ def _group_difference_evidence(
         calculation=calculation,
         subject=_subject(_leading_groups(comparison)) if clear else None,
         lead=lead,
+    )
+
+
+def _input_imbalance(dataframe: pd.DataFrame, roles: ColumnRoles, entity: str | None) -> str:
+    """Say when the inputs of a mix or dose differ across the groups, since the comparison then mixes them in.
+
+    In a table of concrete mixes tested at different ages, a strength gap
+    between ages is partly a gap between mixes when the mixes differ too.
+    Inputs are readings named as what goes into a mix or a dose (cement,
+    water, dose).
+    """
+    inputs = [
+        column
+        for column in numeric_readings(dataframe, roles)
+        if column != roles.measure and set(normalized_name(column).split()) & INPUT_WORDS
+    ]
+    if not inputs:
+        return ""
+    scan = scan_differences(dataframe, inputs, [roles.dimension], entity=entity, limit=DIFFERENCES_NAMED)
+    if scan is None or not scan.named:
+        return ""
+    named = list_names([f"{item.measure} ({effect_text(item)})" for item in scan.named])
+    return (
+        f" The inputs differ across {roles.dimension} too: {named}. The groups were not given the same "
+        f"inputs, so the comparison of {roles.measure} is partly a comparison of inputs."
     )
 
 
@@ -1191,9 +1223,9 @@ def _comparison_groupings(dataframe: pd.DataFrame, roles: ColumnRoles, entity: s
     other codes by how few levels they have, so a rating item read as a code
     comes last; at most MAX_SCAN_GROUPINGS are kept. The column naming each
     row's subject is left out, since readings differ between subjects as a
-    matter of course; so is a month or year taken from the date column, which
-    only shows the season or the trend, and a grouping nested within one
-    already kept, whose differences repeat that one's.
+    matter of course; so is a month or year taken from the date column, or
+    named as one beside it, which only shows the season or the trend, and a
+    grouping nested within one already kept, whose differences repeat that one's.
     """
     frame = dataframe.sample(SCAN_ROWS, random_state=0) if len(dataframe) > SCAN_ROWS else dataframe
 
@@ -1226,6 +1258,9 @@ def _comparison_groupings(dataframe: pd.DataFrame, roles: ColumnRoles, entity: s
         part = date_part(dataframe[column], dataframe[roles.date]) if roles.date else None
         if part is not None:
             date_parts.append((column, part))
+            continue
+        # A year or month column beside the dates holds a cycle that belongs to the timeline.
+        if roles.date and _last_word(column) in TIME_PART_WORDS:
             continue
         coarser = next((other for other in chosen if nested_within(frame, column, other)), None)
         if coarser is not None and column != roles.dimension:
@@ -2241,6 +2276,15 @@ def _relationship_evidence(
     )
 
 
+# Last words of yes/no columns that describe who or what was studied, or how
+# it was assigned, rather than an outcome: the share of women among smokers is
+# the sample's makeup, not a finding about smoking.
+NOT_OUTCOME_WORDS = frozenset({
+    "sex", "gender", "race", "ethnicity", "treatment", "arm", "cohort", "condition", "group",
+    "block", "batch", "phase", "site", "visit",
+})
+
+
 def _yes_no_columns(dataframe: pd.DataFrame, roles: ColumnRoles) -> list[str]:
     """Grouping and flag columns that hold a yes/no outcome, in table order."""
     candidates = {roles.dimension, *roles.dimensions, *roles.factors}
@@ -2250,8 +2294,16 @@ def _yes_no_columns(dataframe: pd.DataFrame, roles: ColumnRoles) -> list[str]:
     return [
         column
         for column in dataframe.columns
-        if column in candidates and outcome_event(dataframe[column]) is not None
+        if column in candidates
+        and _last_word(column) not in NOT_OUTCOME_WORDS
+        and outcome_event(dataframe[column]) is not None
     ]
+
+
+def _last_word(name: str) -> str:
+    """The last word of a column name, which says what the column is."""
+    words = re.findall(r"[a-z]+", normalized_name(name))
+    return words[-1] if words else ""
 
 
 def _rate_evidence(
@@ -2262,18 +2314,22 @@ def _rate_evidence(
     The outcome is the grouping column when that is yes/no, and otherwise the
     last yes/no column in the table, where outcomes usually sit. It is
     compared across every other grouping, with p-values Holm-adjusted for the
-    number of groupings. A grouping in which every group is all yes or all no
-    is another code for the outcome and is left out.
+    number of groupings. A grouping in which every group is all yes or all no,
+    or one named for the same thing, is another code for the outcome and is
+    left out.
     """
     flags = _yes_no_columns(dataframe, roles)
     if not flags:
         return None
     outcome = roles.dimension if roles.dimension in flags else flags[-1]
     found = found or _find_groupings(dataframe, roles)
+    # A grouping named for the same thing as the outcome is the outcome recorded another way.
     groupings = [
         grouping
         for grouping in found.chosen
-        if grouping != outcome and not _same_partition(dataframe, grouping, outcome)
+        if grouping != outcome
+        and not same_stem(grouping, outcome)
+        and not _same_partition(dataframe, grouping, outcome)
     ]
     tested = [
         comparison
@@ -3455,28 +3511,23 @@ def _headline(
     A total (money, counts) leads with its latest movement, as a sales report
     does, and so does any measure whose latest movement is unusual. A latest
     movement within the usual variation is "no clear change" and gives way to
-    a finding: the measure's own group comparison, a change in its level, a
-    rate, the largest difference found, a joint model, a relationship. A bare
-    overall figure leads only when nothing else was found, and
-    a group is never named on fewer than five values or without a clear test.
+    a finding about the measure: its own group comparison, a change in its
+    level, a rate, the largest difference found. Without a date, a joint model
+    or a relationship can lead too; over time a quiet movement says more than
+    a correlation between two readings. A bare overall figure leads only when
+    nothing else was found, and a group is never named on fewer than five
+    values or without a clear test.
     """
     metric = metric_for(roles.measure, roles)
     by_kind: dict[str, Evidence] = {}
     for item in evidence:
         by_kind.setdefault(item.kind, item)
     leader = by_kind.get("leader")
-    findings = [
-        item.lead
-        for item in (
-            leader,
-            by_kind.get("shift"),
-            by_kind.get("rates"),
-            by_kind.get("differences"),
-            by_kind.get("model"),
-            by_kind.get("relationship"),
-        )
-        if item is not None and item.lead
-    ]
+
+    def leads(*kinds: str) -> list[str]:
+        return [by_kind[kind].lead for kind in kinds if kind in by_kind and by_kind[kind].lead]
+
+    findings = leads("leader", "shift", "rates", "differences")
     if growth and (metric.additive or not growth.quiet):
         movement = f"{growth.value} latest movement" + (", within the usual range" if growth.quiet else "")
         if leader:
@@ -3492,6 +3543,7 @@ def _headline(
         if leader and leader.subject is None and roles.dimension:
             return f"{quiet}; no clear difference between {sentence_case(roles.dimension)} groups."
         return f"{quiet}."
+    findings += leads("model", "relationship")
     if findings:
         return findings[0]
     if leader:
