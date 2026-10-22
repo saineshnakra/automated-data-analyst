@@ -2097,6 +2097,19 @@ class BriefAgreementTests(unittest.TestCase):
         self.assertIn("n = 30", answer.answer)
         self.assertIn("10 values the data checks flag are left out (WS swapped on 10 rows)", answer.answer)
 
+    def test_one_cell_left_out_is_said_in_the_singular(self):
+        frame = pd.DataFrame({"hemo": np.linspace(10, 17, 40), "pcv": np.linspace(30, 52, 40)})
+        frame.loc[0, "pcv"] = 9.0
+        given = QualityIssue(
+            "impossible", ("pcv",), 1, 2.5, "pcv below 10.", "pcv: 1 value below 10 (9)",
+            "a test rule", cells={"pcv": pd.Index([0])},
+        )
+
+        question = "correlation between hemo and pcv"
+        answer = answer_question(question, frame, detect_roles(frame), checks=(given,))
+
+        self.assertIn("1 value the data checks flag is left out (pcv: 1 value below 10 (9))", answer.answer)
+
     def test_a_count_on_flagged_values_and_a_code_set_to_missing_are_named(self):
         frame = pd.DataFrame({"Na": [140.0] * 30 + [250.0] * 5, "pm2_5": [10.0] * 35})
         flagged = QualityIssue(

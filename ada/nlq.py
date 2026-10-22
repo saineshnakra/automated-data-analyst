@@ -3871,8 +3871,8 @@ def _left_out(
         masked.loc[rows, column] = np.nan
     cells = sum(len(rows) for rows in hits.values())
     named = "; ".join(reasons[:3]) + ("; and more" if len(reasons) > 3 else "")
-    noun = "value" if cells == 1 else "values"
-    return masked, f"As in the brief, {cells:,} {noun} the data checks flag are left out ({named})."
+    noun, verb = ("value", "is") if cells == 1 else ("values", "are")
+    return masked, f"As in the brief, {cells:,} {noun} the data checks flag {verb} left out ({named})."
 
 
 def _run_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -> QueryAnswer:
