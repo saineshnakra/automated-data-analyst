@@ -249,6 +249,54 @@ def _censored_note(column: str, distinct: _Distinct, censored: np.ndarray, side:
 
 #: Share of a column past a detection limit at which its note warns that the mean is biased.
 CENSORED_SHARE = 0.10
+#: A ">X" limit that matches another column on the same row (within
+#: REACHED_TOLERANCE of it) on REACHED_SHARE of at least REACHED_ROWS rows
+#: is that column's value: the reading reached it.
+REACHED_ROWS = 5
+REACHED_SHARE = 0.8
+REACHED_TOLERANCE = 0.1
+
+
+def _upper_limits(distinct: _Distinct, markers: np.ndarray) -> pd.Series:
+    """The limit in each row written as above one (">3.5" gives 3.5), for those rows only."""
+    above = _censored(distinct)[1] & markers
+    limits = np.full(len(distinct.values) + 1, np.nan)
+    for position in np.flatnonzero(above):
+        read = _read_formatted_number(str(distinct.values.iloc[position]).strip().lstrip("<>").strip())
+        limits[position] = np.nan if read is None else read
+    return pd.Series(limits[distinct.codes], index=distinct.index).dropna()
+
+
+def _reached_note(frame: pd.DataFrame, column: str, limits: pd.Series) -> str | None:
+    """Say so when the limit in a column's ">X" cells is another column's value on the same row.
+
+    Water clarity written ">3.5" at a site 3.5 m deep means the disk was still
+    seen on the bottom: the limit is the depth, and the clarity is at least
+    that. The limits must vary, so one shared limit matching a constant
+    column is not taken for this.
+    """
+    if len(limits) < REACHED_ROWS or limits.nunique() < 3:
+        return None
+    best = None
+    for other in frame.columns:
+        series = frame[other]
+        if other == column or is_bool_dtype(series) or not is_numeric_dtype(series):
+            continue
+        values = series.reindex(limits.index).astype("float64")
+        held = values.notna().to_numpy() & (values > 0).to_numpy()
+        if held.sum() < REACHED_ROWS:
+            continue
+        close = int(((limits[held] - values[held]).abs() <= REACHED_TOLERANCE * values[held]).sum())
+        if close >= REACHED_SHARE * held.sum() and (best is None or close > best[1]):
+            best = (other, close, int(held.sum()))
+    if best is None:
+        return None
+    other, close, held = best
+    return (
+        f'On {close:,} of the {held:,} rows where {column} is written as ">X" and {other} is recorded, X is '
+        f"{other} (within {REACHED_TOLERANCE:.0%}): the reading reached {other}, so its true value is at "
+        "least that."
+    )
 
 
 def _lone_token(distinct: _Distinct, unread: np.ndarray) -> str | None:
@@ -1328,6 +1376,7 @@ def clean_dataframe(
     date_sample_size = 50
 
     clock_columns: list[str] = []
+    upper_limits: dict[str, pd.Series] = {}
     # The text columns that stay text, for the checks after inference.
     still_text: dict[str, _Distinct] = {}
     for column in _text_columns(cleaned):
@@ -1400,6 +1449,9 @@ def clean_dataframe(
                 cleaned[column] = parsed_numeric
                 numeric_columns_inferred += 1
                 notes.extend(_marker_notes(column, distinct, markers, token_cells, token, non_null_before))
+                limits = _upper_limits(distinct, markers)
+                if len(limits):
+                    upper_limits[column] = limits
                 skipped = unread & ~token_cells
                 if skipped.any():
                     notes.append(_unread_note(column, distinct.column()[skipped]))
@@ -1425,6 +1477,9 @@ def clean_dataframe(
     # on their columns, so they are set to missing before anything is computed.
     cleaned, blanked_codes, blanked_notes = blank_codes(cleaned)
     notes.extend(blanked_notes)
+    for column, limits in upper_limits.items():
+        if note := _reached_note(cleaned, column, limits):
+            notes.append(note)
 
     # Whole numbers written as dates (19540601, 202403), now that text columns
     # of them have become numbers and codes among them are gone.

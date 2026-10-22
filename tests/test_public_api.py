@@ -287,6 +287,18 @@ class CommandLineTests(unittest.TestCase):
         frame.to_csv(path, index=False)
         return path
 
+    def test_sheet_picks_the_worksheet_to_read(self):
+        import tempfile
+        path = f"{tempfile.mkdtemp()}/book.xlsx"
+        with pd.ExcelWriter(path, engine="openpyxl") as writer:
+            pd.DataFrame({"Note": ["cover sheet"]}).to_excel(writer, index=False, sheet_name="About")
+            steady().to_excel(writer, index=False, sheet_name="Data")
+
+        result = self.run_ada("schema", path, "--sheet", "Data")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("24 rows", result.stdout)
+
     def test_a_quiet_series_exits_zero(self):
         path = self.write("quiet.csv", steady())
         result = self.run_ada("check", path, "--frequency", "M")
@@ -641,7 +653,9 @@ class DataCheckTests(unittest.TestCase):
         self.assertEqual(frame["Wind Speed"].max(), 999.9)
 
     def test_a_clean_table_has_an_empty_frame(self):
-        self.assertTrue(ada.analyze(steady()).quality().empty)
+        frame = steady().assign(Revenue=lambda table: 100.0 + table.index % 3)
+
+        self.assertTrue(ada.analyze(frame).quality().empty)
 
 
 class ChosenMeasureTests(unittest.TestCase):

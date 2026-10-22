@@ -207,6 +207,13 @@ more of a column is censored (`CENSORED_SHARE`), the note adds that the mean
 of the rest is biased upward (downward for values above a limit), since the
 values left out are the smallest (or largest) ones.
 
+A `>X` limit is not always an instrument's. When the limits vary and, on 80% or
+more of at least five such rows (`REACHED_SHARE`, `REACHED_ROWS`), X is another
+numeric column's value on the same row (within 10%), a note says so: water
+clarity written `>3.5` at a site 3.5 m deep means the disk was still seen on
+the bottom, so the reading reached the depth and its true value is at least
+that.
+
 In a column of readings, `ND` (or `n.d.`) means not detected, so it counts as
 below a detection limit, like `<LOD`. The exception is a column that writes
 values below its limit with a number (`<0.4`): beside those, `ND` more likely

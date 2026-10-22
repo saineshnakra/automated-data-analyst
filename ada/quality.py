@@ -23,11 +23,11 @@ from __future__ import annotations
 import re
 import warnings
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pandas as pd
-from pandas.api.types import is_bool_dtype, is_numeric_dtype
+from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_dtype
 from scipy import stats
 
 from .formatting import group_label, has_percent_unit, is_currency, normalized_name
@@ -63,6 +63,74 @@ CAP_STANDOUT = 2
 #: A pile at the maximum or minimum holding this share of a column is a limit
 #: even when another value inside the range is as common.
 CAP_CLEAR_SHARE = 0.10
+#: A column of fewer than five values is checked for one value holding this
+#: share of it at its minimum or maximum: a reporting limit. From
+#: ALMOST_CONSTANT_SHARE such a limit leaves any column almost no information.
+NEAR_CONSTANT_SHARE = 0.5
+ALMOST_CONSTANT_SHARE = 0.9
+#: Shares of a column piled at each end that read as clipping at both (as
+#: winsorising at the 0.5th and 99.5th percentiles leaves), and how far apart
+#: the two shares may be.
+CLIP_SHARES = (0.001, 0.05)
+CLIP_LIKENESS = 2.0
+#: Values bunched just under a round maximum: how many stretches of 1% of the
+#: range below it make the typical count, and how many times that the top
+#: stretch must hold.
+SQUEEZE_WINDOWS = 20
+SQUEEZE_RATIO = 2.5
+#: Columns sharing one exact maximum or minimum that read as clipped together
+#: (expression values capped at -2 and 2 by a platform), and the share of the
+#: readings they must make up.
+SHARED_CLIP_COLUMNS = 10
+SHARED_CLIP_SHARE = 0.1
+#: A value at the very bottom or top repeated at least this often, standing
+#: apart from every other value, reads as a code.
+EDGE_CODE_VALUES = 10
+#: Above this many columns with extreme values of their own, they are listed as one issue.
+EXTREME_COLUMNS_LISTED = 10
+#: A narrow pile: PILE_SHARE of a column within PILE_WIDTH of its range,
+#: PILE_RATIO times as many values as the slivers of that width on either
+#: side, and a quarter of the other values within PILE_REACH such slivers of it.
+PILE_WIDTH = 0.02
+PILE_SHARE = 0.25
+PILE_RATIO = 3
+PILE_REACH = 10
+#: A round value inside a column's range holding this share of it, with this
+#: share of its rows in one group, is a limit that group's measurements stop at.
+GROUP_CAP_SHARE = 0.05
+GROUP_CAP_CONCENTRATION = 0.8
+#: A group held in bands: at least BAND_READINGS readings (of the first
+#: BAND_COLUMNS) inside its own range that the other group leaves in
+#: BAND_OUTSIDE of its rows.
+BAND_COLUMNS = 60
+BAND_READINGS = 3
+BAND_OUTSIDE = 0.25
+#: A missing-value code on at least FAILED_RECORD_ROWS rows marks a failed
+#: record when another column holds one value on FAILED_RECORD_SHARE of them.
+FAILED_RECORD_ROWS = 10
+FAILED_RECORD_SHARE = 0.9
+#: Rows of zeros: readings each 0 on under ZERO_ROW_COLUMN_SHARE of their
+#: values, ZERO_ROW_SHARE of them 0 on the same row.
+ZERO_ROW_COLUMN_SHARE = 0.05
+ZERO_ROW_SHARE = 0.75
+#: Cells that stand for "not recorded" when several columns hold them on the same rows.
+PLACEHOLDER_TOKENS = frozenset({"0", "-", "--", "—", "–"})
+PLACEHOLDER_OVERLAP = 0.98
+#: A reading exactly 0 in this share of rows is mostly below detection.
+ZERO_HEAVY_SHARE = 1 / 3
+#: Share of rows on which a part must stay at or below its whole for the rows past it to stand out.
+PART_WHOLE_SHARE = 0.95
+#: A gap follows time when one unbroken stretch holds this share of its rows,
+#: or it falls in at most GAP_STRETCHES stretches.
+GAP_RUN_SHARE = 0.95
+GAP_STRETCHES = 6
+#: A regular log holding under this share of the readings its interval implies is gappy.
+LOG_COVERAGE = 0.9
+#: Share of rows on which one column must stay at or below another for the two
+#: to read as one bounded by the other (a time censored at follow-up).
+BOUNDED_SHARE = 0.99
+# Readings whose zeros are dry days, not values below a limit.
+DRY_ZERO_WORDS = frozenset({"rain", "rainfall", "precipitation", "precip", "snow", "snowfall"})
 #: Share of a column's values held by one non-round value that reads as filled-in gaps.
 IMPUTED_SHARE = 0.10
 #: How many times more often than its neighbours a value in the tail must occur
@@ -136,39 +204,72 @@ FLATLINE_VALUE_SHARE = 0.5
 FLATLINE_STALL = 0.01
 #: A block of swapped rows must be at least this long.
 SWAP_ROWS = 3
+#: Share of a column beyond a quantity's critical limits (sodium above 160)
+#: that no real group of patients shows.
+CRITICAL_SHARE = 0.05
+#: A 0 below codes running from 1 is named when it holds under this share of
+#: rows and is at most 1/RARE_CODE_RATIO as common as any other code.
+RARE_CODE_SHARE = 0.02
+RARE_CODE_RATIO = 5
 
 #: Check names, by kind. Within each kind issues are ranked by the rows they
 #: cover; ties follow this order.
 CHECKS = {
     "generated": "Looks simulated",
+    "banded": "Group held in bands",
     "duplicates": "Duplicate rows",
     "swapped": "Swapped columns",
     "impossible": "Impossible values",
+    "implausible": "Implausible share",
     "sentinel": "Sentinel codes",
+    "failed_record": "Failed records",
+    "zero_rows": "Rows of zeros",
+    "placeholder": "Not recorded",
     "group_level": "Group out of scale",
     "equal_columns": "Copied values",
     "min_max": "Max below min",
+    "outside_range": "Average outside min to max",
+    "part_whole": "Part above whole",
     "cluster": "Second cluster",
     "extreme": "Extreme values",
     "matrix_rows": "Rows off scale",
     "imputed": "Probable fill values",
     "flatline": "Stuck readings",
     "cap": "Cap or floor",
+    "clipped": "Clipped at both ends",
+    "pile": "Narrow pile",
     "survey_code": "Survey codes",
+    "rare_code": "Rare codes",
+    "zeros": "Mostly zeros",
+    "single_reading": "Single readings",
+    "bounded": "Bounded by another column",
+    "constant": "Constant columns",
     "missing_by_group": "Missing by group",
     "missing_dependency": "Missing by value",
     "missing_block": "Missing together",
     "missing": "Mostly missing",
+    "missing_time": "Gaps in the log",
 }
 #: Checks that flag individual cells, whose rows ``flagged_index`` returns.
-VALUE_CHECKS = frozenset({"impossible", "sentinel", "extreme", "cluster", "survey_code", "swapped"})
+VALUE_CHECKS = frozenset({
+    "impossible", "implausible", "sentinel", "extreme", "cluster", "survey_code", "swapped", "rare_code",
+    "failed_record", "zero_rows", "placeholder",
+})
 #: Checks whose cells can't be readings as they stand (an impossible value, a
-#: code, a filled-in gap, a value in the wrong column, a stuck sensor), and which
+#: code, a filled-in gap, a value in the wrong column, a stuck sensor, the rest
+#: of a failed record, a row of zeros, a placeholder), and which
 #: ``statistics_mask`` blanks for computing relationships and comparisons.
 #: Extreme values and clusters may be real, so they stay.
-MASKED_CHECKS = frozenset({"impossible", "sentinel", "imputed", "survey_code", "swapped", "flatline"})
+MASKED_CHECKS = frozenset({
+    "impossible", "sentinel", "imputed", "survey_code", "swapped", "flatline", "failed_record", "zero_rows",
+    "placeholder",
+})
 #: Checks about the whole table, named first when they cover enough of it.
 TABLE_CHECKS = frozenset({"generated", "duplicates"})
+#: Checks that describe the table rather than flag values to doubt (a constant
+#: column, a reading mostly 0, max equal to min where one reading was taken, a
+#: narrow pile). They rank after the issues about values and are never named first.
+INFO_CHECKS = frozenset({"constant", "zeros", "single_reading", "bounded", "pile"})
 
 # Words that make a quantity non-negative: a size, an amount of matter, a count.
 # Money and sales quantities are left out, since refunds and returns are negative.
@@ -184,9 +285,16 @@ SIGNED_WORDS = frozenset({
     "change", "changes", "diff", "difference", "delta", "net", "balance", "growth", "gain",
     "loss", "return", "returns", "profit", "margin", "residual", "error", "bias", "anomaly",
     "deviation", "offset", "z", "zscore", "correlation", "temperature", "temp", "elevation",
-    "altitude", "relative", "yoy", "mom", "variance", "increase", "decrease", "score",
+    "altitude", "relative", "yoy", "mom", "variance", "increase", "decrease", "score", "strain",
 })
 PERCENT_WORDS = frozenset({"percent", "percentage", "pct", "perc", "coverage", "humidity"})
+# Stretches written in percent, which can't be negative but pass 100 when a
+# sample more than doubles its length: an elongation of 150% is a ductile metal.
+STRETCH_WORDS = frozenset({"elongation", "extension", "expansion", "swelling"})
+# A valid range written in a header: "Sound Level (dBA) (40 - 100)", "[0-14]", "(0 to 100%)".
+_HEADER_RANGE = re.compile(
+    r"[(\[]\s*(-?\d+(?:\.\d+)?)\s*(?:-|–|—|to)\s*(-?\d+(?:\.\d+)?)\s*%?\s*[)\]]", re.IGNORECASE
+)
 # Coordinates: where a row was taken, not a reading of it.
 LOCATION_WORDS = frozenset({"latitude", "lat", "longitude", "lon", "lng", "easting", "northing"})
 # Names whose values are never judged on a log scale (see prefers_log_scale).
@@ -209,6 +317,14 @@ _AMOUNT_UNIT = re.compile(
 _MAX_WORDS = {
     "max": "min", "maximum": "minimum", "high": "low", "highest": "lowest", "upper": "lower",
 }
+# The middle of a reading's range, beside its min and max: "pollutant_avg".
+MIDDLE_WORDS = frozenset({"avg", "average", "mean", "median", "mid"})
+# Words that make a reading the whole its parts add up to or lie within:
+# "Total Sales" beside "Online Sales"; for a depth, the water column itself.
+WHOLE_WORDS = frozenset({"total", "overall", "whole", "gross", "full", "entire"})
+WHOLE_DEPTH_WORDS = frozenset({"water", "bottom", "site", "station"})
+# Words naming which reading of several in a window a column holds.
+WINDOW_WORDS = frozenset({*_MAX_WORDS, *_MAX_WORDS.values(), "first", "last", "start", "end"})
 # Statistics of a spread or a count: a high group's SD or n may well be below a low group's.
 SPREAD_WORDS = frozenset({
     "sd", "se", "sem", "std", "stdev", "var", "variance", "iqr", "n", "count", "counts", "size",
@@ -235,6 +351,10 @@ class _Unit:
     usual: tuple[float, float]
     #: The values a reading in this unit can take at all.
     limits: tuple[float, float]
+    #: Values beyond these are seen only in critical illness, in a small share
+    #: of any real group of patients, so a column with many of them is suspect
+    #: even though each one alone is possible.
+    critical: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -247,9 +367,10 @@ class _Limit:
     units: tuple[_Unit, ...]
     #: Where the limits hold: "in a living patient", "at the Earth's surface".
     setting: str
-    #: Analytes with short names (Na, K, ALB) count only in a table with at
-    #: least one other analyte, so a soil table's K is never read as potassium.
-    clinical: bool = False
+    #: The kind of table the quantity belongs to ("blood", "water"). Such a
+    #: quantity counts only in a table with at least one other of its kind, so
+    #: a soil table's K is never read as potassium, nor a lab's pH as a lake's.
+    panel: str | None = None
     #: A unit to assume when the header names none and the median can't tell.
     default: str | None = None
 
@@ -259,50 +380,63 @@ def _spelled(*spellings: str) -> tuple[frozenset, ...]:
 
 
 def _unit(
-    name: str, spellings: tuple[str, ...], usual: tuple[float, float], limits: tuple[float, float]
+    name: str,
+    spellings: tuple[str, ...],
+    usual: tuple[float, float],
+    limits: tuple[float, float],
+    critical: tuple[float, float] | None = None,
 ) -> _Unit:
-    return _Unit(name, _spelled(*spellings), usual, limits)
+    return _Unit(name, _spelled(*spellings), usual, limits, critical)
 
 
 _UNBOUNDED = (-np.inf, np.inf)
+_MMOL = ("mmol l", "meq l")
+_CELSIUS = ("c", "degc", "celsius")
+_FAHRENHEIT = ("f", "degf", "fahrenheit")
+_PATIENT = "in a living patient"
+_SURFACE_WATER = "in natural surface water"
 #: Ranges a reading can take at all, kept wide so that a value outside one is
-#: an error and not a rare case: clinical analytes by their standard names, in
-#: their usual units, as survivable in a living patient; vital signs; wind
-#: speed at the Earth's surface; and air temperature within the records ever
-#: measured. The unit is read from the header, or else from the column's median
-#: (haemoglobin near 13 is in g/dL, near 130 in g/L); a column whose median fits
-#: no unit is left alone.
+#: an error and not a rare case: clinical analytes by their standard names and
+#: common short forms, in their usual units, as survivable in a living
+#: patient; vital signs; wind speed at the Earth's surface; air temperature
+#: within the records ever measured; and the temperature, dissolved oxygen and
+#: pH of natural surface water. The unit is read from the header, or else from
+#: the column's median (haemoglobin near 13 is in g/dL, near 130 in g/L); a
+#: column whose median fits no unit is left alone. Electrolytes also carry the
+#: critical limits laboratories report at once (sodium above 160).
 PHYSICAL_LIMITS = (
-    _Limit("sodium", _spelled("sodium", "na"), (
-        _unit("mmol/L", ("mmol l", "meq l"), (120, 160), (100, 200)),), "in a living patient", clinical=True),
-    _Limit("potassium", _spelled("potassium", "k"), (
-        _unit("mmol/L", ("mmol l", "meq l"), (2.5, 7), (1, 10)),), "in a living patient", clinical=True),
+    _Limit("sodium", _spelled("sodium", "na", "sod"), (
+        _unit("mmol/L", _MMOL, (120, 160), (100, 200), (120, 160)),), _PATIENT, panel="blood"),
+    _Limit("potassium", _spelled("potassium", "k", "pot"), (
+        _unit("mmol/L", _MMOL, (2.5, 7), (1, 10), (2.5, 6.5)),), _PATIENT, panel="blood"),
     _Limit("chloride", _spelled("chloride", "cl"), (
-        _unit("mmol/L", ("mmol l", "meq l"), (85, 125), (50, 160)),), "in a living patient", clinical=True),
-    _Limit("glucose", _spelled("glucose", "glu", "fbs", "rbs", "sugar"), (
+        _unit("mmol/L", _MMOL, (85, 125), (50, 160), (80, 120)),), _PATIENT, panel="blood"),
+    _Limit("calcium", _spelled("calcium", "ca", "t ca", "total calcium"), (
+        _unit("mg/dL", ("mg dl",), (6, 14), (2, 22), (6, 13)),
+        _unit("mmol/L", _MMOL, (1.5, 3.5), (0.5, 5.5), (1.5, 3.25))), _PATIENT, panel="blood"),
+    _Limit("glucose", _spelled("glucose", "glu", "fbs", "rbs", "bgr", "sugar"), (
         _unit("mg/dL", ("mg dl",), (60, 400), (10, 3000)),
-        _unit("mmol/L", ("mmol l",), (3, 22), (0.5, 170))), "in a living patient", clinical=True),
-    _Limit("creatinine", _spelled("creatinine", "creatinin", "creat", "scr"), (
+        _unit("mmol/L", ("mmol l",), (3, 22), (0.5, 170))), _PATIENT, panel="blood"),
+    _Limit("creatinine", _spelled("creatinine", "creatinin", "creat", "scr", "sc"), (
         _unit("mg/dL", ("mg dl",), (0.4, 12), (0.1, 30)),
-        _unit("µmol/L", ("umol l", "µmol l", "μmol l"), (35, 1000), (10, 2700))), "in a living patient",
-        clinical=True),
+        _unit("µmol/L", ("umol l", "µmol l", "μmol l"), (35, 1000), (10, 2700))), _PATIENT, panel="blood"),
     _Limit("albumin", _spelled("albumin", "alb"), (
         _unit("g/dL", ("g dl",), (1.5, 6), (1, 7)),
-        _unit("g/L", ("g l",), (15, 60), (10, 70))), "in a living patient", clinical=True),
-    _Limit("haemoglobin", _spelled("haemoglobin", "hemoglobin", "hgb", "hb"), (
+        _unit("g/L", ("g l",), (15, 60), (10, 70))), _PATIENT, panel="blood"),
+    _Limit("haemoglobin", _spelled("haemoglobin", "hemoglobin", "hgb", "hb", "hemo"), (
         _unit("g/dL", ("g dl",), (5, 20), (3, 25)),
-        _unit("g/L", ("g l",), (50, 200), (30, 250))), "in a living patient", clinical=True),
+        _unit("g/L", ("g l",), (50, 200), (30, 250))), _PATIENT, panel="blood"),
     _Limit("haematocrit", _spelled("haematocrit", "hematocrit", "hct", "pcv"), (
         _unit("%", ("pct", "percent"), (15, 65), (10, 75)),
-        _unit("L/L", ("l l",), (0.15, 0.65), (0.1, 0.75))), "in a living patient", clinical=True),
+        _unit("L/L", ("l l",), (0.15, 0.65), (0.1, 0.75))), _PATIENT, panel="blood"),
     _Limit("red cell count", _spelled("rbc", "erythrocytes", "red blood cells", "red cell count"), (
         _unit("×10¹²/L", ("x10 12 l", "10 12 l", "x10 6 ul", "10 6 ul", "m ul"), (2, 8), (1, 10)),),
-        "in a living patient", clinical=True),
+        _PATIENT, panel="blood"),
     _Limit("heart rate", _spelled("heart rate", "heartrate", "pulse", "pulse rate"), (
-        _unit("beats a minute", ("bpm",), (40, 150), (20, 300)),), "in a living patient"),
+        _unit("beats a minute", ("bpm",), (40, 150), (20, 300)),), _PATIENT),
     _Limit("body temperature", _spelled("body temperature", "body temp", "core temperature"), (
-        _unit("°C", ("c", "degc", "celsius"), (34, 41), (25, 45)),
-        _unit("°F", ("f", "degf", "fahrenheit"), (93, 106), (77, 113))), "in a living patient"),
+        _unit("°C", _CELSIUS, (34, 41), (25, 45)),
+        _unit("°F", _FAHRENHEIT, (93, 106), (77, 113))), _PATIENT),
     _Limit("wind speed", _spelled("wind speed", "windspeed", "wind gust", "gust speed", "ws"), (
         _unit("m/s", ("m s", "mps", "ms"), _UNBOUNDED, (0, 115)),
         _unit("km/h", ("km h", "kmh", "kph", "kmph"), _UNBOUNDED, (0, 415)),
@@ -312,15 +446,26 @@ PHYSICAL_LIMITS = (
     _Limit("air temperature", _spelled(
         "air temperature", "air temp", "ambient temperature", "ambient temp", "outdoor temperature",
         "outside temperature"), (
-        _unit("°C", ("c", "degc", "celsius"), _UNBOUNDED, (-90, 60)),
-        _unit("°F", ("f", "degf", "fahrenheit"), _UNBOUNDED, (-130, 140))), "on Earth",
+        _unit("°C", _CELSIUS, _UNBOUNDED, (-90, 60)),
+        _unit("°F", _FAHRENHEIT, _UNBOUNDED, (-130, 140))), "on Earth",
         default="°F"),
+    _Limit("water temperature", _spelled("water temperature", "water temp", "watertemp"), (
+        _unit("°C", _CELSIUS, (0, 32), (-3, 45)),
+        _unit("°F", _FAHRENHEIT, (32, 90), (27, 113))), _SURFACE_WATER, panel="water"),
+    _Limit("dissolved oxygen", _spelled("dissolved oxygen", "do"), (
+        _unit("mg/L", ("mg l",), (1, 16), (0, 25)),), _SURFACE_WATER, panel="water"),
+    _Limit("pH", _spelled("ph"), (_unit("", (), (4, 10), (2, 13)),), _SURFACE_WATER, panel="water"),
 )
+#: Readings that mark a table as one of a panel's kind without a limit of
+#: their own: salinity or turbidity beside a pH says the pH is a lake's.
+PANEL_COMPANIONS = {
+    "water": _spelled("salinity", "turbidity", "conductivity", "secchi depth", "water depth"),
+}
 # Header words set aside before a name is matched: the sample a value comes
 # from and words for "level"; units are set aside by the table above.
 _LIMIT_FILLER = frozenset({
     "serum", "blood", "plasma", "level", "levels", "value", "values", "conc", "test", "max", "maximum",
-    "min", "minimum", "mean", "average", "avg", "median",
+    "min", "minimum", "mean", "average", "avg", "median", "standard", "units",
 })
 _LIMIT_UNIT_WORDS = frozenset(
     word
@@ -328,7 +473,8 @@ _LIMIT_UNIT_WORDS = frozenset(
     for unit in limit.units
     for spelling in unit.spellings
     for word in spelling
-) | {"degree", "degrees", "deg", "degreec", "degreef", "per", "x10", "10", "12", "6", "l", "dl", "ml", "ul"}
+) | {"degree", "degrees", "deg", "degreec", "degreef", "per", "x10", "10", "12", "6", "l", "dl", "ml", "ul",
+     "m", "ppt", "psu", "ntu"}
 
 # Values that stand for "no reading" in numeric exports: runs of nines (-999,
 # 999.9, 9999), a repeated digit (1111, 8888) and large negative powers of ten.
@@ -425,12 +571,28 @@ def _is_percentage_name(column: str, words: set[str]) -> bool:
     )
 
 
+def _header_range(column: str) -> tuple[float, float] | None:
+    """A range written in the header, such as "(40 - 100)", as numbers, or None."""
+    found = _HEADER_RANGE.search(column)
+    if not found:
+        return None
+    low, high = float(found.group(1)), float(found.group(2))
+    return (low, high) if low < high else None
+
+
 def name_bounds(column: str) -> tuple[float, float, str] | None:
     """The range a column's name says its values must lie in, with the rule's wording.
 
-    Returns None when the name implies no bound.
+    A range written in the header itself ("(40 - 100)") comes first. Returns
+    None when the name implies no bound.
     """
+    stated = _header_range(column)
+    if stated is not None:
+        low, high = stated
+        return low, high, f"the header gives its valid range as {low:g} to {high:g}"
     words = _name_words(column)
+    if words & STRETCH_WORDS:
+        return 0.0, float("inf"), "a stretch can't be negative, though it may pass 100%"
     if "ph" in words:
         return 0.0, 14.0, "pH runs from 0 to 14"
     if words & UNIT_INDEX_WORDS:
@@ -465,15 +627,24 @@ class _Bounds:
     #: Set when a physical limit gave the range; its unit came from the header
     #: or the median, so values outside it are wrong however many there are.
     limit: _Limit | None = None
+    #: The limit's critical range in the column's unit, with the quantity named
+    #: in that unit ("a sodium level in mmol/L"), when it has one.
+    critical: tuple[float, float] | None = None
+    quantity: str = ""
 
 
-def _limit_named(column: str) -> tuple[_Limit, set[str]] | None:
-    """The physical quantity a column's name gives, with the header's unit words."""
+def _core_words(column: str) -> tuple[frozenset, set[str]]:
+    """A header's words with units and filler such as "serum" set aside, and its unit words."""
     words = _name_words(column)
     if "%" in column:
         words.add("percent")
     units = words & _LIMIT_UNIT_WORDS
-    core = frozenset(words - units - _LIMIT_FILLER)
+    return frozenset(words - units - _LIMIT_FILLER), units
+
+
+def _limit_named(column: str) -> tuple[_Limit, set[str]] | None:
+    """The physical quantity a column's name gives, with the header's unit words."""
+    core, units = _core_words(column)
     for limit in PHYSICAL_LIMITS:
         if core in limit.names:
             # "WS" is a wind speed only beside a speed unit.
@@ -489,7 +660,7 @@ def _limit_unit(limit: _Limit, units: set[str], median: float) -> tuple[_Unit, s
     if named:
         usual = named[0].usual
         return (named[0], "stated") if usual[0] <= median <= usual[1] else None
-    if units - {"percent"} and limit.clinical:
+    if units - {"percent"} and limit.panel:
         # A unit the table doesn't list (mg in a food table): leave the column alone.
         return None
     fitting = [
@@ -506,12 +677,18 @@ def physical_limits(profiles: dict) -> dict[str, _Bounds]:
     """Limits from ``PHYSICAL_LIMITS`` for the columns whose name and values fit one.
 
     ``profiles`` maps column names to anything with sorted values in
-    ``ordered``. An analyte with a short name counts only when another analyte
-    in the table fits its own unit too, which tells a blood panel from a soil
-    or a food table.
+    ``ordered``. A quantity that belongs to a panel counts only when another
+    of the panel's quantities in the table fits its own unit too, or a
+    companion reading (``PANEL_COMPANIONS``) is present, which tells a blood
+    panel from a soil or a food table, and a lake's pH from a lab's.
     """
     found: dict[str, tuple[_Limit, _Unit, str]] = {}
+    members: dict[str, int] = {}
     for column, profile in profiles.items():
+        core, _ = _core_words(str(column))
+        for panel, companions in PANEL_COMPANIONS.items():
+            if core in companions:
+                members[panel] = members.get(panel, 0) + 1
         named = _limit_named(str(column))
         if named is None or profile.ordered.size == 0:
             continue
@@ -519,43 +696,52 @@ def physical_limits(profiles: dict) -> dict[str, _Bounds]:
         chosen = _limit_unit(limit, units, _sorted_median(profile.ordered))
         if chosen is not None:
             found[column] = (limit, *chosen)
-    analytes = sum(limit.clinical for limit, _, _ in found.values())
+            if limit.panel:
+                members[limit.panel] = members.get(limit.panel, 0) + 1
     bounds = {}
     for column, (limit, unit, how) in found.items():
-        if limit.clinical and analytes < 2:
+        if limit.panel and members.get(limit.panel, 0) < 2:
             continue
         low, high = unit.limits
         quantity = _article(limit.what)
         if how == "default":
             quantity += f" in any common unit ({unit.name} gives the widest range)"
-        else:
+        elif unit.name:
             quantity += f" in {unit.name}" + (" (the unit its median points to)" if how == "median" else "")
         if low == 0:
             rule = f"{quantity} stays below {show_value(high)} {limit.setting}"
         else:
             rule = f"{quantity} lies between {show_value(low)} and {show_value(high)} {limit.setting}"
-        bounds[column] = _Bounds(float(low), float(high), rule, limit)
+        bounds[column] = _Bounds(float(low), float(high), rule, limit, unit.critical, quantity)
     return bounds
 
 
 def _article(what: str) -> str:
     """ "a sodium level", "an air temperature": the quantity as a phrase."""
-    phrase = f"{what} level" if what in ("sodium", "potassium", "chloride", "glucose", "creatinine",
-                                        "albumin", "haemoglobin", "haematocrit") else what
+    analytes = (
+        "sodium", "potassium", "chloride", "calcium", "glucose", "creatinine", "albumin", "haemoglobin",
+        "haematocrit",
+    )
+    phrase = f"{what} level" if what in analytes else what
+    if what == "pH":
+        return "the pH"
     return f"{'an' if phrase[0] in 'aeiou' else 'a'} {phrase}"
 
 
 def column_bounds(column: str, limits: dict[str, _Bounds] | None = None) -> _Bounds | None:
-    """The tightest range a column must lie in, from its name and from any physical limit."""
+    """The tightest range a column must lie in, from its name and from any physical limit.
+
+    A range written in the header is the column's own statement and wins.
+    """
     named = name_bounds(column)
     limit = (limits or {}).get(column)
     if named is None:
         return limit
     low, high, wording = named
-    if limit is None:
+    if limit is None or _header_range(column) is not None:
         return _Bounds(low, high, wording)
     # A wind speed can't be negative by name, and can't pass 115 m/s by physics.
-    return _Bounds(max(low, limit.low), min(high, limit.high), limit.rule, limit.limit)
+    return replace(limit, low=max(low, limit.low), high=min(high, limit.high))
 
 
 def is_location_name(column: str) -> bool:
@@ -747,6 +933,28 @@ class _Scale:
         if not self.log:
             below = scaled[:-1] < self.centre
             cut[:-1] |= (np.cumsum((gaps & below)[::-1])[::-1] > 0) & below
+        return cut
+
+    def upper_cluster(self, uniques: np.ndarray, counts: np.ndarray) -> np.ndarray:
+        """True for distinct values above a wide gap in a log-scaled tail, when CLUSTER_VALUES lie beyond it.
+
+        A long right tail runs on unbroken for a while, so ``detached`` asks a
+        gap to leave its values twice as far out as the tail before it, which a
+        value 180 times the median beside a tail reaching 9 times it misses. A
+        gap of at least a factor of two and GAP_SPREADS spreads with ten or more
+        values beyond it is no chance spacing of a tail, which thins out one
+        value at a time.
+        """
+        cut = np.zeros(uniques.shape, dtype=bool)
+        if not self.log or self.spread == 0 or uniques.size < 2:
+            return cut
+        scaled = np.log10(np.where(uniques > 0, uniques, np.nan))
+        gaps = np.diff(scaled) >= max(GAP_SPREADS * self.spread, np.log10(2))
+        far = scaled[:-1] > self.centre + EXTREME_Z * self.spread
+        beyond = np.cumsum(counts[::-1])[::-1][1:]
+        opening = np.flatnonzero(gaps & far & (beyond >= CLUSTER_VALUES))
+        if opening.size:
+            cut[opening[0] + 1 :] = True
         return cut
 
 
@@ -967,22 +1175,149 @@ def _spikes(column: _Column, taken: np.ndarray) -> list[QualityIssue]:
     return issues
 
 
+def _edge_codes(column: _Column, taken: np.ndarray) -> list[QualityIssue]:
+    """A value repeated at the very bottom or top of a column, standing apart from every other value.
+
+    A cap sits against the readings it limits, which crowd up to it; a
+    converted blank (0 °F becoming -17.78 °C, below the coldest real reading)
+    sits beyond a thin tail. The value must hold EDGE_CODE_VALUES rows or more
+    but under a quarter of the column, be SPIKE_RATIO times as common as any
+    of the five nearest values, and lie further from the nearest of them than
+    a quarter of the other values' interquartile range; and the other values
+    within that distance of the nearest must be a quarter as dense, or less,
+    as they are between their quartiles. Zero is left out: an instrument that
+    is off reads 0 apart from its running values, and that is a reading.
+    """
+    if column.uniques.size < 10 or column.size < 50:
+        return []
+    issues = []
+    for position, inner in ((0, slice(1, 6)), (-1, slice(-6, -1))):
+        value = float(column.uniques[position])
+        count = int(column.counts[position])
+        if value == 0 or count < EDGE_CODE_VALUES or count >= 0.25 * column.size:
+            continue
+        if count < SPIKE_RATIO * int(column.counts[inner].max()):
+            continue
+        rest = column.ordered[column.ordered != value]
+        first, third = (rest[int(round(share * (rest.size - 1)))] for share in (0.25, 0.75))
+        neighbour = float(column.uniques[1 if position == 0 else -2])
+        reach = (third - first) / 4
+        if third <= first or abs(neighbour - value) <= reach:
+            continue
+        low, high = (neighbour, neighbour + reach) if position == 0 else (neighbour - reach, neighbour)
+        beside = int(np.searchsorted(rest, high, side="right") - np.searchsorted(rest, low))
+        if beside > 0.25 * (0.5 * rest.size / (third - first)) * reach:
+            continue
+        cells = (column.array == value) & ~taken
+        if not cells.any():
+            continue
+        flagged = column.cells(cells)
+        rows = _plural(flagged.size, "row")
+        end = "bottom" if position == 0 else "top"
+        reason = "a code for a missing reading, not a measurement"
+        if abs(value - _ZERO_FAHRENHEIT_C) < 0.01 and _name_words(column.name) & {"temp", "temperature"}:
+            reason = "it is 0 °F in °C, so probably blank Fahrenheit readings converted, not measurements"
+        detail = (
+            f"{column.name} holds {show_value(value)} in {rows}, at the very {end} of the column and apart "
+            f"from every other value (the nearest is {show_value(neighbour)}): {reason}."
+        )
+        summary = f"{column.name}: {show_value(value)} in {rows}, standing apart, likely a missing-value code"
+        rule = (
+            f"a value at the minimum or maximum in {EDGE_CODE_VALUES} or more rows, {SPIKE_RATIO}× its "
+            "nearest values and further from them than a quarter of the rest's IQR"
+        )
+        issues.append(_issue("sentinel", column, flagged, detail, summary, rule, group=value))
+    return issues
+
+
+def _narrow_pile(column: _Column, log: bool) -> QualityIssue | None:
+    """A quarter or more of a column within a sliver of its range around one value, not on it exactly.
+
+    Soil pH entered as 7.0 unless measured otherwise puts more than half the
+    readings within 0.05 of 7, so the interquartile range measures that pile
+    and ordinary readings of 6.6 or 7.4 fall outside 1.5×IQR. The sliver is
+    PILE_WIDTH of the range between the 0.5th and 99.5th percentiles (on a log
+    scale for a right-skewed column), it must hold PILE_SHARE of the values,
+    and it must stand out from the slivers just beside it (PILE_RATIO), so the
+    narrow peak of an ordinary cluster is not a pile. A quarter of the other
+    values must lie within PILE_REACH slivers of it: values only far from a
+    pile (wind speeds of 140 among speeds under 1) are outliers whatever the
+    IQR. No single value may hold most of it, since one repeated value is a
+    floor, a cap or a fill instead.
+    """
+    if column.size < 100 or column.uniques.size < FLAT_MIN_LEVELS:
+        return None
+    values = np.log10(column.ordered[column.ordered > 0]) if log else column.ordered
+    if values.size < 100:
+        return None
+    low, high = (values[int(round(share * (values.size - 1)))] for share in (0.005, 0.995))
+    width = PILE_WIDTH * (high - low)
+    if width <= 0:
+        return None
+    reach = np.searchsorted(values, values + width, side="right") - np.arange(values.size)
+    start = int(np.argmax(reach))
+    held = int(reach[start])
+    if held < PILE_SHARE * column.size or int(column.counts.max()) >= 0.6 * held:
+        return None
+    inside = values[start : start + held]
+    def around(distance: float) -> int:
+        """The values within ``distance`` of the pile, outside it."""
+        within = np.searchsorted(values, inside[-1] + distance, side="right")
+        return int(within - np.searchsorted(values, inside[0] - distance)) - held
+
+    if held < PILE_RATIO * around(width) or around(PILE_REACH * width) < 0.25 * (values.size - held):
+        return None
+    first, last = (10**value if log else value for value in (float(inside[0]), float(inside[-1])))
+    centre = 10 ** float(np.median(inside)) if log else float(np.median(inside))
+    share = _percent(held / column.size * 100)
+    detail = (
+        f"{column.name} has {held:,} of its {column.size:,} values ({share}) between {_rounded(first)} and "
+        f"{_rounded(last)}, a sliver of its range around {_rounded(centre)}: a narrow pile, as a default "
+        "entry, rounding or a reading that rarely leaves one level gives. Its interquartile range measures "
+        "the pile, so ordinary values just off it look far out, and outlier counts on it mean little."
+    )
+    summary = f"{column.name}: {share} of values piled near {_rounded(centre)}"
+    rule = (
+        f"{PILE_SHARE:.0%} or more of a column within {PILE_WIDTH:.0%} of its range (0.5th to 99.5th "
+        f"percentile), {PILE_RATIO} times as many as the slivers of that width either side hold, a quarter "
+        f"of the other values within {PILE_REACH} such slivers, and no single value holding most of them"
+    )
+    return QualityIssue("pile", (column.name,), held, held / column.size * 100, detail, summary, rule,
+                        group=(first, last))
+
+
+def _round_value(value: float) -> bool:
+    """Whether a value is round as limits are: one significant figure (80, 500, 0.001), or 25, 150, 7.5."""
+    if value == 0 or not np.isfinite(value):
+        return False
+    leading = abs(value) / 10.0 ** np.floor(np.log10(abs(value)))
+    return bool(np.isclose(leading, np.round(leading)) or np.isclose(leading % 1, 0.5))
+
+
 def _caps(
-    column: _Column, fill: float | None = None, tied: Callable[[str, float], bool] | None = None
+    column: _Column,
+    fill: float | None = None,
+    tied: Callable[[str, float], bool] | None = None,
+    shared: frozenset = frozenset(),
 ) -> list[QualityIssue]:
     """One value piled up at the maximum or minimum: an instrument limit, a time-out, a top code.
 
     The value must stand out from every value inside the range, not only from
-    its neighbours, unless it holds CAP_CLEAR_SHARE of the column: 594 kg/m3
-    of sand at the bottom of a range in which 755.8 is as common is a recipe,
-    not a floor. A count of subjects or samples is
-    a design number, and a value that belongs to one category (every
-    herbivore at trophic level 2) is that category's value; neither is a limit.
-    ``fill`` is a filled-in value left out of the comparison.
+    its neighbours, unless it holds CAP_CLEAR_SHARE of the column, or is a round
+    maximum (500 on an index whose scale stops there): 594 kg/m3 of sand at the
+    bottom of a range in which 755.8 is as common is a recipe, not a floor. A
+    column of fewer than five values is checked only for one value holding
+    most of it (a reporting limit, 0.001 on 94% of rows). A pile of a similar
+    small share at both ends is one column clipped at both, reported as such.
+    A count of subjects or samples is a design number, and a value that
+    belongs to one category (every herbivore at trophic level 2) is that
+    category's value; neither is a limit. ``fill`` is a filled-in value left
+    out of the comparison, and ``shared`` holds limits reported across
+    columns at once (see ``_shared_clips``).
     """
-    if column.uniques.size < 5 or counts_units(column.name):
+    if column.uniques.size < 2 or counts_units(column.name):
         return []
-    issues = []
+    few = column.uniques.size < 5
     inside = column.counts[1:-1]
     if fill is not None:
         inside = inside[column.uniques[1:-1] != fill]
@@ -990,33 +1325,241 @@ def _caps(
     # The three nearest distinct values on each side: a limit piles up on one
     # value, while small counts thin out smoothly from their minimum.
     nearest = {"maximum": column.counts[-4:-1], "minimum": column.counts[1:4]}
+    piles: dict[str, tuple[float, int, bool]] = {}
     for side, position in (("maximum", -1), ("minimum", 0)):
         value = float(column.uniques[position])
         count = int(column.counts[position])
-        if value == 0 or count < 3 or count < 3 * int(nearest[side].max()):
-            continue
-        if count < CAP_STANDOUT * busiest_inside and count / column.size < CAP_CLEAR_SHARE:
+        neighbours = int(nearest[side].max())
+        if value == 0 or count < 3 or count < 2 * neighbours or value in shared:
             continue
         # Counts start at 0 or 1, so piling up there is their shape, not a floor.
         if side == "minimum" and value == 1 and column.whole:
             continue
-        # A share no continuous reading reaches by chance, or enough rows to stand out.
-        if not (count / column.size >= CAP_SHARE or count >= 5):
+        if few and count / column.size < NEAR_CONSTANT_SHARE:
             continue
         if tied is not None and tied(column.name, value):
+            continue
+        # A round maximum hit a handful of times is a scale's ceiling (an index stopping at 500);
+        # a large pile there is judged like any other.
+        ceiling = side == "maximum" and abs(value) >= 1 and _round_value(value)
+        ceiling = ceiling and count / column.size < CAP_SHARE
+        clear = count >= CAP_STANDOUT * busiest_inside or count / column.size >= CAP_CLEAR_SHARE or ceiling
+        # A share no continuous reading reaches by chance, or enough rows to stand out.
+        enough = count / column.size >= CAP_SHARE or count >= 5
+        piles[side] = (value, count, count >= 3 * neighbours and clear and enough)
+    if len(piles) == 2 and _clipped_both(piles, column.size):
+        return [_clipped_issue(column, piles["minimum"][0], piles["maximum"][0])]
+    # Many values just under a maximum that only a few hit exactly are squeezed against it.
+    squeezed = _squeezed(column)
+    issues = [squeezed] if squeezed else []
+    for side, (value, count, limit) in piles.items():
+        if not limit or (side == "maximum" and squeezed):
             continue
         flagged = column.cells(column.array == value)
         kind, bias = ("cap", "down") if side == "maximum" else ("floor", "up")
         share = _percent(count / column.size * 100)
-        detail = (
-            f"{column.name} sits exactly at its {side}, {show_value(value)}, in "
-            f"{_plural(count, 'row')} ({share}), which looks like a {kind} (a limit of the "
-            "instrument or the protocol); true values there may lie beyond it, which biases the "
-            f"mean {bias}."
-        )
+        if few or count / column.size >= ALMOST_CONSTANT_SHARE:
+            detail = (
+                f"{column.name} sits exactly at its {side}, {show_value(value)}, in {count:,} of its "
+                f"{column.size:,} values ({share}): probably a reporting limit, so the column carries "
+                "almost no information, and true values there may lie beyond it."
+            )
+        else:
+            detail = (
+                f"{column.name} sits exactly at its {side}, {show_value(value)}, in "
+                f"{_plural(count, 'row')} ({share}), which looks like a {kind} (a limit of the "
+                "instrument or the protocol); true values there may lie beyond it, which biases the "
+                f"mean {bias}."
+            )
         summary = f"{column.name}: {_plural(count, 'row')} ({share}) piled at its {side}, {show_value(value)}"
-        rule = f"one value at the {side} in {CAP_SHARE:.0%} or more of rows, or the most frequent value"
+        rule = (
+            f"one value at the {side} in {CAP_SHARE:.0%} or more of rows, or the most frequent value, "
+            "or a round maximum"
+        )
         issues.append(_issue("cap", column, flagged, detail, summary, rule, group=(side, value)))
+    return issues
+
+
+def _clipped_both(piles: dict[str, tuple[float, int, bool]], size: int) -> bool:
+    """Whether piles at both ends are one clipping: each a small share, the two alike."""
+    shares = [count / size for _, count, _ in piles.values()]
+    counts = [count for _, count, _ in piles.values()]
+    return (
+        min(counts) >= 5
+        and all(CLIP_SHARES[0] <= share <= CLIP_SHARES[1] for share in shares)
+        and max(shares) <= CLIP_LIKENESS * min(shares)
+    )
+
+
+def _clipped_issue(column: _Column, low: float, high: float) -> QualityIssue:
+    """A column piled at both its minimum and maximum in a similar small share: winsorised."""
+    at_low, at_high = column.array == low, column.array == high
+    flagged = column.cells(at_low | at_high)
+    shares = f"{_percent(at_low.mean() * 100)} and {_percent(at_high.mean() * 100)}"
+    lows, highs = _plural(int(at_low.sum()), "row"), _plural(int(at_high.sum()), "row")
+    detail = (
+        f"{column.name} sits exactly at its minimum, {show_value(low)}, in {lows} and at its maximum, "
+        f"{show_value(high)}, in {highs} ({shares}): it looks clipped at both ends (winsorised), so true "
+        "values lie beyond both limits."
+    )
+    summary = f"{column.name}: clipped at {show_value(low)} and {show_value(high)} ({shares} of rows)"
+    rule = (
+        f"piles at both the minimum and the maximum, each {CLIP_SHARES[0]:.1%} to {CLIP_SHARES[1]:.0%} of "
+        f"rows and at least twice its neighbours, the two shares within a factor of {CLIP_LIKENESS:g}"
+    )
+    return _issue("clipped", column, flagged, detail, summary, rule, group=(low, high))
+
+
+def _squeezed(column: _Column) -> QualityIssue | None:
+    """Values bunched just under a round maximum without piling on it exactly.
+
+    Readings squeezed against a limit (62 values from 79 to 80, only 5 of them
+    exactly 80) crowd the top stretch of the range: the values within 1% of
+    the range below the maximum must be SQUEEZE_RATIO times as many as in a
+    typical stretch of that width below, and CAP_SHARE of the column.
+    """
+    if column.size < 100 or column.uniques.size < 20:
+        return None
+    high = float(column.uniques[-1])
+    if high <= 0 or not _round_value(high):
+        return None
+    width = 0.01 * (high - column.quantile(0.01))
+    if width <= 0:
+        return None
+    edges = high - width * np.arange(SQUEEZE_WINDOWS + 1, -1, -1)
+    counts = np.histogram(column.ordered, bins=edges)[0]
+    top, below = int(counts[-1]), float(np.median(counts[:-1]))
+    exact = int(column.counts[-1])
+    # Most of them must fall short of the maximum; a pile on it is a cap or nothing.
+    if top / column.size < CAP_SHARE or top < SQUEEZE_RATIO * max(below, 1.0) or top < 2 * exact:
+        return None
+    cells = column.array >= high - width
+    flagged = column.cells(cells)
+    share = _percent(top / column.size * 100)
+    detail = (
+        f"{column.name} has {_plural(top, 'value')} ({share}) within {show_value(float(f'{width:.2g}'))} "
+        f"of its maximum, {show_value(high)}, about {top / max(below, 1.0):.0f}× as many as in a stretch of "
+        f"that width lower down, though only {exact:,} equal it exactly: values seem squeezed against a "
+        f"limit at {show_value(high)}, so true values there may lie beyond it."
+    )
+    summary = f"{column.name}: {_plural(top, 'value')} ({share}) bunched just under {show_value(high)}"
+    rule = (
+        f"values within 1% of the range below a round maximum, {SQUEEZE_RATIO}× a typical stretch of that "
+        f"width and {CAP_SHARE:.0%} or more of the column"
+    )
+    return _issue("cap", column, flagged, detail, summary, rule, group=("near maximum", high))
+
+
+def _shared_clips(
+    profiles: dict[str, _Column], columns: list[str]
+) -> tuple[dict[str, frozenset], QualityIssue | None]:
+    """Limits that many columns share as their exact maximum or minimum: values clipped together.
+
+    Expression values capped at -2 and 2 by a platform put both numbers at the
+    ends of hundreds of columns, a few cells each, so no single column piles up
+    enough to look capped and its clipped values look extreme. A value that is
+    the maximum (or minimum) of SHARED_CLIP_COLUMNS columns or more, and of
+    SHARED_CLIP_SHARE of the readings, is reported once for them all, and each
+    column's other checks leave it out. Zero, and a limit the names give (100
+    for percentages), are where such columns end anyway.
+
+    Returns the shared limits by column and the one issue, or None.
+    """
+    needed = max(SHARED_CLIP_COLUMNS, SHARED_CLIP_SHARE * len(columns))
+    if len(columns) < needed:
+        return {}, None
+    limits: dict[str, set[float]] = {}
+    for position in (-1, 0):
+        ends = pd.Series({column: float(profiles[column].ordered[position]) for column in columns})
+        counts = ends.value_counts()
+        for value in counts.index[counts >= needed]:
+            if value == 0:
+                continue
+            for column in ends.index[ends == value]:
+                bound = name_bounds(column)
+                if bound is None or value not in bound[:2]:
+                    limits.setdefault(column, set()).add(float(value))
+    if len(limits) < needed:
+        return {}, None
+    named = list(limits)
+    values = sorted({value for found in limits.values() for value in found})
+    cells = {column: profiles[column].index[np.isin(profiles[column].array, list(found))]
+             for column, found in limits.items()}
+    total = sum(len(rows) for rows in cells.values())
+    shown = " and ".join(show_value(value) for value in values)
+    detail = (
+        f"{len(named):,} columns ({_listed(named)}) end exactly at {shown}, {total:,} cells in all: "
+        f"the values look clipped at {shown} (by the instrument, the platform or the export), so true "
+        "values there lie beyond them. The clipped cells are left out of each column's extreme-value check."
+    )
+    summary = f"{len(named):,} columns clipped at {shown} ({total:,} cells)"
+    rule = (
+        f"one value the exact maximum or minimum of {SHARED_CLIP_COLUMNS} or more columns and of "
+        f"{SHARED_CLIP_SHARE:.0%} or more of the readings"
+    )
+    share = max(len(rows) / max(profiles[column].size, 1) * 100 for column, rows in cells.items())
+    issue = QualityIssue("cap", tuple(named), total, share, detail, summary, rule,
+                         tuple(show_value(value) for value in values), group=("shared", tuple(values)),
+                         cells=cells)
+    return {column: frozenset(found) for column, found in limits.items()}, issue
+
+
+def _group_caps(
+    frame: pd.DataFrame,
+    profiles: dict[str, _Column],
+    columns: list[str],
+    groupings: dict[str, tuple[np.ndarray, pd.Index]],
+) -> list[QualityIssue]:
+    """A round value inside a column's range, piled up in one group: a limit that group's tests stop at.
+
+    Compression tests stopped at 50% strain leave Elongation = 50 on a tenth
+    of the rows, nearly all of them compression tests, though tension tests
+    run past it. The value must be round, hold GROUP_CAP_SHARE of the column
+    and three times as many rows as any other value, and GROUP_CAP_CONCENTRATION
+    of its rows must fall in one level of a grouping that holds far less of
+    the column. ``groupings`` maps grouping columns to their level codes and levels.
+    """
+    issues = []
+    for column in columns:
+        profile = profiles[column]
+        if profile.uniques.size < 10 or profile.size < 50:
+            continue
+        order = np.argsort(profile.counts)
+        position, runner_up = int(order[-1]), int(profile.counts[order[-2]])
+        value, count = float(profile.uniques[position]), int(profile.counts[position])
+        if (
+            count / profile.size < GROUP_CAP_SHARE or count < 3 * runner_up or not _round_value(value)
+            or position in (0, profile.uniques.size - 1)
+        ):
+            continue
+        at = frame[column].to_numpy(dtype="float64", na_value=np.nan) == value
+        present = frame[column].notna().to_numpy()
+        for grouping, (codes, names) in groupings.items():
+            if grouping == column:
+                continue
+            levels = np.bincount(codes[at & (codes >= 0)], minlength=1)
+            top = int(np.argmax(levels))
+            within = levels[top] / count
+            base = float(((codes == top) & present).sum()) / max(int(present.sum()), 1)
+            if within < GROUP_CAP_CONCENTRATION or within < 1.5 * base:
+                continue
+            label = group_label(grouping, names[top])
+            flagged = profile.cells(profile.array == value)
+            share = _percent(count / profile.size * 100)
+            detail = (
+                f"{column} holds exactly {show_value(value)} in {_plural(count, 'row')} ({share}), "
+                f"{int(levels[top]):,} of them in {label}, and at least three times as often as any other "
+                f"value: probably a limit at which those measurements stopped, so true values there may lie "
+                "beyond it."
+            )
+            summary = f"{column}: {show_value(value)} in {_plural(count, 'row')} ({share}), mostly {label}"
+            rule = (
+                f"a round value inside the range in {GROUP_CAP_SHARE:.0%} or more of rows and 3× any other "
+                f"value, with {GROUP_CAP_CONCENTRATION:.0%} or more of them in one group"
+            )
+            group = ("within", value, label)
+            issues.append(_issue("cap", profile, flagged, detail, summary, rule, group=group))
+            break
     return issues
 
 
@@ -1107,7 +1650,8 @@ def _extremes(column: _Column, scale: _Scale, taken: np.ndarray) -> QualityIssue
     distant = scale.far(column.uniques)
     if not distant.any():
         return None
-    candidates = column.uniques[distant & scale.detached(column.uniques)]
+    apart = scale.detached(column.uniques) | scale.upper_cluster(column.uniques, column.counts)
+    candidates = column.uniques[distant & apart]
     if not candidates.size:
         return None
     far = np.isin(column.array, candidates) & ~taken
@@ -1163,12 +1707,19 @@ def _extremes(column: _Column, scale: _Scale, taken: np.ndarray) -> QualityIssue
 
 
 def _survey_codes(column: _Column) -> QualityIssue | None:
-    """Codebook values (7, 9, 77, 99) sitting above a small set of answer codes."""
+    """Codebook values (7, 9, 77, 99) sitting above a small set of answer codes.
+
+    A lone 7 or 8 counts only above an unbroken scale of answers (1 to 5): in a
+    clinical code set such as histological types 1, 2, 4, 5 and 7, a 7 is one
+    more type, not a refusal.
+    """
     if not column.whole:
         return None
     levels = [int(value) for value in column.uniques]
-    codes = [level for level in levels if level in SURVEY_CODES]
     answers = [level for level in levels if level not in SURVEY_CODES]
+    scale = bool(answers) and answers == list(range(answers[0], answers[-1] + 1))
+    codes = [level for level in levels if level in SURVEY_CODES and (level > 8 or scale)]
+    answers = [level for level in levels if level not in codes]
     if not codes or len(answers) < 2 or min(codes) <= max(answers) + 1:
         return None
     cells = np.isin(column.array, codes)
@@ -1186,16 +1737,79 @@ def _survey_codes(column: _Column) -> QualityIssue | None:
     return _issue("survey_code", column, flagged, detail, summary, rule)
 
 
+def _rare_zero_code(column: _Column) -> QualityIssue | None:
+    """A rare 0 below whole-number codes that run unbroken from 1.
+
+    A code set that starts at 1 (thal 1 to 3, a five-point scale) has no use
+    for 0, so a 0 in a handful of rows is more likely a missing value written
+    as a number than a category. It is named for checking and left in place.
+    """
+    if not column.whole or column.uniques.size < 4 or column.size < 50 or column.uniques[0] != 0:
+        return None
+    others = column.uniques[1:]
+    if not np.array_equal(others, np.arange(1, others.size + 1)):
+        return None
+    count = int(column.counts[0])
+    if count / column.size >= RARE_CODE_SHARE or count * RARE_CODE_RATIO > int(column.counts[1:].min()):
+        return None
+    flagged = column.cells(column.array == 0)
+    rows = _plural(count, "row")
+    detail = (
+        f"{column.name} holds 0 in {rows} ({_percent(count / column.size * 100)}), below its other "
+        f"codes (1 to {show_value(others[-1])}), each of which is far more common: a code set that "
+        "starts at 1 has no use for 0, so check whether it stands for a missing value."
+    )
+    summary = f"{column.name}: 0 in {rows}, below codes running from 1, possibly a missing value"
+    rule = (
+        f"a 0 in under {RARE_CODE_SHARE:.0%} of rows, at most 1/{RARE_CODE_RATIO} as common as any other "
+        "code, below whole-number codes running unbroken from 1"
+    )
+    return _issue("rare_code", column, flagged, detail, summary, rule, group=0.0)
+
+
+def _implausible(column: _Column, taken: np.ndarray, bounds: _Bounds | None) -> QualityIssue | None:
+    """Many values beyond a quantity's critical limits, though each lies within what is possible.
+
+    A sodium of 165 can happen; a fifth of a table's patients above 160 can't,
+    since critical values turn up in a few percent of even very ill groups.
+    Cells another check took (``taken``) are left out.
+    """
+    if bounds is None or bounds.critical is None or column.size < 50:
+        return None
+    low, high = bounds.critical
+    beyond = ((column.array < low) | (column.array > high)) & ~taken
+    count = int(beyond.sum())
+    if count < 10 or count / column.size < CRITICAL_SHARE:
+        return None
+    flagged = column.cells(beyond)
+    if flagged.min() > high:
+        what = f"{_plural(count, 'value')} above {show_value(high)}"
+    elif flagged.max() < low:
+        what = f"{_plural(count, 'value')} below {show_value(low)}"
+    else:
+        what = f"{_plural(count, 'value')} outside {show_value(low)} to {show_value(high)}"
+    share = _percent(count / column.size * 100)
+    detail = (
+        f"{column.name} has {what} ({share} of its values), beyond the critical limits of "
+        f"{bounds.quantity}. Each is possible in a very ill patient, but they turn up in a few percent of "
+        "even the sickest groups, so this many points to errors, another unit or a mislabelled column."
+    )
+    summary = f"{column.name}: {what} ({share}), beyond critical limits"
+    rule = f"{CRITICAL_SHARE:.0%} or more of a column beyond a quantity's critical limits ({low:g}, {high:g})"
+    return _issue("implausible", column, flagged, detail, summary, rule)
+
+
 def _is_coded(column: _Column, factors: tuple[str, ...]) -> bool:
     """Whether a column holds category codes: a named factor, or a few whole numbers.
 
     A name that bounds the values (a humidity, a percentage) marks a reading even
-    when it is recorded in whole numbers.
+    when it is recorded in whole numbers; a range written in the header ("Score
+    (1-5)") does not, since a scale of codes states one too.
     """
     if column.name in factors:
         return True
     few = column.uniques.size <= CODED_LEVELS and column.whole
-    return few and name_bounds(column.name) is None
+    return few and (name_bounds(column.name) is None or _header_range(column.name) is not None)
 
 
 def _value_issues(
@@ -1204,19 +1818,23 @@ def _value_issues(
     bounds: _Bounds | None = None,
     tied: Callable[[str, float], bool] | None = None,
     single_cells: bool = True,
+    shared: frozenset = frozenset(),
 ) -> list[QualityIssue]:
     """The checks on one column's values. ``single_cells`` is False for the
-    columns of a matrix table, whose far values are judged by whole rows."""
+    columns of a matrix table, whose far values are judged by whole rows.
+    ``shared`` holds the column's limits that ``_shared_clips`` reports across
+    columns."""
     if column.size == 0:
         return []
     if _is_coded(column, factors):
-        found = _survey_codes(column)
-        return [found] if found else []
+        stated = column_bounds(column.name) if _header_range(column.name) else None
+        outside = _impossible(column, np.zeros(column.size, dtype=bool), stated)[0] if stated else None
+        return [found for found in (outside, _survey_codes(column), _rare_zero_code(column)) if found]
     imputed, filled = _imputed(column)
-    caps = _caps(column, imputed.group if imputed else None, tied)
+    caps = _caps(column, imputed.group if imputed else None, tied, shared)
     # A fill value or a pile-up at a limit would sit in the bulk and shrink the
     # spread, so the scale comes from the other values.
-    piled = [issue.group[1] for issue in caps] + ([imputed.group] if imputed else [])
+    piled = [*_pile_values(caps), *shared] + ([imputed.group] if imputed else [])
     if piled:
         filled = filled | np.isin(column.array, piled)
     ordered = column.ordered[~np.isin(column.ordered, piled)] if piled else column.ordered
@@ -1227,13 +1845,24 @@ def _value_issues(
     coded = np.zeros(column.size, dtype=bool)
     for found in codes:
         coded |= column.index.isin(found.cells[column.name])
-    # A code piled at the minimum (-999 in 45% of rows) is a code, not a floor.
-    caps = [issue for issue in caps if issue.group[1] not in {found.group for found in codes}]
     if bounds is None:
         bounds = column_bounds(column.name)
+    # A value no reading can take is impossible, whether or not it stands apart.
+    edges = [
+        found for found in _edge_codes(column, coded)
+        if bounds is None or bounds.low <= found.group <= bounds.high
+    ]
+    for found in edges:
+        coded |= column.index.isin(found.cells[column.name])
+    codes += edges
+    # A code piled at the minimum (-999 in 45% of rows) is a code, not a floor.
+    caps = [issue for issue in caps if not set(_pile_values([issue])) & {found.group for found in codes}]
     impossible, taken = _impossible(column, coded, bounds)
     issues: list[QualityIssue] = [impossible] if impossible else []
     taken |= coded
+    implausible = _implausible(column, taken, bounds)
+    if implausible:
+        issues.append(implausible)
     issues.extend(codes)
     issues.extend(caps)
     if imputed:
@@ -1243,7 +1872,25 @@ def _value_issues(
     extreme = _extremes(column, scale, taken | filled) if single_cells and not circular else None
     if extreme:
         issues.append(extreme)
+    pile = _narrow_pile(column, scale.log) if single_cells and not circular else None
+    # A floor or cap inside the pile already says why the values crowd there.
+    if pile and not any(pile.group[0] <= value <= pile.group[1] for value in piled):
+        issues.append(pile)
     return issues
+
+
+def _pile_values(issues: list[QualityIssue]) -> list[float]:
+    """The values cap and clipping issues pile at: a floor, a cap, or both ends of a clipped column.
+
+    Values bunched under a maximum without piling on it give none.
+    """
+    values: list[float] = []
+    for issue in issues:
+        if issue.check == "clipped" and issue.group:
+            values.extend(issue.group)
+        elif issue.check == "cap" and issue.group[0] in ("maximum", "minimum"):
+            values.append(issue.group[1])
+    return values
 
 
 def _merge_alike(issues: list[QualityIssue]) -> list[QualityIssue]:
@@ -1251,7 +1898,10 @@ def _merge_alike(issues: list[QualityIssue]) -> list[QualityIssue]:
 
     "MaxTemp, MinTemp and MeanTemp hold -17.78" reads better than three issues,
     and a fill value, or extreme values, recurring on the same rows in several
-    columns are one finding: one bad record, or one batch of them.
+    columns are one finding: one bad record, or one batch of them. Columns
+    clipped at both ends are one finding whatever their limits, since the same
+    treatment was applied to each, and so are extreme values in more than
+    EXTREME_COLUMNS_LISTED columns, as a wide panel of one kind gives.
     """
     merged: list[QualityIssue] = []
     groups: dict[tuple, list[QualityIssue]] = {}
@@ -1261,11 +1911,44 @@ def _merge_alike(issues: list[QualityIssue]) -> list[QualityIssue]:
         elif issue.check in ("imputed", "extreme", "cluster"):
             rows = issue.cells[issue.columns[0]]
             groups.setdefault((issue.check, len(rows), rows[0], rows[-1]), []).append(issue)
+        elif issue.check == "clipped":
+            groups.setdefault(("clipped",), []).append(issue)
         else:
             merged.append(issue)
     for (check, *_), alike in groups.items():
         merged.append(alike[0] if len(alike) == 1 else _combined(check, alike))
+    extremes = [issue for issue in merged if issue.check == "extreme"]
+    if len({column for issue in extremes for column in issue.columns}) > EXTREME_COLUMNS_LISTED:
+        merged = [issue for issue in merged if issue.check != "extreme"] + [_many_extremes(extremes)]
     return merged
+
+
+def _many_extremes(issues: list[QualityIssue]) -> QualityIssue:
+    """Extreme values in many columns as one issue, as a wide panel of one kind gives."""
+    columns = tuple(dict.fromkeys(column for issue in issues for column in issue.columns))
+    cells_by_column = {name: index for issue in issues for name, index in issue.cells.items()}
+    counts = sorted(len(index) for index in cells_by_column.values())
+    cells = sum(counts)
+    spread = f"{counts[0]:,}" if counts[0] == counts[-1] else f"{counts[0]:,} to {counts[-1]:,}"
+    detail = (
+        f"{len(columns):,} columns ({_listed(list(columns))}) each have values more than "
+        f"{EXTREME_Z:.0f} robust standard deviations from their median, cut off from their other values: "
+        f"{cells:,} cells in all, {spread} per column. With this many columns affected, the values are "
+        "as likely the shape of those columns as entry errors; check them before relying on a finding "
+        "about one of these columns."
+    )
+    summary = f"{len(columns):,} columns: {cells:,} extreme values ({spread} each)"
+    return QualityIssue(
+        check="extreme",
+        columns=columns,
+        rows=max(issue.rows for issue in issues),
+        share=max(issue.share for issue in issues),
+        detail=detail,
+        summary=summary,
+        rule=issues[0].rule,
+        examples=issues[0].examples,
+        cells=cells_by_column,
+    )
 
 
 def _combined(check: str, alike: list[QualityIssue]) -> QualityIssue:
@@ -1304,6 +1987,18 @@ def _combined(check: str, alike: list[QualityIssue]) -> QualityIssue:
             f"{_plural(rows, 'row')} ({_percent(share)}) hold a fill value in {len(columns)} "
             f"columns ({named})"
         )
+    elif check == "clipped":
+        shares = sorted(issue.share / 2 for issue in alike)
+        spread = _percent(shares[0]) if _percent(shares[0]) == _percent(shares[-1]) else (
+            f"{_percent(shares[0])} to {_percent(shares[-1])}"
+        )
+        rows, share = max(issue.rows for issue in alike), max(issue.share for issue in alike)
+        detail = (
+            f"{len(columns):,} columns ({named}) each sit exactly at their own minimum and maximum in about "
+            f"{spread} of rows at each end, {cells:,} cells in all: they look clipped at both ends "
+            "(winsorised), so true values lie beyond both limits in every one of them."
+        )
+        summary = f"{len(columns):,} columns clipped at both ends ({_listed(list(columns), 3)})"
     elif check == "cap":
         side, value = first.group
         kind = "cap" if side == "maximum" else "floor"
@@ -1312,6 +2007,12 @@ def _combined(check: str, alike: list[QualityIssue]) -> QualityIssue:
             f"in all, which looks like a shared {kind}; true values there may lie beyond it."
         )
         summary = f"{named}: {_plural(cells, 'value')} piled at their {side}, {show_value(value)}"
+        if side == "near maximum":
+            detail = (
+                f"{named} bunch just under their maximum, {show_value(value)}, in {_plural(cells, 'value')} "
+                "in all, as values squeezed against a shared limit do; true values there may lie beyond it."
+            )
+            summary = f"{named}: {_plural(cells, 'value')} bunched just under {show_value(value)}"
     else:
         each = _listed([f"{issue.rows:,}" for issue in alike])
         reason = "; it is 0 °F in °C, so probably blank Fahrenheit readings" if "0 °F" in first.detail else ""
@@ -1329,7 +2030,8 @@ def _combined(check: str, alike: list[QualityIssue]) -> QualityIssue:
         summary=summary,
         rule=first.rule,
         examples=first.examples,
-        group=first.group,
+        # Columns clipped at both ends each have their own limits, so no one value stands for them.
+        group=None if check == "clipped" else first.group,
         cells={name: index for issue in alike for name, index in issue.cells.items()},
     )
 
@@ -1387,11 +2089,46 @@ def _equal_columns(
     built: dict[str, frozenset] = {}
     for column in {column for issue in issues for column in issue.columns}:
         built[column] = _row_extreme_of(frame, column, columns)
-    return [
+    issues = [
         issue
         for issue in issues
         if issue.columns[1] not in built[issue.columns[0]] and issue.columns[0] not in built[issue.columns[1]]
     ]
+    # The highest and lowest reading in a window are equal wherever one reading was taken.
+    windows = [issue for issue in issues if _same_reading(*issue.columns)]
+    if windows:
+        issues = [issue for issue in issues if issue not in windows] + [_single_readings(windows)]
+    return issues
+
+
+def _reading_stem(column: str) -> tuple[str, ...]:
+    """A header's words without max, min, first, last or window numbers: OBS1_glucose_max is obs, glucose."""
+    words = (re.sub(r"\d+", "", word) for word in normalized_name(column).split())
+    return tuple(word for word in words if word and word not in WINDOW_WORDS)
+
+
+def _same_reading(first: str, second: str) -> bool:
+    """Whether two columns hold the max, min, first or last of one reading, or of it in two windows."""
+    named = set(normalized_name(first).split()) | set(normalized_name(second).split())
+    return bool(named & WINDOW_WORDS) and _reading_stem(first) == _reading_stem(second)
+
+
+def _single_readings(issues: list[QualityIssue]) -> QualityIssue:
+    """Pairs of window statistics of one reading that are often equal, as one note rather than copies."""
+    leading = max(issues, key=lambda issue: issue.rows)
+    shares = sorted(issue.share for issue in issues)
+    spread = _percent(shares[0]) if len(issues) == 1 else f"{_percent(shares[0])} to {_percent(shares[-1])}"
+    pairs = _plural(len(issues), "pair")
+    detail = (
+        f"In {pairs} of columns that hold the highest and lowest value of one reading, or the same reading "
+        f"in two windows (such as {leading.columns[0]} and {leading.columns[1]}), the two are equal on "
+        f"{spread} of rows. Where a single reading was taken in the window its maximum and minimum are that "
+        "one value, so this is no sign of copying."
+    )
+    summary = f"{pairs} of window columns equal where one reading was taken"
+    rule = "two columns of one reading that differ only by max, min, first, last or a window's number"
+    columns = tuple(dict.fromkeys(column for issue in issues for column in issue.columns))
+    return QualityIssue("single_reading", columns, leading.rows, leading.share, detail, summary, rule)
 
 
 def _row_extreme_of(table: pd.DataFrame, column: str, columns: list[str]) -> frozenset:
@@ -1450,6 +2187,43 @@ def _shared_limits(a: pd.Series, b: pd.Series) -> list[float]:
     return limits
 
 
+def _bounded_pair(a: pd.Series, b: pd.Series, first: str, second: str) -> tuple[str, str] | None:
+    """The lower and upper column when one never exceeds the other but often falls short of it.
+
+    A time to recurrence is set to the follow-up time where there was no
+    recurrence, so it equals follow-up on part of the rows and is shorter on
+    the rest, never longer; a discounted price is the list price where no
+    discount applied. Such a pair is bounded, not copied. One must stay at or
+    below the other on BOUNDED_SHARE of rows, be strictly below on a tenth,
+    and there be of the same order (a median ratio of a fifth or more): a
+    column copied into one on a ten-times larger scale lies below it too.
+    """
+    for low, high, names in ((a, b, (first, second)), (b, a, (second, first))):
+        short = low < high
+        if float((low <= high).mean()) < BOUNDED_SHARE or float(short.mean()) < 0.1:
+            continue
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = float(np.nanmedian((low[short] / high[short]).to_numpy(dtype="float64")))
+        if ratio >= 0.2:
+            return names
+    return None
+
+
+def _bounded_issue(low: str, high: str, count: int, share: float) -> QualityIssue:
+    """A note that one column equals another where it reached its bound, rather than a copy."""
+    detail = (
+        f"{low} never exceeds {high} and equals it on {_plural(count, 'row')} ({_percent(share * 100)} of "
+        f"rows with both): it looks recorded up to {high}, as a time to an event is set to the follow-up "
+        "time where the event did not happen (censored), so this is no sign of copying."
+    )
+    summary = f"{low} reaches its bound, {high}, on {_percent(share * 100)} of rows"
+    rule = (
+        f"one column at or below another on {BOUNDED_SHARE:.0%} of rows, below it on a tenth or more, and "
+        f"equal on {EQUAL_SHARE:.0%} or more"
+    )
+    return QualityIssue("bounded", (low, high), count, share * 100, detail, summary, rule)
+
+
 def _equal_pair(frame: pd.DataFrame, first: str, second: str, dimension: str | None) -> QualityIssue | None:
     a, b = frame[first], frame[second]
     both = a.notna() & b.notna()
@@ -1467,6 +2241,8 @@ def _equal_pair(frame: pd.DataFrame, first: str, second: str, dimension: str | N
         f"two columns holding the same non-zero value in {EQUAL_SHARE:.0%} or more of rows, and of the "
         "rows away from any floor or ceiling the two share"
     )
+    if share >= EQUAL_SHARE and (bounded := _bounded_pair(a[both], b[both], first, second)):
+        return _bounded_issue(*bounded, int(equal.sum()), share)
     if share >= EQUAL_SHARE and agree >= EQUAL_SHARE:
         count = int(equal.sum())
         detail = (
@@ -1526,7 +2302,8 @@ def _own_counts(words: tuple[str, ...], every: list[set[str]]) -> bool:
 
 
 def _min_max(frame: pd.DataFrame, columns: list[str]) -> list[QualityIssue]:
-    """Rows where a max-named column falls below its min-named sibling, or its plain one.
+    """Rows where a max-named column falls below its min-named sibling, or its plain one, and rows
+    where an average-named sibling of the two lies outside them.
 
     Spreads and counts are skipped (a high-exposure group's SD may well be
     below a low one's), and so are pairs whose two sides each have their own
@@ -1543,21 +2320,109 @@ def _min_max(frame: pd.DataFrame, columns: list[str]) -> list[QualityIssue]:
         low = by_words.get(tuple(low_words)) or by_words.get(plain)
         if not low or low == high:
             continue
+        both = max(int((frame[high].notna() & frame[low].notna()).sum()), 1)
         below = frame[high] < frame[low]
         count = int(below.sum())
-        if not count:
+        if count:
+            pairs = frame.loc[below, [high, low]].head(3).to_numpy()
+            shown = tuple(f"{show_value(x)} < {show_value(y)}" for x, y in pairs)
+            detail = (
+                f"{high} is below {low} in {_plural(count, 'row')} (for example {shown[0]}), which can't "
+                "happen; one of the two is wrong on those rows."
+            )
+            summary = f"{high} below {low} in {_plural(count, 'row')}"
+            rule = "a max-named column below its min-named or plain sibling"
+            issues.append(QualityIssue("min_max", (high, low), count, count / both * 100, detail, summary,
+                                       rule, shown))
+        middle = next((by_words[found] for found in _middles(words) if found in by_words), None)
+        if middle and low == by_words.get(tuple(low_words)):
+            found = _outside_range(frame, middle, low, high)
+            if found:
+                issues.append(found)
+    return issues
+
+
+def _middles(words: tuple[str, ...]) -> list[tuple[str, ...]]:
+    """The names an average of a max-named column's reading would have: "pm avg", "mean pm", "pm"."""
+    position = next(position for position, word in enumerate(words) if word in _MAX_WORDS)
+    names = [(*words[:position], middle, *words[position + 1 :]) for middle in sorted(MIDDLE_WORDS)]
+    return [*names, (*words[:position], *words[position + 1 :])]
+
+
+def _outside_range(frame: pd.DataFrame, middle: str, low: str, high: str) -> QualityIssue | None:
+    """Rows where an average lies outside the minimum and maximum of the same readings."""
+    outside = (frame[middle] < frame[low]) | (frame[middle] > frame[high])
+    count = int(outside.sum())
+    if not count:
+        return None
+    rows = frame.loc[outside, [middle, low, high]].head(3).to_numpy()
+    shown = tuple(f"{show_value(m)} outside {show_value(x)} to {show_value(y)}" for m, x, y in rows)
+    both = max(int(frame[[middle, low, high]].notna().all(axis=1).sum()), 1)
+    detail = (
+        f"{middle} lies outside {low} to {high} in {_plural(count, 'row')} (for example {shown[0]}), "
+        "which can't happen for an average of the same readings; one of the three is wrong on those rows."
+    )
+    summary = f"{middle} outside {low} to {high} in {_plural(count, 'row')}"
+    rule = "an average-named column below its min-named sibling or above its max-named one"
+    return QualityIssue("outside_range", (middle, low, high), count, count / both * 100, detail, summary,
+                        rule, shown)
+
+
+def _noun_words(column: str) -> list[str]:
+    """A header's words in order, without anything in brackets: "SecchiDepth (m)" gives secchi, depth."""
+    bare = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", normalized_name(column))
+    return re.findall(r"[^\W_]+", bare)
+
+
+def _parts_of_wholes(frame: pd.DataFrame, columns: list[str]) -> list[QualityIssue]:
+    """Rows where a part exceeds the whole it belongs to, for pairs the names make plain.
+
+    Two readings of the same kind ("SecchiDepth" and "WaterDepth", "Online Sales"
+    and "Total Sales") pair as part and whole when they end in the same word,
+    the whole's other words, if any, are WHOLE_WORDS (or, for a depth, name
+    the whole water column), and the part's are not. The part must stay at or
+    below the whole on PART_WHOLE_SHARE of the rows holding both, so the
+    relation holds and the rows past it stand out.
+    """
+    named = {column: _noun_words(column) for column in columns}
+    bounds_words = set(_MAX_WORDS) | set(_MAX_WORDS.values()) | MIDDLE_WORDS
+    issues = []
+    for whole, whole_words in named.items():
+        if not whole_words:
             continue
-        pairs = frame.loc[below, [high, low]].head(3).to_numpy()
-        shown = tuple(f"{show_value(x)} < {show_value(y)}" for x, y in pairs)
-        both = max(int((frame[high].notna() & frame[low].notna()).sum()), 1)
-        detail = (
-            f"{high} is below {low} in {_plural(count, 'row')} (for example {shown[0]}), which can't "
-            "happen; one of the two is wrong on those rows."
-        )
-        summary = f"{high} below {low} in {_plural(count, 'row')}"
-        rule = "a max-named column below its min-named or plain sibling"
-        issues.append(QualityIssue("min_max", (high, low), count, count / both * 100, detail, summary,
-                                   rule, shown))
+        wholes = WHOLE_WORDS | WHOLE_DEPTH_WORDS if whole_words[-1] == "depth" else WHOLE_WORDS
+        if set(whole_words[:-1]) - wholes:
+            continue
+        for part, part_words in named.items():
+            qualifiers = set(part_words[:-1])
+            if (
+                part == whole or not part_words or part_words[-1] != whole_words[-1] or not qualifiers
+                or qualifiers & (wholes | bounds_words)
+            ):
+                continue
+            a, b = frame[part], frame[whole]
+            both = a.notna() & b.notna()
+            if both.sum() < 20:
+                continue
+            over = both & (a > b + 1e-9 * b.abs())
+            count = int(over.sum())
+            if not count or count > (1 - PART_WHOLE_SHARE) * both.sum():
+                continue
+            rows = frame.loc[over, [part, whole]].head(3).to_numpy()
+            shown = tuple(f"{show_value(x)} > {show_value(y)}" for x, y in rows)
+            within = f"{float((~over[both]).mean()) * 100:.1f}%"
+            detail = (
+                f"{part} is greater than {whole} in {_plural(count, 'row')} (for example {shown[0]}), "
+                f"though it stays at or below it on {within} of the rows with both: a part can't exceed its "
+                "whole, so one of the two is wrong on those rows."
+            )
+            summary = f"{part} above {whole} in {_plural(count, 'row')}"
+            rule = (
+                f"a part above the whole its name pairs it with, though at or below it on "
+                f"{PART_WHOLE_SHARE:.0%} or more of rows"
+            )
+            issues.append(QualityIssue("part_whole", (part, whole), count, count / int(both.sum()) * 100,
+                                       detail, summary, rule, shown))
     return issues
 
 
@@ -1666,32 +2531,50 @@ def _missing_issues(
     numeric: list[str],
     dimension: str | None,
     grouping: tuple[np.ndarray, pd.Index] | None,
+    date: str | None = None,
 ) -> list[QualityIssue]:
-    """Columns mostly missing, columns missing together, and gaps that follow a value or a group."""
+    """Columns mostly missing, columns missing together, and gaps that follow time, a value or a group.
+
+    With a date, a gap is first tested against time: rows missing in one
+    unbroken stretch (a reading not recorded before 1985) or in a few
+    stretches of whole periods (years missing from a station's record) are
+    described as such, and not blamed on a group or another column.
+    """
     rows = len(frame)
     if rows == 0:
         return []
     missing = frame.isna()
     shares = missing.mean()
-    gappy = [column for column in frame.columns if 0.05 <= shares[column] < 1.0]
+    gappy = [column for column in frame.columns if 0.05 <= shares[column] < 1.0 and column != date]
     blocks = _blocks(missing, gappy)
     in_block = {column for block in blocks for column in block}
+    timed = _TimeOrder.of(frame, date)
+    in_time: dict[str, str] = {}
     issues: list[QualityIssue] = []
     for block in blocks:
-        count = int(missing[block].all(axis=1).sum())
+        gap = missing[block].all(axis=1).to_numpy()
+        count = int(gap.sum())
         share = count / rows * 100
-        detail = (
-            f"{_listed(block)} are missing on the same {_plural(count, 'row')} ({_percent(share)}), "
-            "which points to a subsample, a separate test or an instrument some rows lack."
-        )
+        when = timed.gaps(gap) if timed else None
+        reason = "which points to a subsample, a separate test or an instrument some rows lack"
+        if when:
+            in_time[block[0]] = when
+            reason = when
+        on_rows = f"{_plural(count, 'row')} ({_percent(share)})"
+        detail = f"{_listed(block)} are missing on the same {on_rows}, {reason}."
         summary = f"{len(block)} columns missing on the same {_plural(count, 'row')} ({_listed(block, 3)})"
         rule = f"columns whose missing rows overlap by {BLOCK_OVERLAP:.0%} or more"
         issues.append(QualityIssue("missing_block", tuple(block), count, share, detail, summary, rule))
+    for column in gappy:
+        if column not in in_block and timed and (when := timed.gaps(missing[column].to_numpy())):
+            in_time[column] = when
     for column in frame.columns:
         if shares[column] > MISSING_SHARE and column not in in_block:
             count = int(missing[column].sum())
             share = _percent(shares[column] * 100)
             detail = f"{column} is missing in {_plural(count, 'row')} ({share})."
+            if column in in_time:
+                detail = f"{column} is missing in {_plural(count, 'row')} ({share}), {in_time[column]}."
             issues.append(QualityIssue("missing", (column,), count, shares[column] * 100, detail,
                                        f"{column} {share} missing", f"more than {MISSING_SHARE:.0%} missing"))
     members = {block[0]: block for block in blocks}
@@ -1700,10 +2583,11 @@ def _missing_issues(
         targets = [block[0] for block in blocks] + [
             column for column in gappy if column not in in_block and column != dimension
         ]
-        by_group = _missing_by_group(missing, targets, members, dimension, grouping)
-    # Gaps a group explains (a station without the sensor) need no second explanation:
+        by_group = _missing_by_group(missing, [target for target in targets if target not in in_time],
+                                     members, dimension, grouping)
+    # Gaps time or a group explains (a station without the sensor) need no second explanation:
     # not by another column, and not as a block when the group holds all its rows.
-    explained = {issue.columns[0] for issue in by_group}
+    explained = {issue.columns[0] for issue in by_group} | set(in_time)
     whole = {issue.columns for issue in by_group if issue.rows >= 0.95 * missing[issue.columns[0]].sum()}
     issues = [issue for issue in issues if not (issue.check == "missing_block" and issue.columns in whole)]
     targets = [block[0] for block in blocks] + [
@@ -1714,6 +2598,136 @@ def _missing_issues(
         frame, [target for target in targets if target not in explained], members, numeric
     ))
     return issues
+
+
+@dataclass(frozen=True)
+class _TimeOrder:
+    """The dated rows in time order, for telling a gap in time from one that follows a group."""
+
+    #: Row positions with a date, in time order.
+    order: np.ndarray
+    stamps: pd.DatetimeIndex
+    column: str
+    #: How a date is written at the grain the column was recorded at: "%Y", "%b %Y", "%d %b %Y".
+    shown: str
+
+    @classmethod
+    def of(cls, frame: pd.DataFrame, date: str | None) -> _TimeOrder | None:
+        if not date or date not in frame.columns or not is_datetime64_any_dtype(frame[date]):
+            return None
+        values = frame[date].to_numpy()
+        dated = np.flatnonzero(~pd.isna(values))
+        if dated.size < 20:
+            return None
+        order = dated[np.argsort(values[dated], kind="stable")]
+        stamps = pd.DatetimeIndex(values[order])
+        if not (stamps == stamps.normalize()).all():
+            shown = "%d %b %Y %H:%M"
+        elif (stamps.day == 1).all():
+            shown = "%Y" if (stamps.month == 1).all() else "%b %Y"
+        else:
+            shown = "%d %b %Y"
+        return cls(order, stamps, date, shown)
+
+    def _at(self, position: int) -> str:
+        return self.stamps[position].strftime(self.shown)
+
+    def _span(self, start: int, end: int) -> str:
+        first, last = self._at(start), self._at(end)
+        return first if first == last else f"{first} to {last}"
+
+    def gaps(self, missing: np.ndarray) -> str | None:
+        """How rows missing a column follow time, as a phrase, or None when they don't.
+
+        One unbroken stretch holding GAP_RUN_SHARE of them is a reading not
+        recorded before or after a date, or a gap in the record; up to
+        GAP_STRETCHES stretches averaging two rows or more are gaps in the
+        record. ``missing`` is True for missing rows, in table order.
+        """
+        flags = missing[self.order]
+        positions = np.flatnonzero(flags)
+        if positions.size < 2 or positions.size == flags.size:
+            return None
+        breaks = np.flatnonzero(np.diff(positions) != 1)
+        starts = np.r_[positions[0], positions[breaks + 1]]
+        ends = np.r_[positions[breaks], positions[-1]]
+        lengths = ends - starts + 1
+        longest = int(np.argmax(lengths))
+        if lengths[longest] >= max(2, GAP_RUN_SHARE * positions.size):
+            start, end = int(starts[longest]), int(ends[longest])
+            if start == 0:
+                when = f"every row before {self._at(end + 1)}: not recorded until then"
+            elif end == flags.size - 1:
+                when = f"every row after {self._at(start - 1)}: not recorded after then"
+            else:
+                when = f"every row from {self._at(start)} to {self._at(end)}: a gap in the record"
+            rest = positions.size - int(lengths[longest])
+            return when + (f" (and {_plural(rest, 'other row')})" if rest else "")
+        if starts.size <= GAP_STRETCHES and lengths.mean() >= 2:
+            spans = [self._span(int(start), int(end)) for start, end in zip(starts, ends, strict=True)]
+            return (
+                f"in {starts.size} unbroken stretches of {self.column} ({_listed(spans, GAP_STRETCHES)}): "
+                "gaps in the record rather than a subsample"
+            )
+        return None
+
+
+def _duration(seconds: float) -> str:
+    """A length of time in the largest whole unit that fits: "5 minutes", "1 hour", "10 days"."""
+    for unit, size in (("day", 86_400), ("hour", 3_600), ("minute", 60), ("second", 1)):
+        if seconds >= size or unit == "second":
+            amount = seconds / size
+            shown = f"{amount:.0f}" if amount >= 10 or abs(amount - round(amount)) < 0.05 else f"{amount:.1f}"
+            return f"{shown} {unit}{'' if shown == '1' else 's'}"
+    return f"{seconds:g} seconds"
+
+
+def _log_coverage(frame: pd.DataFrame, date: str | None) -> QualityIssue | None:
+    """A regular log that holds far fewer readings than its interval and span imply.
+
+    Readings every five minutes for three years should number about 309,600;
+    when only 58% are there, totals and counts per period follow which stretches
+    were logged. The log must be regular (half its steps within a tenth of the
+    typical interval), hold under LOG_COVERAGE of the expected readings, and
+    have a gap of at least a week and ten intervals, which no weekend or night
+    off explains.
+    """
+    if not date or date not in frame.columns or not is_datetime64_any_dtype(frame[date]):
+        return None
+    times = np.unique(frame[date].dropna().to_numpy())
+    if times.size < 100:
+        return None
+    steps = np.diff(times).astype("timedelta64[ns]").astype("float64") / 1e9
+    typical = float(np.median(steps))
+    if typical <= 0 or float((np.abs(steps - typical) <= 0.1 * typical).mean()) < 0.5:
+        return None
+    span = float((times[-1] - times[0]).astype("timedelta64[ns]").astype("float64")) / 1e9
+    expected = int(round(span / typical)) + 1
+    share = times.size / expected
+    longest = int(np.argmax(steps))
+    if share >= LOG_COVERAGE or steps[longest] < max(7 * 86_400, 10 * typical):
+        return None
+    stamps = pd.DatetimeIndex(times)
+    shown = "%d %b %Y" if (stamps == stamps.normalize()).all() else "%d %b %Y %H:%M"
+    first, last, gap_from, gap_to = (
+        stamps[position].strftime(shown) for position in (0, -1, longest, longest + 1)
+    )
+    widest = _duration(steps[longest])
+    long_gaps = int((steps > 3 * typical).sum())
+    missing = expected - times.size
+    detail = (
+        f"Readings come every {_duration(typical)} (the typical interval), but only {times.size:,} of the "
+        f"{expected:,} expected from {first} to {last} are there ({_percent(share * 100)}): "
+        f"{_plural(long_gaps, 'gap')} run longer than {_duration(3 * typical)}, the longest {widest} (from "
+        f"{gap_from} to {gap_to}). Totals and counts per period follow which stretches were logged."
+    )
+    summary = f"{date}: {_percent(share * 100)} of the expected readings logged (gaps up to {widest})"
+    rule = (
+        f"a regular log holding under {LOG_COVERAGE:.0%} of the readings its interval and span imply, with a "
+        "gap of a week or more"
+    )
+    return QualityIssue("missing_time", (date,), missing, (1 - share) * 100, detail, summary, rule,
+                        (_duration(typical),))
 
 
 def _blocks(missing: pd.DataFrame, columns: list[str]) -> list[list[str]]:
@@ -1988,7 +3002,8 @@ def _swapped(
 
 
 def _without_swapped(issues: list[QualityIssue], swaps: list[QualityIssue]) -> list[QualityIssue]:
-    """Drop value issues whose cells all lie in a swapped block: the swap explains them."""
+    """Drop value issues whose cells all lie in a swapped block, or another issue that explains
+    them (a row of zeros): that issue says what is wrong with them."""
     if not swaps:
         return issues
     covered: dict[str, pd.Index] = {}
@@ -2049,6 +3064,34 @@ def _groupings(frame: pd.DataFrame, roles: ColumnRoles | None) -> list[str]:
     return found
 
 
+def _labels(
+    frame: pd.DataFrame, roles: ColumnRoles | None, most: int = 20
+) -> dict[str, tuple[np.ndarray, pd.Index]]:
+    """Columns that split the rows into 2 to ``most`` labelled groups, with each row's level code.
+
+    Text, category and true/false columns count, and so do the codes the roles
+    name; the identifier does not.
+    """
+    named = set(roles.factors) | set(roles.dimensions) if roles else set()
+    identifier = roles.identifier if roles else None
+    found = {}
+    for column in frame.columns:
+        series = frame[column]
+        if column == identifier:
+            continue
+        if (
+            column in named or series.dtype == object or is_bool_dtype(series)
+            or isinstance(series.dtype, pd.CategoricalDtype)
+        ):
+            # A key or free text shows more levels than that in a sample already.
+            if series.iloc[:: max(1, len(series) // SAMPLE_ROWS)].nunique() > most:
+                continue
+            codes, levels = pd.factorize(series)
+            if 2 <= len(levels) <= most:
+                found[column] = (codes, levels)
+    return found
+
+
 def _tied_check(frame: pd.DataFrame, roles: ColumnRoles | None) -> Callable[[str, float], bool]:
     """A test of whether a piled-up value belongs to a category rather than a limit.
 
@@ -2079,6 +3122,298 @@ def _tied_check(frame: pd.DataFrame, roles: ColumnRoles | None) -> Callable[[str
         return False
 
     return tied
+
+
+def _one_sample_fills(frame: pd.DataFrame, issues: list[QualityIssue]) -> list[QualityIssue]:
+    """Drop fill values whose rows all belong to one sample: one reading repeated on its rows.
+
+    A survey that lists every species found on a visit repeats the visit's
+    sulphate on each species row, so 429.815 on 13 rows is one visit, not a
+    gap filled 13 times. A key is a text column with at least ten values; the
+    fill is dropped when every row holding it shares one of them.
+    """
+    keys = [
+        column for column in frame.columns
+        if frame[column].dtype == object and 10 <= frame[column].nunique() < len(frame)
+    ] if any(issue.check == "imputed" for issue in issues) else []
+    kept = []
+    for issue in issues:
+        if issue.check == "imputed" and any(
+            all(frame.loc[labels, key].nunique(dropna=False) == 1 for labels in issue.cells.values())
+            for key in keys
+        ):
+            continue
+        kept.append(issue)
+    return kept
+
+
+def _failed_records(
+    frame: pd.DataFrame, issues: list[QualityIssue], columns: list[str]
+) -> list[QualityIssue]:
+    """Values other columns hold on the rows where one column holds a missing-value code: one failed record.
+
+    A logger that fails writes its code in one channel and its own fixed
+    values in the others (a sound level of 0, a battery of 2.5 V on the rows
+    where temperature reads -25.6). A value counts when it fills
+    FAILED_RECORD_SHARE of the code's rows and turns up elsewhere on at most a
+    tenth as many rows; such cells are no more readings than the code is.
+    """
+    found = []
+    for issue in issues:
+        if issue.check != "sentinel" or not issue.cells:
+            continue
+        rows = next(iter(issue.cells.values()))
+        for labels in issue.cells.values():
+            rows = rows.union(labels)
+        if len(rows) < FAILED_RECORD_ROWS:
+            continue
+        inside = frame.index.isin(rows)
+        held: dict[str, float] = {}
+        cells: dict[str, pd.Index] = {}
+        for column in columns:
+            if column in issue.columns:
+                continue
+            values = frame[column].to_numpy(dtype="float64", na_value=np.nan)
+            codes, levels = pd.factorize(values[inside])
+            if not len(levels):
+                continue
+            top = int(np.argmax(np.bincount(codes[codes >= 0])))
+            value = float(levels[top])
+            at = values == value
+            hits = int((at & inside).sum())
+            if hits < FAILED_RECORD_SHARE * len(rows) or int((at & ~inside).sum()) > 0.1 * hits:
+                continue
+            held[column] = value
+            cells[column] = frame.index[at & inside]
+        if not held:
+            continue
+        source = _listed(list(issue.columns))
+        code = issue.examples[0] if issue.examples else "a code"
+        values = _listed([f"{column} {show_value(value)}" for column, value in held.items()])
+        detail = (
+            f"On the {_plural(len(rows), 'row')} where {source} holds {code} (a missing-value code), "
+            f"{values}, values {'that column' if len(held) == 1 else 'those columns'} almost never "
+            "hold elsewhere: the whole record failed there, so these cells are not readings either and are "
+            "left out of relationships and comparisons."
+        )
+        summary = f"{_listed([*issue.columns, *held], 3)}: one failed record on {_plural(len(rows), 'row')}"
+        rule = (
+            f"one value filling {FAILED_RECORD_SHARE:.0%} or more of the rows a missing-value code is on, "
+            "and elsewhere on at most a tenth as many rows"
+        )
+        found.append(QualityIssue(
+            "failed_record", tuple(held), len(rows), len(rows) / max(len(frame), 1) * 100, detail, summary,
+            rule, tuple(show_value(value) for value in held.values()), group=issue.group, cells=cells,
+        ))
+    return found
+
+
+def _zero_rows(frame: pd.DataFrame, profiles: dict[str, _Column], columns: list[str]) -> QualityIssue | None:
+    """Rows on which nearly every reading is exactly 0, in columns otherwise rarely 0.
+
+    A mineral with no electrons and no density is a row of blanks written as
+    zeros, not a measurement. The columns must each be 0 on under
+    ZERO_ROW_COLUMN_SHARE of their values, at least three of them; a row
+    counts when ZERO_ROW_SHARE of them are 0 on it.
+    """
+    held = {column: float(profiles[column].counts[profiles[column].uniques == 0].sum()) for column in columns}
+    rare = [column for column in columns if held[column] / profiles[column].size < ZERO_ROW_COLUMN_SHARE]
+    # A row of zeros needs zeros in most of these columns, so columns never 0 settle it at once.
+    if len(rare) < 3 or sum(held[column] > 0 for column in rare) < max(3, ZERO_ROW_SHARE * len(rare)):
+        return None
+    zeros = (frame[rare].to_numpy(dtype="float64", na_value=np.nan) == 0)
+    hit = zeros.sum(axis=1) >= max(3, ZERO_ROW_SHARE * len(rare))
+    count = int(hit.sum())
+    if count < 2 or count > 0.25 * len(frame):
+        return None
+    labels = frame.index[hit]
+    involved = [column for position, column in enumerate(rare) if zeros[hit, position].mean() >= 0.5]
+    cells = {column: labels[zeros[hit, rare.index(column)]] for column in involved}
+    named = _listed(involved)
+    detail = (
+        f"{_plural(count, 'row')} hold exactly 0 in nearly every reading ({named}), though each of these "
+        "columns is otherwise rarely 0: probably missing values recorded as 0, so those cells are left "
+        "out of relationships and comparisons."
+    )
+    summary = f"{_plural(count, 'row')} of zeros in {len(involved)} readings ({_listed(involved, 3)})"
+    rule = (
+        f"rows 0 in {ZERO_ROW_SHARE:.0%} or more of three or more readings that are each 0 on under "
+        f"{ZERO_ROW_COLUMN_SHARE:.0%} of their values"
+    )
+    share = count / max(len(frame), 1) * 100
+    return QualityIssue("zero_rows", tuple(involved), count, share, detail, summary, rule,
+                        (f"{count:,} rows",), cells=cells)
+
+
+def _placeholder_mask(series: pd.Series) -> np.ndarray | None:
+    """True for cells holding a placeholder (0, "0", "-"), or None when the column holds none to test.
+
+    Text is judged once per distinct value, so a long column costs one factorisation.
+    """
+    if is_bool_dtype(series):
+        return None
+    if is_numeric_dtype(series):
+        return series.to_numpy(dtype="float64", na_value=np.nan) == 0
+    if series.dtype != object:
+        return None
+    # A block covers 5% of the rows or more, so a sample of them shows it.
+    sampled = series.iloc[:: max(1, len(series) // SAMPLE_ROWS)].dropna().unique()
+    if not any(str(value).strip() in PLACEHOLDER_TOKENS for value in sampled):
+        return np.zeros(len(series), dtype=bool)
+    codes, uniques = pd.factorize(series)
+    held = [position for position, value in enumerate(uniques) if str(value).strip() in PLACEHOLDER_TOKENS]
+    return np.isin(codes, held) if held else np.zeros(len(series), dtype=bool)
+
+
+def _placeholder_blocks(frame: pd.DataFrame, identifier: str | None) -> list[QualityIssue]:
+    """Columns holding 0 or "-" on exactly the same rows, and real values on the rest: not recorded there.
+
+    A feature table writes "-" for the name and 0 for the formula, the score
+    and the error of every feature it could not annotate. Those cells say
+    nothing was recorded; read as values they make "score 0" a group and a
+    finding. A block needs three or more columns, at least one of them text,
+    whose placeholder rows agree (Jaccard PLACEHOLDER_OVERLAP) and cover 5% to
+    95% of the table, with ten or more rows of real values.
+    """
+    rows = len(frame)
+    masks, names, texts = [], [], []
+    # Text columns first: without a dash or a "0" in one, there is no block to find.
+    ordered = sorted(
+        (column for column in frame.columns if column != identifier),
+        key=lambda column: is_numeric_dtype(frame[column]),
+    )
+    for column in ordered:
+        text = not is_numeric_dtype(frame[column])
+        if not text and not any(texts):
+            return []
+        mask = _placeholder_mask(frame[column])
+        if mask is None:
+            continue
+        held = int(mask.sum())
+        if 0.05 * rows <= held <= 0.95 * rows and int(frame[column].notna().sum()) - held >= 10:
+            masks.append(mask)
+            names.append(column)
+            texts.append(text)
+    if len(names) < 3 or not any(texts):
+        return []
+    matrix = np.column_stack(masks).astype("float32")
+    together = matrix.T @ matrix
+    counts = np.diag(together)
+    overlap = together / np.maximum(counts[:, None] + counts[None, :] - together, 1)
+    issues = []
+    taken: set[int] = set()
+    for seed in np.flatnonzero(texts):
+        if seed in taken:
+            continue
+        members = [int(position) for position in np.flatnonzero(overlap[seed] >= PLACEHOLDER_OVERLAP)]
+        members = [position for position in members if position not in taken]
+        if len(members) < 3:
+            continue
+        taken.update(members)
+        block = [names[position] for position in members]
+        shared = np.logical_and.reduce([masks[position] for position in members])
+        count = int(shared.sum())
+        cells = {names[position]: frame.index[masks[position]] for position in members}
+        detail = (
+            f"{_listed(block)} hold 0 or a dash on the same {_plural(count, 'row')} "
+            f"({_percent(count / rows * 100)}) and real values on the rest: on those rows nothing was "
+            "recorded in them, so the zeros and dashes are left out of relationships and comparisons rather "
+            "than read as values or a group."
+        )
+        on_rows = _plural(count, "row")
+        summary = f"{len(block)} columns not recorded on the same {on_rows} ({_listed(block, 3)})"
+        rule = (
+            f"three or more columns, one of them text, holding 0 or a dash on rows that agree by "
+            f"{PLACEHOLDER_OVERLAP:.0%} or more"
+        )
+        issues.append(QualityIssue("placeholder", tuple(block), count, count / rows * 100, detail, summary,
+                                   rule, cells=cells))
+    return issues
+
+
+def _constant_columns(frame: pd.DataFrame, roles: ColumnRoles | None) -> QualityIssue | None:
+    """Columns holding one value on every row where they are recorded.
+
+    They can't differ or relate to anything, so the analysis leaves them out;
+    saying so keeps a never-detected compound (0 in every sample) or a fill
+    value from vanishing without a word. Text columns count only in a flat
+    table, since focusing on one part of a long or stacked table makes the
+    column naming that part constant. Dates are left to the timeline, and a
+    measure that never changes to the brief, which reports it as it is.
+    """
+    flat = roles is None or roles.table_shape == "flat"
+    measure = roles.measure if roles else None
+    rows = len(frame)
+    found: dict[str, object] = {}
+    for column in frame.columns:
+        series = frame[column]
+        text = not is_numeric_dtype(series)
+        if column == measure or is_datetime64_any_dtype(series) or (text and not flat):
+            continue
+        # Most columns vary within a sample already, which is cheaper to see than a count of blanks.
+        if series.iloc[:: max(1, rows // SAMPLE_ROWS)].nunique() > 1:
+            continue
+        if int(series.notna().sum()) < max(2, 0.9 * rows):
+            continue
+        if is_numeric_dtype(series) and not is_bool_dtype(series):
+            values = series.to_numpy(dtype="float64", na_value=np.nan)
+            low = float(np.nanmin(values))
+            if low == float(np.nanmax(values)):
+                found[column] = low
+        elif series.nunique() == 1:
+            found[column] = series.dropna().iloc[0]
+    if not found:
+        return None
+    zeros = [column for column, value in found.items() if isinstance(value, float) and value == 0]
+    others = {column: value for column, value in found.items() if column not in zeros}
+    parts = []
+    if zeros:
+        parts.append(f"{_listed(zeros)} {'is' if len(zeros) == 1 else 'are'} 0 in every row")
+    if others:
+        shown = [f"{column} ({value:g})" if isinstance(value, float) else f"{column} ({value})"
+                 for column, value in others.items()]
+        verb = "holds one value" if len(others) == 1 else "each hold one value"
+        parts.append(f"{_listed(shown)} {verb} in every row")
+    detail = (
+        f"{'; '.join(parts)}. A column that never changes can't differ between groups or relate to "
+        "anything, so the analysis leaves it out: a 0 everywhere means never detected or never recorded, "
+        "and one repeated reading may be a fill value or a detection limit."
+    )
+    noun = "column" if len(found) == 1 else "columns"
+    summary = f"{len(found)} constant {noun} ({_listed(list(found), 3)})"
+    rule = "one value on every row where the column is recorded, recorded on 90% of rows or more"
+    return QualityIssue("constant", tuple(found), len(found), 100.0, detail, summary, rule)
+
+
+def _zero_heavy(profiles: dict[str, _Column], columns: list[str]) -> QualityIssue | None:
+    """Readings that are exactly 0 in a third or more of rows: absences, or values below a detection limit.
+
+    Their Pearson correlations mostly contrast the zero rows with the rest, so
+    rank correlations, or zero against not zero, say more. Whole numbers
+    (counts) and rain, whose zeros are plainly dry days, are left out.
+    """
+    heavy = {}
+    for column in columns:
+        profile = profiles[column]
+        zeros = float(profile.counts[profile.uniques == 0].sum())
+        share = zeros / max(profile.size, 1)
+        if not ZERO_HEAVY_SHARE <= share < 1 or profile.whole or profile.size - zeros < 10:
+            continue
+        if _name_words(column) & DRY_ZERO_WORDS:
+            continue
+        heavy[column] = share
+    if not heavy:
+        return None
+    shown = _listed([f"{column} ({_percent(share * 100)})" for column, share in heavy.items()])
+    detail = (
+        f"{shown} {'is' if len(heavy) == 1 else 'are'} exactly 0 in a third or more of rows, either true "
+        "absences or values below a detection limit: Pearson correlations with them mostly contrast the zero "
+        "rows with the rest, so the rank correlation, or comparing zero with non-zero rows, is the better "
+        "guide."
+    )
+    summary = f"{_listed(list(heavy), 3)}: exactly 0 in a third or more of rows"
+    rule = f"exactly 0 in {ZERO_HEAVY_SHARE:.0%} or more of a reading's values, not whole numbers"
+    return QualityIssue("zeros", tuple(heavy), len(heavy), max(heavy.values()) * 100, detail, summary, rule)
 
 
 def _duplicates(frame: pd.DataFrame, profiles: dict[str, _Column]) -> QualityIssue | None:
@@ -2235,6 +3570,204 @@ def _generated(
     )
     return QualityIssue("generated", tuple(flat), len(frame), 100.0, detail, summary, rule,
                         examples=(f"largest |r| {strongest:.2f}",))
+
+
+def _is_flat(values: pd.Series) -> bool:
+    """Whether a column's values are spread evenly over their range: the screen, then the full test."""
+    profile = _Column.of("values", values)
+    if profile.size < FLAT_MIN_VALUES or profile.uniques.size < FLAT_MIN_LEVELS:
+        return False
+    if _quartile_share(profile.ordered) < 0.48:
+        return False
+    p_value, kurtosis = _flatness(profile)
+    return p_value >= FLAT_P and kurtosis <= FLAT_KURTOSIS
+
+
+def _chance_r(pairs: int, rows: int) -> float:
+    """The largest |r| chance gives across ``pairs`` pairs of ``rows`` rows, at FLAT_CHANCE (Bonferroni)."""
+    return float(np.tanh(stats.norm.isf(FLAT_CHANCE / 2 / max(pairs, 1)) / np.sqrt(max(rows - 3, 1))))
+
+
+def _generated_within(
+    frame: pd.DataFrame,
+    columns: list[str],
+    labels: dict[str, tuple[np.ndarray, pd.Index]],
+    flagged: dict[str, pd.Index],
+) -> QualityIssue | None:
+    """Say when every level of a label holds flat, unrelated readings: each class drawn from its own ranges.
+
+    A landslide table generated class by class puts each reading evenly
+    between fixed bounds within each class, unrelated to the others, while
+    pooled over both classes the readings relate strongly and look anything
+    but flat. The label needs two to six levels of FLAT_MIN_VALUES rows each,
+    and in every level most readings must be flat and no pair related beyond
+    chance, judged on up to SAMPLE_ROWS evenly spaced distinct rows of it.
+    """
+    candidates = {
+        label: (codes, levels) for label, (codes, levels) in labels.items()
+        if 2 <= len(levels) <= 6 and label not in columns
+        and np.bincount(codes[codes >= 0], minlength=len(levels)).min() >= FLAT_MIN_VALUES
+    }
+    for label, (codes, levels) in candidates.items():
+        flat, strongest, ruled = set(columns), 0.0, True
+        for level in range(len(levels)):
+            rows = np.flatnonzero(codes == level)
+            if rows.size > SAMPLE_ROWS:
+                rows = rows[(np.arange(SAMPLE_ROWS) * (rows.size / SAMPLE_ROWS)).astype(int)]
+            part = frame.iloc[rows, frame.columns.get_indexer(columns)].copy()
+            for column, cells in flagged.items():
+                if column in part.columns:
+                    part[column] = part[column].mask(part.index.isin(cells))
+            part = part.drop_duplicates()
+            usable = [column for column in columns if part[column].nunique() >= FLAT_MIN_LEVELS]
+            flat_here = [column for column in usable if _is_flat(part[column])]
+            if len(usable) < 3 or len(flat_here) <= len(usable) / 2 or len(flat_here) < 3:
+                ruled = False
+                break
+            sample = _sampled(part[usable])
+            correlations = sample.corr().to_numpy()
+            pairs = len(usable) * (len(usable) - 1) // 2
+            largest = float(np.nanmax(np.abs(correlations[np.triu_indices(len(usable), k=1)])))
+            if largest >= _chance_r(pairs, len(sample)):
+                ruled = False
+                break
+            flat &= set(flat_here)
+            strongest = max(strongest, largest)
+        if not ruled or len(flat) < 3:
+            continue
+        named = [column for column in columns if column in flat]
+        groups = _listed([group_label(label, level) for level in levels])
+        detail = (
+            f"Within each {label} group ({groups}), {_listed(named)} are spread evenly between fixed bounds "
+            f"and no two relate beyond chance (largest |r| = {strongest:.2f}): each group looks drawn from "
+            "its own fixed ranges, as simulated data are, so findings describe how the table was made rather "
+            "than the world. Correlations over the whole table come only from mixing the groups."
+        )
+        summary = f"each {label} group looks simulated: flat, unrelated readings within each"
+        rule = (
+            f"in every level of a label, most readings uniform-like (Kolmogorov-Smirnov p ≥ {FLAT_P}, excess "
+            f"kurtosis ≤ {FLAT_KURTOSIS}) and no pair beyond the Bonferroni {FLAT_CHANCE:.0%} chance level"
+        )
+        return QualityIssue("generated", tuple(named), len(frame), 100.0, detail, summary, rule,
+                            examples=(f"largest |r| {strongest:.2f} within {label}",), group=label)
+    return None
+
+
+def _generated_columns(
+    frame: pd.DataFrame, profiles: dict[str, _Column], columns: list[str], flagged: dict[str, pd.Index]
+) -> QualityIssue | None:
+    """Columns that are flat and relate to no other column, in a table whose other readings are real.
+
+    An age, a weight and a farm size spread evenly between round bounds and
+    unrelated to everything, beside readings that relate as real ones do, were
+    probably made up. Two such columns or more are named; the chance level for
+    |r| allows for every pair tested (Bonferroni, FLAT_CHANCE). The quartiles
+    screen the columns cheaply, and the tests run on up to SAMPLE_ROWS evenly
+    spaced distinct rows.
+    """
+    eligible = [
+        column for column in columns
+        if profiles[column].size >= FLAT_MIN_VALUES and profiles[column].uniques.size >= FLAT_MIN_LEVELS
+    ][:FLAT_PAIR_COLUMNS]
+    screened = [column for column in eligible if _quartile_share(profiles[column].ordered) >= 0.48]
+    if len(eligible) < 4 or len(screened) < 2:
+        return None
+    table = _sampled(frame)[eligible].copy()
+    for column, cells in flagged.items():
+        if column in table.columns:
+            table[column] = table[column].mask(table.index.isin(cells))
+    table = table.drop_duplicates()
+    flat = [column for column in screened if _is_flat(table[column])]
+    if len(flat) < 2:
+        return None
+    sample = table
+    correlations = sample.corr().abs().to_numpy()
+    np.fill_diagonal(correlations, 0.0)
+    chance = _chance_r(len(flat) * (len(eligible) - 1), len(sample))
+    unrelated = [column for column in flat if np.nanmax(correlations[eligible.index(column)]) < chance]
+    if len(unrelated) < 2:
+        return None
+    largest = max(float(np.nanmax(correlations[eligible.index(column)])) for column in unrelated)
+    ranges = _listed([_range_of(frame[column].dropna()) for column in unrelated])
+    detail = (
+        f"{_listed(unrelated)} are spread evenly between their lowest and highest values ({ranges}) and "
+        f"relate to no other column (largest |r| = {largest:.2f}; chance alone reaches {chance:.2f}). Real "
+        "readings are rarely flat and unconnected like this, so these columns may be generated rather than "
+        "measured: check how they were produced before reading anything into them."
+    )
+    summary = f"{_listed(unrelated, 3)} look generated: flat and unrelated to every other column"
+    rule = (
+        f"columns uniform-like (Kolmogorov-Smirnov p ≥ {FLAT_P}, excess kurtosis ≤ {FLAT_KURTOSIS}) whose "
+        f"|r| with every other column stays under the Bonferroni {FLAT_CHANCE:.0%} chance level"
+    )
+    return QualityIssue("generated", tuple(unrelated), len(frame), 100.0, detail, summary, rule,
+                        examples=(f"largest |r| {largest:.2f}",))
+
+
+def _banded_group(
+    frame: pd.DataFrame, columns: list[str], labels: dict[str, tuple[np.ndarray, pd.Index]]
+) -> QualityIssue | None:
+    """A group whose readings never leave bands the other group crosses, and whose linked readings come apart.
+
+    Controls filled in from reference ranges sit inside the normal band of
+    every test, which real controls do too, but in them haemoglobin and
+    packed cell volume, which move together in any real blood, become
+    unrelated. A two-level label counts when one level stays within its own
+    range on BAND_READINGS readings or more that the other level leaves in
+    BAND_OUTSIDE of its rows, and a pair of those readings related at |r| ≥ 0.7
+    in the other level is unrelated (|r| < 0.2) in this one.
+    """
+    readings = columns[:BAND_COLUMNS]
+    for label, (codes, levels) in labels.items():
+        if len(levels) != 2 or label in columns:
+            continue
+        sizes = np.bincount(codes[codes >= 0], minlength=2)
+        if sizes.min() < 30:
+            continue
+        for inner in (0, 1):
+            held, crossing = codes == inner, codes == 1 - inner
+            bands = []
+            for column in readings:
+                values = frame[column].to_numpy(dtype="float64", na_value=np.nan)
+                own, other = values[held & ~np.isnan(values)], values[crossing & ~np.isnan(values)]
+                if own.size < 20 or other.size < 20:
+                    continue
+                low, high = float(own.min()), float(own.max())
+                outside = float(((other < low) | (other > high)).mean())
+                if outside >= BAND_OUTSIDE:
+                    bands.append((column, low, high, outside))
+            if len(bands) < BAND_READINGS:
+                continue
+            names = [column for column, *_ in bands]
+            inside = frame.loc[held, names].corr(min_periods=30).to_numpy()
+            outer = frame.loc[crossing, names].corr(min_periods=30).to_numpy()
+            linked = np.argwhere(np.triu((np.abs(outer) >= 0.7) & (np.abs(inside) < 0.2), k=1))
+            if not len(linked):
+                continue
+            first, second = (int(position) for position in linked[0])
+            own_label, other_label = group_label(label, levels[inner]), group_label(label, levels[1 - inner])
+            shown = [f"{column} {_rounded(low)} to {_rounded(high)}" for column, low, high, _ in bands]
+            shares = sorted(outside for *_, outside in bands)
+            detail = (
+                f"Every {own_label} row has {_listed(shown, 3)}, bands the {other_label} rows leave in "
+                f"{_percent(shares[0] * 100)} to {_percent(shares[-1] * 100)} of cases, and {names[first]} "
+                f"and {names[second]}, which move together among {other_label} rows (r = "
+                f"{outer[first, second]:.2f}), are unrelated among {own_label} rows (r = "
+                f"{inside[first, second]:.2f}). Values in the {own_label} group may have been filled in from "
+                "reference ranges, or the group chosen by them, so differences between the groups partly "
+                "restate how they were made."
+            )
+            summary = f"{own_label} rows held in bands of {len(bands)} readings, linked readings unrelated"
+            rule = (
+                f"one level of a two-level label inside its own range on {BAND_READINGS} or more readings "
+                f"the other leaves in {BAND_OUTSIDE:.0%} of rows, and a pair related at |r| ≥ 0.7 in the "
+                "other level unrelated (|r| < 0.2) in this one"
+            )
+            rows = int(held.sum())
+            share = rows / max(len(frame), 1) * 100
+            return QualityIssue("banded", tuple(names), rows, share, detail, summary, rule,
+                                group=levels[inner])
+    return None
 
 
 def _flatlines(
@@ -2417,6 +3950,20 @@ def _profiles(frame: pd.DataFrame, roles: ColumnRoles | None) -> dict[str, _Colu
     return profiles
 
 
+def own_columns(frame: pd.DataFrame, roles: ColumnRoles | None) -> pd.DataFrame:
+    """The frame without the columns that are empty throughout it, when it is one part of a stacked file.
+
+    Once the brief covers one of several stacked tables, the other tables'
+    columns are empty on every row; they are not gaps in this table, so the
+    checks and the completeness figure leave them out. Any other table keeps
+    every column, since a column empty throughout is a gap worth naming there.
+    """
+    if roles is None or roles.table_shape != "stacked":
+        return frame
+    recorded = frame.notna().any().to_numpy()
+    return frame if recorded.all() else frame.loc[:, recorded]
+
+
 def scan(
     frame: pd.DataFrame, roles: ColumnRoles | None = None, blanked: tuple[QualityIssue, ...] = ()
 ) -> tuple[QualityIssue, ...]:
@@ -2431,6 +3978,7 @@ def scan(
     codes to missing; they are no longer in ``frame``, so they are ranked with
     the rest here and the checks still list them.
     """
+    frame = own_columns(frame, roles)
     profiles = _profiles(frame, roles)
     factors = tuple(roles.factors) if roles else ()
     measure = roles.measure if roles else None
@@ -2440,16 +3988,35 @@ def scan(
     matrix = set(quantities) if roles and roles.table_shape == "matrix" else set()
     limits = physical_limits({column: profiles[column] for column in quantities})
     tied = _tied_check(frame, roles)
-    issues: list[QualityIssue] = []
+    clips, clipped = _shared_clips(profiles, quantities)
+    issues: list[QualityIssue] = [clipped] if clipped else []
     for column, profile in profiles.items():
         bounds = column_bounds(str(column), limits)
-        issues.extend(_value_issues(profile, factors, bounds, tied, single_cells=column not in matrix))
-    issues = [*_merge_alike(issues), *blanked]
+        issues.extend(_value_issues(
+            profile, factors, bounds, tied, single_cells=column not in matrix,
+            shared=clips.get(column, frozenset()),
+        ))
+    singles = [column for column in quantities if column not in matrix]
+    labels = _labels(frame, roles)
+    issues.extend(_group_caps(frame, profiles, singles, labels))
+    # Limits each column piles at, which a stuck sensor's long run must not be mistaken for.
+    piled: dict[str, set[float]] = {column: set(found) for column, found in clips.items()}
+    for issue in issues:
+        if issue.check in ("cap", "clipped"):
+            for column in issue.columns:
+                piled.setdefault(column, set()).update(_pile_values([issue]))
+    issues = [*_merge_alike(_one_sample_fills(frame, issues)), *blanked]
     swaps = _swapped(frame, profiles, [column for column in quantities if column not in matrix], date)
-    issues = _cluster_runs(_without_swapped(issues, swaps), frame, date) + swaps
+    # A row of zeros explains the extreme values on it, as a swap explains its values.
+    zeros = _zero_rows(frame, profiles, singles)
+    explaining = swaps + ([zeros] if zeros else [])
+    issues = _cluster_runs(_without_swapped(issues, explaining), frame, date) + explaining
+    issues.extend(_failed_records(frame, issues, singles))
+    issues.extend(_placeholder_blocks(frame, roles.identifier if roles else None))
     wide = [column for column in quantities if profiles[column].uniques.size >= 10]
     issues.extend(_equal_columns(frame, wide, dimension, measure))
     issues.extend(_min_max(frame, quantities))
+    issues.extend(_parts_of_wholes(frame, singles))
     grouping = pd.factorize(frame[dimension]) if dimension in frame.columns else None
     if measure in quantities and grouping is not None:
         found = _group_levels(frame, measure, dimension, grouping, date)
@@ -2459,26 +4026,33 @@ def scan(
         off = _matrix_rows(frame, sorted(matrix, key=list(frame.columns).index), roles.identifier)
         if off:
             issues.append(off)
-    piled = {}
-    for issue in issues:
-        if issue.check == "cap":
-            for column in issue.columns:
-                piled.setdefault(column, set()).add(issue.group[1])
     readings = [column for column in quantities if column not in matrix]
     issues.extend(_flatlines(frame, profiles, readings, date, dimension, piled))
     duplicated = _duplicates(frame, profiles)
     if duplicated:
         issues.append(duplicated)
-    generated = _generated(frame, profiles, quantities, _flagged_cells(issues))
-    if generated:
-        issues.append(generated)
-    issues.extend(_missing_issues(frame, quantities, dimension, grouping))
+    flagged = _flagged_cells(issues)
+    generated = (
+        _generated(frame, profiles, quantities, flagged)
+        or _generated_within(frame, singles, labels, flagged)
+        or _generated_columns(frame, profiles, singles, flagged)
+    )
+    # In a table that already looks simulated, a group held in bands is part of how it was made.
+    banded = None if generated else _banded_group(frame, singles, labels)
+    issues.extend(found for found in (generated, banded) if found)
+    for found in (_zero_heavy(profiles, singles), _constant_columns(frame, roles)):
+        if found:
+            issues.append(found)
+    issues.extend(_missing_issues(frame, quantities, dimension, grouping, date))
+    coverage = _log_coverage(frame, date)
+    if coverage:
+        issues.append(coverage)
     order = {check: position for position, check in enumerate(CHECKS)}
     return tuple(sorted(
         issues,
         key=lambda issue: (
-            issue.check.startswith("missing"), -issue.rows, order.get(issue.check, len(order)),
-            measure not in issue.columns,
+            2 if issue.check.startswith("missing") else 1 if issue.check in INFO_CHECKS else 0,
+            -issue.rows, order.get(issue.check, len(order)), measure not in issue.columns,
         ),
     ))
 
@@ -2497,8 +4071,9 @@ def statistics_mask(frame: pd.DataFrame, issues: tuple[QualityIssue, ...]) -> pd
     """True for each cell the checks found can't be a reading as it stands.
 
     That is an impossible value, a missing-value code or likely entry error, a
-    filled-in gap, a survey code, a value in a swapped column, or a stuck
-    reading (``MASKED_CHECKS``). Extreme values and second clusters may be real, so
+    filled-in gap, a survey code, a value in a swapped column, a stuck
+    reading, the rest of a failed record, a row of zeros or a placeholder
+    (``MASKED_CHECKS``). Extreme values and second clusters may be real, so
     they are not marked.
     """
     mask = pd.DataFrame(False, index=frame.index, columns=frame.columns)
@@ -2528,6 +4103,7 @@ def statistics_frame(frame: pd.DataFrame, issues: tuple[QualityIssue, ...]) -> t
     named = {
         "impossible": "impossible values", "sentinel": "missing-value codes", "imputed": "fill values",
         "survey_code": "survey codes", "swapped": "swapped values", "flatline": "stuck readings",
+        "failed_record": "failed records", "zero_rows": "rows of zeros", "placeholder": "placeholders",
     }
     what = _listed([label for kind, label in named.items() if kind in kinds])
     cleaned = frame.copy()

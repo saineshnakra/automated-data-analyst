@@ -82,6 +82,15 @@ class ProfileTests(unittest.TestCase):
         profile = next(item for item in brief.evidence if item.kind == "profile")
         self.assertTrue(brief.headline.startswith("The groups were followed for different lengths"))
         self.assertIn("in order across its 16 time points", profile.statement)
+        # Each mouse's clock is known, so the group card compares the shared stretch too.
+        leader = next(item for item in brief.evidence if item.kind == "leader")
+        self.assertIn("followed for different lengths", leader.statement)
+
+    def test_pooled_means_of_unequal_follow_up_are_not_a_group_finding(self):
+        frame = infection().drop(columns="indiv")
+
+        brief = analyze_business(frame, roles_of(frame))
+
         self.assertNotIn("leader", [item.kind for item in brief.evidence])
         differences = next((item for item in brief.evidence if item.kind == "differences"), None)
         if differences is not None:

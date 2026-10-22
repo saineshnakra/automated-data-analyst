@@ -72,6 +72,7 @@ From the command line:
 ada analyze measurements.csv          # the same report
 ada analyze measurements.csv --json   # as JSON
 ada schema measurements.csv           # which column ADA used for what, and how it combines
+ada analyze results.xlsx --sheet Data # one worksheet of a workbook
 ada ask orders.csv "which category made the most revenue"
 ```
 
@@ -189,6 +190,17 @@ ada ask orders.csv "which category made the most revenue"
   copies of rows are set aside. A grouping cut from a reading (a size band
   from acres, an anaemia flag from haemoglobin) is stated as a rule rather
   than reported as a difference.
+- **Counts what was observed, not rows**: a reading copied onto every row of
+  a sample (a site visit's chemistry on each species row) counts once per
+  sample in the tests and correlations. When every subject appears in every
+  group (each person walked in every condition), the groups are compared
+  within subjects, by a repeated-measures ANOVA or Friedman test (paired t or
+  Wilcoxon for two groups). Groups followed for different lengths of time
+  (animals that died early) are compared over the stretch they share, and a
+  test case's settings group the cases. When another grouping tied to the
+  compared one sets the reading (landslide sites behind a soil difference),
+  the comparison is repeated within its levels, and the brief leads with that
+  when the gap does not hold there.
 - **Compares rates and fits joint models**: a yes/no outcome gets its rate in
   each group with a chi-squared or Fisher test and the risk difference with
   its interval, and the readings that relate to the measure are fitted
@@ -197,6 +209,8 @@ ada ask orders.csv "which category made the most revenue"
 - **Reports what relates to the measure**: every numeric column's Pearson and
   Spearman r with the measure, with a 95% interval and the sample size, then
   the strongest other pair, or a plain "none of N pairs reaches |r| = 0.3".
+  A correlation that all but vanishes within the groups of a label the
+  readings differ by is said to come from the difference between the groups.
   A total and its items, a mean or row maximum of other columns, a score
   standardised within groups, shares that add up to 100, a censoring flag and
   its capped reading, near-duplicates, participant numbers and plate positions
@@ -219,15 +233,17 @@ or a random sample of one without, and every answer says which.
 ## What it doesn't do
 
 It runs standard tests (Welch, Mann-Whitney, Kruskal-Wallis, chi-squared,
-Fisher, Tukey's HSD, least squares) through SciPy and statsmodels, adjusts
-the p-values for how many it ran, and names the method behind every figure.
-What it can't know is your study design: it doesn't model paired or repeated
-measures beyond one value per subject, nested or blocked designs, or
-covariates you planned to adjust for, and it picks its tests by rule, after
-seeing the data, not from a plan written before. So treat what it finds as a
-first pass and its recommendations as what to look at next, not as causal
-claims. For a confirmatory analysis, ADA is the step before that, and its
-calculation lines tell you which test to start from.
+Fisher, Tukey's HSD, paired and repeated-measures tests, least squares)
+through SciPy and statsmodels, adjusts the p-values for how many it ran, and
+names the method behind every figure. What it can't know is your study
+design: it finds subjects, samples and fully crossed within-subject designs
+from the table itself, but it doesn't fit mixed models, survival curves,
+nested or blocked designs, or covariates you planned to adjust for, and it
+picks its tests by rule, after seeing the data, not from a plan written
+before. So treat what it finds as a first pass and its recommendations as
+what to look at next, not as causal claims. For a confirmatory analysis, ADA
+is the step before that, and its calculation lines tell you which test to
+start from.
 
 ## Using it from Python
 

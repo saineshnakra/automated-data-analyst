@@ -1008,6 +1008,24 @@ class NotDetectedTests(unittest.TestCase):
         note = next(note for note in report.notes if "Lead" in note)
         self.assertIn("2 cells in Lead (33.3%) were below a detection limit", note)
 
+    def test_a_limit_equal_to_another_column_on_its_row_is_named(self):
+        depth = [1.5, 2.0, 3.5, 4.0, 2.5, 6.0, 3.0, 5.5]
+        clarity = [">1.5", ">2", "1.2", ">4", ">2.5", "2.2", ">3", ">5.5"]
+        frame = pd.DataFrame({"Depth (m)": depth * 3, "Clarity (m)": clarity * 3})
+
+        _, report = clean_dataframe(frame)
+
+        note = next(note for note in report.notes if note.startswith("On "))
+        self.assertIn('On 18 of the 18 rows where Clarity (m) is written as ">X"', note)
+        self.assertIn("the reading reached Depth (m)", note)
+
+    def test_a_shared_upper_limit_is_not_matched_to_a_column(self):
+        frame = pd.DataFrame({"Steps": [100.0] * 6 + [40.0, 60.0], "Count": [">100"] * 6 + ["40", "60"]})
+
+        _, report = clean_dataframe(frame)
+
+        self.assertFalse([note for note in report.notes if "reached" in note])
+
     def test_nd_beside_values_written_with_a_limit_is_not_determined(self):
         frame = pd.DataFrame({"Zinc": ["<0.4", "ND", "1.2", "0.9", "ND", "2.2"] * 3})
 
