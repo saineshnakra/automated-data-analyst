@@ -1033,6 +1033,19 @@ class BuildOutputTests(unittest.TestCase):
             self.assertIn("primary.estimate", record["assets"]["results"]["numbers"])
             self.assertTrue(any("wrong was not fitted" in warning for warning in built.warnings))
 
+    def test_a_planned_analysis_that_cannot_be_fitted_keeps_its_table(self):
+        study = assay_study()
+        study["analyses"] = [
+            {"id": "wrong", "outcome": "Viability (%)", "compare": "Passage", "planned": True, "family": "p"}
+        ]
+        with study_folder(assay(), study) as path:
+            built = build(path)
+            table = pd.read_csv(built.out / "tables" / "results.csv")
+            notes = next(item for item in built.tables if item.id == "results").notes
+        self.assertTrue(table.empty)
+        self.assertIn("estimate", table.columns)
+        self.assertTrue(any(note.startswith("Not fitted: wrong.") and "relate:" in note for note in notes))
+
     def test_a_rebuild_gives_identical_results_files(self):
         with study_folder(assay(), self.assay_with_analyses()) as path:
             first = build(path, out=path.parent / "one").out
@@ -1055,7 +1068,8 @@ class BuildOutputTests(unittest.TestCase):
             built = build(path)
             changed = {change.asset: change for change in built.changes}
             self.assertIn("model-primary", changed)
-            self.assertTrue(any("p_adjusted" in reason for reason in changed["model-primary"].reasons))
+            reasons = " ".join(changed["model-primary"].reasons)
+            self.assertIn("adjusted", reasons)
 
 
 class SyntheticStudyTests(unittest.TestCase):

@@ -2277,13 +2277,52 @@ def _n_text(found: AnalysisResult) -> str:
     return f"{found.n:,}"
 
 
-def results_table(
-    study: Study, data: pd.DataFrame, chosen: list[AnalysisResult], planned: bool
-) -> Table | None:
-    """One table of the analyses that were planned, or of the exploratory ones; None when none was fitted."""
+#: Columns of the results tables' CSV: one row per estimate, at full precision.
+RESULT_COLUMNS = [
+    "analysis",
+    "question",
+    "planned",
+    "family",
+    "outcome",
+    "predictor",
+    "design",
+    "test",
+    "method",
+    "n",
+    "n_missing",
+    "subjects",
+    "clusters",
+    "term",
+    "label",
+    "row_test",
+    "measure",
+    "unit",
+    "estimate",
+    "ci_low",
+    "ci_high",
+    "confidence",
+    "statistic_name",
+    "statistic",
+    "df",
+    "df2",
+    "p",
+    "p_adjusted",
+    "adjustment",
+    "key",
+    "effect_name",
+    "effect",
+    "effect_ci_low",
+    "effect_ci_high",
+]
+
+
+def results_table(study: Study, data: pd.DataFrame, chosen: list[AnalysisResult], planned: bool) -> Table:
+    """One table of the planned analyses, or of the exploratory ones.
+
+    An analysis that could not be fitted is named in the notes with the reason, so a planned
+    analysis never drops out of the paper unseen, even when it leaves the table without rows.
+    """
     fitted = [found for found in chosen if found.supported]
-    if not fitted:
-        return None
     percent = f"{study.decisions.confidence * 100:g}%"
     display_rows, data_rows = [], []
     symbols, statistics, contrast_methods, measures = set(), set(), set(), set()
@@ -2382,7 +2421,7 @@ def results_table(
         id="results" if planned else "exploratory-analyses",
         title=title,
         display=pd.DataFrame(display_rows, columns=columns),
-        data=pd.DataFrame(data_rows),
+        data=pd.DataFrame(data_rows, columns=RESULT_COLUMNS),
         notes=notes,
     )
 
@@ -2390,6 +2429,26 @@ def results_table(
 def _table_notes(
     study, chosen, fitted, percent, symbols, statistics, contrast_methods, measures, planned
 ) -> list[str]:
+    notes = (
+        _fitted_notes(study, fitted, percent, symbols, statistics, contrast_methods, measures)
+        if fitted
+        else []
+    )
+    notes.append(
+        "Only the analyses listed in study.yml were run."
+        + (
+            " These were planned before the data were seen."
+            if planned
+            else " They were not planned before the data were seen; read them as exploratory."
+        )
+    )
+    for found in chosen:
+        if not found.supported:
+            notes.append(f"Not fitted: {found.spec.id}. {found.reason}")
+    return notes
+
+
+def _fitted_notes(study, fitted, percent, symbols, statistics, contrast_methods, measures) -> list[str]:
     method = study.decisions.multiple_comparisons
     abbreviations = ["CI, confidence interval"]
     words = {
@@ -2402,10 +2461,7 @@ def _table_notes(
         "Cramér's V": "V, Cramér's V",
     }
     abbreviations += [words[name] for name in sorted(symbols) if name in words]
-    if (
-        any((found.estimates["measure"] == "odds ratio").any() for found in fitted)
-        and "odds ratio" not in symbols
-    ):
+    if "odds ratio" in measures and "odds ratio" not in symbols:
         abbreviations.append("OR, odds ratio")
     notes = [
         "; ".join(abbreviations)
@@ -2459,17 +2515,6 @@ def _table_notes(
             + "; ".join(parts)
             + "."
         )
-    notes.append(
-        "Only the analyses listed in study.yml were run."
-        + (
-            " These were planned before the data were seen."
-            if planned
-            else " They were not planned before the data were seen; read them as exploratory."
-        )
-    )
-    unsupported = [found for found in chosen if not found.supported]
-    for found in unsupported:
-        notes.append(f"Not fitted: {found.spec.id}. {found.reason}")
     return notes
 
 
@@ -2504,13 +2549,12 @@ def _add_results_table(result, chosen: list[AnalysisResult], planned: bool) -> N
         return
     study = result.study
     table = results_table(study, result.data, chosen, planned)
-    if table is None:
-        return
     fitted = [found for found in chosen if found.supported]
     used = set()
     for found in fitted:
         if found.fitted is not None:
             used |= set(found.fitted.index)
+    rows_used = max([len(used), *(found.n for found in fitted)])
     numbers = {}
     for found in fitted:
         numbers.update(_key_numbers(found, f"{found.spec.id}."))
@@ -2522,11 +2566,15 @@ def _add_results_table(result, chosen: list[AnalysisResult], planned: bool) -> N
         section="main" if planned else "supplement",
         folder="tables" if planned else "supplement",
         depends=_depends(chosen),
-        calculation=f"Each analysis in study.yml on its complete cases: {methods}. Key p-values adjusted "
-        f"within each family by {ADJUSTMENT_NAMES[adjustment]}"
-        + (" (statsmodels.stats.multitest.multipletests)." if adjustment != "none" else "."),
+        calculation=(
+            f"Each analysis in study.yml on its complete cases: {methods}. Key p-values adjusted within each "
+            f"family by {ADJUSTMENT_NAMES[adjustment]}"
+            + (" (statsmodels.stats.multitest.multipletests)." if adjustment != "none" else ".")
+            if fitted
+            else "No analysis in this table could be fitted; its notes give the reasons."
+        ),
         code="ada.research.analyses.results_table",
-        rows=result.rows(used=len(used) if used else max(found.n for found in fitted)),
+        rows=result.rows(used=rows_used),
         numbers=numbers,
         references=references,
     )
