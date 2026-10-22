@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "automated-data-analyst"
 version = "0.3.0"
-description = "Exploratory analysis for CSV and Excel tables, with the calculation behind every number."
+description = "A first look at a table of measurements: data checks, group differences, relationships and changes over time, with the calculation behind every number."
 requires-python = ">=3.11"
 readme = "README.md"
 license = "MIT"
