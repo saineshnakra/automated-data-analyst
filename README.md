@@ -144,10 +144,11 @@ ada ask orders.csv "which category made the most revenue"
   change, a fire) is found by binary segmentation and reported with its start
   and the levels before and after. Both are calibrated by simulation so a
   stable series raises a false alarm in about one analysis in twenty.
-- **Forecasts with a backtest**: a trendline plus month-of-year seasonality,
-  scored on held-out periods against a no-change forecast. It refuses to run on
-  too little history, and says plainly when the forecast did worse than
-  assuming no change.
+- **Forecasts with a backtest**: a trendline plus the usual offset of each
+  month, quarter or week of the year, scored on held-out periods against a
+  no-change forecast and, for a seasonal series, against repeating the same
+  period a year earlier. It refuses to run on too little history, and says
+  plainly when the forecast did worse than either.
 - **Answers plain-English questions** ("average pH by site", "mean signal by
   timepoint", "which month of the year has the highest wind", "is pH
   correlated with temperature", "does pH differ by site", "what predicts

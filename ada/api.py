@@ -363,7 +363,9 @@ class Analysis:
                 had=f"{periods} periods",
             )
         return detect_anomalies(
-            series.frame, floor_at_zero=metric_for(self.roles.measure, self.roles).floors_at_zero
+            series.frame,
+            floor_at_zero=metric_for(self.roles.measure, self.roles).floors_at_zero,
+            grain=series.frequency,
         )
 
     def forecast(self, horizon: int = 6) -> Forecast | Refusal:
@@ -375,6 +377,7 @@ class Analysis:
             series.frame,
             horizon=horizon,
             floor_at_zero=metric_for(self.roles.measure, self.roles).floors_at_zero,
+            grain=series.frequency,
         )
         if result is None:
             periods = len(series.frame)

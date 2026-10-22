@@ -11,7 +11,8 @@ so one contributor can take it from start to finish.
   filled, grain chosen from span and recording cadence, each adjustment noted
   under the chart
 - Forecast with a band that widens with the horizon and a holdout backtest
-  (MAPE, MASE against no change)
+  (MAPE, MASE against no change, and seasonal MASE against the same period a
+  year earlier)
 - Evidence with volatility context, and correlations with sample size, a
   confidence interval and a rank check
 - Ask ADA: plain-English questions parsed into query plans and run locally,
@@ -39,8 +40,6 @@ so one contributor can take it from start to finish.
 
 - Rolling-origin backtesting: score the forecast from several origins instead
   of one holdout split
-- Seasonal-naive comparison: for seasonal series, compare against the same
-  period last year, not the previous period
 - Detection sensitivity control in the app: let a user trade the calibrated
   false-alarm rate for sensitivity and show the cost (the library already
   accepts `detect_anomalies(threshold=...)`)
