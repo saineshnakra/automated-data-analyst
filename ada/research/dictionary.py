@@ -59,7 +59,7 @@ def dictionary_table(study: Study, processed: Processed) -> Table:
             "unit": variable.unit,
             "description": variable.description,
             "allowed": _allowed(variable),
-            "observed": _observed(series, variable),
+            "observed": "withheld" if name in withheld else _observed(series, variable),
             "present": int(series.notna().sum()),
             "missing": int(series.isna().sum()),
             "missing_codes": "; ".join(codes),

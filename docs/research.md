@@ -22,8 +22,10 @@ ada build                          # writes paper-assets/
 ada verify                         # rebuilds in a scratch folder and checks everything matches
 ```
 
-`ada preview` lists what would be shared and flags anything that shouldn't be.
-Running `ada` on its own says where the folder stands.
+`ada preview` lists what would be shared and flags anything that shouldn't be;
+`ada share` copies what may be shared into `share/`. `ada demo` writes a small
+example study to try it all on. Running `ada` on its own says where the folder
+stands.
 
 The same commands are also under `ada research …`, and in Python:
 
@@ -305,6 +307,80 @@ it names the assets that stayed the same. Entries are numbered, not dated.
 Neither file holds a date or anything else that changes from one build to the
 next, and Word files are written with fixed dates inside, so rebuilding an
 unchanged study gives the same bytes and `git diff` stays quiet.
+
+## Sharing and reproduction
+
+`ada build` ends by writing two folders for other people.
+
+`reproduce/` holds what another researcher needs to rebuild every asset:
+copies of study.yml and the custom scripts (with their paths kept), the exact
+package versions (`requirements.txt`), the checksums of the inputs in
+`sha256sum` format (`checksums.sha256`), plain steps (`INSTRUCTIONS.md`), and
+`reproduce.sh`, which checks the inputs and runs `ada build` and `ada verify`.
+
+`repository/` holds drafts for a data or code repository: a README,
+`CITATION.cff`, Zenodo's `.zenodo.json`, and data and code availability
+statements in the form journals ask for. They say what study.yml says and
+leave a placeholder in [square brackets] for the rest. ADA never chooses a
+licence: when `study.license` is blank, the README says so and the metadata
+leave it out. To link the deposit to the paper, list the paper's DOI:
+
+```yaml
+study:
+  related: [10.1234/journal.0001]   # or {identifier: ..., relation: isDocumentedBy}
+```
+
+### What may be shared
+
+`sharing` in study.yml decides what leaves your computer:
+
+- `data: processed` shares the processed data, and `raw` adds the original
+  file. `demo` shares neither but writes a synthetic table (below), and `none`
+  shares no data.
+- `withhold` names columns that never leave. They are removed from every CSV.
+- `row_level: false` keeps back the tables that list individual rows: the
+  processed data, the excluded rows, the audit's list and figure source data.
+  Reports and figures are still shared.
+
+`ada preview` lists every file in the output folder with its size, whether it
+may be shared, and why. It flags withheld columns in any CSV, files listing
+rows when `row_level` is false, data files when the data are not shared,
+identifier columns when the data are restricted, and any file holding a value
+of a withheld column (text values of four or more characters; figures in PDF,
+PNG, TIFF and EPS are not searched).
+
+`ada share` copies only the shareable files into `share/` (or `--out`), with
+withheld columns removed, and writes `SHARING.md` saying what it left out and
+why. It then searches the copy again with the same rules; if anything withheld
+remains, it deletes the copy and says what it found.
+
+### Demo data
+
+With `sharing.data: demo`, the build writes `reproduce/demo-data.csv`: a
+synthetic table with the columns, types and levels of the processed data,
+drawn with a fixed seed. Each subject or cluster keeps its rows and time
+points under a new code, and conditions that change within a subject stay as
+they are. Every other column is drawn on its own, numbers by inverse-transform
+sampling from the observed values and categories by shuffling, so no
+relationship between columns survives. Withheld columns are left out.
+`demo-data.README.md` says how each column was made, and `demo-study.yml` runs
+the whole build on it:
+
+```
+ada build --study paper-assets/reproduce/demo-study.yml
+```
+
+### An example study
+
+`ada demo [FOLDER]` writes an example study: simulated weights of sixteen mice
+on two diets, weighed weekly, with a study.yml that has authors, units, two
+exclusions with their reasons, a planned and an exploratory analysis, figures,
+a custom table and a withheld column.
+
+```
+ada demo
+cd ada-demo && ada build
+```
 
 ## Verifying
 

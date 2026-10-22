@@ -5,6 +5,9 @@ For a research study, run these in the folder that holds the data:
     ada init data/measurements.csv     # answer a few questions; writes study.yml
     ada build                          # tables, figures, methods and more in paper-assets/
     ada verify                         # rebuild and check every number still matches
+    ada share                          # copy what may be shared into share/
+
+To try it on an example study first: ``ada demo``.
 
 For a first look at any table:
 
@@ -151,13 +154,42 @@ def _preview(args: argparse.Namespace) -> int:
     return EXIT_QUIET
 
 
+def _share(args: argparse.Namespace) -> int:
+    from .research.package import share  # noqa: PLC0415
+
+    shared = share(args.study, out=args.out)
+    print(shared.text())
+    return EXIT_QUIET if shared.ok else EXIT_FLAGGED
+
+
+def _demo(args: argparse.Namespace) -> int:
+    import shlex  # noqa: PLC0415
+
+    from .research.example import write_example  # noqa: PLC0415
+
+    try:
+        files = write_example(args.folder, overwrite=args.force)
+    except FileExistsError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_ERROR
+    folder = Path(args.folder)
+    print(f"Wrote an example study to {folder}/: sixteen mice on two diets, weighed weekly (simulated data).")
+    for path in files:
+        print(f"  {path.relative_to(folder).as_posix()}")
+    print(f"\nNext:\n    cd {shlex.quote(str(folder))} && ada build\n"
+          "then open paper-assets/README.md. `ada preview` lists what may be shared, and `ada share` "
+          "copies it.")
+    return EXIT_QUIET
+
+
 def _status(_: argparse.Namespace) -> int:
     """With no command: say where this folder stands and what to run next."""
     study = Path("study.yml")
     if not study.is_file():
         print("No study.yml here. To make paper assets for a study, run this in its folder:\n"
               "    ada init path/to/data.csv\n"
-              "then `ada build`. For a quick look at any table: `ada analyze file.csv`.\n"
+              "then `ada build`. To try it on an example study: `ada demo`.\n"
+              "For a quick look at any table: `ada analyze file.csv`.\n"
               "`ada --help` lists every command.")
         return EXIT_QUIET
     from .research import load  # noqa: PLC0415
@@ -228,6 +260,13 @@ def build_parser() -> argparse.ArgumentParser:
         check.add_argument("--atol", type=float, default=1e-12, help="absolute tolerance for numbers (1e-12)")
         shown = group.add_parser("preview", help="list what would be shared, and anything that should not be")
         shown.add_argument("--study", default="study.yml", help="the study file")
+        shared = group.add_parser("share", help="copy the files that may be shared into share/")
+        shared.add_argument("--study", default="study.yml", help="the study file")
+        shared.add_argument("--out", help="the folder to write (default: share/ beside the study file)")
+        demo = group.add_parser("demo", help="write a small example study to try ada build on")
+        demo.add_argument("folder", nargs="?", default="ada-demo",
+                          help="where to write it (default: ada-demo)")
+        demo.add_argument("--force", action="store_true", help="write into a folder that is not empty")
 
     research_commands(subcommands)
     research = subcommands.add_parser("research", help="the same research commands, under one name")
@@ -265,6 +304,7 @@ def main(argv: list[str] | None = None) -> int:
     command = getattr(args, "research_command", None) or args.command
     handler = {
         "init": _init, "build": _build, "verify": _verify, "preview": _preview,
+        "share": _share, "demo": _demo,
         "analyze": _analyze, "schema": _schema, "ask": _ask,
         "check": _check, "samples": _samples, "app": _app, None: _status,
     }[command]

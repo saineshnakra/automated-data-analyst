@@ -69,6 +69,9 @@ The methods ADA applies, with the papers that introduced them:
 | Holm's adjustment | Scans of many comparisons | Holm, S. (1979), *Scandinavian Journal of Statistics* 6, 65–70 |
 | Benjamini-Hochberg false discovery rate | Screens of hundreds of readings | Benjamini, Y. and Hochberg, Y. (1995), *Journal of the Royal Statistical Society B* 57, 289–300 |
 | Newcombe's interval for a difference in proportions | Rate comparisons | Newcombe, R. G. (1998), *Statistics in Medicine* 17, 873–890 |
+| Inverse-transform sampling | Synthetic demo data: `numpy.quantile` (linear interpolation) of uniform draws for numbers, `numpy.random.Generator.permutation` for categories | Devroye, L. (1986), *Non-Uniform Random Variate Generation*, Springer, chapter 2 |
+| ISO 7064 MOD 11-2 check digit | Checking authors' ORCID iDs for the repository files | ISO 7064:2003; ORCID, *Structure of the ORCID Identifier* |
+| Citation File Format 1.2.0 | `repository/CITATION.cff` | Druskat, S., Spaaks, J. H., Chue Hong, N. et al. (2021), https://doi.org/10.5281/zenodo.5171937 |
 | Binary segmentation | Changes in level | Scott, A. J. and Knott, M. (1974), *Biometrics* 30, 507–512 |
 | Bias of the lag-1 autocorrelation | Changes in level | Kendall, M. G. (1954), *Biometrika* 41, 403–404 |
 | Variance inflation factor | The joint model | Marquardt, D. W. (1970), *Technometrics* 12, 591–612 |
