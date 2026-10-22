@@ -36,8 +36,9 @@ classifiers = [
 # openpyxl is a core dependency so .xlsx files work out of the box. scipy
 # supplies the distributions behind the group comparisons and correlation tests,
 # and the rate tests; statsmodels the false-discovery-rate adjustment, the rate
-# interval and the joint model; ruptures the change-point search.
-# docs/credits.md says what each is used for.
+# interval, the joint model and the study analyses; ruptures the change-point
+# search. PyYAML reads study.yml, Matplotlib draws the paper figures and
+# python-docx writes the Word tables. docs/credits.md says what each is used for.
 dependencies = [
     "pandas>=2.2,<3",
     "numpy>=1.26,<3",
@@ -45,6 +46,9 @@ dependencies = [
     "scipy>=1.11,<2",
     "statsmodels>=0.14.2,<1",
     "ruptures>=1.1.10,<2",
+    "PyYAML>=6,<7",
+    "matplotlib>=3.8,<4",
+    "python-docx>=1.1,<2",
 ]
 
 [project.optional-dependencies]
@@ -64,7 +68,7 @@ Source = "https://github.com/saineshnakra/automated-data-analyst"
 Issues = "https://github.com/saineshnakra/automated-data-analyst/issues"
 
 [tool.setuptools]
-packages = ["ada"]
+packages = ["ada", "ada.research"]
 
 [tool.setuptools.package-data]
 # Read from inside the package at runtime.

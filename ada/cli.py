@@ -1,5 +1,13 @@
 """The ``ada`` command.
 
+For a research study, run these in the folder that holds the data:
+
+    ada init data/measurements.csv     # answer a few questions; writes study.yml
+    ada build                          # tables, figures, methods and more in paper-assets/
+    ada verify                         # rebuild and check every number still matches
+
+For a first look at any table:
+
     ada analyze measurements.csv
     ada schema measurements.csv
     ada ask orders.csv "which category made the most revenue"
@@ -96,6 +104,76 @@ def _check(args: argparse.Namespace) -> int:
     return EXIT_FLAGGED
 
 
+def _init(args: argparse.Namespace) -> int:
+    from .research import init  # noqa: PLC0415
+
+    try:
+        path = init(args.file, study_path=args.study, sheet=args.sheet, interactive=not args.yes,
+                    overwrite=args.force)
+    except (FileNotFoundError, FileExistsError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_ERROR
+    print(f"\nWrote {path}. Read it through, fill in anything blank, then run `ada build`.")
+    return EXIT_QUIET
+
+
+def _build(args: argparse.Namespace) -> int:
+    from .research import build  # noqa: PLC0415
+
+    built = build(args.study, out=Path(args.out) if args.out else None)
+    checks = sum(1 for finding in built.findings if finding.status == "check")
+    print(f"Built {len(built.assets)} assets in {built.out}")
+    for asset in built.assets:
+        if asset.section in ("main", "supplement"):
+            print(f"  {asset.number or asset.title:12} {asset.title}")
+    if checks:
+        print(f"\nThe data audit lists {checks} item(s) to check: {built.out / 'audit' / 'data-audit.md'}")
+    changed = [change for change in built.changes if change.status != "new"]
+    if changed:
+        print(f"\n{len(changed)} asset(s) changed since the last build; see {built.out / 'CHANGES.md'}")
+    for warning in built.warnings:
+        print(f"note: {warning}")
+    return EXIT_QUIET
+
+
+def _verify(args: argparse.Namespace) -> int:
+    from .research.verify import verify  # noqa: PLC0415
+
+    report = verify(args.study)
+    print(report.text())
+    return EXIT_QUIET if report.ok else EXIT_FLAGGED
+
+
+def _preview(args: argparse.Namespace) -> int:
+    from .research.package import preview  # noqa: PLC0415
+
+    print(preview(args.study))
+    return EXIT_QUIET
+
+
+def _status(_: argparse.Namespace) -> int:
+    """With no command: say where this folder stands and what to run next."""
+    study = Path("study.yml")
+    if not study.is_file():
+        print("No study.yml here. To make paper assets for a study, run this in its folder:\n"
+              "    ada init path/to/data.csv\n"
+              "then `ada build`. For a quick look at any table: `ada analyze file.csv`.\n"
+              "`ada --help` lists every command.")
+        return EXIT_QUIET
+    from .research import load  # noqa: PLC0415
+    from .research.provenance import read_manifest  # noqa: PLC0415
+
+    loaded = load(study)
+    record = read_manifest(loaded.out_dir)
+    print(f"{loaded.title}: {loaded.data_path}, {loaded.design} design, {len(loaded.analyses)} analyses")
+    if record is None:
+        print("Not built yet. Run `ada build`.")
+    else:
+        print(f"{len(record['assets'])} assets in {loaded.output.dir}/ from ADA {record['ada']}. "
+              "Run `ada verify` to check they are current, or `ada build` to rebuild.")
+    return EXIT_QUIET
+
+
 def _samples(_: argparse.Namespace) -> int:
     for name, path in sorted(samples().items()):
         print(f"{name:22} {path}")
@@ -129,7 +207,28 @@ def build_parser() -> argparse.ArgumentParser:
         description="Exploratory analysis for any table, with the arithmetic under every number.",
     )
     parser.add_argument("--version", action="version", version=f"ada {__version__}")
-    subcommands = parser.add_subparsers(dest="command", required=True)
+    subcommands = parser.add_subparsers(dest="command", metavar="COMMAND")
+
+    def research_commands(group) -> None:
+        init = group.add_parser(
+            "init", help="describe a study: writes study.yml from the data and your answers"
+        )
+        init.add_argument("file", help="the study's data file (CSV, TSV or Excel)")
+        init.add_argument("--sheet", help="the worksheet to read from an Excel file")
+        init.add_argument("--study", default="study.yml", help="where to write the study file")
+        init.add_argument("--yes", action="store_true", help="accept every suggestion without asking")
+        init.add_argument("--force", action="store_true", help="replace an existing study file")
+        built = group.add_parser("build", help="make the paper assets: tables, figures, methods and records")
+        built.add_argument("--study", default="study.yml", help="the study file")
+        built.add_argument("--out", help="the output folder (default: output.dir in the study file)")
+        check = group.add_parser("verify", help="rebuild in a scratch folder and check every asset matches")
+        check.add_argument("--study", default="study.yml", help="the study file")
+        shown = group.add_parser("preview", help="list what would be shared, and anything that should not be")
+        shown.add_argument("--study", default="study.yml", help="the study file")
+
+    research_commands(subcommands)
+    research = subcommands.add_parser("research", help="the same research commands, under one name")
+    research_commands(research.add_subparsers(dest="research_command", metavar="COMMAND", required=True))
 
     def with_source(name: str, help_text: str):
         sub = subcommands.add_parser(name, help=help_text)
@@ -157,14 +256,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from .research.study import StudyError  # noqa: PLC0415
+
     args = build_parser().parse_args(argv)
+    command = getattr(args, "research_command", None) or args.command
     handler = {
+        "init": _init, "build": _build, "verify": _verify, "preview": _preview,
         "analyze": _analyze, "schema": _schema, "ask": _ask,
-        "check": _check, "samples": _samples, "app": _app,
-    }[args.command]
+        "check": _check, "samples": _samples, "app": _app, None: _status,
+    }[command]
     try:
         return handler(args)
-    except AdaError as error:
+    except (AdaError, StudyError) as error:
         print(f"error: {error}", file=sys.stderr)
         return EXIT_ERROR
 
