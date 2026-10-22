@@ -509,7 +509,7 @@ try:
         render_footer(build=build_identifier())
         st.stop()
 
-    prepared = prepare_analysis(raw_dataframe, row_limit=MAX_ANALYSIS_ROWS)
+    prepared = prepare_analysis(raw_dataframe, row_limit=MAX_ANALYSIS_ROWS, source_name=source_name)
 except (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError, ValueError, ImportError) as error:
     st.error(f"ADA could not read this file: {error}")
     st.stop()

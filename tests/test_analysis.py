@@ -253,6 +253,27 @@ class BusinessFormattedNumberTests(unittest.TestCase):
 
         self.assertEqual(cleaned["Amount"].tolist(), [1234.5, 2345.6, 1234.5, 1234.5])
 
+    def test_one_column_is_never_read_with_two_decimal_marks(self):
+        frame = pd.DataFrame({
+            "Error (mDa)": ["-0,307", "0,069", "-2,95", "-1,222"],
+            "Mass": ["306,27883", "941,5104", "225,07509", "316,28438"],
+        })
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["Error (mDa)"].tolist(), [-0.307, 0.069, -2.95, -1.222])
+        self.assertEqual(cleaned["Mass"].tolist(), [306.27883, 941.5104, 225.07509, 316.28438])
+        named = "Commas mark the decimal point in Error (mDa), Mass"
+        self.assertTrue(any(named in note for note in report.notes))
+
+    def test_commas_grouping_thousands_still_read_as_thousands(self):
+        frame = pd.DataFrame({"Amount": ["1,234", "5,678", "12", "99"]})
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["Amount"].tolist(), [1234.0, 5678.0, 12.0, 99.0])
+        self.assertFalse(any("decimal point" in note for note in report.notes))
+
     def test_a_value_plain_parsing_already_read_is_never_replaced(self):
         frame = pd.DataFrame({"Amount": ["1e3"] + ["1,000"] * 19})
 
@@ -1046,9 +1067,96 @@ class NotDetectedTests(unittest.TestCase):
         cleaned, report = clean_dataframe(frame)
 
         self.assertEqual(int(cleaned["Particles"].isna().sum()), 2)
-        note = next(note for note in report.notes if "Particles" in note)
-        self.assertIn("not detected", note)
-        self.assertNotIn("not stated", note)
+        notes = " ".join(note for note in report.notes if "Particles" in note)
+        self.assertIn("2 cells in Particles (40.0%) were below a detection limit", notes)
+        self.assertNotIn("not stated", notes)
+
+    def test_readings_written_with_a_spread_and_a_unit_are_read_as_their_mean(self):
+        frame = pd.DataFrame({
+            "particle_number": ["5.66 ± 1.69 items/g", "0.43 items/ g", "2.1 items/g", "0.87 – 7.86 items/g"],
+        })
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["particle_number"].tolist()[:3], [5.66, 0.43, 2.1])
+        self.assertTrue(np.isnan(cleaned["particle_number"].iloc[3]))
+        self.assertNotIn("particle_number unit", cleaned.columns)
+        self.assertTrue(any("Every one is in items/g" in note for note in report.notes))
+
+    def test_readings_in_several_units_get_a_unit_column(self):
+        frame = pd.DataFrame({"Level": ["5 mg/L", "7 mg/L", "0.2 g/L", "0.3 g/L", "4.5 *10^(6) mg/L"]})
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["Level unit"].tolist()[:4], ["mg/L", "mg/L", "g/L", "g/L"])
+        self.assertTrue(np.isnan(cleaned["Level"].iloc[4]))
+
+    def test_yes_and_no_words_in_a_0_1_column_read_as_1_and_0(self):
+        frame = pd.DataFrame({"liver_function_impaired": ["0", "1", "0", "true", "0", "False", "1", "0"]})
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["liver_function_impaired"].tolist(), [0, 1, 0, 1, 0, 0, 1, 0])
+        self.assertTrue(any('held "true", "False"' in note for note in report.notes))
+
+
+class RespeltLabelTests(unittest.TestCase):
+    def test_a_letter_and_the_one_word_it_starts_are_one_label(self):
+        frame = pd.DataFrame({"gender": ["M"] * 50 + ["F"] * 40 + ["male"] * 6 + ["female"] * 5})
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["gender"].value_counts().to_dict(), {"male": 56, "female": 45})
+        self.assertTrue(any('"M" into "male"' in note for note in report.notes))
+
+    def test_a_rare_spelling_one_letter_off_joins_the_common_one(self):
+        frame = pd.DataFrame({"ethnicity": ["Hispanic"] * 30 + ["Hipanic"] * 4 + ["Asian"] * 40})
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["ethnicity"].value_counts().to_dict(), {"Asian": 40, "Hispanic": 34})
+
+    def test_codes_and_levels_that_differ_on_purpose_stay_apart(self):
+        frame = pd.DataFrame({
+            "blood": ["A", "B", "AB", "O"] * 25,
+            "arm": ["Type A"] * 90 + ["Type B"] * 10,
+            "size": ["Large"] * 90 + ["Larger"] * 10,
+        })
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["blood"].nunique(), 4)
+        self.assertEqual(cleaned["arm"].nunique(), 2)
+
+
+class OneHotTests(unittest.TestCase):
+    def test_columns_marking_one_level_each_are_joined_into_one_category(self):
+        frame = pd.DataFrame({
+            "Rainfall": np.arange(100.0),
+            "Soil_Type_Gravel": [1, 0, 0, 0] * 25,
+            "Soil_Type_Sand": [0, 1, 0, 0] * 25,
+            "Soil_Type_Silt": [0, 0, 1, 0] * 25,
+        })
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(cleaned.columns.tolist(), ["Rainfall", "Soil_Type"])
+        levels = {"Gravel": 25, "Sand": 25, "Silt": 25, "other": 25}
+        self.assertEqual(cleaned["Soil_Type"].value_counts().to_dict(), levels)
+        self.assertTrue(any("joined into one column, Soil_Type" in note for note in report.notes))
+
+    def test_separate_yes_no_questions_are_left_alone(self):
+        frame = pd.DataFrame({
+            "has_pool": [1, 0, 0, 0] * 25,
+            "has_garage": [0, 1, 0, 0] * 25,
+            "has_garden": [0, 0, 1, 0] * 25,
+            "Smoker_current": [1, 0, 1, 0] * 25,
+            "Smoker_former": [0, 1, 1, 0] * 25,
+        })
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(cleaned.columns.tolist(), frame.columns.tolist())
 
 
 class PlaceholderTests(unittest.TestCase):

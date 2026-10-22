@@ -63,6 +63,12 @@ money is averaged as well (`metrics.metric_for`): adding each infant's looking
 time across infants, or splitting it into shares, mostly counts infants. An
 order number names a sale, not a subject, so order amounts still add up.
 
+Among lab readings, "total" means all forms of a substance: total nitrogen,
+total phosphorus. So a name that is an amount only because it says `total`
+(`nitrates_total`, `density_Total`) is averaged when every other numeric
+column is a reading, with no money or count among at least two of them.
+`Total`, `Order Total` beside `Quantity`, or `Total Cases` still add up.
+
 The name can mislead either way: rainfall is often reported as a monthly
 total, and a column called `income` may hold income per person. To choose how
 the measure combines, pass `aggregation="sum"` or `aggregation="mean"` to

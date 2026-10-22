@@ -23,12 +23,13 @@ table or as a note.
 | 10 | Infer numbers | See below |
 | 11 | Infer dates in other columns | See below |
 | 12 | Set missing-value codes to missing | See [Missing-value codes](#missing-value-codes) |
+| 12a | Join one-hot columns | See [One-hot columns](#one-hot-columns) |
 | 13 | Read whole numbers written as dates | See [Dates written as whole numbers](#dates-written-as-whole-numbers) |
 | 14 | Join a date column and a time column | See [Times with no date](#times-with-no-date) |
 | 15 | Read elapsed time | See [Elapsed time](#elapsed-time) |
 | 16 | Read "not stated", `ND` and placeholder labels as missing in text columns | See below |
 | 17 | Restore ranges a spreadsheet read as dates | See [Ranges read as dates](#ranges-read-as-dates) |
-| 18 | Merge label spellings | See below |
+| 18 | Merge label spellings and abbreviations | See [Label spellings](#label-spellings) |
 | 19 | Build dates from years | See below |
 | 20 | Widen overflowing integers | An integer column whose total would overflow int64 becomes float64 |
 | 21 | Replace infinities | `inf` and `-inf` in float columns become missing |
@@ -193,6 +194,14 @@ negative. `$1,203.55`, `(48.10)` and `1 234,50` are all numbers. A value with
 any other character, such as a slash, is not read this way, so a date cannot
 become a large integer.
 
+The decimal mark is decided once per column, from all its values. A lone
+comma is ambiguous: `1,234` may be a thousand. When some values can only be
+using commas as decimal points (`-2,95`, `0,307`, `306,27883`, `1.234,5`) and
+none uses them to group thousands (`1,234.5`, `1,234,567`), every comma in
+the column is read as a decimal point, so `-0,307` is -0.307 beside `-2,95`
+rather than -307. In such a column `1.234` groups a thousand. A note names
+the columns where this changed how a value would otherwise be read.
+
 Cells holding a missing-value marker (`MISSING_MARKERS`: `NA`, `n/a`, `nd`,
 `null`, `unknown`, `-`, `#DIV/0!`, `<LOD`, `below detection limit` and
 similar; a "not stated" phrase from `NOT_STATED_MARKERS`, below; or a censored
@@ -218,6 +227,24 @@ In a column of readings, `ND` (or `n.d.`) means not detected, so it counts as
 below a detection limit, like `<LOD`. The exception is a column that writes
 values below its limit with a number (`<0.4`): beside those, `ND` more likely
 means the value was not determined, so its cells get a plain note saying so.
+
+**Yes and no among 0s and 1s.** In a column whose numbers are only 0 and 1,
+`true`, `false`, `yes`, `no`, `y`, `n`, `t` and `f` (any case) are read as 1
+and 0 rather than set to missing, and a note says so.
+
+**Readings written with a spread or a unit.** A column of cells such as
+`5.66 ± 1.69 items/10 g` or `0.43 items/individual` holds readings, even under
+a key name such as `particle_number`. When at least half of its readable
+cells are a number, optionally followed by `±` and a spread, and a unit
+starting with a letter, and at least half of those carry a unit or a spread,
+each cell is read as the number it starts with (the mean before the `±`).
+Ranges (`0.87 – 7.86 items/g`) and numbers in scientific notation
+(`4.5 *10^(6) items`) are not single readings, so they become missing and a
+note lists them; `ND` and `<LOQ` are read as below a detection limit. When
+every reading is in one unit, the note names it. When the units differ, a new
+text column `<name> unit` holds each row's unit, so the schema treats the
+table as long by unit and never combines readings in different units (see
+[Schema detection](schema-detection.md#long-tables)).
 
 **A lone token.** Weather records write `T` for a trace of rain, and instrument
 logs write `M` or `*`. When the only text left in a column after markers is one
@@ -363,6 +390,28 @@ spellings are written the way the most common one is, and a note gives the
 count and an example. Key columns (see above) keep their spelling, since
 `ab12` and `AB12` may be two accounts, and a column with more than 20,000
 distinct values is free text and is left alone.
+
+Two more kinds of spelling are merged, conservatively, in columns of at most
+50 labels (`_respelt_labels`). A single letter is merged into the one word in
+the column it starts (`M` into `male`, `F` into `female`); it is left alone
+when several words start with it, or when the only match is a code in capitals
+(`A` beside `AB`). And a word of five letters or more one letter away from
+another, by a letter added, dropped or two neighbours swapped (`Hipanic` and
+`Hispanic`), is merged into the other when it is at most a fifth as common, as
+a typo is; labels with digits or other marks (`Type A`, `Type B`) never count.
+A note names each merge.
+
+## One-hot columns
+
+A category is sometimes split into one 0/1 column per level, the way models
+are fed: `Soil_Type_Gravel`, `Soil_Type_Sand`, `Soil_Type_Silt`. Columns of
+only 0 and 1 that share a name prefix (up to a `_`, `.`, `:`, `-` or space)
+and never mark two levels on one row are joined back into one text column
+named for the prefix (`Soil_Type`), holding each row's level. Rows where all
+of them are 0 hold the level left out, shown as `other`. Two columns qualify
+only when every row has exactly one of them, and prefixes that start yes/no
+questions (`is_`, `has_`, `was_`, ...) never do. A note names the columns
+joined.
 
 ## The cleaning report
 
