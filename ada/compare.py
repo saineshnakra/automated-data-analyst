@@ -5411,6 +5411,8 @@ MODEL_ROWS = 50_000
 # R² from which a fit is an identity in how the columns were computed (an
 # annual mean and its seasons), not a relationship between readings.
 EXACT_FIT = 0.995
+#: In an exact fit, a standardized coefficient below this is rounding error, not part of the identity.
+EXACT_TERM = 1e-6
 
 
 @dataclass(frozen=True)
@@ -5468,7 +5470,14 @@ class JointModel:
 
     @property
     def clear(self) -> tuple[ModelTerm, ...]:
-        """The predictors whose coefficients stay clear of zero with the others held fixed."""
+        """The predictors whose coefficients stay clear of zero with the others held fixed.
+
+        In an exact fit the residuals are rounding error, so p-values say nothing
+        and differ by platform; a predictor is part of the identity when its
+        standardized coefficient is more than rounding error.
+        """
+        if self.exact:
+            return tuple(term for term in self.terms if abs(term.standardized) > EXACT_TERM)
         return tuple(term for term in self.terms if term.p_value < ALPHA)
 
     @property
