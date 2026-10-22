@@ -1116,6 +1116,25 @@ class _Analysis:
             )
         return rows
 
+    def _slope_rows(self, fit, statistic_name: str, df=math.nan, test: str = "") -> list[dict]:
+        """The slope on the predictor, named by its column, and the intercept that the figures draw it from.
+
+        The intercept row (measure "intercept") stays out of the results tables.
+        """
+        predictor = self.names[self.spec.relate]
+        slope, intercept = self._coefficient_rows(
+            fit,
+            [predictor, "Intercept"],
+            [f"Slope on {self.spec.relate}", "Intercept"],
+            measure="slope",
+            statistic_name=statistic_name,
+            df=df,
+            test=test,
+        )
+        slope["term"] = self.spec.relate
+        intercept["measure"] = "intercept"
+        return [slope, intercept]
+
     def _ols_diagnostics(self, fit, work: pd.DataFrame, group: str | None = None) -> None:
         from statsmodels.stats.diagnostic import het_breuschpagan  # noqa: PLC0415
         from statsmodels.stats.outliers_influence import variance_inflation_factor  # noqa: PLC0415
@@ -1418,15 +1437,7 @@ class _Analysis:
         fit = smf.ols(formula, data=work).fit()
         self.fitted_formula = formula
         found.formula = self._readable_formula(spec.relate)
-        slope = self._coefficient_rows(
-            fit,
-            [predictor],
-            [f"Slope on {spec.relate}"],
-            measure="slope",
-            statistic_name="t",
-            df=fit.df_resid,
-            test="Linear regression",
-        )[0]
+        slope, intercept = self._slope_rows(fit, "t", fit.df_resid, "Linear regression")
         rows = [slope]
         if not spec.covariates:
             x, y = work[predictor].to_numpy(), work[outcome].to_numpy()
@@ -1467,7 +1478,7 @@ class _Analysis:
         key = {"pearson": 1, "spearman": 2}.get(test, 0)
         rows[key]["key"] = True
         found.statistic_name = rows[key]["statistic_name"]
-        found.estimates = _estimates(rows)
+        found.estimates = _estimates([*rows, intercept])
         adjusted = ", ".join(spec.covariates)
         found.test = {
             "pearson": "Pearson correlation",
@@ -1489,14 +1500,7 @@ class _Analysis:
         right = " + ".join([predictor, *self._covariate_terms()])
         fit = self._fit_mixed(f"{outcome} ~ {right}", work)
         found.formula = self._readable_formula(spec.relate, random=True)
-        rows = self._coefficient_rows(
-            fit,
-            [predictor],
-            [f"Slope on {spec.relate}"],
-            measure="slope",
-            statistic_name="z",
-            test="Linear mixed model",
-        )
+        rows = self._slope_rows(fit, "z", test="Linear mixed model")
         rows[0]["key"] = True
         found.estimates = _estimates(rows)
         if self.study.design == "paired":
@@ -2285,7 +2289,7 @@ def results_table(
     symbols, statistics, contrast_methods, measures = set(), set(), set(), set()
     for found in fitted:
         first = True
-        for _, row in found.estimates.iterrows():
+        for _, row in found.estimates[found.estimates["measure"] != "intercept"].iterrows():
             decimals = _decimals(study, found, data, row)
             unit = _unit_text(study, found, row["measure"])
             estimate = number(row["estimate"], decimals) if pd.notna(row["estimate"]) else "–"

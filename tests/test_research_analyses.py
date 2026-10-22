@@ -362,6 +362,8 @@ class IndependentComparisonTests(unittest.TestCase):
         self.assertTrue(rows.loc["Age", "key"])
         self.assertAlmostEqual(rows.loc["Age", "estimate"], regression.slope)
         self.assertAlmostEqual(rows.loc["Age", "p"], regression.pvalue)
+        self.assertAlmostEqual(rows.loc["Intercept", "estimate"], regression.intercept)
+        self.assertEqual(rows.loc["Intercept", "measure"], "intercept")
         self.assertIsNone(found.group_means)
 
 
@@ -635,6 +637,9 @@ class OtherTestsTests(unittest.TestCase):
         )
         direct = smf.mixedlm("Q('Weight (g)') ~ Day", frame, groups="Mouse").fit(reml=True)
         self.assertAlmostEqual(key_row(results["a"])["estimate"], direct.params["Day"], places=6)
+        rows = results["a"].estimates.set_index("term")
+        self.assertEqual(key_row(results["a"])["term"], "Day")
+        self.assertAlmostEqual(rows.loc["Intercept", "estimate"], direct.params["Intercept"], places=6)
 
     def test_categorical_time_points_keep_their_order(self):
         frame = weights()
@@ -1013,6 +1018,8 @@ class BuildOutputTests(unittest.TestCase):
             self.assertIn("Not fitted: wrong.", notes)
             self.assertIn("Only the analyses listed in study.yml were run.", notes)
             self.assertNotIn("wrong", set(exploratory["analysis"]))
+            self.assertNotIn("intercept", set(exploratory["measure"]))
+            self.assertIn("Intercept", set(built.results["passage"].estimates["term"]))
             self.assertIn("Holm's method", " ".join(tables["results"].notes))
             model = (out / "supplement" / "models" / "primary.txt").read_text()
             self.assertIn("Welch's ANOVA", model)
