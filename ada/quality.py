@@ -88,6 +88,11 @@ SHARED_CLIP_SHARE = 0.1
 EDGE_CODE_VALUES = 10
 #: Above this many columns with extreme values of their own, they are listed as one issue.
 EXTREME_COLUMNS_LISTED = 10
+#: A narrow pile: PILE_SHARE of a column within PILE_WIDTH of its range, and
+#: PILE_RATIO times as many values as the slivers of that width on either side.
+PILE_WIDTH = 0.02
+PILE_SHARE = 0.25
+PILE_RATIO = 3
 #: A round value inside a column's range holding this share of it, with this
 #: share of its rows in one group, is a limit that group's measurements stop at.
 GROUP_CAP_SHARE = 0.05
@@ -230,6 +235,7 @@ CHECKS = {
     "flatline": "Stuck readings",
     "cap": "Cap or floor",
     "clipped": "Clipped at both ends",
+    "pile": "Narrow pile",
     "survey_code": "Survey codes",
     "rare_code": "Rare codes",
     "zeros": "Mostly zeros",
@@ -259,9 +265,9 @@ MASKED_CHECKS = frozenset({
 #: Checks about the whole table, named first when they cover enough of it.
 TABLE_CHECKS = frozenset({"generated", "duplicates"})
 #: Checks that describe the table rather than flag values to doubt (a constant
-#: column, a reading mostly 0, max equal to min where one reading was taken).
-#: They rank after the issues about values and are never named first.
-INFO_CHECKS = frozenset({"constant", "zeros", "single_reading", "bounded"})
+#: column, a reading mostly 0, max equal to min where one reading was taken, a
+#: narrow pile). They rank after the issues about values and are never named first.
+INFO_CHECKS = frozenset({"constant", "zeros", "single_reading", "bounded", "pile"})
 
 # Words that make a quantity non-negative: a size, an amount of matter, a count.
 # Money and sales quantities are left out, since refunds and returns are negative.
@@ -1222,6 +1228,56 @@ def _edge_codes(column: _Column, taken: np.ndarray) -> list[QualityIssue]:
     return issues
 
 
+def _narrow_pile(column: _Column, log: bool) -> QualityIssue | None:
+    """A quarter or more of a column within a sliver of its range around one value, not on it exactly.
+
+    Soil pH entered as 7.0 unless measured otherwise puts more than half the
+    readings within 0.05 of 7, so the interquartile range measures that pile
+    and ordinary readings of 6.6 or 7.4 fall outside 1.5×IQR. The sliver is
+    PILE_WIDTH of the range between the 0.5th and 99.5th percentiles (on a log
+    scale for a right-skewed column), it must hold PILE_SHARE of the values,
+    and it must stand out from the slivers just beside it (PILE_RATIO), so the
+    narrow peak of an ordinary cluster is not a pile. No single value may hold
+    most of it, since one repeated value is a floor, a cap or a fill instead.
+    """
+    if column.size < 100 or column.uniques.size < FLAT_MIN_LEVELS:
+        return None
+    values = np.log10(column.ordered[column.ordered > 0]) if log else column.ordered
+    if values.size < 100:
+        return None
+    low, high = (values[int(round(share * (values.size - 1)))] for share in (0.005, 0.995))
+    width = PILE_WIDTH * (high - low)
+    if width <= 0:
+        return None
+    reach = np.searchsorted(values, values + width, side="right") - np.arange(values.size)
+    start = int(np.argmax(reach))
+    held = int(reach[start])
+    if held < PILE_SHARE * column.size or int(column.counts.max()) >= 0.6 * held:
+        return None
+    inside = values[start : start + held]
+    beside = np.searchsorted(values, inside[0], side="left") - np.searchsorted(values, inside[0] - width)
+    beside += np.searchsorted(values, inside[-1] + width, side="right") - (start + held)
+    if held < PILE_RATIO * beside:
+        return None
+    first, last = (10**value if log else value for value in (float(inside[0]), float(inside[-1])))
+    centre = 10 ** float(np.median(inside)) if log else float(np.median(inside))
+    share = _percent(held / column.size * 100)
+    detail = (
+        f"{column.name} has {held:,} of its {column.size:,} values ({share}) between {_rounded(first)} and "
+        f"{_rounded(last)}, a sliver of its range around {_rounded(centre)}: a narrow pile, as a default "
+        "entry, rounding or a reading that rarely leaves one level gives. Its interquartile range measures "
+        "the pile, so ordinary values just off it look far out, and outlier counts on it mean little."
+    )
+    summary = f"{column.name}: {share} of values piled near {_rounded(centre)}"
+    rule = (
+        f"{PILE_SHARE:.0%} or more of a column within {PILE_WIDTH:.0%} of its range (0.5th to 99.5th "
+        f"percentile), {PILE_RATIO} times as many as the slivers of that width either side hold, with no "
+        "single value holding most of them"
+    )
+    return QualityIssue("pile", (column.name,), held, held / column.size * 100, detail, summary, rule,
+                        group=(first, last))
+
+
 def _round_value(value: float) -> bool:
     """Whether a value is round as limits are: one significant figure (80, 500, 0.001), or 25, 150, 7.5."""
     if value == 0 or not np.isfinite(value):
@@ -1808,6 +1864,10 @@ def _value_issues(
     extreme = _extremes(column, scale, taken | filled) if single_cells and not circular else None
     if extreme:
         issues.append(extreme)
+    pile = _narrow_pile(column, scale.log) if single_cells and not circular else None
+    # A floor or cap inside the pile already says why the values crowd there.
+    if pile and not any(pile.group[0] <= value <= pile.group[1] for value in piled):
+        issues.append(pile)
     return issues
 
 

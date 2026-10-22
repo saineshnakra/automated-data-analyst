@@ -973,6 +973,18 @@ class LimitShapeTests(unittest.TestCase):
         self.assertEqual(len(issues), 1)
         self.assertEqual(len(issues[0].columns), 15)
 
+    def test_a_narrow_pile_around_one_value_is_noted(self):
+        rng = np.random.default_rng(82)
+        acidity = np.r_[rng.uniform(6.98, 7.02, 600), rng.normal(7, 0.8, 400)].round(3)
+        frame = pd.DataFrame({"Soil pH": acidity, "Moisture": rng.normal(30, 5, 1000)})
+
+        issues = scan(frame)
+        piles = checks(issues, "pile")
+
+        self.assertEqual([issue.columns for issue in piles], [("Soil pH",)])
+        self.assertGreater(piles[0].share, 55)
+        self.assertIn("pile", INFO_CHECKS)
+
 
 class RecordTests(unittest.TestCase):
     def test_the_rest_of_a_failed_record_is_flagged_with_its_code(self):
