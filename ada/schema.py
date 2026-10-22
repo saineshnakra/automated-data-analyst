@@ -1294,23 +1294,39 @@ def _parameter_by_rows(dataframe: pd.DataFrame, measure: str, text_columns: list
     NO2 and the rest: each station has one row per pollutant, most stations
     have several, and the reading's typical size differs tenfold between them.
     Money and counts are never split this way, since revenue by category is
-    one quantity whatever the sizes.
+    one quantity whatever the sizes, and nor is a signed reading.
     """
-    if is_additive_name(measure) or is_currency(measure):
+    if is_additive_name(measure) or is_currency(measure) or not text_columns:
         return None
     data = dataframe[dataframe[measure].notna()]
-    levels = {column: int(data[column].nunique()) for column in text_columns}
-    for column in text_columns:
-        if not 2 <= levels[column] <= MAX_PARAMETER_LEVELS or not _spans_scales(data, column, measure):
+    # Sizes that differ tenfold are sizes of different things only on a scale
+    # starting at zero; a log ratio or a z-score is signed.
+    if data.empty or float(data[measure].min()) < 0:
+        return None
+    sample = _sample(data)
+    # A column with more values in the sample than a parameter may have has more in all.
+    screened = [column for column in text_columns if 2 <= sample[column].nunique() <= MAX_PARAMETER_LEVELS]
+    parameters = [column for column in screened if _spans_scales(sample, column, measure)]
+    if not parameters:
+        return None
+    codes = {column: pd.factorize(data[column])[0] for column in text_columns}
+    levels = {column: int(found.max(initial=-1)) + 1 for column, found in codes.items()}
+    for column in parameters:
+        if not 2 <= levels[column] <= MAX_PARAMETER_LEVELS:
             continue
         for entity in text_columns:
             if entity == column or levels[entity] <= levels[column]:
                 continue
-            pairs = data[[entity, column]].dropna()
-            if pairs.empty or float(1 - pairs.duplicated().mean()) < PAIR_UNIQUE_SHARE:
+            both = (codes[entity] >= 0) & (codes[column] >= 0)
+            if not both.any():
                 continue
-            spread = pairs.groupby(entity)[column].nunique()
-            if float((spread >= 2).mean()) >= REPEATING_ENTITIES:
+            pairs = codes[entity][both].astype(np.int64) * levels[column] + codes[column][both]
+            distinct = np.unique(pairs)
+            if distinct.size < PAIR_UNIQUE_SHARE * pairs.size:
+                continue
+            per_entity = np.bincount(distinct // levels[column], minlength=levels[entity])
+            present = per_entity[per_entity > 0]
+            if float((present >= 2).mean()) >= REPEATING_ENTITIES:
                 return column
     return None
 
@@ -2288,17 +2304,18 @@ def _block_units(
     columns = [column for column in columns if not is_bool_dtype(dataframe[column])]
     if not columns or rows < 2:
         return units
-    # Each value on one unbroken run: as many runs as values, judged for all columns at once.
-    values = dataframe[columns]
-    runs = values.ne(values.shift()).sum()
-    levels = values.nunique()
-    complete = values.notna().all()
-    for column in columns:
+    # Each value on one unbroken run: as many runs as values. Runs are counted
+    # for all columns at once, and values only where the runs are few enough.
+    values = dataframe[columns].to_numpy(dtype=float)
+    runs = 1 + (values[1:] != values[:-1]).sum(axis=0)
+    few = [
+        column for index, column in enumerate(columns)
+        if MIN_BLOCK_UNITS <= runs[index] <= rows / 3 and not np.isnan(values[:, index]).any()
+    ]
+    for column in few:
         series = dataframe[column]
         if (
-            not complete[column]
-            or not MIN_BLOCK_UNITS <= levels[column] <= rows / 3
-            or runs[column] != levels[column]
+            runs[columns.index(column)] != series.nunique()
             or _named_as_quantity(column)
             or set(_head_words(column)) & (QUANTITY_WORDS | LABEL_NAME_WORDS)
             or is_level_name(column)

@@ -1463,15 +1463,17 @@ def _unit_text(unit: str) -> str:
     return re.sub(r"\s*/\s*", "/", " ".join(unit.split()))
 
 
-def _readings_with_units(distinct: _Distinct) -> tuple[pd.Series, pd.Series, np.ndarray] | None:
+def _readings_with_units(
+    distinct: _Distinct, probe: pd.Series
+) -> tuple[pd.Series, pd.Series, np.ndarray] | None:
     """Numbers and units of a text column of readings written with a spread or a unit, or None.
 
     Returns, on ``distinct.cells``, the number each cell starts with (the mean
     before a "±"), its unit, and which distinct values were missing-value
-    markers ("ND", "<LOQ").
+    markers ("ND", "<LOQ"). ``probe`` holds cells drawn from the column, which
+    must show such readings before the whole column is parsed.
     """
-    # Drawn cells must show readings with a unit or a spread before the whole column is parsed.
-    probe = distinct.sample().astype(str).str.strip().str.extract(_READING_WITH_UNIT.pattern)
+    probe = probe.astype(str).str.strip().str.extract(_READING_WITH_UNIT.pattern)
     shown = probe["number"].notna() & (probe["unit"].notna() | probe["spread"].notna())
     if not shown.mean() >= PROBE_RATIO * READINGS_SHARE * LABELLED_SHARE:
         return None
@@ -1539,12 +1541,18 @@ def _one_hot_sets(frame: pd.DataFrame) -> list[tuple[str, list[str]]]:
     exactly one of them, and prefixes that start yes/no questions ("is_",
     "has_") never do.
     """
-    numbers = frame.select_dtypes(include=np.number)
-    if numbers.shape[1] < 2:
+    numeric = [
+        column for column, kind in frame.dtypes.items() if is_numeric_dtype(kind) and not is_bool_dtype(kind)
+    ]
+    if len(numeric) < 2:
         return []
-    # Columns of only 0 and 1, both present and nothing missing, judged for all at once.
-    binary = numbers.isin([0, 1]).all() & (numbers.max() == 1) & (numbers.min() == 0)
-    flags = [column for column in numbers.columns[binary.to_numpy()]]
+    # Columns running from 0 to 1, then only those holding nothing else and no gaps.
+    lowest, highest = frame[numeric].min(), frame[numeric].max()
+    spanning = [column for column in numeric if lowest[column] == 0 and highest[column] == 1]
+    flags = [
+        column for column in spanning
+        if bool(((frame[column] == 0) | (frame[column] == 1)).all())
+    ]
     prefixes: dict[str, list[str]] = {}
     for column in flags:
         name = str(column)
@@ -1725,7 +1733,7 @@ def clean_dataframe(
         # Whole numbers under a key name ("Order No") are keys; decimals under one
         # are measurements whatever the name says.
         keys = is_identifier_name(column) and not _holds_decimals(distinct)
-        readings = None if leading_zero else _readings_with_units(distinct)
+        readings = None if leading_zero else _readings_with_units(distinct, probe)
         if readings is not None:
             numbers, units, markers = readings
             cleaned[column] = distinct.expand(numbers)
