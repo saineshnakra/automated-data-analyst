@@ -237,7 +237,9 @@ is shaped:
   share of zeros and the 99th percentile instead.
 - With a date, each reading's flagged values are put in time order within each
   group, the measure first. When one unbroken run holds at least half of them
-  and at least five (`SHIFT_RUN_SHARE`, `MIN_SHIFT_RUN`), the card is titled
+  and at least five (`SHIFT_RUN_SHARE`, `MIN_SHIFT_RUN`), at five distinct
+  times or more (rows sharing one time are one record repeated, such as a
+  visit's chemistry on each species row), the card is titled
   **Level shift**: that reading left its usual range at the run's first time and
   stayed out, to the end of the record or until its last time. A fire that
   raises every reading for ten minutes is an event, not a run of entry errors.

@@ -3171,8 +3171,8 @@ def _shift(
 
     Rows are put in time order within each group of the grouping the reading
     was judged within. A run counts when it holds SHIFT_RUN_SHARE of the
-    flagged values and at least MIN_SHIFT_RUN of them. ``orders`` caches the
-    time order by grouping across readings.
+    flagged values and at least MIN_SHIFT_RUN of them, at as many distinct
+    times. ``orders`` caches the time order by grouping across readings.
     """
     if not roles.date or roles.date not in dataframe.columns or result.count < MIN_SHIFT_RUN:
         return None
@@ -3198,6 +3198,9 @@ def _shift(
         return None
     run = np.flatnonzero(runs == longest)
     times = dataframe[roles.date]
+    # Rows sharing one time are one record repeated (a visit's chemistry on each species row), not a shift.
+    if times.iloc[sequence[run]].nunique() < MIN_SHIFT_RUN:
+        return None
     first, last = times.iloc[sequence[run[0]]], times.iloc[sequence[run[-1]]]
     group_end = run[-1] == len(sequence) - 1 or keys[run[-1] + 1] != keys[run[-1]]
     begun, ended = _moment(first), _moment(last)

@@ -1620,6 +1620,17 @@ class OutlierShapeTests(unittest.TestCase):
         self.assertIn("to the end of the record", outliers.statement)
         self.assertNotIn("Review the extreme records", [item.title for item in brief.recommendations])
 
+    def test_one_record_repeated_on_many_rows_is_not_a_shift(self):
+        rng = np.random.default_rng(43)
+        visits = pd.date_range("2001-01-01", periods=290, freq="W")
+        days = visits.append(pd.DatetimeIndex([visits[150]] * 13))
+        sulphate = np.r_[rng.normal(40, 4, 290), rng.normal(90, 5, 13)]
+        frame = pd.DataFrame({"Visit": days, "Sulphate": sulphate}).sort_values("Visit", kind="stable")
+
+        outliers = brief_card(analyze_business(frame, lab_roles(frame, "Sulphate", date="Visit")), "outliers")
+
+        self.assertTrue(outliers is None or outliers.title != "Level shift")
+
     def test_scattered_outliers_keep_the_review_recommendation(self):
         rng = np.random.default_rng(35)
         times = pd.date_range("2024-01-01", periods=300, freq="D")
