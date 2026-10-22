@@ -7,6 +7,7 @@ import pandas as pd
 from ada.aggregation import driver_frame, heatmap_frame, segment_frame, segment_period_change, trend_frame
 from ada.business_insights import (
     Evidence,
+    _outlier_evidence,
     _shown_evidence,
     analyze_business,
     build_business_report,
@@ -14,6 +15,7 @@ from ada.business_insights import (
     measure_correlation,
     numeric_readings,
 )
+from ada.compare import GroupingRule
 from ada.demo_data import make_demo_data
 from ada.formatting import format_number
 from ada.metrics import increase_is_welcome
@@ -1629,6 +1631,49 @@ class OutlierShapeTests(unittest.TestCase):
         brief = analyze_business(frame, lab_roles(frame, "Reading", date="Day"))
 
         self.assertEqual(brief_card(brief, "outliers").title, "Exceptional records")
+
+    def test_a_piled_reading_is_left_out_and_named(self):
+        rng = np.random.default_rng(40)
+        nitrogen = rng.normal(22, 2, 1000)
+        nitrogen[:30] = rng.uniform(40, 60, 30)
+        acidity = np.r_[rng.uniform(6.98, 7.02, 600), rng.normal(7, 0.8, 400)].round(3)
+        frame = pd.DataFrame({"Potassium": rng.normal(60, 8, 1000), "Nitrogen": nitrogen, "Soil pH": acidity})
+
+        outliers = brief_card(analyze_business(frame, lab_roles(frame, "Potassium")), "outliers")
+
+        assert outliers is not None
+        self.assertIn("Not counted: Soil pH", outliers.statement)
+        self.assertNotIn("of Soil pH", outliers.statement)
+        self.assertIn("with pooled quartiles", outliers.calculation)
+        self.assertNotIn("long tails", outliers.statement)
+
+    def test_a_large_share_outside_the_fences_is_described_as_the_shape(self):
+        rng = np.random.default_rng(41)
+        nitrogen = rng.normal(22, 2, 400)
+        nitrogen[:40] = rng.uniform(40, 60, 40)
+        frame = pd.DataFrame({"Potassium": rng.normal(60, 8, 400), "Nitrogen": nitrogen})
+
+        outliers = brief_card(analyze_business(frame, lab_roles(frame, "Potassium")), "outliers")
+
+        assert outliers is not None
+        self.assertEqual(outliers.title, "Long tails")
+        self.assertIn("part of the shape of Nitrogen", outliers.statement)
+
+    def test_a_grouping_cut_from_the_reading_is_not_used_for_its_quartiles(self):
+        rng = np.random.default_rng(42)
+        index = np.r_[rng.normal(100, 30, 600), rng.uniform(320, 420, 30)].clip(1)
+        frame = pd.DataFrame({
+            "AQI": index,
+            "Bucket": pd.cut(index, [0, 50, 100, 200, 300, 1000], labels=list("ABCDE")).astype(str),
+        })
+        roles = lab_roles(frame, "AQI", "Bucket")
+        rule = GroupingRule("Bucket", "bands", ("AQI",), 1.0, len(frame))
+
+        outliers = _outlier_evidence(frame, roles, issues=(), rules=(rule,))
+
+        assert outliers is not None
+        self.assertNotIn("of their own", outliers.statement)
+        self.assertIn("with pooled quartiles", outliers.calculation)
 
 
 class DataCheckTests(unittest.TestCase):

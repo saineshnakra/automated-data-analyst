@@ -2759,6 +2759,9 @@ NORMAL_OUTLIER_SHARE = float(2 * stats.norm.sf(4 * stats.norm.ppf(0.75)))
 #: A reading's count is reported when a normal sample of its size would reach
 #: it less often than this (binomial upper tail).
 OUTLIER_CHANCE = 0.01
+#: Share of a reading's values outside the fences above which the count is
+#: described as the shape of its tails rather than as exceptional records.
+HEAVY_TAIL_SHARE = 0.05
 #: Readings counted at most, the measure first, and named beside the leading one.
 OUTLIER_READINGS = 40
 OUTLIERS_NAMED = 3
@@ -2894,9 +2897,10 @@ def _reading_outliers(
 ) -> _Outliers | None:
     """Values of one reading outside 1.5×IQR, judged on its shape and within the grouping that explains it.
 
-    The scale, the grouping and the quartiles come from at most
+    The scale, the grouping and the pooled quartiles come from at most
     FENCE_SAMPLE_ROWS of the rows that hold the reading, chosen at random;
-    every row is counted.
+    each group's quartiles come from all its rows, and every row is counted.
+    The grouping is named only when some group had quartiles of its own.
     """
     if counts_units(column) or is_location_name(column):
         return None
@@ -2922,10 +2926,10 @@ def _reading_outliers(
     else:
         scaled = values
     grouping = _explaining_grouping(scaled[sample], column, candidates, sample)
-    low, high = _fences(scaled, candidates.get(grouping) if grouping else None, sample)
+    low, high, own = _fences(scaled, candidates.get(grouping) if grouping else None, sample)
     with np.errstate(invalid="ignore"):
         flagged = present & ((scaled < low) | (scaled > high))
-    return _Outliers(column, flagged, present, log, grouping)
+    return _Outliers(column, flagged, present, log, grouping if own else None)
 
 
 def _outlier_evidence(
@@ -2933,21 +2937,25 @@ def _outlier_evidence(
     roles: ColumnRoles,
     readings: list[str] | None = None,
     issues: tuple[QualityIssue, ...] = (),
+    rules: tuple[GroupingRule, ...] = (),
 ) -> Evidence | None:
     """Count values outside 1.5×IQR in every reading, and report those beyond chance.
 
     Each reading is judged the way it is shaped: a right-skewed positive
     reading on a log scale, and against the quartiles of the grouping that
     explains most of its variance (a station, a frequency, a sample), so a
-    long tail or one group's level is not called exceptional. A count of
-    subjects, a coordinate, or a reading a quarter of whose values are one
-    value (a floor, whose IQR measures the pile) is skipped. A normal sample
-    puts about 0.70% of its values outside the fences, so a count is
-    reported only when chance would rarely reach it. A measure that is
-    mostly zeros gets no list at all. When one reading's flagged values form
-    one run in time, the card reports a shift starting then rather than
-    scattered records. ``readings`` are the other columns to count; a matrix
-    table's columns are not counted one by one.
+    long tail or one group's level is not called exceptional; a grouping cut
+    from the reading itself (``rules``: health bands of an index) is never
+    used. A count of subjects, a coordinate, a reading a quarter of whose
+    values are one value (a floor, whose IQR measures the pile), or one the
+    data checks find piled in a sliver of its range is skipped, and the card
+    says so. A normal sample puts about 0.70% of its values outside the
+    fences, so a count is reported only when chance would rarely reach it,
+    and a count above HEAVY_TAIL_SHARE is described as the column's shape. A
+    measure that is mostly zeros gets no list at all. When one reading's
+    flagged values form one run in time, the card reports a shift starting
+    then rather than scattered records. ``readings`` are the other columns to
+    count; a matrix table's columns are not counted one by one.
     """
     if roles.measure and roles.measure in dataframe.columns:
         measure_values = dataframe[roles.measure].dropna().to_numpy(dtype=float)
@@ -2958,14 +2966,22 @@ def _outlier_evidence(
         readings = []
     columns = list(dict.fromkeys(column for column in [roles.measure, *readings] if column))
     columns = [column for column in columns if column in dataframe.columns][:OUTLIER_READINGS]
+    piles = {issue.columns[0]: issue for issue in issues if issue.check == "pile"}
+    piled = [column for column in columns if column in piles]
+    columns = [column for column in columns if column not in piles]
     if not columns:
         return None
     sample = np.arange(len(dataframe))
     if len(dataframe) > FENCE_SAMPLE_ROWS:
         sample = np.sort(np.random.default_rng(0).choice(len(dataframe), FENCE_SAMPLE_ROWS, replace=False))
     candidates = _fence_candidates(dataframe, roles, sample)
+    derived = {(rule.grouping, reading) for rule in rules for reading in rule.readings}
     found = [
-        result for column in columns if (result := _reading_outliers(dataframe, column, candidates))
+        result for column in columns
+        if (result := _reading_outliers(
+            dataframe, column,
+            {grouping: codes for grouping, codes in candidates.items() if (grouping, column) not in derived},
+        ))
     ]
     orders: dict = {}
     for result in found:
@@ -2985,7 +3001,8 @@ def _outlier_evidence(
         parts.append(note)
     if others:
         named = [
-            f"{result.column} {result.count:,} ({_share_of(result)})"
+            f"{result.column} {result.count:,} ({_share_of(result)}"
+            + (f", within its {result.grouping})" if result.grouping not in (None, lead.grouping) else ")")
             for result in others[:OUTLIERS_NAMED]
         ]
         more = len(others) - OUTLIERS_NAMED
@@ -2993,20 +3010,39 @@ def _outlier_evidence(
     if measure is not None and measure not in beyond:
         held = _values_of(measure.count) if measure.count else "none"
         parts.append(f"{measure.column}, the measure, has {held}, about what chance gives.")
+    if piled:
+        examples = [
+            f"{column} ({format_percentage(piles[column].share)} of its values in a sliver of its range)"
+            for column in piled
+        ]
+        since = "its IQR measures that pile" if len(piled) == 1 else "their IQRs measure those piles"
+        parts.append(f"Not counted: {list_names(examples)}, since {since} rather than the spread.")
+    grouped = [result for result in found if result.grouping]
+    if not grouped:
+        within = "with pooled quartiles"
+    elif len(grouped) == len(found):
+        within = (
+            "with quartiles taken within the grouping that explains most of its variance (epsilon squared of "
+            "1% or more)"
+        )
+    else:
+        within = (
+            "with quartiles taken within the grouping that explains most of its variance (epsilon squared of "
+            "1% or more) where there is one, pooled otherwise"
+        )
     calculation = (
-        "Values below Q1 − 1.5×IQR or above Q3 + 1.5×IQR in each numeric reading, with quartiles taken "
-        "within the grouping that explains most of its variance (epsilon squared of 1% or more), on log10 "
-        "for right-skewed readings; a count is reported when a normal sample of the same size would reach "
-        f"it with under {OUTLIER_CHANCE:.0%} chance (binomial, {NORMAL_OUTLIER_SHARE:.2%} expected outside)"
+        f"Values below Q1 − 1.5×IQR or above Q3 + 1.5×IQR in each numeric reading, {within}, on log10 for "
+        "right-skewed readings; a count is reported when a normal sample of the same size would reach it "
+        f"with under {OUTLIER_CHANCE:.0%} chance (binomial, {NORMAL_OUTLIER_SHARE:.2%} expected outside)"
     )
     if any(result.values > FENCE_SAMPLE_ROWS for result in found):
         calculation += (
-            f"; quartiles and groupings from a random sample of {FENCE_SAMPLE_ROWS:,} values of each "
-            "reading, counts on every row"
+            f"; pooled quartiles and groupings from a random sample of {FENCE_SAMPLE_ROWS:,} values of each "
+            "reading, each group's quartiles and the counts from every row"
         )
     return Evidence(
         kind="outliers",
-        title="Exceptional records",
+        title="Long tails" if lead.count > HEAVY_TAIL_SHARE * lead.values else "Exceptional records",
         value=f"{lead.count:,}",
         statement=" ".join(parts),
         calculation=calculation,
@@ -3030,11 +3066,17 @@ def _outlier_sentence(result: _Outliers) -> str:
     on_log = f" on a log scale, since {result.column} is right-skewed" if result.log else ""
     verb = "sits" if result.count == 1 else "sit"
     chance = f"about {result.expected:,.0f}" if result.expected >= 1 else "fewer than 1"
-    return (
+    sentence = (
         f"{_values_of(result.count)} of {result.column} ({_share_of(result)} of its non-missing values) "
         f"{verb} outside 1.5×IQR{within}{on_log}, against {chance} that chance gives in normal data of "
         "this size."
     )
+    if result.count > HEAVY_TAIL_SHARE * result.values:
+        sentence += (
+            f" At that share they are part of the shape of {result.column}, long tails or a second cluster "
+            "of values, rather than a handful of exceptional records."
+        )
+    return sentence
 
 
 def _pile_note(column: str, issues: tuple[QualityIssue, ...]) -> str:
@@ -3073,11 +3115,14 @@ def _heavy_tail_evidence(measure: str, values: np.ndarray, zeros: float) -> Evid
 
 def _fences(
     scaled: np.ndarray, codes: np.ndarray | None, sample: np.ndarray
-) -> tuple[np.ndarray, np.ndarray]:
-    """Q1 − 1.5×IQR and Q3 + 1.5×IQR for each row, from its group's quartiles where it has enough.
+) -> tuple[np.ndarray, np.ndarray, bool]:
+    """Q1 − 1.5×IQR and Q3 + 1.5×IQR for each row, from its group's quartiles where it has enough,
+    and whether any group had quartiles of its own.
 
-    Quartiles come from the ``sample`` rows; a group with fewer than
-    MIN_GROUP_FOR_FENCES values there, or no spread, uses the pooled ones.
+    The pooled quartiles come from the ``sample`` rows. A group's come from
+    all its rows, since a sample spread over a few hundred groups leaves each
+    too few values for steady quartiles; a group with fewer than
+    MIN_GROUP_FOR_FENCES values, or no spread, uses the pooled ones.
     """
     values = scaled[sample]
     finite = np.isfinite(values)
@@ -3085,10 +3130,10 @@ def _fences(
     low = np.full(scaled.shape, first - 1.5 * (third - first))
     high = np.full(scaled.shape, third + 1.5 * (third - first))
     if codes is None or codes.max() < 0:
-        return low, high
-    sampled = codes[sample]
-    kept = finite & (sampled >= 0)
-    table = pd.Series(values[kept]).groupby(sampled[kept])
+        return low, high, False
+    finite = np.isfinite(scaled)
+    kept = finite & (codes >= 0)
+    table = pd.Series(scaled[kept]).groupby(codes[kept])
     quartiles = table.quantile([0.25, 0.75]).unstack()
     sizes = table.size()
     spread = quartiles[0.75] - quartiles[0.25]
@@ -3101,7 +3146,8 @@ def _fences(
     labelled = codes >= 0
     row_low = np.where(labelled, own_low[np.where(labelled, codes, 0)], np.nan)
     row_high = np.where(labelled, own_high[np.where(labelled, codes, 0)], np.nan)
-    return np.where(np.isnan(row_low), low, row_low), np.where(np.isnan(row_high), high, row_high)
+    pooled = np.isnan(row_low)
+    return np.where(pooled, low, row_low), np.where(np.isnan(row_high), high, row_high), bool(groups.size)
 
 
 def _time_order(
@@ -3921,7 +3967,7 @@ def analyze_business(
             left_out,
         ),
         _noting(_joint_model_evidence(related, roles, relationships, related_note), left_out),
-        _noting(_outlier_evidence(statistics, roles, readings, issues), left_out),
+        _noting(_outlier_evidence(statistics, roles, readings, issues, rules), left_out),
         # A scan that found nothing ranks below the findings.
         None if found_difference else differences,
         _quality_evidence(dataframe, issues, roles.measure, roles),
