@@ -58,7 +58,7 @@ with the `app` extra, and the OpenAI client and Pydantic with the `ai` extra.
 | `ada/api.py` | `analyze`, `Analysis`, `Refusal` and its codes, `sample`, `read_file` |
 | `ada/cli.py` | The `ada` command: `analyze`, `schema`, `ask`, `check`, `samples`, `app` |
 | `ada/pipeline.py` | `prepare_analysis`, role overrides, drill-down focus, chart-selection analysis, the audit and schema tables |
-| `ada/file_io.py` | CSV and Excel parsing, worksheet listing, bundled samples, formula-safe CSV export |
+| `ada/file_io.py` | CSV, TSV and Excel parsing, worksheet listing, bundled samples, formula-safe CSV export |
 | `ada/analysis.py` | Cleaning, the cleaning report, column profiling |
 | `ada/schema.py` | `ColumnRoles` and role detection |
 | `ada/metrics.py` | Whether a measure is summed or averaged, and whether a rise is good news |

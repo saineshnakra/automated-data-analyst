@@ -461,8 +461,8 @@ if source_mode == "Try a sample dataset":
     st.caption(SAMPLE_NOTES.get(selected_sample, "A synthetic dataset for trying ADA."))
 if source_mode == "Upload your file":
     uploaded_file = st.file_uploader(
-        "Upload a CSV or Excel workbook",
-        type=["csv", "xlsx", "xlsm"],
+        "Upload a CSV, TSV or Excel workbook",
+        type=["csv", "tsv", "txt", "xlsx", "xlsm"],
         help="Maximum file size: 25 MB. A workbook with several sheets lets you pick one.",
     )
     business_context = st.text_input(

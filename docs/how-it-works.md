@@ -25,8 +25,9 @@ flowchart TD
 
 `ada/file_io.py` · [details](reference/reading-files.md)
 
-Accepts `.csv`, `.xlsx` and `.xlsm`. A CSV may be comma, semicolon, tab or pipe
-separated. For a workbook with several sheets, the app asks which one to
+Accepts `.csv`, `.tsv`, `.txt`, `.xlsx` and `.xlsm`. A CSV may be comma,
+semicolon, tab or pipe separated; a `.tsv` or `.txt` file is read as
+tab-separated when that splits its header. For a workbook with several sheets, the app asks which one to
 analyze; ADA analyzes one sheet at a time.
 
 The app refuses files over 25 MB (`MAX_UPLOAD_BYTES` in `app.py`).

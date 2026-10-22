@@ -10,9 +10,10 @@ analysis happens here.
 | Format | Extensions | Notes |
 |---|---|---|
 | CSV | `.csv` | Comma, semicolon, tab or pipe separated |
+| Tab-separated text | `.tsv`, `.txt` | Read as tab-separated when that splits the header, otherwise as a CSV |
 | Excel | `.xlsx`, `.xlsm` | Read with `openpyxl` |
 
-Any other extension is rejected with "ADA supports CSV, XLSX, and XLSM files."
+Any other extension is rejected with "ADA supports CSV, TSV, TXT, XLSX and XLSM files."
 An empty file is rejected with "The uploaded file is empty."
 
 ## Limits

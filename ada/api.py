@@ -140,7 +140,7 @@ def analyze(
 ) -> Analysis:
     """Read a table, detect its columns and return an :class:`Analysis`.
 
-    ``data`` may be a DataFrame, a path to a CSV or Excel file, or raw bytes.
+    ``data`` may be a DataFrame, a path to a CSV, TSV or Excel file, or raw bytes.
 
     ADA picks a date column, a measure, a grouping column and an identifier
     on its own; ``date``, ``measure`` and ``dimension`` override that choice
@@ -220,7 +220,7 @@ def analyze(
 
 
 def read_file(contents: bytes, filename: str, *, sheet: str | None = None) -> pd.DataFrame:
-    """Read CSV or Excel bytes into a DataFrame.
+    """Read CSV, TSV or Excel bytes into a DataFrame.
 
     Handles a BOM, UTF-16, latin-1 and cp1252, semicolon and tab delimiters,
     a title line above the header, and ragged rows.
