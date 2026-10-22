@@ -163,6 +163,16 @@ compares each reading across each grouping and returns a `DifferenceScan`.
   (`ATTRIBUTE_EXPLAINED`) barely varies within a group: it describes the
   group (a station's battery voltage, a reef's depth) rather than its
   members, and is left out as an attribute (`attributes`).
+- A grouping that holds the reading by definition is left out (`defined`,
+  with the reason from `built_in_grouping(dataframe, reading, grouping)`): a
+  group holding 10% or more of the values (`CONSTANT_GROUP_SHARE`) pinned at
+  the reading's floor or ceiling while other groups vary, as days coded "no
+  precipitation" hold an amount of 0; a grouping named after the reading
+  (`RSKF` beside `RSK`, `trophic_group` beside `trophic_level`) that explains
+  half its ranks (`NAMED_GROUPING_SHARE`); a grouping named as a grade of an
+  index (`AQI_Level`, a risk band; `INDEX_GRADE_WORDS`) that explains 80% of
+  them (`INDEX_GROUPING_SHARE`); or one that explains all of them, one
+  cluster of values per group.
 - Coordinates and compass directions are never compared (`placed`): a
   coordinate places a row, and the mean of an angle means nothing.
 - `skip` holds pairs reported elsewhere, such as the measure across the
@@ -191,6 +201,11 @@ levels of one grouping each occur with only some levels of another: half or
 more of the cells expected to hold five or more rows are empty
 (`NESTED_EMPTY_SHARE`), as when concentrations 3 to 12 were used only with the
 blue dyes. Across such a grouping the two can't be told apart.
+`item_attributes(dataframe, readings, items)` finds the readings that never
+vary within each value of an item column (a species, a product) on 99% of
+the items recorded twice or more (`ITEM_FIXED_SHARE`): a species' trophic
+level describes the species, so comparing it record by record weighs each
+species by how often it was recorded.
 `date_part(values, dates)` says which part of the date a numeric column
 repeats ("month", "year", "day" and so on) on 99% of rows: grouping by it
 shows the season or the trend, not a factor.
@@ -242,13 +257,17 @@ Gender 0 (n = 681): a difference of 25.1 percentage points (95% CI 20.1 to
 
 ## A joint model
 
-`fit_joint_model(frame, measure, predictors)` fits the measure on up to 6
-predictors at once (`MAX_MODEL_TERMS`) by ordinary least squares and returns a
-`JointModel`, or `None` with fewer than two usable predictors or fewer than 10
-rows per predictor (`ROWS_PER_TERM`). Ask uses it for "what predicts X".
+`fit_joint_model(frame, measure, predictors, limit=6)` fits the measure on up
+to `limit` predictors at once (`MAX_MODEL_TERMS`) by ordinary least squares and
+returns a `JointModel`, or `None` with fewer than two usable predictors or
+fewer than 10 distinct rows per predictor (`ROWS_PER_TERM`): a visit's
+readings repeated on every species row of the visit are one row of evidence,
+and a model with as many terms as distinct rows fits them exactly whatever
+they hold. Ask uses it for "what predicts X".
 
 - It uses the rows where the measure and every predictor are recorded, or a
-  fixed random sample of 50,000 of them (`MODEL_ROWS`).
+  fixed random sample of 50,000 of them (`MODEL_ROWS`). `distinct` counts the
+  distinct rows among them.
 - Predictors are taken in the order given; one that does not vary, or that the
   earlier ones reproduce exactly, is dropped.
 - Coefficients with 95% intervals and p-values, R², adjusted R² and the
@@ -261,8 +280,27 @@ rows per predictor (`ROWS_PER_TERM`). Ask uses it for "what predicts X".
 - `reversed` names the predictors whose clear coefficient points the other way
   from their own correlation of 0.3 or more: the pairwise figure partly
   stands for the readings that travel with it.
+- `clear` names the predictors whose coefficient stays clear of zero with the
+  others held fixed.
+- `exact` is true for an R² of 0.995 or more (`EXACT_FIT`), or a coefficient
+  whose interval has no width: the measure is a fixed combination of its
+  predictors (an annual mean and its seasons), an identity rather than a
+  relationship.
 
 A coefficient is an association with the others held fixed, not a cause.
+
+## A logistic model
+
+`fit_logistic_model(frame, outcome, predictors, limit=6)` fits a yes/no
+outcome on up to `limit` predictors by logistic regression
+(`statsmodels.discrete.discrete_model.Logit`) and returns a `LogisticModel`:
+each predictor's odds ratio per standard deviation, with the others held
+fixed, its 95% interval and p-value, the rows and the cases of the outcome,
+and McFadden's pseudo R². It needs 10 cases of the rarer outcome per
+predictor (`EVENTS_PER_TERM`), and returns `None` when the fit does not
+converge or the predictors separate the outcomes completely or all but
+completely (a log odds ratio per standard deviation beyond 5,
+`SEPARATED_LOG_ODDS`): then there is no estimate to report.
 
 ## Relationships
 
@@ -302,15 +340,17 @@ These pairs are set aside and listed in the calculation:
 
 | Kind | Rule |
 |---|---|
-| Near-duplicates | \|r\| of 0.99 or more with ranks that agree, and still 0.99 without the pair's most influential record: one quantity twice, such as a temperature in °C and in °F. A taxon holding half of all reads can make two count columns look identical; without it they are not |
+| One quantity twice | \|r\| of 0.99 or more with ranks that agree, still 0.99 without the pair's most influential record, and either 90% of the values identical (`IDENTICAL_SHARE`) or one a linear function of the other on 99% of rows, to the columns' own rounding: a temperature in °C and in °F. These form one family; a log or square root of a column joins its family too. A taxon holding half of all reads can make two count columns look identical; without it they are not |
+| Near-duplicates | \|r\| of 0.99 or more with ranks that agree, without being one quantity: two replicate samples, two counters that rise together. They are set aside from the ranking (`"near"`) but stay separate columns everywhere else |
+| Statistics of one reading | Both summarise the same reading (`summary_families`): `pollutant_min`, `pollutant_avg` and `pollutant_max`, or a table's `mean`, `std` and quartiles of each row's values, or the same test over numbered windows (`OBS1_bilirubin_max`, `OBS2_bilirubin_min`). A family needs a mean or median, or a minimum and a maximum, and the minimum must stay below the maximum on 95% of rows |
 | Built from the other | One column is built from others that include the second column (see below), or both are built from the same items (one's items contain the other's) |
 | Shares of a total | Both belong to a block of columns that add up to a fixed total, such as phylum shares of 100 |
 | Cap flags | A two-valued column set exactly on the rows where the other sits at its maximum or minimum |
 | Same stem | The names share a word that says what was measured (not a unit, a bracketed note or a word such as `total` or `mean`), and \|Spearman r\| and \|Pearson r\| without the most influential record are both above 0.95 (`SHARED_STEM_CORRELATION`), as `MaxTemp` and `MeanTemp` |
 | Coordinates | Both are map coordinates, which describe where the rows were taken |
 
-Pairs within one near-duplicate family are reported once. `set_aside` lists
-the measure's columns left out and why, so an answer can name them.
+Pairs within one family are reported once. `set_aside` lists the measure's
+columns left out and why, so an answer can name them.
 
 ### Finding derived columns
 
@@ -340,12 +380,31 @@ Correct3 + Correct4`), a mean, a difference, or another fixed combination.
    clipped at zero) can't hide it.
 6. A free combination, whose weights are not ±1 or 1/n, must hold on 99% of
    rows (`COMBINATION_SHARE`), since it has more freedom to fit.
-7. A fit needs three rows per term, so a few rows can't be matched by chance.
+7. A fit needs three distinct rows per term, so a few rows can't be matched
+   by chance, however often they repeat.
+
+A free combination that a rearrangement makes a plain sum or mean of the
+others is read that way round: "70 = 2 × 60 − 50" is named "60 = mean of 50
+and 70", the column filled in from its neighbours.
 
 A fit whose weights are all −1 with a constant is a `complement`: the column
 and its parts add up to a fixed total ("Diet_Silage, Diet_Grains and
 Diet_Forage add up to 100"). The rows that break the total are counted on
 every row and named in a note.
+
+Further searches find columns built in other ways:
+
+| Function | Finds |
+|---|---|
+| `find_product(frame, column, candidates)` | A product or ratio of powers of up to 3 columns (`MAX_PRODUCT_PARTS`), with powers from −3 to 3 and halves (`EXPONENTS`) and a constant factor: "body_mass_index = weight_kg ÷ height_cm² × 10,000". On logs a product is a sum, so it is `find_derivation` on the logs of positive columns. Tables of more than 100 positive readings (`PRODUCT_TARGETS`) are skipped |
+| `find_transform(frame, column, source)` | A log10, natural log, log2, log of one plus, square root, square or reciprocal of another column (`TRANSFORMS`), checked for pairs whose ranks agree to 0.995 (`TRANSFORM_RANKS`): "lcond = log10(COND)" |
+| Rates and lags | On rows in table order, a column that is a fixed multiple of another's row-to-row change on 90% of rows ("velocity = 100 × the row-to-row change in angle"; the rows where a new curve starts break it), and a combination that takes a part from the row before ("D-J-F = mean of JAN, FEB and DEC (row before)"). Tables of up to 60 readings (`ORDERED_TARGETS`) are searched, on their first 2,000 rows |
+| Built from built columns | A sum or mean of columns that are built themselves: "metANN = mean of D-J-F, M-A-M, J-J-A and S-O-N" |
+| Cut off at another | A column that never exceeds another on 99% of rows (`CAPPED_BELOW`) and equals it on at least 20% (`CAPPED_EQUAL`): a time to recurrence that equals the follow-up time wherever no recurrence was seen |
+
+A column built from a built column is built from that column's parts too, so
+an acceleration made from a velocity made from an angle relates to the angle
+by construction.
 
 Two summaries have no fixed formula:
 
