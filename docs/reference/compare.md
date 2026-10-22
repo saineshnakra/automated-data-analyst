@@ -167,9 +167,10 @@ compares each reading across each grouping and returns a `DifferenceScan`.
   with the reason from `built_in_grouping(dataframe, reading, grouping)`): a
   group holding 10% or more of the values (`CONSTANT_GROUP_SHARE`) pinned at
   the reading's floor or ceiling while other groups vary, as days coded "no
-  precipitation" hold an amount of 0; a grouping named after the reading
-  (`RSKF` beside `RSK`, `trophic_group` beside `trophic_level`) that explains
-  half its ranks (`NAMED_GROUPING_SHARE`); a grouping named as a grade of an
+  precipitation" hold an amount of 0; a grouping whose name extends the
+  reading's (`RSKF` beside `RSK`) and explains half its ranks
+  (`NAMED_GROUPING_SHARE`), or shares a name stem with it (`trophic_group`
+  beside `trophic_level`) and explains 80% of them; a grouping named as a grade of an
   index (`AQI_Level`, a risk band; `INDEX_GRADE_WORDS`) that explains 80% of
   them (`INDEX_GROUPING_SHARE`); or one that explains all of them, one
   cluster of values per group.

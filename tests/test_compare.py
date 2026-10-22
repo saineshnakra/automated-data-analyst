@@ -853,6 +853,14 @@ class BuiltInGroupingTests(unittest.TestCase):
         self.assertEqual(built_in_grouping(frame, "pm2_5", "AQI_Level"), "index")
         self.assertIsNone(built_in_grouping(frame, "pm2_5", "Site"))
 
+    def test_a_parameter_column_sharing_a_word_with_the_reading_still_gets_compared(self):
+        rng = np.random.default_rng(57)
+        pollutant = rng.choice(["PM10", "NO2", "SO2"], 600)
+        level = np.select([pollutant == "PM10", pollutant == "NO2"], [90.0, 40.0], 20.0)
+        frame = pd.DataFrame({"pollutant_id": pollutant, "pollutant_max": rng.gamma(2, level / 2)})
+
+        self.assertIsNone(built_in_grouping(frame, "pollutant_max", "pollutant_id"))
+
     def test_a_reading_fixed_for_each_species_is_an_attribute_of_the_species(self):
         rng = np.random.default_rng(56)
         species = rng.choice([f"sp{index}" for index in range(40)], 800)

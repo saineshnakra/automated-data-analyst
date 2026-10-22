@@ -1236,8 +1236,9 @@ def _built_in(omnibus: _Omnibus, column: int, reading: str, grouping: str) -> st
     "constant": a group holding CONSTANT_GROUP_SHARE of the values sits at a
     single value at the reading's floor or ceiling while others vary, as days
     coded "no precipitation" hold an amount of 0.
-    "named": the grouping is named after the reading and explains
-    NAMED_GROUPING_SHARE of its ranks. "index": the grouping grades an index
+    "named": the grouping's name extends the reading's and it explains
+    NAMED_GROUPING_SHARE of its ranks, or the two share a name stem and it
+    explains INDEX_GROUPING_SHARE of them. "index": the grouping grades an index
     and explains INDEX_GROUPING_SHARE of them. "complete": it explains all of
     them, one cluster of values per group.
     """
@@ -1252,9 +1253,12 @@ def _built_in(omnibus: _Omnibus, column: int, reading: str, grouping: str) -> st
     flat = (sizes >= max(MIN_NAMED_GROUP, CONSTANT_GROUP_SHARE * sizes.sum())) & (spread == 0) & edge
     if flat.any() and int((spread > 0).sum()) >= 2 and omnibus.distinct[column] >= CAP_MIN_DISTINCT:
         return "constant"
+    # A name that extends the reading's (RSKF beside RSK) is a strong sign; one
+    # word in common (pollutant_id beside pollutant_max) needs a near-complete split.
     key = _match_key(reading)
-    if explained >= NAMED_GROUPING_SHARE and (
-        (len(key) >= 3 and _match_key(grouping).startswith(key)) or same_stem(reading, grouping)
+    extends = len(key) >= 3 and _match_key(grouping).startswith(key)
+    if (extends and explained >= NAMED_GROUPING_SHARE) or (
+        same_stem(reading, grouping) and explained >= INDEX_GROUPING_SHARE
     ):
         return "named"
     words = set(re.findall(r"[a-z]+", normalized_name(grouping)))
