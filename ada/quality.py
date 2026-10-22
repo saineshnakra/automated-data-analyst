@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_bool_dtype, is_numeric_dtype
 
-from .formatting import group_label, is_currency, normalized_name
+from .formatting import group_label, has_percent_unit, is_currency, normalized_name
 from .schema import ColumnRoles, is_design_name, is_entity_name, is_identifier_name
 from .timeseries import MAD_SCALE
 
@@ -207,7 +207,7 @@ def _is_percentage_name(column: str, words: set[str]) -> bool:
     if words & SIGNED_WORDS:
         return False
     return (
-        "%" in column
+        has_percent_unit(column)
         or bool(words & PERCENT_WORDS)
         or bool(_PERCENT_SUFFIX.search(column.strip()))
     )

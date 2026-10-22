@@ -39,6 +39,11 @@ PERCENTAGE_TOKENS = {"rate", "margin", "ratio"}
 # Above this magnitude a value is not rendered as a percentage, whatever the
 # column name: "Gross Margin" holding 1,250,000 is money and prints as a plain number.
 MAX_PLAUSIBLE_PERCENTAGE = 1_000.0
+# Words that let a percentage fall below zero or pass 100: "% change", "growth %".
+SIGNED_PERCENT_WORDS = frozenset({
+    "change", "chg", "growth", "diff", "difference", "delta", "increase", "decrease", "yoy", "mom",
+    "return", "gain", "loss", "variance",
+})
 
 
 # Split camelCase so "netRevenue" normalizes like "net_revenue" and "customerID"
@@ -98,29 +103,37 @@ def is_money(column: str | None, column_values: pd.Series | None = None) -> bool
     return not coded
 
 
+# A number with a percent sign: "25%" names a quantile or a threshold, not a unit.
+_NUMBERED_PERCENT = re.compile(r"\d+(?:[.,]\d+)?\s*%")
+
+
+def has_percent_unit(column: str | None) -> bool:
+    """Whether a "%" in the name is a unit: "Moisture %", "UTS (%)", "% Elongation".
+
+    A "%" right after a number is not: "25%" and "p95%" label quantiles or
+    thresholds, and the values beside them can be anything.
+    """
+    return bool(column) and "%" in _NUMBERED_PERCENT.sub("", str(column))
+
+
 def is_percentage(column: str | None) -> bool:
     """Return whether the column name represents a percentage."""
     if not column:
         return False
-
-    name = normalized_name(column)
-    tokens = _name_tokens(column)
-
-    return "%" in name or bool(tokens & PERCENTAGE_TOKENS)
+    return has_percent_unit(column) or bool(_name_tokens(column) & PERCENTAGE_TOKENS)
 
 
 def percentage_outranks_currency(column: str | None) -> bool:
     """Whether a name with both currency and percentage signals reads as a percentage.
 
-    True for a "%" sign or a percentage word as the last word: "Profit Margin"
+    True for a "%" unit or a percentage word as the last word: "Profit Margin"
     is a margin, "Margin Amount" is an amount.
     """
     if not column:
         return False
-    name = normalized_name(column)
-    if "%" in name:
+    if has_percent_unit(column):
         return True
-    words = name.split()
+    words = normalized_name(column).split()
     return bool(words) and words[-1] in PERCENTAGE_TOKENS
 
 
@@ -173,15 +186,21 @@ def format_change(
     return sign + format_percentage(abs(delta) / abs(previous) * 100)
 
 
-def _column_reads_as_percentage(value: float, column_values: pd.Series | None) -> bool:
+def _column_reads_as_percentage(
+    value: float, column_values: pd.Series | None, column: str | None = None
+) -> bool:
     """Whether values are plausible percentages, judged on the whole column when given.
 
     Judging per value would render one column as "551.3%" on one row and "1.4K"
-    on the next.
+    on the next. A column named with a "%" unit must hold shares, from 0 to
+    100 (or 0 to 1), unless its name says it measures a change, which can be
+    negative or pass 100.
     """
     if column_values is not None:
         values = pd.to_numeric(column_values, errors="coerce").dropna()
         if not values.empty:
+            if has_percent_unit(column) and not _name_tokens(column) & SIGNED_PERCENT_WORDS:
+                return bool(values.min() >= 0 and values.max() <= 100)
             return bool(values.abs().max() <= MAX_PLAUSIBLE_PERCENTAGE)
     return abs(value) <= MAX_PLAUSIBLE_PERCENTAGE
 
@@ -327,7 +346,7 @@ def format_number(
     if is_percentage(column) and percentage_outranks_currency(column):
         if _percentage_uses_fraction_scale(value, column_values):
             return f"{value * 100:.{1 + extra}f}%"
-        if _column_reads_as_percentage(value, column_values):
+        if _column_reads_as_percentage(value, column_values, column):
             return f"{value:.{1 + extra}f}%"
 
     # Otherwise money takes precedence over percentage.
@@ -341,7 +360,7 @@ def format_number(
     if is_percentage(column):
         if _percentage_uses_fraction_scale(value, column_values):
             return f"{value * 100:.{1 + extra}f}%"
-        if _column_reads_as_percentage(value, column_values):
+        if _column_reads_as_percentage(value, column_values, column):
             return f"{value:.{1 + extra}f}%"
         # Fall through: a ratio-named column above MAX_PLAUSIBLE_PERCENTAGE
         # renders as a plain number.

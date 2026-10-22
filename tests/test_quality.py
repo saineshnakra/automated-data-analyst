@@ -47,6 +47,10 @@ class NameBoundTests(unittest.TestCase):
         self.assertIsNone(name_bounds("Revenue"))
         self.assertIsNone(name_bounds("Units"))
 
+    def test_a_quantile_label_is_not_a_percentage(self):
+        self.assertIsNone(name_bounds("25%"))
+        self.assertIsNone(name_bounds("p95%"))
+
 
 class ImpossibleValueTests(unittest.TestCase):
     def test_percentages_over_100_and_negative_yields(self):

@@ -69,7 +69,7 @@ Bounds come from words in the column name:
 
 | Name | Range |
 |---|---|
-| `%`, `percent`, `pct`, `coverage`, `humidity`, or a lab abbreviation ending in a lower-case `p` (`LYMp`, `NEUTp`) | 0 to 100 |
+| `%` as a unit (not after a number, as in the quantile label `25%`), `percent`, `pct`, `coverage`, `humidity`, or a lab abbreviation ending in a lower-case `p` (`LYMp`, `NEUTp`) | 0 to 100 |
 | `pH` | 0 to 14 |
 | A normalised-difference index (`NDVI`, `NDWI`, `NDMI`, `GNDVI`, `NDRE`, `NBR`) | -1 to 1 |
 | Latitude, longitude | ±90, ±180 |

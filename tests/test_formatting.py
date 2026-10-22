@@ -13,6 +13,7 @@ from ada.formatting import (
     format_values_apart,
     group_label,
     is_money,
+    is_percentage,
     list_names,
     normalized_name,
     rate_scale,
@@ -20,6 +21,30 @@ from ada.formatting import (
     show_undated,
     with_aggregate,
 )
+
+
+class PercentageNameTests(unittest.TestCase):
+    def test_a_percent_sign_after_a_number_labels_a_quantile(self):
+        levels = pd.Series([3.0, 6.7, 14.5])
+
+        self.assertFalse(is_percentage("25%"))
+        self.assertEqual(format_number(6.7, "25%", column_values=levels), "6.70")
+
+    def test_a_percent_sign_as_a_unit_makes_a_percentage(self):
+        for name in ("Moisture %", "UTS (%)", "% Elongation", "Top 10% share (%)"):
+            with self.subTest(name=name):
+                self.assertTrue(is_percentage(name))
+        self.assertEqual(format_number(12.5, "% Elongation", column_values=pd.Series([8.4, 16.6])), "12.5%")
+
+    def test_values_past_100_under_a_percent_unit_print_as_numbers(self):
+        values = pd.Series([20.0, 150.0])
+
+        self.assertEqual(format_number(150.0, "Moisture %", column_values=values), "150")
+
+    def test_a_change_in_percent_may_be_negative_or_pass_100(self):
+        values = pd.Series([-30.0, 250.0])
+
+        self.assertEqual(format_number(-30.0, "% Change", column_values=values), "-30.0%")
 
 
 class UndatedDisplayTests(unittest.TestCase):
