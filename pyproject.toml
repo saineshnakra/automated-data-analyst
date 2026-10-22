@@ -5,13 +5,17 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "automated-data-analyst"
 version = "0.3.0"
-description = "A first look at a table of measurements: data checks, group differences, relationships and changes over time, with the calculation behind every number."
+description = "Paper assets for research data: audit, tables, figures and a methods draft built from a study.yml and traceable to the data, plus a first look at any table."
 requires-python = ">=3.11"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Sainesh Nakra" }]
 keywords = [
+    "reproducible-research",
+    "research-data",
+    "publication-figures",
+    "statistics",
     "exploratory-data-analysis",
     "eda",
     "data-profiling",
@@ -35,9 +39,10 @@ classifiers = [
 
 # python-calamine is a core dependency so .xlsx files work out of the box, and
 # fast on large sheets. scipy supplies the distributions behind the group
-# comparisons and correlation tests,
-# and the rate tests; statsmodels the false-discovery-rate adjustment, the rate
-# interval and the joint model; ruptures the change-point search.
+# comparisons, correlation tests and rate tests; statsmodels the
+# false-discovery-rate adjustment, the rate interval, the joint model and the
+# study analyses; ruptures the change-point search. PyYAML reads study.yml,
+# Matplotlib draws the paper figures and python-docx writes the Word tables.
 # docs/credits.md says what each is used for.
 dependencies = [
     "pandas>=2.2,<3",
@@ -46,6 +51,9 @@ dependencies = [
     "scipy>=1.11,<2",
     "statsmodels>=0.14.2,<1",
     "ruptures>=1.1.10,<2",
+    "PyYAML>=6,<7",
+    "matplotlib>=3.8,<4",
+    "python-docx>=1.1,<2",
 ]
 
 [project.optional-dependencies]
@@ -66,7 +74,7 @@ Source = "https://github.com/saineshnakra/automated-data-analyst"
 Issues = "https://github.com/saineshnakra/automated-data-analyst/issues"
 
 [tool.setuptools]
-packages = ["ada"]
+packages = ["ada", "ada.research"]
 
 [tool.setuptools.package-data]
 # Read from inside the package at runtime.

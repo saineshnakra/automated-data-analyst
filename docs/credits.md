@@ -19,6 +19,9 @@ ADA is MIT-licensed and depends only on permissively licensed libraries.
 | [statsmodels](https://www.statsmodels.org) | BSD-3-Clause | The Benjamini-Hochberg false-discovery-rate adjustment (`multipletests`); Newcombe's interval for a difference in rates (`confint_proportions_2indep`); ordinary least squares for the joint model, for what readings add within a grouping's levels and for a comparison of groups with other readings held fixed (with its F test, `f_test`), with `variance_inflation_factor` for collinearity; logistic regression (`Logit`) for a yes/no measure; the repeated-measures ANOVA follows `AnovaRM`, whose figures it reproduces for every reading at once; Kaplan-Meier survival (`SurvfuncRight`), the log-rank test (`survdiff`) and the Cox model (`PHReg`) for follow-up times |
 | [ruptures](https://centre-borelli.github.io/ruptures-docs/) | BSD-2-Clause | Binary segmentation (`Binseg`) to find a lasting change in the level of the measure's period series |
 | [python-calamine](https://github.com/dimastbk/python-calamine) | MIT | Reading `.xlsx` and `.xlsm` workbooks through pandas, built on the Rust [calamine](https://github.com/tafia/calamine) crate (MIT) |
+| [Matplotlib](https://matplotlib.org) | Matplotlib licence (PSF-based) | The paper figures from `ada build` |
+| [python-docx](https://python-docx.readthedocs.io) | MIT | The Word tables, methods draft and supplement from `ada build` |
+| [PyYAML](https://pyyaml.org) | MIT | Reading and writing `study.yml` |
 
 ## The app
 
@@ -74,6 +77,9 @@ The methods ADA applies, with the papers that introduced them:
 | Holm's adjustment | Scans of many comparisons | Holm, S. (1979), *Scandinavian Journal of Statistics* 6, 65–70 |
 | Benjamini-Hochberg false discovery rate | Screens of hundreds of readings | Benjamini, Y. and Hochberg, Y. (1995), *Journal of the Royal Statistical Society B* 57, 289–300 |
 | Newcombe's interval for a difference in proportions | Rate comparisons | Newcombe, R. G. (1998), *Statistics in Medicine* 17, 873–890 |
+| Inverse-transform sampling | Synthetic demo data: `numpy.quantile` (linear interpolation) of uniform draws for numbers, `numpy.random.Generator.permutation` for categories | Devroye, L. (1986), *Non-Uniform Random Variate Generation*, Springer, chapter 2 |
+| ISO 7064 MOD 11-2 check digit | Checking authors' ORCID iDs for the repository files | ISO 7064:2003; ORCID, *Structure of the ORCID Identifier* |
+| Citation File Format 1.2.0 | `repository/CITATION.cff` | Druskat, S., Spaaks, J. H., Chue Hong, N. et al. (2021), https://doi.org/10.5281/zenodo.5171937 |
 | Binary segmentation | Changes in level | Scott, A. J. and Knott, M. (1974), *Biometrics* 30, 507–512 |
 | Bias of the lag-1 autocorrelation | Changes in level | Kendall, M. G. (1954), *Biometrika* 41, 403–404 |
 | Variance inflation factor | The joint model | Marquardt, D. W. (1970), *Technometrics* 12, 591–612 |
@@ -89,3 +95,71 @@ The methods ADA applies, with the papers that introduced them:
 | Mann-Kendall trend test | Long-run trends and trend answers (`scipy.stats.kendalltau`) | Mann, H. B. (1945), *Econometrica* 13, 245–259; Kendall, M. G. (1975), *Rank Correlation Methods*, 4th ed., Griffin |
 | Effective sample size for autocorrelated trends | Trend tests | Yue, S. and Wang, C. Y. (2004), *Water Resources Management* 18, 201–218 |
 | MASE against a seasonal no-change forecast | Forecast backtests | Hyndman, R. J. and Koehler, A. B. (2006), *International Journal of Forecasting* 22, 679–688 |
+
+## Paper figures
+
+| Library or method | Licence or reference | What ADA uses it for |
+|---|---|---|
+| [Matplotlib](https://matplotlib.org) | Matplotlib licence (PSF-based) | Drawing every figure and writing PDF, SVG, PNG and EPS; Hunter, J. D. (2007), *Computing in Science & Engineering* 9, 90–95 |
+| [Pillow](https://python-pillow.org) | MIT-CMU | Writing TIFF files as RGB with LZW compression, through Matplotlib's own dependency |
+| Okabe–Ito colours | Okabe, M. and Ito, K. (2008), *Color Universal Design*, https://jfly.uni-koeln.de/color/ | The group colours, in an order that keeps neighbours apart for colour-blind readers |
+| van der Corput sequence | van der Corput, J. G. (1935), *Proceedings of the Koninklijke Akademie van Wetenschappen te Amsterdam* 38, 813–821 | Spreading the points of each group sideways the same way at every build, scaled by `scipy.stats.gaussian_kde` |
+| Normal Q–Q plot | Wilk, M. B. and Gnanadesikan, R. (1968), *Biometrika* 55, 1–17 | The model checks, through `scipy.stats.probplot` |
+| t confidence interval | `scipy.stats.t.interval` with `scipy.stats.sem` | Means and their intervals when an analysis gives none |
+| Confidence band for the mean | `statsmodels` OLS `get_prediction().summary_frame()` | The band in the scatter figure |
+
+## Checking a rebuild
+
+`ada verify` compares each number in a rebuilt CSV file with the one on disk
+with NumPy's `isclose`: they match when |rebuilt − disk| ≤ atol + rtol × |disk|
+(by default rtol is 1e-9 and atol 1e-12). It finds the lines of text that
+differ with Python's `difflib`, and reads the text of Word files with
+[python-docx](https://python-docx.readthedocs.io) (MIT).
+
+## The methods draft
+
+The methods draft (`ada build`, in `methods/`) cites the libraries above that
+the build used, and also:
+
+- **Python:** Van Rossum, G. and Drake, F. L. (2009). *Python 3 Reference
+  Manual*. CreateSpace.
+- **Matplotlib** (figures): Hunter, J. D. (2007). Matplotlib: a 2D graphics
+  environment. *Computing in Science & Engineering* 9, 90–95.
+  https://doi.org/10.1109/MCSE.2007.55
+- **The Bonferroni correction**, with `multiple_comparisons: bonferroni`:
+  Dunn, O. J. (1961). Multiple comparisons among means. *Journal of the
+  American Statistical Association* 56, 52–64.
+  https://doi.org/10.1080/01621459.1961.10482090
+- **Holm's method** and **the Benjamini-Hochberg procedure**, with `holm` or
+  `fdr_bh`: the references in the table above.
+
+[python-docx](https://python-docx.readthedocs.io) (MIT) writes the Word files.
+
+## The analyses behind the paper assets
+
+`ada build` fits each analysis in `study.yml` with these methods. The model
+output in `supplement/models/` names the library call behind every number.
+
+| Method | Library function | Reference |
+|---|---|---|
+| Welch's t-test, with its interval | `scipy.stats.ttest_ind(equal_var=False)` | Welch, B. L. (1947), *Biometrika* 34, 28–35 |
+| Welch's ANOVA | `statsmodels.stats.oneway.anova_oneway(use_var="unequal")` | Welch, B. L. (1951), *Biometrika* 38, 330–336 |
+| Games–Howell pairwise contrasts | `scipy.stats.studentized_range` | Games, P. A. and Howell, J. F. (1976), *Journal of Educational Statistics* 1, 113–125 |
+| Tukey–Kramer pairwise contrasts (`test: anova`) | `scipy.stats.tukey_hsd` | Tukey, J. W. (1949), *Biometrics* 5, 99–114; Kramer, C. Y. (1956), *Biometrics* 12, 307–310 |
+| Hedges' g with an exact small-sample correction | `scipy.special.gammaln` | Hedges, L. V. (1981), *Journal of Educational Statistics* 6, 107–128; Hedges, L. V. and Olkin, I. (1985), *Statistical Methods for Meta-Analysis* |
+| Noncentral-t intervals for g and Cohen's dz | `scipy.stats.nct`, `scipy.optimize.brentq` | Steiger, J. H. and Fouladi, R. T. (1997), in *What If There Were No Significance Tests?*, 221–257; Cohen, J. (1988), *Statistical Power Analysis for the Behavioral Sciences* |
+| ω² and partial ω² with a noncentral-F interval | `statsmodels.stats.oneway.confint_noncentrality` | Olejnik, S. and Algina, J. (2003), *Psychological Methods* 8, 434–447; Steiger, J. H. (2004), *Psychological Methods* 9, 164–182 |
+| Paired t-test | `scipy.stats.ttest_rel` | Student (1908), *Biometrika* 6, 1–25 |
+| Mann–Whitney, Kruskal–Wallis and Wilcoxon signed-rank tests | `scipy.stats.mannwhitneyu`, `kruskal`, `wilcoxon` | Mann and Whitney (1947); Kruskal and Wallis (1952); Wilcoxon, F. (1945), *Biometrics Bulletin* 1, 80–83 |
+| Hodges–Lehmann estimates with intervals from inverting the rank test | the SciPy tests above | Hodges, J. L. and Lehmann, E. L. (1963), *Annals of Mathematical Statistics* 34, 598–611; Bauer, D. F. (1972), *JASA* 67, 687–690 |
+| Linear regression, F-tests of model terms | `statsmodels.formula.api.ols` | |
+| Linear mixed models with a random intercept, fitted by REML | `statsmodels.formula.api.mixedlm` | Laird, N. M. and Ware, J. H. (1982), *Biometrics* 38, 963–974; Patterson, H. D. and Thompson, R. (1971), *Biometrika* 58, 545–554 |
+| Intraclass correlation from the variance components | | Snijders, T. A. B. and Bosker, R. J. (2012), *Multilevel Analysis* (2nd ed.) |
+| Pearson's r with a Fisher z interval; Spearman's ρ | `scipy.stats.pearsonr`, `spearmanr` | Pearson, K. (1896), *Phil. Trans. R. Soc. A* 187, 253–318; Fisher (1915); Spearman (1904) |
+| Risk difference with Newcombe's interval | `statsmodels.stats.proportion.confint_proportions_2indep(method="newcomb")` | Newcombe, R. G. (1998), *Statistics in Medicine* 17, 873–890 |
+| Odds ratio with Woolf's interval | `statsmodels.stats.contingency_tables.Table2x2` | Woolf, B. (1955), *Annals of Human Genetics* 19, 251–253 |
+| χ² and Fisher's exact tests (Freeman–Halton by seeded Monte Carlo for larger tables) | `scipy.stats.chi2_contingency`, `fisher_exact` | Pearson (1900); Fisher, R. A. (1922), *JRSS* 85, 87–94; Freeman, G. H. and Halton, J. H. (1951), *Biometrika* 38, 141–149 |
+| Wilson intervals for proportions | `statsmodels.stats.proportion.proportion_confint(method="wilson")` | Wilson, E. B. (1927), *JASA* 22, 209–212 |
+| Logistic regression | `statsmodels.formula.api.logit` | Cox, D. R. (1958), *JRSS B* 20, 215–242 |
+| Holm, Bonferroni and Benjamini–Hochberg adjustment | `statsmodels.stats.multitest.multipletests` | Holm, S. (1979), *Scandinavian Journal of Statistics* 6, 65–70; Dunn, O. J. (1961), *JASA* 56, 52–64; Benjamini and Hochberg (1995) |
+| Shapiro–Wilk, Levene (median-centred) and Breusch–Pagan tests; variance inflation factors | `scipy.stats.shapiro`, `levene`; `statsmodels.stats.diagnostic.het_breuschpagan`, `variance_inflation_factor` | Shapiro and Wilk (1965); Brown and Forsythe (1974); Breusch and Pagan (1979); Marquardt (1970) |
