@@ -50,6 +50,8 @@ TESTS = (
     "rates",
     "logistic",
 )
+#: How a change analysis treats time: one level per time point, or a straight line.
+TIME_AS = ("categorical", "linear")
 CONDITIONS = ("below", "above", "at_most", "at_least", "equals", "not_equals", "in", "not_in", "missing")
 TRANSFORMS = ("log", "log10", "log2", "sqrt", "square", "reciprocal", "zscore", "center", "scale")
 
@@ -176,6 +178,9 @@ class AnalysisSpec:
     question: str = ""
     family: str = ""
     test: str = "auto"
+    #: For change: time as categorical (one level per time point) or linear; None chooses from the
+    #: number of time points.
+    time_as: str | None = None
 
     @property
     def kind(self) -> str:
@@ -706,9 +711,17 @@ class _Reader:
                     question=str(item.get("question") or ""),
                     family=str(item.get("family") or ident),
                     test=self.choice(item, "test", TESTS, f"{where}.test", default="auto"),
+                    time_as=self.time_as(item, where),
                 )
             )
         return found
+
+    def time_as(self, item: dict, where: str) -> str | None:
+        value = self.choice(item, "time_as", TIME_AS, f"{where}.time_as", default=None)
+        if value and not item.get("change"):
+            self.problems.append(f"`{where}.time_as` only applies to a `change:` analysis.")
+            return None
+        return value
 
     def figures(self, value) -> list[FigureSpec]:
         if value is None:
