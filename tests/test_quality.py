@@ -1055,6 +1055,80 @@ class RecordTests(unittest.TestCase):
         self.assertEqual(issue.columns, ("Pentanoic",))
 
 
+class RelatedColumnTests(unittest.TestCase):
+    def test_a_time_censored_at_follow_up_is_bounded_not_copied(self):
+        rng = np.random.default_rng(87)
+        survival = rng.uniform(1, 15, 300).round(2)
+        recurred = rng.random(300) < 0.4
+        recurrence = np.where(recurred, (survival * rng.uniform(0.1, 0.9, 300)).round(2), survival)
+        frame = pd.DataFrame({"survival": survival, "timerecurrence": recurrence})
+
+        issues = scan(frame)
+
+        self.assertFalse(checks(issues, "equal_columns"))
+        self.assertEqual(checks(issues, "bounded")[0].columns, ("timerecurrence", "survival"))
+
+    def test_max_and_min_of_one_reading_are_one_note(self):
+        rng = np.random.default_rng(88)
+        rows = 1000
+        frame = pd.DataFrame()
+        for test in ("glucose", "sodium", "temper"):
+            low = rng.normal(100, 10, rows).round()
+            single = rng.random(rows) < 0.7
+            frame[f"OBS1_{test}_min"] = low
+            frame[f"OBS1_{test}_max"] = np.where(single, low, low + rng.gamma(2, 5, rows).round() + 1)
+        frame["copy_a"] = rng.normal(50, 5, rows).round(1)
+        frame["copy_b"] = np.where(rng.random(rows) < 0.8, frame["copy_a"], rng.normal(50, 5, rows).round(1))
+
+        issues = scan(frame)
+
+        notes = checks(issues, "single_reading")
+        self.assertEqual(len(notes), 1)
+        self.assertIn("3 pairs", notes[0].detail)
+        self.assertEqual([issue.columns for issue in checks(issues, "equal_columns")], [("copy_a", "copy_b")])
+
+    def test_an_average_outside_its_min_and_max_is_flagged(self):
+        rng = np.random.default_rng(89)
+        low = rng.uniform(1, 50, 300).round()
+        high = low + rng.uniform(5, 60, 300).round()
+        frame = pd.DataFrame({"pollutant_min": low, "pollutant_max": high, "pollutant_avg": (low + high) / 2})
+        frame.loc[5, "pollutant_avg"] = frame.loc[5, "pollutant_max"] + 3
+
+        issues = checks(scan(frame), "outside_range")
+
+        self.assertEqual(issues[0].rows, 1)
+        self.assertEqual(issues[0].columns, ("pollutant_avg", "pollutant_min", "pollutant_max"))
+
+    def test_a_part_above_its_whole_is_flagged(self):
+        rng = np.random.default_rng(90)
+        water = rng.gamma(4, 0.4, 500).round(2)
+        secchi = (water * rng.uniform(0.2, 1.0, 500)).round(2)
+        secchi[:6] = water[:6] + 1.5
+        frame = pd.DataFrame({
+            "SecchiDepth (m)": secchi, "WaterDepth (m)": water,
+            "Air Temperature": rng.normal(20, 5, 500), "Water Temperature": rng.normal(18, 4, 500),
+        })
+
+        issues = checks(scan(frame), "part_whole")
+
+        self.assertEqual([issue.columns for issue in issues], [("SecchiDepth (m)", "WaterDepth (m)")])
+        self.assertEqual(issues[0].rows, 6)
+
+    def test_one_samples_reading_repeated_on_its_rows_is_not_a_fill(self):
+        rng = np.random.default_rng(91)
+        names = [f"V{index}" for index in range(30)]
+        visits = np.repeat(names, np.r_[rng.integers(2, 5, 3), [14], rng.integers(2, 5, 26)])
+        sulphate = pd.Series(rng.normal(50, 15, 30).round(1), index=names)
+        sulphate["V3"] = 46.153
+        species = [f"species {index}" for index in range(len(visits))]
+        frame = pd.DataFrame({"Visit": visits, "Species": species})
+        frame["SO4"] = sulphate.loc[frame["Visit"]].to_numpy()
+
+        self.assertFalse(checks(scan(frame), "imputed"))
+        frame.loc[frame.index[::7], "Visit"] = "V0"
+        self.assertTrue(checks(scan(frame), "imputed"))
+
+
 class SpeedTests(unittest.TestCase):
     def test_a_large_table_is_scanned_quickly(self):
         rng = np.random.default_rng(23)

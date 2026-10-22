@@ -105,6 +105,11 @@ PLACEHOLDER_TOKENS = frozenset({"0", "-", "--", "—", "–"})
 PLACEHOLDER_OVERLAP = 0.98
 #: A reading exactly 0 in this share of rows is mostly below detection.
 ZERO_HEAVY_SHARE = 1 / 3
+#: Share of rows on which a part must stay at or below its whole for the rows past it to stand out.
+PART_WHOLE_SHARE = 0.95
+#: Share of rows on which one column must stay at or below another for the two
+#: to read as one bounded by the other (a time censored at follow-up).
+BOUNDED_SHARE = 0.99
 # Readings whose zeros are dry days, not values below a limit.
 DRY_ZERO_WORDS = frozenset({"rain", "rainfall", "precipitation", "precip", "snow", "snowfall"})
 #: Share of a column's values held by one non-round value that reads as filled-in gaps.
@@ -203,6 +208,8 @@ CHECKS = {
     "group_level": "Group out of scale",
     "equal_columns": "Copied values",
     "min_max": "Max below min",
+    "outside_range": "Average outside min to max",
+    "part_whole": "Part above whole",
     "cluster": "Second cluster",
     "extreme": "Extreme values",
     "matrix_rows": "Rows off scale",
@@ -214,6 +221,7 @@ CHECKS = {
     "rare_code": "Rare codes",
     "zeros": "Mostly zeros",
     "single_reading": "Single readings",
+    "bounded": "Bounded by another column",
     "constant": "Constant columns",
     "missing_by_group": "Missing by group",
     "missing_dependency": "Missing by value",
@@ -239,7 +247,7 @@ TABLE_CHECKS = frozenset({"generated", "duplicates"})
 #: Checks that describe the table rather than flag values to doubt (a constant
 #: column, a reading mostly 0, max equal to min where one reading was taken).
 #: They rank after the issues about values and are never named first.
-INFO_CHECKS = frozenset({"constant", "zeros", "single_reading"})
+INFO_CHECKS = frozenset({"constant", "zeros", "single_reading", "bounded"})
 
 # Words that make a quantity non-negative: a size, an amount of matter, a count.
 # Money and sales quantities are left out, since refunds and returns are negative.
@@ -287,6 +295,14 @@ _AMOUNT_UNIT = re.compile(
 _MAX_WORDS = {
     "max": "min", "maximum": "minimum", "high": "low", "highest": "lowest", "upper": "lower",
 }
+# The middle of a reading's range, beside its min and max: "pollutant_avg".
+MIDDLE_WORDS = frozenset({"avg", "average", "mean", "median", "mid"})
+# Words that make a reading the whole its parts add up to or lie within:
+# "Total Sales" beside "Online Sales"; for a depth, the water column itself.
+WHOLE_WORDS = frozenset({"total", "overall", "whole", "gross", "full", "entire"})
+WHOLE_DEPTH_WORDS = frozenset({"water", "bottom", "site", "station"})
+# Words naming which reading of several in a window a column holds.
+WINDOW_WORDS = frozenset({*_MAX_WORDS, *_MAX_WORDS.values(), "first", "last", "start", "end"})
 # Statistics of a spread or a count: a high group's SD or n may well be below a low group's.
 SPREAD_WORDS = frozenset({
     "sd", "se", "sem", "std", "stdev", "var", "variance", "iqr", "n", "count", "counts", "size",
@@ -1991,11 +2007,46 @@ def _equal_columns(
     built: dict[str, frozenset] = {}
     for column in {column for issue in issues for column in issue.columns}:
         built[column] = _row_extreme_of(frame, column, columns)
-    return [
+    issues = [
         issue
         for issue in issues
         if issue.columns[1] not in built[issue.columns[0]] and issue.columns[0] not in built[issue.columns[1]]
     ]
+    # The highest and lowest reading in a window are equal wherever one reading was taken.
+    windows = [issue for issue in issues if _same_reading(*issue.columns)]
+    if windows:
+        issues = [issue for issue in issues if issue not in windows] + [_single_readings(windows)]
+    return issues
+
+
+def _reading_stem(column: str) -> tuple[str, ...]:
+    """A header's words without max, min, first, last or window numbers: OBS1_glucose_max is obs, glucose."""
+    words = (re.sub(r"\d+", "", word) for word in normalized_name(column).split())
+    return tuple(word for word in words if word and word not in WINDOW_WORDS)
+
+
+def _same_reading(first: str, second: str) -> bool:
+    """Whether two columns hold the max, min, first or last of one reading, or of it in two windows."""
+    named = set(normalized_name(first).split()) | set(normalized_name(second).split())
+    return bool(named & WINDOW_WORDS) and _reading_stem(first) == _reading_stem(second)
+
+
+def _single_readings(issues: list[QualityIssue]) -> QualityIssue:
+    """Pairs of window statistics of one reading that are often equal, as one note rather than copies."""
+    leading = max(issues, key=lambda issue: issue.rows)
+    shares = sorted(issue.share for issue in issues)
+    spread = _percent(shares[0]) if len(issues) == 1 else f"{_percent(shares[0])} to {_percent(shares[-1])}"
+    pairs = _plural(len(issues), "pair")
+    detail = (
+        f"In {pairs} of columns that hold the highest and lowest value of one reading, or the same reading "
+        f"in two windows (such as {leading.columns[0]} and {leading.columns[1]}), the two are equal on "
+        f"{spread} of rows. Where a single reading was taken in the window its maximum and minimum are that "
+        "one value, so this is no sign of copying."
+    )
+    summary = f"{pairs} of window columns equal where one reading was taken"
+    rule = "two columns of one reading that differ only by max, min, first, last or a window's number"
+    columns = tuple(dict.fromkeys(column for issue in issues for column in issue.columns))
+    return QualityIssue("single_reading", columns, leading.rows, leading.share, detail, summary, rule)
 
 
 def _row_extreme_of(table: pd.DataFrame, column: str, columns: list[str]) -> frozenset:
@@ -2054,6 +2105,43 @@ def _shared_limits(a: pd.Series, b: pd.Series) -> list[float]:
     return limits
 
 
+def _bounded_pair(a: pd.Series, b: pd.Series, first: str, second: str) -> tuple[str, str] | None:
+    """The lower and upper column when one never exceeds the other but often falls short of it.
+
+    A time to recurrence is set to the follow-up time where there was no
+    recurrence, so it equals follow-up on part of the rows and is shorter on
+    the rest, never longer; a discounted price is the list price where no
+    discount applied. Such a pair is bounded, not copied. One must stay at or
+    below the other on BOUNDED_SHARE of rows, be strictly below on a tenth,
+    and there be of the same order (a median ratio of a fifth or more): a
+    column copied into one on a ten-times larger scale lies below it too.
+    """
+    for low, high, names in ((a, b, (first, second)), (b, a, (second, first))):
+        short = low < high
+        if float((low <= high).mean()) < BOUNDED_SHARE or float(short.mean()) < 0.1:
+            continue
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = float(np.nanmedian((low[short] / high[short]).to_numpy(dtype="float64")))
+        if ratio >= 0.2:
+            return names
+    return None
+
+
+def _bounded_issue(low: str, high: str, count: int, share: float) -> QualityIssue:
+    """A note that one column equals another where it reached its bound, rather than a copy."""
+    detail = (
+        f"{low} never exceeds {high} and equals it on {_plural(count, 'row')} ({_percent(share * 100)} of "
+        f"rows with both): it looks recorded up to {high}, as a time to an event is set to the follow-up "
+        "time where the event did not happen (censored), so this is no sign of copying."
+    )
+    summary = f"{low} reaches its bound, {high}, on {_percent(share * 100)} of rows"
+    rule = (
+        f"one column at or below another on {BOUNDED_SHARE:.0%} of rows, below it on a tenth or more, and "
+        f"equal on {EQUAL_SHARE:.0%} or more"
+    )
+    return QualityIssue("bounded", (low, high), count, share * 100, detail, summary, rule)
+
+
 def _equal_pair(frame: pd.DataFrame, first: str, second: str, dimension: str | None) -> QualityIssue | None:
     a, b = frame[first], frame[second]
     both = a.notna() & b.notna()
@@ -2071,6 +2159,8 @@ def _equal_pair(frame: pd.DataFrame, first: str, second: str, dimension: str | N
         f"two columns holding the same non-zero value in {EQUAL_SHARE:.0%} or more of rows, and of the "
         "rows away from any floor or ceiling the two share"
     )
+    if share >= EQUAL_SHARE and (bounded := _bounded_pair(a[both], b[both], first, second)):
+        return _bounded_issue(*bounded, int(equal.sum()), share)
     if share >= EQUAL_SHARE and agree >= EQUAL_SHARE:
         count = int(equal.sum())
         detail = (
@@ -2130,7 +2220,8 @@ def _own_counts(words: tuple[str, ...], every: list[set[str]]) -> bool:
 
 
 def _min_max(frame: pd.DataFrame, columns: list[str]) -> list[QualityIssue]:
-    """Rows where a max-named column falls below its min-named sibling, or its plain one.
+    """Rows where a max-named column falls below its min-named sibling, or its plain one, and rows
+    where an average-named sibling of the two lies outside them.
 
     Spreads and counts are skipped (a high-exposure group's SD may well be
     below a low one's), and so are pairs whose two sides each have their own
@@ -2147,21 +2238,109 @@ def _min_max(frame: pd.DataFrame, columns: list[str]) -> list[QualityIssue]:
         low = by_words.get(tuple(low_words)) or by_words.get(plain)
         if not low or low == high:
             continue
+        both = max(int((frame[high].notna() & frame[low].notna()).sum()), 1)
         below = frame[high] < frame[low]
         count = int(below.sum())
-        if not count:
+        if count:
+            pairs = frame.loc[below, [high, low]].head(3).to_numpy()
+            shown = tuple(f"{show_value(x)} < {show_value(y)}" for x, y in pairs)
+            detail = (
+                f"{high} is below {low} in {_plural(count, 'row')} (for example {shown[0]}), which can't "
+                "happen; one of the two is wrong on those rows."
+            )
+            summary = f"{high} below {low} in {_plural(count, 'row')}"
+            rule = "a max-named column below its min-named or plain sibling"
+            issues.append(QualityIssue("min_max", (high, low), count, count / both * 100, detail, summary,
+                                       rule, shown))
+        middle = next((by_words[found] for found in _middles(words) if found in by_words), None)
+        if middle and low == by_words.get(tuple(low_words)):
+            found = _outside_range(frame, middle, low, high)
+            if found:
+                issues.append(found)
+    return issues
+
+
+def _middles(words: tuple[str, ...]) -> list[tuple[str, ...]]:
+    """The names an average of a max-named column's reading would have: "pm avg", "mean pm", "pm"."""
+    position = next(position for position, word in enumerate(words) if word in _MAX_WORDS)
+    names = [(*words[:position], middle, *words[position + 1 :]) for middle in sorted(MIDDLE_WORDS)]
+    return [*names, (*words[:position], *words[position + 1 :])]
+
+
+def _outside_range(frame: pd.DataFrame, middle: str, low: str, high: str) -> QualityIssue | None:
+    """Rows where an average lies outside the minimum and maximum of the same readings."""
+    outside = (frame[middle] < frame[low]) | (frame[middle] > frame[high])
+    count = int(outside.sum())
+    if not count:
+        return None
+    rows = frame.loc[outside, [middle, low, high]].head(3).to_numpy()
+    shown = tuple(f"{show_value(m)} outside {show_value(x)} to {show_value(y)}" for m, x, y in rows)
+    both = max(int(frame[[middle, low, high]].notna().all(axis=1).sum()), 1)
+    detail = (
+        f"{middle} lies outside {low} to {high} in {_plural(count, 'row')} (for example {shown[0]}), "
+        "which can't happen for an average of the same readings; one of the three is wrong on those rows."
+    )
+    summary = f"{middle} outside {low} to {high} in {_plural(count, 'row')}"
+    rule = "an average-named column below its min-named sibling or above its max-named one"
+    return QualityIssue("outside_range", (middle, low, high), count, count / both * 100, detail, summary,
+                        rule, shown)
+
+
+def _noun_words(column: str) -> list[str]:
+    """A header's words in order, without anything in brackets: "SecchiDepth (m)" gives secchi, depth."""
+    bare = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", normalized_name(column))
+    return re.findall(r"[^\W_]+", bare)
+
+
+def _parts_of_wholes(frame: pd.DataFrame, columns: list[str]) -> list[QualityIssue]:
+    """Rows where a part exceeds the whole it belongs to, for pairs the names make plain.
+
+    Two readings of the same kind ("SecchiDepth" and "WaterDepth", "Online Sales"
+    and "Total Sales") pair as part and whole when they end in the same word,
+    the whole's other words, if any, are WHOLE_WORDS (or, for a depth, name
+    the whole water column), and the part's are not. The part must stay at or
+    below the whole on PART_WHOLE_SHARE of the rows holding both, so the
+    relation holds and the rows past it stand out.
+    """
+    named = {column: _noun_words(column) for column in columns}
+    bounds_words = set(_MAX_WORDS) | set(_MAX_WORDS.values()) | MIDDLE_WORDS
+    issues = []
+    for whole, whole_words in named.items():
+        if not whole_words:
             continue
-        pairs = frame.loc[below, [high, low]].head(3).to_numpy()
-        shown = tuple(f"{show_value(x)} < {show_value(y)}" for x, y in pairs)
-        both = max(int((frame[high].notna() & frame[low].notna()).sum()), 1)
-        detail = (
-            f"{high} is below {low} in {_plural(count, 'row')} (for example {shown[0]}), which can't "
-            "happen; one of the two is wrong on those rows."
-        )
-        summary = f"{high} below {low} in {_plural(count, 'row')}"
-        rule = "a max-named column below its min-named or plain sibling"
-        issues.append(QualityIssue("min_max", (high, low), count, count / both * 100, detail, summary,
-                                   rule, shown))
+        wholes = WHOLE_WORDS | WHOLE_DEPTH_WORDS if whole_words[-1] == "depth" else WHOLE_WORDS
+        if set(whole_words[:-1]) - wholes:
+            continue
+        for part, part_words in named.items():
+            qualifiers = set(part_words[:-1])
+            if (
+                part == whole or not part_words or part_words[-1] != whole_words[-1] or not qualifiers
+                or qualifiers & (wholes | bounds_words)
+            ):
+                continue
+            a, b = frame[part], frame[whole]
+            both = a.notna() & b.notna()
+            if both.sum() < 20:
+                continue
+            over = both & (a > b + 1e-9 * b.abs())
+            count = int(over.sum())
+            if not count or count > (1 - PART_WHOLE_SHARE) * both.sum():
+                continue
+            rows = frame.loc[over, [part, whole]].head(3).to_numpy()
+            shown = tuple(f"{show_value(x)} > {show_value(y)}" for x, y in rows)
+            within = f"{float((~over[both]).mean()) * 100:.1f}%"
+            detail = (
+                f"{part} is greater than {whole} in {_plural(count, 'row')} (for example {shown[0]}), "
+                f"though it stays at or below it on {within} of the rows with both: a part can't exceed its "
+                "whole, so one of the two is wrong on those rows."
+            )
+            summary = f"{part} above {whole} in {_plural(count, 'row')}"
+            rule = (
+                f"a part above the whole its name pairs it with, though at or below it on "
+                f"{PART_WHOLE_SHARE:.0%} or more of rows"
+            )
+            issues.append(QualityIssue("part_whole", (part, whole), count, count / int(both.sum()) * 100,
+                                       detail, summary, rule, shown))
     return issues
 
 
@@ -2709,6 +2888,29 @@ def _tied_check(frame: pd.DataFrame, roles: ColumnRoles | None) -> Callable[[str
         return False
 
     return tied
+
+
+def _one_sample_fills(frame: pd.DataFrame, issues: list[QualityIssue]) -> list[QualityIssue]:
+    """Drop fill values whose rows all belong to one sample: one reading repeated on its rows.
+
+    A survey that lists every species found on a visit repeats the visit's
+    sulphate on each species row, so 429.815 on 13 rows is one visit, not a
+    gap filled 13 times. A key is a text column with at least ten values; the
+    fill is dropped when every row holding it shares one of them.
+    """
+    keys = [
+        column for column in frame.columns
+        if frame[column].dtype == object and 10 <= frame[column].nunique() < len(frame)
+    ] if any(issue.check == "imputed" for issue in issues) else []
+    kept = []
+    for issue in issues:
+        if issue.check == "imputed" and any(
+            all(frame.loc[labels, key].nunique(dropna=False) == 1 for labels in issue.cells.values())
+            for key in keys
+        ):
+            continue
+        kept.append(issue)
+    return kept
 
 
 def _failed_records(
@@ -3356,7 +3558,7 @@ def scan(
         if issue.check in ("cap", "clipped"):
             for column in issue.columns:
                 piled.setdefault(column, set()).update(_pile_values([issue]))
-    issues = [*_merge_alike(issues), *blanked]
+    issues = [*_merge_alike(_one_sample_fills(frame, issues)), *blanked]
     swaps = _swapped(frame, profiles, [column for column in quantities if column not in matrix], date)
     # A row of zeros explains the extreme values on it, as a swap explains its values.
     zeros = _zero_rows(frame, profiles, singles)
@@ -3367,6 +3569,7 @@ def scan(
     wide = [column for column in quantities if profiles[column].uniques.size >= 10]
     issues.extend(_equal_columns(frame, wide, dimension, measure))
     issues.extend(_min_max(frame, quantities))
+    issues.extend(_parts_of_wholes(frame, singles))
     grouping = pd.factorize(frame[dimension]) if dimension in frame.columns else None
     if measure in quantities and grouping is not None:
         found = _group_levels(frame, measure, dimension, grouping, date)
