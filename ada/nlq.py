@@ -15,7 +15,7 @@ import calendar
 import re
 import unicodedata
 import weakref
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field, fields, replace
 from typing import Literal
 
@@ -31,6 +31,7 @@ from .business_insights import (
     measure_correlation,
     numeric_readings,
     set_aside_note,
+    tested_rows,
 )
 from .compare import (
     MIN_NAMED_GROUP,
@@ -64,9 +65,9 @@ from .formatting import (
     with_aggregate,
 )
 from .metrics import metric_for
-from .quality import VALUE_CHECKS, QualityIssue, prefers_log_scale, show_value
+from .quality import MASKED_CHECKS, VALUE_CHECKS, QualityIssue, prefers_log_scale, show_value
 from .quality import scan as scan_quality
-from .schema import ColumnRoles, running_total_columns
+from .schema import ColumnRoles, row_summary_columns, running_total_columns
 from .timeseries import period_positions, theil_sen
 
 Intent = Literal[
@@ -76,10 +77,10 @@ Intent = Literal[
 #: Plans answered from the column profile or the data checks rather than by combining a measure.
 ProfileIntent = Literal["missing", "duplicates", "outliers"]
 Aggregation = Literal[
-    "sum", "mean", "median", "min", "max", "count", "std", "var", "iqr", "quantile", "mode", "share"
+    "sum", "mean", "median", "min", "max", "count", "std", "var", "iqr", "quantile", "mode", "share", "range"
 ]
-Operator = Literal["=", "<", "<=", ">", ">=", "missing"]
-TimePart = Literal["hour", "weekday", "month", "quarter", "year"]
+Operator = Literal["=", "<", "<=", ">", ">=", "missing", "contains", "starts", "ends"]
+TimePart = Literal["hour", "weekday", "month", "quarter", "year", "season"]
 
 AGGREGATION_WORDS: dict[str, Aggregation] = {
     "total": "sum",
@@ -113,6 +114,7 @@ SPREAD_WORDS: dict[str, Aggregation] = {
     "stddev": "std",
     "variance": "var",
     "iqr": "iqr",
+    "range": "range",
 }
 # Phrases for the same, read before single words claim theirs.
 SPREAD_PHRASES: dict[str, Aggregation] = {
@@ -135,9 +137,10 @@ AGGREGATION_LABELS: dict[Aggregation, str] = {
     "quantile": "Percentile of",
     "mode": "Most common",
     "share": "Share of rows",
+    "range": "Range of",
 }
 # Aggregations that describe how a measure spreads; they don't add up across groups.
-SPREAD_AGGREGATIONS = ("std", "var", "iqr", "quantile")
+SPREAD_AGGREGATIONS = ("std", "var", "iqr", "quantile", "range")
 
 # Words asking for the bottom of a ranking. Each is also a superlative, so
 # SUPERLATIVE_WORDS includes this tuple rather than repeating it.
@@ -317,13 +320,16 @@ TIME_PART_PATTERN = re.compile(
     r"\b(?:by|per|each|across|which|what)\s+(?:the\s+)?"
     r"(?:(?P<hour>hours?(?:\s+of\s+(?:the\s+)?day)?)|(?P<weekday>weekdays?|days?\s+of\s+(?:the\s+)?week)"
     r"|(?P<month>(?:calendar\s+)?months?\s+of\s+(?:the\s+)?year|calendar\s+months?)"
-    r"|(?P<quarter>quarters?\s+of\s+(?:the\s+)?year))\b"
+    r"|(?P<quarter>quarters?\s+of\s+(?:the\s+)?year)|(?P<season>seasons?))\b"
     # Spelled out in full, a part of the date may open the question: "month of year with the highest max".
     r"|^(?:(?P<hour_>hours?\s+of\s+(?:the\s+)?day)|(?P<weekday_>days?\s+of\s+(?:the\s+)?week)"
     r"|(?P<month_>months?\s+of\s+(?:the\s+)?year)|(?P<quarter_>quarters?\s+of\s+(?:the\s+)?year))\b"
 )
 # Names of the date parts a grouping can show, for answers and tables.
 QUARTER_NAMES = {1: "Q1", 2: "Q2", 3: "Q3", 4: "Q4"}
+# Seasons as three-month spans of the calendar, named by their months so they read
+# the same on either side of the equator.
+SEASON_NAMES = {0: "Dec–Feb", 1: "Mar–May", 2: "Jun–Aug", 3: "Sep–Nov"}
 
 
 @dataclass(frozen=True)
@@ -336,12 +342,17 @@ class ValueFilter:
 class Condition:
     """Rows whose ``column`` compares to ``value``: "pH below 5.5", "OBJECT is 0".
 
-    ``"missing"`` keeps the rows where the column has no value and needs no ``value``.
+    ``"missing"`` keeps the rows where the column has no value and needs no
+    ``value``; ``"contains"``, ``"starts"`` and ``"ends"`` match ``text`` within
+    a text column, ignoring case: "sampleID containing Ivc".
     """
 
     column: str
     operator: Operator
     value: float | None = None
+    #: "year" when ``value`` is a year compared with a date column: "since 1978".
+    part: str | None = None
+    text: str | None = None
 
 
 @dataclass(frozen=True)
@@ -377,6 +388,10 @@ class QueryPlan:
     #: For a share ("share of Result 1 by Gender"), what a row must meet to be counted;
     #: ``filters``, ``conditions`` and the time scope choose the rows the shares are of.
     counted: tuple[ValueFilter | Condition, ...] = ()
+    #: Splits ``dimension`` into the rows before this value (a year, for a date) and those from it on.
+    split: float | None = None
+    #: Readings a comparison holds fixed: "does VB differ by feed after accounting for time".
+    adjusted_for: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -461,33 +476,59 @@ def _core_name(column: str) -> str:
 
 
 def _column_names(columns: list[str]) -> dict[str, tuple[str, ...]]:
-    """Each column's normalized name, plus its core name when that differs.
+    """Each column's normalized name, then the shorter forms that name it alone.
 
-    A core name shared with another column, or found inside another column's
-    name, is left out: with "Temp (°C)" and "Temp (°F)", "temp" names neither.
+    The shorter forms are its core name (without a trailing unit), its name
+    without a prefix most columns share ("YS (MPa)" for "PROPERTY: YS (MPa)")
+    and without LaTeX markup, and their cores. A form shared with another
+    column, or found inside another column's name, is left out: with
+    "Temp (°C)" and "Temp (°F)", "temp" names neither.
     """
     full = {column: _norm(column) for column in columns}
-    cores = {column: _core_name(column) for column in columns}
+    candidates: dict[str, list[str]] = {}
+    for column, spellings in _spellings(columns).items():
+        forms = [_core_name(column)]
+        for spelling in spellings[1:]:
+            forms += [_norm(spelling), _core_name(spelling)]
+        candidates[column] = [form for form in dict.fromkeys(forms) if form and form != full[column]]
     # Every run of whole words in every full name, with the columns it occurs in,
-    # so finding a core inside another name is a lookup rather than a scan.
-    phrases: dict[str, set[str]] = defaultdict(set)
+    # so finding a form inside another name is a lookup rather than a scan.
+    owners: dict[str, set[str]] = defaultdict(set)
     for column, name in full.items():
         words = name.split()
         for start in range(len(words)):
             for end in range(start + 1, len(words) + 1):
-                phrases[" ".join(words[start:end])].add(column)
-    sharing = defaultdict(set)
-    for column, core in cores.items():
-        sharing[core].add(column)
-    names: dict[str, tuple[str, ...]] = {}
+                owners[" ".join(words[start:end])].add(column)
+    for column, forms in candidates.items():
+        for form in forms:
+            owners[form].add(column)
+    return {
+        column: (full[column], *(form for form in candidates[column] if owners[form] == {column}))
+        for column in columns
+    }
+
+
+# A prefix that most column names share before a colon, as in "PROPERTY: YS (MPa)".
+NAME_PREFIX = re.compile(r"^\s*([^:]{1,40}):\s*(?=\S)")
+# LaTeX markup in a name: "$\mu$m", "g/cm$^3$".
+LATEX_MARKUP = re.compile(r"\$|\\[A-Za-z]+|[\^{}]")
+
+
+def _spellings(columns: list[str]) -> dict[str, list[str]]:
+    """Each column's name as written, then without a prefix most names share, then without LaTeX markup."""
+    prefixes = Counter(
+        match.group(1).strip().casefold() for column in columns if (match := NAME_PREFIX.match(str(column)))
+    )
+    shared = {prefix for prefix, count in prefixes.items() if count >= 3 and 2 * count >= len(columns)}
+    spellings: dict[str, list[str]] = {}
     for column in columns:
-        core = cores[column]
-        if not core or core == full[column]:
-            names[column] = (full[column],)
-            continue
-        shared = len(sharing[core] | phrases.get(core, set())) > 1
-        names[column] = (full[column],) if shared else (full[column], core)
-    return names
+        forms = [str(column)]
+        match = NAME_PREFIX.match(forms[0])
+        if match and match.group(1).strip().casefold() in shared:
+            forms.append(forms[0][match.end():])
+        forms += [LATEX_MARKUP.sub("", form) for form in forms if LATEX_MARKUP.search(form)]
+        spellings[column] = forms
+    return spellings
 
 
 @dataclass(frozen=True)
@@ -710,10 +751,35 @@ UNSUPPORTED_PHRASES = re.compile(
 )
 
 
+YEAR = r"(?:19|20)\d{2}"
+# Ranges of years, read as conditions on the date: "since 1978", "before 1950",
+# "between 1990 and 2000". Each gives the operator on the year, or "range".
+YEAR_RANGES: tuple[tuple[re.Pattern, str], ...] = (
+    (re.compile(rf"\bbetween\s+(?P<low>{YEAR})\s+and\s+(?P<high>{YEAR})\b"), "range"),
+    (re.compile(rf"\bfrom\s+(?P<low>{YEAR})\s+(?:to|until|till|through)\s+(?P<high>{YEAR})\b"), "range"),
+    (re.compile(
+        rf"\b(?:since|from|starting(?:\s+in|\s+from)?|beginning(?:\s+in)?)\s+(?P<year>{YEAR})(?:\s+onwards?)?\b"
+    ), ">="),
+    (re.compile(rf"\b(?P<year>{YEAR})\s+(?:onwards?|and\s+later|and\s+after)\b"), ">="),
+    (re.compile(rf"\bafter\s+(?P<year>{YEAR})\b"), ">"),
+    (re.compile(rf"\bbefore\s+(?P<year>{YEAR})\b"), "<"),
+    (re.compile(rf"\b(?:until|till|up\s+to|through)\s+(?P<year>{YEAR})\b"), "<="),
+)
+# Two groups split at a year: "before and after 2000".
+SPLIT_PATTERN = re.compile(
+    rf"\b(?:before\s+(?:and|vs|versus)\s+after|pre\s+(?:and|vs|versus)\s+post)\s+(?P<year>{YEAR})\b"
+)
+
+
 def _asks_for_several_periods(q: str) -> bool:
-    """Whether the question names two or more months or years, which a plan cannot hold."""
+    """Whether the question names two or more months or years, which a plan cannot hold.
+
+    The two ends of a range of years ("between 1990 and 2000") are one condition.
+    """
+    for pattern, _ in YEAR_RANGES:
+        q = pattern.sub(" ", q)
     months = {MONTH_NAMES[name] for name in MONTH_NAMES if re.search(rf"\b{name}\b", q)}
-    years = set(re.findall(r"\b(?:19|20)\d{2}\b", q))
+    years = set(re.findall(rf"\b{YEAR}\b", q))
     return len(months) >= 2 or len(years) >= 2
 
 
@@ -803,6 +869,10 @@ class _Reading:
     scoped: set[str] = field(default_factory=set)
     #: "rate of X", "X rate": the share of rows where X holds.
     rate: bool = False
+    #: "before and after 2000": the column to split and where.
+    split: tuple[str, float] | None = None
+    #: Readings to hold fixed: "after accounting for time".
+    adjusted: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     #: Why the question can't become one plan, from reading it.
     problem: str | None = None
@@ -1160,7 +1230,7 @@ def _claim_partial_at(
             continue
         candidates = _holding(words, phrase, reading.index or _name_index(dataframe.columns))
         if not candidates and size == 1:
-            candidates = _prefixed_columns(phrase[0], words)
+            candidates = _prefixed_columns(phrase[0], words) or _stemmed_columns(phrase[0], words)
         if not candidates:
             continue
         start, end = window[0][0], window[-1][1]
@@ -1305,6 +1375,21 @@ def _prefixed_columns(word: str, words: dict[str, tuple[str, ...]]) -> list[str]
     ]
 
 
+# Endings that turn a word into a column's name word: "fast" names fasting_ability.
+STEM_ENDINGS = ("ing", "ed", "er", "ers", "ness", "ity", "ability", "ation", "ion", "ions", "ment", "al")
+
+
+def _stemmed_columns(word: str, words: dict[str, tuple[str, ...]]) -> list[str]:
+    """Columns with a name word that is ``word`` plus a common ending: "fast" for fasting_ability."""
+    if not word.isalpha() or len(word) < 4:
+        return []
+    return [
+        column
+        for column, names in words.items()
+        if any(name.startswith(word) and name[len(word):] in STEM_ENDINGS for name in names)
+    ]
+
+
 def _number(text: str) -> float:
     words = text.split()
     return -float(words[-1]) if words[0] == "minus" else float(words[-1])
@@ -1366,9 +1451,12 @@ def _condition_words(
         return [_sign_condition(column, match.group("sign"))], match.end()
     if (match := re.match(rf"\s+(?:is|are|was|were|equals|equal\s+to)\s+{number}", after)):
         return [Condition(column, "=", _number(match.group("number")))], match.end()
-    if (match := re.match(rf"\s+{number}", after)):
+    if (match := re.match(rf"\s+(?:of\s+)?{number}", after)):
+        # "VMA of 0", "Pentanoic_acid 0", "Status 2": a value the column holds. A year is
+        # left for the time scope when the table has a date.
         number = _number(match.group("number"))
-        if _code_like(column, series, roles) and bool((series == number).any()):
+        year = bool(roles.date) and bool(re.fullmatch(YEAR, match.group("number")))
+        if not year and bool((series == number).any()):
             return [Condition(column, "=", number)], match.end()
     return None
 
@@ -1420,6 +1508,15 @@ def _claim_conditions(
         )):
             reading.conditions.append(Condition(column, "missing"))
             claimed = (match.start(), end)
+        elif is_datetime64_any_dtype(series) and (match := re.match(
+            rf"\s+{LINKING_VERB}(?:{COMPARISON_PATTERN})\s+(?P<year>{YEAR})\b", after
+        )):
+            # "YEAR > 1977" on a date column compares its year.
+            operator = next(
+                operator for index, (operator, _) in enumerate(COMPARISONS) if match.group(f"op{index}")
+            )
+            reading.conditions.append(Condition(column, operator, float(match.group("year")), part="year"))
+            claimed = (start, end + match.end())
         elif numeric and (found := _condition_after(column, after, series, roles)):
             conditions, length = found
             reading.conditions.extend(conditions)
@@ -1441,6 +1538,10 @@ def _claim_conditions(
                 continue
             reading.conditions.append(Condition(column, "=", 0.0 if match.group("cue") == "without" else 1.0))
             claimed = (match.start(), end)
+        elif not numeric and (found_text := _text_condition(reading, column, after)):
+            condition, length = found_text
+            reading.conditions.append(condition)
+            claimed = (start, end + length)
         elif not numeric and (found_value := _attached_value(reading, column, end, vocabulary)):
             values, value_end = found_value
             _add_filter(reading, values)
@@ -1450,6 +1551,24 @@ def _claim_conditions(
             if _scope_cued(reading, claimed[0]):
                 reading.scoped.add(column)
             reading.claim(*claimed)
+
+
+TEXT_MATCH = re.compile(
+    r"\s+(?:(?:that|which)\s+)?(?P<how>contains?|containing|includes?|including|"
+    r"(?:starts?|starting|begins?|beginning)\s+with|(?:ends?|ending)\s+with)\s+(?P<word>\S+)"
+)
+
+
+def _text_condition(reading: _Reading, column: str, after: str) -> tuple[Condition, int] | None:
+    """Part of a text written after its column: "sampleID containing Ivc", "Name starting with Ac"."""
+    match = TEXT_MATCH.match(after)
+    if match is None:
+        return None
+    how = match.group("how")
+    operator = "starts" if how[0] in "sb" else "ends" if how[0] == "e" else "contains"
+    chunks = _raw_chunks(reading.question, [match.group("word")])
+    text = chunks[-1] if chunks else match.group("word")
+    return Condition(column, operator, text=text), match.end()
 
 
 def _unclaimed_after(reading: _Reading, end: int) -> str:
@@ -1534,6 +1653,39 @@ def _claim_unit_conditions(reading: _Reading, dataframe: pd.DataFrame, roles: Co
         reading.conditions.append(Condition(columns[0], "=", _number(match.group("number"))))
         reading.scoped.add(columns[0])
         reading.claim(match.start(), match.end())
+
+
+# Words before a reading that ask to hold it fixed: "after accounting for time", "adjusted for age".
+ADJUSTING = re.compile(
+    r"\b(?:(?:after|when|while)\s+)?(?:accounting|adjusting|controlling|correcting)\s+for\s+(?:the\s+)?$"
+    r"|\badjusted\s+for\s+(?:the\s+)?$"
+)
+
+
+def _claim_adjustment(reading: _Reading) -> None:
+    """Read "after accounting for time", "adjusted for age and sex" or "holding dose fixed".
+
+    Such a column is neither the measure nor the grouping; the comparison
+    holds it fixed (see ``_execute_adjusted``).
+    """
+    previous: str | None = None
+    for column, (start, end) in sorted(reading.spans.items(), key=lambda item: item[1][0]):
+        before = reading.original[:start]
+        lead = ADJUSTING.search(before)
+        if lead is None and previous in reading.adjusted:
+            lead = re.search(r"\b(?:and|or)\s+$", before)
+        held = None
+        if lead is None and (lead := re.search(r"\b(?:holding|with)\s+(?:the\s+)?$", before)):
+            held = re.match(r"\s+(?:held\s+)?(?:constant|fixed)\b", reading.original[end:])
+            lead = lead if held else None
+        previous = column
+        if lead is None:
+            continue
+        reading.adjusted.append(column)
+        reading.consumed.add(column)
+        reading.claim(lead.start(), lead.end())
+        if held:
+            reading.claim(end, end + held.end())
 
 
 # Words before a number that make it a value rather than the column it names: "above 1", "top 5".
@@ -1654,7 +1806,10 @@ def _claim_row_label(reading: _Reading, roles: ColumnRoles) -> None:
     if not label or not re.match(r"unnamed\b", str(label), re.IGNORECASE) or label in reading.spans:
         return
     for start, end, word in _tokens(reading.remaining):
-        if word in QUERY_GRAMMAR or word in ENTITY_NOUNS or not word.isalpha() or len(word) < 3:
+        # "which columns relate to VB" asks about the columns, not about the rows' labels.
+        if word in QUERY_GRAMMAR or word in ENTITY_NOUNS or word in COLUMN_WORDS:
+            continue
+        if not word.isalpha() or len(word) < 3:
             continue
         if not _follows(reading.original, start, rf"(?:{RANKING_WORDS}|{GROUPING_WORDS})"):
             continue
@@ -1665,13 +1820,20 @@ def _claim_row_label(reading: _Reading, roles: ColumnRoles) -> None:
 
 
 def _claim_entity(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
-    """Read a noun for the rows ("patients", "birds") as what is counted."""
+    """Read a noun for the rows ("patients", "birds") as what is counted.
+
+    A plural that names nothing else, right before "with" or "where" and a
+    condition, names the rows too: "average strength for mixes with admixture above 0".
+    """
     for start, end, word in _tokens(reading.remaining):
         if word in QUERY_GRAMMAR:
             continue
         counted = re.search(rf"{COUNT_PATTERN}\s+(?:of\s+)?(?:the\s+)?$", reading.original[:start])
         plural = word.endswith("s") and word.isalpha() and len(word) > 3
-        if word not in ENTITY_NOUNS and not (counted and plural):
+        described = plural and re.match(
+            r"\s+(?:with|where|whose|having|that\s+have|which\s+have)\s+\S", reading.original[end:]
+        )
+        if word not in ENTITY_NOUNS and not (counted and plural) and not described:
             continue
         reading.claim(start, end)
         if reading.entity is None:
@@ -1689,10 +1851,7 @@ def _claim_time_part(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRo
     match = TIME_PART_PATTERN.search(reading.remaining)
     if match is None:
         return
-    group = next(
-        name for name in ("hour", "weekday", "month", "quarter", "hour_", "weekday_", "month_", "quarter_")
-        if match.group(name)
-    )
+    group = next(name for name, value in match.groupdict().items() if value)
     part: TimePart = group.rstrip("_")  # type: ignore[assignment]
     reading.claim(*match.span(group))
     if not roles.date or roles.date not in dataframe.columns:
@@ -1701,6 +1860,98 @@ def _claim_time_part(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRo
         reading.flag(f"{roles.date} holds dates without times of day, so there is no hour to group by.")
     else:
         reading.time_part = part
+        if part == "season":
+            spans = _and_listed(list(SEASON_NAMES.values()))
+            reading.notes.append(f"Seasons are the three-month spans {spans}.")
+
+
+# Years of data from which "by month" asks for the month of the year rather than a timeline.
+SEASONAL_YEARS = 2
+
+
+def _claim_month_of_year(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
+    """Read "by month" as the month of the year when the data spans several years.
+
+    Over several years a breakdown by month asks for the seasonal profile, each
+    month pooled across the years; the answer says so and how to ask for the
+    timeline. "per month", "monthly" and any word of a trend keep the timeline.
+    """
+    if reading.time_part or not roles.date or roles.date not in dataframe.columns:
+        return
+    match = re.search(r"\b(?:by|each|across)\s+(?:the\s+)?(?P<month>months?)\b", reading.remaining)
+    if match is None or any(phrase in reading.unnamed for phrase in (*TREND_WORDS, "monthly", "per month")):
+        return
+    dates = dataframe[roles.date].dropna()
+    if dates.empty or not is_datetime64_any_dtype(dates):
+        return
+    years = (dates.max() - dates.min()).days / 365.25
+    if years < SEASONAL_YEARS:
+        return
+    reading.claim(*match.span("month"))
+    reading.time_part = "month"
+    reading.notes.append(
+        f'Read "by month" as the month of the year, each pooled across the {years:.0f} years of data; '
+        'ask for the "monthly trend" for the timeline.'
+    )
+
+
+def _year_column(dataframe: pd.DataFrame, roles: ColumnRoles) -> str | None:
+    """The column a year in the question refers to: the date column, or one numeric column of years."""
+    if roles.date and roles.date in dataframe.columns:
+        return roles.date
+    named = [
+        column for column in roles.numeric
+        if column in dataframe.columns and {"year", "yr"} & set(_norm(normalized_name(column)).split())
+    ]
+    return named[0] if len(named) == 1 else None
+
+
+def _claim_year_ranges(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
+    """Read ranges of years as conditions on the date ("since 1978") and "before and after 2000" as a split.
+
+    Right after another numeric column's name, numbers within that column's
+    own values are a range of it ("Elevation between 1900 and 2000"), which
+    the conditions read instead.
+    """
+    column = _year_column(dataframe, roles)
+
+    def own_range(match: re.Match) -> bool:
+        named = next(
+            (
+                other for other, (_, end) in reading.spans.items()
+                if end <= match.start() and not reading.original[end:match.start()].strip()
+            ),
+            None,
+        )
+        if named is None or named == column or not _is_measurement(dataframe[named]):
+            return False
+        values = dataframe[named].dropna()
+        numbers = [float(number) for number in match.groupdict().values() if number]
+        return not values.empty and all(values.min() <= number <= values.max() for number in numbers)
+
+    if (match := SPLIT_PATTERN.search(reading.remaining)):
+        if column is None:
+            reading.flag("This table has no date or year column to split at a year.")
+        else:
+            reading.split = (column, float(match.group("year")))
+        reading.claim(*match.span())
+    for pattern, operator in YEAR_RANGES:
+        for match in list(pattern.finditer(reading.remaining)):
+            if own_range(match):
+                continue
+            if column is None:
+                reading.flag("This table has no date or year column for a range of years.")
+            elif operator == "range":
+                low, high = sorted((float(match.group("low")), float(match.group("high"))))
+                reading.conditions.extend(
+                    [Condition(column, ">=", low, part="year"), Condition(column, "<=", high, part="year")]
+                )
+                reading.scoped.add(column)
+            else:
+                year = float(match.group("year"))
+                reading.conditions.append(Condition(column, operator, year, part="year"))
+                reading.scoped.add(column)
+            reading.claim(*match.span())
 
 
 def _reread_aggregation_names(reading: _Reading) -> None:
@@ -1798,8 +2049,48 @@ def _claim_analysis_words(reading: _Reading, dataframe: pd.DataFrame, roles: Col
             reading.entity = following.group(1)
     relating = CORRELATES_PATTERN.search(text) or set(text.split()) & RESEARCH_WORDS
     if not relating and (match := ACROSS_PATTERN.search(reading.remaining)):
-        reading.across = tuple(numeric_readings(dataframe, roles))
+        reading.across = _ranked_readings(dataframe, roles)
         reading.claim(*match.span())
+    _claim_matrix_columns(reading, dataframe, roles)
+
+
+# The per-row mean ADA adds to a matrix table (see ``schema.row_summary_name``).
+ROW_SUMMARY = re.compile(r"Row mean \([\d,]+ columns\)")
+
+
+def _ranked_readings(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[str, ...]:
+    """The readings a "which column" question ranks, without the row mean ADA built from them."""
+    readings = numeric_readings(dataframe, roles)
+    return tuple(column for column in readings if not ROW_SUMMARY.fullmatch(str(column)))
+
+
+def _claim_matrix_columns(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
+    """Read "total reads per sample" in a matrix, whose columns are the samples, as a ranking of the columns.
+
+    In a matrix of counts each column is one sample, so "per sample" asks for
+    each column's total; the noun after the aggregation ("reads") names what
+    the cells hold, and the answer says how it was read.
+    """
+    if roles.table_shape != "matrix" or reading.across:
+        return
+    match = re.search(
+        r"\b(?:per|by|each|for\s+each|in\s+each|across)\s+(?:the\s+)?(?P<noun>samples?|columns?|librar(?:y|ies))\b",
+        reading.remaining,
+    )
+    if match is None:
+        return
+    reading.across = _ranked_readings(dataframe, roles)
+    reading.claim(*match.span())
+    words = "|".join(word for word in AGGREGATION_WORDS if word not in SUPERLATIVE_WORDS)
+    held = re.search(rf"\b(?:{words})\s+(?:number\s+of\s+)?(?P<noun>[a-z]{{3,}})\b", reading.remaining)
+    if held and held.group("noun") not in QUERY_GRAMMAR:
+        reading.claim(*held.span("noun"))
+        noun = match.group("noun")
+        unit = f"{noun[:-3]}y" if noun.endswith("ies") else noun.removesuffix("s")
+        reading.notes.append(
+            f'Read "{_raw_words(reading.question, [held.group("noun")])}" as the values in the '
+            f"{len(reading.across):,} columns, one column per {unit}."
+        )
 
 
 def _claim_rate(reading: _Reading) -> None:
@@ -1884,7 +2175,10 @@ def _read_question(
         reading.claim(start, end, keep_text=True)
     _reread_aggregation_names(reading)
     _claim_numbered_columns(reading, roles)
+    _claim_adjustment(reading)
     _claim_time_part(reading, dataframe, roles)
+    _claim_month_of_year(reading, dataframe, roles)
+    _claim_year_ranges(reading, dataframe, roles)
     _claim_conditions(reading, list(reading.spans), dataframe, roles, vocabulary)
     _claim_values(reading, vocabulary, dataframe, exact_only=True)
     _claim_analysis_words(reading, dataframe, roles)
@@ -2277,6 +2571,11 @@ def _plan_from_reading(reading: _Reading, dataframe: pd.DataFrame, roles: Column
             reading.refusal = _two_groupings(groupings)
         return None
     measure, dimension = chosen
+    if reading.split is not None:
+        if dimension:
+            reading.refusal = _two_groupings([dimension, reading.split[0]])
+            return None
+        return _split_plan(reading, dataframe, roles, measure)
     time_part = reading.time_part
     by_year = re.search(r"\b(?:by|per|each|every|and)\s+(?:the\s+)?(?:years?|yearly)\b", unnamed)
     if dimension and roles.date and (time_part or by_year) and dimension != roles.date:
@@ -2482,6 +2781,42 @@ def _plan_from_reading(reading: _Reading, dataframe: pd.DataFrame, roles: Column
         # A question that only states conditions ("pH below 5", "West") counts the rows meeting them.
         return QueryPlan(intent="count", aggregation="count", **{**ungrouped, "measure": None})
     return None
+
+
+def _split_plan(
+    reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles, measure: str | None
+) -> QueryPlan | None:
+    """Plan "average DO before and after 2000": the rows before the year against those from it on."""
+    assert reading.split is not None
+    column, at = reading.split
+    measure = measure or roles.measure
+    if measure is None or not _is_measurement(dataframe[measure]):
+        reading.refusal = (
+            'A split at a year compares a numeric measure, as in "average <measure> before and after 2000".'
+        )
+        return None
+    scope = _scope(reading)
+    if _is_flag(dataframe[measure]) and outcome_event(dataframe[measure]) is not None:
+        return QueryPlan(
+            intent="compare", aggregation="mean", dimension=column, split=at,
+            counted=(_event(measure, dataframe[measure]),), notes=(_rate_note(measure),), **scope,
+        )
+    return QueryPlan(
+        intent="compare", aggregation="mean", measure=measure, dimension=column, split=at, **scope
+    )
+
+
+def _split_labels(series: pd.Series, at: float) -> pd.Series:
+    """Each row's side of a split: "before 2000" or "2000 onwards" for a date, by value otherwise."""
+    dated = is_datetime64_any_dtype(series)
+    values = series.dt.year.astype(float) if dated else pd.to_numeric(series, errors="coerce")
+    shown = _number_text(at)
+    if dated:
+        before, after = f"the years before {shown}", f"{shown} and later"
+    else:
+        before, after = f"rows below {shown}", f"rows at {shown} or above"
+    labels = pd.Series(np.where(values < at, before, after), index=series.index, dtype=object)
+    return labels.where(values.notna()).astype(pd.CategoricalDtype([before, after], ordered=True))
 
 
 def _event(column: str, series: pd.Series) -> ValueFilter | Condition:
@@ -2741,6 +3076,13 @@ def _unused_part(
             f"The answer would leave out the {GRAIN_NAMES[grain]} grouping; "
             "ask for one grouping at a time."
         )
+    if reading.split and plan.split is None:
+        return f"The answer would leave out the split at {_number_text(reading.split[1])}."
+    if reading.adjusted and plan.adjusted_for != tuple(reading.adjusted):
+        return (
+            f"The answer would leave out holding {_and_listed(reading.adjusted)} fixed; ask as in "
+            f'"does <measure> differ by <group> after accounting for {reading.adjusted[0]}".'
+        )
     if reading.time_part and plan.time_part != reading.time_part:
         return f"The answer would leave out the {reading.time_part} grouping."
     entity_at = reading.original.find(reading.entity) if reading.entity else -1
@@ -2872,7 +3214,19 @@ def _value_mask(series: pd.Series, values: tuple[str, ...]) -> pd.Series:
 def _condition_mask(series: pd.Series, condition: Condition) -> pd.Series:
     if condition.operator == "missing":
         return series.isna()
-    values = pd.to_numeric(series, errors="coerce")
+    if condition.operator in TEXT_OPERATORS:
+        text = series.astype("string").str.casefold()
+        wanted = str(condition.text).casefold()
+        found = {
+            "contains": text.str.contains(wanted, regex=False), "starts": text.str.startswith(wanted),
+            "ends": text.str.endswith(wanted),
+        }[condition.operator]
+        return found.fillna(False).astype(bool)
+    if is_datetime64_any_dtype(series):
+        # A condition on a date compares its year: "since 1978".
+        values = series.dt.year.astype(float)
+    else:
+        values = pd.to_numeric(series, errors="coerce")
     compare = {"=": values.eq, "<": values.lt, "<=": values.le, ">": values.gt, ">=": values.ge}
     return compare[condition.operator](condition.value)
 
@@ -2888,9 +3242,19 @@ def _describe_filter(value_filter: ValueFilter) -> str:
     return f"{value_filter.column} in ({', '.join(value_filter.values)})"
 
 
+# How a condition on part of a text reads: 'sampleID containing "Ivc"'.
+TEXT_OPERATORS = {"contains": "containing", "starts": "starting with", "ends": "ending with"}
+# How a condition on a year reads: "YEAR from 1978", "YEAR before 1950".
+YEAR_OPERATOR_WORDS = {"=": "in", "<": "before", "<=": "up to", ">": "after", ">=": "from"}
+
+
 def _describe_condition(condition: Condition) -> str:
     if condition.operator == "missing":
         return f"{condition.column} missing"
+    if condition.operator in TEXT_OPERATORS:
+        return f'{condition.column} {TEXT_OPERATORS[condition.operator]} "{condition.text}"'
+    if condition.part == "year":
+        return f"{condition.column} {YEAR_OPERATOR_WORDS[condition.operator]} {_number_text(condition.value)}"
     return f"{condition.column} {OPERATOR_WORDS[condition.operator]} {_number_text(condition.value)}"
 
 
@@ -2926,6 +3290,8 @@ def _aggregate_series(series: pd.Series, aggregation: Aggregation, quantile: flo
     values = series.dropna()
     if aggregation == "iqr":
         return float(values.quantile(0.75) - values.quantile(0.25))
+    if aggregation == "range":
+        return float(values.max() - values.min()) if len(values) else float("nan")
     if aggregation == "quantile":
         return float(values.quantile(quantile if quantile is not None else 0.5))
     if aggregation == "mode":
@@ -2956,6 +3322,8 @@ def _aggregation_formula(plan: QueryPlan, column: str | None) -> str:
         return f"quantile({column}, {plan.quantile or 0.5:g})"
     if plan.aggregation == "iqr":
         return f"Q3 − Q1 of {column}"
+    if plan.aggregation == "range":
+        return f"max − min of {column}"
     return f"{plan.aggregation}({column})"
 
 
@@ -2987,6 +3355,9 @@ def _group_values(dataframe: pd.DataFrame, plan: QueryPlan) -> pd.Series:
 
 def _time_part_values(stamps: pd.Series, part: TimePart) -> pd.Series:
     """The hour, weekday, month of year, quarter of year or year of each timestamp."""
+    if part == "season":
+        # Three-month seasons: 0 for December to February, then March to May and so on.
+        return stamps.dt.month % 12 // 3
     return {
         "hour": stamps.dt.hour, "weekday": stamps.dt.dayofweek, "month": stamps.dt.month,
         "quarter": stamps.dt.quarter, "year": stamps.dt.year,
@@ -3058,7 +3429,7 @@ def _grouped_frame(
 
 def _group_function(plan: QueryPlan):
     """What pandas runs per group for the plan's aggregation."""
-    if plan.aggregation in ("iqr", "quantile", "mode"):
+    if plan.aggregation in ("iqr", "quantile", "mode", "range"):
         return lambda values: _aggregate_series(values, plan.aggregation, plan.quantile)
     return plan.aggregation
 
@@ -3071,29 +3442,80 @@ def execute_plan(
     The answer ends with how the question was read, how many rows it used and,
     when the row limit left ``rows_not_analyzed`` rows out, that it covers only
     the rows analysed. Raises ``ValueError`` for an unknown column or intent.
-    The returned ``question`` is empty; ``answer_question`` fills it in.
+    The returned ``question`` is empty; ``answer_question`` fills it in. A
+    comparison, correlation or grouped average runs on the rows the brief's
+    tests use: the distinct rows, when many rows exactly repeat others.
     """
-    return _with_scope(_run_plan(plan, dataframe, roles), dataframe, roles, rows_not_analyzed)
+    basis, repeats = _distinct_basis(dataframe, roles) if _tested(plan) else (dataframe, 0)
+    note = (
+        f"As in the brief, this uses the {len(basis):,} distinct rows, leaving out {repeats:,} exact repeats "
+        "of other rows."
+        if repeats else ""
+    )
+    return _with_scope(_run_plan(plan, basis, roles), basis, roles, rows_not_analyzed, note)
+
+
+def _tested(plan: QueryPlan) -> bool:
+    """Whether a plan's answer rests on a test or a correlation, which copies of rows would inflate."""
+    if plan.intent in LEFT_OUT_INTENTS:
+        return True
+    return plan.intent in ("rank", "breakdown", "crosstab") and bool(plan.measure or plan.counted)
+
+
+# The distinct rows of the last few tables asked about, with the repeats they leave out.
+_BASES: dict[int, tuple[weakref.ref, pd.DataFrame, int]] = {}
+
+
+def _distinct_basis(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[pd.DataFrame, int]:
+    """The rows the brief tests on (``business_insights.tested_rows``), found once per table."""
+    cached = _BASES.get(id(dataframe))
+    if cached and cached[0]() is dataframe:
+        return cached[1], cached[2]
+    tested, repeats = tested_rows(dataframe)
+    if repeats:
+        # The checks flag cells by row label, so the table's own scan serves its distinct rows too.
+        _remember_checks(tested, roles, _data_checks(dataframe, roles))
+    if len(_BASES) >= 8:
+        _BASES.clear()
+    _BASES[id(dataframe)] = (weakref.ref(dataframe), tested, repeats)
+    return tested, repeats
 
 
 def _with_scope(
-    result: QueryAnswer, dataframe: pd.DataFrame, roles: ColumnRoles, rows_not_analyzed: int
+    result: QueryAnswer, dataframe: pd.DataFrame, roles: ColumnRoles, rows_not_analyzed: int, basis: str = ""
 ) -> QueryAnswer:
-    """Add the plan's readings, the rows the answer used and any rows the row limit left out."""
+    """Add the plan's readings, the rows the answer used and any rows the row limit left out.
+
+    The rows used are those with the measure recorded, so an answer about a
+    column filled on 110 of 120 rows says it rests on those 110. ``basis``
+    says when the answer runs on the distinct rows, as the brief's tests do.
+    """
     plan = result.plan
-    sentences = [result.answer, *plan.notes]
+    sentences = [result.answer, *plan.notes, *([basis] if basis else [])]
     try:
         working, _ = _apply_filters(dataframe, plan, roles)
     except TimeScopeUnavailable:
         working = None
     if working is not None and not working.empty:
         sentences.extend(_flag_cautions(plan, dataframe, working, roles))
+        sentences.extend(_condition_cautions(plan, dataframe, working, roles))
+    sentences.extend(_blanked_notes(plan, dataframe, roles))
     # A count says its own rows, and an unfiltered aggregate says how many rows it used.
     if working is not None and not working.empty and plan.intent not in ("count", "missing"):
-        if len(working) < len(dataframe):
+        needed = [
+            column for column in (plan.measure, plan.partner)
+            if column and column in working.columns and plan.intent != "duplicates"
+        ]
+        used = int(working[needed].notna().all(axis=1).sum()) if needed else len(working)
+        if used < len(working):
+            scoped = f", of the {len(working):,} in that scope" if len(working) < len(dataframe) else (
+                f", of {_analysed_rows(dataframe, roles, rows_not_analyzed)}"
+            )
+            sentences.append(f"Based on the {used:,} rows with {_and_listed(needed)} recorded{scoped}.")
+        elif len(working) < len(dataframe):
             rows = _analysed_rows(dataframe, roles, rows_not_analyzed)
             sentences.append(f"Based on {len(working):,} of {rows}.")
-        elif plan.intent != "aggregate" or rows_not_analyzed:
+        elif (plan.intent != "aggregate" and not basis) or rows_not_analyzed:
             sentences.append(f"Based on {_analysed_rows(dataframe, roles, rows_not_analyzed, every=True)}.")
     elif rows_not_analyzed:
         sentences.append(f"ADA analysed {_analysed_rows(dataframe, roles, rows_not_analyzed, every=True)}.")
@@ -3125,6 +3547,9 @@ def _flag_cautions(
     if not columns:
         return []
     issues = _data_checks(dataframe, roles)
+    if plan.intent in LEFT_OUT_INTENTS:
+        # Those values were left out of the answer (see _left_out), so they need no caution.
+        issues = tuple(issue for issue in issues if issue.check not in MASKED_CHECKS)
     cautions: list[str] = []
     for column in columns:
         flagged = _value_issues(issues, column, working.index)
@@ -3160,6 +3585,71 @@ def _flag_cautions(
     return cautions
 
 
+def _condition_cautions(
+    plan: QueryPlan, dataframe: pd.DataFrame, working: pd.DataFrame, roles: ColumnRoles
+) -> list[str]:
+    """A caution when the rows a condition picks include values the data checks flag.
+
+    "How many patients have Na above 150" counts rows by their Na, so when
+    some of those Na values are flagged as impossible the count rests on them.
+    """
+    checked = [
+        item for item in (*plan.conditions, *plan.counted)
+        if isinstance(item, Condition) and item.operator not in ("missing", *TEXT_OPERATORS)
+        and item.column != plan.measure and item.column in working.columns
+    ]
+    if not checked:
+        return []
+    issues = _data_checks(dataframe, roles)
+    cautions = []
+    for column in dict.fromkeys(item.column for item in checked):
+        rows = working.index
+        if plan.counted:
+            rows = working.index[_counted_mask(working, plan.counted).to_numpy()]
+        flagged = _value_issues(issues, column, rows)
+        if not flagged:
+            continue
+        cells = pd.Index([])
+        for issue in flagged:
+            cells = cells.union(rows.intersection(issue.cells[column]))
+        summaries = "; ".join(issue.summary for issue in flagged)
+        noun = "row has" if len(cells) == 1 else "rows have"
+        cautions.append(
+            f"Caution: {len(cells):,} of these {noun} {column} values the data checks flag ({summaries})."
+        )
+    return cautions
+
+
+def _blanked_notes(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -> list[str]:
+    """Say when a condition would have matched a code that cleaning set to missing.
+
+    "How many rows have pm2_5 below 0" finds none once the -1 codes are
+    missing values, and the answer says that is why.
+    """
+    conditions = [
+        item for item in (*plan.conditions, *plan.counted)
+        if isinstance(item, Condition) and item.operator in ("=", "<", "<=", ">", ">=") and item.part is None
+    ]
+    if not conditions:
+        return []
+    notes = []
+    for issue in _data_checks(dataframe, roles):
+        # Codes cleaning set to missing are listed by the checks with no cells left to flag.
+        if issue.check != "sentinel" or issue.cells or not isinstance(issue.group, int | float):
+            continue
+        for condition in conditions:
+            if condition.column in issue.columns and bool(
+                _condition_mask(pd.Series([float(issue.group)]), condition).iloc[0]
+            ):
+                code = show_value(float(issue.group))
+                notes.append(
+                    f"{code} in {condition.column} was read as a missing-value code and set to missing "
+                    f"during cleaning, so those cells are not counted ({issue.summary})."
+                )
+                break
+    return notes
+
+
 def _analysed_rows(
     dataframe: pd.DataFrame, roles: ColumnRoles, rows_not_analyzed: int, every: bool = False
 ) -> str:
@@ -3172,6 +3662,72 @@ def _analysed_rows(
         return f"all {rows:,} rows" if every else f"{rows:,} rows"
     kept = "newest" if roles.date else "sampled"
     return f"the {rows:,} {kept} rows (of {rows + rows_not_analyzed:,})"
+
+
+# Answers that compare or relate columns, which the brief computes without the cells
+# the data checks find can't be readings as they stand.
+LEFT_OUT_INTENTS = ("correlation", "correlates", "compare")
+
+
+def _related_columns(plan: QueryPlan, working: pd.DataFrame, roles: ColumnRoles) -> list[str]:
+    """The numeric columns a comparison or correlation reads."""
+    if plan.intent == "correlates":
+        readings = numeric_readings(working, roles)
+        return list(dict.fromkeys([*readings, *([plan.measure] if plan.measure else [])]))
+    return [column for column in (plan.measure, plan.partner, *plan.columns) if column]
+
+
+def _run_related(
+    plan: QueryPlan, working: pd.DataFrame, roles: ColumnRoles, scope: str, applied: list[str]
+) -> QueryAnswer:
+    if plan.intent == "correlation":
+        return _execute_correlation(plan, working, scope, applied)
+    if plan.intent == "correlates":
+        return _execute_correlates(plan, working, roles, scope, applied)
+    if plan.columns:
+        return _execute_column_differences(plan, working, roles, scope, applied)
+    if plan.adjusted_for:
+        return _execute_adjusted(plan, working, scope, applied)
+    return _execute_compare(plan, working, roles, scope, applied)
+
+
+def _left_out(
+    working: pd.DataFrame, issues: tuple[QualityIssue, ...], columns: list[str]
+) -> tuple[pd.DataFrame, str]:
+    """``working`` without the values the brief leaves out of comparisons and correlations, and a note.
+
+    Those are the cells the data checks find can't be readings as they stand
+    (``quality.MASKED_CHECKS``): impossible values, codes, fill values, swapped
+    or stuck readings. The note names the checks, so a figure is never left to
+    rest on them unexplained.
+    """
+    present = set(working.columns)
+    hits: dict[str, pd.Index] = {}
+    reasons: list[str] = []
+    for issue in issues:
+        if issue.check not in MASKED_CHECKS:
+            continue
+        found = False
+        for column in columns:
+            labels = issue.cells.get(column)
+            if labels is None or column not in present:
+                continue
+            rows = working.index.intersection(labels)
+            rows = rows[working.loc[rows, column].notna().to_numpy()]
+            if len(rows):
+                hits[column] = hits[column].union(rows) if column in hits else rows
+                found = True
+        if found:
+            reasons.append(issue.summary)
+    if not hits:
+        return working, ""
+    masked = working.copy()
+    for column, rows in hits.items():
+        masked.loc[rows, column] = np.nan
+    cells = sum(len(rows) for rows in hits.values())
+    named = "; ".join(reasons[:3]) + ("; and more" if len(reasons) > 3 else "")
+    noun = "value" if cells == 1 else "values"
+    return masked, f"As in the brief, {cells:,} {noun} the data checks flag are left out ({named})."
 
 
 def _run_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -> QueryAnswer:
@@ -3263,17 +3819,12 @@ def _run_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -> Q
     if plan.intent == "crosstab":
         return _execute_crosstab(plan, working, scope, applied)
 
-    if plan.intent == "correlation":
-        return _execute_correlation(plan, working, scope, applied)
-
-    if plan.intent == "compare" and plan.columns:
-        return _execute_column_differences(plan, working, roles, scope, applied)
-
-    if plan.intent == "compare":
-        return _execute_compare(plan, working, roles, scope, applied)
-
-    if plan.intent == "correlates":
-        return _execute_correlates(plan, working, roles, scope, applied)
+    if plan.intent in LEFT_OUT_INTENTS:
+        # Comparisons and correlations leave out the cells the brief leaves out of its scans.
+        issues = _data_checks(dataframe, roles)
+        working, left_out = _left_out(working, issues, _related_columns(plan, working, roles))
+        result = _run_related(plan, working, roles, scope, applied)
+        return replace(result, answer=f"{result.answer} {left_out}") if left_out else result
 
     if plan.intent == "rank" and plan.dimension is None and plan.grain:
         return _rank_periods(plan, working, roles, scope, applied)
@@ -3327,11 +3878,12 @@ def _execute_trend(
     column = working[plan.measure].dropna() if plan.measure else None
     unit = _unit(plan.measure, scoped_roles)
     size = format_change(first, last, plan.measure, unit, column, signed=True)
-    movement = (
-        f"{size} across {len(trend)} {grain_name}s"
-        if size
-        else f"across {len(trend)} {grain_name}s, from a starting period of zero"
-    )
+    # The span runs from the first period with a value to the last; periods with none are not counted.
+    spanned = int(trend.index.get_loc(present.index[-1]) - trend.index.get_loc(present.index[0])) + 1
+    across = f"{spanned} {grain_name}s"
+    if len(present) < spanned:
+        across += f", {len(present)} of them with values"
+    movement = f"{size} across {across}" if size else f"across {across}, from a starting period of zero"
     start, end = format_values_apart(first, last, column=plan.measure)
     counted = f"Distinct {plan.count_column}" if plan.count_column else "Records"
     named = plan.measure or counted
@@ -3812,8 +4364,9 @@ def _column_outliers(
             ordered = values.loc[index].sort_values(ascending=False)
             shown = [show_value(value) for value in ordered.head(8)]
             more = f" and {len(index) - 8:,} more" if len(index) > 8 else ""
+            verb = "sits" if len(index) == 1 else "sit"
             answer = (
-                f"{len(index):,} of the {len(present):,} {column} values{_phrase(applied)} sit outside "
+                f"{len(index):,} of the {len(present):,} {column} values{_phrase(applied)} {verb} outside "
                 f"1.5×IQR ({bounds}{on_log}): {', '.join(shown)}{more}."
             )
         else:
@@ -3965,6 +4518,10 @@ def _execute_grouping(
     grouped = _grouped_frame(working, plan, value_label, groups)
     key = grouped.columns[0]
     single_rows = not counted and not (plan.time_part or plan.bins) and 1 < len(grouped) == len(working)
+    plain = not (counted or single_rows or plan.time_part or plan.bins)
+    if plan.intent == "rank" and plain and len(grouped) > 2:
+        if float((grouped["n"] == 1).mean()) >= SINGLE_ROW_GROUPS:
+            return _rank_rows(plan, working, scope, applied, grouped)
     if single_rows:
         assert plan.measure is not None
         grouped = grouped.drop(columns="n").rename(columns={value_label: plan.measure})
@@ -3978,11 +4535,12 @@ def _execute_grouping(
         if enough.any() and not enough.all():
             rankable, small = grouped[enough], grouped[~enough]
         fragile = not enough.any()
-    if plan.intent == "rank" and not plan.time_part and len(rankable) > 1:
-        # Rows with no value for the grouping are counted, but they are not a group to name as the top one.
-        unlabelled = unlabelled_label(working[plan.dimension].dropna().unique())
-        if str(rankable[key].iloc[0]) == unlabelled:
-            rankable = rankable[rankable[key].astype(str) != unlabelled]
+    if not (plan.time_part or plan.bins) and len(rankable) > 1:
+        # Rows with no value for the grouping, or a placeholder such as "-" or "unknown", are
+        # counted and listed, but they are not a group to name as the highest or the lowest.
+        placeholder = _placeholders(rankable[key], working[plan.dimension])
+        if not placeholder.all():
+            rankable = rankable[~placeholder.to_numpy()]
     extremes = False
     if ordered:
         table = _in_group_order(grouped, key)
@@ -4092,6 +4650,77 @@ def _execute_grouping(
     )
 
 
+# Labels that stand for no value rather than name a group, once normalized: "-", "N/A", "unknown".
+PLACEHOLDER_LABELS = frozenset({
+    "", "na", "n a", "nan", "none", "null", "unknown", "missing", "not recorded", "not available",
+    "not applicable",
+})
+# Share of single-row groups at which a ranking of groups ranks the rows instead.
+SINGLE_ROW_GROUPS = 0.5
+
+
+def _placeholders(labels: pd.Series, column: pd.Series) -> pd.Series:
+    """Which group labels stand for no value: the label for rows without one, or a placeholder text."""
+    unlabelled = unlabelled_label(column.dropna().unique())
+    texts = not is_numeric_dtype(column) or is_bool_dtype(column)
+    return labels.map(
+        lambda label: str(label) == unlabelled or (texts and _norm(str(label)) in PLACEHOLDER_LABELS)
+    ).astype(bool)
+
+
+def _rank_rows(
+    plan: QueryPlan, working: pd.DataFrame, scope: str, applied: list[str], grouped: pd.DataFrame
+) -> QueryAnswer:
+    """Rank the rows themselves when most groups are a single row: "top 5 Name by intensity".
+
+    An average over one row is that row, and a group with one row is never
+    ranked against groups of five, so ranking groups would leave out nearly
+    every label. Placeholder labels ("-", "unknown") and rows without a label
+    are left out.
+    """
+    assert plan.measure is not None and plan.dimension is not None
+    rows = working[[plan.dimension, plan.measure]].dropna()
+    placeholder = _placeholders(rows[plan.dimension], working[plan.dimension])
+    rows = rows[~placeholder.to_numpy()]
+    if rows.empty:
+        return QueryAnswer(
+            question="", plan=plan,
+            answer=f"Every row with {plan.measure}{_phrase(applied)} has a placeholder {plan.dimension}.",
+            calculation=f"rows with a {plan.dimension} label{scope}",
+        )
+    shown = plan.top_n or BREAKDOWN_LIMIT
+    table = rows.sort_values(plan.measure, ascending=plan.ascending, kind="stable").head(shown)
+    table = table.reset_index(drop=True)
+    values = working[plan.measure].dropna()
+    top = table.iloc[0]
+    high = "lowest" if plan.ascending else "highest"
+    label = group_label(plan.dimension, top[plan.dimension])
+    answer = (
+        f"{label} has the {high} {plan.measure}{_phrase(applied)}, "
+        f"at {format_number(float(top[plan.measure]), plan.measure, column_values=values)}."
+    )
+    if len(table) > 1:
+        answer += f" The table lists the {len(table)} rows with the {high} values."
+    single = int((grouped["n"] == 1).sum())
+    answer += (
+        f" {single:,} of the {len(grouped):,} {plan.dimension} values label a single row, so the rows are "
+        "ranked by their own value rather than the groups by an average."
+    )
+    if placeholder.any():
+        left = working.loc[placeholder[placeholder].index, plan.dimension].astype(str)
+        labels = list_names([f'"{label}"' for label in pd.unique(left)][:3])
+        answer += f" {int(placeholder.sum()):,} rows labelled {labels} are left out."
+    return QueryAnswer(
+        question="", plan=plan, answer=answer,
+        calculation=(
+            f"{plan.measure} of each row labelled by {plan.dimension}, "
+            f"{'ascending' if plan.ascending else 'descending'}, showing {len(table)}{scope}; "
+            "placeholder labels left out"
+        ),
+        table=table, chart="bar",
+    )
+
+
 def _in_group_order(grouped: pd.DataFrame, key: str) -> pd.DataFrame:
     """Groups in their own order: numbers by value, bins in order, other labels as they come."""
     if isinstance(grouped[key].dtype, pd.CategoricalDtype):
@@ -4109,6 +4738,8 @@ def _part_names(part: TimePart | None) -> dict[int, str]:
         return {number: calendar.month_name[number] for number in range(1, 13)}
     if part == "quarter":
         return QUARTER_NAMES
+    if part == "season":
+        return SEASON_NAMES
     return {}
 
 
@@ -4116,6 +4747,8 @@ def _grouping_name(plan: QueryPlan) -> str:
     """What a group is called in an answer: "Region", "month of the year", "hour"."""
     if plan.time_part in ("month", "quarter"):
         return f"{plan.time_part} of the year"
+    if plan.time_part == "season":
+        return "season"
     if plan.bins:
         return f"{plan.dimension} group"
     return plan.time_part or str(plan.dimension)
@@ -4144,7 +4777,11 @@ def _group_difference_line(
     # Only the groups that were ranked are tested, so a group of two can't decide it.
     ranked = set(rankable.iloc[:, 0].map(str))
     codes = {str(number): str(name) for number, name in _part_names(plan.time_part).items()}
-    kept = [value for value in frame[key].dropna().unique() if codes.get(str(value), str(value)) in ranked]
+    # A date with gaps gives its parts as floats (3.0 for March), named by their whole number.
+    kept = [
+        value for value in frame[key].dropna().unique()
+        if codes.get(_number_text(value) if isinstance(value, float) else str(value), str(value)) in ranked
+    ]
     frame = frame[frame[key].isin(kept)]
     comparison = compare_groups(frame, plan.measure, key, entity=entity)
     if comparison is None:
@@ -4357,7 +4994,10 @@ def _comparison_plan(question: str, dataframe: pd.DataFrame, roles: ColumnRoles)
         return _flag_comparison(reading, free, numeric_columns, way, scope)
 
     conditions = scope["conditions"]
-    if split:
+    at = None
+    if reading.split:
+        (grouping, at), compared, bins = reading.split, (), None
+    elif split:
         after = [column for column in free if mentioned[column] > split.start()]
         if not after or not _is_measurement(dataframe[after[0]]):
             return None
@@ -4390,13 +5030,14 @@ def _comparison_plan(question: str, dataframe: pd.DataFrame, roles: ColumnRoles)
             intent="compare",
             aggregation=DIRECTION_WORDS[direction.group(1)] if direction and len(compared) == 2 else "mean",
             dimension=grouping, counted=(_event(measure, dataframe[measure]),), filters=tuple(kept),
-            year=year, month=month, conditions=conditions,
+            year=year, month=month, conditions=conditions, split=at,
             notes=(_rate_note(measure),),
         )
     # "compare revenue across regions" asks for each region's total when revenue
     # adds up; only words of difference ask for the test.
     testing = differ or direction or significant
-    if compare and not testing and metric_for(measure, roles).additive and not compared and not bins:
+    plain = not (compared or bins or reading.split or reading.adjusted)
+    if compare and not testing and metric_for(measure, roles).additive and plain:
         return QueryPlan(
             intent="breakdown", aggregation=metric_for(measure, roles).aggregation, measure=measure,
             dimension=grouping, filters=tuple(kept), year=year, month=month, conditions=conditions,
@@ -4413,6 +5054,8 @@ def _comparison_plan(question: str, dataframe: pd.DataFrame, roles: ColumnRoles)
         month=month,
         conditions=conditions,
         bins=bins,
+        split=at,
+        adjusted_for=tuple(reading.adjusted),
     )
 
 
@@ -4608,6 +5251,8 @@ def _execute_compare(
     frame = working
     if plan.bins:
         frame = working.assign(**{plan.dimension: _binned(working[plan.dimension], plan.bins)})
+    if plan.split is not None:
+        frame = working.assign(**{plan.dimension: _split_labels(working[plan.dimension], plan.split)})
     comparison = compare_groups(frame, plan.measure, plan.dimension, entity=entity_column(working, roles))
     if comparison is None:
         return QueryAnswer(
@@ -4631,6 +5276,8 @@ def _execute_compare(
         else:
             answer = f"No, the other way round. {answer}"
     calculation = f"{comparison_calculation(comparison)}{scope}"
+    if plan.split is not None:
+        calculation += f"; {plan.dimension} split at {_number_text(plan.split)}"
     if plan.bins:
         answer += f" {plan.dimension} is continuous, so its rows are split at the median into low and high."
         calculation += f"; {plan.dimension} split into {plan.bins} groups of about equal size"
@@ -4641,6 +5288,106 @@ def _execute_compare(
         calculation=calculation,
         table=comparison_table(comparison),
         chart="bar",
+    )
+
+
+def _execute_adjusted(plan: QueryPlan, working: pd.DataFrame, scope: str, applied: list[str]) -> QueryAnswer:
+    """Compare the measure across the groups with other readings held fixed, by ordinary least squares.
+
+    Each group but the first enters as a 0/1 column and each held reading as
+    it is (``statsmodels`` OLS). For two groups the answer gives the adjusted
+    gap with its 95% interval; for more, an F test that every adjusted gap is
+    zero. The gap without adjusting is given beside it, since holding a
+    reading fixed can shrink a difference, or reverse it.
+    """
+    assert plan.measure is not None and plan.dimension is not None
+    from statsmodels.regression.linear_model import OLS
+
+    measure, dimension, held = plan.measure, plan.dimension, list(plan.adjusted_for)
+    data = working[[measure, dimension, *held]].copy()
+    if plan.bins:
+        data[dimension] = _binned(working[dimension], plan.bins)
+    if plan.split is not None:
+        data[dimension] = _split_labels(working[dimension], plan.split)
+    data[[measure, *held]] = data[[measure, *held]].apply(pd.to_numeric, errors="coerce")
+    data = data.dropna()
+    levels = list(data[dimension].dropna().unique())
+    if is_numeric_dtype(data[dimension]) or isinstance(data[dimension].dtype, pd.CategoricalDtype):
+        levels = sorted(levels)
+    terms = len(levels) - 1 + len(held)
+    if len(levels) < 2 or len(data) < max(3 * (terms + 1), 10):
+        return QueryAnswer(
+            question="", plan=plan,
+            answer=(
+                f"Only {len(data):,} rows have {measure}, {dimension} and {_and_listed(held)} all recorded"
+                f"{_phrase(applied)}, too few to hold {_and_listed(held)} fixed."
+            ),
+            calculation=f"least squares needs about three rows per term{scope}",
+        )
+    indicators = np.column_stack([(data[dimension] == level).to_numpy(dtype=float) for level in levels[1:]])
+    design = np.column_stack([np.ones(len(data)), indicators, data[held].to_numpy(dtype=float)])
+    target = data[measure].to_numpy(dtype=float)
+    fit = OLS(target, design).fit()
+    means = data.groupby(dimension, observed=True)[measure].mean()
+    values = working[measure].dropna()
+
+    def shown(value: float) -> str:
+        return format_number(float(value), measure, column_values=values)
+
+    names = [group_label(dimension, level) for level in levels]
+    fixed = _and_listed(held)
+    if len(levels) == 2:
+        gap = float(fit.params[1])
+        low, high = (float(bound) for bound in fit.conf_int(0.05)[1])
+        p_value = float(fit.pvalues[1])
+        raw = float(means[levels[1]] - means[levels[0]])
+        bounds = f"{_signed(low, measure, values)} to {_signed(high, measure, values)}"
+        interval = f"95% CI {bounds}; {format_p(p_value)}"
+        if p_value < 0.05:
+            way = "higher" if gap > 0 else "lower"
+            answer = (
+                f"With {fixed} held fixed, {measure} is {shown(abs(gap))} {way} in {names[1]} than in "
+                f"{names[0]}{_phrase(applied)} ({interval})."
+            )
+        else:
+            answer = (
+                f"With {fixed} held fixed, {measure} does not clearly differ between {names[1]} and "
+                f"{names[0]}{_phrase(applied)}: the adjusted gap is {_signed(gap, measure, values)} "
+                f"({interval})."
+            )
+        answer += (
+            f" Without adjusting, the gap is {_signed(raw, measure, values)} (mean {shown(means[levels[1]])} "
+            f"vs {shown(means[levels[0]])})."
+        )
+        test = "the t test of the group term"
+    else:
+        restriction = np.zeros((len(levels) - 1, design.shape[1]))
+        restriction[:, 1:len(levels)] = np.eye(len(levels) - 1)
+        joint = fit.f_test(restriction)
+        p_value = float(joint.pvalue)
+        verdict = "do differ" if p_value < 0.05 else "do not clearly differ"
+        answer = (
+            f"With {fixed} held fixed, the {dimension} groups {verdict} in {measure}{_phrase(applied)} "
+            f"(F test of the {len(levels) - 1} group terms, {format_p(p_value)})."
+        )
+        test = "an F test that every group term is zero"
+    answer += (
+        f" This holds {fixed} fixed only as a straight line would, over the {len(data):,} rows with all of "
+        "them recorded, and is not evidence of cause."
+    )
+    gaps = [0.0, *(float(value) for value in fit.params[1:len(levels)])]
+    table = pd.DataFrame({
+        dimension: names,
+        f"Mean {measure}": [float(means[level]) for level in levels],
+        f"Gap from {names[0]}, {fixed} held fixed": gaps,
+        "n": [int((data[dimension] == level).sum()) for level in levels],
+    })
+    calculation = (
+        f"ordinary least squares of {measure} on 0/1 columns for the {dimension} groups (against "
+        f"{names[0]}) and on {fixed}, over {len(data):,} complete rows (statsmodels OLS); {test}{scope}"
+    )
+    return QueryAnswer(
+        question="", plan=plan, answer=answer, calculation=calculation, table=table.round(6), chart="bar"
     )
 
 
@@ -4895,6 +5642,8 @@ def _share_groups(frame: pd.DataFrame, plan: QueryPlan) -> tuple[pd.Series, bool
     """
     assert plan.dimension is not None
     column = frame[plan.dimension]
+    if plan.split is not None:
+        return _split_labels(column, plan.split).astype(object), True
     if plan.grain:
         return column.dt.to_period(plan.grain).dt.start_time, True
     if plan.time_part:
@@ -4909,6 +5658,8 @@ def _order_keys(frame: pd.DataFrame, plan: QueryPlan, groups: pd.Series) -> np.n
     assert plan.dimension is not None
     present = groups.notna()
     column = frame.loc[present, plan.dimension]
+    if plan.split is not None:
+        return _split_labels(column, plan.split).cat.codes.to_numpy()
     if plan.grain:
         return column.to_numpy(dtype="datetime64[ns]").astype("int64")
     if plan.time_part:
@@ -5028,6 +5779,14 @@ def _execute_correlates(
     # In table order, which tells a total from the items before it.
     readings = {*numeric_readings(working, roles), plan.measure}
     columns = [column for column in working.columns if column in readings]
+    # The row mean ADA built from a matrix's columns holds each of them, so the brief never
+    # relates them to it, and neither does Ask.
+    summaries = [
+        column for column in columns
+        if ROW_SUMMARY.fullmatch(str(column)) and column != plan.measure
+        and plan.measure in row_summary_columns(roles, working)
+    ]
+    columns = [column for column in columns if column not in summaries]
     scan = scan_relationships(working, columns, plan.measure, limit=BREAKDOWN_LIMIT, others=False)
     if scan is None or not scan.correlates:
         if scan is not None and scan.set_aside:
@@ -5037,8 +5796,8 @@ def _execute_correlates(
             )
         else:
             answer = (
-                f"No other numeric column shares {MIN_CORRELATION_PAIRS} or more rows with "
-                f"{plan.measure}{_phrase(applied)}, so nothing can be correlated with it."
+                f"Nothing can be correlated with {plan.measure}{_phrase(applied)}: "
+                f"{_uncorrelated_reason(plan.measure, working, roles, columns)}."
             )
         return QueryAnswer(
             question="",
@@ -5076,9 +5835,21 @@ def _execute_correlates(
             f"{describe_correlation(detail, _phrase(applied))}"
         )
         following = [pair for pair in scan.correlates[1:3] if pair.strength >= NOTABLE_CORRELATION]
+        # The ranking uses each pair's strength: the larger of |Spearman r| and |r| without its most
+        # influential record. When r and Spearman alone would order the pairs differently, the
+        # strengths are stated, so the order shown is the order of the figures given.
+        shown = [max(abs(pair.pearson), abs(pair.spearman)) for pair in (top, *following)]
+        ranked_by = any(later > earlier + 0.005 for earlier, later in zip(shown, shown[1:], strict=False))
+        if ranked_by:
+            answer += (
+                f" It ranks first at {top.strength:.2f}, the larger of its rank correlation and its r "
+                "without the most influential record."
+            )
         if following:
             answer += " Next: " + ", ".join(
-                f"{pair.second} (r = {pair.pearson:.2f}, Spearman {pair.spearman:.2f})" for pair in following
+                f"{pair.second} ({f'ranked at {pair.strength:.2f}; ' if ranked_by else ''}"
+                f"r = {pair.pearson:.2f}, Spearman {pair.spearman:.2f})"
+                for pair in following
             ) + "."
         answer += (
             " It was picked from several columns, so treat it as a lead to check, not as evidence of cause."
@@ -5100,7 +5871,8 @@ def _execute_correlates(
         f"columns with {plan.measure} over their complete rows; ranked by the larger of |Spearman r| "
         "and |Pearson r| without the most influential record"
     )
-    left_out = [item.describe() for item in scan.derived if plan.measure in (item.column, *item.parts)]
+    left_out = [f"{column}, the row mean built from {plan.measure} and the others" for column in summaries]
+    left_out += [item.describe() for item in scan.derived if plan.measure in (item.column, *item.parts)]
     left_out += [flag.describe() for flag in scan.flags if plan.measure in (flag.flag, flag.column)]
     left_out += [
         f"{first} and {second}, which move together almost exactly"
@@ -5122,6 +5894,39 @@ def _execute_correlates(
         table=table,
         chart="bar",
     )
+
+
+def _uncorrelated_reason(
+    measure: str, working: pd.DataFrame, roles: ColumnRoles, readings: list[str]
+) -> str:
+    """Why no column could be correlated with ``measure``, column by column, from the real reasons."""
+    reasons: dict[str, list[str]] = defaultdict(list)
+    for column in roles.numeric:
+        if column == measure or column not in working.columns:
+            continue
+        values = working[column]
+        paired = int(working[[measure, column]].dropna().shape[0])
+        if values.nunique(dropna=True) < 2:
+            reasons["never vary"].append(column)
+        elif _is_flag(values):
+            reasons["hold only 0 and 1, so they are compared as groups rather than correlated"].append(column)
+        elif column not in readings:
+            reasons["are groupings or labels rather than readings"].append(column)
+        elif paired < MIN_CORRELATION_PAIRS:
+            reasons[f"share fewer than {MIN_CORRELATION_PAIRS} rows with it"].append(column)
+    if not reasons:
+        return "the table has no other numeric column"
+    return "; ".join(
+        f"{_leaders(columns, 4)} {why if len(columns) > 1 else _singular(why)}"
+        for why, columns in reasons.items()
+    )
+
+
+def _singular(phrase: str) -> str:
+    """The verb of a reason for one column: "never vary" becomes "never varies"."""
+    words = {"vary": "varies", "hold": "holds", "are": "is", "share": "shares", "groupings": "a grouping",
+             "labels": "a label", "readings": "a reading", "they": "it"}
+    return " ".join(words.get(word, word) for word in phrase.split())
 
 
 def _rank_periods(

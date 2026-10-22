@@ -4491,6 +4491,14 @@ def _distinct_rows(dataframe: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     return dataframe.loc[~repeated], count
 
 
+def tested_rows(dataframe: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """The rows the brief's comparisons and correlations run on, and the exact repeats it left out.
+
+    Ask answers on the same rows, so a question gets the brief's figures.
+    """
+    return _distinct_rows(dataframe)
+
+
 def _headline(
     evidence: list[Evidence], growth: Evidence | None, dataframe: pd.DataFrame, roles: ColumnRoles
 ) -> str:
