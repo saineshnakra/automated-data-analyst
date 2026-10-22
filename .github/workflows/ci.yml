@@ -53,3 +53,17 @@ jobs:
           /tmp/venv/bin/ada --version
           /tmp/venv/bin/ada analyze - > /dev/null
           /tmp/venv/bin/python -c "import ada, sys; ada.analyze(ada.sample()); assert 'streamlit' not in sys.modules"
+      - name: Build and verify a small study with the installed command
+        run: |
+          cd "$(mktemp -d)"
+          /tmp/venv/bin/python - <<'PY'
+          import numpy as np
+          import pandas as pd
+
+          rng = np.random.default_rng(1)
+          scores = rng.normal(50, 5, 24).round(1)
+          pd.DataFrame({"Group": np.repeat(["Control", "Treated"], 12), "Score": scores}).to_csv("data.csv", index=False)
+          PY
+          /tmp/venv/bin/ada init data.csv --yes
+          /tmp/venv/bin/ada build
+          /tmp/venv/bin/ada verify
