@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "automated-data-analyst"
-version = "0.2.0"
+version = "0.3.0"
 description = "Exploratory analysis for CSV and Excel tables, with the calculation behind every number."
 requires-python = ">=3.11"
 readme = "README.md"
