@@ -1181,6 +1181,57 @@ class TimeGapTests(unittest.TestCase):
         self.assertFalse(checks(scan(sales, daily), "missing_time"))
 
 
+class SimulatedTableTests(unittest.TestCase):
+    def test_each_class_drawn_from_its_own_flat_ranges_looks_simulated(self):
+        rng = np.random.default_rng(95)
+        stable = {"Rain": rng.uniform(50, 200, 1000), "Slope": rng.uniform(5, 30, 1000),
+                  "Saturation": rng.uniform(0, 0.6, 1000), "Quake": rng.uniform(1, 4, 1000)}
+        sliding = {"Rain": rng.uniform(150, 300, 1000), "Slope": rng.uniform(25, 60, 1000),
+                   "Saturation": rng.uniform(0.6, 1.0, 1000), "Quake": rng.uniform(4, 8, 1000)}
+        parts = [pd.DataFrame(stable).assign(Landslide=0), pd.DataFrame(sliding).assign(Landslide=1)]
+        frame = pd.concat(parts, ignore_index=True)
+
+        issues = checks(scan(frame, roles_for(frame, factors=("Landslide",))), "generated")
+
+        self.assertEqual(issues[0].group, "Landslide")
+        self.assertIn("Within each Landslide group", issues[0].detail)
+
+    def test_flat_columns_unrelated_to_everything_look_generated(self):
+        rng = np.random.default_rng(96)
+        rows = 4000
+        risk = rng.uniform(0, 1, rows)
+        frame = pd.DataFrame({
+            "Age_months": rng.integers(6, 61, rows), "Weight_kg": rng.integers(80, 700, rows),
+            "Risk": risk, "Shannon": 4 - 2 * risk + rng.normal(0, 0.3, rows),
+            "Forage": 60 - 30 * risk + rng.normal(0, 5, rows),
+        })
+
+        issue = checks(scan(frame), "generated")[0]
+
+        self.assertEqual(issue.columns, ("Age_months", "Weight_kg"))
+
+    def test_a_group_held_in_bands_with_linked_readings_unrelated(self):
+        rng = np.random.default_rng(97)
+        sick_hemo = rng.normal(10.5, 2.5, 250)
+        sick = pd.DataFrame({
+            "hemo": sick_hemo, "pcv": sick_hemo * 3 + rng.normal(0, 1.5, 250),
+            "sc": rng.lognormal(1, 0.9, 250), "bgr": rng.lognormal(5.1, 0.45, 250), "label": "ckd",
+        })
+        healthy = pd.DataFrame({
+            "hemo": rng.uniform(13, 17.8, 150), "pcv": rng.uniform(40, 54, 150),
+            "sc": rng.uniform(0.4, 1.2, 150), "bgr": rng.uniform(70, 140, 150), "label": "notckd",
+        })
+        frame = pd.concat([sick, healthy], ignore_index=True)
+
+        issue = checks(scan(frame), "banded")[0]
+
+        self.assertEqual(issue.group, "notckd")
+        self.assertIn("hemo and pcv", issue.detail)
+        real = frame.copy()
+        real.loc[250:, "pcv"] = real.loc[250:, "hemo"] * 3 + rng.normal(0, 1.5, 150)
+        self.assertFalse(checks(scan(real), "banded"))
+
+
 class SpeedTests(unittest.TestCase):
     def test_a_large_table_is_scanned_quickly(self):
         rng = np.random.default_rng(23)

@@ -92,6 +92,12 @@ EXTREME_COLUMNS_LISTED = 10
 #: share of its rows in one group, is a limit that group's measurements stop at.
 GROUP_CAP_SHARE = 0.05
 GROUP_CAP_CONCENTRATION = 0.8
+#: A group held in bands: at least BAND_READINGS readings (of the first
+#: BAND_COLUMNS) inside its own range that the other group leaves in
+#: BAND_OUTSIDE of its rows.
+BAND_COLUMNS = 60
+BAND_READINGS = 3
+BAND_OUTSIDE = 0.25
 #: A missing-value code on at least FAILED_RECORD_ROWS rows marks a failed
 #: record when another column holds one value on FAILED_RECORD_SHARE of them.
 FAILED_RECORD_ROWS = 10
@@ -203,6 +209,7 @@ RARE_CODE_RATIO = 5
 #: cover; ties follow this order.
 CHECKS = {
     "generated": "Looks simulated",
+    "banded": "Group held in bands",
     "duplicates": "Duplicate rows",
     "swapped": "Swapped columns",
     "impossible": "Impossible values",
@@ -3138,12 +3145,10 @@ def _zero_rows(frame: pd.DataFrame, profiles: dict[str, _Column], columns: list[
     ZERO_ROW_COLUMN_SHARE of their values, at least three of them; a row
     counts when ZERO_ROW_SHARE of them are 0 on it.
     """
-    rare = [
-        column for column in columns
-        if float(profiles[column].counts[profiles[column].uniques == 0].sum()) / profiles[column].size
-        < ZERO_ROW_COLUMN_SHARE
-    ]
-    if len(rare) < 3:
+    held = {column: float(profiles[column].counts[profiles[column].uniques == 0].sum()) for column in columns}
+    rare = [column for column in columns if held[column] / profiles[column].size < ZERO_ROW_COLUMN_SHARE]
+    # A row of zeros needs zeros in most of these columns, so columns never 0 settle it at once.
+    if len(rare) < 3 or sum(held[column] > 0 for column in rare) < max(3, ZERO_ROW_SHARE * len(rare)):
         return None
     zeros = (frame[rare].to_numpy(dtype="float64", na_value=np.nan) == 0)
     hit = zeros.sum(axis=1) >= max(3, ZERO_ROW_SHARE * len(rare))
@@ -3170,15 +3175,19 @@ def _zero_rows(frame: pd.DataFrame, profiles: dict[str, _Column], columns: list[
 
 
 def _placeholder_mask(series: pd.Series) -> np.ndarray | None:
-    """True for cells holding a placeholder (0, "0", "-"), or None when the column holds none to test."""
+    """True for cells holding a placeholder (0, "0", "-"), or None when the column holds none to test.
+
+    Text is judged once per distinct value, so a long column costs one factorisation.
+    """
     if is_bool_dtype(series):
         return None
     if is_numeric_dtype(series):
         return series.to_numpy(dtype="float64", na_value=np.nan) == 0
     if series.dtype != object:
         return None
-    text = series.astype("string").str.strip()
-    return text.isin(PLACEHOLDER_TOKENS).to_numpy(dtype=bool, na_value=False)
+    codes, uniques = pd.factorize(series)
+    held = [position for position, value in enumerate(uniques) if str(value).strip() in PLACEHOLDER_TOKENS]
+    return np.isin(codes, held) if held else np.zeros(len(series), dtype=bool)
 
 
 def _placeholder_blocks(frame: pd.DataFrame, identifier: str | None) -> list[QualityIssue]:
@@ -3193,9 +3202,15 @@ def _placeholder_blocks(frame: pd.DataFrame, identifier: str | None) -> list[Qua
     """
     rows = len(frame)
     masks, names, texts = [], [], []
-    for column in frame.columns:
-        if column == identifier:
-            continue
+    # Text columns first: without a dash or a "0" in one, there is no block to find.
+    ordered = sorted(
+        (column for column in frame.columns if column != identifier),
+        key=lambda column: is_numeric_dtype(frame[column]),
+    )
+    for column in ordered:
+        text = not is_numeric_dtype(frame[column])
+        if not text and not any(texts):
+            return []
         mask = _placeholder_mask(frame[column])
         if mask is None:
             continue
@@ -3203,7 +3218,7 @@ def _placeholder_blocks(frame: pd.DataFrame, identifier: str | None) -> list[Qua
         if 0.05 * rows <= held <= 0.95 * rows and int(frame[column].notna().sum()) - held >= 10:
             masks.append(mask)
             names.append(column)
-            texts.append(not is_numeric_dtype(frame[column]))
+            texts.append(text)
     if len(names) < 3 or not any(texts):
         return []
     matrix = np.column_stack(masks).astype("float32")
@@ -3260,16 +3275,15 @@ def _constant_columns(frame: pd.DataFrame, roles: ColumnRoles | None) -> Quality
         text = not is_numeric_dtype(series)
         if column == measure or is_datetime64_any_dtype(series) or (text and not flat):
             continue
-        present = series.dropna()
-        if len(present) < max(2, 0.9 * rows):
+        if int(series.notna().sum()) < max(2, 0.9 * rows):
             continue
-        first = present.iloc[0]
         if is_numeric_dtype(series) and not is_bool_dtype(series):
-            values = present.to_numpy(dtype="float64")
-            if np.all(values == values[0]):
-                found[column] = float(values[0])
-        elif (present == first).all():
-            found[column] = first
+            values = series.to_numpy(dtype="float64", na_value=np.nan)
+            low = float(np.nanmin(values))
+            if low == float(np.nanmax(values)):
+                found[column] = low
+        elif series.nunique(dropna=True) == 1:
+            found[column] = series.dropna().iloc[0]
     if not found:
         return None
     zeros = [column for column, value in found.items() if isinstance(value, float) and value == 0]
@@ -3478,6 +3492,204 @@ def _generated(
     )
     return QualityIssue("generated", tuple(flat), len(frame), 100.0, detail, summary, rule,
                         examples=(f"largest |r| {strongest:.2f}",))
+
+
+def _is_flat(values: pd.Series) -> bool:
+    """Whether a column's values are spread evenly over their range: the screen, then the full test."""
+    profile = _Column.of("values", values)
+    if profile.size < FLAT_MIN_VALUES or profile.uniques.size < FLAT_MIN_LEVELS:
+        return False
+    if _quartile_share(profile.ordered) < 0.48:
+        return False
+    p_value, kurtosis = _flatness(profile)
+    return p_value >= FLAT_P and kurtosis <= FLAT_KURTOSIS
+
+
+def _chance_r(pairs: int, rows: int) -> float:
+    """The largest |r| chance gives across ``pairs`` pairs of ``rows`` rows, at FLAT_CHANCE (Bonferroni)."""
+    return float(np.tanh(stats.norm.isf(FLAT_CHANCE / 2 / max(pairs, 1)) / np.sqrt(max(rows - 3, 1))))
+
+
+def _generated_within(
+    frame: pd.DataFrame,
+    columns: list[str],
+    labels: dict[str, tuple[np.ndarray, pd.Index]],
+    flagged: dict[str, pd.Index],
+) -> QualityIssue | None:
+    """Say when every level of a label holds flat, unrelated readings: each class drawn from its own ranges.
+
+    A landslide table generated class by class puts each reading evenly
+    between fixed bounds within each class, unrelated to the others, while
+    pooled over both classes the readings relate strongly and look anything
+    but flat. The label needs two to six levels of FLAT_MIN_VALUES rows each,
+    and in every level most readings must be flat and no pair related beyond
+    chance, judged on up to SAMPLE_ROWS evenly spaced distinct rows of it.
+    """
+    candidates = {
+        label: (codes, levels) for label, (codes, levels) in labels.items()
+        if 2 <= len(levels) <= 6 and label not in columns
+        and np.bincount(codes[codes >= 0], minlength=len(levels)).min() >= FLAT_MIN_VALUES
+    }
+    for label, (codes, levels) in candidates.items():
+        flat, strongest, ruled = set(columns), 0.0, True
+        for level in range(len(levels)):
+            rows = np.flatnonzero(codes == level)
+            if rows.size > SAMPLE_ROWS:
+                rows = rows[(np.arange(SAMPLE_ROWS) * (rows.size / SAMPLE_ROWS)).astype(int)]
+            part = frame.iloc[rows, frame.columns.get_indexer(columns)].copy()
+            for column, cells in flagged.items():
+                if column in part.columns:
+                    part[column] = part[column].mask(part.index.isin(cells))
+            part = part.drop_duplicates()
+            usable = [column for column in columns if part[column].nunique() >= FLAT_MIN_LEVELS]
+            flat_here = [column for column in usable if _is_flat(part[column])]
+            if len(usable) < 3 or len(flat_here) <= len(usable) / 2 or len(flat_here) < 3:
+                ruled = False
+                break
+            sample = _sampled(part[usable])
+            correlations = sample.corr().to_numpy()
+            pairs = len(usable) * (len(usable) - 1) // 2
+            largest = float(np.nanmax(np.abs(correlations[np.triu_indices(len(usable), k=1)])))
+            if largest >= _chance_r(pairs, len(sample)):
+                ruled = False
+                break
+            flat &= set(flat_here)
+            strongest = max(strongest, largest)
+        if not ruled or len(flat) < 3:
+            continue
+        named = [column for column in columns if column in flat]
+        groups = _listed([group_label(label, level) for level in levels])
+        detail = (
+            f"Within each {label} group ({groups}), {_listed(named)} are spread evenly between fixed bounds "
+            f"and no two relate beyond chance (largest |r| = {strongest:.2f}): each group looks drawn from "
+            "its own fixed ranges, as simulated data are, so findings describe how the table was made rather "
+            "than the world. Correlations over the whole table come only from mixing the groups."
+        )
+        summary = f"each {label} group looks simulated: flat, unrelated readings within each"
+        rule = (
+            f"in every level of a label, most readings uniform-like (Kolmogorov-Smirnov p ≥ {FLAT_P}, excess "
+            f"kurtosis ≤ {FLAT_KURTOSIS}) and no pair beyond the Bonferroni {FLAT_CHANCE:.0%} chance level"
+        )
+        return QualityIssue("generated", tuple(named), len(frame), 100.0, detail, summary, rule,
+                            examples=(f"largest |r| {strongest:.2f} within {label}",), group=label)
+    return None
+
+
+def _generated_columns(
+    frame: pd.DataFrame, profiles: dict[str, _Column], columns: list[str], flagged: dict[str, pd.Index]
+) -> QualityIssue | None:
+    """Columns that are flat and relate to no other column, in a table whose other readings are real.
+
+    An age, a weight and a farm size spread evenly between round bounds and
+    unrelated to everything, beside readings that relate as real ones do, were
+    probably made up. Two such columns or more are named; the chance level for
+    |r| allows for every pair tested (Bonferroni, FLAT_CHANCE). The quartiles
+    screen the columns cheaply, and the tests run on up to SAMPLE_ROWS evenly
+    spaced distinct rows.
+    """
+    eligible = [
+        column for column in columns
+        if profiles[column].size >= FLAT_MIN_VALUES and profiles[column].uniques.size >= FLAT_MIN_LEVELS
+    ][:FLAT_PAIR_COLUMNS]
+    screened = [column for column in eligible if _quartile_share(profiles[column].ordered) >= 0.48]
+    if len(eligible) < 4 or len(screened) < 2:
+        return None
+    table = _sampled(frame)[eligible].copy()
+    for column, cells in flagged.items():
+        if column in table.columns:
+            table[column] = table[column].mask(table.index.isin(cells))
+    table = table.drop_duplicates()
+    flat = [column for column in screened if _is_flat(table[column])]
+    if len(flat) < 2:
+        return None
+    sample = table
+    correlations = sample.corr().abs().to_numpy()
+    np.fill_diagonal(correlations, 0.0)
+    chance = _chance_r(len(flat) * (len(eligible) - 1), len(sample))
+    unrelated = [column for column in flat if np.nanmax(correlations[eligible.index(column)]) < chance]
+    if len(unrelated) < 2:
+        return None
+    largest = max(float(np.nanmax(correlations[eligible.index(column)])) for column in unrelated)
+    ranges = _listed([_range_of(frame[column].dropna()) for column in unrelated])
+    detail = (
+        f"{_listed(unrelated)} are spread evenly between their lowest and highest values ({ranges}) and "
+        f"relate to no other column (largest |r| = {largest:.2f}; chance alone reaches {chance:.2f}). Real "
+        "readings are rarely flat and unconnected like this, so these columns may be generated rather than "
+        "measured: check how they were produced before reading anything into them."
+    )
+    summary = f"{_listed(unrelated, 3)} look generated: flat and unrelated to every other column"
+    rule = (
+        f"columns uniform-like (Kolmogorov-Smirnov p ≥ {FLAT_P}, excess kurtosis ≤ {FLAT_KURTOSIS}) whose "
+        f"|r| with every other column stays under the Bonferroni {FLAT_CHANCE:.0%} chance level"
+    )
+    return QualityIssue("generated", tuple(unrelated), len(frame), 100.0, detail, summary, rule,
+                        examples=(f"largest |r| {largest:.2f}",))
+
+
+def _banded_group(
+    frame: pd.DataFrame, columns: list[str], labels: dict[str, tuple[np.ndarray, pd.Index]]
+) -> QualityIssue | None:
+    """A group whose readings never leave bands the other group crosses, and whose linked readings come apart.
+
+    Controls filled in from reference ranges sit inside the normal band of
+    every test, which real controls do too, but in them haemoglobin and
+    packed cell volume, which move together in any real blood, become
+    unrelated. A two-level label counts when one level stays within its own
+    range on BAND_READINGS readings or more that the other level leaves in
+    BAND_OUTSIDE of its rows, and a pair of those readings related at |r| ≥ 0.7
+    in the other level is unrelated (|r| < 0.2) in this one.
+    """
+    readings = columns[:BAND_COLUMNS]
+    for label, (codes, levels) in labels.items():
+        if len(levels) != 2 or label in columns:
+            continue
+        sizes = np.bincount(codes[codes >= 0], minlength=2)
+        if sizes.min() < 30:
+            continue
+        for inner in (0, 1):
+            held, crossing = codes == inner, codes == 1 - inner
+            bands = []
+            for column in readings:
+                values = frame[column].to_numpy(dtype="float64", na_value=np.nan)
+                own, other = values[held & ~np.isnan(values)], values[crossing & ~np.isnan(values)]
+                if own.size < 20 or other.size < 20:
+                    continue
+                low, high = float(own.min()), float(own.max())
+                outside = float(((other < low) | (other > high)).mean())
+                if outside >= BAND_OUTSIDE:
+                    bands.append((column, low, high, outside))
+            if len(bands) < BAND_READINGS:
+                continue
+            names = [column for column, *_ in bands]
+            inside = frame.loc[held, names].corr(min_periods=30).to_numpy()
+            outer = frame.loc[crossing, names].corr(min_periods=30).to_numpy()
+            linked = np.argwhere(np.triu((np.abs(outer) >= 0.7) & (np.abs(inside) < 0.2), k=1))
+            if not len(linked):
+                continue
+            first, second = (int(position) for position in linked[0])
+            own_label, other_label = group_label(label, levels[inner]), group_label(label, levels[1 - inner])
+            shown = [f"{column} {_rounded(low)} to {_rounded(high)}" for column, low, high, _ in bands]
+            shares = sorted(outside for *_, outside in bands)
+            detail = (
+                f"Every {own_label} row has {_listed(shown, 3)}, bands the {other_label} rows leave in "
+                f"{_percent(shares[0] * 100)} to {_percent(shares[-1] * 100)} of cases, and {names[first]} "
+                f"and {names[second]}, which move together among {other_label} rows (r = "
+                f"{outer[first, second]:.2f}), are unrelated among {own_label} rows (r = "
+                f"{inside[first, second]:.2f}). Values in the {own_label} group may have been filled in from "
+                "reference ranges, or the group chosen by them, so differences between the groups partly "
+                "restate how they were made."
+            )
+            summary = f"{own_label} rows held in bands of {len(bands)} readings, linked readings unrelated"
+            rule = (
+                f"one level of a two-level label inside its own range on {BAND_READINGS} or more readings "
+                f"the other leaves in {BAND_OUTSIDE:.0%} of rows, and a pair related at |r| ≥ 0.7 in the "
+                "other level unrelated (|r| < 0.2) in this one"
+            )
+            rows = int(held.sum())
+            share = rows / max(len(frame), 1) * 100
+            return QualityIssue("banded", tuple(names), rows, share, detail, summary, rule,
+                                group=levels[inner])
+    return None
 
 
 def _flatlines(
@@ -3707,7 +3919,8 @@ def scan(
             shared=clips.get(column, frozenset()),
         ))
     singles = [column for column in quantities if column not in matrix]
-    issues.extend(_group_caps(frame, profiles, singles, _labels(frame, roles)))
+    labels = _labels(frame, roles)
+    issues.extend(_group_caps(frame, profiles, singles, labels))
     # Limits each column piles at, which a stuck sensor's long run must not be mistaken for.
     piled: dict[str, set[float]] = {column: set(found) for column, found in clips.items()}
     for issue in issues:
@@ -3740,9 +3953,15 @@ def scan(
     duplicated = _duplicates(frame, profiles)
     if duplicated:
         issues.append(duplicated)
-    generated = _generated(frame, profiles, quantities, _flagged_cells(issues))
-    if generated:
-        issues.append(generated)
+    flagged = _flagged_cells(issues)
+    generated = (
+        _generated(frame, profiles, quantities, flagged)
+        or _generated_within(frame, singles, labels, flagged)
+        or _generated_columns(frame, profiles, singles, flagged)
+    )
+    # In a table that already looks simulated, a group held in bands is part of how it was made.
+    banded = None if generated else _banded_group(frame, singles, labels)
+    issues.extend(found for found in (generated, banded) if found)
     for found in (_zero_heavy(profiles, singles), _constant_columns(frame, roles)):
         if found:
             issues.append(found)
