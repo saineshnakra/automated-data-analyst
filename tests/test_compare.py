@@ -856,8 +856,8 @@ class BuiltInGroupingTests(unittest.TestCase):
     def test_a_parameter_column_sharing_a_word_with_the_reading_still_gets_compared(self):
         rng = np.random.default_rng(57)
         pollutant = rng.choice(["PM10", "NO2", "SO2"], 600)
-        level = np.select([pollutant == "PM10", pollutant == "NO2"], [90.0, 40.0], 20.0)
-        frame = pd.DataFrame({"pollutant_id": pollutant, "pollutant_max": rng.gamma(2, level / 2)})
+        level = np.select([pollutant == "PM10", pollutant == "NO2"], [100.0, 40.0], 15.0)
+        frame = pd.DataFrame({"pollutant_id": pollutant, "pollutant_max": rng.gamma(3, level / 3)})
 
         self.assertIsNone(built_in_grouping(frame, "pollutant_max", "pollutant_id"))
 
