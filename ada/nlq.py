@@ -5173,6 +5173,13 @@ def _comparison_plan(question: str, dataframe: pd.DataFrame, roles: ColumnRoles)
     at = None
     if reading.split:
         (grouping, at), compared, bins = reading.split, (), None
+        # "does pH differ by site before and after 2000" asks for a second grouping beside the split.
+        named = [
+            column for column in free
+            if column not in (grouping, *numeric_columns) and _follows(q, mentioned[column], GROUPING_WORDS)
+        ]
+        if named:
+            raise _ComparisonRefused(_two_groupings([named[0], grouping]))
     elif split:
         after = [column for column in free if mentioned[column] > split.start()]
         if not after or not _is_measurement(dataframe[after[0]]):

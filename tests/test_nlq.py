@@ -1907,6 +1907,14 @@ class MorePhrasingTests(unittest.TestCase):
         self.assertEqual((answer.plan.intent, answer.plan.split), ("compare", 2000.0))
         self.assertTrue(answer.answer.startswith("DO is higher in the years before 2000 than in 2000 and"))
 
+    def test_a_grouping_beside_a_split_at_a_year_is_refused(self):
+        frame = self.frame.assign(site=np.tile(["North", "South", "East"], len(self.frame) // 3))
+        roles = detect_roles(frame)
+        question = "does DO differ by site before and after 2000"
+
+        self.assertIsNone(answer_question(question, frame, roles))
+        self.assertIn("two groupings, site and Date", rephrase_hint(question, frame, roles))
+
     def test_by_month_over_several_years_is_the_month_of_the_year(self):
         answer = self.ask("average DO by month")
 
