@@ -6,6 +6,7 @@ import pandas as pd
 
 from ada.aggregation import (
     build_trend,
+    fixed_design,
     group_coverage,
     heatmap_frame,
     matched_period_change,
@@ -550,6 +551,44 @@ class MonthColumnTests(unittest.TestCase):
         self.assertEqual(len(long), 23)
         self.assertEqual(long["Date"].iloc[12], pd.Timestamp("2019-01-01"))
         self.assertEqual(long["Value"].iloc[-1], 11.5)
+
+
+def plots_by_year(missing=()):
+    rows = [
+        (pd.Timestamp(year=year, month=1, day=1), f"P{plot}", "maize" if (plot + year) % 2 else "wheat")
+        for year in range(2005, 2016) for plot in range(10) if (year, plot) not in missing
+    ]
+    return pd.DataFrame(rows, columns=["Year", "Plot Code", "Crop"])
+
+
+class FixedDesignTests(unittest.TestCase):
+    def roles(self, frame):
+        return ColumnRoles(date="Year", measure=None, dimension="Crop", identifier=None, numeric=(),
+                           dimensions=("Crop",))
+
+    def test_each_plot_once_a_year_is_a_design(self):
+        frame = plots_by_year(missing=((2005, 9),))
+
+        design = fixed_design(frame, self.roles(frame))
+
+        assert design is not None
+        self.assertEqual(design.unit, "Plot Code")
+        self.assertEqual((design.fewest, design.most, design.periods), (9, 10, 11))
+        self.assertIn("appears at most once a year", design.sentence)
+
+    def test_a_count_that_moves_is_not_a_design(self):
+        missing = tuple(
+            (year, plot) for year in range(2005, 2016) for plot in range(10) if plot >= 2 + year - 2005
+        )
+        frame = plots_by_year(missing=missing)
+
+        self.assertIsNone(fixed_design(frame, self.roles(frame)))
+
+    def test_a_measure_is_followed_whatever_the_design(self):
+        frame = plots_by_year().assign(Yield=1.0)
+        roles = replace(self.roles(frame), measure="Yield", numeric=("Yield",))
+
+        self.assertIsNone(fixed_design(frame, roles))
 
 
 class ReportingUnitTests(unittest.TestCase):

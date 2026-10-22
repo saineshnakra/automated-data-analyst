@@ -39,7 +39,7 @@ assembled in this order:
 | Kind | Reports | Skipped when |
 |---|---|---|
 | `longtrend` | The trend across a record of 20 or more complete years: Theil-Sen slope per year and per decade with its 95% interval and a Mann-Kendall test, the months it runs highest and lowest in, and the slopes either side of a change in level (see [Long records](#long-records)) | No date, or fewer than 20 complete years |
-| `trend` | Latest period-over-period change on the groups present in both periods, compared with the series' usual movement or with the time of year | No date, fewer than 2 periods, or a percentage change from a previous period of zero |
+| `trend` | Latest period-over-period change on the groups present in both periods, compared with the series' usual movement or with the time of year | No date, fewer than 2 periods, a percentage change from a previous period of zero, or rows counted where the design fixes how many each period holds (see [Fixed designs](#fixed-designs)) |
 | `driver` | The segment that moved the measure most between the last two periods | No date, measure or segment |
 | `leader` | For money or a count of things, the group with the largest share of the total ("Largest share by ..."), or with the most rows when there is no measure ("Most rows by ..."). For any other measure, a comparison of the groups with its test and effect size (see below). For mixed-sign values, the largest by size with no share | No segment, or a total of zero |
 | `concentration` | Effective number of segments, and the top-three share | Shares are not meaningful (averaged measure or mixed signs), or the measure is neither money nor a count of things |
@@ -170,6 +170,21 @@ A clear trend whose stretch slopes agree leads the headline ("M-A-M rose by
 p < 0.001)") and opens the summary. A latest change judged outside its usual
 range still leads instead. Without a clear trend, a change in level, a group
 finding or a rate leads, and otherwise the card's "no clear trend" sentence.
+
+### Fixed designs
+
+With no measure, the brief counts rows per period. When each unit (the
+column naming what each row belongs to, `compare.entity_column`) appears at
+most once a period, recurs in most periods, and the count barely moves (the
+fewest at least 80% of the most), that count is set by the design: ten plots
+observed every year give ten rows a year. `aggregation.fixed_design` finds
+this, and the brief then has no `longtrend`, `trend` or `anomaly` card and
+says so in the summary instead: *"Each plot code appears at most once a year:
+9 to 10 of the 10 in each of the 11 years. Rows per year follow that design,
+so they are not trended or forecast."* `Analysis.forecast()` and
+`Analysis.anomalies` return a `Refusal` with code `no_measure_column` and the
+same sentence. A count that moves, such as active customers per month, is
+still followed.
 
 ### Drivers on the same groups
 

@@ -87,6 +87,19 @@ class RefusalTests(unittest.TestCase):
             with self.subTest(code=refusal.code):
                 self.assertIn(refusal.code, ada.REFUSAL_CODES)
 
+    def test_rows_per_year_fixed_by_the_design_are_not_forecast(self):
+        frame = pd.DataFrame([
+            {"Year": f"{year}-01-01", "Plot Code": f"P{plot}", "Crop": "maize" if plot % 2 else "wheat"}
+            for year in range(2005, 2016) for plot in range(10)
+        ])
+        report = ada.analyze(frame.assign(Year=pd.to_datetime(frame["Year"])))
+
+        for refusal in (report.forecast(), report.anomalies):
+            with self.subTest(refusal=refusal):
+                self.assertIsInstance(refusal, ada.Refusal)
+                self.assertEqual(refusal.code, "no_measure_column")
+                self.assertIn("at most once a year", refusal.message)
+
     def test_nothing_found_is_not_the_same_as_could_not_look(self):
         """An empty tuple and a Refusal are both falsy; only the type differs."""
         found = ada.analyze(steady()).anomalies

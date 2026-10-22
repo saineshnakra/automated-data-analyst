@@ -2011,6 +2011,23 @@ class LatestPeriodWordingTests(unittest.TestCase):
         self.assertNotIn("average of 1 row", trend.statement)
 
 
+class FixedDesignBriefTests(unittest.TestCase):
+    def test_rows_per_year_set_by_the_design_are_not_trended(self):
+        rows = [
+            (pd.Timestamp(year=year, month=1, day=1), f"P{plot}", "Dry" if plot < 8 else "Paddy")
+            for year in range(2005, 2016) for plot in range(10)
+        ]
+        frame = pd.DataFrame(rows, columns=["Year", "Plot Code", "Farmland"])
+        roles = roles_for(frame, None, "Farmland", date="Year")
+
+        brief = analyze_business(frame, roles)
+
+        self.assertIsNone(brief_card(brief, "trend"))
+        self.assertIsNone(brief_card(brief, "anomaly"))
+        self.assertNotIn("latest movement", brief.headline)
+        self.assertIn("Each plot code appears at most once a year", brief.summary)
+
+
 class MatchedUnitTests(unittest.TestCase):
     def test_a_per_row_condition_is_not_matched_across_periods(self):
         rng = np.random.default_rng(95)

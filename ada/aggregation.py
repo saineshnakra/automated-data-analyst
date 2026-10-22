@@ -13,7 +13,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from .formatting import format_period
+from .compare import entity_column
+from .formatting import format_period, sentence_case
 from .metrics import metric_for
 from .schema import ColumnRoles, is_entity_name
 from .timeseries import (
@@ -650,6 +651,83 @@ def seasonal_context(series: TrendSeries, *, relative: bool) -> SeasonalContext 
         year_ago=year_ago if has_year_ago else None,
         year_ago_value=float(by_period[year_ago]) if has_year_ago else float("nan"),
         usual_changes=tuple(float(change) for change in changes),
+    )
+
+
+# Share of rows that may repeat a unit within a period, or lack a unit, in a
+# fixed design: a stray double entry does not undo the design.
+DESIGN_SLACK = 0.02
+# Periods a design needs before its row counts read as fixed rather than chance.
+MIN_DESIGN_PERIODS = 3
+# The fewest units in a period, as a share of the most, for the count to be steady by design.
+STEADY_DESIGN_SHARE = 0.8
+
+
+@dataclass(frozen=True)
+class FixedDesign:
+    """Rows per period set by a design: each unit observed at most once a period, period after period."""
+
+    unit: str
+    frequency: str
+    periods: int
+    units: int
+    fewest: int
+    most: int
+
+    @property
+    def sentence(self) -> str:
+        grain = DESIGN_GRAINS.get(self.frequency, "period")
+        observed = f"{self.most:,}" if self.fewest == self.most else f"{self.fewest:,} to {self.most:,}"
+        return (
+            f"Each {sentence_case(self.unit)} appears at most once a {grain}: {observed} of the "
+            f"{self.units:,} in each of the {self.periods:,} {grain}s. Rows per {grain} follow that design, "
+            "so they are not trended or forecast."
+        )
+
+
+DESIGN_GRAINS = {"D": "day", "W": "week", "M": "month", "Q": "quarter", "Y": "year"}
+
+
+def fixed_design(
+    dataframe: pd.DataFrame, roles: ColumnRoles, frequency: str | None = None
+) -> FixedDesign | None:
+    """The design behind a row count, when each unit appears at most once a period and keeps recurring.
+
+    With no measure, the brief would trend the number of rows per period; when
+    the same plots or subjects are observed once every year, that number is
+    set in advance and says nothing. Returns None with a measure, without a
+    unit column (``compare.entity_column``), when units repeat within a period
+    or do not recur across most periods, or when their number moves from
+    period to period, as active customers do.
+    """
+    if roles.measure or not roles.date:
+        return None
+    unit = entity_column(dataframe, roles)
+    if unit is None:
+        return None
+    working = dataframe[[roles.date, unit]].dropna(subset=[roles.date])
+    if working.empty or working[unit].isna().mean() > DESIGN_SLACK:
+        return None
+    frequency = frequency or _period_frequency(working[roles.date])
+    periods = working[roles.date].dt.to_period(frequency)
+    pairs = pd.DataFrame({"period": periods, "unit": working[unit]}).dropna()
+    if pairs.duplicated().mean() > DESIGN_SLACK:
+        return None
+    count = periods.nunique()
+    seen = pairs.drop_duplicates().groupby("unit")["period"].nunique()
+    if count < MIN_DESIGN_PERIODS or float(seen.median()) < max(MIN_DESIGN_PERIODS, 0.5 * count):
+        return None
+    per_period = pairs.drop_duplicates().groupby("period")["unit"].nunique()
+    if per_period.min() < STEADY_DESIGN_SHARE * per_period.max():
+        # A count that moves (customers lost and won each month) is worth following.
+        return None
+    return FixedDesign(
+        unit=unit,
+        frequency=frequency,
+        periods=int(count),
+        units=int(seen.size),
+        fewest=int(per_period.min()),
+        most=int(per_period.max()),
     )
 
 

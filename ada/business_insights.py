@@ -20,6 +20,7 @@ from .aggregation import (
     SeasonalContext,
     TrendSeries,
     build_trend,
+    fixed_design,
     group_coverage,
     matched_period_change,
     months_recorded,
@@ -4033,10 +4034,12 @@ def analyze_business(
     tested_statistics = statistics.loc[tested.index] if repeats else statistics
     evidence: list[Evidence] = []
 
-    long_run = _long_run_evidence(dataframe, roles, frequency)
+    # Rows per period set by the design (each plot once a year) are not a series to follow.
+    design = fixed_design(dataframe, roles, frequency)
+    long_run = None if design else _long_run_evidence(dataframe, roles, frequency)
     if long_run:
         evidence.append(long_run)
-    growth = _growth_evidence(dataframe, roles, frequency)
+    growth = None if design else _growth_evidence(dataframe, roles, frequency)
     if growth:
         evidence.append(growth)
     change_driver = _change_driver_evidence(dataframe, roles, frequency)
@@ -4064,7 +4067,7 @@ def analyze_business(
     relationships = _relationship_scan(tested_statistics, roles, readings, built)
     for optional_evidence in (
         _rate_evidence(tested, roles, note, found),
-        _anomaly_evidence(dataframe, roles, frequency),
+        None if design else _anomaly_evidence(dataframe, roles, frequency),
         _noting(
             _relationship_evidence(
                 tested_statistics, roles, readings, relationships, note, built=built, rules=rules
@@ -4161,6 +4164,8 @@ def analyze_business(
         summary_parts = [_table_description(dataframe, roles)]
     if long_run:
         summary_parts.insert(0, long_run.statement)
+    if design:
+        summary_parts.append(design.sentence)
     if repeats:
         share = format_percentage(repeats / len(dataframe) * 100)
         summary_parts.append(

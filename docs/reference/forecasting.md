@@ -97,7 +97,9 @@ undefined.
 | Grain finer than a day | Forecast in seconds, minutes or hours, labelled by the clock |
 
 `ada.Analysis.forecast()` returns a `Refusal` with code `thin_history` where
-`build_forecast` returns `None`.
+`build_forecast` returns `None`, and one with code `no_measure_column` when the
+table has no measure and its rows per period are fixed by its design (each
+plot once a year; see [Fixed designs](evidence.md#fixed-designs)).
 
 ## Changing this
 
