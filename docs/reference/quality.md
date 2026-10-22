@@ -280,12 +280,15 @@ pair would cost more than the rest of the scan.
 
 Not a copy:
 
-- matches at a floor or a ceiling both columns share (two element contents both
-  floored at 0.01)
+- agreement at a floor or a ceiling both columns share, or at zero: the two
+  must also agree on half the other rows. Two element contents both floored at
+  0.01 are not copies; two identical flag columns, most of whose rows sit at
+  their lowest code, are
 - a column built as the row maximum or minimum of others: it never falls below
-  (or rises above) them on 98% of rows and equals their maximum (or minimum) on
-  95% (`ROW_EXTREME_SHARE`), as an index that is the largest of its
-  sub-indices does
+  (or rises above) them on 98% of rows, equals their maximum (or minimum) on
+  95% (`ROW_EXTREME_SHARE`), and takes that value from at least two of them,
+  as an index that is the largest of its sub-indices does; a column equal to
+  one of them almost everywhere is a copy of it
 
 Siblings are found by name: `max` and `min`, `maximum` and `minimum`, `high`
 and `low`, `upper` and `lower`. With no min-named sibling, the max-named column

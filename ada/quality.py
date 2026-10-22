@@ -1400,7 +1400,9 @@ def _row_extreme_of(table: pd.DataFrame, column: str, columns: list[str]) -> fro
     equals each of them wherever it is the largest; that is how it is built,
     not a copy. The parts are the other columns it never falls below (or
     rises above); it must equal their maximum (or minimum) on ROW_EXTREME_SHARE
-    of the rows where both are present, judged on an evenly spaced sample.
+    of the rows where both are present, and at least two parts must supply
+    that value on 1% of rows or more: a column equal to one part almost
+    everywhere is a copy of it. Judged on an evenly spaced sample.
     """
     frame = _sampled(table)[columns]
     target = frame[column]
@@ -1417,7 +1419,10 @@ def _row_extreme_of(table: pd.DataFrame, column: str, columns: list[str]) -> fro
             continue
         extreme = frame[parts].max(axis=1) if below else frame[parts].min(axis=1)
         both = target.notna() & extreme.notna()
-        if both.sum() >= 20 and float((target[both] == extreme[both]).mean()) >= ROW_EXTREME_SHARE:
+        if both.sum() < 20 or float((target[both] == extreme[both]).mean()) < ROW_EXTREME_SHARE:
+            continue
+        supplying = frame.loc[both, parts].eq(target[both], axis=0).mean()
+        if (supplying >= 0.01).sum() >= 2 and supplying.max() < ROW_EXTREME_SHARE:
             return frozenset(parts)
     return frozenset()
 
@@ -1445,15 +1450,18 @@ def _equal_pair(frame: pd.DataFrame, first: str, second: str, dimension: str | N
     if both.sum() < 20:
         return None
     equal = both & a.eq(b) & a.ne(0)
-    limits = _shared_limits(a, b)
-    if limits:
-        equal &= ~a.isin(limits)
     share = float(equal.sum() / both.sum())
+    # Agreement at a floor or a ceiling both share, or at zero, says nothing; the other rows decide.
+    limits = _shared_limits(a, b)
+    away = both & ~(a.eq(0) & b.eq(0))
+    if limits:
+        away &= ~(a.isin(limits) & b.isin(limits))
+    agree = float((equal & away).sum() / away.sum()) if away.sum() >= 20 else 0.0
     rule = (
-        f"two columns holding the same non-zero value in {EQUAL_SHARE:.0%} or more of rows, leaving "
-        "out a floor or a ceiling the two share"
+        f"two columns holding the same non-zero value in {EQUAL_SHARE:.0%} or more of rows, and of the "
+        "rows away from any floor or ceiling the two share"
     )
-    if share >= EQUAL_SHARE:
+    if share >= EQUAL_SHARE and agree >= EQUAL_SHARE:
         count = int(equal.sum())
         detail = (
             f"{first} equals {second} in {_plural(count, 'row')} ({_percent(share * 100)} of rows "
@@ -1463,6 +1471,7 @@ def _equal_pair(frame: pd.DataFrame, first: str, second: str, dimension: str | N
         return QualityIssue("equal_columns", (first, second), count, share * 100, detail, summary, rule)
     if not dimension or dimension not in frame.columns:
         return None
+    equal, both = equal & away, away
     rows = both.groupby(frame[dimension]).sum()
     shares = equal.groupby(frame[dimension]).sum() / rows.where(rows >= 20)
     if shares.dropna().empty or shares.max() < EQUAL_SHARE:

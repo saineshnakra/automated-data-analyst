@@ -476,6 +476,16 @@ class FalseAlarmTests(unittest.TestCase):
 
         self.assertFalse(checks(scan(frame), "equal_columns"))
 
+    def test_identical_columns_are_a_copy_even_when_most_rows_sit_at_their_floor(self):
+        rng = np.random.default_rng(66)
+        codes = rng.choice(np.r_[[0.0], 10.0 ** np.arange(1, 10), 10.0 ** np.arange(1, 11) + 1], 600)
+        codes[rng.random(600) < 0.9] = 1.0
+        frame = pd.DataFrame({"PoorWeather": codes, "Flags": codes.copy(), "Rain": rng.gamma(2, 3, 600)})
+
+        issues = checks(scan(frame), "equal_columns")
+
+        self.assertEqual([issue.columns for issue in issues], [("PoorWeather", "Flags")])
+
     def test_a_row_maximum_is_not_a_copy(self):
         rng = np.random.default_rng(47)
         parts = pd.DataFrame(rng.gamma(4, 15, (400, 4)).round(), columns=["pm10", "so2", "co", "o3"])
