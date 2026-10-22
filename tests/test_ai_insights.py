@@ -194,6 +194,22 @@ class PlanValidationTests(unittest.TestCase):
                 assert plan is not None
                 self.assertIn(f"{word} Revenue", describe_query_plan(plan))
 
+    def test_a_spread_is_planned_for_a_measure_and_described_as_one(self):
+        plan = self._plan(intent="aggregate", aggregation="std", measure="Revenue")
+
+        self.assertEqual(describe_query_plan(plan), "Standard deviation of Revenue.")
+        self.assertIsNone(self._plan(intent="trend", aggregation="std", measure="Revenue"))
+        self.assertIsNone(self._plan(intent="count", aggregation="iqr", measure="Revenue"))
+
+    def test_rule_plans_of_the_newer_kinds_are_described(self):
+        crosstab = QueryPlan(
+            intent="crosstab", aggregation="count", dimension="Region", second_dimension="Ticket"
+        )
+        describe = QueryPlan(intent="describe", aggregation="mean", measure="Revenue")
+
+        self.assertEqual(describe_query_plan(crosstab), "Cross-tabulate rows by Region and Ticket.")
+        self.assertIn("distribution of Revenue", describe_query_plan(describe))
+
     def test_a_small_pre_aggregated_table_can_be_broken_down(self):
         """Each region appears once here, which must not make Region read as an identifier."""
         summary = pd.DataFrame({"Region": ["West", "East"], "Revenue": [100.0, 200.0]})

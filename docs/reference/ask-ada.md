@@ -20,7 +20,8 @@ QueryAnswer(answer="...", calculation="...", table=..., chart="bar")
 ```
 
 Every part of a question has to reach the plan. A column, a value, a grouping,
-a condition or a "top N" the plan would leave out makes the parser refuse, and
+a condition, a "top N" or a word such as "which column", "of the year",
+"within" or "distinct" the plan would leave out makes the parser refuse, and
 `rephrase_hint` says which part and why. ADA never answers a simpler question
 under the original wording.
 
@@ -30,8 +31,10 @@ under the original wording.
 @dataclass(frozen=True)
 class QueryPlan:
     intent: Intent            # aggregate | count | rank | breakdown | trend | growth |
-                              # correlation | compare | correlates | missing
-    aggregation: Aggregation  # sum | mean | median | min | max | count
+                              # correlation | compare | correlates | describe | columns |
+                              # crosstab | missing | duplicates | outliers
+    aggregation: Aggregation  # sum | mean | median | min | max | count | std | var | iqr |
+                              # quantile | mode | share
     measure: str | None
     dimension: str | None
     count_column: str | None  # counts distinct values of this column instead of rows
@@ -44,8 +47,13 @@ class QueryPlan:
     grain: str | None         # s | min | h | D | W | M | Q | Y
     source: str               # "rules", or "ai" for the optional planner
     conditions: tuple[Condition, ...]  # "pH below 5.5", "OBJECT is 0", "eCO2 missing"
-    time_part: str | None     # "hour" or "weekday" of the date column in `dimension`
+    time_part: str | None     # "hour", "weekday", "month" or "quarter" of the year, or "year",
+                              # of the date column in `dimension`
     notes: tuple[str, ...]    # how the question was read, said in the answer
+    second_dimension: str | None  # the second grouping of a cross-table
+    bins: int | None          # a continuous `dimension` split into this many equal-sized groups
+    columns: tuple[str, ...]  # the columns a cross-column answer ranks or compares
+    quantile: float | None    # 0.9 for "90th percentile"
 ```
 
 A `Condition` is a column, an operator (`=`, `<`, `<=`, `>`, `>=` or
@@ -64,7 +72,12 @@ A `Condition` is a column, an operator (`=`, `<`, `<=`, `>`, `>=` or
 | `correlation` | How two numeric columns move together | "Is flipper length correlated with body mass?" |
 | `missing` | Missing values per column, or in one column | "Which columns have missing values?" |
 | `compare` | Whether a reading differs between groups, with a test and an effect size | "Does pH differ by site?", "Is troponin higher in positive than negative?" |
-| `correlates` | Every numeric column ranked by how strongly it relates to one | "What correlates with strength?" |
+| `correlates` | Every numeric column ranked by how strongly it relates to one | "What correlates with strength?", "what predicts yield?" |
+| `describe` | n, mean, SD, median, quartiles, range and skew, overall or per group | "Distribution of ELOVL2_6", "describe pH by site" |
+| `columns` | The numeric columns themselves, ranked by one aggregation | "Which column has the highest average?", "which gene has the highest mean?" |
+| `crosstab` | Row counts, or a measure, for each pair of groups of two groupings | "Count by crop and year", "mean risk by antibiotics and probiotics" |
+| `outliers` | Values outside 1.5×IQR and the values the data checks flag | "Outliers in HGB", "are there impossible values?" |
+| `duplicates` | Rows that repeat an earlier row, or values found on several rows | "How many duplicate rows?" |
 
 ## Comparing groups, and what correlates with a column
 
@@ -74,10 +87,32 @@ as "patients" or "variables") on top of the usual one:
 
 | Question | Plan |
 |---|---|
-| "does X differ by Y", "is X different between Y", "does X vary across Y", "compare X across Y" | `compare` X across every group of Y |
+| "does X differ by Y", "is X different between Y", "does X vary across Y", "compare X across Y", "is the difference in X between Y groups significant" | `compare` X across every group of Y |
 | "is X higher in A than B", "is X lower for A than B" | `compare` X between groups A and B of one column, kept as a filter in the order named; the direction asked is stored as the plan's `aggregation` (`max` for higher, `min` for lower) |
 | "is X higher in condition 2 than condition 1" | The same, for the numbered groups of a numeric column |
+| "is X higher with Y", "is X lower without Y" | The same, for the rows where a 0/1 flag Y is set against those where it is not |
+| "does X differ between high and low Y" | `compare` X between the halves of a continuous Y split at its median (`bins=2`) |
 | "what correlates with X", "what is most related to X", "which variables are most correlated with X" | `correlates` of X |
+| "what predicts X", "what drives X", "which factors affect X the most", "which marker best separates X" | `correlates` of X, from `_predictors_plan` |
+| "does Y affect X", "what is the effect of Y on X", "the impact of Y on X" | X related to Y (see below) |
+| "is there a trend in X with Y", "does X change with Y" | X related to Y, for a Y that is not the date |
+| "which genes differ between AML and ALL" | `compare` of every column the word names, across one grouping |
+
+`_predictors_plan` is the one place that decides how "what predicts X" is
+answered. For now it ranks each numeric column against X one at a time, as
+"what correlates with X" does, and says so; a joint model of the predictors
+is called from there once one is available.
+
+Two named columns are related the way their kinds allow (`_relation_plan`):
+two quantities are correlated; a quantity and a set of category codes are
+compared across the codes' groups; two sets of codes are cross-tabulated with
+a chi-square test. The answer says when a correlation question became a
+comparison: "Condition holds category codes, so CorrectTotal is compared
+across its groups rather than correlated with it." Codes are text, 0/1 flags,
+the numeric codes ADA declared (`roles.factors`) and whole numbers under an ID
+or code name. A declared code whose name carries a unit ("Location_m", "Age
+(day)") is a quantity set at a few levels and still correlates. This also
+applies to "correlation between X and Y" read by the steps below.
 
 The grouping column is the one named after "by", "across", "between",
 "among" or "in" (a segment, or a numeric column with 2 to 50 values), or the
@@ -102,9 +137,18 @@ and is drawn as a bar chart.
 A `correlates` answer ranks every numeric reading against X as the brief's
 relationship card does, by the larger of |Spearman r| and |Pearson r| without
 the most influential record, and leaves out columns built from X or from the
-same items. It states the strongest with the usual correlation wording and
-checks, or says nothing reaches |r| = 0.3. The table lists each column's
-Pearson r, 95% interval, Spearman r and n, drawn as a bar chart.
+same items, and copies of X. It names the columns it left out and why ("Left
+out of the ranking for Even1: Even2 (the same measurement under another name
+or unit)"), so the column that moves most with X is never dropped silently,
+and counts only the columns it ranked. It states the strongest with the usual
+correlation wording and checks, or says nothing reaches |r| = 0.3. The table
+lists each column's Pearson r, 95% interval, Spearman r and n, drawn as a bar
+chart.
+
+Comparing every column a word names ("which genes differ") runs the brief's
+difference scan (`compare.scan_differences`), with p-values Holm-adjusted over
+every test, and names the columns that still differ clearly, or the largest
+gap with its adjusted p-value when none does.
 
 ## How the parser reads a question
 
@@ -134,32 +178,58 @@ each word is claimed, in this order, by:
    `Wind Speed` and `Maximum Wind Speed`, "maximum wind speed" is the maximum
    of Wind Speed unless the question has another aggregation word ("average
    maximum wind speed"); the answer says how it was read. A column called
-   just `MAX` is the word "max" unless the question has another aggregation
-   word or names it after "of" or a grouping word.
+   just `MAX`, `mean` or `std` is the column when the question has another
+   aggregation word, names it after "of", a grouping or a ranking word, types
+   it exactly as the column is spelled and that spelling is not plain lower
+   case ("MAX trend"), asks for a correlation ("correlation between mean and
+   std"), or sets a condition on it ("std above 2"), or when "trend" follows.
+   Otherwise it is the aggregation word.
 3. **A part of the date**: "by hour", "by hour of day", "by weekday", "by day
-   of week", "which hour". The hour needs a date column that holds times of day.
+   of week", "which hour", "which month of the year", "by quarter of the
+   year", "by calendar month". The hour needs a date column that holds times
+   of day. Months and quarters of the year pool every year.
 4. **Conditions** written around a named column (see below).
 5. **Values** of text columns, written in full (any case).
-6. **Partial column names** (see below).
-7. **Values** of long labels, by whole words: "Tartrazine" names "Tartrazine,
+6. **Summary words**: "standard deviation", "interquartile range",
+   "90th percentile", "upper quartile", "most common", "distribution of",
+   "describe", "outliers", "unusual", "impossible", "duplicate", "distinct",
+   "unique", and "which column" or "which variable", which rank the numeric
+   readings themselves. "std", "sd", "variance" and "iqr" are aggregation
+   words.
+7. **Partial column names** (see below).
+8. **Values** of long labels, by whole words: "Tartrazine" names "Tartrazine,
    FD&C Yellow 5 (US), E102 (EU)".
-8. **Unit conditions**: "at 28 days" is `Age of testing (day)` = 28 when one
+9. **Unit conditions**: "at 28 days" is `Age of testing (day)` = 28 when one
    numeric column has that unit in its name.
-9. **Numbers**: the N of "top N" and "bottom N", a year (1900 to 2099), and a
-   number that is a column's whole name ("correlation between 1001 and 1").
-   In a table with no date column, a number naming a column is the column.
-10. **Nouns for the rows**: a word from `ENTITY_NOUNS` ("patients", "birds",
+10. **Numbers**: the N of "top N" and "bottom N", a year (1900 to 2099), and a
+    number that is a column's whole name ("correlation between 1001 and 1").
+    In a table with no date column, a number naming a column is the column.
+11. **An unnamed row label**: when the first column has no header
+    (`Unnamed: 0`) and the notes read it as the row label, a noun that names
+    nothing else right after "which", "top N" or a grouping word names it:
+    "which probes have the highest mean". The answer says how it was read.
+12. **Nouns for the rows**: a word from `ENTITY_NOUNS` ("patients", "birds",
     "readings") or a plural word right after "how many", "number of" or
     "share of".
-11. **"missing"**, "null", "blank" or "empty" not attached to a column: a
+13. **"missing"**, "null", "blank" or "empty" not attached to a column: a
     question about missing values.
+14. **Column words** ("column", "variable") right after a column's name ("the
+    pH column") or in a question about missing values, and **filter cues**
+    ("within", "among") right before a filter or condition ("within CLASS 0").
 
 The rest must be query grammar: aggregation, ranking, growth, correlation,
 time, grain and share words, and `QUERY_STOPWORDS`, a fixed list of function
 words ("the", "by", "how", "where", "tested", ...). Any other word refuses the
-question and is named: `ADA found no column or value called "A1_1" in this
-table`. When the row limit left rows out, the reason says so, since the value
-may be in the rows ADA did not read.
+question, and each unbroken run of such words is quoted as typed: `ADA found
+no column or value called "A1_1" in this table`. Words of comparison or
+research ("differ", "affect") that no plan used get a reason of their own: they
+ask to compare groups or relate columns, and ADA could not tell which columns.
+When the row limit left rows out, the reason says so, since the value may be
+in the rows ADA did not read.
+
+Intent, grain and month words are read with every column name blanked, so a
+word inside a name is never grammar: `average_weekly_activity` asks for no
+weekly view and `Age of testing (day)` for no daily one.
 
 ### Conditions
 
@@ -171,7 +241,8 @@ may be in the rows ADA did not read.
 | "negative yield", "yield is negative", "positive", "zero" | `< 0`, `> 0`, `= 0` |
 | "when OBJECT is 0", "OBJECT = 0", "OBJECT equals 0" | `OBJECT = 0` |
 | "for Status 2", "cars with 6 cyl" | `Status = 2`, for a column of codes holding that value |
-| "how many have hypertension", "with diabetes", "are healthy", "without diabetes" | a 0/1 flag `= 1`, or `= 0` after "without" |
+| "how many have hypertension", "with diabetes", "are healthy", "received antibiotics", "without diabetes" | a 0/1 flag `= 1`, or `= 0` after "without" |
+| "how many AQC1cm values are 0", "how many zeros in AQC1cm", "negative values of X" | `AQC1cm = 0`, `X < 0` |
 | "missing eCO2", "eCO2 is missing" | `eCO2 missing` |
 | "where Condition is Open", "Detector is ON", "Region West" | the value of that text column |
 
@@ -211,10 +282,21 @@ names `Conduc`, "stations" names `STA`, "healthy" names `Crop_Health_Label`.
 
 When several columns fit, the one suited to the word's place is used if it is
 the only one: the identifier after "how many", a groupable column after "by"
-or "which", a numeric column elsewhere. Otherwise the question is refused with
-"Did you mean bill_length_mm or flipper_length_mm?". A plural noun for rows
-that several columns share ("how many samples" in a table of `sample.*`
-columns) counts rows instead.
+or "which", a numeric column elsewhere. After "how many" the column named for
+the noun is used (`_counted_column`): "how many drugs" counts `DRUG_NAME`
+rather than the rows or the serial `DRUG_ID`, "how many crops" counts
+`Current Crop` but not `Crop Rotation System`, and when `Plot Code` and `Plot
+Name` count different numbers the code is used and the answer gives the
+other's count. After "by" or "which", columns that pick the same groups of
+rows (a code and its label) stand for each other, and the label is used.
+Otherwise the question is refused with "Did you mean bill_length_mm or
+flipper_length_mm?", listing at most five columns ("or 995 others"). A noun
+for rows ("how many samples" in a table of `sample.*` columns) counts rows
+instead.
+
+"Which gene" naming three or more numeric columns (`Gene_1` to `Gene_1000`)
+asks about the columns themselves: "which gene has the highest average" ranks
+them, and "which genes differ between AML and ALL" compares each.
 
 ### 3. Choosing the intent
 
@@ -228,18 +310,34 @@ reading the question with the matched column names removed so that
 | Signal | Result |
 |---|---|
 | A question about missing values | `missing`, for every column or the one named |
+| "duplicate" | `duplicates`, of whole rows or of one column's values |
+| "outliers", "unusual", "impossible" | `outliers`, in one column or across the numeric readings; "outlier spectra" in a matrix table judges each row by its row summary |
+| "distribution of", "describe", "summary statistics" | `describe` of one measure, by a grouping when one follows "by" |
+| "which column", "which gene" | `columns` |
+| Two groupings named together ("by A and B", "by A by B") | `crosstab` |
+| "most common" | `rank` of row counts for a grouping ("which Kind is most common"), or the `mode` of a number |
 | "correlation", "correlated", "relate", "related" or "relationship" | `correlation` of the two numeric columns named, in the order named |
-| "how many", "count", "number of", "share", "proportion", "percentage", "percent" or "fraction", without a growth word | `count`; a `breakdown` by count with a grouping word; a `trend` of row counts with a grain |
+| "how many", "count", "number of", "share", "proportion", "percentage", "percent" or "fraction", without a growth word | `count`; a `breakdown` by count with a grouping word; a `trend` of row counts with a grain; a `share` within each group for "share of Result 1 by Gender" |
 | A growth word, and a date column exists | `growth`; ranked by segment when one is named, or by the detected segment when the question says "which", "fastest", "slowest" or a superlative |
 | "which" or "what" followed by day, week, month, quarter or year, with a superlative, and a date column exists | `rank` of the periods |
 | "top N", "bottom N", or a superlative, with a grouping column | `rank` |
 | A grain, "over time", "trend", "timeline", "history", "trajectory", or the date column named after "by" | `trend` |
-| A grouping column with "by", "per", "across", "breakdown", "split" or "each", or a grouping column with no measure named | `breakdown` |
+| A grouping column with "by", "per", "across", "breakdown", "split" or "each", or a grouping column with no measure named | `breakdown`; a continuous grouping is split at its quartiles (`bins=4`) |
 | A measure with an aggregation word or a superlative, or a measure named on its own | `aggregate` |
 | Only conditions or values | `count` |
 
 If none match, `parse_question` returns `None`. That triggers the AI planner
 (when a key is set) or the suggestion list.
+
+A segment with "by year", or with a part of the date ("average PM2.5 by
+station and month of the year"), is a `crosstab` of the date part by the
+segment. "Which year was the warmest" ranks the years of the measure, and the
+answer says it read "warmest" as the highest value ("coldest" as the lowest).
+
+"Share of Result 1 by Gender" is the share within each group: each Gender's
+rows with Result = 1, out of its rows with Result recorded, with a chi-square
+test of whether the shares differ. "Share of Antibiotics" for a 0/1 flag is
+the share of rows where it is set.
 
 Without an aggregation word, the measure's default is used: a sum for money
 and counts, a mean for anything else, or whatever the `aggregation` override
@@ -255,6 +353,11 @@ A trend whose aggregation word differs from the default ("average revenue
 monthly") is refused, because the trend executor always uses the default, and
 the reason says how the periods combine. The same holds for ranking periods
 ("which month had the highest average revenue").
+
+A spread ("standard deviation of X", "IQR of X by site") is a sample
+statistic with n − 1, and a percentile ("90th percentile of X") uses pandas'
+linear interpolation. Both work in aggregates, rankings and breakdowns, and
+are refused in a trend.
 
 A correlation question is refused unless it names exactly two numeric columns.
 It is also refused when it names a column to group by or a grain ("by
@@ -281,6 +384,11 @@ grouping word ("by", "per", "across", "each") or a ranking word ("which",
   column named, the detected measure is used. After a ranking word the column
   is what gets ranked and a later "by" names the measure: in "top 3 cylinders
   by mpg" the measure is `mpg`.
+- **A continuous column** named after "by" ("average growth by temperature")
+  is split into four groups of about equal size at its quartiles, labelled
+  with their ranges ("Q1: 12 to 18.5"), and the answer says so.
+- **The row label**, even when it is a number: "which OTU has the highest
+  AQC1cm" names the row.
 
 After a segment, the column named after "by" is the measure: "top 5 products
 by revenue". With no grouping column, the measure is the numeric column with
@@ -319,13 +427,14 @@ question is refused when the plan would leave out:
 | Part | Reason given |
 |---|---|
 | A column named after "by" with one value | "Sample has a single value (O) in the 250,000 rows analysed (the row limit left out 2,858,545 others), so there is nothing to group by." |
-| A continuous column named after "by" | "weight has 60 distinct values, too many to group by (the limit is 50)." |
-| A grouping alongside another grouping or a trend | "The question asks for two groupings, Site and Grade; ADA answers one at a time." |
+| A grouping alongside a trend, or an average per one unit by another ("average X per transect by status") | "The question asks for two groupings, transect and protection_status; ADA answers one at a time." |
 | A text column in the measure's place | "Precip holds text, not numbers, so it can't be averaged or totalled." |
 | A second measure | "The answer can use one measure, and the question names B and Concentration." |
 | A value of the grouping column | "Open is a value of Condition, which the answer groups by, so it can't also filter the rows." |
 | "top N" with nothing to rank | `"top 5" needs a column to rank, as in "top 5 <group> by <measure>".` |
 | A grain the plan doesn't use | "This table has no date column, so there is no month view." |
+| A spread, a percentile, "distinct" or "which column" the plan doesn't use | "The answer would leave out the standard deviation the question asks for." |
+| A running total the brief set aside, summed, averaged or correlated | "Total Rain keeps climbing like a meter reading ... Ask for its maximum, or use the column that records each reading's own amount." |
 
 `rephrase_hint` returns this reason, or the problem found while reading (an
 unknown word, a partial name or value several columns share). Otherwise it
@@ -352,8 +461,30 @@ how the question was read, and says how many rows it used: "Based on 179 of
 its own sentence ("calculated from 1,228 rows") and a count states its rows.
 Given `rows_not_analyzed` (`answer_question`, `execute_plan` and
 `rephrase_hint` take it; `Analysis.ask` and the app pass the rows the row limit
-left out), the answer adds "The row limit left out 2,858,545 older rows, so
-this answer covers only the 250,000 rows ADA analysed."
+left out), the rows are named for what they are: "Based on the 1,000,000
+sampled rows (of 3,108,545)." for a table sampled at random, or "the newest"
+rows for a dated one.
+
+**A long table's focus.** When the brief follows one parameter of a long table
+(pH, ammonia and temperature on separate rows), `Analysis.ask` and the app
+pass every row as a `WholeTable`. A question that names another parameter
+("average result for pH") is answered from its rows, and one that groups by
+the parameter lists each one's value without ranking them, since they are in
+different units. Any other answer ends: "This covers the 5,400 rows with
+determinand.label = Ammonia(N), which the brief follows; name another
+determinand.label to ask about it."
+
+**Cautions.** An answer that combines a measure's values looks them up in the
+data checks (`quality.scan`, run once per table). A maximum or minimum the
+checks flag says so: "Caution: the data checks flag this value (999.9 in 8
+rows, a missing-value code), so it is more likely an error or a code than a
+reading." Any other answer says how many flagged values it uses, and a
+grouped answer names a group the checks flag for the measure: "Caution: the
+data checks flag CO for Ahmedabad: NO equals CO in 94% of Ahmedabad's rows."
+
+**Running totals.** A column the notes set aside as a running total
+(`schema.running_total_columns`) is never summed, averaged, binned or
+correlated; its maximum and minimum are still answered.
 
 Trend, growth and period-ranking answers use the same `TrendSeries` as the
 dashboard, so the timeline notes ([Periods](periods.md#timeline-adjustments))
@@ -369,11 +500,42 @@ Other behaviour:
   and is drawn as a line; beyond 50 it falls back to the highest and lowest.
   A ranking ("which timepoint has the highest signal") still sorts by value.
 - A breakdown or ranking answer names the first group the way the brief does:
-  "timepoint 5 has the highest average signal of any timepoint, at 10". A
-  numeric group carries its column name (`formatting.group_label`), groups
-  tied with the first are all named ("North and South tie for the highest
-  average pH"), and an aggregate the column name already has is not repeated
-  ("total rain", not "total total rain").
+  "timepoint 5 has the highest average signal of any timepoint, at 10 (n =
+  3)". A numeric group carries its column name (`formatting.group_label`),
+  groups tied with the first are all named ("North and South tie for the
+  highest average pH"), and an aggregate the column name already has is not
+  repeated ("total rain", not "total total rain"). The table gives each
+  group's `n`.
+- An average, median or spread ranks only groups with at least five values
+  (`MIN_RANK_VALUES`), and says how many it left out, or that every group is
+  too small to rank firmly. A ranking leaves rows with no group out of first
+  place.
+- An average or median ranking adds one line from `compare.compare_groups` on
+  whether the ranked groups really differ: "The Breed groups do not clearly
+  differ (Welch ANOVA, p = 0.19; η² = 0.00), so this ranking may be chance."
+  When the leading group's mean is more than twice its median, the answer says
+  a few large values carry it and suggests the medians.
+- A trend says where the measure started and ended and between which periods,
+  its Theil-Sen slope (per year, fitted on yearly averages of complete years
+  once three or more are covered, so seasons can't tilt it; per decade too
+  over 20 years), and its peak and low. A first period the data starts
+  part-way through is left out, as the last one is when it is still in
+  progress, and the calculation says so. Period rankings leave it out too.
+- `describe` gives n, mean, SD, median, quartiles, IQR, range and skewness,
+  says whether the measure is roughly symmetric or skewed, and says when the
+  mean is more than twice the median. By a grouping, the table has one row per
+  group.
+- `outliers` lists the values outside Q1 − 1.5×IQR and Q3 + 1.5×IQR, on a log
+  scale for a right-skewed positive column as the brief judges its measure,
+  with the values the data checks flag; a mostly-zero column, or one whose
+  quartiles leave no spread, gets no list and says why. Across the readings it
+  leads with the data checks and gives each column's count outside the fences.
+- `duplicates` counts rows equal to an earlier row in every column, and again
+  without the row identifier when that differs.
+- `columns` ranks the columns by the aggregation asked for, with each one's n;
+  the calculation notes this means something only when they share a unit.
+- `crosstab` of counts gives the table with a chi-square test and Cramér's V;
+  of a measure, each cell's value and n, naming the highest and lowest cells.
 - When every group is one row (a label on each row), the answer names the row
   and its own value: "Hungatella hathewayi has the highest A101, at 6,803."
 - A count of distinct values per group (`count_column`) gets no share column,
@@ -429,6 +591,8 @@ the refusal message.
 | Plan names a column missing from the data | `execute_plan` raises `ValueError`; `answer_question` returns `None` |
 | "top 0" | `None` |
 | More than 20 breakdown groups | The 10 highest and the 10 lowest, with the number of groups |
+| A breakdown by a continuous column | Four equal-sized groups at its quartiles, said in the answer |
+| "average X per transect by status" | `None`: an average of per-transect totals is a two-step summary ADA does not build |
 | A partial column name one column fits ("average body by island") | Uses `body_mass_g` and says so |
 | A partial name several columns fit ("average length by island") | `None`, with "Did you mean bill_length_mm or flipper_length_mm?" |
 | "Which year ..." with no date column | Not a period ranking; a numeric `year` column can still group if it has at most 50 values |
@@ -449,5 +613,6 @@ the refusal message.
 6. Check that the `calculation` string describes what ran, and that
    `describe_query_plan` in `ada/ai_insights.py` still matches.
 
-Comparisons ("West vs East"), shares of a total ("what % of revenue is
-Enterprise") and date ranges are on the [roadmap](../../ROADMAP.md).
+Shares of a total ("what % of revenue is Enterprise"), date ranges and
+two-step summaries ("average per transect by status") are on the
+[roadmap](../../ROADMAP.md).

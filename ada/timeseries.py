@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+import ruptures
 
 MAD_SCALE = 1.4826  # converts MAD to a standard deviation for normal data
 # 1/sqrt(2/pi): puts the mean absolute deviation on the same scale as MAD_SCALE,
@@ -258,3 +259,132 @@ def observed_periods(trend: pd.DataFrame) -> pd.DataFrame:
     if not missing.any():
         return trend
     return trend.loc[~missing]
+
+
+# A level shift is looked for in a series of at least this many periods, and
+# each of its two stretches holds at least MIN_STRETCH periods and STRETCH_SHARE
+# of the series: a couple of odd periods at either end are anomalies, not a new level.
+MIN_SHIFT_PERIODS = 8
+MIN_STRETCH = 2
+STRETCH_SHARE = 0.15
+# A shift must be at least this many within-stretch standard deviations: a
+# stable series wanders by about one.
+MIN_SHIFT_EFFECT = 1.5
+# (history length, t statistic) from tools/calibrate_level_shifts.py, above
+# which only 1 stable series in 20 shows a shift that also passes the other rules.
+SHIFT_CRITICAL_VALUES: tuple[tuple[int, float], ...] = (
+    (8, 3.19),
+    (12, 2.75),
+    (20, 2.00),
+    (40, 2.00),
+    (60, 2.00),
+    (120, 2.00),
+    (240, 2.00),
+)
+
+
+@dataclass(frozen=True)
+class LevelShift:
+    """The split of a series into two stretches at different levels that fits it best."""
+
+    #: Position of the first value at the new level.
+    position: int
+    before: float
+    after: float
+    #: The shift in within-stretch standard deviations.
+    effect: float
+    #: The two-sample t statistic, discounted for autocorrelation within the stretches.
+    statistic: float
+    #: Squared error of the two-level fit as a share of a straight line's.
+    against_line: float
+    #: Each stretch's median sits on its own side of the midpoint between the two levels,
+    #: so neither level rests on one or two extreme values.
+    steady: bool = True
+
+
+def shift_critical_value(periods: int) -> float:
+    """The calibrated t statistic for a series of this length, interpolated on a log scale."""
+    lengths = np.array([length for length, _ in SHIFT_CRITICAL_VALUES], dtype=float)
+    values = np.array([value for _, value in SHIFT_CRITICAL_VALUES], dtype=float)
+    return float(np.interp(np.log(max(periods, 1)), np.log(lengths), values))
+
+
+def best_split(values: np.ndarray) -> LevelShift | None:
+    """The best two-level fit of ``values`` by binary segmentation, with no test applied.
+
+    The split comes from ``ruptures.Binseg`` with the l2 cost, which minimises
+    the squared error around each stretch's mean. Its t statistic is
+    discounted by the lag-1 autocorrelation left within the stretches (with
+    Kendall's small-sample correction), since a slowly wandering series makes
+    any split look significant. Returns None for a series too short or flat.
+    """
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    size = len(values)
+    if size < MIN_SHIFT_PERIODS or np.ptp(values) == 0:
+        return None
+    stretch = max(MIN_STRETCH, round(STRETCH_SHARE * size))
+    position = ruptures.Binseg(model="l2", min_size=stretch, jump=1).fit(values).predict(n_bkps=1)[0]
+    first, second = values[:position], values[position:]
+    residual = np.r_[first - first.mean(), second - second.mean()]
+    error = float((residual**2).sum())
+    shift = float(second.mean() - first.mean())
+    spread = np.sqrt(error / (size - 2))
+    if spread == 0:
+        return LevelShift(position, float(first.mean()), float(second.mean()), np.inf, np.inf, 0.0)
+    midpoint = (first.mean() + second.mean()) / 2
+    side = np.sign(second.mean() - first.mean())
+    steady = bool(
+        np.sign(np.median(first) - midpoint) == -side and np.sign(np.median(second) - midpoint) == side
+    )
+    lagged = np.r_[
+        residual[: position - 1] * residual[1:position], residual[position:-1] * residual[position + 1 :]
+    ]
+    rho = float(lagged.sum()) / error
+    rho = min(0.9, max(0.0, rho + (1 + 3 * rho) / size))
+    error_of_shift = spread * np.sqrt(1 / len(first) + 1 / len(second))
+    statistic = abs(shift) / error_of_shift * np.sqrt((1 - rho) / (1 + rho))
+    steps = np.arange(size, dtype=float)
+    line = np.polyval(np.polyfit(steps, values, 1), steps)
+    line_error = float(((values - line) ** 2).sum())
+    return LevelShift(
+        position=position,
+        before=float(first.mean()),
+        after=float(second.mean()),
+        effect=float(abs(shift) / spread),
+        statistic=float(statistic),
+        against_line=error / line_error if line_error > 0 else 1.0,
+        steady=steady,
+    )
+
+
+def passes_shift_rules(found: LevelShift, size: int) -> bool:
+    """Whether a split is large and steady enough to report, short of the calibrated t statistic.
+
+    The two-level fit must beat a straight line by more than its extra
+    parameters would by chance (a BIC-like margin of n^(-2/n) on the squared
+    error), so a steady rise is not called a shift, and each level must hold
+    for most of its stretch, so one extreme period is not a new level.
+    """
+    return (
+        found.steady and found.effect >= MIN_SHIFT_EFFECT and found.against_line < size ** (-2 / size)
+    )
+
+
+def level_shift(values: np.ndarray) -> LevelShift | None:
+    """The largest lasting change in a series' level, or None when it has none.
+
+    Binary segmentation finds the best split; it counts as a shift when its
+    t statistic passes ``shift_critical_value`` for the series' length and
+    ``passes_shift_rules`` holds. The threshold is calibrated so that only 1
+    stable series in 20 (normal noise) shows a shift; series whose noise
+    wanders slowly show one more often.
+    """
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    found = best_split(values)
+    if found is None:
+        return None
+    if found.statistic < shift_critical_value(len(values)) or not passes_shift_rules(found, len(values)):
+        return None
+    return found

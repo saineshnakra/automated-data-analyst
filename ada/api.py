@@ -22,16 +22,23 @@ import pandas as pd
 from .aggregation import TrendSeries, build_trend, group_coverage, segment_frame
 from .analysis import column_profile
 from .anomalies import MIN_PERIODS as ANOMALY_MIN_PERIODS
-from .anomalies import Anomaly, detect_anomalies
+from .anomalies import Anomaly, detect_anomalies, finer_trend
 from .business_insights import BusinessBrief, analyze_business, build_business_report
 from .file_io import list_sample_datasets as _list_sample_datasets
 from .file_io import read_tabular_file
 from .forecasting import Forecast, build_forecast
-from .formatting import format_moment, is_undated
+from .formatting import format_moment, is_undated, show_undated
 from .metrics import AGGREGATION_CHOICES, metric_for
-from .nlq import QueryAnswer, answer_question, rephrase_hint, suggested_questions, unsupported_phrasing
+from .nlq import (
+    QueryAnswer,
+    WholeTable,
+    answer_question,
+    rephrase_hint,
+    suggested_questions,
+    unsupported_phrasing,
+)
 from .pipeline import apply_focus, focus_options, prepare_analysis
-from .quality import mask_sentinels, quality_frame
+from .quality import quality_frame
 from .quality import scan as scan_quality
 from .schema import ColumnRoles
 
@@ -188,14 +195,15 @@ def analyze(
             ),
         )
     name = source_name or detected_name
-    # A clear code such as 999.9 or -100000 in the measure would drive every
-    # average, so it alone is set to missing, with a note; other columns keep theirs.
+    # Cleaning has already set clear codes such as 999.9 or -100000 to missing
+    # in every numeric column, with a note for each.
     cleaning = prepared.cleaning_report
-    frame, masked = mask_sentinels(prepared.dataframe, roles.measure)
-    if masked:
-        cleaning = replace(cleaning, notes=(*cleaning.notes, masked))
+    frame = prepared.dataframe
+    whole = None
     if roles.focus and dimension is None:
         # A long table's rows measure different things; the brief covers one of them.
+        # Questions about another one are answered from every row (see nlq.WholeTable).
+        whole = WholeTable(frame, replace(roles, focus=None), roles.dimension, roles.focus)
         name = f"{name} · {roles.focus}"
         frame, roles = apply_focus(frame, roles, roles.focus)
     return Analysis(
@@ -207,6 +215,7 @@ def analyze(
         frequency=frequency,
         source_name=name,
         rows_note=prepared.rows_note,
+        whole=whole,
     )
 
 
@@ -255,6 +264,8 @@ class Analysis:
     #: Which rows were analyzed when some were left out ("a random sample of
     #: 1,000,000 of 3,108,545 rows"), or "" when every row was.
     rows_note: str = ""
+    #: Every row of a long table, before the brief's focus on one parameter; Ask uses it.
+    whole: WholeTable | None = field(default=None, repr=False, compare=False)
     _trends: dict = field(default_factory=dict, repr=False, compare=False)
 
     @property
@@ -263,7 +274,9 @@ class Analysis:
 
     @cached_property
     def _brief(self) -> BusinessBrief:
-        return analyze_business(self.frame, self.roles, frequency=self.frequency)
+        return analyze_business(
+            self.frame, self.roles, frequency=self.frequency, blanked=self.cleaning.blanked_codes
+        )
 
     @property
     def headline(self) -> str:
@@ -297,14 +310,17 @@ class Analysis:
         return column_profile(self.frame)
 
     def quality(self) -> pd.DataFrame:
-        """Every issue the data checks found, one row each, the most consequential first.
+        """Every issue the data checks found, one row each: issues about values
+        before issues about gaps, each ranked by the rows they cover.
 
         Columns: ``Check``, ``Columns``, ``Rows`` (cells or rows affected),
         ``Share %``, ``Detail`` (a plain sentence), ``Rule`` (what fired) and
-        ``Examples``. Nothing is changed by the checks; an empty frame means
-        nothing was flagged. See ``ada/quality.py`` for the rules.
+        ``Examples``. Clear missing-value codes (-999, 999.9) were set to
+        missing during cleaning and are listed here as such; nothing else is
+        changed by the checks. An empty frame means nothing was flagged. See
+        ``ada/quality.py`` for the rules.
         """
-        return quality_frame(scan_quality(self.frame, self.roles))
+        return quality_frame(scan_quality(self.frame, self.roles, blanked=self.cleaning.blanked_codes))
 
     def trend(self, frequency: str | None = None) -> TrendSeries | Refusal:
         """The measure per period. ``.notes`` lists any adjustments made to the periods."""
@@ -323,8 +339,8 @@ class Analysis:
         """Periods outside the expected range of the trend.
 
         An empty tuple means nothing was flagged. A :class:`Refusal` means ADA
-        could not check (no date column, or too few periods). Both are falsy,
-        so check the type::
+        could not check (no date column, or too few periods even at a finer
+        grain than the trend's). Both are falsy, so check the type::
 
             found = report.anomalies
             if isinstance(found, ada.Refusal):
@@ -335,6 +351,8 @@ class Analysis:
         series = self.trend()
         if isinstance(series, Refusal):
             return series
+        # Too few periods at this grain may still be enough at a finer one.
+        series = finer_trend(self.frame, self.roles, series) or series
         periods = len(series.frame)
         if periods < ANOMALY_MIN_PERIODS:
             return Refusal(
@@ -379,7 +397,8 @@ class Analysis:
             return Refusal("no_dimension_column", "This table has no segment column to group by.")
         frame = segment_frame(self.frame, self.roles, limit=limit)
         if self.roles.date:
-            frame = frame.join(group_coverage(self.frame, self.roles), on="Segment")
+            # Times with no calendar date show as the time of day, not on their stand-in date.
+            frame = frame.join(show_undated(group_coverage(self.frame, self.roles)), on="Segment")
         return frame
 
     def ask(self, question: str) -> QueryAnswer | Refusal:
@@ -395,10 +414,14 @@ class Analysis:
                 "unsupported_phrasing",
                 "ADA has no way to represent that question, so it will not guess at a near one.",
             )
-        answer = answer_question(question, self.frame, self.roles, rows_not_analyzed=self.rows_not_analyzed)
+        answer = answer_question(
+            question, self.frame, self.roles, rows_not_analyzed=self.rows_not_analyzed, whole=self.whole
+        )
         if answer is None:
             message = "ADA could not build a plan for that question against this table."
-            hint = rephrase_hint(question, self.frame, self.roles, rows_not_analyzed=self.rows_not_analyzed)
+            hint = rephrase_hint(
+                question, self.frame, self.roles, rows_not_analyzed=self.rows_not_analyzed, whole=self.whole
+            )
             return Refusal("unrepresentable_question", f"{message} {hint}" if hint else message)
         return answer
 

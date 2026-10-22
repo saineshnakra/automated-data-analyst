@@ -41,14 +41,16 @@ class MovementContextTests(unittest.TestCase):
         self.assertIn("unusually large swing", trend.statement)
         self.assertEqual(trend.tone, "negative")
 
-    def test_the_qualifier_travels_into_the_recommendation(self):
+    def test_a_routine_swing_gets_no_follow_up(self):
         rng = np.random.default_rng(41)
         frame = monthly_frame(1_000 * (1 + rng.normal(0, 0.25, 20)))
 
         brief = analyze_business(frame, detect_roles(frame))
-        rationales = " ".join(item.rationale for item in brief.recommendations)
+        titles = " ".join(item.title for item in brief.recommendations)
 
-        self.assertIn("within normal period-to-period variation", rationales)
+        self.assertNotIn("Check whether", titles)
+        self.assertNotIn("Start with", titles)
+        self.assertNotIn("Find where the", titles)
 
     def test_too_little_history_makes_no_claim_either_way(self):
         trend = evidence_of(monthly_frame([100, 120, 90, 140]), "trend")
@@ -96,7 +98,8 @@ class CorrelationEvidenceTests(unittest.TestCase):
         units = rng.normal(50, 10, 60)
         revenue[0], units[0] = 40_000, 4_000  # two extreme records carry the linear correlation
         revenue[1], units[1] = 35_000, 3_600
-        frame = monthly_frame(revenue, Units=units)
+        # No region, so the data-check card about those two records leaves room for this one.
+        frame = monthly_frame(revenue, Units=units).drop(columns="Region")
 
         relationship = evidence_of(frame, "relationship")
 

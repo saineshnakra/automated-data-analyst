@@ -38,8 +38,15 @@ Re-running the calibration simulation with this step in place still gives
 about 5% of stable series a false flag at 24 to 60 periods, and a strongly
 seasonal quarterly series no more often.
 
-At least 8 observed periods are needed (`MIN_PERIODS`). With fewer, nothing is
-flagged.
+At least 8 observed periods are needed (`MIN_PERIODS`). When the chosen grain
+leaves fewer, `finer_trend` tries the finer grains in turn and checks the
+first one with 8 recorded periods: 147 daily readings roll up to 5 months, too
+few, but give 21 weeks. A grain finer than the data was recorded at only adds
+empty periods, so one with over a fifth of its periods empty
+(`MAX_EMPTY_SHARE`) is skipped. The brief's card then says which grain it
+checked ("Periods are checked by week, since by month there are only 5"), and
+`Analysis.anomalies` uses the same fallback. With no grain that has enough
+periods, nothing is flagged.
 
 ## Why the threshold is calibrated
 

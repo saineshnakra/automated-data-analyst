@@ -28,7 +28,7 @@ follows and its edge cases.
 | [Periods](reference/periods.md) | `ada/aggregation.py`, `ada/timeseries.py` | Period grain, timeline adjustments, the trendline |
 | [Anomalies](reference/anomalies.md) | `ada/anomalies.py` | When a period is flagged |
 | [Forecasting](reference/forecasting.md) | `ada/forecasting.py` | The forecast model, its guards and backtest |
-| [Data checks](reference/quality.md) | `ada/quality.py` | Impossible values, codes, caps, fill values, extreme values and patterns in missing data |
+| [Data checks](reference/quality.md) | `ada/quality.py` | Impossible values and physical limits, codes, caps, fill values, extreme values, clusters, swapped and stuck readings, copied rows, simulated-looking data and patterns in missing data |
 | [Evidence and recommendations](reference/evidence.md) | `ada/business_insights.py` | Evidence cards, KPIs, recommendations |
 | [Comparing groups and finding relationships](reference/compare.md) | `ada/compare.py` | Group comparisons with tests and effect sizes, the scan of every reading, and what relates to the measure |
 | [Ask ADA](reference/ask-ada.md) | `ada/nlq.py` | How a question becomes a pandas calculation |
@@ -44,6 +44,7 @@ follows and its edge cases.
 | [Development](development.md) | Setup, tests, linting, CI, conventions |
 | [Privacy](privacy.md) | What stays local and what can leave the machine |
 | [FAQ](faq.md) | Short answers to common questions |
+| [Credits](credits.md) | The libraries ADA builds on, their licences, and how to cite them |
 
 Project files at the repository root: [CONTRIBUTING](../CONTRIBUTING.md),
 [ROADMAP](../ROADMAP.md), [SECURITY](../SECURITY.md),

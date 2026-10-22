@@ -10,10 +10,16 @@ from ada.schema import (
     MEASURE_KEYWORDS,
     add_row_summary,
     detect_roles,
+    is_angle_column,
     is_design_name,
     is_entity_name,
     is_identifier_name,
+    is_month_name,
+    is_quality_flag,
+    is_time_part,
+    is_year_name,
     looks_like_identifier,
+    row_summary_columns,
 )
 
 
@@ -153,6 +159,33 @@ class EntityNameTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertFalse(is_entity_name(name))
 
+    def test_a_bare_no_is_nitric_oxide_not_an_entity(self):
+        self.assertFalse(is_entity_name("NO"))
+        for name in ("No.", "Specimen No", "Station No #"):
+            with self.subTest(name=name):
+                self.assertTrue(is_entity_name(name))
+
+
+class CalendarPartTests(unittest.TestCase):
+    def test_a_month_name_needs_month_values(self):
+        self.assertTrue(is_month_name("MO", pd.Series([1, 6, 12])))
+        self.assertTrue(is_month_name("Month", pd.Series(["Jan", "February", "Mar"])))
+        self.assertFalse(is_month_name("Age_months", pd.Series([12, 30, 66])))
+        self.assertTrue(is_month_name("Age_months"))
+
+    def test_a_year_name_needs_year_values(self):
+        self.assertTrue(is_year_name("survey_yr", pd.Series([1999, 2004])))
+        self.assertTrue(is_year_name("YR", pd.Series([40, 45])))
+        self.assertFalse(is_year_name("Age_years", pd.Series([3, 41, 80])))
+        self.assertFalse(is_year_name("Years", pd.Series([1, 12, 30])))
+
+    def test_an_age_in_months_is_a_reading_not_a_part_of_the_date(self):
+        frame = pd.DataFrame({"Age_months": [12 + index % 55 for index in range(220)]})
+
+        self.assertFalse(is_time_part("Age_months", frame["Age_months"]))
+        self.assertFalse(is_time_part("Duration Hours", pd.Series([3, 48, 200])))
+        self.assertTrue(is_time_part("DA", pd.Series([1, 15, 31])))
+
 
 class IdentifierNamePunctuationTests(unittest.TestCase):
     def test_key_names_with_punctuation_or_symbols(self):
@@ -245,6 +278,86 @@ class FactorTests(unittest.TestCase):
 
         self.assertIn("Concentration", roles.factors)
         self.assertIn(roles.measure, ("R", "B"))
+
+    def test_numbered_rating_items_stay_quantities(self):
+        rng = np.random.default_rng(21)
+        frame = pd.DataFrame({
+            "condition": ["A", "B", "C", "D"] * 30,
+            "fsi_high": [0, 1] * 60,
+            "RDB1": rng.integers(0, 11, 120),
+            "RDB2": rng.integers(0, 11, 120),
+            "Realism_1": rng.integers(2, 8, 120),
+            "Realism_2": rng.integers(2, 8, 120),
+            "risky_decision": readings(120, centre=5),
+        })
+
+        roles = detect_roles(frame)
+
+        self.assertEqual(roles.factors, ("fsi_high",))
+        for column in ("RDB1", "RDB2", "Realism_1", "Realism_2"):
+            with self.subTest(column=column):
+                self.assertNotIn(column, roles.dimensions)
+
+    def test_columns_sharing_a_rating_scale_are_items_but_a_lone_code_is_not(self):
+        rng = np.random.default_rng(22)
+        frame = pd.DataFrame({
+            "success_likelihood": rng.integers(1, 8, 120),
+            "direct_riskiness": rng.integers(1, 8, 120),
+            "perceived_harm": rng.integers(1, 8, 120),
+            "marital": rng.integers(1, 7, 120),
+            "bmi": readings(120),
+        })
+
+        roles = detect_roles(frame)
+
+        self.assertEqual(roles.factors, ("marital",))
+
+    def test_counts_beside_a_count_that_passes_one_are_not_flags(self):
+        def counts(ones: int) -> list[float]:
+            return [1.0] * ones + [0.0] * (110 - ones) + [np.nan] * 10
+
+        frame = pd.DataFrame({
+            "Location_m": [step * 5 for step in range(10)] * 12,
+            "Nudibranchs": counts(2),
+            "Crabs": [75.0, 36.0, 3.0, 2.0] + [1.0] * 8 + [0.0] * 98 + [np.nan] * 10,
+            "Octopuses": counts(3),
+            "Side": ["Left", "Right"] * 60,
+        })
+
+        roles = detect_roles(frame)
+
+        self.assertEqual(roles.flags, ())
+        self.assertNotIn("Nudibranchs", roles.dimensions)
+        self.assertEqual(roles.measure, "Crabs")
+
+    def test_two_yes_no_columns_side_by_side_stay_flags(self):
+        frame = pd.DataFrame({
+            "Antibiotics": [0, 1, 0] * 40,
+            "Probiotics": [1, 0] * 60,
+            "Shannon_Index": readings(120, centre=3),
+        })
+
+        self.assertEqual(detect_roles(frame).flags, ("Antibiotics", "Probiotics"))
+
+    def test_a_swept_setting_is_a_design_factor_not_a_measure(self):
+        rng = np.random.default_rng(23)
+        frequency = np.tile(np.arange(100, 600, 10), 12).astype(float)
+        frame = pd.DataFrame({
+            "Frequency (GHz)": frequency,
+            "Sample": np.repeat(list("ABCDEFGHIJKL"), 50),
+            "HG (mV)": np.round(frequency / 3 + rng.normal(0, 5, frequency.size), 2),
+            "LG (mV)": np.round(frequency / 9 + rng.normal(0, 5, frequency.size), 2),
+        })
+
+        roles = detect_roles(frame)
+
+        self.assertIn("Frequency (GHz)", roles.factors)
+        self.assertNotIn("Frequency (GHz)", (roles.measure, *roles.measure_alternatives))
+
+    def test_a_reading_rounded_to_whole_numbers_is_not_a_sweep(self):
+        frame = pd.DataFrame({"Humidity": [40 + index % 41 for index in range(410)], "Rain": readings(410)})
+
+        self.assertEqual(detect_roles(frame).factors, ())
 
     def test_a_short_scale_is_the_quantity_when_nothing_else_is_measured(self):
         frame = pd.DataFrame({"Class": ["A", "B"] * 30, "Mark": [3, 5, 7, 9, 10, 6] * 10})
@@ -368,6 +481,183 @@ class MeasureTieTests(unittest.TestCase):
         self.assertEqual(roles.measure_alternatives, ())
 
 
+class MeasureChoiceTests(unittest.TestCase):
+    def test_a_date_stored_as_a_number_is_never_the_measure(self):
+        days = pd.date_range("1954-06-01", periods=60, freq="D")
+        frame = pd.DataFrame({
+            "MESS_DATUM": days.strftime("%Y%m%d").astype(int),
+            "TMK": readings(60, centre=10),
+            "RSKF": [0, 6, 7] * 20,
+        })
+
+        self.assertEqual(detect_roles(frame).measure, "TMK")
+
+    def test_a_constant_column_is_never_the_measure(self):
+        frame = pd.DataFrame({
+            "Year": pd.date_range("2005-01-01", periods=30, freq="YS"),
+            "Farmland Type": ["dry", "paddy", "dry"] * 10,
+            "Multiple Cropping Index (%)": [100] * 30,
+        })
+
+        roles = detect_roles(frame)
+
+        self.assertIsNone(roles.measure)
+        self.assertEqual(roles.measure_alternatives, ())
+
+    def test_a_statistic_of_another_column_gives_way_to_a_reading(self):
+        frame = pd.DataFrame({
+            "p_value": np.linspace(0.001, 0.9, 40),
+            "beta_continuous": readings(40, seed=5, centre=0),
+            "overall_mean": readings(40, centre=100),
+        })
+
+        self.assertEqual(detect_roles(frame).measure, "overall_mean")
+
+    def test_a_column_recorded_on_few_rows_gives_way(self):
+        sparse = [np.nan] * 36 + [1.5, 2.5, 3.5, 4.5]
+        frame = pd.DataFrame({"Concentration": sparse, "Turbidity": readings(40)})
+
+        self.assertEqual(detect_roles(frame).measure, "Turbidity")
+
+    def test_a_summary_statistics_table_is_measured_by_its_mean(self):
+        mean = readings(50, centre=7)
+        frame = pd.DataFrame({
+            "probe": [f"{index}_at" for index in range(50)],
+            "count": 46,
+            "mean": mean,
+            "std": np.abs(readings(50, seed=8, centre=1)),
+            "min": mean - 2,
+            "25%": mean - 1,
+            "50%": mean,
+            "75%": mean + 1,
+            "max": mean + 2,
+        })
+
+        roles = detect_roles(frame)
+
+        self.assertEqual(roles.measure, "mean")
+        note = next(note for note in roles.notes if note.startswith("Each row summarises"))
+        self.assertIn("count is 46 on every row", note)
+
+    def test_an_outcome_score_beats_a_body_weight(self):
+        frame = pd.DataFrame({
+            "Weight_kg": readings(80, centre=400),
+            "Farm_Size_Acres": readings(80, seed=6, centre=50),
+            "Dysbiosis_Risk": np.round(np.random.default_rng(9).random(80), 2),
+        })
+
+        self.assertEqual(detect_roles(frame).measure, "Dysbiosis_Risk")
+
+    def test_the_reading_that_best_separates_an_outcome_label_wins_a_tie(self):
+        rng = np.random.default_rng(10)
+        result = np.array(["positive", "negative"] * 60)
+        positive = result == "positive"
+        frame = pd.DataFrame({
+            "Result": result,
+            "CK-MB": np.round(rng.lognormal(1 + 0.2 * positive, 1), 2),
+            "Troponin": np.round(rng.lognormal(-4 + 2 * positive, 1), 3),
+            "Blood sugar": readings(120, centre=140),
+        })
+
+        self.assertEqual(detect_roles(frame).measure, "Troponin")
+
+
+class GroupingRuleTests(unittest.TestCase):
+    def test_many_districts_with_several_samples_each_are_a_grouping(self):
+        frame = pd.DataFrame({
+            "District": [f"District {index % 101}" for index in range(606)],
+            "Potassium value": readings(606, centre=60),
+        })
+
+        self.assertEqual(detect_roles(frame).dimension, "District")
+
+    def test_names_that_each_appear_once_or_twice_are_not(self):
+        frame = pd.DataFrame({
+            "Name": [f"Person {index // 2}" for index in range(400)],
+            "Score": readings(400),
+        })
+
+        self.assertNotIn("Name", detect_roles(frame).dimensions)
+
+    def test_a_grouping_that_shares_no_rows_with_the_measure_is_not_picked(self):
+        frame = pd.DataFrame({
+            "food_category": ["Fish", "Salt", "Water"] * 10 + [None] * 10,
+            "biomarker": [None] * 30 + ["CRP", "aPTT"] * 5,
+            "overall_mean": [np.nan] * 30 + list(readings(10)),
+        })
+
+        self.assertEqual(detect_roles(frame).dimension, "biomarker")
+
+    def test_the_more_complete_of_two_twin_groupings_is_preferred(self):
+        types = ["LUAD", "BRCA", "SCLC", "COAD"] * 30
+        frame = pd.DataFrame({
+            "TCGA_DESC": types,
+            "Cancer Type": [None if index % 5 == 0 else kind for index, kind in enumerate(types)],
+            "LN_IC50": readings(120, centre=2),
+        })
+
+        roles = detect_roles(frame)
+
+        self.assertEqual(roles.dimension, "TCGA_DESC")
+        self.assertTrue(any(note.startswith("TCGA_DESC holds the same groups") for note in roles.notes))
+
+    def test_text_labels_beat_a_numeric_code_for_the_same_groups(self):
+        cells = ["T0", "T1", "S0", "S1", "D0", "D1"]
+        frame = pd.DataFrame({
+            "Group": [index % 6 + 1 for index in range(48)],
+            "Gp": [cells[index % 6] for index in range(48)],
+            "Ca": readings(48, centre=9),
+        })
+
+        roles = detect_roles(frame)
+
+        self.assertEqual(roles.dimension, "Gp")
+        self.assertTrue(any("ADA groups by Gp" in note for note in roles.notes))
+
+    def test_two_columns_that_split_the_rows_alike_are_named(self):
+        frame = pd.DataFrame({
+            "side": ["Leeward", "Windward", "Bajos"] * 20,
+            "protection_status": ["NTZ", "MPA", "OA"] * 20,
+            "region": ["Alacranes", "Alacranes", "Bajos"] * 20,
+            "quantity": [1, 4, 2, 8, 3] * 12,
+        })
+
+        notes = detect_roles(frame).notes
+
+        self.assertTrue(any("side and protection_status" in note for note in notes))
+
+    def test_a_swept_setting_that_explains_the_reading_is_the_grouping(self):
+        rng = np.random.default_rng(24)
+        frequency = np.tile(np.arange(100, 600, 10), 48).astype(float)
+        sample = np.repeat(list("ABCDEFGHIJKL"), 200)
+        frame = pd.DataFrame({
+            "Frequency (GHz)": frequency,
+            "Sample_original": np.repeat([f"{letter}{n}" for letter in "ABCDEFGHIJKL" for n in range(4)], 50),
+            "Sample": sample,
+            "HG (mV)": np.round(np.sin(frequency / 40) * 50 + rng.normal(0, 10, frequency.size), 2),
+        })
+
+        self.assertEqual(detect_roles(frame).dimension, "Frequency (GHz)")
+
+    def test_when_no_grouping_explains_the_measure_the_handier_one_stays(self):
+        frame = pd.DataFrame({
+            "Location_m": [step * 5 for step in range(10)] * 12,
+            "Side": ["Left"] * 60 + ["Right"] * 60,
+            "Crabs": [0, 0, 1, 0, 3, 0, 0, 2, 0, 0, 0, 1] * 10,
+        })
+
+        self.assertEqual(detect_roles(frame).dimension, "Location_m")
+
+    def test_a_date_that_never_changes_is_not_the_date(self):
+        frame = pd.DataFrame({
+            "last_updated": pd.Timestamp("2025-02-01"),
+            "Revenue": readings(30, centre=100),
+            "Region": ["N", "S", "E"] * 10,
+        })
+
+        self.assertIsNone(detect_roles(frame).date)
+
+
 class RunningTotalTests(unittest.TestCase):
     def setUp(self):
         rng = np.random.default_rng(4)
@@ -459,9 +749,138 @@ class MatrixTests(unittest.TestCase):
         self.assertEqual(roles.measure, "Row mean (30 columns)")
         self.assertAlmostEqual(frame.loc[0, roles.measure], self.frame.iloc[0, 1:].mean())
 
+    def test_counts_spread_across_named_sample_columns_are_a_matrix(self):
+        samples = [
+            "CL3", "CC1", "SV1", "M31Fcsw", "AQC1cm", "AQC4cm", "NP2", "TRRsed1", "TS28", "Even1", "Even2",
+        ]
+        counts = np.random.default_rng(31).poisson(30, (60, len(samples)))
+        counts[:, 4] *= 20
+        frame = pd.DataFrame(counts, columns=samples)
+        frame.insert(0, "OTU", [f"OTU{549000 + index}" for index in range(60)])
+
+        detected = detect_roles(frame)
+        _, roles = add_row_summary(frame, detected)
+
+        self.assertEqual(detected.table_shape, "matrix")
+        self.assertEqual(roles.measure, "Row mean (11 columns)")
+        note = next(note for note in roles.notes if note.startswith("This table looks like a matrix"))
+        self.assertIn("columns of counts", note)
+        self.assertIn("common scale", note)
+        self.assertEqual(row_summary_columns(roles, frame), samples)
+
+    def test_a_few_count_columns_beside_readings_are_not_a_matrix(self):
+        frame = pd.DataFrame({
+            "Station": [f"S{index}" for index in range(40)],
+            "Crabs": np.arange(40) % 4,
+            "Seastars": np.arange(40) % 3,
+            "Water Temp": readings(40),
+        })
+
+        self.assertEqual(detect_roles(frame).table_shape, "flat")
+
     def test_a_wide_table_of_named_measures_is_not_a_matrix(self):
         names = "abcdefghijklmnopqrstuvwxy"
         frame = pd.DataFrame({f"marker_{name}": readings(30, seed=seed) for seed, name in enumerate(names)})
+
+        self.assertEqual(detect_roles(frame).table_shape, "flat")
+
+
+class NonReadingTests(unittest.TestCase):
+    def test_compass_directions_are_set_aside(self):
+        frame = pd.DataFrame({
+            "Wind Direction": [10, 350, 180, 90, 270] * 8,
+            "Aspect Ratio": readings(40, centre=2),
+            "Air Temperature": readings(40, seed=4, centre=15),
+        })
+
+        roles = detect_roles(frame)
+
+        self.assertTrue(is_angle_column("Wind Direction", frame["Wind Direction"]))
+        self.assertFalse(is_angle_column("Aspect Ratio", frame["Aspect Ratio"]))
+        self.assertEqual(roles.non_readings, ("Wind Direction",))
+        self.assertNotEqual(roles.measure, "Wind Direction")
+        self.assertEqual(roles.numeric[-1], "Wind Direction")
+
+    def test_quality_flags_are_never_groupings_or_readings(self):
+        frame = pd.DataFrame({
+            "TMK": readings(60, centre=10),
+            "TMK_flag": [1, 1, 3] * 20,
+            "QN_4": [1, 10, 9] * 20,
+            "RSKF": [0, 6, 7, 8] * 15,
+        })
+
+        roles = detect_roles(frame)
+
+        self.assertEqual(set(roles.non_readings), {"TMK_flag", "QN_4"})
+        self.assertEqual(roles.factors, ("RSKF",))
+        self.assertEqual(roles.dimension, "RSKF")
+        self.assertTrue(any("flag the quality of other readings" in note for note in roles.notes))
+
+    def test_a_flag_that_names_an_outcome_is_still_a_grouping(self):
+        frame = pd.DataFrame({"Fraud_Flag": [0, 1, 0, 0] * 10, "Amount": readings(40, centre=80)})
+
+        self.assertFalse(is_quality_flag("Fraud_Flag", frame.columns))
+        self.assertEqual(detect_roles(frame).flags, ("Fraud_Flag",))
+
+    def test_map_coordinates_and_numbered_rows_are_set_aside(self):
+        frame = pd.DataFrame({
+            "result": readings(40, centre=1),
+            "MESS_DATUM": pd.date_range("2020-01-01", periods=40).strftime("%Y%m%d").astype(int),
+            "sample.samplingPoint.easting": np.arange(40) * 113 % 997 + 300_000,
+            "x_coord": readings(40, seed=5, centre=500),
+        })
+
+        roles = detect_roles(frame)
+
+        self.assertEqual(
+            set(roles.non_readings), {"MESS_DATUM", "sample.samplingPoint.easting", "x_coord"}
+        )
+        self.assertEqual(roles.measure, "result")
+
+    def test_an_id_before_the_name_marks_a_code(self):
+        frame = pd.DataFrame({"id_reef": [index % 15 + 1 for index in range(150)], "quantity": readings(150)})
+
+        self.assertEqual(detect_roles(frame).factors, ("id_reef",))
+
+
+class StackedTableTests(unittest.TestCase):
+    def setUp(self):
+        food = pd.DataFrame({
+            "source_table": "food",
+            "food_item": [f"item {index}" for index in range(40)],
+            "food_category": ["Fish", "Salt", "Water", "Honey"] * 10,
+            "particles_per_g": readings(40, centre=5),
+            "reference": [f"study {index % 7}" for index in range(40)],
+        })
+        blood = pd.DataFrame({
+            "source_table": "blood",
+            "biomarker": ["CRP", "aPTT", "Fibrinogen"] * 3,
+            "overall_mean": readings(9, centre=100),
+            "p_value_group": np.linspace(0.01, 0.5, 9),
+            "unit": ["mg/dl", "s", "mg/dl"] * 3,
+        })
+        self.frame = pd.concat([food, blood], ignore_index=True)
+
+    def test_the_largest_of_stacked_tables_is_the_focus(self):
+        roles = detect_roles(self.frame)
+
+        self.assertEqual(roles.table_shape, "stacked")
+        self.assertEqual(roles.dimension, "source_table")
+        self.assertEqual(roles.focus, "food")
+        self.assertEqual(roles.measure, "particles_per_g")
+        self.assertEqual(roles.dimensions[0], "food_category")
+        note = next(note for note in roles.notes if note.startswith("This file stacks 2 tables"))
+        self.assertIn("blood (9)", note)
+
+    def test_a_column_filled_only_on_some_rows_is_no_stack(self):
+        frame = pd.DataFrame({
+            "Status": ["Completed"] * 30 + ["Returned"] * 10,
+            "Revenue": readings(40, centre=100),
+            "Units": [1, 2, 3, 4] * 10,
+            "Region": ["N", "S"] * 20,
+            "Refund Amount": [np.nan] * 30 + list(readings(10, centre=40)),
+            "Return Reason": [None] * 30 + ["Damaged", "Late"] * 5,
+        })
 
         self.assertEqual(detect_roles(frame).table_shape, "flat")
 
@@ -494,14 +913,16 @@ class GroupingChoiceTests(unittest.TestCase):
 
         self.assertEqual(detect_roles(frame).dimension, "PHENOTYPE")
 
-    def test_a_month_column_beside_a_date_is_not_the_grouping(self):
+    def test_a_month_column_beside_a_date_is_not_a_grouping(self):
         days = pd.date_range("2024-01-01", periods=120, freq="D")
         frame = pd.DataFrame({"Date": days, "MO": days.month, "MaxTemp": readings(120)})
 
         roles = detect_roles(frame)
 
-        self.assertIn("MO", roles.factors)
+        self.assertNotIn("MO", roles.factors)
+        self.assertNotIn("MO", roles.dimensions)
         self.assertIsNone(roles.dimension)
+        self.assertEqual(roles.measure, "MaxTemp")
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+import time
 import unittest
 
 import numpy as np
@@ -852,6 +853,233 @@ class PerValueCleaningTests(unittest.TestCase):
         self.assertEqual(cleaned["Amount"].iloc[:2].tolist(), [1200.5, 1200.5])
         self.assertTrue(pd.isna(cleaned["Amount"].iloc[2]))
         self.assertEqual(cleaned["Amount"].iloc[3], -30.0)
+
+    def test_a_large_table_of_text_columns_is_cleaned_quickly(self):
+        rng = np.random.default_rng(31)
+        rows = 250_000
+        data = {f"label_{i}": rng.choice([f"L{j}" for j in range(300)], rows) for i in range(10)}
+        for i in range(3):
+            data[f"reading_{i}"] = rng.normal(50, 10, rows).round(2).astype(str)
+        frame = pd.DataFrame(data)
+
+        started = time.perf_counter()
+        cleaned, _ = clean_dataframe(frame)
+        elapsed = time.perf_counter() - started
+
+        self.assertEqual(cleaned["reading_0"].dtype.kind, "f")
+        # About half a second on a laptop; the margin absorbs slow CI machines.
+        self.assertLess(elapsed, 4.0)
+
+
+class MissingValueCodeTests(unittest.TestCase):
+    def test_a_code_is_set_to_missing_in_every_numeric_column_with_a_note_each(self):
+        rng = np.random.default_rng(32)
+        frame = pd.DataFrame({
+            "Date": pd.date_range("2020-01-01", periods=200).strftime("%Y-%m-%d"),
+            "PM": np.r_[rng.normal(955, 5, 150), [-999.0] * 50],
+            "TMK": np.r_[rng.normal(10, 6, 180), [-999.0] * 20],
+        })
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(cleaned[["PM", "TMK"]].isna().sum().tolist(), [50, 20])
+        self.assertAlmostEqual(cleaned["PM"].mean(), 955, delta=3)
+        self.assertIn("50 cells in PM held -999", " ".join(report.notes))
+        self.assertIn("20 cells in TMK held -999", " ".join(report.notes))
+        self.assertEqual([issue.columns for issue in report.blanked_codes], [("PM", "TMK")])
+
+    def test_a_table_without_codes_is_unchanged(self):
+        frame = pd.DataFrame({"Price": [9_999.0, 120.0, 3_000.0, 450.0] * 5})
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(int(cleaned["Price"].isna().sum()), 0)
+        self.assertEqual(report.blanked_codes, ())
+
+
+class TwoRowHeaderTests(unittest.TestCase):
+    def test_group_labels_over_the_names_make_a_two_row_header(self):
+        frame = pd.DataFrame({
+            "Weld No.": [None, "L-a", "L-b", "L-c"],
+            "Inputs": ["Pin Dia (mm)", 5, 7, 7],
+            "Unnamed: 2": ["Speed (rpm)", 710, 710, 450],
+            "Outputs": ["UTS (MPa)", 200.5, 205.2, 196.1],
+            "Unnamed: 4": ["% Elongation", 11.3, 15.3, 8.4],
+        })
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(
+            list(cleaned.columns), ["Weld No.", "Pin Dia (mm)", "Speed (rpm)", "UTS (MPa)", "% Elongation"]
+        )
+        self.assertEqual(len(cleaned), 3)
+        self.assertEqual(cleaned["UTS (MPa)"].dtype.kind, "f")
+        self.assertFalse(cleaned.isna().any().any())
+        note = next(note for note in report.notes if note.startswith("The header has two rows"))
+        self.assertIn('"Inputs" and "Outputs" label groups of columns', note)
+
+    def test_a_label_over_one_column_is_joined_with_the_text_below_it(self):
+        frame = pd.DataFrame({
+            "Site": [None, "A", "B", "C"],
+            "Temperature": ["(°C)", 20.1, 21.3, 19.8],
+            "Readings": ["pH", 6.1, 6.4, 7.0],
+            "Unnamed: 3": ["Nitrate (mg/L)", 1.2, 0.8, 2.5],
+        })
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(list(cleaned.columns), ["Site", "Temperature (°C)", "pH", "Nitrate (mg/L)"])
+
+    def test_a_first_row_of_numbers_is_data(self):
+        frame = pd.DataFrame({
+            "Unnamed: 0": ["x", "y", "z", "w"], "Value": [1.5, 2.5, 3.5, 4.5], "Count": [1, 2, 3, 4],
+        })
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(len(cleaned), 4)
+        self.assertIn("Value", cleaned.columns)
+        self.assertFalse(any("two rows" in note for note in report.notes))
+
+
+class WholeNumberDateTests(unittest.TestCase):
+    def test_yyyymmdd_numbers_become_dates_when_the_table_has_no_other(self):
+        days = pd.date_range("1954-06-01", periods=40)
+        frame = pd.DataFrame({"MESS_DATUM": days.strftime("%Y%m%d").astype(int), "TMK": np.arange(40.0)})
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertTrue(is_datetime64_any_dtype(cleaned["MESS_DATUM"]))
+        self.assertEqual(cleaned["MESS_DATUM"].tolist(), list(days))
+        self.assertIn(
+            "MESS_DATUM holds whole numbers written as YYYYMMDD (01 Jun 1954 to 10 Jul 1954), so it was "
+            "read as dates.",
+            report.notes,
+        )
+
+    def test_yyyymm_numbers_under_a_date_name_become_months_beside_another_date(self):
+        frame = pd.DataFrame({
+            "Run Date": ["2024-01-05", "2024-02-07", "2024-03-04"],
+            "Period": [202401, 202402, 202403],
+            "Yield": [1.0, 2.0, 3.0],
+        })
+
+        cleaned, report = clean_dataframe(frame)
+
+        months = pd.to_datetime(["2024-01-01", "2024-02-01", "2024-03-01"])
+        self.assertEqual(cleaned["Period"].tolist(), list(months))
+        self.assertTrue(any("YYYYMM (Jan 2024 to Mar 2024)" in note for note in report.notes))
+
+    def test_numbers_that_are_not_all_valid_dates_stay_numbers(self):
+        frame = pd.DataFrame({"Batch": [20240101, 20241301, 20240102], "Yield": [1.0, 2.0, 3.0]})
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["Batch"].dtype.kind, "i")
+
+    def test_numbers_that_look_like_dates_stay_numbers_beside_a_real_date(self):
+        frame = pd.DataFrame({
+            "Date": ["2024-01-05", "2024-02-07", "2024-03-04"],
+            "Reads": [20240101, 20240102, 20240103],
+        })
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["Reads"].dtype.kind, "i")
+
+    def test_a_column_named_as_the_date_is_read_whatever_else_the_table_holds(self):
+        frame = pd.DataFrame({
+            "Date": ["2024-01-05", "2024-02-07", "2024-03-04"],
+            "Reads": [20240101, 20240102, 20240103],
+        })
+
+        cleaned, _ = clean_dataframe(frame, date="Reads")
+
+        self.assertTrue(is_datetime64_any_dtype(cleaned["Reads"]))
+
+
+class NotDetectedTests(unittest.TestCase):
+    def test_nd_in_a_numeric_column_is_below_a_detection_limit(self):
+        frame = pd.DataFrame({"Lead": ["0.81", "ND", "0.77", "0.92", "ND", "1.10"]})
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(int(cleaned["Lead"].isna().sum()), 2)
+        note = next(note for note in report.notes if "Lead" in note)
+        self.assertIn("2 cells in Lead (33.3%) were below a detection limit", note)
+
+    def test_nd_beside_values_written_with_a_limit_is_not_determined(self):
+        frame = pd.DataFrame({"Zinc": ["<0.4", "ND", "1.2", "0.9", "ND", "2.2"] * 3})
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(int(cleaned["Zinc"].isna().sum()), 9)
+        notes = " ".join(note for note in report.notes if "Zinc" in note)
+        self.assertIn('6 cells in Zinc read as missing: "ND".', notes)
+        self.assertIn("not determined", notes)
+        self.assertIn("3 cells in Zinc (16.7%) were below a detection limit (<0.4)", notes)
+
+    def test_nd_among_readings_written_as_text_is_not_detected(self):
+        frame = pd.DataFrame({
+            "Particles": ["5.66 ± 1.69 items/g", "ND", "14 items/L", "0.179 items/g", "ND"],
+            "Food": ["Fish", "Salt", "Water", "Fish", "Salt"],
+        })
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(int(cleaned["Particles"].isna().sum()), 2)
+        note = next(note for note in report.notes if "Particles" in note)
+        self.assertIn("not detected", note)
+        self.assertNotIn("not stated", note)
+
+
+class PlaceholderTests(unittest.TestCase):
+    def test_no_data_phrases_in_other_languages_become_missing(self):
+        frame = pd.DataFrame({
+            "Category": ["BAIK", "TIDAK ADA DATA", "SEDANG", "keine Daten", "sem dados", "BAIK"],
+            "Index": [40.0, 0.0, 70.0, 0.0, 0.0, 45.0],
+        })
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["Category"].dropna().tolist(), ["BAIK", "SEDANG", "BAIK"])
+        self.assertTrue(any("not stated" in note and "Category" in note for note in report.notes))
+
+    def test_placeholder_labels_become_missing_with_a_note(self):
+        frame = pd.DataFrame({
+            "Cancer Type": ["BRCA", "UNABLE TO CLASSIFY", "LUAD", "Unknown", "unclassified", "BRCA"],
+            "Z": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+        })
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["Cancer Type"].dropna().tolist(), ["BRCA", "LUAD", "BRCA"])
+        note = next(note for note in report.notes if "Cancer Type" in note)
+        self.assertIn("3 cells in Cancer Type read as missing", note)
+        self.assertIn("not a group of its own", note)
+
+
+class MangledRangeTests(unittest.TestCase):
+    def test_a_range_a_spreadsheet_turned_into_a_date_is_restored(self):
+        frame = pd.DataFrame({"Depth": ["0-10", "Oct-30", "30-60", "60-90"] * 3, "Ca": np.arange(12.0)})
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["Depth"].unique().tolist(), ["0-10", "10-30", "30-60", "60-90"])
+        self.assertIn(
+            '3 Depth values read "Oct-30", which is how a spreadsheet shows the range "10-30" once it '
+            'has read it as a date; they were restored to "10-30".',
+            report.notes,
+        )
+
+    def test_a_range_that_fits_no_other_is_only_named(self):
+        frame = pd.DataFrame({"Band": ["0-5", "5-15", "Mar-40", "15-25"] * 2, "Ca": np.arange(8.0)})
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertIn("Mar-40", cleaned["Band"].tolist())
+        named = 'may be how a spreadsheet shows the range "3-40"'
+        self.assertTrue(any(named in note for note in report.notes))
 
 
 def hourly_log(start, hours, value=1.0, seed=0):

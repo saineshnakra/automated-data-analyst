@@ -61,6 +61,8 @@ at most three watchouts.
   `measure` and `partner`
 - it asks to `aggregate` with no measure
 - it asks for a non-count aggregation of a non-numeric column
+- it asks for a spread (`std`, `var` or `iqr`) outside an aggregate, a rank
+  or a breakdown
 - it asks to `rank` or `breakdown` with no usable dimension
 - its dimension is the measure, a date, an identifier, a column of fractional
   or nearly unique numbers, or a column that is more than 90% unique over at

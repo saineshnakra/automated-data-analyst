@@ -68,7 +68,7 @@ class RateMeasureTests(unittest.TestCase):
         # Four records a month: a sum and a mean differ by a factor of four.
         rows = []
         for month in ("2025-01-31", "2025-02-28", "2025-03-31"):
-            rows.extend((month, 0.2) for _ in range(4))
+            rows.extend((month, rate) for rate in (0.1, 0.3, 0.2, 0.2))
         self.frame = pd.DataFrame(rows, columns=["Date", "Conversion Rate"])
         self.frame["Date"] = pd.to_datetime(self.frame["Date"])
 
@@ -78,7 +78,7 @@ class RateMeasureTests(unittest.TestCase):
 
     def test_an_amount_is_still_the_period_total(self):
         amounts = self.frame.rename(columns={"Conversion Rate": "Revenue"})
-        amounts["Revenue"] = 100.0
+        amounts["Revenue"] = [50.0, 150.0, 100.0, 100.0] * 3
         series = build_trend(amounts, detect_roles(amounts))
         np.testing.assert_allclose(series.frame["Value"].to_numpy(), [400.0, 400.0, 400.0])
 
@@ -98,7 +98,7 @@ class EmptyPeriodTests(unittest.TestCase):
         months = [m for i, m in enumerate(pd.date_range("2025-01-31", periods=12, freq="ME"))
                   if i != skip]
         value = 0.2 if measure == "Conversion Rate" else 100.0
-        frame = pd.DataFrame({"Date": months, measure: [value] * len(months)})
+        frame = pd.DataFrame({"Date": months, measure: [value * (1 + i % 2) for i in range(len(months))]})
         return build_trend(frame, detect_roles(frame))
 
     def test_a_month_with_no_rows_counts_as_zero(self):
@@ -164,7 +164,7 @@ class EmptyPeriodTests(unittest.TestCase):
         frame = pd.DataFrame(
             {
                 "Date": pd.to_datetime(["2025-01-31", "2025-02-28", "2025-03-31"]),
-                "Revenue": [100.0, np.nan, 100.0],
+                "Revenue": [100.0, np.nan, 120.0],
             }
         )
         series = build_trend(frame, detect_roles(frame))

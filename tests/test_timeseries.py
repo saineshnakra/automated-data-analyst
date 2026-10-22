@@ -6,12 +6,15 @@ import pandas as pd
 from ada.timeseries import (
     MAD_SCALE,
     MEAN_ABS_DEV_SCALE,
+    best_split,
     f_test_p_value,
     fit_trendline,
+    level_shift,
     observed_periods,
     period_grain,
     period_positions,
     robust_scale,
+    shift_critical_value,
     theil_sen,
     yearly_pattern,
 )
@@ -252,6 +255,56 @@ class YearlyPatternTests(unittest.TestCase):
         offsets = yearly_pattern(quarters, residuals, min_cycles=3)
 
         self.assertLess(offsets[8], 25)
+
+
+class LevelShiftTests(unittest.TestCase):
+    def test_a_step_is_found_with_the_levels_on_either_side(self):
+        values = np.r_[5.5, 103.5, 805.5, 795.0, 791.6, 840.3, 924.7, 958.9]
+
+        found = level_shift(values)
+
+        assert found is not None
+        self.assertEqual(found.position, 2)
+        self.assertAlmostEqual(found.before, 54.5)
+        self.assertAlmostEqual(found.after, values[2:].mean())
+
+    def test_the_split_matches_the_least_squared_error(self):
+        rng = np.random.default_rng(61)
+        values = np.r_[rng.normal(90, 10, 40), rng.normal(35, 10, 20)]
+
+        found = best_split(values)
+
+        assert found is not None
+        errors = [
+            ((values[:k] - values[:k].mean()) ** 2).sum() + ((values[k:] - values[k:].mean()) ** 2).sum()
+            for k in range(9, 52)
+        ]
+        self.assertEqual(found.position, 9 + int(np.argmin(errors)))
+        self.assertIsNotNone(level_shift(values))
+
+    def test_stable_series_rarely_show_a_shift(self):
+        rng = np.random.default_rng(62)
+        flagged = sum(level_shift(rng.normal(0, 1, 40)) is not None for _ in range(300))
+        self.assertLessEqual(flagged / 300, 0.09)
+
+    def test_a_steady_rise_is_not_a_shift(self):
+        rng = np.random.default_rng(63)
+        flagged = sum(level_shift(np.arange(30) + rng.normal(0, 1, 30)) is not None for _ in range(100))
+        self.assertLessEqual(flagged, 5)
+
+    def test_one_extreme_period_at_an_end_is_not_a_new_level(self):
+        rng = np.random.default_rng(64)
+        values = rng.normal(500, 30, 20)
+        values[-1] = 40_000
+
+        self.assertIsNone(level_shift(values))
+
+    def test_short_or_flat_series_have_none(self):
+        self.assertIsNone(level_shift(np.array([1.0, 5.0, 9.0])))
+        self.assertIsNone(level_shift(np.full(20, 3.0)))
+
+    def test_the_critical_values_rise_for_short_series(self):
+        self.assertGreater(shift_critical_value(8), shift_critical_value(60))
 
 
 if __name__ == "__main__":

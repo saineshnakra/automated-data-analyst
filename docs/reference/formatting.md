@@ -101,20 +101,25 @@ when the name contains that code or symbol, and `$` otherwise. `is_money`
 
 ## Percentages
 
-`is_percentage` is true for a name containing `%` or the word `rate`,
-`margin` or `ratio`.
+`is_percentage` is true for a name that uses `%` as a unit (`Moisture %`,
+`UTS (%)`, `% Elongation`) or has the word `rate`, `margin` or `ratio`. A `%`
+right after a number is not a unit: `25%` and `p95%` label quantiles or
+thresholds, and their values can be anything (`has_percent_unit`).
 
 A name can carry both signals: `Profit Margin %` contains a currency word and
-a percentage one. A `%` sign, or a percentage word as the last word, makes it a
+a percentage one. A `%` unit, or a percentage word as the last word, makes it a
 percentage, so `Profit Margin` is a margin and `Margin Amount` is an amount.
 Matching is on whole words, so `rate` does not match `Corporate Revenue` and
 `eur` does not match `Europe Sales`.
 
 The scale is decided once per column from `column_values`, not per value: if
 every value is between 0 and 1, the column stores fractions (`0.25` is 25%);
-otherwise it stores points (`25` is 25%). If any value in a rate-named column
-exceeds `MAX_PLAUSIBLE_PERCENTAGE` (1,000), the column is printed as plain
-numbers instead of `1250000.0%`.
+otherwise it stores points (`25` is 25%). A column named with a `%` unit must
+hold shares from 0 to 100 to print as percentages, unless its name says it
+measures a change (`% change`, `growth %`; `SIGNED_PERCENT_WORDS`), which can
+be negative or pass 100. If any value in a word-named rate column exceeds
+`MAX_PLAUSIBLE_PERCENTAGE` (1,000), the column is printed as plain numbers
+instead of `1250000.0%`.
 
 `format_rate_change` writes a change in a rate as percentage points
 ("20.0 percentage points"), since 20% to 40% is 20 points but a 100% relative
@@ -168,6 +173,12 @@ a log passes midnight, `day 3` at a daily grain. `format_moment` writes one
 end of a date range the same way (`05 Mar 2024`, or `15:06:28`). Real
 readings from 1900 at a grain finer than a day would be labelled as undated
 too.
+
+Tables show such times the same way. `show_undated(frame)` writes every
+column of them as clock times (`15:06:28`, `day 2 00:15:00`) for display, and
+is applied to `Analysis.segments()` (its `From` and `To`), the app's answer
+tables, the Explore table and the cleaned-data preview. An Explore chart with
+such a time axis is labelled by the clock, like the trend chart.
 
 ## Known gaps
 

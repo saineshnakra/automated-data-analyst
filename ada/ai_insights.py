@@ -142,7 +142,8 @@ class AIQueryPlan(BaseModel):
 
     answerable: bool
     intent: Literal["aggregate", "count", "rank", "breakdown", "trend", "growth", "correlation"] = "aggregate"
-    aggregation: Literal["sum", "mean", "median", "min", "max", "count"] = "sum"
+    #: "std", "var" and "iqr" are the spread of the measure: its standard deviation, variance or IQR.
+    aggregation: Literal["sum", "mean", "median", "min", "max", "count", "std", "var", "iqr"] = "sum"
     measure: str | None = None
     dimension: str | None = None
     #: The second numeric column of a correlation; ``measure`` is the first.
@@ -161,6 +162,7 @@ PLANNER_INSTRUCTIONS = """You translate one business question about a single tab
 Use only the listed column names, exactly as written; never invent a column.
 Filter values may only be phrases quoted from the question itself.
 For a correlation, put the two numeric columns in measure and partner.
+For a standard deviation, variance or interquartile range, use the aggregation std, var or iqr.
 If the schema cannot answer the question, set answerable to false instead of guessing."""
 
 
@@ -220,6 +222,8 @@ GRAIN_INTENTS = ("trend", "growth")
 # Intents whose executor combines each period with the measure's own aggregation
 # (a sum for an amount, a mean for a rate or level), whatever the plan says.
 PERIOD_INTENTS = ("trend", "growth")
+# Aggregations that measure how a measure spreads.
+SPREAD_AGGREGATIONS = ("std", "var", "iqr")
 # Above this share of distinct values a column identifies rows rather than grouping them.
 IDENTIFIER_UNIQUENESS = 0.9
 
@@ -291,6 +295,9 @@ def _to_query_plan(
         if parsed.aggregation not in runs:
             return None
     if parsed.intent == "aggregate" and not measure:
+        return None
+    # A spread describes one measure's values; it has no meaning for a row count or a correlation.
+    if parsed.aggregation in SPREAD_AGGREGATIONS and parsed.intent not in ("aggregate", "rank", "breakdown"):
         return None
     if measure is not None and not _usable_measure(dataframe, measure, parsed.aggregation):
         return None
@@ -414,6 +421,8 @@ def describe_query_plan(plan: QueryPlan, roles: ColumnRoles | None = None) -> st
     per_period = "average" if plan.measure and not metric_for(plan.measure, roles).additive else "total"
 
     grouping = f"the {plan.time_part} of {plan.dimension}" if plan.time_part else plan.dimension
+    if plan.bins:
+        grouping = f"{plan.bins} equal-sized groups of {plan.dimension}"
     counted = f"distinct {plan.count_column} values" if plan.count_column else "rows"
     if plan.intent == "count":
         if plan.count_column:
@@ -451,8 +460,26 @@ def describe_query_plan(plan: QueryPlan, roles: ColumnRoles | None = None) -> st
         # Name the aggregation that will actually run.
         described = counted if plan.aggregation == "count" else f"{aggregation.lower()} {measure}"
         description = f"break {described} down by {grouping}"
+    elif plan.intent == "crosstab":
+        described = counted if plan.aggregation == "count" else f"{aggregation.lower()} {measure}"
+        description = f"cross-tabulate {described} by {grouping} and {plan.second_dimension}"
+    elif plan.intent == "describe":
+        description = f"summarise the distribution of {measure} (n, mean, SD, quartiles, range and skew)"
+    elif plan.intent == "compare":
+        description = f"compare {measure} across the groups of {plan.dimension}, with a test and effect size"
+    elif plan.intent == "correlates":
+        description = f"rank each numeric column by how strongly it relates to {measure}"
+    elif plan.intent == "columns":
+        word = aggregation.lower().removesuffix(" of")
+        description = f"rank the {len(plan.columns)} numeric columns by their {word}"
+    elif plan.intent == "outliers":
+        description = f"list the values of {measure} the outlier rule and the data checks flag"
+    elif plan.intent == "duplicates":
+        description = "count the rows that repeat an earlier row"
     else:
-        description = f"{aggregation.lower()} of {measure}"
+        # "Standard deviation of" already says "of".
+        joined = aggregation.lower() if aggregation.endswith(" of") else f"{aggregation.lower()} of"
+        description = f"{joined} {measure}"
 
     description += _scope_clause(plan)
     return description[0].upper() + description[1:] + "."

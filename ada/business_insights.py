@@ -6,10 +6,11 @@ Every figure comes from a deterministic pandas calculation that is shown beside 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pandas as pd
+from scipy import stats
 
 from .aggregation import (
     MatchedChange,
@@ -24,28 +25,57 @@ from .aggregation import (
     segment_period_change,
     unlabelled_label,
 )
-from .anomalies import detect_anomalies
+from .anomalies import detect_anomalies, finer_trend
 from .compare import (
+    ADJUSTED_BY,
+    ALPHA,
+    CAP_MIN_DISTINCT,
+    CAP_MIN_ROWS,
+    CAP_SHARE,
+    FALSE_DISCOVERY,
     INFLUENCE_CHANGE,
+    MAX_MODEL_TERMS,
     MAX_SCAN_LEVELS,
+    MAX_VIF,
+    MIN_NAMED_GROUP,
     NEAR_DUPLICATE_CORRELATION,
     NOTABLE_CORRELATION,
     RANK_DIVERGENCE,
     SCAN_ROWS,
     SHARED_STEM_CORRELATION,
+    Construction,
+    Derivation,
     GroupComparison,
+    GroupingRule,
     Pair,
     RelationshipScan,
+    WithinGroups,
+    centre_word,
     combined_groupings,
     compare_groups,
+    compare_rates,
     comparison_calculation,
+    construction,
     correlation_interval,
+    date_part,
     describe_comparison,
+    describe_rates,
     effect_clause,
     effect_text,
     entity_column,
+    far_out,
+    fit_joint_model,
+    format_p,
+    grouping_rules,
+    holm_adjust,
     lead_sentence,
+    leads_with_trend,
+    longest_stretch,
     most_influential,
+    nested_within,
+    outcome_event,
+    rate_calculation,
+    same_stem,
     scan_differences,
     scan_relationships,
     variance_explained,
@@ -70,10 +100,21 @@ from .formatting import (
     with_aggregate,
 )
 from .metrics import MetricSpec, metric_for
-from .quality import QualityIssue, flagged_index, prefers_log_scale, show_value
+from .quality import (
+    TABLE_CHECKS,
+    QualityIssue,
+    counts_units,
+    flagged_index,
+    is_location_name,
+    prefers_log_scale,
+    show_value,
+    statistics_frame,
+)
 from .quality import scan as scan_quality
 from .schema import (
+    INPUT_WORDS,
     TIME_PART_TOKENS,
+    TIME_PART_WORDS,
     ColumnRoles,
     detect_roles,
     is_design_name,
@@ -81,8 +122,9 @@ from .schema import (
     is_month_name,
     is_year_name,
     looks_like_identifier,
+    row_summary_columns,
 )
-from .timeseries import robust_scale
+from .timeseries import MIN_SHIFT_EFFECT, level_shift, observed_periods, robust_scale
 
 
 @dataclass(frozen=True)
@@ -102,6 +144,10 @@ class Evidence:
     calculation: str
     tone: str = "neutral"
     subject: str | None = None
+    #: One sentence for the headline when this card holds the brief's strongest finding, or "".
+    lead: str = ""
+    #: The card's change is within the usual variation, so it is no clear change.
+    quiet: bool = False
 
 
 @dataclass(frozen=True)
@@ -145,22 +191,25 @@ def _period_changes(values: np.ndarray, *, relative: bool = True) -> np.ndarray:
     return (current[usable] - previous[usable]) / np.abs(previous[usable]) * 100
 
 
-def _movement_in_context(values: np.ndarray, change: float, describe=format_percentage) -> str:
+def _movement_in_context(
+    values: np.ndarray, change: float, describe=format_percentage
+) -> tuple[str, bool | None]:
     """Describe the latest change relative to this series' usual volatility.
 
     ``change`` is a percentage when ``describe`` is ``format_percentage`` and a
     plain difference otherwise. Returns a sentence with a leading space, or ""
-    when there are too few prior changes or they have no spread.
+    when there are too few prior changes or they have no spread, and whether
+    the change is within the usual variation (None when it can't be judged).
     """
     relative = describe is format_percentage
     prior = _period_changes(values[:-1], relative=relative)
     if len(prior) < MIN_PERIODS_FOR_VOLATILITY:
-        return ""
+        return "", None
 
     spread = robust_scale(prior)
     typical = float(np.median(np.abs(prior)))
     if spread == 0:
-        return ""
+        return "", None
 
     distance = abs(change - float(np.median(prior))) / spread
     # Distance from the median decides how unusual; the size of the move picks
@@ -176,7 +225,37 @@ def _movement_in_context(values: np.ndarray, change: float, describe=format_perc
             if moved_more
             else "This is an unusually quiet period for this series"
         )
-    return f" {verdict}; this series typically moves about {describe(typical)} per period."
+    quiet = distance < 1.0 or not moved_more
+    return f" {verdict}; this series typically moves about {describe(typical)} per period.", quiet
+
+
+def _rows_in_period(
+    dataframe: pd.DataFrame, roles: ColumnRoles, frequency: str, period: pd.Timestamp
+) -> np.ndarray:
+    """The measure's recorded values in one period."""
+    stamps = dataframe[roles.date].dt.to_period(frequency).dt.to_timestamp()
+    return dataframe.loc[stamps == period, roles.measure].dropna().to_numpy(dtype=float)
+
+
+def _noise_note(previous: np.ndarray, current: np.ndarray) -> tuple[str, bool | None]:
+    """Whether two periods' averages differ by more than the noise in their rows, by Welch's t-test.
+
+    Used when the series is too short to judge a change against its own
+    history. Returns a sentence with a leading space and whether the change is
+    within the noise.
+    """
+    if min(len(previous), len(current)) < 2 or not (previous.std() > 0 or current.std() > 0):
+        return "", None
+    p = float(stats.ttest_ind(current, previous, equal_var=False).pvalue)
+    if not np.isfinite(p):
+        return "", None
+    if p >= ALPHA:
+        return (
+            f" That is within the noise: the two periods' rows do not differ clearly (Welch's t-test, "
+            f"{format_p(p)}).",
+            True,
+        )
+    return f" The two periods' rows differ clearly (Welch's t-test, {format_p(p)}).", False
 
 
 # A figure resting on fewer rows than this is quoted with its row count and a caveat.
@@ -238,13 +317,18 @@ def _growth_evidence(
     current = float(values[-1])
     # Groups that start or stop reporting would move a pooled figure on their own,
     # so the change, and the history it is judged against, use the groups in both.
-    matched = matched_period_change(dataframe, roles, series)
+    # Without a grouping column, the unit each row belongs to (a station) is the group.
+    grouped = roles
+    if not roles.dimension and (unit := entity_column(dataframe, roles)):
+        grouped = replace(roles, dimension=unit)
+    matched = matched_period_change(dataframe, grouped, series)
     pooled = (previous, current)
     history = series
+    compared = dataframe
     if matched is not None and matched.groups:
         previous, current = matched.previous, matched.current
-        kept = dataframe[dataframe[roles.dimension].isin(matched.kept)]
-        history = build_trend(kept, roles, series.frequency)
+        compared = dataframe[dataframe[grouped.dimension].isin(matched.kept)]
+        history = build_trend(compared, roles, series.frequency)
         values = history.frame["Value"].to_numpy(dtype=float)
     metric = metric_for(roles.measure, roles)
     unit = metric.unit
@@ -259,7 +343,7 @@ def _growth_evidence(
         # a temperature in °C means nothing, and 3% to 4% is one point.
         value = f"{sign}{moved.split()[0]} pts" if unit == "rate" else f"{sign}{moved}"
         moved = f"by {moved}"
-        context = _movement_in_context(
+        context, quiet = _movement_in_context(
             values, delta, lambda size: format_change(0, size, roles.measure, unit, measure_values)
         )
         calculation = "Latest period average − previous period average"
@@ -269,13 +353,22 @@ def _growth_evidence(
     else:
         change = delta / abs(previous) * 100
         value = format_percentage(change, signed=True)
-        context = _movement_in_context(values, change)
+        context, quiet = _movement_in_context(values, change)
         calculation = "(Latest period − previous period) ÷ |previous period|"
-    compared = "compared with past period-to-period changes"
+    against = "compared with past period-to-period changes"
     seasonal = seasonal_context(history, relative=unit not in ("rate", "level"))
     if seasonal is not None:
-        context = _seasonal_note(seasonal, history, change, current, roles, unit, measure_values)
-        compared = "compared with the same move in earlier years and the same period a year earlier"
+        context, quiet = _seasonal_note(seasonal, history, change, current, roles, unit, measure_values)
+        against = "compared with the same move in earlier years and the same period a year earlier"
+    if quiet is None and roles.measure and not metric.additive:
+        # Too short a history to judge the move against, so it is judged against
+        # the spread of the rows in the two periods instead.
+        periods = (trend.iloc[-2]["Period"], trend.iloc[-1]["Period"])
+        sides = [_rows_in_period(compared, roles, series.frequency, period) for period in periods]
+        note, quiet = _noise_note(*sides)
+        if note:
+            context += note
+            against = "compared with the spread of the two periods' rows by Welch's t-test (scipy.stats)"
     # Format at the series frequency so a quarter reads "Q4 2023", matching the chart axis.
     period = format_period(trend.iloc[-1]["Period"], series.frequency)
     # Without enough periods to check completeness, the last one may be partial,
@@ -298,9 +391,9 @@ def _growth_evidence(
             "missing data rather than a real move."
         )
     if matched is not None:
-        context = _matched_note(matched, roles, pooled, series, measure_values) + context
+        context = _matched_note(matched, grouped, pooled, series, measure_values) + context
         if matched.groups:
-            calculation = f"On the {roles.dimension} values present in both periods: {calculation}"
+            calculation = f"On the {grouped.dimension} values present in both periods: {calculation}"
     return Evidence(
         kind="trend",
         title=f"Latest {sentence_case(measure)} movement",
@@ -309,9 +402,11 @@ def _growth_evidence(
             f"{measure} {direction} {moved} in the latest {completeness} "
             f"({period}), from {start} to {end}.{context}"
         ),
-        calculation=f"{calculation}, {compared}",
+        calculation=f"{calculation}, {against}",
         # Recommendations follow this tone.
         tone=_tone(delta >= 0, metric),
+        subject=period,
+        quiet=bool(quiet),
     )
 
 
@@ -372,11 +467,12 @@ def _seasonal_note(
     roles: ColumnRoles,
     unit: str,
     measure_values: pd.Series | None,
-) -> str:
+) -> tuple[str, bool | None]:
     """Set the latest move beside the same move in earlier years and the same period a year ago.
 
     Replaces the comparison with all past period-to-period changes, which a
-    yearly cycle makes look unusual every spring.
+    yearly cycle makes look unusual every spring. Also returns whether the move
+    is within the range of earlier years (None with fewer than two of them).
     """
     relative = unit not in ("rate", "level")
 
@@ -388,12 +484,14 @@ def _seasonal_note(
     latest = pd.Timestamp(series.frame.iloc[-1]["Period"])
     season = _season_name(latest, series.frequency)
     note = ""
+    quiet = None
     usual = np.asarray(seasonal.usual_changes, dtype=float)
     if usual.size == 1:
         note = f" In the one earlier year on record, the move into {season} was {describe(usual[0])}."
     elif usual.size:
         low, high = float(usual.min()), float(usual.max())
-        within = "within" if low <= change <= high else "outside"
+        quiet = bool(low <= change <= high)
+        within = "within" if quiet else "outside"
         note = (
             f" In the {usual.size} earlier years on record, the move into {season} ranged from "
             f"{describe(low)} to {describe(high)} (median {describe(float(np.median(usual)))}), "
@@ -407,7 +505,7 @@ def _seasonal_note(
         if size is not None:
             verb = "up" if current > before else "down" if current < before else "level"
             note += f" Against {then} ({shown}), it is {verb}" + (f" {size}." if verb != "level" else ".")
-    return note
+    return note, quiet
 
 
 def _change_driver_evidence(
@@ -515,12 +613,15 @@ def _anomaly_evidence(
     if not roles.date:
         return None
     series = build_trend(dataframe, roles, frequency)
+    # Too few periods at the chosen grain to calibrate a band, so a finer one is checked.
+    finer = finer_trend(dataframe, roles, series)
+    checked = finer or series
     metric = metric_for(roles.measure, roles)
-    anomalies = detect_anomalies(series.frame, floor_at_zero=metric.floors_at_zero)
+    anomalies = detect_anomalies(checked.frame, floor_at_zero=metric.floors_at_zero)
     if not anomalies:
         return None
     # Label at the series' own grain, which a fixed frequency may have set.
-    grain = series.frequency
+    grain = checked.frequency
     worst = anomalies[0]
     measure = roles.measure or "Records"
     measure_values = dataframe[roles.measure].dropna() if roles.measure else None
@@ -536,6 +637,13 @@ def _anomaly_evidence(
     if worst.seasonal:
         band = "band for its time of year"
         expected += " plus the usual offset of the same month or quarter in other years"
+    finer_note = ""
+    if finer is not None:
+        finer_note = (
+            f" Periods are checked by {GRAIN_NAMES.get(grain, grain)}, since by "
+            f"{GRAIN_NAMES.get(series.frequency, series.frequency)} there are only "
+            f"{len(observed_periods(series.frame))}, too few to set the band."
+        )
     return Evidence(
         kind="anomaly",
         title="Anomalous periods",
@@ -543,14 +651,22 @@ def _anomaly_evidence(
         statement=(
             f"{label} is the sharpest anomaly: {sentence_case(measure)} reached {reached}, "
             f"{worst.direction} the expected {low}–{high} range. "
-            f"{len(anomalies)} {plural} outside the {band}."
+            f"{len(anomalies)} {plural} outside the {band}.{finer_note}"
         ),
         calculation=(
             f"Period values vs {expected} ± a band calibrated so that only "
             "1 stable series in 20 raises a flag"
         ),
         tone="warning",
+        lead=f"{label} is an anomalous period: {sentence_case(measure)} reached {reached}, "
+        f"{worst.direction} the expected {low}–{high} range.",
     )
+
+
+GRAIN_NAMES = {
+    "s": "second", "min": "minute", "h": "hour", "D": "day", "W": "week", "M": "month", "Q": "quarter",
+    "Y": "year",
+}
 
 
 CONCENTRATED_EFFECTIVE_SEGMENTS = 3.0
@@ -679,19 +795,43 @@ def _highest_and_lowest(
     return statement, high, _subject(top_names)
 
 
-def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evidence, ...]:
+def _segment_evidence(
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles,
+    tested: pd.DataFrame | None = None,
+    note: str = "",
+    found: _Groupings | None = None,
+    *,
+    rules: tuple[GroupingRule, ...] = (),
+    built: Construction | None = None,
+) -> tuple[Evidence, ...]:
+    """The leading group: a share of the total for money and counts, a group comparison otherwise.
+
+    ``tested`` holds the rows the comparison runs on (the distinct rows when
+    many repeat exactly), and ``note`` says so in its calculation. A grouping
+    cut from the measure (``rules``, with ``built`` for the columns built from
+    it) ranks its groups by definition, so the comparisons card states the
+    rule instead.
+    """
+    if roles.measure and roles.dimension and _rule_for(rules, built, roles.measure, roles.dimension):
+        return ()
     # All segments, so shares and concentration are measured against the full total.
     segments = segment_frame(dataframe, roles, limit=None)
     if segments.empty:
         return ()
 
     # Shares also need an additive measure: segment churn rates of 10% and 20%
-    # don't make one segment two thirds of churn.
+    # don't make one segment two thirds of churn. A summed per-row score (seconds
+    # of looking time per infant) is compared too: its shares mostly count rows.
     metric = metric_for(roles.measure, roles)
     additive = metric.additive
-    if not additive:
-        compared = _group_difference_evidence(dataframe, roles)
+    measure_values = dataframe[roles.measure].dropna() if roles.measure else None
+    if not additive or (roles.measure and not _counts_money_or_things(roles, metric, measure_values)):
+        compared = _group_difference_evidence(dataframe if tested is None else tested, roles, note, found)
         if compared is not None:
+            if additive:
+                shares = _share_note(dataframe, roles, segments)
+                compared = replace(compared, statement=compared.statement + shares)
             return (compared,)
     # A segment with no values for the measure has no figure, not a figure of zero.
     no_data = tuple(segments.loc[segments["Value"].isna(), "Segment"])
@@ -721,7 +861,6 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
     )
     effective = _effective_segments(segments["Value"].to_numpy(dtype=float), total)
     measure = roles.measure or "rows"
-    measure_values = dataframe[roles.measure].dropna() if roles.measure else None
     dimension = sentence_case(roles.dimension or "segment")
     leader_name = group_label(roles.dimension, leader["Segment"])
 
@@ -791,6 +930,8 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
             calculation=calculation,
             tone="positive" if shares_hold else ("neutral" if not additive else "warning"),
             subject=subject,
+            # An average ranked without a test names no group in the headline.
+            lead=_first_sentence(statement) if additive else "",
         ),
         # Concentration needs shares, and describes only money and counts of
         # things; omit the card rather than print nan%.
@@ -807,6 +948,29 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
             if shares_hold and _counts_money_or_things(roles, metric, measure_values)
             else ()
         ),
+    )
+
+
+def _share_note(dataframe: pd.DataFrame, roles: ColumnRoles, segments: pd.DataFrame) -> str:
+    """The largest group's share of a summed per-row score, beside its share of the rows."""
+    present = segments.dropna(subset=["Value"])
+    values = present["Value"].to_numpy(dtype=float)
+    total = float(values.sum()) if values.size else 0.0
+    if not total > 0 or not _shares_are_meaningful(values):
+        return ""
+    leader = present.loc[present["Value"].astype(float).idxmax()]
+    rows = _rows_per_group(dataframe, roles)
+    count, everything = int(rows.get(leader["Segment"], 0)), int(rows.sum())
+    if not everything:
+        return ""
+    share, row_share = float(leader["Value"]) / total * 100, count / everything * 100
+    mostly_rows = ""
+    if abs(share - row_share) <= 10:
+        mostly_rows = ", so its share mostly reflects how many rows it has"
+    return (
+        f" Summed, {group_label(roles.dimension, leader['Segment'])} holds {format_percentage(share)} of "
+        f"all {roles.measure} and {count:,} of the {everything:,} rows ({format_percentage(row_share)})"
+        f"{mostly_rows}."
     )
 
 
@@ -886,18 +1050,23 @@ def _leading_groups(comparison: GroupComparison) -> list[str]:
     return [group.label for group in comparison.groups if np.isclose(comparison.centre(group), top)]
 
 
-def _group_difference_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
-    """The averaged measure compared across the grouping, with its test and effect size.
+def _group_difference_evidence(
+    dataframe: pd.DataFrame, roles: ColumnRoles, note: str = "", found: _Groupings | None = None
+) -> Evidence | None:
+    """The measure compared across the grouping, with its test and effect size.
 
     A gap the test can't tell from noise is reported as no clear difference,
-    so the card never ranks groups that don't differ. None when no two groups
-    have two or more values.
+    so the card never ranks groups that don't differ. When the grouping is the
+    combination of two others (a cell code for depth and contour), each of
+    those factors is tested on its own as well, since the cells say nothing
+    about which factor matters. ``note`` is added to the calculation. None
+    when no two groups have two or more values.
     """
     if not roles.measure or not roles.dimension:
         return None
-    comparison = compare_groups(
-        dataframe, roles.measure, roles.dimension, entity=entity_column(dataframe, roles)
-    )
+    found = found or _find_groupings(dataframe, roles)
+    entity = found.entity
+    comparison = compare_groups(dataframe, roles.measure, roles.dimension, entity=entity)
     if comparison is None:
         return None
     values = dataframe[roles.measure].dropna()
@@ -905,59 +1074,244 @@ def _group_difference_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> E
     clear = comparison.verdict == "clear"
     calculation = comparison_calculation(comparison)
     centre = "median" if calculation.startswith("median ") else "average"
+    statement = describe_comparison(comparison, values)
+    lead = lead_sentence(comparison, values) if clear or leads_with_trend(comparison) else ""
+    factors = _factor_comparisons(dataframe, roles, found)
+    if factors:
+        first, second = factors
+        statement += (
+            f" {roles.dimension} combines {first.grouping} and {second.grouping}; each on its own: "
+            f"{_factor_clause(first, values)}; {_factor_clause(second, values)}."
+        )
+        calculation += f"; {first.grouping} and {second.grouping} also compared on their own"
+        differing = [factor for factor in factors if factor.verdict == "clear"]
+        if differing and not clear:
+            lead = lead_sentence(max(differing, key=lambda factor: factor.explained), values)
+    imbalance = _input_imbalance(dataframe, roles, entity)
+    if imbalance:
+        statement += imbalance
+        calculation += "; inputs compared across the same groups, Holm-adjusted"
+    if note:
+        calculation += note
     return Evidence(
         kind="leader",
-        title=f"Highest {centre} by {dimension}" if clear else f"No clear difference by {dimension}",
+        title=(
+            f"Highest {centre} by {dimension}"
+            if clear
+            else f"Too few values to rank by {dimension}"
+            if comparison.verdict == "thin"
+            else f"No clear difference by {dimension}"
+        ),
         value=(
             format_number(comparison.centre(comparison.higher), roles.measure, column_values=values)
             if clear
             else effect_text(comparison).replace("Hedges' ", "")
         ),
         # A group that reported for only part of the dates is said to have done so.
-        statement=describe_comparison(comparison, values)
+        statement=statement
         + _coverage_note(dataframe, roles, [comparison.higher.value, comparison.lower.value]),
         calculation=calculation,
         subject=_subject(_leading_groups(comparison)) if clear else None,
+        lead=lead,
+    )
+
+
+def _input_imbalance(dataframe: pd.DataFrame, roles: ColumnRoles, entity: str | None) -> str:
+    """Say when the inputs of a mix or dose differ across the groups, since the comparison then mixes them in.
+
+    In a table of concrete mixes tested at different ages, a strength gap
+    between ages is partly a gap between mixes when the mixes differ too.
+    Inputs are readings named as what goes into a mix or a dose (cement,
+    water, dose).
+    """
+    inputs = [
+        column
+        for column in numeric_readings(dataframe, roles)
+        if column != roles.measure and set(normalized_name(column).split()) & INPUT_WORDS
+    ]
+    if not inputs:
+        return ""
+    scan = scan_differences(dataframe, inputs, [roles.dimension], entity=entity, limit=DIFFERENCES_NAMED)
+    if scan is None or not scan.named:
+        return ""
+    named = list_names([f"{item.measure} ({effect_text(item)})" for item in scan.named])
+    return (
+        f" The inputs differ across {roles.dimension} too: {named}. The groups were not given the same "
+        f"inputs, so the comparison of {roles.measure} is partly a comparison of inputs."
+    )
+
+
+def _factor_comparisons(
+    dataframe: pd.DataFrame, roles: ColumnRoles, found: _Groupings
+) -> tuple[GroupComparison, GroupComparison] | None:
+    """The measure compared across each of the two factors the grouping combines, or None."""
+    parts = found.combined.get(roles.dimension)
+    if parts is None:
+        return None
+    compared = [compare_groups(dataframe, roles.measure, part, entity=found.entity) for part in parts]
+    if any(comparison is None for comparison in compared):
+        return None
+    return compared[0], compared[1]
+
+
+def _factor_clause(comparison: GroupComparison, values: pd.Series) -> str:
+    """One factor's comparison in a clause: its extremes and effect, or that it shows no clear difference."""
+    c = comparison
+    if c.verdict != "clear":
+        return f"{c.grouping} shows no clear difference ({effect_clause(c)})"
+    first, second = format_values_apart(
+        c.centre(c.higher), c.centre(c.lower), column=c.measure, column_values=values
+    )
+    return (
+        f"{c.grouping} differs, {centre_word(c)} {first} ({c.higher.label}, n = {c.higher.n:,}) against "
+        f"{second} ({c.lower.label}, n = {c.lower.n:,}), {effect_clause(c)}"
     )
 
 
 DIFFERENCES_NAMED = 3
 # A scan with nothing clear is still reported once it covers this many comparisons.
 MIN_NULL_COMPARISONS = 3
+# The scan compares readings across at most this many groupings, design factors first,
+# so dozens of codes can't bury the effect of the design in a sea of tests.
+MAX_SCAN_GROUPINGS = 6
 
 
 def _same_partition(dataframe: pd.DataFrame, first: str, second: str) -> bool:
-    """Whether two columns split the rows into the same groups, as a code and its label do."""
-    data = dataframe[[first, second]].dropna()
-    return bool(
-        not data.empty
-        and data.groupby(first, observed=True)[second].nunique().max() == 1
-        and data.groupby(second, observed=True)[first].nunique().max() == 1
+    """Whether two columns split the rows into the same groups, as a code and its label do.
+
+    They do when each value of one goes with exactly one value of the other,
+    which integer codes show without a groupby: a table with many groupings
+    checks every pair.
+    """
+    return _codes_match(_partition_codes(dataframe[first]), _partition_codes(dataframe[second]))
+
+
+def _partition_codes(values: pd.Series) -> np.ndarray:
+    return pd.factorize(values)[0].astype(np.int64)
+
+
+def _codes_match(one: np.ndarray, other: np.ndarray) -> bool:
+    kept = (one >= 0) & (other >= 0)
+    if not kept.any():
+        return False
+    one, other = one[kept], other[kept]
+    pairs = np.unique(one * (int(other.max()) + 1) + other).size
+    return bool(pairs == np.unique(one).size == np.unique(other).size)
+
+
+@dataclass(frozen=True)
+class _Groupings:
+    """The groupings the comparisons use, found once for the brief, and the candidates left out and why."""
+
+    chosen: tuple[str, ...]
+    #: The column naming each row's subject, counted once per group.
+    entity: str | None = None
+    #: Groupings that combine two others, with the two.
+    combined: dict = field(default_factory=dict)
+    #: (column, part): a numeric column that repeats a part of the date column.
+    date_parts: tuple[tuple[str, str], ...] = ()
+    #: (finer, coarser): a grouping whose levels each occur with only some levels of another.
+    nested: tuple[tuple[str, str], ...] = ()
+    #: Groupings past MAX_SCAN_GROUPINGS.
+    capped: tuple[str, ...] = ()
+
+
+def _comparison_groupings(dataframe: pd.DataFrame, roles: ColumnRoles, entity: str | None) -> _Groupings:
+    """The grouping column, then other groupings with 2 to MAX_SCAN_LEVELS levels, each split once.
+
+    Design-like groupings come first: text labels, then two-level codes, then
+    other codes by how few levels they have, so a rating item read as a code
+    comes last; at most MAX_SCAN_GROUPINGS are kept. The column naming each
+    row's subject is left out, since readings differ between subjects as a
+    matter of course; so is a month or year taken from the date column, or
+    named as one beside it, which only shows the season or the trend, and a
+    grouping nested within one already kept, whose differences repeat that one's.
+    """
+    frame = dataframe.sample(SCAN_ROWS, random_state=0) if len(dataframe) > SCAN_ROWS else dataframe
+
+    def levels(column: str) -> int:
+        return int(frame[column].nunique())
+
+    def eligible(column: str) -> bool:
+        return column in frame.columns and 2 <= levels(column) <= MAX_SCAN_LEVELS
+
+    labels = [column for column in roles.dimensions if column not in roles.factors and eligible(column)]
+    codes = sorted((column for column in roles.factors if eligible(column)), key=levels)
+    candidates = [roles.dimension] if roles.dimension else []
+    chosen: list[str] = []
+    # Each column coded once, since every pair is checked.
+    partitions: dict[str, np.ndarray] = {}
+    capped: list[str] = []
+    date_parts: list[tuple[str, str]] = []
+    nested: list[tuple[str, str]] = []
+    for column in dict.fromkeys([*candidates, *labels, *codes]):
+        if column in (entity, roles.identifier, roles.measure) or column not in frame.columns:
+            continue
+        if frame[column].nunique() < 2:
+            continue
+        if len(chosen) >= MAX_SCAN_GROUPINGS:
+            capped.append(column)
+            continue
+        partitions[column] = _partition_codes(frame[column])
+        if any(_codes_match(partitions[column], partitions[other]) for other in chosen):
+            continue
+        part = date_part(dataframe[column], dataframe[roles.date]) if roles.date else None
+        if part is not None:
+            date_parts.append((column, part))
+            continue
+        # A year or month column beside the dates holds a cycle that belongs to the timeline.
+        if roles.date and _last_word(column) in TIME_PART_WORDS:
+            continue
+        coarser = next((other for other in chosen if nested_within(frame, column, other)), None)
+        if coarser is not None and column != roles.dimension:
+            nested.append((column, coarser))
+            continue
+        chosen.append(column)
+    return _Groupings(
+        chosen=tuple(chosen),
+        date_parts=tuple(date_parts),
+        nested=tuple(nested),
+        capped=tuple(capped),
     )
 
 
-def _comparison_groupings(dataframe: pd.DataFrame, roles: ColumnRoles, entity: str | None) -> list[str]:
-    """The grouping column, then other groupings with 2 to MAX_SCAN_LEVELS levels, each split once.
+def _find_groupings(dataframe: pd.DataFrame, roles: ColumnRoles) -> _Groupings:
+    """The brief's groupings, with the subject column and the groupings that combine two others."""
+    entity = entity_column(dataframe, roles)
+    found = _comparison_groupings(dataframe, roles, entity)
+    chosen = list(found.chosen)
+    return replace(found, entity=entity, combined=combined_groupings(dataframe, chosen) if chosen else {})
 
-    The column naming each row's subject is left out: readings differ between
-    subjects as a matter of course.
-    """
-    candidates = [roles.dimension] if roles.dimension else []
-    candidates += [
-        column
-        for column in (*roles.dimensions, *roles.factors)
-        if column in dataframe.columns and 2 <= dataframe[column].nunique() <= MAX_SCAN_LEVELS
-    ]
-    chosen: list[str] = []
-    for column in dict.fromkeys(candidates):
-        if column in (entity, roles.identifier, roles.measure) or column not in dataframe.columns:
+
+def _rule_groupings(roles: ColumnRoles, groupings: _Groupings) -> list[str]:
+    """The groupings the brief compares on, which a reading may have set: the main one and the scanned."""
+    return list(dict.fromkeys([*([roles.dimension] if roles.dimension else []), *groupings.chosen]))
+
+
+def _rule_for(
+    rules: tuple[GroupingRule, ...], built: Construction | None, reading: str, grouping: str
+) -> GroupingRule | None:
+    """The rule by which ``grouping`` is set from ``reading``, or from a column built from or into it."""
+    for rule in rules:
+        if rule.grouping != grouping:
             continue
-        if dataframe[column].nunique() < 2:
-            continue
-        if any(_same_partition(dataframe, column, other) for other in chosen):
-            continue
-        chosen.append(column)
-    return chosen
+        if reading in rule.readings:
+            return rule
+        if built is not None and reading in built.position and any(
+            other in built.position and built.relation(reading, other) for other in rule.readings
+        ):
+            return rule
+    return None
+
+
+def _built_from_grouping(built: Construction | None, reading: str, grouping: str) -> bool:
+    """Whether a score is built from a grouping column, as a scale is from its rated items."""
+    return (
+        built is not None
+        and reading in built.position
+        and grouping in built.position
+        and (built.built_from(reading, grouping) or built.built_from(grouping, reading))
+    )
 
 
 def _count(number: int, noun: str) -> str:
@@ -979,66 +1333,137 @@ def _variance_shares(measure: str, shares: tuple[tuple[str, float], ...], combin
     return text + "."
 
 
+def _pairs_text(pairs: list[tuple[str, str]], limit: int = DIFFERENCES_NAMED) -> str:
+    """ "a by b, c by d and 2 more" for a calculation."""
+    named = ", ".join(f"{reading} by {grouping}" for reading, grouping in pairs[:limit])
+    extra = len(pairs) - limit
+    return named + (f" and {extra} more" if extra > 0 else "")
+
+
+def _adjustment(scan) -> str:
+    """How the scan's p-values were adjusted, for a sentence."""
+    if scan.correction == FALSE_DISCOVERY:
+        return f"with a false discovery rate of 5% (Benjamini-Hochberg) over all {scan.tested:,} tests"
+    return f"after a Holm adjustment for all {scan.tested:,} tests"
+
+
 def _differences_evidence(
-    dataframe: pd.DataFrame, roles: ColumnRoles, readings: list[str] | None = None
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles,
+    readings: list[str] | None = None,
+    note: str = "",
+    found: _Groupings | None = None,
+    *,
+    built: Construction | None = None,
+    rules: tuple[GroupingRule, ...] | None = None,
 ) -> Evidence | None:
     """Which readings differ between groups, largest standardised difference first.
 
     Every numeric reading is compared across the grouping column and the other
     groupings with few levels, with p-values adjusted for the number of tests.
-    A table with several groupings also gets the share of the measure's
-    variance each one explains.
+    Pairs related by construction are left out and named: a grouping cut from
+    the reading (stated as a rule), a score and the items it is built from, a
+    reading fixed within each group, and copies of one reading in other
+    units, which are compared once. A table with several groupings also gets
+    the share of the measure's variance each one explains. ``built``,
+    ``rules`` and ``found`` are the brief's screens of the table, made here
+    when not given, and ``note`` is added to the calculation.
     """
-    entity = entity_column(dataframe, roles)
-    groupings = _comparison_groupings(dataframe, roles, entity)
+    found = found if found is not None else _find_groupings(dataframe, roles)
+    entity, groupings = found.entity, list(found.chosen)
     if not groupings:
         return None
     readings = numeric_readings(dataframe, roles) if readings is None else readings
     if not readings:
         return None
+    frame = built.masked(dataframe) if built is not None else dataframe
+    # One quantity in two units (°C and °F) is compared once, as the measure where it is one.
+    copies = []
+    if built is not None:
+        prefer = (roles.measure,) if roles.measure else ()
+        for reading in readings:
+            kept = built.representative(reading, prefer)
+            if kept != reading and kept in readings:
+                copies.append((reading, kept))
+    readings = [reading for reading in readings if reading not in {copy for copy, _ in copies}]
+    if rules is None:
+        rules = grouping_rules(frame, readings, _rule_groupings(roles, found), date=roles.date)
     # A cell code made of two other groupings explains as much as both together,
     # which says nothing about which of them matters.
     combined = {
         grouping: parts
-        for grouping, parts in combined_groupings(dataframe, groupings).items()
+        for grouping, parts in found.combined.items()
         if all(part in groupings for part in parts)
     }
     scanned = [grouping for grouping in groupings if grouping not in combined]
-    # The leading-group card already compares an averaged measure across the grouping.
-    covered = (roles.measure, roles.dimension) if not metric_for(roles.measure, roles).additive else None
-    scan = scan_differences(dataframe, readings, scanned, entity=entity, skip=(covered,) if covered else ())
-    # A flag that only marks where the measure hit its cap explains it by definition.
+    set_by = [
+        (reading, grouping)
+        for grouping in scanned
+        for reading in readings
+        if _rule_for(rules, built, reading, grouping)
+    ]
+    items = [
+        (reading, grouping)
+        for grouping in scanned
+        for reading in readings
+        if (reading, grouping) not in set_by and _built_from_grouping(built, reading, grouping)
+    ]
+    # The leading-group card already compares the measure across the grouping,
+    # unless the measure is money or a count, whose card gives shares instead.
+    metric = metric_for(roles.measure, roles)
+    measure_values = dataframe[roles.measure].dropna() if roles.measure in dataframe.columns else None
+    compared_on_card = not metric.additive or not _counts_money_or_things(roles, metric, measure_values)
+    covered = (roles.measure, roles.dimension) if roles.measure and compared_on_card else None
+    skip = tuple(set_by + items + ([covered] if covered else []))
+    scan = scan_differences(frame, readings, scanned, entity=entity, skip=skip)
+    used_rules = [rule for rule in rules if rule.grouping in scanned or rule.grouping == roles.dimension]
+    # A flag that only marks where the measure hit its cap explains it by definition,
+    # as does a grouping cut from the measure or one of its items.
     flags = {grouping for reading, grouping in (scan.flagged if scan else ()) if reading == roles.measure}
-    sharing = [grouping for grouping in groupings if grouping not in flags]
+    circular = {grouping for reading, grouping in [*set_by, *items] if reading == roles.measure}
+    sharing = [grouping for grouping in groupings if grouping not in flags | circular]
     shares = (
-        variance_explained(dataframe, roles.measure, sharing)
+        variance_explained(frame, roles.measure, sharing, entity=entity)
         if roles.measure in readings and len(sharing) > 1
         else ()
     )
-    if scan is None or not (scan.named or shares or scan.tested >= MIN_NULL_COMPARISONS):
-        return None
+    rule_text = " ".join(
+        f"{rule.describe()}, so it is not compared with {_rule_subject(rule)}." for rule in used_rules
+    )
+    if scan is None or not (scan.named or shares or scan.compared >= MIN_NULL_COMPARISONS):
+        if not used_rules:
+            return None
+        return Evidence(
+            kind="differences",
+            title="Groupings set by the readings",
+            value=_count(len(used_rules), "rule"),
+            statement=rule_text,
+            calculation=_rules_calculation(used_rules) + note,
+        )
 
     where = list_names(list(scan.groupings), limit=len(scan.groupings))
-    comparisons = _count(scan.tested, "comparison")
+    comparisons = _count(scan.compared, "comparison")
     parts = []
+    lead = ""
     if scan.named:
-        lead = scan.named[0]
-        parts.append(lead_sentence(lead, dataframe[lead.measure].dropna()))
-        if scan.tested == 1:
+        first = scan.named[0]
+        sentence = lead_sentence(first, frame[first.measure].dropna())
+        lead = f"Largest difference found: {sentence}"
+        parts.append(sentence)
+        if scan.compared == 1:
             parts.append("It is the only comparison made.")
         elif scan.clear == 1:
             parts.append(
-                f"It is the only clear difference among {comparisons} across {where}, "
-                f"after a Holm adjustment for all {scan.tested}."
+                f"It is the only clear finding among {comparisons} across {where}, {_adjustment(scan)}."
             )
         else:
             parts.append(
-                f"It is the largest of {scan.clear} clear differences among {comparisons} "
-                f"across {where}, after a Holm adjustment for all {scan.tested}."
+                f"It is the largest of {scan.clear} clear findings among {comparisons} across {where}, "
+                f"{_adjustment(scan)}."
             )
-        if lead.shared_entities:
+        if first.shared_entities:
             parts.append(
-                f"The same {lead.entity} appears in more than one {lead.grouping} group, so those "
+                f"The same {first.entity} appears in more than one {first.grouping} group, so those "
                 "groups are not independent and the p-value is only a guide."
             )
         if len(scan.named) > 1:
@@ -1052,54 +1477,142 @@ def _differences_evidence(
     elif scan.largest is not None:
         largest = scan.largest
         # A passing test on a trivial gap would otherwise read as a contradiction.
-        trivial = ": detectable, but too small to matter" if largest.verdict == "negligible" else ""
-        none_of = "The one comparison" if scan.tested == 1 else f"None of the {comparisons}"
+        trivial = {
+            "negligible": ": detectable, but too small to matter",
+            "thin": f": it rests on a group of fewer than {MIN_NAMED_GROUP} values",
+            "disputed": f": {largest.test} and {largest.check} disagree",
+        }.get(largest.verdict, "")
+        none_of = "The one comparison" if scan.compared == 1 else f"None of the {comparisons}"
         parts.append(
             f"{none_of} across {where} shows a clear difference once all tests are allowed for; "
             f"the largest is {largest.measure} by {largest.grouping} ({effect_clause(largest)}{trivial})."
         )
+    if scan.correction == FALSE_DISCOVERY:
+        expected = ALPHA * scan.tested
+        parts.append(
+            f"{scan.passing:,} of the {scan.tested:,} tests have an unadjusted p below 0.05, against about "
+            f"{expected:,.0f} that chance alone would give."
+        )
     if shares:
-        parts.append(_variance_shares(roles.measure, shares, combined))
+        unit = f", one value per {entity} in each group" if entity else ""
+        parts.append(_variance_shares(roles.measure, shares, combined).rstrip(".") + f"{unit}.")
     if scan.entity:
         parts.append(f"Each {scan.entity} counts once per group.")
+    if rule_text:
+        parts.append(rule_text)
+    if found.nested:
+        within: dict[str, list[str]] = {}
+        for finer, coarser in found.nested:
+            within.setdefault(coarser, []).append(finer)
+        nested = _joined_names(
+            [f"{_joined_names(finer)} within {coarser}" for coarser, finer in within.items()]
+        )
+        parts.append(
+            "Groupings nested in another, whose levels each occur with only some of its values, are not "
+            f"compared on their own, since their differences would repeat it: {nested}."
+        )
 
+    method = "Holm-adjusted"
+    if scan.correction == FALSE_DISCOVERY:
+        method = "Benjamini-Hochberg false-discovery-rate adjusted"
     calculation = (
-        f"each numeric reading compared across {where}: Welch's t-test or ANOVA on means, or "
-        "Mann-Whitney or Kruskal-Wallis on ranks for a skewed or capped reading; p-values "
-        f"Holm-adjusted for {_count(scan.tested, 'test')}; ranked by share of variance explained "
-        "(η², or ε² on ranks)"
+        f"each numeric reading compared across {where}: Welch's t-test or ANOVA on means (pooled variances "
+        "when a group has fewer than 3 values), or Mann-Whitney or Kruskal-Wallis on ranks for a skewed "
+        "or capped reading, each checked with the other; p-values from scipy.stats distributions, "
+        f"{method} for {_count(scan.tested, 'test')} ({ADJUSTED_BY[scan.correction]}); a finding "
+        "needs both tests to agree and groups of 5 or more values; ranked by share of variance explained "
+        "(η², or ε² on ranks), those on under 20% of rows last"
     )
+    if scan.trends:
+        calculation += (
+            f"; {_count(scan.trends, 'trend test')} (Spearman's ρ against the levels of each ordered "
+            "numeric grouping) among them"
+        )
     if scan.entity:
         calculation += f"; one value per {scan.entity} in each group before testing"
     if scan.sampled:
         calculation += f"; on a fixed random sample of {SCAN_ROWS:,} of the {scan.rows:,} rows"
     if len(scan.readings) < scan.available:
-        calculation += f"; the {len(scan.readings)} most variable of {scan.available:,} readings"
-    if covered and covered[0] in readings and covered[1] in scan.groupings:
+        calculation += f"; the {len(scan.readings):,} most variable of {scan.available:,} readings"
+    if covered and covered[0] in readings and covered[1] in scan.groupings and covered not in set_by + items:
         calculation += f"; {covered[0]} by {covered[1]} is compared on its own card"
+    if set_by:
+        calculation += f"; left out as set by the reading: {_pairs_text(set_by)}"
+    if items:
+        calculation += f"; left out as a score compared with its own items: {_pairs_text(items)}"
+    for copy, kept in copies:
+        calculation += f"; {copy} is {kept} recorded again, so only {kept} is compared"
+    if scan.attributes:
+        calculation += (
+            "; left out as fixed within each group (an attribute of the group, not a difference "
+            f"between its members): {_pairs_text(list(scan.attributes))}"
+        )
+    if scan.placed:
+        calculation += (
+            f"; {list_names(list(scan.placed))} not compared: coordinates place a row and compass "
+            "directions have no linear mean"
+        )
     for reading, grouping in scan.flagged:
         calculation += (
             f"; {reading} by {grouping} left out: {grouping} only marks where {reading} hits its cap"
         )
     if scan.recoded:
-        named = ", ".join(
-            f"{reading} by {grouping}" for reading, grouping in scan.recoded[:DIFFERENCES_NAMED]
+        calculation += (
+            "; left out as codes for the grouping, with one value per group: "
+            + _pairs_text(list(scan.recoded))
         )
-        extra = len(scan.recoded) - DIFFERENCES_NAMED
-        more = f" and {extra} more" if extra > 0 else ""
-        calculation += f"; left out as codes for the grouping, with one value per group: {named}{more}"
-    for grouping, (first, second) in combined.items():
-        calculation += f"; {grouping} combines {first} and {second}, so those two are compared instead"
+    for grouping, (first_part, second_part) in combined.items():
+        calculation += (
+            f"; {grouping} combines {first_part} and {second_part}, so those two are compared instead"
+        )
+    for column, part in found.date_parts:
+        calculation += f"; {column} is the {part} of {roles.date}, so it is not used as a grouping"
+    if found.capped:
+        calculation += (
+            f"; the first {MAX_SCAN_GROUPINGS} groupings only, so {list_names(list(found.capped))} "
+            f"{'is' if len(found.capped) == 1 else 'are'} not scanned"
+        )
     if shares:
         calculation += f"; variance shares are η² of {roles.measure} for each grouping alone"
+    calculation += note
     return Evidence(
         kind="differences",
         title="What differs between groups",
-        value=f"{scan.clear} of {scan.tested}",
+        value=f"{scan.clear:,} of {scan.compared:,}",
         statement=" ".join(parts),
         calculation=calculation,
         subject=scan.named[0].measure if scan.named else None,
+        lead=lead,
     )
+
+
+def _rule_subject(rule: GroupingRule) -> str:
+    """What a grouping set by a rule is not compared with: the reading, or the columns it picks between."""
+    if rule.kind == "largest":
+        return f"{_joined_names(list(rule.readings))} or anything built from them"
+    return f"{rule.readings[0]} or anything built from it"
+
+
+def _joined_names(names: list[str]) -> str:
+    return list_names(names, limit=len(names))
+
+
+def _rules_calculation(rules: list[GroupingRule]) -> str:
+    """The calculation behind the rules: bands of a reading, or the largest of several, row by row."""
+    steps = []
+    for rule in rules:
+        if rule.kind == "largest":
+            steps.append(
+                f"{rule.grouping} checked against the largest of {_joined_names(list(rule.readings))} "
+                f"on each of {rule.rows:,} rows"
+            )
+        else:
+            within = f" within each {rule.by}" if rule.by else ""
+            steps.append(
+                f"cut points of {rule.readings[0]}{within} that place the most of {rule.rows:,} rows "
+                f"in their {rule.grouping} group"
+            )
+    return "; ".join(steps)
 
 
 OFFSETTING_NET_RATIO = 0.25
@@ -1113,8 +1626,15 @@ DERIVED_NAMED = 3
 UNRELATED_CORRELATION = 0.05
 UNRELATED_MIN_ROWS = 1_000
 UNRELATED_MIN_PAIRS = 10
-# A within-group r this far from the pooled one changes what the pooled figure means.
-WITHIN_GROUP_GAP = 0.3
+# A within-group r this far from the pooled one, and beyond its sampling noise,
+# changes what the pooled figure means, whichever way it moves.
+WITHIN_GROUP_GAP = 0.1
+# With this many groups or fewer, each group's own r is listed.
+WITHIN_GROUPS_LISTED = 3
+# Records far out in a column, mostly in one unbroken stretch of at least this
+# many, are a phase of the run rather than a few stray values.
+STRETCH_MIN_RECORDS = 10
+STRETCH_SHARE = 0.8
 
 
 def _near_duplicate_note(duplicates: list[tuple[str, str, float]]) -> str:
@@ -1141,9 +1661,12 @@ def _near_duplicate_note(duplicates: list[tuple[str, str, float]]) -> str:
 class Correlation:
     """Pearson r over the complete pairs of two columns, with its interval, Spearman's r and checks.
 
-    The checks say whether one record, or a few extreme ones, decide the
-    figure: r without the record whose removal moves it most (and that
-    record's two values), and r without records far outside either column.
+    The checks say whether one record, a few extreme ones, a long stretch of
+    them or a pile-up at a floor decide the figure: r without the record whose
+    removal moves it most (and that record's two values), r without records
+    far outside either column, how many records lie that far out and how many
+    of them run unbroken, and the largest pile-up at a column's minimum or
+    maximum.
     """
 
     first: str
@@ -1157,6 +1680,11 @@ class Correlation:
     influential: tuple[float, float] | None = None
     without_extremes: float | None = None
     extremes: int = 0
+    #: Records more than EXTREME_Z robust SDs out in either column, and the longest unbroken run of them.
+    far_out: int = 0
+    stretch: int = 0
+    #: (column, "minimum" or "maximum", value, records) for the largest pile-up at a column's edge.
+    pile: tuple[str, str, float, int] | None = None
 
     @property
     def rank_divergence(self) -> float:
@@ -1171,8 +1699,22 @@ class Correlation:
         )
 
 
+def _pile(paired: pd.DataFrame) -> tuple[str, str, float, int] | None:
+    """The largest pile-up of equal values at a column's minimum or maximum: a floor or a ceiling."""
+    found = None
+    for column in paired.columns[:2]:
+        values = paired[column]
+        if values.nunique() < CAP_MIN_DISTINCT:
+            continue
+        for edge, value in (("minimum", values.min()), ("maximum", values.max())):
+            count = int((values == value).sum())
+            if count >= max(CAP_MIN_ROWS, CAP_SHARE * len(values)) and (found is None or count > found[3]):
+                found = (str(column), edge, float(value), count)
+    return found
+
+
 def measure_correlation(paired: pd.DataFrame) -> Correlation | None:
-    """Correlate the two columns of ``paired``, which holds only complete rows.
+    """Correlate the two columns of ``paired``, which holds only complete rows, in row order.
 
     Returns None when r is undefined, as it is when either column does not vary.
     """
@@ -1186,6 +1728,7 @@ def measure_correlation(paired: pd.DataFrame) -> Correlation | None:
     y = paired.iloc[:, 1].to_numpy(dtype=float)
     influence = most_influential(x, y)
     trimmed = without_extremes(x, y)
+    outside = far_out(x, y)
     return Correlation(
         first,
         second,
@@ -1198,76 +1741,137 @@ def measure_correlation(paired: pd.DataFrame) -> Correlation | None:
         influential=(float(x[influence[0]]), float(y[influence[0]])) if influence else None,
         without_extremes=trimmed[0] if trimmed else None,
         extremes=trimmed[1] if trimmed else 0,
+        far_out=int(outside.sum()) if outside is not None else 0,
+        stretch=longest_stretch(outside) if outside is not None else 0,
+        pile=_pile(paired),
+    )
+
+
+def _relationship_words(value: float) -> str:
+    """ "move together", "move in opposite directions only weakly", or "show no linear relationship"."""
+    if round(value, 2) == 0:
+        return "show no linear relationship"
+    words = "move together" if value > 0 else "move in opposite directions"
+    return words + (" only weakly" if abs(value) < MATERIAL_CORRELATION else "")
+
+
+def _interval_note(value: float, low: float, high: float, pairs: int) -> str:
+    """A sentence when the interval spans zero: a thin sample for a strong r, plain weakness otherwise."""
+    if not low <= 0.0 <= high:
+        return ""
+    if abs(value) >= MATERIAL_CORRELATION:
+        return f" With only {pairs:,} paired values this cannot be told apart from no relationship at all."
+    return " The interval includes zero, so this cannot be told apart from no relationship at all."
+
+
+def _rank_gap_cause(correlation: Correlation) -> str:
+    """Why the linear figure is well above the rank one: a floor, a long stretch of records, a few extremes.
+
+    Ties at a floor or a ceiling lower the rank figure; a phase of the run in
+    which both columns are far higher raises the linear one. Only when the
+    extreme records are few and scattered are they "a few extreme records".
+    """
+    trimmed = correlation.without_extremes
+    few = trimmed is not None and abs(correlation.pearson) - abs(trimmed) > INFLUENCE_CHANGE
+    causes = []
+    if few:
+        causes.append(
+            f"a few extreme records drive the linear figure (without the {correlation.extremes} most "
+            f"extreme, r is {trimmed:.2f})"
+        )
+    if correlation.stretch >= max(STRETCH_MIN_RECORDS, STRETCH_SHARE * correlation.far_out):
+        causes.append(
+            f"one unbroken stretch of {correlation.stretch:,} records lies far beyond the rest and sets "
+            "the linear figure"
+        )
+    if correlation.pile is not None:
+        column, edge, value, count = correlation.pile
+        causes.append(
+            f"{column} sits at its {edge} of {format_number(value, column, compact=False)} in "
+            f"{count:,} records, which tie in rank"
+        )
+    if few and len(causes) == 1:
+        return (
+            f" A few extreme records are driving the linear figure: without the {correlation.extremes} "
+            f"most extreme, r is {trimmed:.2f}."
+        )
+    if causes:
+        return f" The two figures differ because {' and '.join(causes)}."
+    if correlation.far_out <= max(3, 0.05 * correlation.pairs):
+        return " A few extreme records are driving the linear figure."
+    return (
+        f" {correlation.far_out:,} records lie far beyond the rest in one column or both and drive the "
+        "linear figure."
     )
 
 
 def describe_correlation(correlation: Correlation, scope: str = "") -> str:
-    """State r with its interval, adding why the sample, one record or a few extremes may undercut it.
+    """State r with its interval, leading with the figure that one record or a few extremes don't decide.
 
     The brief and Ask both use this, so a pair reads the same in either. ``scope``
-    follows the column names, as in " for Site in (North)".
+    follows the column names, as in " for Site in (North)". When one record
+    or a few extreme ones move r far, the sentence leads with r without them
+    and says whether they hide the relationship or make it.
     """
     value, pairs = correlation.pearson, correlation.pairs
-    if round(value, 2) == 0:
-        relationship = "show no linear relationship"
-    else:
-        relationship = "move together" if value > 0 else "move in opposite directions"
-        if abs(value) < MATERIAL_CORRELATION:
-            relationship += " only weakly"
-    statement = (
-        f"{correlation.first} and {correlation.second} {relationship}{scope}: "
-        f"Pearson r = {value:.2f} (95% CI {correlation.low:.2f} to {correlation.high:.2f}, "
-        f"n = {pairs:,})."
-    )
-
-    # An interval spanning zero means the sample cannot rule out no relationship.
-    # A strong r that still spans zero is a thin sample; a weak one is just weak.
-    if correlation.low <= 0.0 <= correlation.high:
-        if abs(value) >= MATERIAL_CORRELATION:
-            statement += (
-                f" With only {pairs:,} paired values this cannot be told apart from no "
-                "relationship at all."
-            )
-        else:
-            statement += (
-                " The interval includes zero, so this cannot be told apart from no "
-                "relationship at all."
-            )
+    pair = f"{correlation.first} and {correlation.second}"
+    trimmed = correlation.without_extremes
 
     # One record that moves r this far decides the figure on its own, whichever
     # way it moves it; that says more than any comparison with the ranks.
-    trimmed = correlation.without_extremes
     if correlation.rests_on_one_record and correlation.influential is not None:
+        robust = float(correlation.without_influential)
+        low, high = correlation_interval(robust, pairs - 1)
         first_value, second_value = correlation.influential
-        statement += (
-            f" It rests on one record: without the one where {correlation.first} is "
+        record = (
+            f"the one where {correlation.first} is "
             f"{format_number(first_value, correlation.first, compact=False)} and {correlation.second} is "
-            f"{format_number(second_value, correlation.second, compact=False)}, r is "
-            f"{correlation.without_influential:.2f}."
+            f"{format_number(second_value, correlation.second, compact=False)}"
         )
-    # Spearman well above Pearson: extreme records hiding a straight line, or a
-    # curve. Well below: extreme records producing the linear figure.
-    elif correlation.rank_divergence > RANK_DIVERGENCE:
-        if trimmed is not None and abs(trimmed) - abs(value) > RANK_DIVERGENCE:
-            statement += (
-                f" The rank correlation is stronger ({correlation.spearman:.2f}) because "
-                f"{correlation.extremes} extreme records hide the relationship: without them "
-                f"r is {trimmed:.2f}."
-            )
-        else:
-            statement += (
-                f" The rank correlation is stronger ({correlation.spearman:.2f}), so the relationship is "
-                "consistent but not a straight line."
-            )
-    elif correlation.rank_divergence < -RANK_DIVERGENCE:
-        statement += (
-            f" The rank correlation is only {correlation.spearman:.2f}, so a few extreme records are "
-            "driving the linear figure"
+        statement = (
+            f"{pair} {_relationship_words(robust)}{scope} once one record is set aside: Pearson r = "
+            f"{robust:.2f} without it (95% CI {low:.2f} to {high:.2f}, n = {pairs - 1:,})."
+            + _interval_note(robust, low, high, pairs - 1)
         )
-        if trimmed is not None and abs(value) - abs(trimmed) > RANK_DIVERGENCE:
-            statement += f": without the {correlation.extremes} most extreme, r is {trimmed:.2f}"
-        statement += "."
-    return statement
+        if abs(robust) > abs(value):
+            hidden = "a strong relationship" if abs(robust) >= MATERIAL_CORRELATION else "the relationship"
+            return statement + f" One record hides {hidden}: with {record}, r is only {value:.2f}."
+        return statement + f" It rests on one record: with {record}, r is {value:.2f}."
+
+    # Spearman well above Pearson because extreme records hide a straight line.
+    if (
+        correlation.rank_divergence > RANK_DIVERGENCE
+        and trimmed is not None
+        and abs(trimmed) - abs(value) > RANK_DIVERGENCE
+    ):
+        kept = pairs - correlation.extremes
+        low, high = correlation_interval(trimmed, kept)
+        return (
+            f"{pair} {_relationship_words(trimmed)}{scope} once {correlation.extremes} extreme records "
+            f"are set aside: Pearson r = {trimmed:.2f} without them (95% CI {low:.2f} to {high:.2f}, "
+            f"n = {kept:,}), and the rank correlation is {correlation.spearman:.2f} on all {pairs:,}. "
+            f"The extreme records hide the relationship: with them, Pearson r is only {value:.2f}."
+        )
+    figures = (
+        f"Pearson r = {value:.2f} (95% CI {correlation.low:.2f} to {correlation.high:.2f}, n = {pairs:,})"
+    )
+    ranked = _relationship_words(correlation.spearman)
+    # Spearman well above Pearson otherwise: a consistent relationship that is not a straight line.
+    if correlation.rank_divergence > RANK_DIVERGENCE:
+        return (
+            f"{pair} {ranked}{scope} in rank: the rank correlation is {correlation.spearman:.2f}, while "
+            f"{figures}. The relationship is consistent but not a straight line."
+        )
+    # Pearson well above Spearman: the linear figure comes from part of the records.
+    if correlation.rank_divergence < -RANK_DIVERGENCE:
+        return (
+            f"{pair} {ranked}{scope} by rank: the rank correlation is only {correlation.spearman:.2f}, "
+            f"while {figures}." + _rank_gap_cause(correlation)
+        )
+    return (
+        f"{pair} {_relationship_words(value)}{scope}: {figures}."
+        + _interval_note(value, correlation.low, correlation.high, pairs)
+    )
 
 
 def _codes_a_grouping(dataframe: pd.DataFrame, column: str, groupings: list[str]) -> bool:
@@ -1298,65 +1902,149 @@ def numeric_readings(dataframe: pd.DataFrame, roles: ColumnRoles) -> list[str]:
         for column in roles.numeric
         if column in dataframe.columns
         and column not in groupings
+        and column not in roles.non_readings
         and not looks_like_identifier(column, dataframe[column])
         and not is_design_name(column)
         and not is_entity_name(column)
-        and not is_year_name(column)
-        and not is_month_name(column)
+        and not is_year_name(column, dataframe[column])
+        and not is_month_name(column, dataframe[column])
         and not any(token == normalized_name(column) for token in TIME_PART_TOKENS)
         and not _is_flag(dataframe[column])
         and not _codes_a_grouping(dataframe, column, text_groupings)
     ]
 
 
-def _within_group_note(dataframe: pd.DataFrame, roles: ColumnRoles, correlation: Correlation) -> str:
-    """A sentence when r inside the groups differs in sign or clearly in size from the pooled r."""
-    groupings = [roles.dimension] if roles.dimension else []
-    groupings += [
-        column
-        for column in roles.dimensions
-        if column != roles.dimension and 2 <= dataframe[column].nunique() <= MAX_SCAN_LEVELS
-    ]
-    pooled = correlation.pearson
-    worst = None
-    for grouping in dict.fromkeys(groupings):
-        if grouping not in dataframe.columns:
-            continue
-        within = within_group_correlation(dataframe, correlation.first, correlation.second, grouping)
-        if within is None:
-            continue
-        reversed_sign = pooled * within.within < 0 and min(abs(pooled), abs(within.within)) >= 0.1
-        if reversed_sign or abs(pooled - within.within) >= WITHIN_GROUP_GAP:
-            if worst is None or abs(pooled - within.within) > abs(pooled - worst.within):
-                worst = within
-    if worst is None:
-        return ""
-    group = sentence_case(worst.grouping)
-    spread = (
-        f"r = {worst.within:.2f} once each {group}'s own means are removed (from {worst.low:.2f} "
-        f"to {worst.high:.2f} across {worst.groups} groups)"
-    )
-    if pooled * worst.within < 0:
+def _differs_within(pooled: float, within: float, pairs: int) -> bool:
+    """Whether r within the groups differs from the pooled r in sign, or by WITHIN_GROUP_GAP beyond noise."""
+    if pooled * within < 0 and min(abs(pooled), abs(within)) >= 0.1:
+        return True
+    if abs(pooled - within) < WITHIN_GROUP_GAP or pairs <= 3:
+        return False
+    clip = 1 - 1e-9
+    gap = abs(np.arctanh(np.clip(within, -clip, clip)) - np.arctanh(np.clip(pooled, -clip, clip)))
+    return bool(gap > 2 / np.sqrt(pairs - 3))
+
+
+def _within_sentence(within: WithinGroups, pooled: float) -> str:
+    group = sentence_case(within.grouping)
+    removed = f"{within.within:.2f} once each {group}'s own means are removed"
+    if len(within.per_group) <= WITHIN_GROUPS_LISTED:
+        listed = _joined_names(
+            [f"{r:.2f} in {group_label(within.grouping, level)}" for level, r, _ in within.per_group]
+        )
+        spread = f"r = {listed} ({removed})"
+    else:
+        spread = f"r = {removed} (from {within.low:.2f} to {within.high:.2f} across {within.groups} groups)"
+    if pooled * within.within < 0:
         return (
             f" Within each {group} the relationship runs the other way: {spread}, so the pooled "
             f"figure reflects differences between the {group} groups."
         )
-    if abs(worst.within) > abs(pooled):
+    if abs(within.within) > abs(pooled):
         return (
-            f" Within each {group} it is stronger: {spread}; pooling groups at different levels "
-            "weakens it."
+            f" Within each {group} it is stronger: {spread}; pooling groups at different levels weakens it."
         )
     return (
-        f" Within each {group} it is weaker: {spread}, so much of the pooled figure comes from "
+        f" Within each {group} it is weaker: {spread}, so part of the pooled figure comes from "
         f"differences between the {group} groups."
     )
 
 
-def _scanned_pair(dataframe: pd.DataFrame, roles: ColumnRoles, pair: Pair) -> tuple[Correlation, str]:
-    """The full correlation of a pair the scan picked, with its within-group sentence."""
+def _within_group_note(
+    dataframe: pd.DataFrame, roles: ColumnRoles, correlation: Correlation, skip: frozenset[str] = frozenset()
+) -> str:
+    """Sentences when r inside the groups differs from the pooled r, in sign or clearly in size, either way.
+
+    The grouping column is always checked and reported when it differs;
+    another grouping is added when it differs more. ``skip`` holds groupings
+    set by either column or built into it, whose groups split the pair by
+    construction.
+    """
+    groupings = [roles.dimension] if roles.dimension else []
+    groupings += [
+        column
+        for column in roles.dimensions
+        if column != roles.dimension
+        and column in dataframe.columns
+        and 2 <= dataframe[column].nunique() <= MAX_SCAN_LEVELS
+    ]
+    groupings = [grouping for grouping in groupings if grouping not in skip]
+    pooled = correlation.pearson
+    differing = []
+    for grouping in dict.fromkeys(groupings):
+        if grouping not in dataframe.columns:
+            continue
+        within = within_group_correlation(dataframe, correlation.first, correlation.second, grouping)
+        if within is not None and _differs_within(pooled, within.within, correlation.pairs):
+            differing.append(within)
+    if not differing:
+        return ""
+    main = next((within for within in differing if within.grouping == roles.dimension), None)
+    largest = max(differing, key=lambda within: abs(pooled - within.within))
+    chosen = [main] if main is not None else []
+    if largest is not main:
+        chosen.append(largest)
+    return "".join(_within_sentence(within, pooled) for within in chosen)
+
+
+def _scanned_pair(
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles,
+    pair: Pair,
+    rules: tuple[GroupingRule, ...] = (),
+    built: Construction | None = None,
+) -> tuple[Correlation, str]:
+    """The full correlation of a pair the scan picked, over every row, with its within-group sentence."""
     correlation = measure_correlation(dataframe[[pair.first, pair.second]].dropna())
     assert correlation is not None
-    return correlation, _within_group_note(dataframe, roles, correlation)
+    skip = frozenset(
+        grouping
+        for grouping in (roles.dimension, *roles.dimensions)
+        if grouping
+        and any(
+            _rule_for(rules, built, column, grouping) or _built_from_grouping(built, column, grouping)
+            for column in (pair.first, pair.second)
+        )
+    )
+    return correlation, _within_group_note(dataframe, roles, correlation, skip)
+
+
+def _pair_numbers(dataframe: pd.DataFrame, pair: Pair, sampled: bool) -> tuple[float, float, int]:
+    """Pearson r, Spearman r and n for a pair, over every row when the scan used a sample."""
+    if not sampled:
+        return pair.pearson, pair.spearman, pair.pairs
+    paired = dataframe[[pair.first, pair.second]].dropna()
+    return float(paired.corr().iloc[0, 1]), float(paired.corr(method="spearman").iloc[0, 1]), len(paired)
+
+
+def _figures(dataframe: pd.DataFrame, pair: Pair, sampled: bool) -> str:
+    """ "r = 0.83, Spearman 0.74, n = 2,435" for a pair."""
+    pearson, spearman, pairs = _pair_numbers(dataframe, pair, sampled)
+    return f"r = {pearson:.2f}, Spearman {spearman:.2f}, n = {pairs:,}"
+
+
+# Why a column paired with the measure was set aside, by the scan's reason.
+SET_ASIDE_REASONS = {
+    "copy": "the same measurement under another name or unit",
+    "built": "built from it, or it from them",
+    "flag": "marking where it hits its cap",
+    "total": "adding up to a fixed total with it",
+    "place": "map coordinates like it",
+}
+
+
+def set_aside_note(scan: RelationshipScan) -> str:
+    """A sentence naming the columns left out of the measure's ranking, and why, or ""."""
+    if not scan.measure or not scan.set_aside:
+        return ""
+    by_reason: dict[str, list[str]] = {}
+    for column, reason in scan.set_aside:
+        by_reason.setdefault(reason, []).append(column)
+    clauses = [
+        f"{list_names(columns)} ({SET_ASIDE_REASONS.get(reason, reason)})"
+        for reason, columns in by_reason.items()
+    ]
+    return f" Left out of the ranking for {scan.measure}: {'; '.join(clauses)}."
 
 
 def _chance_note(pair: Pair, tests: int) -> str:
@@ -1373,61 +2061,130 @@ def _left_out(scan: RelationshipScan) -> list[str]:
         named = [item.describe() for item in scan.derived[:DERIVED_NAMED]]
         if len(scan.derived) > DERIVED_NAMED:
             named.append(f"{len(scan.derived) - DERIVED_NAMED} more")
-        notes.append("pairs of a column and the columns it is built from (" + "; ".join(named) + ")")
+        notes.append("pairs of columns built from one another (" + "; ".join(named) + ")")
     notes.extend(f"{flag.describe()}" for flag in scan.flags)
     if scan.shared_stems:
         named = [f"{first} and {second}" for first, second, _ in scan.shared_stems[:NEAR_DUPLICATES_NAMED]]
         notes.append(f"same-stem pairs above |r| = {SHARED_STEM_CORRELATION} ({', '.join(named)})")
     if scan.near_duplicates:
         notes.append(f"near-duplicates (|r| ≥ {NEAR_DUPLICATE_CORRELATION})")
+    if scan.coordinates:
+        named = [f"{first} and {second}" for first, second in scan.coordinates[:NEAR_DUPLICATES_NAMED]]
+        notes.append(f"pairs of map coordinates, which describe where rows were taken ({', '.join(named)})")
+    if scan.angles:
+        notes.append(
+            f"{_joined_names(list(scan.angles))}, compass directions, whose 0 and 360 are the same place"
+        )
     return notes
 
 
-def _relationship_evidence(
-    dataframe: pd.DataFrame, roles: ColumnRoles, columns: list[str] | None = None
-) -> Evidence | None:
-    """What relates to the measure, then the strongest other pair, or a plain null result.
+def _construction(dataframe: pd.DataFrame, roles: ColumnRoles, readings: list[str]) -> Construction | None:
+    """How the readings are built from one another and from numeric codes, screened once for both scans.
 
-    Every pair is screened at once; pairs related by construction are set
-    aside and listed in the calculation, and the ranking discounts a
-    correlation that one record makes or hides.
+    Rating items read as codes may be what a score is the mean of, so they are
+    tried as parts. A row mean added to a matrix table is built from its columns.
     """
+    items = [column for column in roles.factors if column in dataframe.columns and column not in readings]
+    block = row_summary_columns(roles, dataframe)
+    known = (
+        (Derivation(roles.measure, tuple(block), (1 / len(block),) * len(block), 0.0, "mean"),)
+        if block and roles.measure
+        else ()
+    )
+    measure = roles.measure if roles.measure in readings else None
+    return construction(dataframe, readings, measure, items=items, known=known)
+
+
+def _relationship_scan(
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles,
+    columns: list[str] | None = None,
+    built: Construction | None = None,
+) -> RelationshipScan | None:
+    """Every pair of numeric readings screened, with the measure's correlates first."""
     columns = numeric_readings(dataframe, roles) if columns is None else columns
     if len(columns) < 2:
         return None
     measure = roles.measure if roles.measure in columns else None
-    scan = scan_relationships(dataframe, columns, measure)
+    if built is None:
+        built = _construction(dataframe, roles, columns)
+    return scan_relationships(dataframe, columns, measure, built=built)
+
+
+def _relationship_evidence(
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles,
+    columns: list[str] | None = None,
+    scan: RelationshipScan | None = None,
+    note: str = "",
+    *,
+    built: Construction | None = None,
+    rules: tuple[GroupingRule, ...] = (),
+) -> Evidence | None:
+    """What relates to the measure, then the strongest other pair, or a plain null result.
+
+    Every pair is screened at once, on a fixed sample of a very long table;
+    pairs related by construction are set aside and listed in the
+    calculation, and the ranking discounts a correlation that one record
+    makes or hides. The pairs reported are computed on every row. ``scan`` is
+    the screen when it has been run already, with ``built`` the screen of how
+    the readings are built from one another, and ``note`` is added to the
+    calculation.
+    """
+    if scan is None:
+        columns = numeric_readings(dataframe, roles) if columns is None else columns
+        if built is None and len(columns) >= 2:
+            built = _construction(dataframe, roles, columns)
+        scan = _relationship_scan(dataframe, roles, columns, built)
     if scan is None or not (scan.correlates or scan.others):
         return None
+    measure = scan.measure
+    frame = built.masked(dataframe) if built is not None else dataframe
 
     parts: list[str] = []
     value = None
     reported = 0
-    if scan.measure:
+    headline = ""
+    # A measure made of every other column (a row mean) has nothing left to relate to.
+    whole = (
+        scan.measure is not None
+        and not scan.correlates
+        and scan.measure_tests > 0
+        and len(scan.set_aside) == scan.measure_tests
+    )
+    if whole:
+        derivation = built.derivation(measure) if built is not None else None
+        made = f" ({derivation.describe()})" if derivation is not None else ""
+        parts.append(
+            f"Every column tested against {measure} is part of it{made}, so none is said to relate to it."
+        )
+    elif scan.measure:
         notable = [pair for pair in scan.correlates if pair.strength >= NOTABLE_CORRELATION]
         if notable:
-            lead, within = _scanned_pair(dataframe, roles, notable[0])
+            lead, within = _scanned_pair(frame, roles, notable[0], rules, built)
             value = f"r = {lead.pearson:.2f}"
             reported += 1
             parts.append(f"{describe_correlation(lead)}{within}")
+            if not lead.low <= 0 <= lead.high:
+                headline = _first_sentence(describe_correlation(lead))
             if scan.measure_tests > 1:
                 parts.append(
                     f"Of the {scan.measure_tests:,} columns tested against {measure}, "
                     f"{notable[0].second} relates most.{_chance_note(notable[0], scan.measure_tests)}"
+                    + set_aside_note(scan)
                 )
             if len(notable) > 1:
                 parts.append(
                     "Next: "
                     + ", ".join(
-                        f"{pair.second} (r = {pair.pearson:.2f}, Spearman {pair.spearman:.2f}, "
-                        f"n = {pair.pairs:,})"
+                        f"{pair.second} ({_figures(frame, pair, scan.sampled)})"
                         for pair in notable[1:CORRELATES_NAMED]
                     )
                     + "."
                 )
         elif scan.correlates:
             closest = scan.correlates[0]
-            figures = f"r = {closest.pearson:.2f}, Spearman {closest.spearman:.2f}, n = {closest.pairs:,}"
+            figures = _figures(frame, closest, scan.sampled)
             parts.append(
                 f"{closest.second} does not relate to {measure}: {figures}."
                 if scan.measure_tests == 1
@@ -1436,20 +2193,22 @@ def _relationship_evidence(
             )
     others = [pair for pair in scan.others if pair.strength >= NOTABLE_CORRELATION]
     if others:
-        pair, within = _scanned_pair(dataframe, roles, others[0])
+        pair, within = _scanned_pair(frame, roles, others[0], rules, built)
         # The card's figure answers its title, which names the measure when there is one.
-        if not scan.measure:
+        if not scan.measure or whole:
             value = f"r = {pair.pearson:.2f}"
         reported += 1
         lead_in = "Among the other columns, the strongest pair: " if scan.measure else ""
         chance = _chance_note(others[0], scan.pair_tests)
         parts.append(f"{lead_in}{describe_correlation(pair)}{within}{chance}")
+        if not scan.measure and not chance and not pair.low <= 0 <= pair.high:
+            headline = _first_sentence(describe_correlation(pair))
     elif scan.others:
         strongest = scan.others[0]
+        pearson, _, pairs = _pair_numbers(frame, strongest, scan.sampled)
         parts.append(
             f"No {'other ' if scan.measure else ''}pair reaches |r| = {NOTABLE_CORRELATION}; the "
-            f"strongest is {strongest.first} and {strongest.second} (r = {strongest.pearson:.2f}, "
-            f"n = {strongest.pairs:,})."
+            f"strongest is {strongest.first} and {strongest.second} (r = {pearson:.2f}, n = {pairs:,})."
         )
     if value is None:
         value = f"|r| < {NOTABLE_CORRELATION}"
@@ -1477,6 +2236,9 @@ def _relationship_evidence(
         )
     if scan.near_duplicates:
         parts[-1] += _near_duplicate_note(list(scan.near_duplicates))
+    # Rows that break a block of shares, and placeholder zeros, are named once, here.
+    for item in scan.derived:
+        parts.extend(item.exceptions())
 
     calculation = (
         "Pearson r over each pair's complete rows, 95% CI by Fisher transform, and Spearman r; "
@@ -1485,6 +2247,11 @@ def _relationship_evidence(
         "and |Pearson r| without the pair's most influential record; intervals not adjusted for "
         "that selection"
     )
+    if scan.sampled:
+        calculation += (
+            f"; pairs screened on a fixed random sample of {SCAN_ROWS:,} of the {scan.rows:,} rows, and "
+            "the pairs named computed on every row"
+        )
     if len(scan.columns) < scan.available:
         calculation += (
             f"; scan limited to {len(scan.columns)} of the {scan.available:,} columns: the measure "
@@ -1497,10 +2264,273 @@ def _relationship_evidence(
         calculation += "; left out: " + "; ".join(left_out)
     return Evidence(
         kind="relationship",
-        title=f"What relates to {measure}" if scan.measure else "Strongest measurable relationship",
+        title=(
+            f"What relates to {measure}"
+            if scan.measure and not whole
+            else "Strongest measurable relationship"
+        ),
         value=value,
         statement=" ".join(parts),
-        calculation=calculation,
+        calculation=calculation + note,
+        lead=headline,
+    )
+
+
+# Last words of yes/no columns that describe who or what was studied, how it
+# was assigned, or whether the procedure worked, rather than an outcome: the
+# share of women among smokers is the sample's makeup, not a finding about smoking.
+NOT_OUTCOME_WORDS = frozenset({
+    "sex", "gender", "race", "ethnicity", "treatment", "arm", "cohort", "condition", "group",
+    "block", "batch", "phase", "site", "visit", "check",
+})
+
+
+def _yes_no_columns(dataframe: pd.DataFrame, roles: ColumnRoles) -> list[str]:
+    """Grouping and flag columns that hold a yes/no outcome, in table order."""
+    candidates = {roles.dimension, *roles.dimensions, *roles.factors}
+    candidates |= {
+        column for column in roles.numeric if column in dataframe.columns and _is_flag(dataframe[column])
+    }
+    return [
+        column
+        for column in dataframe.columns
+        if column in candidates
+        and _last_word(column) not in NOT_OUTCOME_WORDS
+        and outcome_event(dataframe[column]) is not None
+    ]
+
+
+def _last_word(name: str) -> str:
+    """The last word of a column name, which says what the column is."""
+    words = re.findall(r"[a-z]+", normalized_name(name))
+    return words[-1] if words else ""
+
+
+def _rate_evidence(
+    dataframe: pd.DataFrame, roles: ColumnRoles, note: str = "", found: _Groupings | None = None
+) -> Evidence | None:
+    """How often a yes/no outcome occurs in each group of another column, when it differs clearly.
+
+    The outcome is the grouping column when that is yes/no, and otherwise the
+    last yes/no column in the table, where outcomes usually sit. It is
+    compared across every other grouping, with p-values Holm-adjusted for the
+    number of groupings. A grouping in which every group is all yes or all no,
+    or one named for the same thing, is another code for the outcome and is
+    left out.
+    """
+    flags = _yes_no_columns(dataframe, roles)
+    if not flags:
+        return None
+    outcome = roles.dimension if roles.dimension in flags else flags[-1]
+    found = found or _find_groupings(dataframe, roles)
+    # A grouping named for the same thing as the outcome is the outcome recorded another way.
+    groupings = [
+        grouping
+        for grouping in found.chosen
+        if grouping != outcome
+        and not same_stem(grouping, outcome)
+        and not _same_partition(dataframe, grouping, outcome)
+    ]
+    tested = [
+        comparison
+        for comparison in (compare_rates(dataframe, outcome, grouping) for grouping in groupings)
+        if comparison is not None and not all(group.events in (0, group.n) for group in comparison.groups)
+    ]
+    if not tested:
+        return None
+    adjusted = holm_adjust(np.array([comparison.p_value for comparison in tested]))
+    tested = [
+        replace(comparison, adjusted_p=float(p), tests=len(tested)) if len(tested) > 1 else comparison
+        for comparison, p in zip(tested, adjusted, strict=True)
+    ]
+    clear = sorted(
+        (comparison for comparison in tested if comparison.verdict == "clear"),
+        key=lambda comparison: comparison.cramers_v,
+        reverse=True,
+    )
+    if not clear:
+        return None
+    first = clear[0]
+    statement = describe_rates(first)
+    if len(tested) > 1:
+        statement += (
+            f" It is the clearest of {len(clear)} clear differences in the rate across "
+            f"{_count(len(tested), 'grouping')}."
+            if len(clear) > 1
+            else f" Of the {len(tested)} groupings tested, it is the only one where the rate differs clearly."
+        )
+    if len(clear) > 1:
+        statement += " Next: " + "; ".join(
+            f"by {comparison.grouping} ({comparison.higher.rate:.1%} in {comparison.higher.label} vs "
+            f"{comparison.lower.rate:.1%} in {comparison.lower.label}, "
+            f"Cramér's V = {comparison.cramers_v:.2f})"
+            for comparison in clear[1:DIFFERENCES_NAMED]
+        ) + "."
+    return Evidence(
+        kind="rates",
+        title=f"Rate of {first.event_label} by {sentence_case(first.grouping)}",
+        value=f"{first.higher.rate:.0%} vs {first.lower.rate:.0%}",
+        statement=statement,
+        calculation=rate_calculation(first) + note,
+        lead=_first_sentence(describe_rates(first)),
+    )
+
+
+# A joint model is reported when it explains this much more of the measure than its best reading alone.
+MODEL_GAIN = 0.1
+
+
+def _coefficient(value: float) -> str:
+    return f"{value:+.3g}"
+
+
+def _joint_model_evidence(
+    dataframe: pd.DataFrame, roles: ColumnRoles, scan: RelationshipScan | None, note: str = ""
+) -> Evidence | None:
+    """The measure fitted on the readings that relate to it, when the fit says more than any one of them.
+
+    The predictors are the measure's correlates with p below 0.05, at most
+    MAX_MODEL_TERMS. The card appears when the readings together explain
+    clearly more than the best one alone, or when a reading's coefficient
+    points the other way from its own correlation.
+    """
+    if scan is None or not scan.measure:
+        return None
+    predictors = [pair.second for pair in scan.correlates if pair.p_value < ALPHA][:MAX_MODEL_TERMS]
+    model = fit_joint_model(dataframe, roles.measure, predictors)
+    if model is None:
+        return None
+    best = model.best_single
+    gain = model.r2 - best.pairwise**2
+    if gain < MODEL_GAIN and not model.reversed:
+        return None
+    names = list_names(list(model.predictors), limit=len(model.predictors))
+    equation = f"{roles.measure} = {model.intercept:.3g}" + "".join(
+        f" {'+' if term.coefficient >= 0 else '−'} {abs(term.coefficient):.3g} × {term.name}"
+        for term in model.terms
+    )
+    statement = (
+        f"Together, {names} explain {model.r2:.0%} of the variance in {roles.measure} (adjusted R² = "
+        f"{model.adjusted_r2:.2f}, n = {model.n:,}), against {best.pairwise**2:.0%} for {best.name} alone: "
+        f"{equation}. With the others held fixed: "
+        + "; ".join(
+            f"{term.name} {_coefficient(term.coefficient)} per unit (95% CI {term.low:.3g} to "
+            f"{term.high:.3g}, {format_p(term.p_value)})"
+            for term in model.terms
+        )
+        + "."
+    )
+    for term in model.reversed:
+        direction = "higher" if term.coefficient > 0 else "lower"
+        statement += (
+            f" With the others held fixed, more {term.name} goes with {direction} {roles.measure}, though on "
+            f"its own it correlates the other way (r = {term.pairwise:.2f}): that correlation partly stands "
+            "for the readings that travel with it."
+        )
+    if model.collinear:
+        verb = "is" if len(model.collinear) == 1 else "are"
+        statement += (
+            f" {list_names(list(model.collinear))} {verb} largely a mix of the other predictors (variance "
+            f"inflation factor above {MAX_VIF:.0f}), so the separate coefficients are unstable."
+        )
+    statement += " A coefficient is an association with the others held fixed, not evidence of cause."
+    calculation = (
+        f"ordinary least squares of {roles.measure} on the readings that relate to it with p < 0.05 (at "
+        f"most {MAX_MODEL_TERMS}), over the {model.n:,} rows with all of them recorded (statsmodels OLS); "
+        "95% CIs from the t distribution; variance inflation factors from statsmodels "
+        "variance_inflation_factor"
+    )
+    if model.rows > model.n:
+        calculation += f"; on a fixed random sample of {model.n:,} of the {model.rows:,} rows"
+    lead = (
+        f"Together, {names} explain {model.r2:.0%} of the variance in {roles.measure} (n = {model.n:,}), "
+        f"against {best.pairwise**2:.0%} for {best.name} alone."
+    )
+    if model.reversed and gain < MODEL_GAIN:
+        term = model.reversed[0]
+        lead = (
+            f"With the other readings held fixed, {term.name}'s link to {roles.measure} reverses: "
+            f"r = {term.pairwise:.2f} on its own, coefficient {_coefficient(term.coefficient)} in a joint "
+            "model."
+        )
+    return Evidence(
+        kind="model",
+        title=f"Joint model of {roles.measure}",
+        value=f"R² = {model.r2:.2f}",
+        statement=statement,
+        calculation=calculation + note,
+        lead=lead,
+    )
+
+
+def _level_shift_evidence(
+    dataframe: pd.DataFrame, roles: ColumnRoles, frequency: str | None = None
+) -> Evidence | None:
+    """The largest lasting change in the level of the measure's period series, when there is one."""
+    if not roles.date or not roles.measure:
+        return None
+    series = build_trend(dataframe, roles, frequency)
+    trend = observed_periods(series.frame)
+    found = level_shift(trend["Value"].to_numpy(dtype=float))
+    if found is None:
+        return None
+    periods = pd.DatetimeIndex(pd.to_datetime(trend["Period"]))
+    grain = series.frequency
+    measure_values = dataframe[roles.measure].dropna()
+    before, after = format_values_apart(
+        found.before, found.after, column=roles.measure, column_values=measure_values
+    )
+    start = format_period(periods[found.position], grain)
+    last = format_period(periods[found.position - 1], grain)
+    first, end = format_period(periods[0], grain), format_period(periods[-1], grain)
+    verb = "rose" if found.after > found.before else "fell"
+    size = format_number(abs(found.after - found.before), roles.measure, column_values=measure_values)
+    per = f"per {GRAIN_NAMES.get(grain, 'period')}"
+    statement = (
+        f"{roles.measure} {verb} to a new level from {start}: it averaged {before} {per} from {first} "
+        f"to {last} and {after} from {start} to {end}, a shift of {size}, {found.effect:.1f} times the "
+        "spread within the two stretches. A lasting shift like this usually follows a change in method, "
+        "instrument or conditions."
+    )
+    statement += _shift_groups_note(dataframe, roles, grain, periods[found.position])
+    return Evidence(
+        kind="shift",
+        title="Change in level",
+        value=start,
+        statement=statement,
+        calculation=(
+            "binary segmentation of the period values into two stretches with the least squared error "
+            "(ruptures Binseg, l2 cost), each at least 15% of the series; kept when its t statistic, "
+            "discounted for autocorrelation, passes the threshold at which only 1 stable series in 20 "
+            "raises a flag, the two-level fit beats a straight line by a BIC-like margin, and the shift is "
+            f"at least {MIN_SHIFT_EFFECT:g} within-stretch standard deviations"
+        ),
+        tone="warning",
+        lead=(
+            f"{roles.measure} {verb} to a new level from {start}: from {before} to {after} {per} on average."
+        ),
+    )
+
+
+def _shift_groups_note(dataframe: pd.DataFrame, roles: ColumnRoles, grain: str, start: pd.Timestamp) -> str:
+    """Say when the groups reporting before and after a shift differ, since that alone can move the level."""
+    if not roles.dimension:
+        return ""
+    stamps = dataframe[roles.date].dt.to_period(grain).dt.to_timestamp()
+    recorded = dataframe[roles.measure].notna()
+    before = set(dataframe.loc[recorded & (stamps < start), roles.dimension].dropna())
+    after = set(dataframe.loc[recorded & (stamps >= start), roles.dimension].dropna())
+    stopped, started = before - after, after - before
+    if not stopped and not started:
+        return ""
+    changes = []
+    if stopped:
+        changes.append(f"{_listed(tuple(sorted(stopped, key=str)), roles.dimension)} stopped reporting")
+    if started:
+        changes.append(f"{_listed(tuple(sorted(started, key=str)), roles.dimension)} started")
+    return (
+        f" The {sentence_case(roles.dimension)} groups changed at the same time ({'; '.join(changes)}), "
+        "which may explain part of it."
     )
 
 
@@ -1511,56 +2541,301 @@ MIN_GROUP_FOR_FENCES = 12
 #: Share of the flagged values that one unbroken run in time must hold to read as a shift.
 SHIFT_RUN_SHARE = 0.5
 MIN_SHIFT_RUN = 5
+#: Share of values a normal distribution puts outside Q1 − 1.5×IQR and Q3 + 1.5×IQR
+#: (each fence lies 4 × 0.6745 standard deviations out, so about 0.70%).
+NORMAL_OUTLIER_SHARE = float(2 * stats.norm.sf(4 * stats.norm.ppf(0.75)))
+#: A reading's count is reported when a normal sample of its size would reach
+#: it less often than this (binomial upper tail).
+OUTLIER_CHANCE = 0.01
+#: Readings counted at most, the measure first, and named beside the leading one.
+OUTLIER_READINGS = 40
+OUTLIERS_NAMED = 3
+#: Rows the quartiles and the choice of grouping come from in a large table;
+#: values are counted on every row.
+FENCE_SAMPLE_ROWS = 50_000
+#: Share of a reading's variance (epsilon squared) a grouping must explain to
+#: be judged within, and the most levels it may have.
+FENCE_GROUPING_SHARE = 0.01
+FENCE_GROUPING_LEVELS = 500
+#: Most levels a numeric setting (a swept frequency, a dose series) may have.
+FENCE_SETTING_LEVELS = 60
+#: Share of a reading one value may hold before its IQR measures that pile
+#: rather than the spread, and outlier fences say nothing.
+FENCE_PILE_SHARE = 0.25
 
 
-def _outlier_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
-    """Count measure values outside 1.5×IQR, judged the way the measure is shaped.
+@dataclass(frozen=True, eq=False)
+class _Outliers:
+    """One reading's values outside 1.5×IQR and how that compares with chance.
 
-    A right-skewed positive measure is judged on a log scale, and each group
-    against its own quartiles, so a long tail or one group's level is not
-    called exceptional. A measure that is mostly zeros gets no list at all. When
-    the flagged values form one run in time, the card reports a shift starting
-    then rather than scattered records.
+    ``flagged`` and ``present`` are over every row of the table, by position.
     """
-    if not roles.measure:
+
+    column: str
+    flagged: np.ndarray
+    present: np.ndarray
+    log: bool
+    grouping: str | None
+
+    @property
+    def count(self) -> int:
+        return int(self.flagged.sum())
+
+    @property
+    def values(self) -> int:
+        return int(self.present.sum())
+
+    @property
+    def expected(self) -> float:
+        return NORMAL_OUTLIER_SHARE * self.values
+
+    @property
+    def beyond_chance(self) -> bool:
+        return bool(stats.binom.sf(self.count - 1, self.values, NORMAL_OUTLIER_SHARE) < OUTLIER_CHANCE)
+
+
+def _is_setting(values: np.ndarray) -> bool:
+    """Whether a numeric column is a swept setting: a few evenly spaced levels, each about equally common.
+
+    A frequency stepped from 100 to 590 GHz in 50 equal steps, every step
+    measured as often, is a design setting a reading can be judged within; a
+    reading with few distinct values (temperatures in whole degrees) is not
+    balanced like that.
+    """
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return False
+    levels, counts = np.unique(values, return_counts=True)
+    if not 2 <= levels.size <= FENCE_SETTING_LEVELS or counts.max() > 2 * counts.min():
+        return False
+    steps = np.diff(levels)
+    return bool(np.allclose(steps, steps[0], rtol=1e-6))
+
+
+def _fence_candidates(
+    dataframe: pd.DataFrame, roles: ColumnRoles, sample: np.ndarray
+) -> dict[str, np.ndarray]:
+    """Columns a reading may be judged within, coded on every row.
+
+    The groupings, the codes, the subject column, and swept numeric settings
+    (``_is_setting``); each must leave its typical group in the ``sample`` rows
+    MIN_GROUP_FOR_FENCES values for quartiles of its own.
+    """
+    entity = entity_column(dataframe, roles)
+    named = [roles.dimension, *roles.dimensions, *roles.factors, entity]
+    # A matrix table's columns are its readings, never settings.
+    numeric = roles.numeric if roles.table_shape != "matrix" else ()
+    settings = [
+        column for column in numeric
+        if column not in named and column != roles.measure and column in dataframe.columns
+        and pd.api.types.is_numeric_dtype(dataframe[column])
+        and _is_setting(dataframe[column].to_numpy(dtype="float64", na_value=np.nan)[sample])
+    ]
+    candidates = {}
+    for column in dict.fromkeys(column for column in [*named, *settings] if column):
+        if column not in dataframe.columns or column == roles.date:
+            continue
+        codes, levels = pd.factorize(dataframe[column])
+        if not 2 <= len(levels) <= FENCE_GROUPING_LEVELS:
+            continue
+        sampled = codes[sample]
+        sizes = np.bincount(sampled[sampled >= 0])
+        if sizes.size == 0 or np.median(sizes[sizes > 0]) < MIN_GROUP_FOR_FENCES:
+            continue
+        candidates[column] = codes
+    return candidates
+
+
+def _explaining_grouping(
+    values: np.ndarray, column: str, candidates: dict[str, np.ndarray], sample: np.ndarray
+) -> str | None:
+    """The candidate that explains most of a reading's variance (epsilon squared), if any explains enough.
+
+    ``values`` are the reading's (scaled) values on the ``sample`` rows.
+    """
+    present = np.isfinite(values)
+    best, best_share = None, FENCE_GROUPING_SHARE
+    for grouping, all_codes in candidates.items():
+        if grouping == column:
+            continue
+        codes = all_codes[sample]
+        kept = present & (codes >= 0)
+        if kept.sum() < 2 * MIN_GROUP_FOR_FENCES:
+            continue
+        x, group = values[kept], codes[kept]
+        counts = np.bincount(group)
+        used = counts > 0
+        means = np.bincount(group, weights=x)[used] / counts[used]
+        total = float(((x - x.mean()) ** 2).sum())
+        between = float((counts[used] * (means - x.mean()) ** 2).sum())
+        levels, n = int(used.sum()), x.size
+        if total <= 0 or n <= levels:
+            continue
+        share = (between - (levels - 1) * (total - between) / (n - levels)) / total
+        if share > best_share:
+            best, best_share = grouping, share
+    return best
+
+
+def _reading_outliers(
+    dataframe: pd.DataFrame, column: str, candidates: dict[str, np.ndarray]
+) -> _Outliers | None:
+    """Values of one reading outside 1.5×IQR, judged on its shape and within the grouping that explains it.
+
+    The scale, the grouping and the quartiles come from at most
+    FENCE_SAMPLE_ROWS of the rows that hold the reading, chosen at random;
+    every row is counted.
+    """
+    if counts_units(column) or is_location_name(column):
         return None
-    series = dataframe[roles.measure].dropna()
-    if len(series) < 12 or series.nunique() < 4:
+    if not pd.api.types.is_numeric_dtype(dataframe[column]):
         return None
-    values = series.to_numpy(dtype=float)
-    zeros = float((values == 0).mean())
-    if zeros >= HEAVY_TAIL_ZEROS:
-        return _heavy_tail_evidence(roles.measure, values, zeros)
-    log = prefers_log_scale(np.sort(values))
-    scaled = pd.Series(np.log10(np.where(values > 0, values, np.nan)) if log else values, index=series.index)
-    groups = _fence_groups(dataframe, roles, series.index)
-    low, high = _fences(scaled, groups)
-    flagged = (scaled < low) | (scaled > high)
-    count = int(flagged.sum())
-    if count == 0:
+    values = dataframe[column].to_numpy(dtype="float64", na_value=np.nan)
+    present = np.isfinite(values)
+    if present.sum() < 12:
         return None
-    shift = _shift(dataframe, roles, flagged, groups)
-    if shift is not None:
-        return shift
-    rate = count / len(series) * 100
-    within = f" of their own {sentence_case(roles.dimension)}" if groups is not None else ""
-    on_log = f" on a log scale, since {roles.measure} is right-skewed" if log else ""
-    calculation = "Values below Q1 − 1.5×IQR or above Q3 + 1.5×IQR"
-    if groups is not None:
-        calculation += f", with quartiles taken within each {roles.dimension}"
+    if float((values[present] == 0).mean()) >= HEAVY_TAIL_ZEROS:
+        return None
+    sample = np.flatnonzero(present)
+    if sample.size > FENCE_SAMPLE_ROWS:
+        sample = np.sort(np.random.default_rng(0).choice(sample, FENCE_SAMPLE_ROWS, replace=False))
+    sampled = values[sample]
+    levels, counts = np.unique(sampled, return_counts=True)
+    if levels.size < 4 or counts.max() >= FENCE_PILE_SHARE * sampled.size:
+        return None
+    log = prefers_log_scale(np.sort(sampled), column)
     if log:
-        calculation += ", on log10 of the values"
+        with np.errstate(divide="ignore", invalid="ignore"):
+            scaled = np.where(values > 0, np.log10(values), np.nan)
+    else:
+        scaled = values
+    grouping = _explaining_grouping(scaled[sample], column, candidates, sample)
+    low, high = _fences(scaled, candidates.get(grouping) if grouping else None, sample)
+    with np.errstate(invalid="ignore"):
+        flagged = present & ((scaled < low) | (scaled > high))
+    return _Outliers(column, flagged, present, log, grouping)
+
+
+def _outlier_evidence(
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles,
+    readings: list[str] | None = None,
+    issues: tuple[QualityIssue, ...] = (),
+) -> Evidence | None:
+    """Count values outside 1.5×IQR in every reading, and report those beyond chance.
+
+    Each reading is judged the way it is shaped: a right-skewed positive
+    reading on a log scale, and against the quartiles of the grouping that
+    explains most of its variance (a station, a frequency, a sample), so a
+    long tail or one group's level is not called exceptional. A count of
+    subjects, a coordinate, or a reading a quarter of whose values are one
+    value (a floor, whose IQR measures the pile) is skipped. A normal sample
+    puts about 0.70% of its values outside the fences, so a count is
+    reported only when chance would rarely reach it. A measure that is
+    mostly zeros gets no list at all. When one reading's flagged values form
+    one run in time, the card reports a shift starting then rather than
+    scattered records. ``readings`` are the other columns to count; a matrix
+    table's columns are not counted one by one.
+    """
+    if roles.measure and roles.measure in dataframe.columns:
+        measure_values = dataframe[roles.measure].dropna().to_numpy(dtype=float)
+        zeros = float((measure_values == 0).mean()) if len(measure_values) else 0.0
+        if len(measure_values) >= 12 and zeros >= HEAVY_TAIL_ZEROS:
+            return _heavy_tail_evidence(roles.measure, measure_values, zeros)
+    if roles.table_shape == "matrix" or readings is None:
+        readings = []
+    columns = list(dict.fromkeys(column for column in [roles.measure, *readings] if column))
+    columns = [column for column in columns if column in dataframe.columns][:OUTLIER_READINGS]
+    if not columns:
+        return None
+    sample = np.arange(len(dataframe))
+    if len(dataframe) > FENCE_SAMPLE_ROWS:
+        sample = np.sort(np.random.default_rng(0).choice(len(dataframe), FENCE_SAMPLE_ROWS, replace=False))
+    candidates = _fence_candidates(dataframe, roles, sample)
+    found = [
+        result for column in columns if (result := _reading_outliers(dataframe, column, candidates))
+    ]
+    orders: dict = {}
+    for result in found:
+        shift = _shift(dataframe, roles, result, orders)
+        if shift is not None:
+            return shift
+    beyond = [result for result in found if result.count and result.beyond_chance]
+    if not beyond:
+        return None
+    measure = next((result for result in found if result.column == roles.measure), None)
+    lead = measure if measure in beyond else max(beyond, key=lambda result: result.count - result.expected)
+    others = sorted(
+        (result for result in beyond if result is not lead), key=lambda result: result.expected - result.count
+    )
+    parts = [_outlier_sentence(lead)]
+    if note := _pile_note(lead.column, issues):
+        parts.append(note)
+    if others:
+        named = [
+            f"{result.column} {result.count:,} ({_share_of(result)})"
+            for result in others[:OUTLIERS_NAMED]
+        ]
+        more = len(others) - OUTLIERS_NAMED
+        parts.append(f"Also beyond chance: {list_names(named + ([f'{more} more'] if more > 0 else []))}.")
+    if measure is not None and measure not in beyond:
+        held = _values_of(measure.count) if measure.count else "none"
+        parts.append(f"{measure.column}, the measure, has {held}, about what chance gives.")
+    calculation = (
+        "Values below Q1 − 1.5×IQR or above Q3 + 1.5×IQR in each numeric reading, with quartiles taken "
+        "within the grouping that explains most of its variance (epsilon squared of 1% or more), on log10 "
+        "for right-skewed readings; a count is reported when a normal sample of the same size would reach "
+        f"it with under {OUTLIER_CHANCE:.0%} chance (binomial, {NORMAL_OUTLIER_SHARE:.2%} expected outside)"
+    )
+    if any(result.values > FENCE_SAMPLE_ROWS for result in found):
+        calculation += (
+            f"; quartiles and groupings from a random sample of {FENCE_SAMPLE_ROWS:,} values of each "
+            "reading, counts on every row"
+        )
     return Evidence(
         kind="outliers",
         title="Exceptional records",
-        value=f"{count:,}",
-        statement=(
-            f"{count:,} {roles.measure} values ({format_percentage(rate)} of non-missing records) "
-            f"sit outside 1.5×IQR{within}{on_log}."
-        ),
+        value=f"{lead.count:,}",
+        statement=" ".join(parts),
         calculation=calculation,
         tone="warning",
     )
+
+
+def _values_of(count: int) -> str:
+    return f"{count:,} {'value' if count == 1 else 'values'}"
+
+
+def _share_of(result: _Outliers) -> str:
+    """The flagged share of a reading's values, "under 0.1%" rather than "0.0%"."""
+    share = result.count / result.values * 100
+    return "under 0.1%" if 0 < share < 0.1 else format_percentage(share)
+
+
+def _outlier_sentence(result: _Outliers) -> str:
+    """How many of a reading's values sit outside 1.5×IQR, against how many chance gives."""
+    within = f" of their own {sentence_case(result.grouping)}" if result.grouping else ""
+    on_log = f" on a log scale, since {result.column} is right-skewed" if result.log else ""
+    verb = "sits" if result.count == 1 else "sit"
+    chance = f"about {result.expected:,.0f}" if result.expected >= 1 else "fewer than 1"
+    return (
+        f"{_values_of(result.count)} of {result.column} ({_share_of(result)} of its non-missing values) "
+        f"{verb} outside 1.5×IQR{within}{on_log}, against {chance} that chance gives in normal data of "
+        "this size."
+    )
+
+
+def _pile_note(column: str, issues: tuple[QualityIssue, ...]) -> str:
+    """A sentence when a cap or floor in the column narrows its IQR, so the count partly reflects the pile."""
+    for issue in issues:
+        if issue.check == "cap" and column in issue.columns and issue.share >= 10:
+            side, value = issue.group
+            kind = "cap" if side == "maximum" else "floor"
+            return (
+                f"Its {kind} at {show_value(value)} holds {format_percentage(issue.share)} of its values and "
+                "narrows the IQR, so part of this count reflects the pile-up rather than the tails."
+            )
+    return ""
 
 
 def _heavy_tail_evidence(measure: str, values: np.ndarray, zeros: float) -> Evidence:
@@ -1581,51 +2856,76 @@ def _heavy_tail_evidence(measure: str, values: np.ndarray, zeros: float) -> Evid
     )
 
 
-def _fence_groups(dataframe: pd.DataFrame, roles: ColumnRoles, index: pd.Index) -> pd.Series | None:
-    """The grouping column's values for ``index``, when there is a grouping to judge within."""
-    if not roles.dimension or roles.dimension not in dataframe.columns:
-        return None
-    groups = dataframe.loc[index, roles.dimension]
-    return groups if groups.nunique() >= 2 else None
+def _fences(
+    scaled: np.ndarray, codes: np.ndarray | None, sample: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Q1 − 1.5×IQR and Q3 + 1.5×IQR for each row, from its group's quartiles where it has enough.
 
-
-def _fences(scaled: pd.Series, groups: pd.Series | None) -> tuple[pd.Series, pd.Series]:
-    """Q1 − 1.5×IQR and Q3 + 1.5×IQR for each value, from its group's quartiles where it has enough."""
-    present = scaled.dropna()
-    first, third = present.quantile([0.25, 0.75])
-    low = pd.Series(first - 1.5 * (third - first), index=scaled.index)
-    high = pd.Series(third + 1.5 * (third - first), index=scaled.index)
-    if groups is None:
+    Quartiles come from the ``sample`` rows; a group with fewer than
+    MIN_GROUP_FOR_FENCES values there, or no spread, uses the pooled ones.
+    """
+    values = scaled[sample]
+    finite = np.isfinite(values)
+    first, third = np.percentile(values[finite], [25, 75]) if finite.any() else (np.nan, np.nan)
+    low = np.full(scaled.shape, first - 1.5 * (third - first))
+    high = np.full(scaled.shape, third + 1.5 * (third - first))
+    if codes is None or codes.max() < 0:
         return low, high
-    quartiles = present.groupby(groups.loc[present.index]).quantile([0.25, 0.75]).unstack()
-    sizes = present.groupby(groups.loc[present.index]).size()
+    sampled = codes[sample]
+    kept = finite & (sampled >= 0)
+    table = pd.Series(values[kept]).groupby(sampled[kept])
+    quartiles = table.quantile([0.25, 0.75]).unstack()
+    sizes = table.size()
     spread = quartiles[0.75] - quartiles[0.25]
     usable = (sizes >= MIN_GROUP_FOR_FENCES) & (spread > 0)
-    own_low = groups.map((quartiles[0.25] - 1.5 * spread)[usable])
-    own_high = groups.map((quartiles[0.75] + 1.5 * spread)[usable])
-    return own_low.fillna(low), own_high.fillna(high)
+    own_low = np.full(int(codes.max()) + 1, np.nan)
+    own_high = np.full(int(codes.max()) + 1, np.nan)
+    groups = usable.index[usable.to_numpy()].to_numpy(dtype=int)
+    own_low[groups] = (quartiles[0.25] - 1.5 * spread)[usable].to_numpy()
+    own_high[groups] = (quartiles[0.75] + 1.5 * spread)[usable].to_numpy()
+    labelled = codes >= 0
+    row_low = np.where(labelled, own_low[np.where(labelled, codes, 0)], np.nan)
+    row_high = np.where(labelled, own_high[np.where(labelled, codes, 0)], np.nan)
+    return np.where(np.isnan(row_low), low, row_low), np.where(np.isnan(row_high), high, row_high)
+
+
+def _time_order(
+    dataframe: pd.DataFrame, roles: ColumnRoles, grouping: str | None
+) -> tuple[np.ndarray, np.ndarray]:
+    """Row positions with a time, in time order within each group, and each one's group code."""
+    times = dataframe[roles.date]
+    keys = pd.factorize(dataframe[grouping])[0] if grouping else np.zeros(len(dataframe), dtype=int)
+    order = np.lexsort((times.to_numpy(), keys))
+    order = order[times.notna().to_numpy()[order]]
+    return order, keys[order]
 
 
 def _shift(
-    dataframe: pd.DataFrame, roles: ColumnRoles, flagged: pd.Series, groups: pd.Series | None
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles,
+    result: _Outliers,
+    orders: dict | None = None,
 ) -> Evidence | None:
-    """Report flagged values that form one unbroken run in time as a shift starting at its first time.
+    """Report a reading's flagged values that form one unbroken run in time as a shift starting then.
 
-    Rows are put in time order within each group. A run counts when it holds
-    SHIFT_RUN_SHARE of the flagged values and at least MIN_SHIFT_RUN of them.
+    Rows are put in time order within each group of the grouping the reading
+    was judged within. A run counts when it holds SHIFT_RUN_SHARE of the
+    flagged values and at least MIN_SHIFT_RUN of them. ``orders`` caches the
+    time order by grouping across readings.
     """
-    if not roles.date or roles.date not in dataframe.columns:
+    if not roles.date or roles.date not in dataframe.columns or result.count < MIN_SHIFT_RUN:
         return None
-    ordered = pd.DataFrame({
-        "time": dataframe.loc[flagged.index, roles.date],
-        "group": groups if groups is not None else 0,
-        "flag": flagged,
-    }).dropna(subset=["time"])
-    ordered = ordered.sort_values(["group", "time"], kind="stable")
-    flags = ordered["flag"].to_numpy(dtype=bool)
+    column, grouping = result.column, result.grouping
+    orders = {} if orders is None else orders
+    if grouping not in orders:
+        orders[grouping] = _time_order(dataframe, roles, grouping)
+    order, keys = orders[grouping]
+    marked = result.flagged
+    kept = result.present[order]
+    sequence, keys = order[kept], keys[kept]
+    flags = marked[sequence]
     if not flags.any():
         return None
-    keys = pd.factorize(ordered["group"])[0]
     same_group = np.r_[False, keys[1:] == keys[:-1]]
     starts = flags & ~(np.r_[False, flags[:-1]] & same_group)
     runs = np.cumsum(starts) * flags
@@ -1635,21 +2935,23 @@ def _shift(
     total = int(flags.sum())
     if length < max(MIN_SHIFT_RUN, SHIFT_RUN_SHARE * total):
         return None
-    positions = np.flatnonzero(runs == longest)
-    first, last = ordered.iloc[positions[0]], ordered.iloc[positions[-1]]
-    group_end = positions[-1] == len(ordered) - 1 or keys[positions[-1] + 1] != keys[positions[-1]]
-    begun, ended = _moment(first["time"]), _moment(last["time"])
+    run = np.flatnonzero(runs == longest)
+    times = dataframe[roles.date]
+    first, last = times.iloc[sequence[run[0]]], times.iloc[sequence[run[-1]]]
+    group_end = run[-1] == len(sequence) - 1 or keys[run[-1] + 1] != keys[run[-1]]
+    begun, ended = _moment(first), _moment(last)
     where = ""
-    if groups is not None:
-        label = group_label(roles.dimension, first["group"])
-        where = f" for {label if label != str(first['group']) else f'{roles.dimension} {label}'}"
+    if grouping:
+        value = dataframe[grouping].iloc[sequence[run[0]]]
+        label = group_label(grouping, value)
+        where = f" for {label if label != str(value) else f'{grouping} {label}'}"
     until = "to the end of the record" if group_end else f"until {ended}"
     return Evidence(
         kind="outliers",
         title="Level shift",
         value=begun,
         statement=(
-            f"{roles.measure} left its usual range{where} at {begun} and stayed out for {length:,} "
+            f"{column} left its usual range{where} at {begun} and stayed out for {length:,} "
             f"readings in a row, {until}: {length:,} of the {total:,} values outside 1.5×IQR form this "
             "one run, so this is a shift starting then rather than scattered entry errors."
         ),
@@ -1675,14 +2977,16 @@ QUALITY_ISSUES_SHOWN = 3
 GAP_ISSUES_SHOWN = 2
 #: Issues named in the brief's summary as the ones to check first.
 CHECK_FIRST_SHOWN = 2
+#: Share of the table, in percent, at which an issue about the whole table
+#: (copied rows, simulated-looking data) is named first whatever the headline,
+#: and the share of a column at which any other issue about values is.
+CHECK_FIRST_SHARE = 10.0
+CHECK_FIRST_BROAD = 25.0
 
 
-def _leading_issues(issues: tuple[QualityIssue, ...], measure: str | None, limit: int) -> list[QualityIssue]:
-    """The issues to name first: those on the measure, then the rest, in scan order."""
-    ranked = [issue for issue in issues if measure in issue.columns] + [
-        issue for issue in issues if measure not in issue.columns
-    ]
-    return ranked[:limit]
+def _leading_issues(issues: tuple[QualityIssue, ...], limit: int) -> list[QualityIssue]:
+    """The issues to name first: those covering the most rows or cells."""
+    return sorted(issues, key=lambda issue: -issue.rows)[:limit]
 
 
 def _quality_evidence(
@@ -1709,8 +3013,8 @@ def _quality_evidence(
         )
     values = tuple(issue for issue in issues if not issue.check.startswith("missing"))
     gaps = tuple(issue for issue in issues if issue.check.startswith("missing"))
-    shown = _leading_issues(values, measure, QUALITY_ISSUES_SHOWN)
-    shown_gaps = _leading_issues(gaps, measure, GAP_ISSUES_SHOWN)
+    shown = _leading_issues(values, QUALITY_ISSUES_SHOWN)
+    shown_gaps = _leading_issues(gaps, GAP_ISSUES_SHOWN)
     parts = []
     if shown:
         parts.append("; ".join(issue.summary for issue in shown) + ".")
@@ -1728,10 +3032,12 @@ def _quality_evidence(
         statement=f"The data checks found {len(issues)} {noun} to look at before trusting these figures. "
         + " ".join(parts),
         calculation=(
-            "Every numeric column checked for values outside what its name allows, missing-value "
-            "codes, caps, repeated fill values, values more than 10 robust standard deviations out, "
-            "copied columns, max below min, and gaps that follow a group or another column; "
-            "Analysis.quality() lists every issue with its rule"
+            "Every numeric column checked for values outside what its name or a physical limit allows, "
+            "missing-value codes, caps, repeated fill values, values more than 10 robust standard "
+            "deviations out, second clusters, swapped and copied columns, max below min, stuck readings, "
+            "a group off by a unit factor, and gaps that follow a group or another column; the table for "
+            "copied rows and for flat, unrelated columns that suggest simulated data; issues ranked by the "
+            "rows they cover; Analysis.quality() lists every issue with its rule"
         ),
         tone="warning",
     )
@@ -1757,8 +3063,21 @@ def _issues_on_headline(
 
 
 def _check_first(issues: tuple[QualityIssue, ...], roles: ColumnRoles, leader: Evidence | None) -> str:
-    """One line naming the issues behind the headline, or "" when none touch it."""
-    relevant = _issues_on_headline(issues, roles, leader)[:CHECK_FIRST_SHOWN]
+    """One line naming the issues behind the headline, or "" when none touch it.
+
+    Issues about the whole table (copied rows, data that look simulated)
+    count when they cover CHECK_FIRST_SHARE of it, and any other issue about
+    values when it covers CHECK_FIRST_BROAD of its column (fill values in 61% of
+    rows), since they qualify figures well beyond the headline. The issues
+    covering most rows come first.
+    """
+    broad = [
+        issue for issue in issues
+        if not issue.check.startswith("missing")
+        and issue.share >= (CHECK_FIRST_SHARE if issue.check in TABLE_CHECKS else CHECK_FIRST_BROAD)
+    ]
+    behind = [issue for issue in _issues_on_headline(issues, roles, leader) if issue not in broad]
+    relevant = _leading_issues(tuple(broad + behind), CHECK_FIRST_SHOWN)
     if not relevant:
         return ""
     return "Check these first: " + "; ".join(issue.summary for issue in relevant) + "."
@@ -1814,7 +3133,7 @@ def _flag_driven_leader(
     return evidence
 
 
-def _shown_evidence(evidence: list[Evidence], limit: int = 6) -> list[Evidence]:
+def _shown_evidence(evidence: list[Evidence], limit: int = 8) -> list[Evidence]:
     """Return the first ``limit`` cards, swapping in a data-quality card if it was cut.
 
     A quality card past the limit replaces the last shown card, since it
@@ -1840,7 +3159,7 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
     if driver and trend and driver.value.startswith("-") != trend.value.startswith("-"):
         driver = None
     adverse = "decline" if metric.increase_is_welcome else "increase"
-    if trend and trend.tone == "negative":
+    if trend and trend.tone == "negative" and not trend.quiet:
         recommendations.append(
             Recommendation(
                 "Now",
@@ -1858,7 +3177,8 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
                 f"{trend.statement} {driver.statement}" if driver else trend.statement,
             )
         )
-    elif trend:
+    elif trend and not trend.quiet:
+        # A change within the usual variation is no change to follow up.
         recommendations.append(
             Recommendation(
                 "Now",
@@ -1877,9 +3197,29 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
             )
         )
 
+    shift = by_kind.get("shift")
+    if shift:
+        recommendations.append(
+            Recommendation(
+                "Now",
+                f"Find what changed in {shift.value}",
+                (
+                    "Match the start of the new level to an event (a change in method, instrument, site "
+                    "or conditions) before comparing periods on either side of it."
+                ),
+                shift.statement,
+            )
+        )
+
     concentration = by_kind.get("concentration")
     leader = by_kind.get("leader")
     largest = leader.subject if leader and leader.subject else f"the largest {group}"
+    # A leader card that compares groups, rather than giving shares or sizes.
+    compares = (
+        leader is not None
+        and "÷ total" not in leader.calculation
+        and not leader.calculation.startswith("largest |")
+    )
     if concentration and concentration.tone == "warning":
         recommendations.append(
             Recommendation(
@@ -1889,7 +3229,19 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
                 concentration.statement,
             )
         )
-    elif leader and not metric.additive and leader.subject is None:
+    elif compares and leader.title.startswith("Too few values"):
+        recommendations.append(
+            Recommendation(
+                "Next",
+                f"Collect more records per {group}",
+                (
+                    f"The {group} groups hold fewer than {MIN_NAMED_GROUP} values each, too few to rank; "
+                    "compare a coarser grouping, or collect more records per group."
+                ),
+                leader.statement,
+            )
+        )
+    elif compares and leader.subject is None:
         recommendations.append(
             Recommendation(
                 "Next",
@@ -1901,7 +3253,7 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
                 leader.statement,
             )
         )
-    elif leader and not metric.additive:
+    elif compares:
         recommendations.append(
             Recommendation(
                 "Next",
@@ -1938,7 +3290,8 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
         )
 
     relationship = by_kind.get("relationship")
-    if relationship:
+    # A scan that found no relationship leaves nothing to test.
+    if relationship and not relationship.value.startswith("|r|"):
         # Name only the splits the table has: a file with no date has no time window.
         splits = [f"each {group}" if roles.dimension else "", "each time window" if roles.date else ""]
         within = " and ".join(split for split in splits if split) or "different subsets of the rows"
@@ -1982,8 +3335,8 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
                 "Watch",
                 "Review the extreme records",
                 (
-                    "Check whether the most extreme values are real or entry and measurement "
-                    "errors; either way they pull averages."
+                    "Look at what sets the most extreme records apart before averaging over them: "
+                    "values beyond 1.5×IQR are often real but rare, and either way they pull averages."
                 ),
                 outliers.statement,
             )
@@ -2017,6 +3370,18 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
             )
         )
 
+    if not recommendations and (roles.date or roles.dimension) and evidence:
+        recommendations.append(
+            Recommendation(
+                "Next",
+                "Collect more before acting",
+                (
+                    "Nothing here stands out from the noise yet; more periods, or more records per "
+                    "group, would show smaller effects."
+                ),
+                evidence[0].statement,
+            )
+        )
     if not recommendations:
         recommendations.append(
             Recommendation(
@@ -2090,27 +3455,140 @@ def _first_sentence(statement: str) -> str:
 
 
 def _averaged_leader_phrase(leader: Evidence, roles: ColumnRoles) -> str:
-    """The leading-group clause of a headline for an averaged measure."""
-    if leader.subject is None:
-        return f"no clear difference in {roles.measure} between {sentence_case(roles.dimension)} groups."
-    centre = "median" if leader.calculation.startswith("median ") else "average"
-    return f"{leader.subject} has the highest {centre}, at {leader.value}."
+    """The leading-group clause of a headline for a measure whose groups are compared."""
+    if leader.lead:
+        return leader.lead
+    return f"no clear difference in {roles.measure} between {sentence_case(roles.dimension)} groups."
+
+
+def _leader_phrase(leader: Evidence, roles: ColumnRoles) -> str:
+    """The leading-group clause of a headline after the latest movement."""
+    if "÷ total" in leader.calculation:
+        if roles.measure:
+            measure = sentence_case(roles.measure)
+            return f"{leader.subject} has the largest share of {measure}, at {leader.value}."
+        return f"{leader.subject} has the most rows, {leader.value} of them."
+    if leader.calculation.startswith("largest |"):
+        return f"{leader.subject} is the largest by size, at {leader.value}."
+    return _averaged_leader_phrase(leader, roles)
+
+
+# Exact repeats of whole rows beyond this share make every test over-confident.
+REPEATED_SHARE = 0.1
+# A numeric column with fractional values and at least this many distinct ones is a continuous reading.
+CONTINUOUS_VALUES = 20
+
+
+def _distinct_rows(dataframe: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """The rows the tests run on: the distinct ones when many rows exactly repeat a continuous reading.
+
+    Two records of a continuous measurement can't agree on every column by
+    chance, so beyond REPEATED_SHARE such repeats are copies, and counting them
+    would make every test over-confident. Counts and labels can coincide
+    legitimately (two quadrats with no crabs), so a table with no continuous
+    reading is left whole. Returns the rows and the number of repeats left out.
+    """
+    continuous = None
+    for column in dataframe.select_dtypes("number").columns:
+        values = dataframe[column].dropna()
+        if values.nunique() >= CONTINUOUS_VALUES and bool((values % 1 != 0).any()):
+            continuous = column
+            break
+    if continuous is None:
+        return dataframe, 0
+    repeated = dataframe.duplicated()
+    count = int(repeated.sum())
+    if count <= REPEATED_SHARE * len(dataframe):
+        return dataframe, 0
+    return dataframe.loc[~repeated], count
+
+
+def _headline(
+    evidence: list[Evidence], growth: Evidence | None, dataframe: pd.DataFrame, roles: ColumnRoles
+) -> str:
+    """The brief's first line, from its most informative finding.
+
+    A total (money, counts) leads with its latest movement, as a sales report
+    does, and so does any measure whose latest movement is unusual. A latest
+    movement within the usual variation is "no clear change" and gives way to
+    a finding about the measure: its own group comparison, a change in its
+    level, a rate, the largest difference found. Without a date, a joint model
+    or a relationship can lead too; over time a quiet movement says more than
+    a correlation between two readings. A bare overall figure leads only when
+    nothing else was found, and a group is never named on fewer than five
+    values or without a clear test.
+    """
+    metric = metric_for(roles.measure, roles)
+    by_kind: dict[str, Evidence] = {}
+    for item in evidence:
+        by_kind.setdefault(item.kind, item)
+    leader = by_kind.get("leader")
+
+    def leads(*kinds: str) -> list[str]:
+        return [by_kind[kind].lead for kind in kinds if kind in by_kind and by_kind[kind].lead]
+
+    findings = leads("leader", "shift", "rates", "differences")
+    if growth and (metric.additive or not growth.quiet):
+        movement = f"{growth.value} latest movement" + (", within the usual range" if growth.quiet else "")
+        if leader:
+            return f"{movement}; {_leader_phrase(leader, roles)}"
+        if growth.quiet and findings:
+            return findings[0]
+        return _first_sentence(growth.statement)
+    if growth:
+        if findings:
+            return findings[0]
+        when = growth.subject or "the latest period"
+        quiet = f"No clear change in {roles.measure} in {when} ({growth.value}, within the usual range)"
+        if leader and leader.subject is None and roles.dimension:
+            return f"{quiet}; no clear difference between {sentence_case(roles.dimension)} groups."
+        return f"{quiet}."
+    findings += leads("model", "relationship")
+    if findings:
+        return findings[0]
+    if leader:
+        return _first_sentence(leader.statement)
+    if roles.measure:
+        measure_values = dataframe[roles.measure].dropna()
+        combined = measure_values.mean() if metric.aggregation == "mean" else measure_values.sum()
+        total_measure = format_number(float(combined), roles.measure, column_values=measure_values)
+        verb = "averages" if metric.aggregation == "mean" else "totals"
+        return f"{roles.measure} {verb} {total_measure} across all rows."
+    return f"{len(dataframe):,} rows, with no date, measure or grouping column ADA could use."
+
+
+def _noting(evidence: Evidence | None, left_out: str) -> Evidence | None:
+    """The card with the cells the data checks left out added to its calculation."""
+    if evidence is None or not left_out or evidence.title == "Heavy-tailed measure":
+        return evidence
+    return replace(evidence, calculation=f"{evidence.calculation}; {left_out}")
 
 
 def analyze_business(
     dataframe: pd.DataFrame,
     roles: ColumnRoles | None = None,
     frequency: str | None = None,
+    blanked: tuple[QualityIssue, ...] = (),
 ) -> BusinessBrief:
     """Create an executive brief from explainable calculations and rule-based interpretation.
 
     ``frequency`` fixes the period grain (``s min h D W M Q Y``) for the trend, driver and
     anomaly findings, so they match a trend or forecast built at that grain.
     Without it the grain follows how often the data was recorded.
+    ``blanked`` holds the missing-value codes cleaning set to missing
+    (``CleaningReport.blanked_codes``), so the data checks card lists them too.
     """
     roles = roles or detect_roles(dataframe)
     metric = metric_for(roles.measure, roles)
-    issues = scan_quality(dataframe, roles)
+    issues = scan_quality(dataframe, roles, blanked=blanked)
+    # Cells the checks found can't be readings (codes, impossible values, fill
+    # values, swapped or stuck readings) are blanked for the scans that compare
+    # and relate columns, and each of those cards says how many were left out.
+    statistics, left_out = statistics_frame(dataframe, issues)
+    # Exact copies of rows would count as independent evidence in every test.
+    tested, repeats = _distinct_rows(dataframe)
+    note = f"; on the {len(tested):,} distinct rows, leaving out {repeats:,} exact repeats" if repeats else ""
+    tested_statistics = statistics.loc[tested.index] if repeats else statistics
     evidence: list[Evidence] = []
 
     growth = _growth_evidence(dataframe, roles, frequency)
@@ -2119,18 +3597,37 @@ def analyze_business(
     change_driver = _change_driver_evidence(dataframe, roles, frequency)
     if change_driver:
         evidence.append(change_driver)
-    evidence.extend(_segment_evidence(dataframe, roles))
-    evidence = _flag_driven_leader(evidence, dataframe, roles, issues)
-    # Both scans work on the same numeric readings, which are slow to pick out of a wide table.
+    # Both scans work on the same numeric readings, which are slow to pick out of a
+    # wide table, and on one screen of how they are built from one another.
     readings = numeric_readings(dataframe, roles)
-    differences = _differences_evidence(dataframe, roles, readings)
+    built = _construction(tested, roles, readings)
+    masked = built.masked(tested) if built is not None else tested
+    found = _find_groupings(tested, roles)
+    rules = grouping_rules(masked, readings, _rule_groupings(roles, found), date=roles.date)
+    evidence.extend(_segment_evidence(dataframe, roles, tested, note, found, rules=rules, built=built))
+    evidence = _flag_driven_leader(evidence, dataframe, roles, issues)
+    shift = _level_shift_evidence(dataframe, roles, frequency)
+    if shift:
+        evidence.append(shift)
+    differences = _noting(
+        _differences_evidence(tested_statistics, roles, readings, note, found, built=built, rules=rules),
+        left_out,
+    )
     found_difference = differences is not None and differences.subject is not None
     if found_difference:
         evidence.append(differences)
+    relationships = _relationship_scan(tested_statistics, roles, readings, built)
     for optional_evidence in (
+        _rate_evidence(tested, roles, note, found),
         _anomaly_evidence(dataframe, roles, frequency),
-        _relationship_evidence(dataframe, roles, readings),
-        _outlier_evidence(dataframe, roles),
+        _noting(
+            _relationship_evidence(
+                tested_statistics, roles, readings, relationships, note, built=built, rules=rules
+            ),
+            left_out,
+        ),
+        _noting(_joint_model_evidence(tested_statistics, roles, relationships, note), left_out),
+        _noting(_outlier_evidence(statistics, roles, readings, issues), left_out),
         # A scan that found nothing ranks below the findings.
         None if found_difference else differences,
         _quality_evidence(dataframe, issues, roles.measure),
@@ -2165,7 +3662,7 @@ def analyze_business(
             KPI(
                 "Latest movement",
                 growth.value,
-                "Versus the previous observed period",
+                "Versus the previous observed period" + (", within the usual range" if growth.quiet else ""),
                 growth.tone,
             )
         )
@@ -2206,43 +3703,7 @@ def analyze_business(
     kpis = kpis[:4]
 
     recommendations = _recommendations(evidence, roles)
-    if growth and leader:
-        # A share is quoted only when the leader card divides by a total; a
-        # level (non-additive or mixed-sign measure) is the highest or largest.
-        if "÷ total" in leader.calculation:
-            ranked = (
-                f"has the largest share of {sentence_case(roles.measure)}, at {leader.value}"
-                if roles.measure
-                else f"has the most rows, {leader.value} of them"
-            )
-            headline = f"{growth.value} latest movement; {leader.subject} {ranked}."
-        elif not metric.additive:
-            headline = f"{growth.value} latest movement; {_averaged_leader_phrase(leader, roles)}"
-        else:
-            headline = (
-                f"{growth.value} latest movement; {leader.subject} is the largest by size, "
-                f"at {leader.value}."
-            )
-    elif growth:
-        headline = _first_sentence(growth.statement)
-    elif leader:
-        # A comparison that found nothing gives way to a difference found elsewhere.
-        found_elsewhere = leader.subject is None and differences is not None and differences.subject
-        headline = _first_sentence(differences.statement if found_elsewhere else leader.statement)
-    elif differences is not None and differences.subject:
-        headline = _first_sentence(differences.statement)
-    elif roles.measure:
-        measure_values = dataframe[roles.measure].dropna()
-        combined = measure_values.mean() if metric.aggregation == "mean" else measure_values.sum()
-        total_measure = format_number(
-            float(combined),
-            roles.measure,
-            column_values=measure_values,
-        )
-        verb = "averages" if metric.aggregation == "mean" else "totals"
-        headline = f"{roles.measure} {verb} {total_measure} across all rows."
-    else:
-        headline = f"{len(dataframe):,} rows, with no date, measure or grouping column ADA could use."
+    headline = _headline(evidence, growth, dataframe, roles)
 
     # Without a trend the headline already gives the one finding there is, so
     # the summary says what the table seems to be instead of repeating it.
@@ -2250,12 +3711,22 @@ def analyze_business(
         summary_parts = [growth.statement] + ([leader.statement] if leader else [])
     else:
         summary_parts = [_table_description(dataframe, roles)]
-    if differences is not None and differences.subject and (leader is None or leader.subject is None):
-        summary_parts.append(_first_sentence(differences.statement))
+    if repeats:
+        share = format_percentage(repeats / len(dataframe) * 100)
+        summary_parts.append(
+            f"{repeats:,} of the {len(dataframe):,} rows ({share}) repeat another row exactly, so the "
+            f"comparisons and correlations use the {len(tested):,} distinct rows."
+        )
+    extras = [shift]
+    if found_difference and (leader is None or leader.subject is None):
+        extras.append(differences)
+    for item in extras:
+        if item is not None and item.lead and item.lead != headline:
+            summary_parts.append(item.lead)
     if check_first := _check_first(issues, roles, leader):
         summary_parts.append(check_first)
-    if note := _measure_choice_note(roles):
-        summary_parts.append(note)
+    if note_text := _measure_choice_note(roles):
+        summary_parts.append(note_text)
 
     return BusinessBrief(
         headline=headline,

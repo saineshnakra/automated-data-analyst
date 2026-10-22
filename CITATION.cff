@@ -10,9 +10,73 @@ repository-code: "https://github.com/saineshnakra/automated-data-analyst"
 url: "https://automated-data-analyst.streamlit.app/"
 license: MIT
 keywords:
+  - exploratory data analysis
+  - statistics
+  - research data
   - business intelligence
   - automated data analysis
   - data visualization
   - Streamlit
   - CSV
   - Excel
+references:
+  - type: article
+    title: "Array programming with NumPy"
+    authors:
+      - family-names: Harris
+        given-names: Charles R.
+      - name: "NumPy contributors"
+    journal: Nature
+    volume: 585
+    start: 357
+    end: 362
+    year: 2020
+    doi: 10.1038/s41586-020-2649-2
+  - type: article
+    title: "SciPy 1.0: fundamental algorithms for scientific computing in Python"
+    authors:
+      - family-names: Virtanen
+        given-names: Pauli
+      - name: "SciPy 1.0 Contributors"
+    journal: Nature Methods
+    volume: 17
+    start: 261
+    end: 272
+    year: 2020
+    doi: 10.1038/s41592-019-0686-2
+  - type: conference-paper
+    title: "Data structures for statistical computing in Python"
+    authors:
+      - family-names: McKinney
+        given-names: Wes
+    collection-title: "Proceedings of the 9th Python in Science Conference"
+    start: 56
+    end: 61
+    year: 2010
+    doi: 10.25080/Majora-92bf1922-00a
+  - type: conference-paper
+    title: "statsmodels: Econometric and statistical modeling with Python"
+    authors:
+      - family-names: Seabold
+        given-names: Skipper
+      - family-names: Perktold
+        given-names: Josef
+    collection-title: "Proceedings of the 9th Python in Science Conference"
+    start: 92
+    end: 96
+    year: 2010
+    doi: 10.25080/Majora-92bf1922-011
+  - type: article
+    title: "Selective review of offline change point detection methods"
+    authors:
+      - family-names: Truong
+        given-names: Charles
+      - family-names: Oudre
+        given-names: Laurent
+      - family-names: Vayatis
+        given-names: Nicolas
+    journal: Signal Processing
+    volume: 167
+    start: 107299
+    year: 2020
+    doi: 10.1016/j.sigpro.2019.107299

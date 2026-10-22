@@ -33,8 +33,9 @@ runs from a script or a test with no browser and no API key.
 
 Only `app.py`, `ada/ui.py` and the `ada app` subcommand import Streamlit, and
 `ada app` imports it only when run. The installed package depends on pandas,
-numpy, scipy and openpyxl; Streamlit and Plotly come with the `app` extra, and the
-OpenAI client and Pydantic with the `ai` extra.
+numpy, scipy, statsmodels, ruptures and openpyxl; Streamlit and Plotly come
+with the `app` extra, and the OpenAI client and Pydantic with the `ai` extra.
+[Credits](credits.md) says what each library does for ADA and how to cite it.
 
 ## Layers
 
@@ -65,7 +66,7 @@ OpenAI client and Pydantic with the `ai` extra.
 | `ada/timeseries.py` | Theil-Sen trendline, calendar positions, robust scale |
 | `ada/anomalies.py` | Anomaly detection and the calibrated threshold table |
 | `ada/forecasting.py` | Baseline forecast, prediction band, backtest |
-| `ada/quality.py` | The data checks: impossible values, codes, caps, fill values, extreme values, copied columns, patterns in missing data; setting a clear code in the measure aside |
+| `ada/quality.py` | The data checks: impossible values, codes, caps, fill values, extreme values, swapped, copied and stuck columns, copied rows, simulated-looking data, patterns in missing data; setting clear missing-value codes to missing during cleaning; the frame statistics are computed on |
 | `ada/business_insights.py` | Evidence cards, KPIs, recommendations, the executive brief |
 | `ada/nlq.py` | Question to `QueryPlan` to local execution |
 | `ada/autovis.py` | Chart form for a set of columns, and the sentence explaining it |

@@ -30,7 +30,7 @@ def steady(periods: int = 24) -> pd.DataFrame:
 class AnalyzeTests(unittest.TestCase):
 
     def test_a_dataframe_in_an_analysis_out(self):
-        report = ada.analyze(steady())
+        report = ada.analyze(steady().assign(Revenue=lambda frame: 100.0 + frame.index % 3))
         self.assertIsInstance(report, ada.Analysis)
         self.assertEqual(report.rows_analyzed, 24)
         self.assertEqual(report.roles.measure, "Revenue")
@@ -123,7 +123,7 @@ class RefusalTests(unittest.TestCase):
         answer = ada.analyze(frame, row_limit=40).ask("average value by group")
         refusal = ada.analyze(frame, row_limit=40).ask("average value for zz9")
 
-        self.assertIn("The row limit left out 20 rows", answer.answer)
+        self.assertIn("Based on the 40 sampled rows (of 60).", answer.answer)
         self.assertIn("the row limit left out 20 others", refusal.message)
 
     def test_ask_answers_a_supported_question_with_its_calculation(self):
@@ -341,6 +341,17 @@ class LongTableTests(unittest.TestCase):
         self.assertEqual(len(report.frame), len(long_readings()))
         self.assertIsNone(report.roles.focus)
 
+    def test_ask_answers_another_parameter_from_every_row(self):
+        report = ada.analyze(long_readings())
+        other = next(value for value in long_readings()["Parameter"].unique() if value != "Ammonia")
+
+        answer = report.ask(f"average Result for {other}")
+        own = report.ask("average Result by Site")
+
+        self.assertIn(f"Parameter = {other}", answer.answer)
+        self.assertIn("This covers the", own.answer)
+        self.assertIn("Parameter = Ammonia, which the brief follows", own.answer)
+
 
 class AggregationTests(unittest.TestCase):
     def test_a_reading_is_averaged_unless_told_otherwise(self):
@@ -413,9 +424,9 @@ class FrequencyTests(unittest.TestCase):
         self.frame = pd.DataFrame({"date": days, "precipitation": [float(day.day % 7) for day in days]})
 
     def test_the_headline_uses_the_requested_grain(self):
-        self.assertIn("(Q4 2024)", ada.analyze(self.frame).headline)
+        self.assertIn("Q4 2024", ada.analyze(self.frame).headline)
         monthly = ada.analyze(self.frame, frequency="M")
-        self.assertIn("(Dec 2024)", monthly.headline)
+        self.assertRegex(monthly.headline, r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) 2024")
         trend = next(item for item in monthly.evidence if item.kind == "trend")
         self.assertIn("(Dec 2024)", trend.statement)
 
@@ -455,9 +466,7 @@ class RowsLeftOutTests(unittest.TestCase):
     def test_every_answer_says_which_rows_it_used(self):
         report = ada.analyze(self.frame, row_limit=400)
         answer = report.ask("average Signal by Material")
-        self.assertTrue(answer.answer.endswith(
-            "The row limit left out 800 rows, so this answer covers only a random sample of 400."
-        ))
+        self.assertTrue(answer.answer.endswith("Based on the 400 sampled rows (of 1,200)."))
         self.assertEqual(report.rows_note, "a random sample of 400 of 1,200 rows")
         self.assertEqual(report.to_dict()["rows_note"], report.rows_note)
         self.assertIn("Analyzed a random sample of 400 of 1,200 rows", str(report))
@@ -483,6 +492,36 @@ class UndatedTimeTests(unittest.TestCase):
         self.assertNotIn("2026", text)
         period = self.report.to_dict()["period"]
         self.assertEqual((period["from"], period["to"]), ("15:06:28", "15:56:01"))
+
+    def test_segments_give_each_group_its_times_without_the_stand_in_date(self):
+        stamps = pd.date_range("2024-01-01 15:06:28", periods=600, freq="s")
+        report = ada.analyze(pd.DataFrame({
+            "Time": stamps.strftime("%H:%M:%S"),
+            "Phase": ["warm-up"] * 200 + ["burn"] * 400,
+            "Signal": [100.0 + (n > 200) * 200 + n % 5 for n in range(600)],
+        }), dimension="Phase")
+
+        segments = report.segments().set_index("Segment")
+
+        self.assertEqual(segments.loc["warm-up", "From"], "15:06:28")
+        self.assertEqual(segments.loc["burn", "To"], "15:16:27")
+
+
+class WholeNumberDateTests(unittest.TestCase):
+    def setUp(self):
+        days = pd.date_range("1954-06-01", periods=400)
+        self.frame = pd.DataFrame({
+            "MESS_DATUM": days.strftime("%Y%m%d").astype(int),
+            "TMK": [10.0 + 8 * ((n % 365) / 365) for n in range(400)],
+        })
+
+    def test_a_yyyymmdd_column_is_the_timeline(self):
+        self.assertEqual(ada.analyze(self.frame).roles.date, "MESS_DATUM")
+
+    def test_a_yyyymmdd_column_can_be_named_as_the_date(self):
+        report = ada.analyze(self.frame, date="MESS_DATUM")
+
+        self.assertEqual(report.period[0], pd.Timestamp("1954-06-01"))
 
 
 def gauges() -> pd.DataFrame:
@@ -520,10 +559,34 @@ class DataCheckTests(unittest.TestCase):
         self.assertTrue(any("999.9" in note for note in report.cleaning.notes), report.cleaning.notes)
         self.assertLess(report.frame["Wind Speed"].max(), 10)
 
-    def test_codes_in_other_columns_are_reported_not_changed(self):
+    def test_codes_in_other_columns_are_set_aside_and_still_listed(self):
         report = ada.analyze(gauges(), measure="Humidity")
 
-        self.assertEqual(report.frame["Wind Speed"].max(), 999.9)
+        self.assertEqual(int(report.frame["Wind Speed"].isna().sum()), 4)
+        codes = report.quality().query("Check == 'Sentinel codes'")
+        self.assertEqual(codes["Columns"].tolist(), ["Wind Speed"])
+        self.assertIn("set those cells to missing", codes["Detail"].iloc[0])
+        self.assertEqual(int(codes["Rows"].iloc[0]), 4)
+
+    def test_the_brief_counts_the_codes_set_aside_with_the_other_checks(self):
+        report = ada.analyze(gauges(), measure="Humidity")
+
+        card = next(item for item in report.evidence if item.title == "Data checks")
+
+        self.assertEqual(card.value, f"{len(report.quality())} issues")
+
+    def test_missing_counts_include_the_codes_set_aside(self):
+        report = ada.analyze(gauges(), measure="Humidity")
+
+        self.assertEqual(int(report.profile().set_index("Column").loc["Wind Speed", "Missing"]), 4)
+        self.assertIn("4 of the 400 rows", report.ask("how many rows have missing Wind Speed").answer)
+
+    def test_a_frame_handed_in_is_left_unchanged(self):
+        frame = gauges()
+
+        ada.analyze(frame, measure="Humidity")
+
+        self.assertEqual(frame["Wind Speed"].max(), 999.9)
 
     def test_a_clean_table_has_an_empty_frame(self):
         self.assertTrue(ada.analyze(steady()).quality().empty)

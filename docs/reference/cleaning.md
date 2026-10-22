@@ -11,35 +11,58 @@ table or as a note.
 
 | # | Step | Detail |
 |---|---|---|
-| 1 | Normalize and de-duplicate column names | Whitespace collapsed; a blank name becomes `column_<position>`; a repeated name gets `_2`, `_3` and so on. A note names each repeated header, and says whether the two columns differ |
-| 2 | Drop empty columns | Every value missing or whitespace; a note names them |
-| 3 | Drop empty rows | Every value missing or whitespace |
-| 4 | Drop exported index columns | See below |
-| 5 | Drop timezones | Timezone-aware columns keep their wall-clock time |
-| 6 | Trim text | Leading and trailing whitespace removed; empty strings become missing |
-| 7 | Read times of day | See [Times with no date](#times-with-no-date) |
-| 8 | Infer dates in date-named columns | See below |
-| 9 | Infer numbers | See below |
-| 10 | Infer dates in other columns | See below |
-| 11 | Join a date column and a time column | See [Times with no date](#times-with-no-date) |
-| 12 | Read elapsed time | See [Elapsed time](#elapsed-time) |
-| 13 | Read "not stated" as missing in text columns | See below |
-| 14 | Build dates from years | See below |
-| 15 | Merge label spellings | See below |
-| 16 | Widen overflowing integers | An integer column whose total would overflow int64 becomes float64 |
-| 17 | Replace infinities | `inf` and `-inf` in float columns become missing |
-| 18 | Count identical rows | Counted and kept |
+| 1 | Read a second header row | See [Two-row headers](#two-row-headers) |
+| 2 | Normalize and de-duplicate column names | Whitespace collapsed; a blank name becomes `column_<position>`; a repeated name gets `_2`, `_3` and so on. A note names each repeated header, and says whether the two columns differ |
+| 3 | Drop empty columns | Every value missing or whitespace; a note names them |
+| 4 | Drop empty rows | Every value missing or whitespace |
+| 5 | Drop exported index columns | See below |
+| 6 | Drop timezones | Timezone-aware columns keep their wall-clock time |
+| 7 | Trim text | Leading and trailing whitespace removed; empty strings become missing |
+| 8 | Read times of day | See [Times with no date](#times-with-no-date) |
+| 9 | Infer dates in date-named columns | See below |
+| 10 | Infer numbers | See below |
+| 11 | Infer dates in other columns | See below |
+| 12 | Set missing-value codes to missing | See [Missing-value codes](#missing-value-codes) |
+| 13 | Read whole numbers written as dates | See [Dates written as whole numbers](#dates-written-as-whole-numbers) |
+| 14 | Join a date column and a time column | See [Times with no date](#times-with-no-date) |
+| 15 | Read elapsed time | See [Elapsed time](#elapsed-time) |
+| 16 | Read "not stated", `ND` and placeholder labels as missing in text columns | See below |
+| 17 | Restore ranges a spreadsheet read as dates | See [Ranges read as dates](#ranges-read-as-dates) |
+| 18 | Merge label spellings | See below |
+| 19 | Build dates from years | See below |
+| 20 | Widen overflowing integers | An integer column whose total would overflow int64 becomes float64 |
+| 21 | Replace infinities | `inf` and `-inf` in float columns become missing |
+| 22 | Count identical rows | Counted and kept |
 
 If nothing is left, `clean_dataframe` raises `ValueError` rather than
 returning an empty frame.
 
-Steps 6 to 10 work on each distinct value of a text column once and spread
-the result back over its rows, since a site, a status or a date repeats many
-times. Before a column is parsed in full as numbers or as times of day, 200 of
-its cells drawn at random are tried. A column needs 95% of its cells to
-convert, so one where fewer than half of the drawn cells read as numbers (or
-times) is not parsed in full. On a file of 700,000 rows this takes cleaning
-from about 8 seconds to under 3.
+Each text column is factorised once, when empty rows are found, and every
+later step on it (trimming, markers, numbers, dates, labels) works on its
+distinct values, with their text normalised once, and spreads the result back
+over the rows. A site, a status or a date repeats many times, so a table of
+242,000 rows with 13 text columns cleans in under a second. Before a column is
+parsed in full as numbers or as times of day, 200 of its cells drawn at random
+are tried. A column needs 95% of its cells to convert, so one where fewer than
+half of the drawn cells read as numbers (or times) is not parsed in full.
+
+## Two-row headers
+
+A spreadsheet often puts a label over a run of columns, with the real names
+in the row below: `Weld Output Response` over `UTS (MPa)` and `% Elongation`.
+Read with one header row, the label's blank cells become `Unnamed: 6` and the
+names become a row of text in numeric columns, which would then count as data
+and leave a missing cell in every column.
+
+The first row is read as a second header row when the header has at least one
+blank cell (`Unnamed: N`) and one label, and the first row holds text in at
+least two columns whose values below it read as numbers, never a number in
+such a column, and text under every blank header cell with data below it. A
+column under a group label takes its name from the second row; a label over a
+single column is joined with the text below it (`Temperature` over `(°C)`
+becomes `Temperature (°C)`); a column with nothing in the second row keeps its
+label. Names the second row repeats are prefixed with their group label. The
+row is dropped, and a note names the group labels.
 
 ## Identical rows are kept
 
@@ -154,7 +177,9 @@ counter.
 
 ## Type inference
 
-Inference runs only on text columns.
+Inference runs only on text columns, except for
+[dates written as whole numbers](#dates-written-as-whole-numbers) and
+[dates from years](#dates-from-years).
 
 **Dates in date-named columns.** A column whose name contains `date`, `time`,
 `timestamp`, `created` or `updated` is converted when at least 80% of its
@@ -169,18 +194,23 @@ any other character, such as a slash, is not read this way, so a date cannot
 become a large integer.
 
 Cells holding a missing-value marker (`MISSING_MARKERS`: `NA`, `n/a`, `nd`,
-`null`, `-`, `#DIV/0!`, `<LOD`, `below detection limit` and similar; a
-"not stated" phrase from `NOT_STATED_MARKERS`, below; or a censored value such
-as `<0.1` or `<3,87`) do not count against the 95%. If the column converts,
-they become missing and a note lists them.
+`null`, `unknown`, `-`, `#DIV/0!`, `<LOD`, `below detection limit` and
+similar; a "not stated" phrase from `NOT_STATED_MARKERS`, below; or a censored
+value such as `<0.1` or `<3,87`) do not count against the 95%. If the column
+converts, they become missing and a note lists them.
 
-Values past a detection limit get a note of their own. The limit is parsed
-like any number, so `<3,87` is read as below 3.87, and the note gives the
-limits and the share of the column: "7,239 cells in Phosphorus (15.5%) were
-below a detection limit (<3.87) and read as missing". When 10% or more of a
-column is censored (`CENSORED_SHARE`), the note adds that the mean of the rest
-is biased upward (downward for values above a limit), since the values left
-out are the smallest (or largest) ones.
+Values past a detection limit get a note of their own, one for each side. The
+limit is parsed like any number, so `<3,87` is read as below 3.87, and the
+note gives the limits and the share of the column: "7,239 cells in Phosphorus
+(15.5%) were below a detection limit (<3.87) and read as missing". When 10% or
+more of a column is censored (`CENSORED_SHARE`), the note adds that the mean
+of the rest is biased upward (downward for values above a limit), since the
+values left out are the smallest (or largest) ones.
+
+In a column of readings, `ND` (or `n.d.`) means not detected, so it counts as
+below a detection limit, like `<LOD`. The exception is a column that writes
+values below its limit with a number (`<0.4`): beside those, `ND` more likely
+means the value was not determined, so its cells get a plain note saying so.
 
 **A lone token.** Weather records write `T` for a trace of rain, and instrument
 logs write `M` or `*`. When the only text left in a column after markers is one
@@ -208,11 +238,22 @@ that has a leading zero (`02134`, `007`) is never converted.
 value, not a group: left as a label, `NO INDICA` and `No indica` would become
 two groups of their own and could lead the brief. After inference, cells in
 text columns matching `NOT_STATED_MARKERS` (`no indica`, `no indicado`,
-`sin dato`, `nicht angegeben`, `non renseigné`, `not stated`, `not specified`,
-`N/A`, `ND`, `ERROR: #N/A` and similar, ignoring case and spacing) become
-missing, and a note lists them. `ND` is left alone in a column of two-letter
-codes, where it is North Dakota. The same list counts as markers in numeric
-columns.
+`sin dato`, `sin datos`, `nicht angegeben`, `keine Daten`, `non renseigné`,
+`pas de données`, `nessun dato`, `sem dados`, `tidak ada data`,
+`geen gegevens`, `no data`, `not stated`, `not specified`, `N/A`,
+`ERROR: #N/A` and similar, ignoring case and spacing) become missing, and a
+note lists them. The same list counts as markers in numeric columns.
+
+Placeholder labels (`PLACEHOLDER_LABELS`: `Unknown`, `unclassified`,
+`not classified`, `UNABLE TO CLASSIFY`) stand for a value nobody could give.
+Kept as labels, they become a group that mixes every kind of row, so they
+become missing too, with a note saying what they stand for.
+
+`ND` in a text column becomes missing with a note: when most of the column's
+other cells start with a number (readings written with their units, such as
+`5.66 ± 1.69 items/g`), the note says it means not detected; otherwise that it
+usually means not detected or not determined. `ND` is left alone in a column
+of two-letter codes, where it is North Dakota.
 
 **Dates in other columns.** Dates also arrive in columns called `Month`,
 `Period` or `FY`. For a column with any other name, the first 50 values must
@@ -226,6 +267,58 @@ that is 5% unparseable as numbers is probably not numeric.
 `01234` is a postcode, and converting it to `1234` would change it. The reader
 also keeps such columns as text from the start: see
 [Reading files](reading-files.md).
+
+## Missing-value codes
+
+Instruments and exports write a code in place of a missing reading: `-999`
+among pressures near 950 hPa, `999.9` among wind speeds below 20. Left in, a
+code drives every average, correlation and comparison on its column, and a
+count of missing values misses it. After inference, `quality.blank_codes` sets
+clear codes to missing in every numeric column, before roles are detected or
+any figure is computed. Two kinds qualify:
+
+- a code value (a run of nines, a repeated digit, a large negative power of
+  ten) standing alone, far from the rest, and either negative in a column that
+  is otherwise not or ten times the 99th percentile of the other values; see
+  [Data checks](quality.md#codes-set-to-missing)
+- one negative value that three or more columns, each otherwise never
+  negative and holding readings rather than a few whole-number codes, hold on
+  the same rows, as a logger writes `-1` in every channel when a read fails
+
+Key columns and layout numbers are left alone. Each column gets a note with
+its count ("11,177 cells in PM held -999, a code for a missing reading far from
+every other value (median 955.6), and were set to missing"), and the data
+checks still list each code, saying it was set to missing. The cells count as
+missing everywhere afterwards: in the completeness figure, the data
+dictionary and "how many rows have missing PM".
+
+## Dates written as whole numbers
+
+Weather and finance exports often write a date as a whole number:
+`19540601` (YYYYMMDD) or `202403` (YYYYMM). A numeric column becomes dates
+when every value is a valid date in one of these layouts, with years from 1800
+to 2100, and either:
+
+- its name has a date word (`date`, `datum`, `fecha`, `data`, `day`,
+  `period`, `yyyymmdd` and similar) and it has two or more values, or
+- the table has no other date (times of day with no date do not count) and it
+  has three or more values
+
+A column passed as the date (`ada.analyze(df, date="MESS_DATUM")`) is read
+whatever its name or the rest of the table, with any year a timestamp can
+hold. A YYYYMM value becomes the first of its month. A note gives the layout
+and the span. Codes are set to missing first, so a `-999` in such a column
+does not stop it being read.
+
+## Ranges read as dates
+
+A spreadsheet reads a range such as `10-30` as a date and shows it as
+`Oct-30` (or `30-Oct`). In a text column made mostly of numeric ranges, with
+at most 200 labels, such a value is matched to its likely original: the
+month's number and the other number, low end first. When that range shares an
+end with another range in the column (`0-10`, `10-30`, `30-60`), the values
+are restored to it and a note says so. Otherwise they are left as written, and
+the note names the range they may have been.
 
 ## Dates from years
 
@@ -271,14 +364,16 @@ count for each operation: empty rows, empty columns and index columns removed,
 text columns whose values trimming changed, numeric and datetime columns
 inferred, identical rows found and removed, unreadable date values and
 infinite values. Its `notes` hold the sentences shown above the dashboard
-(repeated headers, dropped empty columns, date-order assumptions, timezones,
-unreadable dates, dates built from years, missing-value markers, values past a
-detection limit, lone tokens, unreadable numbers, "not stated" phrases, merged
-label spellings, widened columns, infinities, identical rows).
+(a two-row header, repeated headers, dropped empty columns, date-order
+assumptions, timezones, unreadable dates, missing-value codes set to missing,
+dates read from whole numbers, dates built from years, missing-value markers,
+values past a detection limit, lone tokens, unreadable numbers, "not stated"
+phrases, `ND` and placeholder labels, ranges read as dates, merged label
+spellings, widened columns, infinities, identical rows). Its `blanked_codes`
+hold the data-check issues for the codes set to missing, which
+`Analysis.quality()` and the app's data checks list beside the rest.
 `pipeline.prepare_analysis` adds what schema detection concluded about the
-columns (see [Schema detection](schema-detection.md#notes)), and `ada.analyze`
-adds one more when it sets a clear code in the measure aside; see
-[Data checks](quality.md#codes-in-the-measure).
+columns (see [Schema detection](schema-detection.md#notes)).
 
 `pipeline.cleaning_audit_frame` turns the counts into the table shown in the
 app.
@@ -304,6 +399,13 @@ app.
 | `Precip` holding numbers and 14% `T` | Converted; the `T` cells become missing, with a note |
 | `P mg/kg` holding `<3,87` in 15% of rows | Converted; those cells become missing, with a note on the limit and the biased mean |
 | `Drainage` holding `No indica` and `ERROR: #N/A` | Those cells become missing, with a note |
+| `categori` holding `TIDAK ADA DATA`, or `Cancer Type` holding `UNABLE TO CLASSIFY` | Those cells become missing, with a note |
+| `Lead` holding numbers and `ND` | Converted; `ND` counts as below a detection limit, with a note |
+| `PM` and nine other columns holding `-999` | Those cells become missing, with a note per column, and the data checks list the code |
+| `pm10`, `pm1_0` and `pm2_5` all `-1` on the same 4 rows, never otherwise negative | Those cells become missing, with a note per column |
+| `MESS_DATUM` holding `19540601` to `20221231`, and no date column | Read as dates, with a note |
+| `Depth` holding `0-10`, `Oct-30`, `30-60` | `Oct-30` restored to `10-30`, with a note |
+| A header row of group labels over the real names | Names taken from the second row, which is dropped, with a note |
 | A CSV header repeated, read as `diabetes` and `diabetes.1` | Both kept, with a note saying on how many rows they differ |
 
 ## Changing this

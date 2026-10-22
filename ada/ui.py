@@ -10,14 +10,14 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-from pandas.api.types import is_datetime64_any_dtype
+from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 
 from .aggregation import build_trend, driver_frame, heatmap_frame, segment_frame
 from .anomalies import detect_anomalies
 from .autovis import fold_small_series, recommend_chart
 from .business_insights import BusinessBrief
 from .forecasting import build_forecast, describe_backtest
-from .formatting import format_number, format_period, group_label, is_undated
+from .formatting import format_number, format_period, group_label, holds_undated, is_undated, show_undated
 from .metrics import metric_for
 from .nlq import QueryAnswer
 from .pipeline import analyze_selection
@@ -524,8 +524,9 @@ def _chat_answer_figure(result: QueryAnswer) -> go.Figure | None:
         figure = _trend_figure(table, averaged, title=result.plan.measure or "Records")
         return style_chart(figure, height=320)
     if result.chart == "line":
-        # Groups of a numbered column (timepoint 0, 1, 2...), in the table's order.
+        # Groups of a numbered column (timepoint 0, 1, 2...) or its quantile bins, in the table's order.
         category, value = table.columns[:2]
+        table = _labels_as_text(table, category)
         figure = px.line(
             table, x=category, y=value, markers=True, title=f"{value} by {category}",
             color_discrete_sequence=[ACCENT],
@@ -534,6 +535,9 @@ def _chat_answer_figure(result: QueryAnswer) -> go.Figure | None:
         return style_chart(figure, height=320)
     category = table.columns[0]
     value = next((name for name in ("Change %", "Change") if name in table.columns), table.columns[1])
+    if not is_numeric_dtype(table[value]):
+        return None
+    table = _labels_as_text(table, category)
     figure = px.bar(
         table.sort_values(value),
         x=value,
@@ -544,6 +548,13 @@ def _chat_answer_figure(result: QueryAnswer) -> go.Figure | None:
     )
     figure.update_traces(marker_line_width=0, hovertemplate="%{y}: %{x:,.2f}<extra></extra>")
     return style_chart(figure, height=320)
+
+
+def _labels_as_text(table: pd.DataFrame, column: str) -> pd.DataFrame:
+    """Quantile bins as text, so they label the axis in order rather than as a category type."""
+    if isinstance(table[column].dtype, pd.CategoricalDtype):
+        return table.assign(**{column: table[column].astype(str)})
+    return table
 
 
 def render_chat_answer(result: QueryAnswer, *, key: str) -> None:
@@ -568,7 +579,7 @@ def render_chat_answer(result: QueryAnswer, *, key: str) -> None:
         )
     if result.table is not None and not result.table.empty:
         with st.expander("See the numbers"):
-            st.dataframe(result.table, hide_index=True, width="stretch", key=f"chat_table_{key}")
+            st.dataframe(show_undated(result.table), hide_index=True, width="stretch", key=f"chat_table_{key}")
     st.markdown(
         f'<p class="calculation chat-calc">CALC · {escape(result.calculation)}</p>',
         unsafe_allow_html=True,
@@ -728,6 +739,10 @@ def _explore_figure(frame: pd.DataFrame, spec) -> go.Figure | None:
     figure.update_layout(title=title)
     if spec.form in ("column", "bar"):
         figure.update_traces(marker_line_width=0)
+    # Times with no calendar date are labelled by the clock, never by their stand-in date.
+    vertical = spec.form in ("line", "area", "column", "scatter", "histogram")
+    if vertical and spec.x in frame.columns and holds_undated(frame[spec.x]):
+        figure = _undated_axis(figure, frame[spec.x])
     return style_chart(figure, height=380)
 
 
@@ -775,7 +790,7 @@ def render_explore(dataframe: pd.DataFrame, roles: ColumnRoles, brief: BusinessB
             return
         st.metric(spec.y or "Value", format_number(float(present.iloc[0]), spec.y))
     elif spec.form == "table":
-        st.dataframe(frame, hide_index=True, width="stretch")
+        st.dataframe(show_undated(frame), hide_index=True, width="stretch")
     else:
         figure = _explore_figure(frame, spec)
         if figure is not None:

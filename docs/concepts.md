@@ -25,11 +25,14 @@ a status or phenotype code, an income band, a set dose. ADA calls these
 measure, and are left out of totals and correlations. A 0/1 flag's average is
 the share of rows that are 1.
 
-Two table shapes are handled apart. In a *long* table one column names what
+Three table shapes are handled apart. In a *long* table one column names what
 each row measures (a determinand, an analyte) and one holds the result, often
-in several units, so ADA analyzes one parameter at a time. In a *matrix* most
-columns are one kind of reading (60 samples, 7,932 spectral channels), so no
-single column is the measure; ADA follows each row's mean instead.
+in several units, so ADA analyzes one parameter at a time. A *stacked* file
+holds several tables, each with its own columns, and a column naming which one
+each row belongs to, so ADA analyzes the largest. In a *matrix* most columns
+are one kind of reading (60 samples, 7,932 spectral channels, 26 samples of
+read counts), so no single column is the measure; ADA follows each row's mean
+instead.
 
 See [Schema detection](reference/schema-detection.md).
 
@@ -53,6 +56,12 @@ A measure is either summed or averaged, decided from its column name by
   Hours`. The mean of an amount still reads sensibly, but the sum of a reading
   does not, so a name ADA does not recognise is averaged.
 - With no measure, ADA counts rows.
+
+When each row is one subject or sample, because the row key is named for one
+(`ParticipantId`, `Sample ID`, `Patient No`), a count or a total that is not
+money is averaged as well (`metrics.metric_for`): adding each infant's looking
+time across infants, or splitting it into shares, mostly counts infants. An
+order number names a sale, not a subject, so order amounts still add up.
 
 The name can mislead either way: rainfall is often reported as a monthly
 total, and a column called `income` may hold income per person. To choose how

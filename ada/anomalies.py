@@ -14,6 +14,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from .aggregation import GRAIN_ORDER, TrendSeries, build_trend
+from .schema import ColumnRoles
 from .timeseries import fit_trendline, observed_periods, robust_scale, yearly_pattern
 
 MIN_PERIODS = 8
@@ -126,3 +128,26 @@ def detect_anomalies(
     ]
     anomalies.sort(key=lambda anomaly: anomaly.severity, reverse=True)
     return tuple(anomalies[:limit])
+
+
+# A finer grain with more than this share of its periods empty is finer than the data was recorded at.
+MAX_EMPTY_SHARE = 0.2
+
+
+def finer_trend(dataframe: pd.DataFrame, roles: ColumnRoles, series: TrendSeries) -> TrendSeries | None:
+    """The measure's trend at a finer grain with enough periods, when ``series`` has too few to check.
+
+    A table of 147 daily readings rolls up to 5 months, too few to calibrate a
+    band, but gives 21 weeks. The coarsest finer grain with ``MIN_PERIODS``
+    recorded periods is used. A grain finer than the data was recorded at only
+    adds empty periods, so one with over MAX_EMPTY_SHARE of them empty is
+    skipped. Returns None when ``series`` has enough periods or no finer grain does.
+    """
+    if len(observed_periods(series.frame)) >= MIN_PERIODS or series.frequency not in GRAIN_ORDER:
+        return None
+    for grain in reversed(GRAIN_ORDER[: GRAIN_ORDER.index(series.frequency)]):
+        candidate = build_trend(dataframe, roles, grain)
+        periods, empty = len(candidate.frame), candidate.filled_periods
+        if periods - empty >= MIN_PERIODS and empty <= MAX_EMPTY_SHARE * periods:
+            return candidate
+    return None

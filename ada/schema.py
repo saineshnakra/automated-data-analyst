@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_dtype
 
-from .formatting import is_percentage, normalized_name
+from .formatting import format_number, is_percentage, normalized_name
 from .metrics import ADDITIVE_WORDS, LEVEL_WORDS, is_level_name
 
 
@@ -41,15 +41,22 @@ class ColumnRoles:
     #: Columns that came close to being the measure, best first. Set only when
     #: the pick was a close call, so the reader can be told it was a judgement.
     measure_alternatives: tuple[str, ...] = ()
-    #: "flat"; "long" when one column names what each row's value measures; or
+    #: "flat"; "long" when one column names what each row's value measures;
     #: "matrix" when the table is mostly numeric columns of one kind, such as
-    #: samples or spectral channels.
+    #: samples or spectral channels; or "stacked" when one column names which
+    #: of several tables, each with its own columns, a row belongs to.
     table_shape: str = "flat"
     #: The value of ``dimension`` the brief covers. A long table's rows measure
-    #: different things, often in different units, so they are never combined.
+    #: different things, often in different units, so they are never combined;
+    #: a stacked file's tables hold different columns.
     focus: str | None = None
     #: What ADA concluded about the columns, in plain sentences.
     notes: tuple[str, ...] = ()
+    #: Numeric columns that place or describe a row rather than measure it:
+    #: coordinates, compass directions, quality flags and parts of a date. They
+    #: stay in ``numeric`` so questions can name them, but are never the
+    #: measure, a grouping or a reading to compare or correlate.
+    non_readings: tuple[str, ...] = ()
 
 
 MEASURE_KEYWORDS = {
@@ -92,7 +99,10 @@ MEASURE_KEYWORDS = {
     "survival": 5,
     "decision": 5,
     "choice": 5,
+    "risk": 5,
+    "diversity": 5,
     "score": 4,
+    "index": 4,
 }
 
 DIMENSION_KEYWORDS = {
@@ -147,11 +157,36 @@ DESIGN_TOKENS = frozenset({
 # Conditions recorded beside an outcome, and rarely the outcome itself. Any word
 # of the name counts, so "air_temp_c" matches.
 COVARIATE_TOKENS = frozenset({"temp", "temperature", "humidity", "wind", "air"})
+# The size of a subject or a plot, recorded beside the outcome of a study: a
+# weight in a microbiome survey, the acres of a farm.
+SIZE_COVARIATE_TOKENS = frozenset({"weight", "size", "area", "acres", "acre", "height", "age"})
+# Words naming a statistic computed about some other quantity: a p-value, a
+# coefficient, a standard error. Such a column is rarely what a table measures.
+STATISTIC_WORDS = frozenset({
+    "pvalue", "pval", "padj", "qvalue", "fdr", "stderr", "sem", "std", "stdev", "beta", "coef",
+    "coefficient", "significant", "significance", "tstat", "zscore",
+})
+# Pairs of short words that name a statistic together, where either alone may
+# be something else: "T" a temperature, "P" phosphorus, "Z" a coordinate.
+STATISTIC_PAIRS = frozenset({
+    ("p", "value"), ("p", "val"), ("t", "stat"), ("t", "value"), ("z", "score"), ("z", "stat"),
+    ("z", "value"), ("std", "err"), ("ci", "low"), ("ci", "high"), ("ci", "lower"), ("ci", "upper"),
+})
+# Head words of a column naming the outcome class of each row, which the
+# measure should tell apart when names alone cannot choose it.
+OUTCOME_LABEL_WORDS = frozenset({
+    "result", "outcome", "diagnosis", "class", "label", "disease", "case", "condition", "status",
+})
 # Coordinates are continuous numbers, but never a quantity to total or trend.
 COORDINATE_TOKENS = frozenset({
-    "latitude", "longitude", "lat", "lon", "lng", "easting", "northing", "gps",
-    "coordinate", "coordinates",
+    "latitude", "longitude", "lat", "lon", "lng", "easting", "northing", "gps", "utm",
+    "coordinate", "coordinates", "coord", "coords",
 })
+# Last words of a column of compass directions or angles round a circle, where
+# 359° sits next to 0°: "Wind Direction", "Heading", "slope aspect", "WD".
+DIRECTION_WORDS = frozenset({"direction", "dir", "bearing", "heading", "azimuth", "aspect", "wd"})
+# Words of a column that flags the quality of other readings: "QN_3", "qc_code".
+QUALITY_FLAG_WORDS = frozenset({"qn", "qc", "qa", "qf"})
 # Head words of what goes into a mix or a dose rather than what comes out: in a
 # table of cement, water and slag in kg/m³ and a strength in MPa, the strength
 # is the result.
@@ -213,18 +248,45 @@ DESIGN_LEVEL_WORDS = frozenset({
     "dose", "dosage", "concentration", "conc", "age", "day", "time", "timepoint", "hour",
     "week", "frequency", "freq",
 })
+# Words that put a column of whole numbers on a rating scale.
+RATING_WORDS = frozenset({
+    "rating", "ratings", "likert", "scale", "satisfaction", "agreement", "likelihood",
+})
+# A rating scale steps in whole numbers from 0 or 1 up to at most this, using
+# at least MIN_SCALE_POINTS of its points: 0 to 10, 1 to 7, 1 to 5.
+MAX_SCALE_TOP = 10
+MIN_SCALE_POINTS = 5
+# Columns sharing one rating scale are the items of a questionnaire.
+MIN_SCALE_ITEMS = 3
+MAX_SWEEP_LEVELS = 100
+# A setting swept in equal steps is used about equally often at every level.
+SWEEP_BALANCE = 0.5
 
 # Head words of columns holding calendar years and months. A table with no date
 # column but a year (and perhaps a month) is still a timeline; cleaning builds
 # its dates from these.
 YEAR_NAME_WORDS = frozenset({"year", "years", "yr"})
-MONTH_NAME_WORDS = frozenset({"month", "months", "mon"})
+MONTH_NAME_WORDS = frozenset({"month", "months", "mon", "mo"})
 # Parts of a date held in their own column. Beside a date column they repeat it,
 # so they are not offered as the grouping.
 TIME_PART_WORDS = (
     frozenset(TIME_PART_TOKENS) | YEAR_NAME_WORDS | MONTH_NAME_WORDS
-    | frozenset({"mo", "da", "dy", "wk", "qtr", "doy", "dow", "weekday"})
+    | frozenset({"da", "dy", "wk", "qtr", "doy", "dow", "weekday"})
 )
+# The whole numbers each part of a date takes, by the words that name it.
+CALENDAR_RANGES = (
+    (MONTH_NAME_WORDS, (1, 12)),
+    (frozenset({"day", "da", "dy"}), (1, 31)),
+    (frozenset({"hour"}), (0, 24)),
+    (frozenset({"minute"}), (0, 59)),
+    (frozenset({"week", "wk"}), (0, 53)),
+    (frozenset({"quarter", "qtr"}), (1, 4)),
+    (frozenset({"doy"}), (1, 366)),
+    (frozenset({"dow", "weekday"}), (0, 7)),
+)
+MONTH_ABBREVIATIONS = frozenset({
+    "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+})
 
 # Names of a column numbering the rows. Unique whole numbers under such a name
 # are a key whatever their order.
@@ -253,8 +315,10 @@ _UNIT_MARKS = re.compile(r"[/%°µ]|^(?:[mµunk]?g|[mµ]?l|[mck]?m|s|min|h|ppm|p
 _NUMBERED_NAME = re.compile(r"^(\D*?)[\s_.-]*(\d+(?:\.\d+)?)$")
 
 MIN_ROWS_FOR_KEY = 20
-# Most levels a numeric code may have: the same cap as a text grouping.
+# Up to this many levels, any column whose values repeat can group rows; past
+# it, most groups must hold MIN_ROWS_PER_GROUP rows (see ``_groups_rows``).
 MAX_LABEL_LEVELS = 100
+MIN_ROWS_PER_GROUP = 3
 MAX_GROUPING_SHARE = 0.65
 MAX_CODE_LEVELS = 12
 MAX_DESIGN_LEVELS = 15
@@ -265,6 +329,16 @@ LOPSIDED_GROUPING = 0.9
 NEARLY_CONSTANT = 0.8
 MIN_MATRIX_COLUMNS = 20
 MATRIX_SHARE = 0.75
+# A stacked table owns a column recorded on at least OWNED_SHARE of its rows
+# that another table records on at most ABSENT_SHARE of its rows.
+MAX_STACKED_TABLES = 20
+OWNED_SHARE = 0.5
+ABSENT_SHARE = 0.02
+STACKED_COLUMN_SHARE = 1 / 3
+# Columns of counts make a matrix without numbered names from this many on,
+# when their typical sizes sit within this factor of one another.
+MIN_COUNT_MATRIX_COLUMNS = 10
+MATRIX_SCALE_SPREAD = 1000
 MIN_RUNNING_TOTAL_ROWS = 20
 RUNNING_TOTAL_RISING = 0.95
 # A running total that resets falls to this share of its last value or less.
@@ -276,6 +350,20 @@ INTERVAL_WORDS = frozenset({"interval", "incremental", "increment", "hourly", "d
 LONG_SCALE_SPREAD = 10.0
 # Runners-up within this many points of the measure's score were close calls.
 CLOSE_CALL_POINTS = 3
+# A candidate recorded on fewer rows than these shares of the best-covered one's.
+THIN_COVERAGE = 0.5
+SPARSE_COVERAGE = 0.25
+# A grouping and the measure must share at least this many rows, or half the
+# measure's rows in a small table.
+MIN_SHARED_ROWS = 12
+# On a tie of names, a grouping explaining at least this share of the measure,
+# and this much more than the one with the handiest number of groups, wins.
+MIN_EXPLAINED = 0.05
+EXPLAINED_MARGIN = 0.02
+# A grouping this much more complete than its twin is preferred to it.
+COMPLETENESS_GAIN = 0.05
+# The most levels an outcome label may have to judge how well readings separate it.
+MAX_OUTCOME_CLASSES = 20
 MAX_ALTERNATIVES = 3
 # Rows sampled, evenly, to measure how much information a column holds.
 INFORMATION_SAMPLE = 50_000
@@ -311,9 +399,12 @@ def is_identifier_name(name: str) -> bool:
     "No #"): a bare "NO" is as likely nitric oxide or a yes/no answer.
     """
     words = _head_words(name)
-    if words == ["no"] and not re.search(r"[.#]", str(name)):
-        return False
-    return bool(words) and words[-1] in IDENTIFIER_NAME_WORDS
+    return bool(words) and words[-1] in IDENTIFIER_NAME_WORDS and not _bare_no(name, words)
+
+
+def _bare_no(name: str, words: list[str]) -> bool:
+    """Whether the name is "No" alone with no mark, as likely nitric oxide or a yes/no answer as a number."""
+    return words == ["no"] and not re.search(r"[.#]", str(name))
 
 
 def is_design_name(name: str) -> bool:
@@ -329,21 +420,74 @@ def is_design_name(name: str) -> bool:
 
 
 def is_entity_name(name: str) -> bool:
-    """Whether the name labels the unit a row belongs to, such as "Subject", "Station" or "Patient ID"."""
+    """Whether the name labels the unit a row belongs to, such as "Subject", "Station" or "Patient ID".
+
+    A bare "NO" is not one (see ``is_identifier_name``): it is as likely a
+    reading of nitric oxide.
+    """
     words = _head_words(name)
-    return bool(words) and words[-1] in ENTITY_NAME_WORDS
+    return bool(words) and words[-1] in ENTITY_NAME_WORDS and not _bare_no(name, words)
 
 
-def is_year_name(name: str) -> bool:
-    """Whether the name marks a column of calendar years, such as "Year" or "survey_yr"."""
+def is_year_name(name: str, values: pd.Series | None = None) -> bool:
+    """Whether the name marks a column of calendar years, such as "Year" or "survey_yr".
+
+    With ``values``, they must look like years too (see ``is_time_part``), so
+    "Age_years" holding 1 to 80 is an age.
+    """
     words = _head_words(name)
-    return bool(words) and words[-1] in YEAR_NAME_WORDS
+    return bool(words) and words[-1] in YEAR_NAME_WORDS and (values is None or is_time_part(name, values))
 
 
-def is_month_name(name: str) -> bool:
-    """Whether the name marks a column of calendar months, such as "Month"."""
+def is_month_name(name: str, values: pd.Series | None = None) -> bool:
+    """Whether the name marks a column of calendar months, such as "Month".
+
+    With ``values``, they must be months too, 1 to 12 or month names, so
+    "Age_months" holding 12 to 66 is an age.
+    """
     words = _head_words(name)
-    return bool(words) and words[-1] in MONTH_NAME_WORDS
+    return bool(words) and words[-1] in MONTH_NAME_WORDS and (values is None or is_time_part(name, values))
+
+
+def _calendar_range(words: list[str]) -> tuple[int, int] | None:
+    """The whole numbers a part of a date named by ``words`` can take: 1 to 12 for a month."""
+    head = words[-1]
+    if head in YEAR_NAME_WORDS:
+        # A two-digit year ("YR" 40 to 45) only under a bare singular name:
+        # "Years" alone is as likely years of service.
+        return (0, 2999) if words in (["yr"], ["year"]) else (1000, 2999)
+    for part_words, bounds in CALENDAR_RANGES:
+        if head in part_words:
+            return bounds
+    return None
+
+
+def is_time_part(name: str, values: pd.Series | None = None) -> bool:
+    """Whether the column holds a part of a date, such as a month, a day of the month or a year.
+
+    The last word must name the part ("Month", "MO", "DA", "survey_yr"). With
+    ``values``, numbers must fall within that part's range: months 1 to 12,
+    days 1 to 31, hours 0 to 24, years 1000 to 2999. "Age_months" holding
+    12 to 66 or "Duration Hours" up to 200 are amounts of time, not parts of a
+    date. Text is judged by the name, except that a month column must hold month
+    names.
+    """
+    words = _head_words(name)
+    if not words or words[-1] not in TIME_PART_WORDS:
+        return False
+    if values is None:
+        return True
+    present = _sample(values).dropna()
+    if present.empty:
+        return False
+    if not is_numeric_dtype(present) or is_bool_dtype(present):
+        if words[-1] not in MONTH_NAME_WORDS:
+            return True
+        return bool(present.astype(str).str.strip().str[:3].str.lower().isin(MONTH_ABBREVIATIONS).all())
+    bounds = _calendar_range(words)
+    if bounds is None or not bool((present % 1 == 0).all()):
+        return False
+    return bool(bounds[0] <= present.min() and present.max() <= bounds[1])
 
 
 def _named_like_a_date(name: str) -> bool:
@@ -405,7 +549,7 @@ def _is_row_key(name: str, series: pd.Series, *, first: bool) -> bool:
         return False
     words = set(_head_words(name))
     named = bool(words & ROW_KEY_WORDS)
-    if not named and (not first or words & QUANTITY_WORDS or words & TIME_PART_WORDS):
+    if not named and (not first or words & QUANTITY_WORDS or is_time_part(name, series)):
         return False
     if len(series) < MIN_ROWS_FOR_KEY or series.isna().any():
         return False
@@ -463,13 +607,67 @@ def _places_rows(name: str, series: pd.Series) -> bool:
         return False
     if set(words) & COORDINATE_TOKENS:
         return True
-    named = words[-1] in TIME_PART_WORDS or is_design_name(name) or is_entity_name(name)
+    named = is_time_part(name, series) or is_design_name(name) or is_entity_name(name)
     return named and not bool((series.dropna() % 1 != 0).any())
 
 
 def _not_a_quantity(name: str, series: pd.Series, factor: bool) -> bool:
     """Whether a numeric column is a code, a label or a constant rather than something to measure."""
     return factor or _places_rows(name, series) or series.nunique(dropna=True) <= 1
+
+
+def is_angle_column(name: str, series: pd.Series) -> bool:
+    """Whether the column holds compass directions or angles round a circle, such as "Wind Direction".
+
+    The last word must name a direction (see DIRECTION_WORDS) and the values
+    fall within 0 to 360. Since 359° sits next to 0°, an average or a linear
+    correlation of such a column means nothing.
+    """
+    words = _head_words(name)
+    if not words or words[-1] not in DIRECTION_WORDS or not is_numeric_dtype(series) or is_bool_dtype(series):
+        return False
+    values = series.dropna()
+    return not values.empty and float(values.min()) >= 0 and float(values.max()) <= 360
+
+
+def is_quality_flag(name: str, columns) -> bool:
+    """Whether the column flags the quality of other readings rather than recording one.
+
+    "QN_3", "qc_code" and "quality_flag" do. A name ending in "flag" counts
+    only after the name of another of ``columns`` ("TMK_flag" beside "TMK"),
+    since "Fraud_Flag" alone is an outcome to compare.
+    """
+    words = [word for word in _head_words(name) if not word.isdigit()]
+    if not words:
+        return False
+    if set(words) & QUALITY_FLAG_WORDS:
+        return True
+    if len(words) > 1 and words[0] in {"quality", "qual"} and words[-1] in {"flag", "flags", "code", "codes"}:
+        return True
+    if len(words) > 1 and words[-1] in {"flag", "flags"}:
+        stem = words[:-1]
+        return any(_head_words(other) == stem for other in columns if other != name)
+    return False
+
+
+def _non_reading_note(quality: list[str], places: list[str], angles: list[str], sequences: list[str]) -> str:
+    def told(columns: list[str], verb: str, rest: str) -> str:
+        """The columns, then "which" and the verb agreeing with how many there are."""
+        return f"{_named(columns)}, which {verb + 's' if len(columns) == 1 else verb} {rest}"
+
+    parts = []
+    if sequences:
+        parts.append(told(
+            sequences, "hold", "a different whole number on every row in order, as a key or a date "
+            "written as a number does",
+        ))
+    if quality:
+        parts.append(told(quality, "flag", "the quality of other readings"))
+    if places:
+        parts.append(told(places, "place", "each row on a map"))
+    if angles:
+        parts.append(told(angles, "hold", "compass directions, on which 359° sits next to 0°"))
+    return "Not measured, compared or correlated as readings: " + "; ".join(parts) + "."
 
 
 def _plural(word: str) -> bool:
@@ -485,41 +683,193 @@ def _named_as_quantity(name: str) -> bool:
 
 
 def _named_as_label(name: str) -> bool:
-    """Whether the name marks group labels: a status, a condition, a site or a plate row."""
+    """Whether the name marks group labels: a status, a condition, a site, a plate row or "id_reef"."""
     words = _head_words(name)
-    return bool(words) and (words[-1] in LABEL_NAME_WORDS or is_entity_name(name) or is_design_name(name))
+    keyed = len(words) > 1 and words[0] in {"id", "code"}
+    return bool(words) and (
+        words[-1] in LABEL_NAME_WORDS or is_entity_name(name) or is_design_name(name) or keyed
+    )
 
 
-def _factor_kind(name: str, series: pd.Series) -> str | None:
+def _factor_kind(name: str, series: pd.Series, scale_item: bool = False) -> str | None:
     """Say whether a numeric column holds category codes, and on what evidence.
 
     "flag" is a 0/1 column. "label" is a column of whole numbers named like a
-    label (Status, Group, Station), which may have up to MAX_LABEL_LEVELS
-    values. "code" is weaker evidence: two values, or up to MAX_CODE_LEVELS
-    whole numbers each repeated many times, under a name that is not a count
-    or an amount. None means a quantity.
+    label (Status, Group, Station), with enough rows in most groups (see
+    ``_groups_rows``). "code" is weaker evidence: two values, or up to
+    MAX_CODE_LEVELS whole numbers each repeated many times, under a name that
+    is not a count or an amount, on a column that is not a rating item
+    (``scale_item``, see ``_scale_items``). None means a quantity.
     """
-    if is_bool_dtype(series) or _sample(series).nunique() > MAX_LABEL_LEVELS:
+    if is_bool_dtype(series):
+        return None
+    if _sample(series).nunique() > MAX_LABEL_LEVELS and not _named_as_label(name):
         return None
     levels = int(series.nunique(dropna=True))
-    if levels < 2 or levels > MAX_LABEL_LEVELS:
+    if levels < 2:
         return None
     values = series.dropna()
     if levels == 2 and set(values.unique()) <= {0, 1}:
         return "flag"
     if not bool((values % 1 == 0).all()):
         return None
-    if _named_as_label(name) and len(values) >= 2 * levels:
+    if _named_as_label(name) and len(values) >= 2 * levels and _groups_rows(values):
         return "label"
     # A reading named as one ("Humidity", "pH", "Score") is a quantity even when
-    # it was recorded in whole numbers with few values.
-    if _named_as_quantity(name) or is_level_name(name) or is_percentage(name):
+    # it was recorded in whole numbers with few values, and so is an item
+    # answered on a rating scale.
+    if _named_as_quantity(name) or is_level_name(name) or is_percentage(name) or scale_item:
         return None
     if levels == 2 and len(values) >= 3 * levels:
         return "code"
     if levels <= MAX_CODE_LEVELS and len(values) >= MIN_ROWS_PER_LEVEL * levels:
         return "code"
     return None
+
+
+def _groups_rows(series: pd.Series) -> bool:
+    """Whether a column's values can group its rows: at least two, most of them on several rows.
+
+    Up to MAX_LABEL_LEVELS values, any column whose values repeat enough (see
+    MAX_GROUPING_SHARE) qualifies. Beyond that, most groups need at least
+    MIN_ROWS_PER_GROUP rows, so 101 districts of 3 to 20 samples each group a
+    table, while names that each appear once or twice do not. Judged on an even
+    sample of a large table.
+    """
+    values = _sample(series).dropna()
+    counts = values.value_counts().to_numpy()
+    if len(counts) < 2 or len(counts) > MAX_GROUPING_SHARE * len(values):
+        return False
+    return len(counts) <= MAX_LABEL_LEVELS or float((counts >= MIN_ROWS_PER_GROUP).mean()) >= 0.5
+
+
+def _family_stem(name: str) -> str | None:
+    """The stem a numbered column shares with its siblings: "rdb" for "RDB2", "rp" for "RP_1".
+
+    Headerless columns read as "Unnamed: 3" are numbered by position, not as a family.
+    """
+    match = _NUMBERED_NAME.match(str(name).strip())
+    if not match:
+        return None
+    stem = normalized_name(match.group(1)).strip(" :")
+    if not re.search(r"[a-z]", stem) or stem.startswith("unnamed"):
+        return None
+    return stem
+
+
+def _scale(series: pd.Series) -> tuple[int, int] | None:
+    """The rating scale a column of whole numbers sits on, as its (bottom, top), or None.
+
+    The bottom is 0 or 1, the top at most MAX_SCALE_TOP, and at least
+    MIN_SCALE_POINTS points are used. A scale of 1 to 7 whose answers happen to
+    start at 2 is still 1 to 7.
+    """
+    values = series.dropna()
+    if values.empty or not bool((values % 1 == 0).all()):
+        return None
+    low, high = float(values.min()), float(values.max())
+    if low < 0 or high > MAX_SCALE_TOP or values.nunique() < MIN_SCALE_POINTS:
+        return None
+    return (0 if low == 0 else 1), int(high)
+
+
+def _scale_items(dataframe: pd.DataFrame, numeric: list[str]) -> set[str]:
+    """Columns of whole numbers answered on a scale, which are quantities however few their values.
+
+    A questionnaire's items share a numbered stem ("RDB1" to "RDB3", "RP_1" to
+    "RP_3") or one rating scale with at least MIN_SCALE_ITEMS other columns
+    (1 to 7), or are named as ratings ("Satisfaction"). A lone column of codes
+    1 to 6, such as marital status, is none of these.
+    """
+    samples = {column: _sample(dataframe[column]) for column in numeric}
+    whole = [
+        column for column in numeric
+        if not is_bool_dtype(samples[column]) and bool((samples[column].dropna() % 1 == 0).all())
+    ]
+    stems = Counter(_family_stem(column) for column in numeric)
+    scales = {column: _scale(samples[column]) for column in whole}
+    shared = Counter(scale for scale in scales.values() if scale)
+    items = set()
+    for column in whole:
+        stem, scale = _family_stem(column), scales[column]
+        in_family = stem is not None and stems[stem] >= 2 and samples[column].nunique() >= 3
+        rated = scale is not None and (
+            shared[scale] >= MIN_SCALE_ITEMS or bool(set(_head_words(column)) & RATING_WORDS)
+        )
+        if in_family or rated:
+            items.add(column)
+    return items
+
+
+def _counts_of_things(series: pd.Series) -> bool:
+    values = series.dropna()
+    return not values.empty and bool((values >= 0).all() and (values % 1 == 0).all())
+
+
+def _sibling_counts(dataframe: pd.DataFrame, numeric: list[str]) -> set[str]:
+    """0/1 columns that count something, as the sibling columns recorded with them do.
+
+    Five animal counts per quadrat, three of which never pass 1, are counts
+    all the same: they sit in one block with a count that does, side by side
+    under count names ("Crabs", "Seastars") or missing on exactly the same rows.
+    A yes/no column such as "Antibiotics" beside "Probiotics" stays a flag,
+    since neither ever passes 1.
+    """
+    counts = {
+        column for column in numeric
+        if not is_bool_dtype(dataframe[column])
+        and _named_as_quantity(column)
+        and _counts_of_things(dataframe[column])
+    }
+    blocks: list[list[str]] = [[]]
+    for column in dataframe.columns:
+        if column in counts:
+            blocks[-1].append(column)
+        elif blocks[-1]:
+            blocks.append([])
+    by_gaps: dict[bytes, list[str]] = {}
+    for column in counts:
+        missing = dataframe[column].isna().to_numpy()
+        if 0 < missing.sum() < len(missing):
+            by_gaps.setdefault(np.packbits(missing).tobytes(), []).append(column)
+    blocks += by_gaps.values()
+    found: set[str] = set()
+    for block in blocks:
+        if len(block) >= 2 and any(dataframe[column].max() > 1 for column in block):
+            found |= {column for column in block if set(dataframe[column].dropna().unique()) <= {0, 1}}
+    return found
+
+
+def _resolution(values: np.ndarray) -> float:
+    """The unit the values are recorded in: 1 for whole numbers, 0.1 for one decimal place."""
+    for decimals in range(7):
+        scaled = values * 10.0**decimals
+        if np.allclose(scaled, np.round(scaled), rtol=0, atol=1e-6):
+            return 10.0**-decimals
+    return 0.0
+
+
+def _is_sweep(name: str, series: pd.Series) -> bool:
+    """Whether the column steps through evenly spaced settings, each used about equally often.
+
+    A frequency swept from 100 to 590 GHz in steps of 10, or a transect read
+    every 5 m, is a setting of the study rather than a reading. A reading rounded
+    to its resolution (humidity in whole percent, a share to one decimal) steps
+    by that resolution, and is not used equally often at every level.
+    """
+    if is_bool_dtype(series) or _named_as_quantity(name):
+        return False
+    values = _sample(series).dropna()
+    counts = values.value_counts()
+    if not 3 <= len(counts) <= MAX_SWEEP_LEVELS:
+        return False
+    if counts.min() < MIN_ROWS_PER_LEVEL or counts.min() < SWEEP_BALANCE * counts.max():
+        return False
+    levels = np.sort(counts.index.to_numpy(dtype=float))
+    steps = np.diff(levels)
+    if not np.allclose(steps, steps[0], rtol=1e-6, atol=0):
+        return False
+    return bool(steps[0] >= 2 * _resolution(levels) > 0)
 
 
 def _crossed(series: pd.Series, grouping: pd.Series) -> bool:
@@ -605,7 +955,7 @@ def _running_total(name: str, values: np.ndarray, groups: np.ndarray) -> bool:
     enough without a reset.
     """
     words = _head_words(name)
-    if words and words[-1] in TIME_PART_WORDS:
+    if is_time_part(name, pd.Series(values)):
         return False
     present = ~np.isnan(values)
     values, groups = values[present], groups[present]
@@ -646,31 +996,82 @@ def _matrix_columns(numeric: list[str]) -> list[str]:
     return numbered
 
 
+def _count_matrix_columns(dataframe: pd.DataFrame, numeric: list[str]) -> list[str]:
+    """The count columns of a table that is mostly a matrix of counts, whatever their names, or [].
+
+    Twenty-six samples of read counts named AQC1cm, CC1 … Even3, beside an id
+    on each row, are one kind of reading spread across columns too. They must
+    be MIN_COUNT_MATRIX_COLUMNS or more columns of whole numbers of at least
+    zero, most of the numeric columns, with typical sizes within
+    MATRIX_SCALE_SPREAD of one another.
+    """
+    if len(numeric) < MIN_COUNT_MATRIX_COLUMNS:
+        return []
+    counts = [
+        column
+        for column in numeric
+        if not is_bool_dtype(dataframe[column])
+        and _counts_of_things(_sample(dataframe[column]))
+        and _sample(dataframe[column]).nunique() > 2
+    ]
+    if len(counts) < MIN_COUNT_MATRIX_COLUMNS or len(counts) < MATRIX_SHARE * len(numeric):
+        return []
+    means = dataframe[counts].mean().to_numpy(dtype=float)
+    if not (means > 0).all() or means.max() > MATRIX_SCALE_SPREAD * means.min():
+        return []
+    return counts
+
+
 def row_summary_name(columns: int) -> str:
     """Name of the per-row mean a matrix table is measured by."""
     return f"Row mean ({columns:,} columns)"
 
 
+def row_summary_columns(roles: ColumnRoles, dataframe: pd.DataFrame | None = None) -> list[str]:
+    """The columns averaged into the row mean ``add_row_summary`` made the measure, or [].
+
+    Each of them is part of that mean, so none can be said to relate to it.
+    The block is found as ``add_row_summary`` found it: by name, or, for counts
+    beside an identifier, from the values in ``dataframe``.
+    """
+    if roles.table_shape != "matrix" or not roles.measure:
+        return []
+    numeric = [column for column in roles.numeric if column != roles.measure]
+    block = _matrix_columns(numeric)
+    if not block and roles.identifier and dataframe is not None:
+        block = _count_matrix_columns(dataframe, numeric)
+    return block if roles.measure == row_summary_name(len(block)) else []
+
+
 def _prefix_groups(columns: list[str]) -> list[tuple[str, int]]:
     """Name prefixes that split the matrix columns into a few groups, such as A* and B*."""
-    prefixes = Counter(
-        _NUMBERED_NAME.match(str(column).strip()).group(1).upper() for column in columns
-    )
+    matches = [_NUMBERED_NAME.match(str(column).strip()) for column in columns]
+    if not all(matches):
+        return []
+    prefixes = Counter(match.group(1).upper() for match in matches)
     groups = [(prefix, count) for prefix, count in prefixes.most_common() if prefix]
     if 2 <= len(groups) <= 6 and all(count >= 3 for _, count in groups):
         return groups
     return []
 
 
-def _matrix_note(columns: list[str], label: str | None) -> str:
+def _matrix_note(dataframe: pd.DataFrame, columns: list[str], label: str | None, counts: bool) -> str:
     rows = label or "row"
+    kind = "columns of counts" if counts else "numeric columns"
     note = (
-        f"This table looks like a matrix: {len(columns):,} numeric columns of one kind, named "
+        f"This table looks like a matrix: {len(columns):,} {kind} of one kind, named "
         f"{columns[0]} … {columns[-1]}, with one row per {rows}. No single column is the "
         f"measure, so ADA follows each row's mean across them ({row_summary_name(len(columns))}). "
         f"To compare the columns themselves, reshape the table to long form first: one row per "
         f"{rows} and column, with the value in a single column."
     )
+    if counts:
+        totals = dataframe[columns].sum().to_numpy(dtype=float)
+        if totals.min() > 0 and totals.max() >= 2 * totals.min():
+            note += (
+                f" The columns' totals differ up to {totals.max() / totals.min():,.0f}-fold, so put "
+                "them on a common scale, such as shares of each column's total, before comparing them."
+            )
     groups = _prefix_groups(columns)
     if groups:
         listed = ", ".join(f"{prefix}* ({count})" for prefix, count in groups)
@@ -810,9 +1211,13 @@ def _identifier_note(column: str, series: pd.Series) -> str:
     return f"{column} is different on every row, so it is read as the row label."
 
 
+# How the notes describe a running total; ``running_total_columns`` reads it back.
+RUNNING_TOTAL_PHRASE = "keeps climbing, dropping back only when it resets"
+
+
 def _running_total_note(counter: str, sibling: str | None) -> str:
     note = (
-        f"{counter} keeps climbing, dropping back only when it resets, like a gauge or meter "
+        f"{counter} {RUNNING_TOTAL_PHRASE}, like a gauge or meter "
         "reading, so adding it up or averaging it over a period would mean nothing; it is not "
         "used as the measure."
     )
@@ -821,26 +1226,128 @@ def _running_total_note(counter: str, sibling: str | None) -> str:
     return note
 
 
+def _names_a_statistic(name: str) -> bool:
+    """Whether the name marks a statistic of another quantity: "p_value", "beta", "overall_sd", "Z_SCORE"."""
+    words = _head_words(name)
+    pairs = zip(words, words[1:], strict=False)
+    if set(words) & STATISTIC_WORDS or any(pair in STATISTIC_PAIRS for pair in pairs):
+        return True
+    # "SD" alone is ambiguous; beside another word ("low_mp_sd") it is a spread.
+    return len(words) > 1 and "sd" in words
+
+
+def _numbers_rows(name: str, series: pd.Series) -> bool:
+    """Whether the column holds a different whole number on every row, in order.
+
+    A key or a date stored as a number (19540601, 19540602 …) does. A table
+    sorted by population still holds populations, so a name that marks a
+    quantity keeps the column a candidate.
+    """
+    if set(_head_words(name)) & QUANTITY_WORDS or is_bool_dtype(series):
+        return False
+    sample = _sample(series).dropna().to_numpy(dtype=float)
+    steps = np.diff(sample)
+    if len(sample) < MIN_ROWS_FOR_KEY or not ((steps > 0).all() or (steps < 0).all()):
+        return False
+    numbers = series.dropna().to_numpy(dtype=float)
+    if not np.all(numbers % 1 == 0):
+        return False
+    # Climbing or falling at every step, so no value repeats.
+    steps = np.diff(numbers)
+    return bool((steps > 0).all() or (steps < 0).all())
+
+
+def _constant(series: pd.Series) -> bool:
+    return _sample(series).nunique() <= 1 and series.nunique() <= 1
+
+
+def _explained(values: pd.Series, groups: pd.Series) -> float:
+    """How much of the variation in the values' ranks the groups account for, adjusted for their number.
+
+    Ranks keep a few extreme values from deciding, and the adjustment (that of
+    an adjusted R²) keeps a column of many small groups from winning by chance.
+    Judged on an even sample of the rows where both are present.
+    """
+    data = pd.DataFrame({"value": _sample(values).to_numpy(), "group": _sample(groups).to_numpy()}).dropna()
+    rows, levels = len(data), int(data["group"].nunique())
+    if levels < 2 or rows <= levels:
+        return float("-inf")
+    ranks = data["value"].rank().to_numpy()
+    total = float(((ranks - ranks.mean()) ** 2).sum())
+    if total == 0:
+        return 0.0
+    group_means = pd.Series(ranks).groupby(data["group"].to_numpy()).transform("mean").to_numpy()
+    within = float(((ranks - group_means) ** 2).sum())
+    return 1 - (within / (rows - levels)) / (total / (rows - 1))
+
+
+SUMMARY_STATISTIC_NAMES = frozenset({
+    "mean", "std", "sd", "min", "max", "median", "count", "25%", "50%", "75%",
+})
+
+
+def _summary_statistics(dataframe: pd.DataFrame, candidates: list[str]) -> tuple[str, str] | None:
+    """The mean column of a table whose rows each summarise a set of values, and a note, or None.
+
+    Columns named count, mean, std, min, the quartiles and max, as a summary of
+    each probe or gene across its samples, are statistics of one set of values
+    per row; the mean is what the row measures.
+    """
+    names = {normalized_name(column): column for column in candidates}
+    if not {"mean", "min", "max"} <= names.keys() or not names.keys() & {"std", "sd", "median", "50%", "25%"}:
+        return None
+    mean = names["mean"]
+    statistics = [column for name, column in names.items() if name in SUMMARY_STATISTIC_NAMES]
+    note = (
+        f"Each row summarises a set of values: {_named(statistics)} are statistics of them, so ADA "
+        f"uses {mean} as the measure. The other statistics come from the same values, so they "
+        "move with it by construction."
+    )
+    count = names.get("count")
+    if count is not None and _constant(dataframe[count]) and dataframe[count].notna().any():
+        size = format_number(float(dataframe[count].dropna().iloc[0]), compact=False)
+        note += f" {count} is {size} on every row: each row summarises that many values."
+    return mean, note
+
+
+def running_total_columns(roles: ColumnRoles) -> tuple[str, ...]:
+    """The columns the notes set aside as running totals, which nothing should add up or average."""
+    marker = f" {RUNNING_TOTAL_PHRASE}"
+    return tuple(note.split(marker)[0] for note in roles.notes if marker in note)
+
+
 def _choose_measure(
-    dataframe: pd.DataFrame, candidates: list[str], preferred: set[str]
+    dataframe: pd.DataFrame, candidates: list[str], preferred: set[str], label: str | None = None
 ) -> tuple[str | None, tuple[str, ...]]:
     """Pick the measure, and the runners-up when the pick was a close call.
 
-    The name scores first: money and outcome words up; keys, design labels,
-    inputs, checks and near-constant columns down. Ties go to the column
-    holding the most information, then to fractional values, completeness and
-    the name, so column order never decides. ``preferred`` columns record a
-    running total's own amounts and are favoured over it.
+    Constant columns and whole numbers that differ on every row in order (a
+    date or a key stored as a number) are never picked. The name scores first:
+    money and outcome words up; keys, design labels, inputs, checks, statistics
+    of other columns and near-constant or thinly recorded columns down. Ties go
+    to the column that best tells apart the groups of ``label``, an outcome
+    class such as a diagnosis, when there is one; then to the column holding
+    the most information, then to fractional values, completeness and the name,
+    so column order never decides. ``preferred`` columns record a running
+    total's own amounts and are favoured over it.
     """
+    candidates = [
+        column for column in candidates
+        if not _constant(dataframe[column]) and not _numbers_rows(column, dataframe[column])
+    ]
     unit_outcome = _lone_unit(candidates)
-    scored: list[tuple[int, float, float, float, str]] = []
+    coverage = {column: float(dataframe[column].notna().mean()) for column in candidates}
+    best_coverage = max(coverage.values(), default=0.0)
+    scored: list[tuple[int, float, float, float, float, str]] = []
     covariates: set[str] = set()
     nearly_constant: set[str] = set()
     for column in candidates:
         series = dataframe[column]
         words = _head_words(column)
         head = words[-1] if words else ""
-        score = _keyword_score(column, MEASURE_KEYWORDS)
+        # A statistic of another column is no "value" or "score" of its own.
+        statistic = _names_a_statistic(column)
+        score = -6 if statistic else _keyword_score(column, MEASURE_KEYWORDS)
         if looks_like_identifier(column, series):
             score -= 20
         if _places_rows(column, series):
@@ -849,6 +1356,10 @@ def _choose_measure(
             score -= 4
         if set(words) & CHECK_WORDS or head == "check":
             score -= 6
+        if coverage[column] < SPARSE_COVERAGE * best_coverage:
+            score -= 6
+        elif coverage[column] < THIN_COVERAGE * best_coverage:
+            score -= 3
         if column == unit_outcome:
             score += 4
         if column in preferred:
@@ -856,12 +1367,12 @@ def _choose_measure(
         if _top_share(series) > NEARLY_CONSTANT:
             score -= 6
             nearly_constant.add(column)
-        if set(words) & COVARIATE_TOKENS:
+        if set(words) & (COVARIATE_TOKENS | SIZE_COVARIATE_TOKENS):
             covariates.add(column)
         # Amounts carry fractions; postal codes and counters do not. A weak
         # signal, so it only breaks ties.
         continuous = float(not is_bool_dtype(series) and bool((series.dropna() % 1 != 0).any()))
-        scored.append((score, _information(series), continuous, float(series.notna().mean()), column))
+        scored.append((score, 0.0, _information(series), continuous, coverage[column], column))
     if not scored:
         return None, ()
 
@@ -875,10 +1386,164 @@ def _choose_measure(
             (score - 3 if column in covariates else score, *rest, column)
             for score, *rest, column in scored
         ]
-    ranked = sorted(scored, key=lambda item: (-item[0], -item[1], -item[2], -item[3], item[4]))
+    top = max(item[0] for item in scored)
+    if label is not None and sum(item[0] == top for item in scored) > 1:
+        # Names cannot choose between these, so the one that best separates
+        # the outcome classes is the reading the table is about.
+        scored = [
+            (score, _explained(dataframe[column], dataframe[label]) if score == top else 0.0, *rest, column)
+            for score, _, *rest, column in scored
+        ]
+    ranked = sorted(scored, key=lambda item: (-item[0], -item[1], -item[2], -item[3], -item[4], item[5]))
     best = ranked[0]
-    close = [item[4] for item in ranked[1:] if item[0] >= best[0] - CLOSE_CALL_POINTS]
-    return best[4], tuple(close[:MAX_ALTERNATIVES])
+    close = [
+        item[5] for item in ranked[1:]
+        if item[0] >= best[0] - CLOSE_CALL_POINTS and item[5] not in nearly_constant
+    ]
+    return best[5], tuple(close[:MAX_ALTERNATIVES])
+
+
+def _shares_rows(dataframe: pd.DataFrame, grouping: str, measured: np.ndarray) -> bool:
+    """Whether a grouping and the measure are recorded together on enough rows, in two groups or more.
+
+    ``measured`` marks the rows where the measure is recorded.
+    """
+    both = dataframe[grouping].notna().to_numpy() & measured
+    needed = max(min(MIN_SHARED_ROWS, 0.5 * int(measured.sum())), 2)
+    if int(both.sum()) < needed:
+        return False
+    shared = dataframe[grouping].to_numpy()[both]
+    return bool((shared != shared[0]).any())
+
+
+def _refines(dataframe: pd.DataFrame, fine: str, coarse: str) -> bool:
+    """Whether each group of ``fine`` lies within one of ``coarse``, as specimens lie within materials."""
+    data = _sample(dataframe[[fine, coarse]]).dropna()
+    levels = int(data[fine].nunique())
+    return levels > data[coarse].nunique() and len(data.drop_duplicates()) == levels
+
+
+def _same_groups(first: np.ndarray, second: np.ndarray) -> bool:
+    """Whether two columns split the rows where both are recorded into the same groups.
+
+    Each column comes as its group codes from ``pd.factorize``, -1 where it is missing.
+    """
+    both = (first >= 0) & (second >= 0)
+    if not both.any():
+        return False
+    first, second = first[both].astype(np.int64), second[both].astype(np.int64)
+    pairs = np.unique(first * (int(second.max()) + 1) + second).size
+    return pairs == np.unique(first).size == np.unique(second).size
+
+
+def _outcome_label(dataframe: pd.DataFrame, ranked: list[str]) -> str | None:
+    """The grouping its name ranks first, when it names an outcome class such as a diagnosis or a result."""
+    if not ranked:
+        return None
+    column = ranked[0]
+    named = (_core_words(column) or [""])[-1] in OUTCOME_LABEL_WORDS
+    return column if named and 2 <= dataframe[column].nunique() <= MAX_OUTCOME_CLASSES else None
+
+
+def _choose_dimension(
+    dataframe: pd.DataFrame, candidates: list[tuple[int, int, str]], measure: str | None
+) -> str | None:
+    """Pick the grouping from scored candidates, each (score, closeness to ten groups, column).
+
+    With a measure, a grouping must share rows with it (see ``_shares_rows``):
+    groups that never hold a value compare nothing. The best name score wins.
+    Among equal scores, the number of groups closest to ten wins, unless
+    another grouping explains clearly more of the measure (MIN_EXPLAINED, and
+    EXPLAINED_MARGIN more): a frequency that explains 70% of a signal beats the
+    materials that explain 1%. One that only splits another's groups further,
+    as specimens split materials, is left out of that comparison.
+    """
+    measured = dataframe[measure].notna().to_numpy() if measure else None
+    # The best score among groupings that share rows with the measure, checked
+    # one score at a time since most tables settle it at the first.
+    for top in sorted({candidate[0] for candidate in candidates}, reverse=True):
+        tied = [
+            candidate
+            for candidate in candidates
+            if candidate[0] == top and (measured is None or _shares_rows(dataframe, candidate[2], measured))
+        ]
+        if tied:
+            break
+    else:
+        return None
+    sized = max(tied, key=lambda candidate: candidate[1])
+    if measure is None or len(tied) == 1:
+        return sized[2]
+    coarse = [
+        candidate
+        for candidate in tied
+        if not any(other is not candidate and _refines(dataframe, candidate[2], other[2]) for other in tied)
+    ] or tied
+    explained = {column: _explained(dataframe[measure], dataframe[column]) for *_, column in coarse}
+    best = max(coarse, key=lambda candidate: (explained[candidate[2]], candidate[1]))
+    if sized[2] not in explained:
+        explained[sized[2]] = _explained(dataframe[measure], dataframe[sized[2]])
+    baseline = explained[sized[2]]
+    if explained[best[2]] >= MIN_EXPLAINED and explained[best[2]] - baseline >= EXPLAINED_MARGIN:
+        return best[2]
+    return sized[2]
+
+
+def _twins(
+    dataframe: pd.DataFrame, dimension: str | None, candidates: list[str], factors: set[str]
+) -> tuple[str | None, list[str]]:
+    """Swap the grouping for a twin that reads better, and name columns that split the rows alike.
+
+    A twin splits the rows where both are recorded into the same groups. One
+    recorded on clearly more rows is preferred (a cancer type left blank for a
+    fifth of the rows, beside a complete one), and so is text in place of a
+    numeric code (labels T0 … D6 for codes 1 … 12).
+    """
+    notes: list[str] = []
+    described: set[str] = set()
+    codes = {column: pd.factorize(_sample(dataframe[column]))[0] for column in candidates}
+    coverage = {column: float((codes[column] >= 0).mean()) for column in candidates}
+    if dimension:
+        for other in candidates:
+            if other == dimension or not _same_groups(codes[dimension], codes[other]):
+                continue
+            if coverage[other] >= coverage[dimension] + COMPLETENESS_GAIN:
+                notes.append(
+                    f"{other} holds the same groups as {dimension} where both are recorded, and is "
+                    f"recorded on {coverage[other]:.0%} of rows against {coverage[dimension]:.0%}, so "
+                    f"ADA groups by {other}."
+                )
+            elif dimension in factors and other not in factors and coverage[other] >= coverage[dimension]:
+                notes.append(
+                    f"{dimension} and {other} split the rows into the same groups; ADA groups by "
+                    f"{other}, whose values are labels rather than numbers."
+                )
+            else:
+                continue
+            described = {dimension, other}
+            dimension = other
+            break
+    levels: dict[int, list[str]] = {}
+    for column in sorted(candidates, key=list(dataframe.columns).index):
+        if coverage[column] > 0:
+            levels.setdefault(int(codes[column].max()) + 1, []).append(column)
+    pairs = [
+        f"{first} and {second}"
+        for alike in levels.values()
+        for position, first in enumerate(alike)
+        for second in alike[position + 1:]
+        if {first, second} != described
+        and abs(coverage[first] - coverage[second]) < 0.01
+        and _same_groups(codes[first], codes[second])
+    ]
+    if pairs:
+        listed = "; ".join(pairs[:NAMED_IN_NOTES])
+        more = f"; and {len(pairs) - NAMED_IN_NOTES:,} more pairs" if len(pairs) > NAMED_IN_NOTES else ""
+        notes.append(
+            f"These columns split the rows into the same groups, so comparing by either gives the "
+            f"same result: {listed}{more}."
+        )
+    return dimension, notes
 
 
 def _factors(
@@ -886,13 +1551,20 @@ def _factors(
 ) -> tuple[list[str], list[str]]:
     """The numeric columns holding category codes, and the 0/1 flags among them.
 
-    Weak evidence (a short run of whole numbers, a design level) is dropped
-    when it would leave nothing to measure: marks out of 10 are the quantity
-    of a table that has nothing else.
+    Weak evidence (a short run of whole numbers, a design level, a swept
+    setting) is dropped when it would leave nothing to measure: marks out of 10
+    are the quantity of a table that has nothing else. Rating items and counts
+    read like their siblings are never codes (see ``_scale_items`` and
+    ``_sibling_counts``).
     """
-    kinds = {column: _factor_kind(column, dataframe[column]) for column in numeric}
+    items = _scale_items(dataframe, numeric)
+    counted = _sibling_counts(dataframe, numeric)
+    kinds = {
+        column: None if column in counted else _factor_kind(column, dataframe[column], column in items)
+        for column in numeric
+    }
     found = {column for column, kind in kinds.items() if kind}
-    rest = [column for column in numeric if column not in found]
+    rest = [column for column in numeric if column not in found and column not in items | counted]
     groupings = [dataframe[column] for column in [*text_dimensions, *found]]
     # Rows repeat a recipe or a sample across the levels of a design column.
     groupings += [
@@ -901,7 +1573,7 @@ def _factors(
         if _sample(dataframe[column]).nunique() <= len(_sample(dataframe[column])) / 2
     ][:10]
     for column in rest:
-        if _is_design_level(column, dataframe[column], groupings):
+        if _is_design_level(column, dataframe[column], groupings) or _is_sweep(column, dataframe[column]):
             kinds[column] = "code"
             found.add(column)
     if len(found) == len(numeric):
@@ -910,11 +1582,91 @@ def _factors(
     return factors, [column for column in factors if kinds[column] == "flag"]
 
 
+def _stacked_tables(dataframe: pd.DataFrame) -> tuple[str, str] | None:
+    """The column naming which stacked table each row belongs to, and the largest table, or None.
+
+    A file that stacks a table of foods on a table of blood markers holds each
+    table's columns only on that table's rows. A text column with 2 to
+    MAX_STACKED_TABLES values qualifies when its largest table and another each
+    own at least two columns the other lacks, together at least
+    STACKED_COLUMN_SHARE of the file's columns. A table whose rows merely leave
+    a few columns blank, such as a refund amount filled only on returned
+    orders, does not.
+    """
+    sample = _sample(dataframe)
+    present = sample.notna()
+    others = len(dataframe.columns) - 1
+    missing = 1 - present.mean()
+    if others < 4 or int((missing > 0).sum()) < 4:
+        return None
+    for column in dataframe.columns:
+        series = sample[column]
+        if is_numeric_dtype(series) or is_datetime64_any_dtype(series) or missing[column] > 0.05:
+            continue
+        counts = series.value_counts()
+        if not 2 <= len(counts) <= MAX_STACKED_TABLES:
+            continue
+        # Columns another table owns are missing on nearly all of the largest
+        # table's rows, so at least that share of the file's rows.
+        if int((missing >= (1 - ABSENT_SHARE) * counts.iloc[0] / len(series)).sum()) < 2:
+            continue
+        shares = present.drop(columns=column).groupby(series).mean()
+        largest = shares.loc[counts.index[0]]
+        for table in counts.index[1:]:
+            other = shares.loc[table]
+            own = int(((largest >= OWNED_SHARE) & (other <= ABSENT_SHARE)).sum())
+            theirs = int(((other >= OWNED_SHARE) & (largest <= ABSENT_SHARE)).sum())
+            if own >= 2 and theirs >= 2 and own + theirs >= STACKED_COLUMN_SHARE * others:
+                return column, str(counts.index[0])
+    return None
+
+
+def _stacked_note(dataframe: pd.DataFrame, column: str, focus: str) -> str:
+    counts = dataframe[column].astype(str).value_counts()
+    others = [table for table in counts.index if table != focus]
+    listed = ", ".join(f"{table} ({counts[table]:,})" for table in others[:NAMED_IN_NOTES])
+    more = f", and {len(others) - NAMED_IN_NOTES:,} more" if len(others) > NAMED_IN_NOTES else ""
+    return (
+        f"This file stacks {len(counts):,} tables, named in {column}, each with its own columns, so "
+        f"their rows are never combined. The brief covers {focus}, the largest ({counts[focus]:,} "
+        f"rows); the others are {listed}{more}. Filter the table to one of them to analyze it instead."
+    )
+
+
 def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
-    """Infer likely roles from names, values, and cardinality."""
+    """Infer likely roles from names, values, and cardinality.
+
+    A file that stacks several tables (see ``_stacked_tables``) is read as its
+    largest table, which becomes the ``focus`` of the column naming the tables,
+    much as a long table's commonest parameter is.
+    """
+    stacked = _stacked_tables(dataframe)
+    if stacked is None:
+        return _detect_roles(dataframe)
+    column, focus = stacked
+    part = dataframe[dataframe[column].astype(str) == focus]
+    roles = _detect_roles(part[[name for name in part.columns if part[name].notna().any()]])
+    # The focus is applied later (``pipeline.apply_focus``) and regroups by the
+    # first other dimension, so the table's own grouping goes first.
+    follow = [roles.dimension] if roles.dimension else []
+    return replace(
+        roles,
+        dimension=column,
+        dimensions=(*follow, *(name for name in roles.dimensions if name not in follow), column),
+        table_shape="stacked",
+        focus=focus,
+        notes=(_stacked_note(dataframe, column, focus), *roles.notes),
+    )
+
+
+def _detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
+    """The roles of one table, flat, long or a matrix (see ``detect_roles``)."""
     numeric = dataframe.select_dtypes(include=np.number).columns.tolist()
+    # A date that never changes, such as a compilation stamp, places no row in time.
     date_columns = [
-        column for column in dataframe.columns if is_datetime64_any_dtype(dataframe[column])
+        column
+        for column in dataframe.columns
+        if is_datetime64_any_dtype(dataframe[column]) and dataframe[column].nunique() >= 2
     ]
     notes: list[str] = []
 
@@ -932,11 +1684,17 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
     )
 
     matrix = _matrix_columns(numeric)
-    in_matrix = set(matrix)
+    numbered = set(matrix)
     identifiers = _identifier_columns(
-        dataframe, [column for column in dataframe.columns if column not in in_matrix]
+        dataframe, [column for column in dataframe.columns if column not in numbered]
     )
     identifier = identifiers[0] if identifiers else None
+    # Counts spread across columns are a matrix even without numbered names,
+    # when an id or a label names each row.
+    counted_matrix = not matrix and identifier is not None
+    if counted_matrix:
+        matrix = _count_matrix_columns(dataframe, [column for column in numeric if column not in identifiers])
+    in_matrix = set(matrix)
     notes.extend(
         _identifier_note(column, dataframe[column])
         for column in identifiers
@@ -945,25 +1703,50 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
     keys = set(identifiers)
     numeric = [column for column in numeric if column not in keys]
     in_numeric = set(numeric)
+    # Columns that flag the quality of other readings or place a row on a map
+    # or a compass are never the measure, a grouping or a reading to compare.
+    quality = [
+        column for column in dataframe.columns
+        if column not in keys and column not in in_matrix and is_quality_flag(column, dataframe.columns)
+    ]
+    places = [
+        column for column in numeric
+        if column not in in_matrix and set(_head_words(column)) & COORDINATE_TOKENS
+    ]
+    angles = [
+        column for column in numeric
+        if column not in in_matrix and column not in places and is_angle_column(column, dataframe[column])
+    ]
+    sequences = [
+        column for column in numeric
+        if column not in in_matrix and column not in places and _numbers_rows(column, dataframe[column])
+    ]
+    set_aside = {*quality, *places, *angles, *sequences}
+    if set_aside:
+        notes.append(_non_reading_note(quality, places, angles, sequences))
 
     text_columns: list[str] = []
     text_dimensions: list[str] = []
     for column in dataframe.columns:
-        if column == date or column in in_numeric or column in keys:
+        if column == date or column in in_numeric or column in keys or column in set_aside:
             continue
         series = dataframe[column]
         if _named_like_a_date(column) or is_datetime64_any_dtype(series):
             # Date-named columns are never segments, even when they didn't parse as dates.
             continue
         text_columns.append(column)
-        unique = int(series.nunique(dropna=True))
-        non_null = int(series.notna().sum())
-        if 2 <= unique <= MAX_LABEL_LEVELS and unique / max(non_null, 1) <= MAX_GROUPING_SHARE:
+        if _groups_rows(series):
             text_dimensions.append(column)
 
     factors, flags = _factors(
-        dataframe, [column for column in numeric if column not in in_matrix], text_dimensions
+        dataframe,
+        [column for column in numeric if column not in in_matrix and column not in set_aside],
+        text_dimensions,
     )
+    if date:
+        # Beside a date, a month or year column only repeats the timeline.
+        factors = [column for column in factors if not is_time_part(column, dataframe[column])]
+        flags = [column for column in flags if column in factors]
     if factors:
         notes.append(_factor_note(dataframe, factors, flags))
     in_factors = set(factors)
@@ -973,7 +1756,7 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
     dimension_candidates: list[tuple[int, int, str]] = []
     for column in dimensions:
         words = _head_words(column)
-        if date and words and words[-1] in TIME_PART_WORDS:
+        if date and is_time_part(column, dataframe[column]):
             # Beside a date, a month or year column only repeats the timeline.
             continue
         series = dataframe[column]
@@ -985,16 +1768,23 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
             score -= 15
         if _top_share(series) > LOPSIDED_GROUPING:
             score -= 5
-        preferred_size = -abs(int(series.nunique(dropna=True)) - 10)
-        dimension_candidates.append((score, preferred_size, column))
+        levels = int(series.nunique(dropna=True))
+        if levels > MAX_LABEL_LEVELS:
+            # Hundreds of groups make a poor headline, so such a column leads
+            # only when nothing with as good a name has fewer.
+            score -= 3
+        dimension_candidates.append((score, -abs(levels - 10), column))
+    ranked_dimensions = [
+        column
+        for *_, column in sorted(dimension_candidates, key=lambda candidate: (-candidate[0], -candidate[1]))
+    ]
+    # A first pick, by name alone, to follow running totals through each group.
+    dimension = ranked_dimensions[0] if ranked_dimensions else None
 
-    dimension = (
-        max(dimension_candidates, key=lambda candidate: (candidate[0], candidate[1]))[2]
-        if dimension_candidates
-        else None
-    )
-
-    candidates = [column for column in numeric if column not in in_factors and column not in in_matrix]
+    candidates = [
+        column for column in numeric
+        if column not in in_factors and column not in in_matrix and column not in set_aside
+    ]
     order = _reading_order(dataframe, date, dimension)
     groups = pd.factorize(dataframe[dimension])[0][order] if dimension else np.zeros(len(order))
     counters = [
@@ -1004,13 +1794,24 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
     ]
     candidates = [column for column in candidates if column not in counters]
     siblings = {counter: _sibling_interval(counter, candidates) for counter in counters}
-    measure, measure_alternatives = _choose_measure(
-        dataframe, candidates, {sibling for sibling in siblings.values() if sibling}
-    )
+    summary = _summary_statistics(dataframe, candidates)
+    if summary:
+        measure, measure_alternatives = summary[0], ()
+        notes.append(summary[1])
+    else:
+        measure, measure_alternatives = _choose_measure(
+            dataframe,
+            candidates,
+            {sibling for sibling in siblings.values() if sibling},
+            _outcome_label(dataframe, ranked_dimensions),
+        )
     notes.extend(
         _running_total_note(counter, sibling if sibling == measure else None)
         for counter, sibling in siblings.items()
     )
+    dimension = _choose_dimension(dataframe, dimension_candidates, measure)
+    dimension, twin_notes = _twins(dataframe, dimension, ranked_dimensions, in_factors)
+    notes.extend(twin_notes)
 
     table_shape = "flat"
     focus = None
@@ -1018,15 +1819,24 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
     chosen = _long_focus(dataframe, parameter, units, measure) if parameter and measure else None
     if chosen:
         table_shape = "long"
+        focus, note = chosen
+        notes.append(note)
+        # The focus is applied later (``pipeline.apply_focus``) and regroups by
+        # the first other dimension, so the best grouping within it goes first.
+        within = dataframe[dataframe[parameter].astype(str) == focus]
+        follow = _choose_dimension(
+            within,
+            [candidate for candidate in dimension_candidates if candidate[2] not in (parameter, units)],
+            measure,
+        )
+        dimensions = [*([follow] if follow else []), *(column for column in dimensions if column != follow)]
         dimension = parameter
         if parameter not in dimensions:
             dimensions.append(parameter)
-        focus, note = chosen
-        notes.append(note)
     elif matrix:
         table_shape = "matrix"
         measure, measure_alternatives = None, ()
-        notes.append(_matrix_note(matrix, identifier))
+        notes.append(_matrix_note(dataframe, matrix, identifier, counted_matrix))
 
     return ColumnRoles(
         date=date,
@@ -1037,8 +1847,8 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
         numeric=tuple(
             sorted(
                 numeric,
-                key=lambda column: column not in in_matrix and _not_a_quantity(
-                    column, dataframe[column], column in in_factors
+                key=lambda column: column not in in_matrix and (
+                    column in set_aside or _not_a_quantity(column, dataframe[column], column in in_factors)
                 ),
             )
         ),
@@ -1049,11 +1859,15 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
         table_shape=table_shape,
         focus=focus,
         notes=tuple(notes),
+        non_readings=tuple(
+            column for column in numeric
+            if column in set_aside or (column not in in_matrix and is_time_part(column, dataframe[column]))
+        ),
     )
 
 
 def add_row_summary(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[pd.DataFrame, ColumnRoles]:
-    """Give a matrix table each row's mean across its numbered columns, as its measure.
+    """Give a matrix table each row's mean across its matrix columns, as its measure.
 
     A matrix has no single column to headline, so the brief follows the row
     mean, named for what it is. Other tables are returned unchanged.
@@ -1061,6 +1875,8 @@ def add_row_summary(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[pd.Dat
     if roles.table_shape != "matrix" or roles.measure:
         return dataframe, roles
     block = _matrix_columns(list(roles.numeric))
+    if not block and roles.identifier:
+        block = _count_matrix_columns(dataframe, list(roles.numeric))
     if not block:
         return dataframe, roles
     name = row_summary_name(len(block))

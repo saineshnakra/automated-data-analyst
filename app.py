@@ -10,6 +10,7 @@ import importlib
 import os
 import secrets
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
@@ -92,8 +93,9 @@ from ada.analysis import column_profile  # noqa: E402 - the refresh above must r
 from ada.business_insights import BusinessBrief, analyze_business, build_business_report  # noqa: E402
 from ada.demo_data import make_demo_data  # noqa: E402
 from ada.file_io import list_excel_sheets, list_sample_datasets, read_tabular_file, safe_csv  # noqa: E402
-from ada.metrics import resolve_metric  # noqa: E402
-from ada.nlq import QueryPlan, answer_question, rephrase_hint, suggested_questions  # noqa: E402
+from ada.formatting import show_undated  # noqa: E402
+from ada.metrics import metric_for  # noqa: E402
+from ada.nlq import QueryPlan, WholeTable, answer_question, rephrase_hint, suggested_questions  # noqa: E402
 from ada.pipeline import (  # noqa: E402
     apply_focus,
     apply_role_selection,
@@ -102,7 +104,7 @@ from ada.pipeline import (  # noqa: E402
     prepare_analysis,
     schema_frame,
 )
-from ada.quality import mask_sentinels, quality_frame  # noqa: E402
+from ada.quality import quality_frame  # noqa: E402
 from ada.quality import scan as scan_quality  # noqa: E402
 
 # The AI layer and its dependencies are optional. Any import failure disables
@@ -327,11 +329,18 @@ def dataset_fingerprint(dataframe: pd.DataFrame, roles, source_name: str) -> str
 
 
 def render_ask_ada(
-    dataframe: pd.DataFrame, roles, source_name: str, api_key: str, rows_not_analyzed: int = 0
+    dataframe: pd.DataFrame,
+    roles,
+    source_name: str,
+    api_key: str,
+    rows_not_analyzed: int = 0,
+    whole: WholeTable | None = None,
 ) -> None:
     """Chat over the analyzed dataset; every answer is a local calculation.
 
     ``rows_not_analyzed`` is how many rows the row limit left out; answers say so.
+    ``whole`` holds every row of a long table whose brief follows one parameter,
+    so a question about another parameter is answered from its rows.
     """
     fingerprint = dataset_fingerprint(dataframe, roles, source_name)
     if st.session_state.get("chat_fingerprint") != fingerprint:
@@ -346,14 +355,14 @@ def render_ask_ada(
         if chip.button(suggestion, key=f"chip_{suggestion}", width="stretch"):
             question = suggestion
 
-    typed = st.chat_input("Ask about this data, e.g. “top 5 by revenue” or “which segment grew fastest?”")
+    typed = st.chat_input("Ask about this data, e.g. “top 5 by revenue”, “what drives revenue?” or “outliers in price”")
     question = typed or question
     pending = st.session_state.get("pending_ai_plan")
     if pending is not None and question and question != pending["question"]:
         st.session_state.pending_ai_plan = None
         pending = None
     if question:
-        result = answer_question(question, dataframe, roles, rows_not_analyzed=rows_not_analyzed)
+        result = answer_question(question, dataframe, roles, rows_not_analyzed=rows_not_analyzed, whole=whole)
         if result is not None:
             st.session_state.chat_history.append({"question": question, "result": result})
         elif api_key and pending is None:
@@ -413,7 +422,9 @@ def render_ask_ada(
             elif entry["result"] is not None:
                 render_chat_answer(entry["result"], key=str(position))
             else:
-                hint = rephrase_hint(entry["question"], dataframe, roles, rows_not_analyzed=rows_not_analyzed)
+                hint = rephrase_hint(
+                    entry["question"], dataframe, roles, rows_not_analyzed=rows_not_analyzed, whole=whole
+                )
                 render_chat_fallback(suggestions, hint)
 
 
@@ -553,7 +564,7 @@ with st.expander("Tune ADA's schema detection", expanded=bool(close_measures)):
         # Keyed by metric, so each metric starts from its own detected default
         # and a choice made for one never carries over to another.
         combine_options = {"Total": "sum", "Average": "mean"}
-        detected_combine = resolve_metric(selected_measure).combines_as.capitalize()
+        detected_combine = metric_for(selected_measure, detected).combines_as.capitalize()
         combine_labels = list(combine_options)
         selected_combine = selectors[1].selectbox(
             "Combine rows by",
@@ -573,11 +584,6 @@ roles = apply_role_selection(
     dimension=selected_dimension,
     aggregation=selected_aggregation,
 )
-# A clear code such as 999.9 in the chosen measure is set aside before anything is computed.
-dataframe, masked = mask_sentinels(dataframe, roles.measure)
-if masked:
-    st.info(masked)
-
 focus_value = None
 focus_label = None
 focus_values = focus_options(dataframe, roles)
@@ -602,8 +608,14 @@ if focus_values:
         focus_value = choice
         focus_label = focus_labels[choice]
 
+# A long table's other parameters stay askable: Ask answers about them from every row.
+whole = (
+    WholeTable(dataframe, replace(roles, focus=None), roles.dimension, focus_value)
+    if roles.table_shape == "long" and focus_value and roles.dimension
+    else None
+)
 dataframe, roles = apply_focus(dataframe, roles, focus_value)
-brief = analyze_business(dataframe, roles)
+brief = analyze_business(dataframe, roles, blanked=prepared.cleaning_report.blanked_codes)
 
 render_dataset_bar(source_name, dataframe, roles, focus=focus_label)
 render_brief(brief)
@@ -666,7 +678,9 @@ with ask_tab:
         "supplied a key, is the question itself sent to the planner, which returns a plan "
         "for you to approve, never an answer.",
     )
-    render_ask_ada(dataframe, roles, source_name, api_key, rows_not_analyzed=prepared.truncated_rows)
+    render_ask_ada(
+        dataframe, roles, source_name, api_key, rows_not_analyzed=prepared.truncated_rows, whole=whole
+    )
 
 with dashboard_tab:
     render_section_heading(
@@ -737,11 +751,15 @@ with data_tab:
         )
 
     with st.expander("Data checks"):
-        st.caption("Values to look at before trusting the figures. None of them was changed.")
-        st.dataframe(quality_frame(scan_quality(dataframe, roles)), hide_index=True, width="stretch")
+        st.caption(
+            "Values to look at before trusting the figures. Clear missing-value codes were set to "
+            "missing during cleaning; nothing else was changed."
+        )
+        issues = scan_quality(dataframe, roles, blanked=prepared.cleaning_report.blanked_codes)
+        st.dataframe(quality_frame(issues), hide_index=True, width="stretch")
 
     st.subheader("Cleaned data")
-    st.dataframe(dataframe.head(1_000), width="stretch", height=420)
+    st.dataframe(show_undated(dataframe.head(1_000)), width="stretch", height=420)
     st.caption("Preview limited to 1,000 rows. The download includes every analyzed row.")
     st.subheader("Data dictionary")
     st.dataframe(column_profile(dataframe), hide_index=True, width="stretch")
