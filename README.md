@@ -242,6 +242,7 @@ report.trend()            # the measure per period, with notes on adjustments
 report.segments()         # the measure by group, as a DataFrame
 report.anomalies          # flagged periods
 report.forecast()         # forecast with .backtest
+report.long_form()        # a year-by-month table as one row per month
 report.ask("average pH by site")
 report.focus("North Marsh")   # the same analysis for one group
 report.to_dict()          # JSON-safe, versioned by schema_version

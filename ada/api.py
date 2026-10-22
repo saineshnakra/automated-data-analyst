@@ -24,6 +24,8 @@ from .aggregation import (
     build_trend,
     fixed_design,
     group_coverage,
+    month_columns,
+    months_long,
     sampling_campaigns,
     segment_frame,
 )
@@ -423,6 +425,20 @@ class Analysis:
                 had=f"{periods} periods",
             )
         return result
+
+    def long_form(self) -> pd.DataFrame | Refusal:
+        """A table with one row per year and a column per month (JAN to DEC) as one row per month.
+
+        The result has a ``Date`` (the first of each month) and a ``Value``
+        column, so ``ada.analyze(report.long_form())`` analyses the monthly
+        series itself: its seasonal cycle, trend and anomalies by month.
+        """
+        if not self.roles.date or not month_columns(self.frame):
+            return Refusal(
+                "no_date_column",
+                "This table has no year column beside a column per month to lay out as one monthly series.",
+            )
+        return months_long(self.frame, self.roles.date)
 
     def _timeline_refusal(self, series: TrendSeries) -> Refusal | None:
         """A refusal when the periods are not a timeline to project or check.

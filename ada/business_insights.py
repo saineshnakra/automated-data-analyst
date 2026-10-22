@@ -26,6 +26,8 @@ from .aggregation import (
     fixed_design,
     group_coverage,
     matched_period_change,
+    month_columns,
+    months_long,
     months_recorded,
     preferred_frequency,
     reporting_unit,
@@ -1202,6 +1204,71 @@ def _series_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | 
             f"deviation across them; least-squares sine and cosine fits at {PERIOD_CANDIDATES} periods from "
             "two steps to the whole span, each row's fit tested by its F test with a "
             f"{FALSE_DISCOVERY} false discovery rate, and the period with the most clear rows kept"
+        ),
+        lead=lead,
+    )
+
+
+def _months_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
+    """Read a table with one row per year and a column per month as the one monthly series it holds.
+
+    The long form (``aggregation.months_long``) gives the seasonal profile,
+    the mean of each calendar month across the years, and the long-run trend
+    of the years with all twelve months recorded, tested as the long-run card
+    is. ``Analysis.long_form()`` hands the long form back for a monthly
+    analysis of its own.
+    """
+    months = month_columns(dataframe)
+    if not months or not roles.date:
+        return None
+    long = months_long(dataframe, roles.date)
+    if long.empty:
+        return None
+    month_numbers = long["Date"].dt.month
+    profile = long.groupby(month_numbers)["Value"].mean()
+    values = dataframe[list(months)].stack()
+    high, low = format_values_apart(
+        float(profile.max()), float(profile.min()), column=months[0], column_values=values
+    )
+    years = long.groupby(long["Date"].dt.year)["Value"]
+    complete = years.count() == len(months)
+    statement = (
+        f"The {len(months)} columns {months[0]} to {months[-1]} hold one monthly series of {len(long):,} "
+        f"months across {long['Date'].dt.year.nunique():,} years. On average it is highest in "
+        f"{calendar.month_name[int(profile.idxmax())]} ({high}) and lowest in "
+        f"{calendar.month_name[int(profile.idxmin())]} ({low})."
+    )
+    lead = ""
+    yearly = years.mean()[complete]
+    test = trend_test(yearly.index.to_numpy(dtype=float), yearly.to_numpy(dtype=float))
+    if test is not None and len(yearly) >= MIN_STRETCH_PERIODS:
+        decade = f"{_signed_figure(test.slope * 10)} per decade"
+        low_end, high_end = _signed_figure(test.low * 10), _signed_figure(test.high * 10)
+        interval = f"{TREND_CONFIDENCE:.0%} CI {low_end} to {high_end}"
+        if test.clear:
+            statement += (
+                f" Over the {len(yearly)} years with all twelve months, the yearly mean of the months moves "
+                f"{decade} ({interval}; Mann-Kendall {format_p(test.p_value)})."
+            )
+            lead = (
+                f"The monthly series in {months[0]} to {months[-1]} moves {decade} over the {len(yearly)} "
+                f"years with all twelve months ({interval})."
+            )
+        else:
+            statement += (
+                f" Over the {len(yearly)} years with all twelve months it shows no clear trend: "
+                f"{decade}, {interval}."
+            )
+    statement += " Analysis.long_form() gives it as one row per month (Date, Value) for a monthly analysis."
+    return Evidence(
+        kind="months",
+        title="Monthly series",
+        value=f"{len(long):,} months",
+        statement=statement,
+        calculation=(
+            "the month columns laid out as one row per year and month; mean of each calendar month; "
+            "Theil-Sen slope of the yearly mean over years with every month recorded, with a 95% CI "
+            "(scipy.stats.theilslopes) and a Mann-Kendall test, both allowing for lag-1 autocorrelation"
         ),
         lead=lead,
     )
@@ -4341,6 +4408,10 @@ def analyze_business(
     long_run = _long_run_evidence(dataframe, roles, frequency) if timeline else None
     if long_run:
         evidence.append(long_run)
+    # A row per year with a column per month is one monthly series laid out wide.
+    monthly = _months_evidence(dataframe, roles)
+    if monthly:
+        evidence.append(monthly)
     growth = _growth_evidence(dataframe, roles, frequency) if timeline else None
     if growth:
         evidence.append(growth)
@@ -4493,6 +4564,8 @@ def analyze_business(
         summary_parts = [growth.statement] + ([leader.statement] if leader else [])
     else:
         summary_parts = [_table_description(dataframe, roles)]
+    if monthly:
+        summary_parts.insert(0, monthly.statement)
     if long_run:
         summary_parts.insert(0, long_run.statement)
     for item in (survival, profile, series):

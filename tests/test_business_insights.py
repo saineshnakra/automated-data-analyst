@@ -1996,6 +1996,31 @@ class LongRunTrendTests(unittest.TestCase):
         self.assertIn("lowest in July", long_run.statement)
 
 
+def station_months(years: int = 40, seed: int = 99) -> pd.DataFrame:
+    """One row per year, a column per month: a warming station record with a September peak."""
+    rng = np.random.default_rng(seed)
+    names = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+    cycle = 28 + np.cos(2 * np.pi * (np.arange(12) - 8) / 12)
+    frame = pd.DataFrame({"YEAR": pd.to_datetime([f"{1950 + year}-01-01" for year in range(years)])})
+    for month, name in enumerate(names):
+        frame[name] = cycle[month] + 0.015 * np.arange(years) + rng.normal(0, 0.2, years)
+    frame["ANN"] = frame[names].mean(axis=1)
+    return frame
+
+
+class MonthlySeriesTests(unittest.TestCase):
+    def test_a_column_per_month_is_read_as_one_monthly_series(self):
+        frame = station_months()
+
+        monthly = brief_card(analyze_business(frame, roles_for(frame, "ANN", None, date="YEAR")), "months")
+
+        assert monthly is not None
+        self.assertIn("hold one monthly series of 480 months across 40 years", monthly.statement)
+        self.assertIn("highest in September", monthly.statement)
+        self.assertIn("per decade", monthly.statement)
+        self.assertIn("Analysis.long_form()", monthly.statement)
+
+
 class LatestPeriodWordingTests(unittest.TestCase):
     def test_one_row_per_year_is_named_by_the_year_and_its_missing_months(self):
         months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]

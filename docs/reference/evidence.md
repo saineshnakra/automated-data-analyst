@@ -43,6 +43,7 @@ assembled in this order:
 | `profile` | For a numeric time-point column (days since infection, minutes, a gait cycle), the measure at each time point in order, its peak and trough, and groups followed for different lengths compared over the time they share (see [Time points](#time-points)) | A date column, or no column named like elapsed time with repeated values |
 | `series` | Numbered columns in an arithmetic progression (40, 50, ... 260) read as one series: the mean profile, the rows that vary most, and the period of a repeating pattern | Fewer than 5 evenly numbered columns |
 | `longtrend` | The trend across a record of 20 or more complete years: Theil-Sen slope per year and per decade with its 95% interval and a Mann-Kendall test, the months it runs highest and lowest in, and the slopes either side of a change in level (see [Long records](#long-records)) | No date, or fewer than 20 complete years |
+| `months` | For a table with one row per year and a column per month (JAN to DEC), the monthly series it holds: the mean of each calendar month and the trend of the years with all twelve months (see [Long records](#long-records)) | No year column, or not all twelve month columns |
 | `trend` | Latest period-over-period change on the groups present in both periods, compared with the series' usual movement or with the time of year | No date, fewer than 2 periods, a percentage change from a previous period of zero, or rows counted where the design fixes how many each period holds (see [Fixed designs](#fixed-designs)) |
 | `driver` | The segment that moved the measure most between the last two periods | No date, measure or segment |
 | `leader` | For money or a count of things, the group with the largest share of the total ("Largest share by ..."), or with the most rows when there is no measure ("Most rows by ..."). For any other measure, a comparison of the groups with its test and effect size (see below). For mixed-sign values, the largest by size with no share | No segment, or a total of zero |
@@ -168,6 +169,14 @@ highest and lowest in, when the month of the year explains the monthly values
 by the shared F test. When the series also has a change in level, it gives the
 slope within each stretch either side of it and says whether the trend runs on
 both sides or the long-run slope is mostly the step.
+
+A table with one row per year and a column per month holds one monthly
+series laid out wide. The `months` card reads it in long form
+(`aggregation.months_long`): the calendar months it runs highest and lowest
+in, and the Theil-Sen trend of the yearly mean over the years with all twelve
+months, tested the same way. `Analysis.long_form()` returns that long form
+(`Date`, `Value`), so `ada.analyze(report.long_form())` analyses the monthly
+series itself.
 
 A clear trend whose stretch slopes agree leads the headline ("M-A-M rose by
 0.154 per decade from 1910 to 2019 (95% CI +0.103 to +0.203; Mann-Kendall
