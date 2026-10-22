@@ -137,6 +137,14 @@ TRANSFORM_NAMES = {
     "ln1p": "ln({} + 1)", "sqrt": "√{}", "square": "{}²", "reciprocal": "1 ÷ {}",
 }
 TRANSFORM_RANKS = 0.995
+# Rows in table order that the searches over neighbouring rows use, and the most
+# readings they check: a rate needs consecutive rows of one curve, a lag the year before.
+ORDERED_ROWS = 2_000
+ORDERED_TARGETS = 60
+# A column whose ranks follow another's row-to-row change this closely is checked as its rate.
+STEP_RANKS = 0.95
+# Candidates whose value on the row before may be a part.
+LAGGED_PARTS = 5
 # Words that qualify a name rather than say what was measured, so sharing one
 # ("CorrectTotal", "IncorrectTotal") does not make two columns one quantity.
 GENERIC_NAME_WORDS = frozenset({
@@ -2505,8 +2513,10 @@ class Derivation:
     #: parts add up to a fixed total), "maximum" or "minimum" (the largest or
     #: smallest of the parts), "standardised" (a z-score of its part, within
     #: each group of ``within`` when that is set), "transform" (``function`` of
-    #: its one part, such as its log10), or "product" (the parts raised to the
-    #: powers in ``coefficients`` and multiplied, times e to the ``intercept``).
+    #: its one part, such as its log10), "product" (the parts raised to the
+    #: powers in ``coefficients`` and multiplied, times e to the ``intercept``),
+    #: or "rate" (the row-to-row change in its one part, times its coefficient:
+    #: a velocity from an angle sampled at a fixed step).
     kind: str
     #: Share of the rows holding the column and its parts on which the formula holds.
     share: float = 1.0
@@ -2519,33 +2529,48 @@ class Derivation:
     blank_rows: int = 0
     #: For a "transform", the function of the part: "log10", "ln", "sqrt" and so on.
     function: str = ""
+    #: Positions in ``parts`` of the parts taken from the row before (last December
+    #: in a December-to-February mean), for a table whose rows run in order.
+    lagged: tuple[int, ...] = ()
+
+    @property
+    def shown_parts(self) -> tuple[str, ...]:
+        """The parts as a formula names them, with those taken from the row before marked."""
+        return tuple(
+            f"{part} (row before)" if index in self.lagged else part for index, part in enumerate(self.parts)
+        )
 
     def describe(self) -> str:
+        parts = self.shown_parts
         if self.kind == "transform":
-            return f"{self.column} = {TRANSFORM_NAMES[self.function].format(self.parts[0])}"
+            return f"{self.column} = {TRANSFORM_NAMES[self.function].format(parts[0])}"
         if self.kind == "product":
-            return f"{self.column} = {_product_formula(self.parts, self.coefficients, self.intercept)}"
+            return f"{self.column} = {_product_formula(parts, self.coefficients, self.intercept)}"
+        if self.kind == "rate":
+            scale = self.coefficients[0]
+            times = "" if np.isclose(scale, 1.0) else f"{format_number(scale, compact=False)} × "
+            return f"{self.column} = {times}the row-to-row change in {parts[0]}"
         if self.kind == "sum":
-            return f"{self.column} = {' + '.join(self.parts)}"
+            return f"{self.column} = {' + '.join(parts)}"
         if self.kind == "mean":
-            return f"{self.column} = mean of {_listed_parts(self.parts)}"
+            return f"{self.column} = mean of {_listed_parts(parts)}"
         if self.kind in ("maximum", "minimum"):
             word = "largest" if self.kind == "maximum" else "smallest"
-            return f"{self.column} = the {word} of {_listed_parts(self.parts)}"
+            return f"{self.column} = the {word} of {_listed_parts(parts)}"
         if self.kind == "complement":
             total = format_number(self.intercept, self.column, compact=False)
-            return f"{_joined([*self.parts, self.column])} add up to {total}"
+            return f"{_joined([*parts, self.column])} add up to {total}"
         if self.kind == "standardised":
             scope = f" within each {self.within}" if self.within else ""
-            source = f"{self.parts[0]} standardised" if self.parts else "standardised"
+            source = f"{parts[0]} standardised" if parts else "standardised"
             return f"{self.column} is {source}{scope} (mean 0, SD 1)"
         if self.kind == "difference":
-            ordered = sorted(zip(self.coefficients, self.parts, strict=True), key=lambda item: -item[0])
+            ordered = sorted(zip(self.coefficients, parts, strict=True), key=lambda item: -item[0])
             formula = ordered[0][1] + "".join(
                 f" {'+' if weight > 0 else '−'} {part}" for weight, part in ordered[1:]
             )
             return f"{self.column} = {formula}"
-        return f"{self.column} is a fixed combination of {_joined(self.parts)}"
+        return f"{self.column} is a fixed combination of {_joined(parts)}"
 
     @property
     def block(self) -> tuple[str, ...]:
@@ -2682,11 +2707,12 @@ def find_derivation(
             admitted.append(candidate)
             complete = joint
     candidates = admitted
-    # A reading repeated on every row of its visit is one row of evidence,
-    # however many rows carry it, so only distinct rows count towards a fit.
-    data = frame[[column, *candidates]].iloc[np.flatnonzero(complete)].drop_duplicates()
+    data = frame[[column, *candidates]].iloc[np.flatnonzero(complete)]
     if len(data) > DERIVATION_ROWS:
         data = data.iloc[np.linspace(0, len(data) - 1, DERIVATION_ROWS).astype(int)]
+    # A reading repeated on every row of its visit is one row of evidence,
+    # however many rows carry it, so only distinct rows count towards a fit.
+    data = data.drop_duplicates()
     rows = len(data)
     usable = min(len(candidates), rows // 3 - 1)
     if usable < 2:
@@ -3272,11 +3298,14 @@ def _derivations(
         return found
 
     everything = set(range(len(columns)))
-    derived = {}
+    derived: dict[str, Derivation] = {}
     for index in sorted(targets):
         found = search(index, everything)
         if found is not None:
-            derived[columns[index]] = found
+            turned = _reoriented(found)
+            if turned.column in derived or columns.index(turned.column) not in targets:
+                turned = found
+            derived[turned.column] = turned
     leaves = {index for index, column in enumerate(columns) if column not in derived}
     for column in list(derived):
         refined = search(columns.index(column), leaves)
@@ -3293,6 +3322,75 @@ def _derivations(
             coefficients=tuple(weight for _, weight in ordered),
         )
     return derived
+
+
+def _built_from_built(
+    frame: pd.DataFrame,
+    columns: list[str],
+    targets: set[int],
+    derived: dict[str, Derivation],
+    family: list[int],
+) -> dict[str, Derivation]:
+    """Sums and means of columns that are built themselves: an annual mean of four seasonal means.
+
+    The built columns need not be among its strongest correlates, so they are
+    tried on their own once every other search is done.
+    """
+    found: dict[str, Derivation] = {}
+    position = {column: index for index, column in enumerate(columns)}
+    for index in sorted(targets):
+        column = columns[index]
+        built = [
+            other for other, made in derived.items()
+            if other != column and column not in made.parts and family[position[other]] != family[index]
+        ]
+        if column in derived or len(built) < 2:
+            continue
+        derivation = find_derivation(frame, column, built[:PART_CANDIDATES])
+        if derivation is not None and derivation.kind in ("sum", "mean"):
+            found[column] = derivation
+    return found
+
+
+def _in_table_order(derivation: Derivation, order: dict[str, int]) -> Derivation:
+    """The derivation with its parts in table order, as a reader would write the formula."""
+    if len(derivation.coefficients) != len(derivation.parts):
+        return derivation
+    places = sorted(
+        range(len(derivation.parts)), key=lambda place: (order.get(derivation.parts[place], 0), place)
+    )
+    return replace(
+        derivation,
+        parts=tuple(derivation.parts[place] for place in places),
+        coefficients=tuple(derivation.coefficients[place] for place in places),
+        lagged=tuple(new for new, place in enumerate(places) if place in derivation.lagged),
+    )
+
+
+def _reoriented(derivation: Derivation) -> Derivation:
+    """The same identity solved for the part it makes a plain sum or mean of the others, when there is one.
+
+    "70 = 2 × 60 − 50" and "60 = mean of 50 and 70" are one identity, and the
+    second names the column that was filled in from its neighbours. Only a
+    free combination is re-read; a sum, a mean or a difference already names
+    its derived column.
+    """
+    if derivation.kind != "combination" or derivation.intercept != 0.0:
+        return derivation
+    weights = np.array(derivation.coefficients)
+    for index, part in enumerate(derivation.parts):
+        others = [other for place, other in enumerate(derivation.parts) if place != index]
+        solved = np.r_[1.0 / weights[index], -np.delete(weights, index) / weights[index]]
+        kind = _classify(solved, 0.0, 0.0)
+        if kind in ("sum", "mean"):
+            return replace(
+                derivation,
+                column=part,
+                parts=(derivation.column, *others),
+                coefficients=tuple(float(weight) for weight in solved),
+                kind=kind,
+            )
+    return derivation
 
 
 def _summaries(
@@ -3382,6 +3480,92 @@ def _products(
             derivation = find_product(frame, columns[index], candidates)
             if derivation is not None:
                 found[columns[index]] = derivation
+    return found
+
+
+def _step_rate(target: np.ndarray, change: np.ndarray) -> tuple[float, float] | None:
+    """The scale and share of rows at which ``target`` is ``change`` times a constant, or None.
+
+    The rows where a new curve starts break the identity, so the scale is the
+    median ratio and the identity must hold on DERIVED_SHARE of rows.
+    """
+    rows = np.isfinite(target) & np.isfinite(change) & (change != 0)
+    if rows.sum() < 3 * DERIVATION_MIN_ROWS:
+        return None
+    target, change = target[rows], change[rows]
+    scale = float(f"{np.median(target / change):.6g}")
+    tolerance, spread = _tolerance(target)
+    residual = target - scale * change
+    if not spread > 0 or not _reproduces(target, residual, tolerance, spread, DERIVED_SHARE):
+        return None
+    return scale, float(np.mean(np.abs(residual) <= tolerance))
+
+
+def _neighbour_derivations(
+    ordered: pd.DataFrame, columns: list[str], targets: set[int], pearson: np.ndarray, family: list[int]
+) -> dict[str, Derivation]:
+    """Columns built from neighbouring rows: a velocity from an angle, a winter mean using last December.
+
+    ``ordered`` holds rows in table order, where curves and years run on. A
+    rate is the row-to-row change in another column times a fixed scale (one
+    over the time step), found from the rank correlation of each column with
+    every column's change. A combination may also take a part from the row
+    before, as a December-to-February mean takes the previous December. Only
+    tables of at most ORDERED_TARGETS readings are searched.
+    """
+    if not targets or len(targets) > ORDERED_TARGETS or len(ordered) < 3 * DERIVATION_MIN_ROWS:
+        return {}
+    values = ordered[columns].to_numpy(dtype=float)
+    before = np.vstack([np.full((1, len(columns)), np.nan), values[:-1]])
+    change = values - before
+    wanted = sorted(targets)
+    rho, _ = pairwise_correlations(_rank_columns(np.column_stack([values[:, wanted], change])).ranks)
+    # How each target follows every column's value on the row before.
+    follows, _ = pairwise_correlations(np.column_stack([values[:, wanted], before]))
+    found: dict[str, Derivation] = {}
+    for row, index in enumerate(wanted):
+        closeness = np.nan_to_num(np.abs(rho[row, len(wanted):]), nan=0.0)
+        for other in np.argsort(-closeness):
+            if closeness[other] < STEP_RANKS:
+                break
+            if other == index or family[other] == family[index]:
+                continue
+            rate = _step_rate(values[:, index], change[:, other])
+            if rate is not None:
+                found[columns[index]] = Derivation(
+                    columns[index], (columns[other],), (rate[0],), 0.0, "rate", share=rate[1]
+                )
+                break
+    for row, index in enumerate(wanted):
+        if columns[index] in found:
+            continue
+        strength = np.nan_to_num(np.abs(pearson[index]), nan=-1.0)
+        # As in the main search, a column is built from the columns before it.
+        near = [
+            other for other in np.argsort(-strength)
+            if other < index and family[other] != family[index] and strength[other] > 0
+        ][:PART_CANDIDATES]
+        lead = np.nan_to_num(np.abs(follows[row, len(wanted):]), nan=-1.0)
+        lagged = [other for other in np.argsort(-lead) if family[other] != family[index]][:LAGGED_PARTS]
+        # Rows that do not run in order (one gene or patient each) give no column a
+        # say in the next row, and need no search.
+        if len(near) < 2 or not lagged or lead[lagged[0]] < NOTABLE_CORRELATION:
+            continue
+        names = [f"part{place}" for place in range(len(near))]
+        names += [f"before{place}" for place in range(len(lagged))]
+        block = np.column_stack([values[:, index], values[:, near], before[:, lagged]])
+        frame = pd.DataFrame(block, columns=["target", *names])
+        derivation = find_derivation(frame, "target", list(frame.columns[1:]))
+        if derivation is None or not any(part.startswith("before") for part in derivation.parts):
+            continue
+        source = {f"part{place}": columns[other] for place, other in enumerate(near)}
+        source |= {f"before{place}": columns[other] for place, other in enumerate(lagged)}
+        found[columns[index]] = replace(
+            derivation,
+            column=columns[index],
+            parts=tuple(source[part] for part in derivation.parts),
+            lagged=tuple(place for place, part in enumerate(derivation.parts) if part.startswith("before")),
+        )
     return found
 
 
@@ -3513,13 +3697,26 @@ class Construction:
 
     @cached_property
     def _parts(self) -> dict[str, frozenset]:
-        """Each derived column's parts, as the families they belong to (or their names, when not screened)."""
-        return {
-            item.column: frozenset(
-                self.family[self.position[part]] if part in self.position else part for part in item.parts
-            )
-            for item in self.derived
-        }
+        """Each derived column's parts, as the families they belong to (or their names, when not screened).
+
+        A part built itself brings its own parts along: an acceleration made
+        from a velocity made from an angle is built from the angle too.
+        """
+        direct = {item.column: item.parts for item in self.derived}
+
+        def key(part: str) -> object:
+            return self.family[self.position[part]] if part in self.position else part
+
+        found = {}
+        for column in direct:
+            reached, waiting = set(), list(direct[column])
+            while waiting:
+                part = waiting.pop()
+                if part not in reached and part != column:
+                    reached.add(part)
+                    waiting.extend(direct.get(part, ()))
+            found[column] = frozenset(key(part) for part in reached)
+        return found
 
     def _part_families(self, column: str) -> frozenset:
         return self._parts.get(column, frozenset())
@@ -3624,6 +3821,12 @@ def construction(
     remaining = {index for index in targets if screened[index] not in derived}
     derived.update(_products(thinned, screened, remaining, family))
     remaining = {index for index in remaining if screened[index] not in derived}
+    # Rates and lags need consecutive rows, so they are searched on rows in table order.
+    ordered = dataframe[screened].iloc[:ORDERED_ROWS].astype(float)
+    derived.update(_neighbour_derivations(ordered, screened, remaining, pearson, family))
+    remaining = {index for index in remaining if screened[index] not in derived}
+    derived.update(_built_from_built(thinned, screened, remaining, derived, family))
+    remaining = {index for index in remaining if screened[index] not in derived}
     transforms = _transforms(thinned, screened, remaining, spearman, family)
     derived.update(transforms)
     remaining = {index for index in remaining if screened[index] not in derived}
@@ -3633,6 +3836,7 @@ def construction(
         family = [into if member == joined else member for member in family]
     for column, found in _summaries(dataframe, thinned, screened, remaining, pearson, family).items():
         derived[column] = replace(found, parts=tuple(sorted(found.parts, key=order.__getitem__)))
+    derived = {column: _in_table_order(found, order) for column, found in derived.items()}
     for item in known:
         derived[item.column] = item
     blanks = []

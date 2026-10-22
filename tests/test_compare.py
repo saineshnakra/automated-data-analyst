@@ -758,6 +758,58 @@ class TransformTests(unittest.TestCase):
         self.assertIsNone(find_product(frame, "age", ["weight_kg", "height_cm"]))
 
 
+class NeighbourRowTests(unittest.TestCase):
+    def test_a_rate_is_the_row_to_row_change_of_its_reading(self):
+        rng = np.random.default_rng(50)
+        curves = []
+        for _ in range(12):
+            time = np.arange(0.01, 1.0, 0.01)
+            angle = np.sin(2 * np.pi * time + rng.uniform(0, 1)) * rng.uniform(0.5, 1.5)
+            velocity = np.r_[0.0, np.diff(angle) / 0.01]
+            acceleration = np.r_[0.0, np.diff(velocity) / 0.01]
+            curves.append(pd.DataFrame({"angle": angle, "velocity": velocity, "acceleration": acceleration}))
+        frame = pd.concat(curves, ignore_index=True)
+
+        built = construction(frame, list(frame.columns), "angle")
+
+        assert built is not None
+        rate = built.derivation("velocity").describe()
+        self.assertEqual(rate, "velocity = 100 × the row-to-row change in angle")
+        self.assertEqual(built.derivation("acceleration").parts, ("velocity",))
+        self.assertEqual(built.relation("angle", "acceleration"), "built")
+
+    def test_a_season_using_the_year_before_and_an_annual_mean_of_seasons_are_built(self):
+        rng = np.random.default_rng(51)
+        months = pd.DataFrame(
+            rng.normal(27, 1, (80, 12)).round(2),
+            columns=["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"],
+        )
+        months += np.linspace(0, 2, 80)[:, None]
+        frame = months.assign(
+            DJF=((months["DEC"].shift(1) + months["JAN"] + months["FEB"]) / 3).round(2),
+            MAM=months[["MAR", "APR", "MAY"]].mean(axis=1).round(2),
+            JJA=months[["JUN", "JUL", "AUG"]].mean(axis=1).round(2),
+            SON=months[["SEP", "OCT", "NOV"]].mean(axis=1).round(2),
+        )
+        frame["ANN"] = frame[["DJF", "MAM", "JJA", "SON"]].mean(axis=1).round(2)
+
+        built = construction(frame, list(frame.columns), "MAM")
+
+        assert built is not None
+        self.assertEqual(built.derivation("DJF").describe(), "DJF = mean of JAN, FEB and DEC (row before)")
+        self.assertEqual(built.derivation("ANN").describe(), "ANN = mean of DJF, MAM, JJA and SON")
+
+    def test_a_column_filled_in_from_its_neighbours_is_the_one_named_as_derived(self):
+        rng = np.random.default_rng(52)
+        frame = pd.DataFrame(rng.normal(0, 0.4, (300, 4)).round(2), columns=["40", "50", "70", "80"])
+        frame.insert(2, "60", ((frame["50"] + frame["70"]) / 2).round(3))
+
+        built = construction(frame, list(frame.columns))
+
+        assert built is not None
+        self.assertEqual([item.describe() for item in built.derived], ["60 = mean of 50 and 70"])
+
+
 class SummaryFamilyTests(unittest.TestCase):
     def test_the_statistics_of_one_reading_are_one_family(self):
         rng = np.random.default_rng(45)
