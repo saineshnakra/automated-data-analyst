@@ -822,6 +822,27 @@ class NeighbourRowTests(unittest.TestCase):
         self.assertEqual([item.describe() for item in built.derived], ["60 = mean of 50 and 70"])
 
 
+class CappedTests(unittest.TestCase):
+    def test_a_time_cut_off_at_follow_up_is_built_from_it(self):
+        rng = np.random.default_rng(53)
+        follow_up = rng.uniform(1, 15, 300).round(2)
+        recurred = rng.random(300) < 0.4
+        earlier = (follow_up * rng.uniform(0.1, 0.9, 300)).round(2)
+        frame = pd.DataFrame({
+            "survival": follow_up,
+            "timerecurrence": np.where(recurred, earlier, follow_up),
+            "age": rng.normal(50, 10, 300),
+        })
+
+        built = construction(frame, list(frame.columns), "survival")
+
+        assert built is not None
+        found = built.derivation("timerecurrence")
+        self.assertEqual(found.kind, "capped")
+        self.assertTrue(found.describe().startswith("timerecurrence never exceeds survival and equals it on"))
+        self.assertEqual(built.relation("survival", "timerecurrence"), "built")
+
+
 class SummaryFamilyTests(unittest.TestCase):
     def test_the_statistics_of_one_reading_are_one_family(self):
         rng = np.random.default_rng(45)

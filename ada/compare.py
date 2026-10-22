@@ -147,6 +147,14 @@ ORDERED_TARGETS = 60
 STEP_RANKS = 0.95
 # Candidates whose value on the row before may be a part.
 LAGGED_PARTS = 5
+# A column that stays at or below another on CAPPED_BELOW of rows and equals it
+# on at least CAPPED_EQUAL of them is cut off at it, as a time to recurrence is
+# at the end of follow-up for patients without one. Pairs that correlate at
+# least CAPPED_CORRELATION are checked, CAPPED_PAIRS at most.
+CAPPED_BELOW = 0.99
+CAPPED_EQUAL = 0.2
+CAPPED_CORRELATION = 0.5
+CAPPED_PAIRS = 2_000
 # Words that qualify a name rather than say what was measured, so sharing one
 # ("CorrectTotal", "IncorrectTotal") does not make two columns one quantity.
 GENERIC_NAME_WORDS = frozenset({
@@ -2517,8 +2525,9 @@ class Derivation:
     #: each group of ``within`` when that is set), "transform" (``function`` of
     #: its one part, such as its log10), "product" (the parts raised to the
     #: powers in ``coefficients`` and multiplied, times e to the ``intercept``),
-    #: or "rate" (the row-to-row change in its one part, times its coefficient:
-    #: a velocity from an angle sampled at a fixed step).
+    #: "rate" (the row-to-row change in its one part, times its coefficient:
+    #: a velocity from an angle sampled at a fixed step), or "capped" (never
+    #: above its one part and equal to it on ``share`` of rows: cut off at it).
     kind: str
     #: Share of the rows holding the column and its parts on which the formula holds.
     share: float = 1.0
@@ -2552,6 +2561,11 @@ class Derivation:
             scale = self.coefficients[0]
             times = "" if np.isclose(scale, 1.0) else f"{format_number(scale, compact=False)} × "
             return f"{self.column} = {times}the row-to-row change in {parts[0]}"
+        if self.kind == "capped":
+            return (
+                f"{self.column} never exceeds {parts[0]} and equals it on {_share_text(self.share)} of rows, "
+                f"so it is cut off at {parts[0]}"
+            )
         if self.kind == "sum":
             return f"{self.column} = {' + '.join(parts)}"
         if self.kind == "mean":
@@ -2714,7 +2728,9 @@ def find_derivation(
         data = data.iloc[np.linspace(0, len(data) - 1, DERIVATION_ROWS).astype(int)]
     # A reading repeated on every row of its visit is one row of evidence,
     # however many rows carry it, so only distinct rows count towards a fit.
-    data = data.drop_duplicates()
+    # Rows can only repeat where the column's own values do.
+    if pd.unique(data[column].to_numpy()).size < len(data):
+        data = data.drop_duplicates()
     rows = len(data)
     usable = min(len(candidates), rows // 3 - 1)
     if usable < 2:
@@ -3599,6 +3615,44 @@ def _neighbour_derivations(
     return found
 
 
+def _capped(
+    frame: pd.DataFrame, columns: list[str], targets: set[int], pearson: np.ndarray, family: list[int]
+) -> dict[str, Derivation]:
+    """Columns cut off at another column: never above it, and equal to it on a good share of rows.
+
+    A time to recurrence that equals the follow-up time wherever no
+    recurrence was seen moves with it by construction, and so do an amount
+    paid and the amount due when most bills are paid in full.
+    """
+    values = frame.to_numpy(dtype=float)
+    strength = np.triu(np.nan_to_num(pearson, nan=0.0), k=1)
+    first, second = np.where(strength >= CAPPED_CORRELATION)
+    order = np.argsort(-strength[first, second], kind="stable")[:CAPPED_PAIRS]
+    found: dict[str, Derivation] = {}
+    tolerances: dict[int, float] = {}
+    for i, j in zip(first[order], second[order], strict=True):
+        if family[i] == family[j]:
+            continue
+        both = ~np.isnan(values[:, i]) & ~np.isnan(values[:, j])
+        if both.sum() < DERIVATION_MIN_ROWS:
+            continue
+        for low, high in ((i, j), (j, i)):
+            if low not in targets or columns[low] in found:
+                continue
+            x, y = values[both, low], values[both, high]
+            if low not in tolerances:
+                column = values[:, low]
+                tolerances[low] = _tolerance(column[~np.isnan(column)])[0]
+            tolerance = tolerances[low]
+            equal = float(np.mean(np.abs(x - y) <= tolerance))
+            if CAPPED_EQUAL <= equal < IDENTICAL_SHARE and float(np.mean(x <= y + tolerance)) >= CAPPED_BELOW:
+                found[columns[low]] = Derivation(
+                    columns[low], (columns[high],), (1.0,), 0.0, "capped", share=equal
+                )
+                break
+    return found
+
+
 def _transforms(
     frame: pd.DataFrame, columns: list[str], targets: set[int], spearman: np.ndarray, family: list[int]
 ) -> dict[str, Derivation]:
@@ -3862,6 +3916,8 @@ def construction(
     derived.update(_neighbour_derivations(ordered, screened, remaining, pearson, family))
     remaining = {index for index in remaining if screened[index] not in derived}
     derived.update(_built_from_built(thinned, screened, remaining, derived, family))
+    remaining = {index for index in remaining if screened[index] not in derived}
+    derived.update(_capped(thinned, screened, remaining, pearson, family))
     remaining = {index for index in remaining if screened[index] not in derived}
     transforms = _transforms(thinned, screened, remaining, spearman, family)
     derived.update(transforms)
