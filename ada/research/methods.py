@@ -23,6 +23,10 @@ import pandas as pd
 
 from ..file_io import EXCEL_SUFFIXES
 from . import provenance
+from .analyses import REFERENCES
+from .analyses import _decimals as table_decimals
+from .analyses import _statistic_text as statistic_text
+from .analyses import _unit_text as unit_text
 from .audit import EXTREME_Z
 from .descriptives import grouping
 from .processing import levels_of
@@ -45,28 +49,44 @@ WHOLE_STUDY = (
     "custom",
 )
 
-#: Each multiple-comparison method: its name in a sentence, its short name, and its reference.
+#: Each multiple-comparison method: its name in a sentence and its reference (as the analyses cite it).
 ADJUSTMENTS = {
-    "holm": (
-        "Holm's step-down method",
-        "Holm",
-        "Holm, S. (1979). A simple sequentially rejective multiple test procedure. "
-        "Scandinavian Journal of Statistics 6, 65–70.",
-    ),
-    "bonferroni": (
-        "the Bonferroni correction",
-        "Bonferroni",
-        "Dunn, O. J. (1961). Multiple comparisons among means. Journal of the American Statistical "
-        "Association 56, 52–64. https://doi.org/10.1080/01621459.1961.10482090",
-    ),
-    "fdr_bh": (
-        "the Benjamini-Hochberg false discovery rate procedure",
-        "Benjamini-Hochberg",
-        "Benjamini, Y. and Hochberg, Y. (1995). Controlling the false discovery rate: a practical and "
-        "powerful approach to multiple testing. Journal of the Royal Statistical Society B 57, 289–300. "
-        "https://doi.org/10.1111/j.2517-6161.1995.tb02031.x",
-    ),
+    "holm": ("Holm's step-down method", REFERENCES["holm"]),
+    "bonferroni": ("the Bonferroni correction", REFERENCES["bonferroni"]),
+    "fdr_bh": ("the Benjamini–Hochberg false discovery rate procedure", REFERENCES["fdr_bh"]),
 }
+#: References an analysis carries, sorted by where the draft cites them; the rest go with the test.
+CHECK_REFERENCES = {REFERENCES[key] for key in ("shapiro", "levene", "breusch_pagan", "vif", "icc")}
+EFFECT_REFERENCES = {
+    REFERENCES[key] for key in ("hedges", "hedges_1981", "noncentral", "cohen", "omega", "steiger", "cramer")
+}
+ADJUSTMENT_REFERENCES = {reference for _, reference in ADJUSTMENTS.values()}
+#: Diagnostics that test an assumption. Those that only count rows are left to the supplement, and the
+#: rest describe the model and are kept as notes.
+CHECK_WORDS = (
+    "Shapiro",
+    "Levene",
+    "Brown–Forsythe",
+    "Breusch–Pagan",
+    "Variance inflation",
+    "intraclass correlation",
+    "Normality of",
+    "expected count",
+)
+COUNT_WORDS = (
+    "because a value this analysis needs was missing",
+    "Rows per ",
+    "Subjects per ",
+    " rows with both ",
+    "Events per group",
+    " events in ",
+    "Group means average",
+)
+_CONVERGENCE = re.compile(r"; the model (converged|did not converge) \((\w+)\)\.$")
+#: A clause telling the researcher which study.yml setting to change: "write it under `custom:`".
+_SETTING = re.compile(r"`[\w.]+:")
+#: Measures in the outcome's own unit, where a difference in "%" reads as percentage points.
+DIFFERENCES = ("mean difference", "median difference", "change", "difference in change")
 
 #: The libraries a build uses, in the order the draft names them, with how to cite each (docs/credits.md).
 LIBRARIES = (
@@ -451,7 +471,10 @@ def _variable_sentences(study, processed) -> list[str]:
     covariates = study.with_role("covariate")
     if covariates:
         verb = "covariate was" if len(covariates) == 1 else "covariates were"
-        sentences.append(f"The {verb} {_join([described(name) for name in covariates])}.")
+        listed = [
+            described(name) + ("" if name in used else " (not used in any analysis)") for name in covariates
+        ]
+        sentences.append(f"The {verb} {_join(listed)}.")
     identifiers = [
         name for name in study.with_role("identifier") if name not in (study.subject, study.cluster)
     ]
@@ -505,18 +528,21 @@ def _missing_sentences(study, processed) -> list[str]:
     if codes:
         where = "; ".join(f"{sum(counts.values()):,} in {name}" for name, counts in found.items())
         sentences.append(f"Missing values were coded as {codes}.")
-        sentences.append(
-            f"Using these codes, {_n(total, 'value')} {_was(total)} read as missing ({where})."
-            if total
-            else "No such codes occurred in the data."
-        )
+    read_step = _record(processed, "read")
+    caught = read_step.values_changed if read_step else 0
+    if codes:
+        if total:
+            sentences.append(
+                f"Using these codes, {_n(total, 'value')} {_was(total)} read as missing ({where})."
+            )
+        elif not caught:
+            sentences.append("No such codes occurred in the data.")
     else:
         sentences.append("No missing-value codes were declared; empty cells were read as missing.")
-    read_step = _record(processed, "read")
-    if read_step and read_step.values_changed:
+    if caught:
         sentences.append(
-            f"When the file was read, {_n(read_step.values_changed, 'further value')} "
-            f"{_was(read_step.values_changed)} recognised as missing (processing step 1)."
+            f"When the file was read, {_n(caught, 'further value' if total else 'value')} {_was(caught)} set "
+            "to missing (processing step 1)."
         )
     for name, (count, examples) in processed.unreadable.items():
         sentences.append(
@@ -754,17 +780,30 @@ def _analysis_section(draft: Draft, result, references: References) -> None:
         )
         method = decisions.multiple_comparisons
         if method in ADJUSTMENTS:
-            name, _, reference = ADJUSTMENTS[method]
+            name, reference = ADJUSTMENTS[method]
             adjusted = (
-                f"P-values were adjusted for multiple comparisons with {name} {references.cite(reference)} "
-                f"within each family of analyses named in study.yml: {listed}."
+                "For multiple comparisons, each analysis contributed the p-value of its key result, adjusted "
+                f"with {name} {references.cite(reference)} within each family of analyses named in "
+                f"study.yml: {listed}."
             )
         else:
             adjusted = "P-values were not adjusted for multiple comparisons."
+        singles = [f"“{family}”" for family, specs in families.items() if len(specs) == 1]
+        unchanged = ""
+        if method in ADJUSTMENTS and singles:
+            unchanged = (
+                "The family held a single analysis, so its adjusted p-value equals the unadjusted one."
+                if len(families) == 1
+                else "Each family held a single analysis, so the adjusted p-values equal the unadjusted ones."
+                if len(singles) == len(families)
+                else f"{_join(singles)} held a single analysis, so {'its' if len(singles) == 1 else 'their'} "
+                "adjusted p-value equals the unadjusted one."
+            )
         draft.paragraph(
             adjusted,
-            f"The significance level was α = {decisions.alpha:g}, and all confidence intervals were computed "
-            f"at the {_percent(decisions.confidence)} level.",
+            unchanged,
+            f"All tests were two-sided. The significance level was α = {decisions.alpha:g}, and all "
+            f"confidence intervals were computed at the {_percent(decisions.confidence)} level.",
         )
     _custom_paragraph(draft, result)
 
@@ -802,13 +841,19 @@ def _analysis_sentences(spec, found, study, references: References) -> list[str]
             f"This {status} analysis was listed in study.yml, but the build produced no result for it.",
         ]
     if not found.supported:
-        return [lead, f"This {status} analysis was not run.", _sentence(found.reason) if found.reason else ""]
+        return [
+            lead,
+            f"This {status} analysis was not run.",
+            _for_paper(found.reason) or _sentence(found.reason),
+        ]
     sentences = [lead]
     if spec.question:
         sentences.append(f"It addressed the question “{spec.question.strip()}”")
         if not spec.question.strip().endswith(("?", ".", "!")):
             sentences[-1] += "."
-    test = _with_article(found.test) + (f" {references.cite(*found.references)}" if found.references else "")
+    cited = [reference for reference in found.references if reference not in ADJUSTMENT_REFERENCES]
+    on_test = [reference for reference in cited if reference not in CHECK_REFERENCES | EFFECT_REFERENCES]
+    test = _with_article(_test_prose(found.test)) + (f" {references.cite(*on_test)}" if on_test else "")
     method = f" (`{found.method}`)" if found.method else ""
     groups = "; ".join(f"{level}, {_n(count, 'row')}" for level, count in found.groups.items())
     in_groups = f" ({groups})" if groups else ""
@@ -852,20 +897,111 @@ def _analysis_sentences(spec, found, study, references: References) -> list[str]
         )
     effect = found.effect.get("name") if found.effect else ""
     if effect:
+        cite = references.cite(*[reference for reference in cited if reference in EFFECT_REFERENCES])
         sentences.append(
-            f"{effect} was reported as the standardised effect size, with its "
-            f"{_percent(study.decisions.confidence)} confidence interval."
+            f"{_cap(effect)} was reported as the standardised effect size, with its "
+            f"{_percent(study.decisions.confidence)} confidence interval" + (f" {cite}" if cite else "") + "."
         )
+    sentences += _adjustment_sentences(found)
     sentences.append(
         "This analysis was planned before the data were seen."
         if spec.planned
         else "This analysis was exploratory: it was not planned before the data were seen."
     )
-    if found.diagnostics:
-        sentences.append("Assumption checks: " + " ".join(_sentence(d) for d in found.diagnostics))
+    checks, notes = _diagnostics(found)
+    if checks:
+        cite = references.cite(*[reference for reference in cited if reference in CHECK_REFERENCES])
+        sentences.append("Its fit and assumptions were checked" + (f" {cite}" if cite else "") + ".")
+        sentences += checks
+    sentences += notes
     for warning in found.warnings:
-        sentences.append(f"Caveat: {_sentence(warning)}")
+        warning = re.sub(r"^statsmodels: ", "statsmodels warned: ", warning)
+        sentences.append(f"Caveat: {_for_paper(warning) or _sentence(warning)}")
     return sentences
+
+
+def _adjustment_sentences(found) -> list[str]:
+    """Which result was adjusted across the family, and how the other rows were adjusted within it."""
+    rows = _reported(found)
+    key = next((row for row in rows if row["key"]), None)
+    sentences = []
+    if key is not None and len(rows) > 1:
+        sentences.append(f"Its key result, the one adjusted across its family, was {_row_name(key)}.")
+    within = [
+        row
+        for row in rows
+        if not row["key"] and row["adjustment"] and not row["adjustment"].startswith("not adjusted")
+    ]
+    if within:
+        methods = list(dict.fromkeys(row["adjustment"] for row in within))
+        simultaneous = all(row["test"] in ("Games–Howell", "Tukey–Kramer") for row in within)
+        sentences.append(
+            f"The p-values of its other rows were adjusted within the analysis ({_join(methods)}), with "
+            + ("simultaneous" if simultaneous else "unadjusted")
+            + " confidence intervals."
+        )
+    return sentences
+
+
+def _diagnostics(found) -> tuple[list[str], list[str]]:
+    """The assumption checks among an analysis's diagnostics, and the notes that describe its model.
+
+    Sentences that only count rows are left out: the draft gives those counts already, and the model's
+    record in the supplement keeps every diagnostic.
+    """
+    checks, notes = [], []
+    for item in found.diagnostics:
+        text = _sentence(item)
+        converged = _CONVERGENCE.search(text)
+        if converged:
+            checks.append(f"The model {converged.group(1)} ({converged.group(2)}).")
+        elif any(word in text for word in COUNT_WORDS):
+            continue
+        elif any(word in text for word in CHECK_WORDS):
+            checks.append(text)
+        elif note := _for_paper(text):
+            notes.append(note)
+    return checks, notes
+
+
+def _for_paper(text: str) -> str:
+    """``text`` without the clauses that tell the researcher which study.yml setting to change."""
+    kept = []
+    for sentence in re.split(r"(?<=[.!?])\s+", str(text).strip()):
+        clauses = [clause for clause in sentence.rstrip(".").split("; ") if not _SETTING.search(clause)]
+        if clauses:
+            kept.append(_sentence("; ".join(clauses)))
+    return " ".join(kept)
+
+
+def _reported(found) -> list[dict]:
+    """The rows of an analysis a reader sees, with every column; intercept rows only serve the figures."""
+    estimates = found.estimates if found.estimates is not None else pd.DataFrame()
+    defaults = {
+        "key": False,
+        "measure": "",
+        "statistic_name": found.statistic_name,
+        "df2": math.nan,
+        "test": "",
+        "adjustment": "",
+    }
+    rows = []
+    for record in estimates.to_dict("records"):
+        row = dict(record)
+        for name, value in defaults.items():
+            if _blank(row.get(name)) or row.get(name) == "":
+                row[name] = value
+        row["key"] = bool(row["key"])
+        if row["measure"] != "intercept":
+            rows.append(row)
+    return rows
+
+
+def _row_name(row: dict) -> str:
+    label = str(row.get("label") or row.get("term") or "the estimate")
+    if row["measure"] == "overall":
+        return f"the overall test of {label.removesuffix(' (overall)')}"
+    return f"“{label}”"
 
 
 def _custom_paragraph(draft: Draft, result) -> None:
@@ -922,6 +1058,7 @@ def _figure_caption(asset: Asset) -> str:
     head = f"{asset.number}. {asset.title}" if asset.number else asset.title
     body = asset.caption[len(head) :].strip() if asset.caption.startswith(head) else asset.caption
     body = body.removeprefix(".").strip()
+    body = _for_paper(body) or body
     return f"**{asset.number or asset.id}.** {_sentence(asset.title)}" + (f" {body}" if body else "")
 
 
@@ -954,7 +1091,6 @@ def _software_section(draft: Draft, result, references: References) -> None:
 
 def results_draft(result) -> Draft:
     """One plain sentence per analysis with its estimates, intervals and p-values; exploratory ones apart."""
-    study = result.study
     draft = Draft("Results (draft)")
     draft.note(
         "Draft for the authors to edit: one sentence per analysis, with the numbers this build computed. "
@@ -964,8 +1100,8 @@ def results_draft(result) -> Draft:
     entries = _analyses(result)
     names = _names(entries)
     done = [(spec, found) for spec, found in entries if found is not None and found.supported]
-    planned = [_result_sentence(found, study, names) for spec, found in done if spec.planned]
-    exploratory = [_result_sentence(found, study, names) for spec, found in done if not spec.planned]
+    planned = [_result_sentence(found, result, names) for spec, found in done if spec.planned]
+    exploratory = [_result_sentence(found, result, names) for spec, found in done if not spec.planned]
     if not done:
         draft.paragraph("No analyses were run, so there are no results to report.")
     if planned:
@@ -981,36 +1117,45 @@ def results_draft(result) -> Draft:
         draft.paragraph(
             *[
                 f"{_cap(_phrase(spec, names))} was not analysed."
-                + (f" {_sentence(found.reason)}" if found is not None and found.reason else "")
+                + (
+                    f" {_for_paper(found.reason) or _sentence(found.reason)}"
+                    if found and found.reason
+                    else ""
+                )
                 for spec, found in skipped
             ]
         )
     return draft
 
 
-def _result_sentence(found, study, names: dict[str, str]) -> str:
+def _result_sentence(found, result, names: dict[str, str]) -> str:
+    """One analysis in a sentence: its overall test, then each estimate, as the results table gives them."""
+    study = result.study
     conf = _percent(study.decisions.confidence)
+    rows = _reported(found)
+    key = next((row for row in rows if row["key"]), None)
     size = f"n = {found.n:,}"
     if found.subjects:
         size += f" rows from {found.subjects:,} subjects"
     elif found.clusters:
         size += f" rows in {found.clusters:,} clusters"
-    context = f"{_test_name(found.test)}; {size}" if found.test else size
-    method = study.decisions.multiple_comparisons
-    adjusted = ADJUSTMENTS[method][1] if method in ADJUSTMENTS else ""
-    estimates = found.estimates if found.estimates is not None else pd.DataFrame()
-    parts = []
-    for row in estimates.to_dict("records"):
-        label = row.get("label") or row.get("term") or "the estimate"
-        parts.append((str(label), _estimate_text(row, found.statistic_name, conf, adjusted)))
-    head = f"For {_phrase(found.spec, names)} ({context})"
-    if not parts:
-        sentence = f"{head}, the analysis gave no estimates."
-    elif len(parts) == 1:
-        sentence = f"{head}, the estimate for {parts[0][0]} was {parts[0][1]}."
-    else:
-        listed = _join([f"{label}, {text}" for label, text in parts], separator="; ")
-        sentence = f"{head}, the estimates were: {listed}."
+    test = (key["test"] if key is not None and key["test"] else "") or found.test
+    head = f"For {_phrase(found.spec, names)} ({_test_name(_test_prose(test)) + '; ' if test else ''}{size})"
+    clauses = []
+    for row in [row for row in rows if row["measure"] == "overall"]:
+        details = "; ".join(part for part in (_p_text(row), _adjusted_text(row)) if part)
+        clauses.append(f"{_row_name(row)} gave {statistic_text(row)}" + (f" ({details})" if details else ""))
+    estimates = [
+        (str(row.get("label") or row.get("term") or "the estimate"), _estimate_text(row, found, result, conf))
+        for row in rows
+        if row["measure"] != "overall"
+    ]
+    if len(estimates) == 1:
+        clauses.append(f"the estimate for {estimates[0][0]} was {estimates[0][1]}")
+    elif estimates:
+        listed = _join([f"{label} = {text}" for label, text in estimates], separator="; ")
+        clauses.append(f"the estimates were {listed}")
+    sentence = f"{head}, {_join(clauses)}." if clauses else f"{head}, the analysis gave no estimates."
     effect = found.effect or {}
     if effect.get("name") and _finite(effect.get("value")):
         interval = (
@@ -1018,41 +1163,38 @@ def _result_sentence(found, study, names: dict[str, str]) -> str:
             if _finite(effect.get("ci_low")) and _finite(effect.get("ci_high"))
             else ""
         )
-        sentence += f" {effect['name']} was {number(effect['value'], 2)}{interval}."
+        sentence += f" {_cap(effect['name'])} was {number(effect['value'], 2)}{interval}."
     return sentence
 
 
-def _estimate_text(row: dict, statistic_name: str, conf: str, adjusted: str) -> str:
-    estimate, low, high = row.get("estimate"), row.get("ci_low"), row.get("ci_high")
-    decimals = _decimals(estimate, low, high)
-    text = number(estimate, decimals) if _finite(estimate) else "not estimable"
+def _estimate_text(row: dict, found, result, conf: str) -> str:
+    """An estimate with its unit, interval, statistic and p-values, to the results table's decimals."""
+    study = result.study
+    decimals = table_decimals(study, found, result.data, row)
+    unit = unit_text(study, found, row["measure"])
+    if row["measure"] in DIFFERENCES + ("slope", "slope difference") and unit.split(" ")[0] == "%":
+        unit = "percentage points" + unit[1:]
+    text = number(row["estimate"], decimals) + (f" {unit}" if unit else "")
     details = []
-    if _finite(low) and _finite(high):
-        details.append(f"{conf} CI {number(low, decimals)} to {number(high, decimals)}")
-    test = []
-    if _finite(row.get("statistic")):
-        test.append(f"{statistic_name or 'statistic'} = {number(row['statistic'], 2)}")
-    if _finite(row.get("df")):
-        df = float(row["df"])
-        test.append(f"df = {int(df)}" if df.is_integer() else f"df = {number(df, 1)}")
-    if _finite(row.get("p")):
-        test.append(_p(row["p"]))
-    if test:
-        details.append(", ".join(test))
-    if adjusted and _finite(row.get("p_adjusted")):
-        details.append(f"{adjusted}-adjusted {_p(row['p_adjusted'])}")
+    if _finite(row.get("ci_low")) and _finite(row.get("ci_high")):
+        details.append(f"{conf} CI {number(row['ci_low'], decimals)} to {number(row['ci_high'], decimals)}")
+    statistic = statistic_text(row)
+    test = ", ".join(part for part in (statistic if statistic != "–" else "", _p_text(row)) if part)
+    details += [part for part in (test, _adjusted_text(row)) if part]
     return text + (f" ({'; '.join(details)})" if details else "")
 
 
-def _decimals(estimate, low, high) -> int:
-    """Decimals that show an estimate to the precision of its interval: about two significant figures."""
-    if _finite(low) and _finite(high) and high > low:
-        scale = (high - low) / 2
-    elif _finite(estimate) and estimate:
-        scale = abs(float(estimate))
-    else:
-        return 2
-    return int(min(4, max(0, 1 - math.floor(math.log10(scale)))))
+def _p_text(row: dict) -> str:
+    return _p(row["p"]) if _finite(row.get("p")) else ""
+
+
+def _adjusted_text(row: dict) -> str:
+    """The adjusted p-value with how it was adjusted, from the row's own ``adjustment``."""
+    if not _finite(row.get("p_adjusted")):
+        return ""
+    how = str(row.get("adjustment") or "")
+    how = re.sub(r" \(([^()]*)\)$", r", \1", how)
+    return f"adjusted {_p(row['p_adjusted'])}" + (f", {how}" if how else "")
 
 
 def _p(value) -> str:
@@ -1175,6 +1317,11 @@ def _model_output(draft: Draft, result) -> None:
         return
     for spec, found in entries:
         draft.heading(f"{_title(spec)} ({spec.id})", 3)
+        path = files.pop(spec.id, None)
+        if path is not None:
+            draft.paragraph(f"The model's record, supplement/models/{path.name}:")
+            draft.code(path.read_text(encoding="utf-8"))
+            continue
         status = "Planned" if spec.planned else "Exploratory"
         if found is None:
             draft.paragraph(f"{status}. The build produced no result for this analysis.")
@@ -1190,20 +1337,16 @@ def _model_output(draft: Draft, result) -> None:
         if found.formula:
             draft.paragraph(f"Model: `{found.formula}`")
         if found.diagnostics:
-            draft.paragraph("Assumption checks:")
+            draft.paragraph("Diagnostics:")
             draft.bullets(found.diagnostics)
         if found.warnings:
-            draft.paragraph("Caveats:")
+            draft.paragraph("Warnings:")
             draft.bullets(found.warnings)
-        path = files.pop(spec.id, None)
-        text = path.read_text(encoding="utf-8") if path is not None else found.summary
-        if text and text.strip():
-            if path is not None:
-                draft.paragraph(f"Output (supplement/models/{path.name}):")
-            draft.code(text)
+        if found.summary and found.summary.strip():
+            draft.code(found.summary)
     for stem, path in files.items():
         draft.heading(stem, 3)
-        draft.paragraph(f"Output (supplement/models/{path.name}):")
+        draft.paragraph(f"The model's record, supplement/models/{path.name}:")
         draft.code(path.read_text(encoding="utf-8"))
 
 
@@ -1347,11 +1490,20 @@ def _phrase(spec, names: dict[str, str]) -> str:
     return f"the {name[0].lower()}{name[1:]}" if spec.kind != "compare" else name
 
 
+def _test_prose(test: str) -> str:
+    """ "Linear mixed model, random intercept per subject" reads "... with a random intercept per subject"."""
+    return test.replace(", random intercept per", " with a random intercept per")
+
+
+def _named(first: str) -> bool:
+    return re.split(r"[-–]", first.lower())[0] in _NAMED_TESTS
+
+
 def _test_name(test: str) -> str:
     """A test's name inside a sentence: "linear mixed model", but "Welch's t-test" and "ANOVA" as they are."""
     text = test.strip()
     first = text.split()[0] if text else ""
-    if not first or "'" in first or "’" in first or first.lower().split("-")[0] in _NAMED_TESTS:
+    if not first or "'" in first or "’" in first or _named(first):
         return text
     if len(first) > 1 and first[:2].isupper():
         return text
@@ -1366,7 +1518,7 @@ def _with_article(test: str) -> str:
     first = text.split()[0]
     if "'" in first or "’" in first:
         return text
-    if first.lower().split("-")[0] in _NAMED_TESTS:
+    if _named(first):
         return f"the {text}"
     if len(first) > 1 and first[:2].isupper():
         return ("an " if first[0] in "AEFHILMNORSX" else "a ") + text
@@ -1431,6 +1583,10 @@ def _value(value) -> str:
 
 def _percent(fraction: float) -> str:
     return f"{fraction * 100:g}%"
+
+
+def _blank(value) -> bool:
+    return value is None or (isinstance(value, float) and math.isnan(value))
 
 
 def _finite(value) -> bool:

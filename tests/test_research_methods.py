@@ -11,7 +11,8 @@ from research_helpers import assay, assay_study, study_folder, weights
 
 from ada import __version__
 from ada.research import build, provenance
-from ada.research.methods import LIBRARIES, _decimals, _join, _with_article
+from ada.research.analyses import COLUMNS, REFERENCES
+from ada.research.methods import LIBRARIES, _for_paper, _join, _test_prose, _with_article
 from ada.research.results import ESTIMATE_COLUMNS, AnalysisResult
 from ada.research.tables import Table
 
@@ -33,24 +34,43 @@ def assay_with_steps(**changes) -> dict:
 
 
 def estimates(*rows) -> pd.DataFrame:
-    return pd.DataFrame(list(rows), columns=ESTIMATE_COLUMNS)
+    """Rows in the statistics step's shape: ESTIMATE_COLUMNS plus key, measure, statistic_name, df2, test
+    and adjustment."""
+    return pd.DataFrame(
+        list(rows), columns=COLUMNS if any("measure" in row for row in rows) else ESTIMATE_COLUMNS
+    )
 
 
 def welch(spec, result) -> AnalysisResult:
-    """A Welch comparison whose counts come from the processed data, as the statistics step reports them."""
+    """Welch's ANOVA with Games–Howell contrasts, shaped as the statistics step writes it; the counts come
+    from the processed data."""
     used = result.processed.rows_used_by([spec.outcome, spec.compare])
     frame = result.data[used]
     return AnalysisResult(
         spec=spec,
         design=result.study.design,
-        test="Welch's t-test",
-        method="scipy.stats.ttest_ind(equal_var=False)",
+        test="Welch's ANOVA with Games–Howell contrasts",
+        method="statsmodels.stats.oneway.anova_oneway(use_var='unequal')",
         n=int(used.sum()),
         n_missing=int((~used).sum()),
         groups={
             str(level): int((frame[spec.compare] == level).sum()) for level in ("Control", "Low", "High")
         },
         estimates=estimates(
+            {
+                "term": "Treatment",
+                "label": "Treatment (overall)",
+                "statistic": 24.31,
+                "df": 2.0,
+                "df2": 21.7,
+                "p": 3e-6,
+                "p_adjusted": 3e-6,
+                "key": True,
+                "measure": "overall",
+                "statistic_name": "F",
+                "test": "Welch's ANOVA",
+                "adjustment": "Holm over family primary (1 analysis)",
+            },
             {
                 "term": "High",
                 "label": "High − Control",
@@ -60,13 +80,25 @@ def welch(spec, result) -> AnalysisResult:
                 "statistic": -8.12,
                 "df": 21.46,
                 "p": 2e-7,
-                "p_adjusted": 4e-7,
-            }
+                "p_adjusted": 6e-7,
+                "key": False,
+                "measure": "mean difference",
+                "statistic_name": "t",
+                "test": "Games–Howell",
+                "adjustment": "Games–Howell over the 3 pairs",
+            },
         ),
-        statistic_name="t",
-        effect={"name": "Hedges' g", "value": -3.1, "ci_low": -4.2, "ci_high": -2.0},
-        diagnostics=["Residuals were roughly normal in each group (Shapiro-Wilk p ≥ 0.2)."],
-        references=(WELCH,),
+        statistic_name="F",
+        effect={"name": "omega squared", "value": 0.61, "ci_low": 0.3, "ci_high": 0.75},
+        diagnostics=[
+            "1 of 34 rows were left out because a value this analysis needs was missing (missing values: "
+            "Viability (%) 1).",
+            "Rows per group: Control (n = 10), Low (n = 11), High (n = 12).",
+            "Shapiro–Wilk test of the residuals: W = 0.970, p = 0.410 (n = 33), consistent with a normal "
+            "distribution.",
+            "Levene's test (median-centred) for equal variances across Treatment: W = 1.20, p = 0.310.",
+        ],
+        references=(WELCH, REFERENCES["shapiro"], REFERENCES["omega"], REFERENCES["holm"]),
     )
 
 
@@ -74,7 +106,7 @@ def regression(spec, result) -> AnalysisResult:
     return AnalysisResult(
         spec=spec,
         design=result.study.design,
-        test="Ordinary least squares regression",
+        test="Linear regression (OLS) adjusted for Treatment",
         method="statsmodels.formula.api.ols",
         formula="Viability (%) ~ Passage + Treatment",
         n=33,
@@ -82,7 +114,7 @@ def regression(spec, result) -> AnalysisResult:
         estimates=estimates(
             {
                 "term": "Passage",
-                "label": "Passage",
+                "label": "Slope on Passage",
                 "estimate": 0.21,
                 "ci_low": -0.35,
                 "ci_high": 0.77,
@@ -90,10 +122,36 @@ def regression(spec, result) -> AnalysisResult:
                 "df": 29.0,
                 "p": 0.45,
                 "p_adjusted": 0.45,
-            }
+                "key": True,
+                "measure": "slope",
+                "statistic_name": "t",
+                "test": "Linear regression (OLS)",
+                "adjustment": "Holm over family exploratory (1 analysis)",
+            },
+            {
+                "term": "Intercept",
+                "label": "Intercept",
+                "estimate": 85.2,
+                "ci_low": 80.1,
+                "ci_high": 90.3,
+                "statistic": 33.0,
+                "df": 29.0,
+                "p": 1e-20,
+                "key": False,
+                "measure": "intercept",
+                "statistic_name": "t",
+                "test": "Linear regression (OLS)",
+            },
         ),
         statistic_name="t",
+        diagnostics=[
+            "33 rows with both Viability (%) and Passage.",
+            "Breusch–Pagan test for constant residual variance: LM = 1.20, p = 0.550.",
+            "The design's time variable (Day) is not in this model, so the difference is averaged over time "
+            "points; a `change: Day` analysis models time.",
+        ],
         warnings=["Passage was recorded for each well, not each plate."],
+        references=(REFERENCES["breusch_pagan"], REFERENCES["holm"]),
         summary="OLS Regression Results\nR-squared: 0.81",
     )
 
@@ -206,7 +264,7 @@ class MethodsDraftTests(unittest.TestCase):
         self.assertIn("listed two analyses, and no other analyses were run", text)
         self.assertIn(
             "Viability (%) was compared between the levels of Treatment (Control, 10 rows; Low, 11 rows; "
-            "High, 12 rows) with Welch's t-test [",
+            "High, 12 rows) with Welch's ANOVA with Games–Howell contrasts [",
             text,
         )
         self.assertIn(
@@ -218,10 +276,29 @@ class MethodsDraftTests(unittest.TestCase):
         self.assertIn("This analysis was exploratory: it was not planned before the data were seen.", text)
         self.assertIn("The model was `Viability (%) ~ Passage + Treatment`.", text)
         self.assertIn("Treatment entered the model as a fixed-effect covariate.", text)
-        self.assertIn("Hedges' g was reported as the standardised effect size", text)
-        self.assertIn("Assumption checks: Residuals were roughly normal", text)
+        self.assertIn("Omega squared was reported as the standardised effect size", text)
+        self.assertIn(
+            "Its key result, the one adjusted across its family, was the overall test of Treatment.", text
+        )
+        self.assertIn(
+            "The p-values of its other rows were adjusted within the analysis (Games–Howell over the 3 "
+            "pairs), with simultaneous confidence intervals.",
+            text,
+        )
+        checks = text.split("Its fit and assumptions were checked [", 1)[1].split("\n", 1)[0]
+        self.assertIn("Shapiro–Wilk test of the residuals: W = 0.970", checks)
+        self.assertIn("Levene's test (median-centred)", checks)
+        self.assertNotIn("Rows per group", text)
+        self.assertNotIn("this analysis needs was missing", text)
+        self.assertNotIn("rows with both", text)
+        self.assertIn("Breusch–Pagan test for constant residual variance", text)
+        self.assertIn("so the difference is averaged over time points.", text)
+        self.assertNotIn("`change: Day`", text)
         self.assertIn("Caveat: Passage was recorded for each well, not each plate.", text)
-        self.assertIn("with Holm's step-down method [", text)
+        self.assertIn(
+            "each analysis contributed the p-value of its key result, adjusted with Holm's step-down", text
+        )
+        self.assertIn("All tests were two-sided.", text)
         self.assertIn("“primary” (Viability (%) by Treatment) and “exploratory” (Association between", text)
         self.assertIn(
             "The significance level was α = 0.05, and all confidence intervals were computed at the 95% "
@@ -230,6 +307,8 @@ class MethodsDraftTests(unittest.TestCase):
         )
         self.assertIn("Exploratory results are labelled as such", text)
         self.assertIn(WELCH, text)
+        references = text.split("## References", 1)[1]
+        self.assertEqual(references.count("Holm, S. (1979)"), 1)
 
     def test_the_software_section_names_python_and_every_package_version(self):
         text = make(assay_study(), primary=welch).methods
@@ -257,8 +336,9 @@ class MethodsDraftTests(unittest.TestCase):
         made = make(assay_study(), primary=unsupported)
         methods, results = made.methods, made.results
         self.assertIn(
-            "This planned analysis was not run. Binary outcomes in repeated designs are not fitted", methods
+            "This planned analysis was not run. Binary outcomes in repeated designs are not fitted.", methods
         )
+        self.assertNotIn("custom:", methods)
         self.assertNotIn("Holm", methods)
         self.assertIn("Viability (%) by Treatment was not analysed. Binary outcomes", results)
         self.assertIn("No analyses were run, so there are no results to report.", results)
@@ -319,9 +399,13 @@ class MethodsDraftTests(unittest.TestCase):
                         "ci_low": 0.0601,
                         "ci_high": 0.0823,
                         "statistic": 12.6,
-                        "df": float("nan"),
                         "p": 1e-12,
                         "p_adjusted": 1e-12,
+                        "key": True,
+                        "measure": "slope difference",
+                        "statistic_name": "z",
+                        "test": "Linear mixed model",
+                        "adjustment": "Holm over family growth (1 analysis)",
                     }
                 ),
                 statistic_name="z",
@@ -348,8 +432,8 @@ class MethodsDraftTests(unittest.TestCase):
         )
         self.assertIn(
             "For the change in Weight (g) over Day by Diet (linear mixed model; n = 60 rows from 12 "
-            "subjects), the estimate for Day × High fat was 0.071 (95% CI 0.060 to 0.082; z = 12.60, "
-            "p < 0.001; Holm-adjusted p < 0.001).",
+            "subjects), the estimate for Day × High fat was 0.0712 g per day (95% CI 0.0601 to 0.0823; "
+            "z = 12.60, p < 0.001; adjusted p < 0.001, Holm over family growth, 1 analysis).",
             made.results,
         )
 
@@ -393,7 +477,7 @@ class MethodsDraftTests(unittest.TestCase):
         self.assertEqual(supplement.core_properties.author, "")
         self.assertEqual(supplement.core_properties.created.year, 2000)
         body = "\n".join(p.text for p in methods.paragraphs)
-        self.assertIn("Welch's t-test", body)
+        self.assertIn("Welch's ANOVA", body)
         self.assertNotIn("**", body)
 
 
@@ -402,24 +486,24 @@ class ResultsDraftTests(unittest.TestCase):
         text = make(assay_with_steps(analyses=two_analyses()), primary=welch, passage=regression).results
         planned, exploratory = text.split("The following analyses were exploratory", 1)
         self.assertIn(
-            "For Viability (%) by Treatment (Welch's t-test; n = 33), the estimate for High − Control was "
-            "−12.1 (95% CI −15.2 to −9.0; t = −8.12, df = 21.5, p < 0.001; Holm-adjusted p < 0.001). Hedges' "
-            "g was −3.10 (95% CI −4.20 to −2.00).",
+            "For Viability (%) by Treatment (Welch's ANOVA; n = 33), the overall test of Treatment gave "
+            "F(2, 21.7) = 24.31 (p < 0.001; adjusted p < 0.001, Holm over family primary, 1 analysis) and "
+            "the estimate for High − Control was −12.08 percentage points (95% CI −15.18 to −8.98; "
+            "t(21.5) = −8.12, p < 0.001; adjusted p < 0.001, Games–Howell over the 3 pairs). Omega squared "
+            "was 0.61 (95% CI 0.30 to 0.75).",
             planned,
         )
         self.assertNotIn("Passage", planned.split("> Draft", 1)[1].split("\n\n", 1)[1])
         self.assertIn("were not planned before the data were seen", exploratory)
         self.assertIn(
-            "the estimate for Passage was 0.21 (95% CI −0.35 to 0.77; t = 0.76, df = 29, p = 0.450",
+            "the estimate for Slope on Passage was 0.210 percentage points per unit (95% CI −0.350 to 0.770; "
+            "t(29) = 0.76, p = 0.450; adjusted p = 0.450, Holm over family exploratory, 1 analysis).",
             exploratory,
         )
+        self.assertNotIn("Intercept", text)
+        self.assertNotIn("not estimable", text)
         self.assertNotIn("significan", text.lower())
         self.assertNotIn("trend", text.lower())
-
-    def test_decimals_follow_the_interval_width(self):
-        self.assertEqual(_decimals(-12.08, -15.18, -8.98), 1)
-        self.assertEqual(_decimals(0.0712, 0.0601, 0.0823), 3)
-        self.assertEqual(_decimals(250.0, None, None), 0)
 
 
 class SupplementTests(unittest.TestCase):
@@ -475,7 +559,11 @@ class SupplementTests(unittest.TestCase):
             "| 0 |",
             text,
         )
-        self.assertIn("Output (supplement/models/passage.txt):\n\n```\nModel output for passage\n```", text)
+        self.assertIn(
+            "The model's record, supplement/models/passage.txt:\n\n```\nModel output for passage\n```", text
+        )
+        self.assertNotIn("Warnings:", text)
+        self.assertIn("Diagnostics:\n\n- 1 of 34 rows were left out", text)
         self.assertIn("**Data dictionary**", text)
         self.assertEqual(len(document.inline_shapes), 1)
         self.assertEqual(len(document.tables), 3)
@@ -508,6 +596,26 @@ class WordingTests(unittest.TestCase):
         self.assertEqual(_with_article("One-way ANOVA"), "a one-way ANOVA")
         self.assertEqual(_with_article("Mann-Whitney U test"), "the Mann-Whitney U test")
         self.assertEqual(_with_article("ANOVA"), "an ANOVA")
+        self.assertEqual(
+            _with_article("Kruskal–Wallis test with pairwise Mann–Whitney tests"),
+            "the Kruskal–Wallis test with pairwise Mann–Whitney tests",
+        )
+        self.assertEqual(
+            _with_article(_test_prose("Linear mixed model, random intercept per subject (Mouse)")),
+            "a linear mixed model with a random intercept per subject (Mouse)",
+        )
+
+    def test_advice_about_study_yml_stays_out_of_the_paper(self):
+        self.assertEqual(
+            _for_paper("Not fitted here. Write your own analysis under `custom:`."), "Not fitted here."
+        )
+        self.assertEqual(
+            _for_paper("Time is not in this model, so it is averaged; a `change: Day` analysis models time."),
+            "Time is not in this model, so it is averaged.",
+        )
+        self.assertEqual(
+            _for_paper("`by` applies to change analyses only."), "`by` applies to change analyses only."
+        )
 
     def test_lists_join_without_a_serial_comma(self):
         self.assertEqual(_join(["a"]), "a")
