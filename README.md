@@ -234,6 +234,7 @@ calculation lines tell you which test to start from.
 ```python
 report = ada.analyze(df, date="Survey Date", measure="Water Temp (°C)", dimension="Site")
 ada.analyze(df, measure="Rainfall (mm)", aggregation="sum")   # monthly totals, not averages
+ada.analyze(df, date="timept")   # days since infection as the time axis: a profile, no calendar
 
 report.profile()          # one row per column: type, missing, distinct values
 report.quality()          # every data-check issue, with its rows and the rule that fired
