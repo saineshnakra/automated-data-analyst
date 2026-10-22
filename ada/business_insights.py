@@ -111,11 +111,13 @@ from .formatting import (
 )
 from .metrics import MetricSpec, metric_for
 from .quality import (
+    INFO_CHECKS,
     TABLE_CHECKS,
     QualityIssue,
     counts_units,
     flagged_index,
     is_location_name,
+    own_columns,
     prefers_log_scale,
     show_value,
     statistics_frame,
@@ -3198,16 +3200,23 @@ CHECK_FIRST_BROAD = 25.0
 
 
 def _leading_issues(issues: tuple[QualityIssue, ...], limit: int) -> list[QualityIssue]:
-    """The issues to name first: those covering the most rows or cells."""
-    return sorted(issues, key=lambda issue: -issue.rows)[:limit]
+    """The issues to name first: those covering the most rows or cells, descriptions of the table last."""
+    return sorted(issues, key=lambda issue: (issue.check in INFO_CHECKS, -issue.rows))[:limit]
 
 
 def _quality_evidence(
-    dataframe: pd.DataFrame, issues: tuple[QualityIssue, ...] = (), measure: str | None = None
+    dataframe: pd.DataFrame,
+    issues: tuple[QualityIssue, ...] = (),
+    measure: str | None = None,
+    roles: ColumnRoles | None = None,
 ) -> Evidence | None:
-    """The data checks: the leading issues by name and count, and how complete the table is."""
-    total_cells = dataframe.shape[0] * dataframe.shape[1]
-    missing_cells = int(dataframe.isna().sum().sum())
+    """The data checks: the leading issues by name and count, and how complete the table is.
+
+    One part of a stacked file is judged on its own columns (``own_columns``).
+    """
+    own = own_columns(dataframe, roles)
+    total_cells = own.shape[0] * own.shape[1]
+    missing_cells = int(own.isna().sum().sum())
     if total_cells == 0 or (missing_cells == 0 and not issues):
         return None
     rate = missing_cells / total_cells * 100
@@ -3215,6 +3224,12 @@ def _quality_evidence(
         f"{missing_cells:,} cells are missing, leaving the analyzed dataset "
         f"{format_percentage(100 - rate)} complete."
     )
+    if own.shape[1] < dataframe.shape[1]:
+        others = dataframe.shape[1] - own.shape[1]
+        completeness = completeness[:-1] + (
+            f" across its own {own.shape[1]:,} columns; the {others:,} columns of the other stacked tables, "
+            "empty throughout this one, are left out."
+        )
     if not issues:
         return Evidence(
             kind="quality",
@@ -3275,25 +3290,47 @@ def _issues_on_headline(
     ]
 
 
-def _check_first(issues: tuple[QualityIssue, ...], roles: ColumnRoles, leader: Evidence | None) -> str:
+def _check_first(
+    issues: tuple[QualityIssue, ...],
+    roles: ColumnRoles,
+    leader: Evidence | None,
+    resolved: tuple[QualityIssue, ...] = (),
+) -> str:
     """One line naming the issues behind the headline, or "" when none touch it.
 
     Issues about the whole table (copied rows, data that look simulated)
     count when they cover CHECK_FIRST_SHARE of it, and any other issue about
     values when it covers CHECK_FIRST_BROAD of its column (fill values in 61% of
-    rows), since they qualify figures well beyond the headline. The issues
-    covering most rows come first.
+    rows), since they qualify figures well beyond the headline. They are
+    ranked as the data checks card ranks them, and those still in the data
+    come before ``resolved`` ones, codes cleaning already set to missing: the
+    card's leading open issues take a resolved code's place, since the code no
+    longer touches any figure. Descriptions of the table (a constant column)
+    are never named here.
     """
+    open_values = [
+        issue for issue in issues
+        if not issue.check.startswith("missing") and issue.check not in INFO_CHECKS and issue not in resolved
+    ]
     broad = [
         issue for issue in issues
-        if not issue.check.startswith("missing")
+        if not issue.check.startswith("missing") and issue.check not in INFO_CHECKS
         and issue.share >= (CHECK_FIRST_SHARE if issue.check in TABLE_CHECKS else CHECK_FIRST_BROAD)
     ]
-    behind = [issue for issue in _issues_on_headline(issues, roles, leader) if issue not in broad]
-    relevant = _leading_issues(tuple(broad + behind), CHECK_FIRST_SHOWN)
+    behind = [
+        issue for issue in _issues_on_headline(issues, roles, leader)
+        if issue not in broad and issue.check not in INFO_CHECKS
+    ]
+    relevant = broad + behind
     if not relevant:
         return ""
-    return "Check these first: " + "; ".join(issue.summary for issue in relevant) + "."
+    current = _leading_issues(tuple(issue for issue in relevant if issue not in resolved), CHECK_FIRST_SHOWN)
+    handled = [issue for issue in relevant if issue in resolved]
+    leading = [issue for issue in _leading_issues(tuple(open_values), CHECK_FIRST_SHOWN)
+               if issue not in current]
+    chosen = (current + (leading if handled else []) + handled)[:CHECK_FIRST_SHOWN]
+    chosen.sort(key=lambda issue: (issue in resolved, issue.check in INFO_CHECKS, -issue.rows))
+    return "Check these first: " + "; ".join(issue.summary for issue in chosen) + "."
 
 
 def _flag_driven_leader(
@@ -3887,7 +3924,7 @@ def analyze_business(
         _noting(_outlier_evidence(statistics, roles, readings, issues), left_out),
         # A scan that found nothing ranks below the findings.
         None if found_difference else differences,
-        _quality_evidence(dataframe, issues, roles.measure),
+        _quality_evidence(dataframe, issues, roles.measure, roles),
     ):
         if optional_evidence:
             evidence.append(optional_evidence)
@@ -3931,7 +3968,8 @@ def analyze_business(
 
     # Pad towards four tiles from a fixed list, skipping labels already shown;
     # a thin file gets fewer tiles rather than duplicates.
-    completeness = 1 - dataframe.isna().sum().sum() / max(dataframe.size, 1)
+    own = own_columns(dataframe, roles)
+    completeness = 1 - own.isna().sum().sum() / max(own.size, 1)
     fallbacks = []
     row_key = _row_key(dataframe, roles)
     if roles.identifier and not row_key:
@@ -3987,7 +4025,7 @@ def analyze_business(
     for item in extras:
         if item is not None and item.lead and item.lead != headline:
             summary_parts.append(item.lead)
-    if check_first := _check_first(issues, roles, leader):
+    if check_first := _check_first(issues, roles, leader, blanked):
         summary_parts.append(check_first)
     if note_text := _measure_choice_note(roles):
         summary_parts.append(note_text)

@@ -601,7 +601,9 @@ class DataCheckTests(unittest.TestCase):
         self.assertEqual(frame["Wind Speed"].max(), 999.9)
 
     def test_a_clean_table_has_an_empty_frame(self):
-        self.assertTrue(ada.analyze(steady()).quality().empty)
+        frame = steady().assign(Revenue=lambda table: 100.0 + table.index % 3)
+
+        self.assertTrue(ada.analyze(frame).quality().empty)
 
 
 class ChosenMeasureTests(unittest.TestCase):

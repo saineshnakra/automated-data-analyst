@@ -1,5 +1,5 @@
 import unittest
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
@@ -18,6 +18,7 @@ from ada.demo_data import make_demo_data
 from ada.formatting import format_number
 from ada.metrics import increase_is_welcome
 from ada.pipeline import prepare_analysis
+from ada.quality import blank_codes
 from ada.schema import ColumnRoles, detect_roles
 
 MONTHS = pd.date_range("2024-01-01", periods=12, freq="MS")
@@ -1675,6 +1676,41 @@ class DataCheckTests(unittest.TestCase):
 
         assert checks is not None
         self.assertEqual(checks.title, "Data completeness")
+
+    def test_open_issues_come_before_codes_cleaning_set_to_missing(self):
+        rng = np.random.default_rng(66)
+        rows = 2000
+        frame = pd.DataFrame({
+            "Level": rng.choice(["Good", "Moderate", "Unhealthy"], rows),
+            "mq135": rng.normal(85, 10, rows).round(),
+            "mq2": rng.normal(84, 10, rows).round(),
+            "mq4": rng.normal(150, 15, rows).round(),
+        })
+        frame["Gas_Index"] = frame[["mq135", "mq2", "mq4"]].mean(axis=1).round(2)
+        frame.loc[:59, "mq135"] = rng.uniform(5000, 80000, 60).round()
+        frame.loc[100:107, ["mq135", "mq2", "mq4", "Gas_Index"]] = -1.0
+        cleaned, blanked, _ = blank_codes(frame)
+
+        brief = analyze_business(cleaned, lab_roles(cleaned, "Gas_Index", "Level"), blanked=blanked)
+
+        line = brief.summary[brief.summary.index("Check these first"):]
+        self.assertTrue(line.startswith("Check these first: mq135: 60 values"), line)
+
+    def test_a_stacked_part_is_judged_on_its_own_columns(self):
+        rng = np.random.default_rng(67)
+        frame = pd.DataFrame({
+            "Category": rng.choice(["Seafood", "Water", "Salt"], 300),
+            "Particles": rng.gamma(3, 2, 300).round(2),
+            "Size": rng.gamma(4, 20, 300).round(),
+            **{f"other_{index}": np.full(300, np.nan) for index in range(6)},
+        })
+        roles = replace(lab_roles(frame, "Particles", "Category"), table_shape="stacked")
+
+        brief = analyze_business(frame, roles)
+
+        checks = brief_card(brief, "quality")
+        self.assertTrue(checks is None or "other_0" not in checks.statement)
+        self.assertIn("Data completeness: 100.0%", [f"{kpi.label}: {kpi.value}" for kpi in brief.kpis])
 
     def test_copied_rows_over_a_tenth_of_the_table_are_checked_first(self):
         rng = np.random.default_rng(63)

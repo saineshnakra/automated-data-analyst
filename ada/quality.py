@@ -27,7 +27,7 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pandas as pd
-from pandas.api.types import is_bool_dtype, is_numeric_dtype
+from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_dtype
 from scipy import stats
 
 from .formatting import group_label, has_percent_unit, is_currency, normalized_name
@@ -92,6 +92,21 @@ EXTREME_COLUMNS_LISTED = 10
 #: share of its rows in one group, is a limit that group's measurements stop at.
 GROUP_CAP_SHARE = 0.05
 GROUP_CAP_CONCENTRATION = 0.8
+#: A missing-value code on at least FAILED_RECORD_ROWS rows marks a failed
+#: record when another column holds one value on FAILED_RECORD_SHARE of them.
+FAILED_RECORD_ROWS = 10
+FAILED_RECORD_SHARE = 0.9
+#: Rows of zeros: readings each 0 on under ZERO_ROW_COLUMN_SHARE of their
+#: values, ZERO_ROW_SHARE of them 0 on the same row.
+ZERO_ROW_COLUMN_SHARE = 0.05
+ZERO_ROW_SHARE = 0.75
+#: Cells that stand for "not recorded" when several columns hold them on the same rows.
+PLACEHOLDER_TOKENS = frozenset({"0", "-", "--", "—", "–"})
+PLACEHOLDER_OVERLAP = 0.98
+#: A reading exactly 0 in this share of rows is mostly below detection.
+ZERO_HEAVY_SHARE = 1 / 3
+# Readings whose zeros are dry days, not values below a limit.
+DRY_ZERO_WORDS = frozenset({"rain", "rainfall", "precipitation", "precip", "snow", "snowfall"})
 #: Share of a column's values held by one non-round value that reads as filled-in gaps.
 IMPUTED_SHARE = 0.10
 #: How many times more often than its neighbours a value in the tail must occur
@@ -182,6 +197,9 @@ CHECKS = {
     "impossible": "Impossible values",
     "implausible": "Implausible share",
     "sentinel": "Sentinel codes",
+    "failed_record": "Failed records",
+    "zero_rows": "Rows of zeros",
+    "placeholder": "Not recorded",
     "group_level": "Group out of scale",
     "equal_columns": "Copied values",
     "min_max": "Max below min",
@@ -194,6 +212,9 @@ CHECKS = {
     "clipped": "Clipped at both ends",
     "survey_code": "Survey codes",
     "rare_code": "Rare codes",
+    "zeros": "Mostly zeros",
+    "single_reading": "Single readings",
+    "constant": "Constant columns",
     "missing_by_group": "Missing by group",
     "missing_dependency": "Missing by value",
     "missing_block": "Missing together",
@@ -202,14 +223,23 @@ CHECKS = {
 #: Checks that flag individual cells, whose rows ``flagged_index`` returns.
 VALUE_CHECKS = frozenset({
     "impossible", "implausible", "sentinel", "extreme", "cluster", "survey_code", "swapped", "rare_code",
+    "failed_record", "zero_rows", "placeholder",
 })
 #: Checks whose cells can't be readings as they stand (an impossible value, a
-#: code, a filled-in gap, a value in the wrong column, a stuck sensor), and which
+#: code, a filled-in gap, a value in the wrong column, a stuck sensor, the rest
+#: of a failed record, a row of zeros, a placeholder), and which
 #: ``statistics_mask`` blanks for computing relationships and comparisons.
 #: Extreme values and clusters may be real, so they stay.
-MASKED_CHECKS = frozenset({"impossible", "sentinel", "imputed", "survey_code", "swapped", "flatline"})
+MASKED_CHECKS = frozenset({
+    "impossible", "sentinel", "imputed", "survey_code", "swapped", "flatline", "failed_record", "zero_rows",
+    "placeholder",
+})
 #: Checks about the whole table, named first when they cover enough of it.
 TABLE_CHECKS = frozenset({"generated", "duplicates"})
+#: Checks that describe the table rather than flag values to doubt (a constant
+#: column, a reading mostly 0, max equal to min where one reading was taken).
+#: They rank after the issues about values and are never named first.
+INFO_CHECKS = frozenset({"constant", "zeros", "single_reading"})
 
 # Words that make a quantity non-negative: a size, an amount of matter, a count.
 # Money and sales quantities are left out, since refunds and returns are negative.
@@ -1215,11 +1245,11 @@ def _caps(
             continue
         if tied is not None and tied(column.name, value):
             continue
-        clear = (
-            count >= CAP_STANDOUT * busiest_inside
-            or count / column.size >= CAP_CLEAR_SHARE
-            or (side == "maximum" and abs(value) >= 1 and _round_value(value))
-        )
+        # A round maximum hit a handful of times is a scale's ceiling (an index stopping at 500);
+        # a large pile there is judged like any other.
+        ceiling = side == "maximum" and abs(value) >= 1 and _round_value(value)
+        ceiling = ceiling and count / column.size < CAP_SHARE
+        clear = count >= CAP_STANDOUT * busiest_inside or count / column.size >= CAP_CLEAR_SHARE or ceiling
         # A share no continuous reading reaches by chance, or enough rows to stand out.
         enough = count / column.size >= CAP_SHARE or count >= 5
         piles[side] = (value, count, count >= 3 * neighbours and clear and enough)
@@ -1227,8 +1257,6 @@ def _caps(
         return [_clipped_issue(column, piles["minimum"][0], piles["maximum"][0])]
     # Many values just under a maximum that only a few hit exactly are squeezed against it.
     squeezed = _squeezed(column)
-    if squeezed is not None and "maximum" in piles and squeezed.rows < 2 * piles["maximum"][1]:
-        squeezed = None
     issues = [squeezed] if squeezed else []
     for side, (value, count, limit) in piles.items():
         if not limit or (side == "maximum" and squeezed):
@@ -1307,9 +1335,10 @@ def _squeezed(column: _Column) -> QualityIssue | None:
     edges = high - width * np.arange(SQUEEZE_WINDOWS + 1, -1, -1)
     counts = np.histogram(column.ordered, bins=edges)[0]
     top, below = int(counts[-1]), float(np.median(counts[:-1]))
-    if top / column.size < CAP_SHARE or top < SQUEEZE_RATIO * max(below, 1.0):
-        return None
     exact = int(column.counts[-1])
+    # Most of them must fall short of the maximum; a pile on it is a cap or nothing.
+    if top / column.size < CAP_SHARE or top < SQUEEZE_RATIO * max(below, 1.0) or top < 2 * exact:
+        return None
     cells = column.array >= high - width
     flagged = column.cells(cells)
     share = _percent(top / column.size * 100)
@@ -2563,7 +2592,8 @@ def _swapped(
 
 
 def _without_swapped(issues: list[QualityIssue], swaps: list[QualityIssue]) -> list[QualityIssue]:
-    """Drop value issues whose cells all lie in a swapped block: the swap explains them."""
+    """Drop value issues whose cells all lie in a swapped block, or another issue that explains
+    them (a row of zeros): that issue says what is wrong with them."""
     if not swaps:
         return issues
     covered: dict[str, pd.Index] = {}
@@ -2679,6 +2709,261 @@ def _tied_check(frame: pd.DataFrame, roles: ColumnRoles | None) -> Callable[[str
         return False
 
     return tied
+
+
+def _failed_records(
+    frame: pd.DataFrame, issues: list[QualityIssue], columns: list[str]
+) -> list[QualityIssue]:
+    """Values other columns hold on the rows where one column holds a missing-value code: one failed record.
+
+    A logger that fails writes its code in one channel and its own fixed
+    values in the others (a sound level of 0, a battery of 2.5 V on the rows
+    where temperature reads -25.6). A value counts when it fills
+    FAILED_RECORD_SHARE of the code's rows and turns up elsewhere on at most a
+    tenth as many rows; such cells are no more readings than the code is.
+    """
+    found = []
+    for issue in issues:
+        if issue.check != "sentinel" or not issue.cells:
+            continue
+        rows = next(iter(issue.cells.values()))
+        for labels in issue.cells.values():
+            rows = rows.union(labels)
+        if len(rows) < FAILED_RECORD_ROWS:
+            continue
+        inside = frame.index.isin(rows)
+        held: dict[str, float] = {}
+        cells: dict[str, pd.Index] = {}
+        for column in columns:
+            if column in issue.columns:
+                continue
+            values = frame[column].to_numpy(dtype="float64", na_value=np.nan)
+            codes, levels = pd.factorize(values[inside])
+            if not len(levels):
+                continue
+            top = int(np.argmax(np.bincount(codes[codes >= 0])))
+            value = float(levels[top])
+            at = values == value
+            hits = int((at & inside).sum())
+            if hits < FAILED_RECORD_SHARE * len(rows) or int((at & ~inside).sum()) > 0.1 * hits:
+                continue
+            held[column] = value
+            cells[column] = frame.index[at & inside]
+        if not held:
+            continue
+        source = _listed(list(issue.columns))
+        code = issue.examples[0] if issue.examples else "a code"
+        values = _listed([f"{column} {show_value(value)}" for column, value in held.items()])
+        detail = (
+            f"On the {_plural(len(rows), 'row')} where {source} holds {code} (a missing-value code), "
+            f"{values}, values {'that column' if len(held) == 1 else 'those columns'} almost never "
+            "hold elsewhere: the whole record failed there, so these cells are not readings either and are "
+            "left out of relationships and comparisons."
+        )
+        summary = f"{_listed([*issue.columns, *held], 3)}: one failed record on {_plural(len(rows), 'row')}"
+        rule = (
+            f"one value filling {FAILED_RECORD_SHARE:.0%} or more of the rows a missing-value code is on, "
+            "and elsewhere on at most a tenth as many rows"
+        )
+        found.append(QualityIssue(
+            "failed_record", tuple(held), len(rows), len(rows) / max(len(frame), 1) * 100, detail, summary,
+            rule, tuple(show_value(value) for value in held.values()), group=issue.group, cells=cells,
+        ))
+    return found
+
+
+def _zero_rows(frame: pd.DataFrame, profiles: dict[str, _Column], columns: list[str]) -> QualityIssue | None:
+    """Rows on which nearly every reading is exactly 0, in columns otherwise rarely 0.
+
+    A mineral with no electrons and no density is a row of blanks written as
+    zeros, not a measurement. The columns must each be 0 on under
+    ZERO_ROW_COLUMN_SHARE of their values, at least three of them; a row
+    counts when ZERO_ROW_SHARE of them are 0 on it.
+    """
+    rare = [
+        column for column in columns
+        if float(profiles[column].counts[profiles[column].uniques == 0].sum()) / profiles[column].size
+        < ZERO_ROW_COLUMN_SHARE
+    ]
+    if len(rare) < 3:
+        return None
+    zeros = (frame[rare].to_numpy(dtype="float64", na_value=np.nan) == 0)
+    hit = zeros.sum(axis=1) >= max(3, ZERO_ROW_SHARE * len(rare))
+    count = int(hit.sum())
+    if count < 2 or count > 0.25 * len(frame):
+        return None
+    labels = frame.index[hit]
+    involved = [column for position, column in enumerate(rare) if zeros[hit, position].mean() >= 0.5]
+    cells = {column: labels[zeros[hit, rare.index(column)]] for column in involved}
+    named = _listed(involved)
+    detail = (
+        f"{_plural(count, 'row')} hold exactly 0 in nearly every reading ({named}), though each of these "
+        "columns is otherwise rarely 0: probably missing values recorded as 0, so those cells are left "
+        "out of relationships and comparisons."
+    )
+    summary = f"{_plural(count, 'row')} of zeros in {len(involved)} readings ({_listed(involved, 3)})"
+    rule = (
+        f"rows 0 in {ZERO_ROW_SHARE:.0%} or more of three or more readings that are each 0 on under "
+        f"{ZERO_ROW_COLUMN_SHARE:.0%} of their values"
+    )
+    share = count / max(len(frame), 1) * 100
+    return QualityIssue("zero_rows", tuple(involved), count, share, detail, summary, rule,
+                        (f"{count:,} rows",), cells=cells)
+
+
+def _placeholder_mask(series: pd.Series) -> np.ndarray | None:
+    """True for cells holding a placeholder (0, "0", "-"), or None when the column holds none to test."""
+    if is_bool_dtype(series):
+        return None
+    if is_numeric_dtype(series):
+        return series.to_numpy(dtype="float64", na_value=np.nan) == 0
+    if series.dtype != object:
+        return None
+    text = series.astype("string").str.strip()
+    return text.isin(PLACEHOLDER_TOKENS).to_numpy(dtype=bool, na_value=False)
+
+
+def _placeholder_blocks(frame: pd.DataFrame, identifier: str | None) -> list[QualityIssue]:
+    """Columns holding 0 or "-" on exactly the same rows, and real values on the rest: not recorded there.
+
+    A feature table writes "-" for the name and 0 for the formula, the score
+    and the error of every feature it could not annotate. Those cells say
+    nothing was recorded; read as values they make "score 0" a group and a
+    finding. A block needs three or more columns, at least one of them text,
+    whose placeholder rows agree (Jaccard PLACEHOLDER_OVERLAP) and cover 5% to
+    95% of the table, with ten or more rows of real values.
+    """
+    rows = len(frame)
+    masks, names, texts = [], [], []
+    for column in frame.columns:
+        if column == identifier:
+            continue
+        mask = _placeholder_mask(frame[column])
+        if mask is None:
+            continue
+        held = int(mask.sum())
+        if 0.05 * rows <= held <= 0.95 * rows and int(frame[column].notna().sum()) - held >= 10:
+            masks.append(mask)
+            names.append(column)
+            texts.append(not is_numeric_dtype(frame[column]))
+    if len(names) < 3 or not any(texts):
+        return []
+    matrix = np.column_stack(masks).astype("float32")
+    together = matrix.T @ matrix
+    counts = np.diag(together)
+    overlap = together / np.maximum(counts[:, None] + counts[None, :] - together, 1)
+    issues = []
+    taken: set[int] = set()
+    for seed in np.flatnonzero(texts):
+        if seed in taken:
+            continue
+        members = [int(position) for position in np.flatnonzero(overlap[seed] >= PLACEHOLDER_OVERLAP)]
+        members = [position for position in members if position not in taken]
+        if len(members) < 3:
+            continue
+        taken.update(members)
+        block = [names[position] for position in members]
+        shared = np.logical_and.reduce([masks[position] for position in members])
+        count = int(shared.sum())
+        cells = {names[position]: frame.index[masks[position]] for position in members}
+        detail = (
+            f"{_listed(block)} hold 0 or a dash on the same {_plural(count, 'row')} "
+            f"({_percent(count / rows * 100)}) and real values on the rest: on those rows nothing was "
+            "recorded in them, so the zeros and dashes are left out of relationships and comparisons rather "
+            "than read as values or a group."
+        )
+        on_rows = _plural(count, "row")
+        summary = f"{len(block)} columns not recorded on the same {on_rows} ({_listed(block, 3)})"
+        rule = (
+            f"three or more columns, one of them text, holding 0 or a dash on rows that agree by "
+            f"{PLACEHOLDER_OVERLAP:.0%} or more"
+        )
+        issues.append(QualityIssue("placeholder", tuple(block), count, count / rows * 100, detail, summary,
+                                   rule, cells=cells))
+    return issues
+
+
+def _constant_columns(frame: pd.DataFrame, roles: ColumnRoles | None) -> QualityIssue | None:
+    """Columns holding one value on every row where they are recorded.
+
+    They can't differ or relate to anything, so the analysis leaves them out;
+    saying so keeps a never-detected compound (0 in every sample) or a fill
+    value from vanishing without a word. Text columns count only in a flat
+    table, since focusing on one part of a long or stacked table makes the
+    column naming that part constant. Dates are left to the timeline, and a
+    measure that never changes to the brief, which reports it as it is.
+    """
+    flat = roles is None or roles.table_shape == "flat"
+    measure = roles.measure if roles else None
+    rows = len(frame)
+    found: dict[str, object] = {}
+    for column in frame.columns:
+        series = frame[column]
+        text = not is_numeric_dtype(series)
+        if column == measure or is_datetime64_any_dtype(series) or (text and not flat):
+            continue
+        present = series.dropna()
+        if len(present) < max(2, 0.9 * rows):
+            continue
+        first = present.iloc[0]
+        if is_numeric_dtype(series) and not is_bool_dtype(series):
+            values = present.to_numpy(dtype="float64")
+            if np.all(values == values[0]):
+                found[column] = float(values[0])
+        elif (present == first).all():
+            found[column] = first
+    if not found:
+        return None
+    zeros = [column for column, value in found.items() if isinstance(value, float) and value == 0]
+    others = {column: value for column, value in found.items() if column not in zeros}
+    parts = []
+    if zeros:
+        parts.append(f"{_listed(zeros)} {'is' if len(zeros) == 1 else 'are'} 0 in every row")
+    if others:
+        shown = [f"{column} ({value:g})" if isinstance(value, float) else f"{column} ({value})"
+                 for column, value in others.items()]
+        verb = "holds one value" if len(others) == 1 else "each hold one value"
+        parts.append(f"{_listed(shown)} {verb} in every row")
+    detail = (
+        f"{'; '.join(parts)}. A column that never changes can't differ between groups or relate to "
+        "anything, so the analysis leaves it out: a 0 everywhere means never detected or never recorded, "
+        "and one repeated reading may be a fill value or a detection limit."
+    )
+    noun = "column" if len(found) == 1 else "columns"
+    summary = f"{len(found)} constant {noun} ({_listed(list(found), 3)})"
+    rule = "one value on every row where the column is recorded, recorded on 90% of rows or more"
+    return QualityIssue("constant", tuple(found), len(found), 100.0, detail, summary, rule)
+
+
+def _zero_heavy(profiles: dict[str, _Column], columns: list[str]) -> QualityIssue | None:
+    """Readings that are exactly 0 in a third or more of rows: absences, or values below a detection limit.
+
+    Their Pearson correlations mostly contrast the zero rows with the rest, so
+    rank correlations, or zero against not zero, say more. Whole numbers
+    (counts) and rain, whose zeros are plainly dry days, are left out.
+    """
+    heavy = {}
+    for column in columns:
+        profile = profiles[column]
+        zeros = float(profile.counts[profile.uniques == 0].sum())
+        share = zeros / max(profile.size, 1)
+        if not ZERO_HEAVY_SHARE <= share < 1 or profile.whole or profile.size - zeros < 10:
+            continue
+        if _name_words(column) & DRY_ZERO_WORDS:
+            continue
+        heavy[column] = share
+    if not heavy:
+        return None
+    shown = _listed([f"{column} ({_percent(share * 100)})" for column, share in heavy.items()])
+    detail = (
+        f"{shown} {'is' if len(heavy) == 1 else 'are'} exactly 0 in a third or more of rows, either true "
+        "absences or values below a detection limit: Pearson correlations with them mostly contrast the zero "
+        "rows with the rest, so the rank correlation, or comparing zero with non-zero rows, is the better "
+        "guide."
+    )
+    summary = f"{_listed(list(heavy), 3)}: exactly 0 in a third or more of rows"
+    rule = f"exactly 0 in {ZERO_HEAVY_SHARE:.0%} or more of a reading's values, not whole numbers"
+    return QualityIssue("zeros", tuple(heavy), len(heavy), max(heavy.values()) * 100, detail, summary, rule)
 
 
 def _duplicates(frame: pd.DataFrame, profiles: dict[str, _Column]) -> QualityIssue | None:
@@ -3017,6 +3302,20 @@ def _profiles(frame: pd.DataFrame, roles: ColumnRoles | None) -> dict[str, _Colu
     return profiles
 
 
+def own_columns(frame: pd.DataFrame, roles: ColumnRoles | None) -> pd.DataFrame:
+    """The frame without the columns that are empty throughout it, when it is one part of a stacked file.
+
+    Once the brief covers one of several stacked tables, the other tables'
+    columns are empty on every row; they are not gaps in this table, so the
+    checks and the completeness figure leave them out. Any other table keeps
+    every column, since a column empty throughout is a gap worth naming there.
+    """
+    if roles is None or roles.table_shape != "stacked":
+        return frame
+    recorded = frame.notna().any().to_numpy()
+    return frame if recorded.all() else frame.loc[:, recorded]
+
+
 def scan(
     frame: pd.DataFrame, roles: ColumnRoles | None = None, blanked: tuple[QualityIssue, ...] = ()
 ) -> tuple[QualityIssue, ...]:
@@ -3031,6 +3330,7 @@ def scan(
     codes to missing; they are no longer in ``frame``, so they are ranked with
     the rest here and the checks still list them.
     """
+    frame = own_columns(frame, roles)
     profiles = _profiles(frame, roles)
     factors = tuple(roles.factors) if roles else ()
     measure = roles.measure if roles else None
@@ -3058,7 +3358,12 @@ def scan(
                 piled.setdefault(column, set()).update(_pile_values([issue]))
     issues = [*_merge_alike(issues), *blanked]
     swaps = _swapped(frame, profiles, [column for column in quantities if column not in matrix], date)
-    issues = _cluster_runs(_without_swapped(issues, swaps), frame, date) + swaps
+    # A row of zeros explains the extreme values on it, as a swap explains its values.
+    zeros = _zero_rows(frame, profiles, singles)
+    explaining = swaps + ([zeros] if zeros else [])
+    issues = _cluster_runs(_without_swapped(issues, explaining), frame, date) + explaining
+    issues.extend(_failed_records(frame, issues, singles))
+    issues.extend(_placeholder_blocks(frame, roles.identifier if roles else None))
     wide = [column for column in quantities if profiles[column].uniques.size >= 10]
     issues.extend(_equal_columns(frame, wide, dimension, measure))
     issues.extend(_min_max(frame, quantities))
@@ -3079,13 +3384,16 @@ def scan(
     generated = _generated(frame, profiles, quantities, _flagged_cells(issues))
     if generated:
         issues.append(generated)
+    for found in (_zero_heavy(profiles, singles), _constant_columns(frame, roles)):
+        if found:
+            issues.append(found)
     issues.extend(_missing_issues(frame, quantities, dimension, grouping))
     order = {check: position for position, check in enumerate(CHECKS)}
     return tuple(sorted(
         issues,
         key=lambda issue: (
-            issue.check.startswith("missing"), -issue.rows, order.get(issue.check, len(order)),
-            measure not in issue.columns,
+            2 if issue.check.startswith("missing") else 1 if issue.check in INFO_CHECKS else 0,
+            -issue.rows, order.get(issue.check, len(order)), measure not in issue.columns,
         ),
     ))
 
@@ -3104,8 +3412,9 @@ def statistics_mask(frame: pd.DataFrame, issues: tuple[QualityIssue, ...]) -> pd
     """True for each cell the checks found can't be a reading as it stands.
 
     That is an impossible value, a missing-value code or likely entry error, a
-    filled-in gap, a survey code, a value in a swapped column, or a stuck
-    reading (``MASKED_CHECKS``). Extreme values and second clusters may be real, so
+    filled-in gap, a survey code, a value in a swapped column, a stuck
+    reading, the rest of a failed record, a row of zeros or a placeholder
+    (``MASKED_CHECKS``). Extreme values and second clusters may be real, so
     they are not marked.
     """
     mask = pd.DataFrame(False, index=frame.index, columns=frame.columns)
@@ -3135,6 +3444,7 @@ def statistics_frame(frame: pd.DataFrame, issues: tuple[QualityIssue, ...]) -> t
     named = {
         "impossible": "impossible values", "sentinel": "missing-value codes", "imputed": "fill values",
         "survey_code": "survey codes", "swapped": "swapped values", "flatline": "stuck readings",
+        "failed_record": "failed records", "zero_rows": "rows of zeros", "placeholder": "placeholders",
     }
     what = _listed([label for kind, label in named.items() if kind in kinds])
     cleaned = frame.copy()

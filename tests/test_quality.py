@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from ada.quality import (
+    INFO_CHECKS,
     blank_codes,
     flagged_index,
     name_bounds,
@@ -586,7 +587,10 @@ class ClusterAndSwapTests(unittest.TestCase):
 
         issues = scan(frame)
 
-        self.assertFalse([issue for issue in issues if not issue.check.startswith("missing")])
+        self.assertFalse([
+            issue for issue in issues
+            if not issue.check.startswith("missing") and issue.check not in INFO_CHECKS
+        ])
 
 
 class TableCheckTests(unittest.TestCase):
@@ -968,6 +972,87 @@ class LimitShapeTests(unittest.TestCase):
 
         self.assertEqual(len(issues), 1)
         self.assertEqual(len(issues[0].columns), 15)
+
+
+class RecordTests(unittest.TestCase):
+    def test_the_rest_of_a_failed_record_is_flagged_with_its_code(self):
+        rng = np.random.default_rng(82)
+        rows = 3000
+        temperature = rng.normal(75, 5, rows).round(1)
+        sound = rng.normal(70, 12, rows).round()
+        battery = rng.choice([3.6, 3.7], rows)
+        failed = np.zeros(rows, dtype=bool)
+        failed[rng.choice(rows, 60, replace=False)] = True
+        temperature[failed], sound[failed], battery[failed] = -25.6, 0.0, 2.5
+        frame = pd.DataFrame({"Onboard Temp": temperature, "Sound": sound, "Battery (V)": battery})
+
+        issues = scan(frame)
+
+        record = checks(issues, "failed_record")[0]
+        self.assertEqual(set(record.columns), {"Sound", "Battery (V)"})
+        self.assertEqual(record.rows, 60)
+        self.assertEqual(int(statistics_mask(frame, issues)["Battery (V)"].sum()), 60)
+
+    def test_rows_of_zeros_are_blanks_not_extreme_values(self):
+        rng = np.random.default_rng(83)
+        frame = pd.DataFrame({
+            "density": rng.gamma(9, 1, 600), "radius": rng.normal(1.5, 0.2, 600),
+            "electrons": rng.gamma(20, 3, 600), "hardness": rng.uniform(1, 10, 600),
+        })
+        frame.loc[:9, ["density", "radius", "electrons"]] = 0.0
+
+        issues = scan(frame)
+
+        self.assertEqual(checks(issues, "zero_rows")[0].rows, 10)
+        self.assertFalse(checks(issues, "extreme"))
+        self.assertEqual(int(statistics_mask(frame, issues)["radius"].sum()), 10)
+
+    def test_placeholders_on_the_same_rows_are_not_recorded(self):
+        rng = np.random.default_rng(84)
+        rows = 600
+        unannotated = rng.random(rows) < 0.8
+        frame = pd.DataFrame({
+            "Name": np.where(unannotated, "-", [f"compound {index}" for index in range(rows)]),
+            "Formula": np.where(unannotated, "0", "C6H12O6"),
+            "Score": np.where(unannotated, 0.0, rng.uniform(500, 900, rows)),
+            "Error ppm": np.where(unannotated, 0.0, rng.normal(0, 2, rows)),
+            "Retention": rng.uniform(0.1, 12, rows),
+        })
+
+        issues = scan(frame)
+
+        block = checks(issues, "placeholder")[0]
+        self.assertEqual(set(block.columns), {"Name", "Formula", "Score", "Error ppm"})
+        self.assertEqual(block.rows, int(unannotated.sum()))
+        cleaned, _ = statistics_frame(frame, issues)
+        self.assertEqual(int(cleaned["Score"].isna().sum()), int(unannotated.sum()))
+
+    def test_constant_columns_are_listed(self):
+        rng = np.random.default_rng(85)
+        frame = pd.DataFrame({
+            "Acetic": rng.gamma(5, 6, 200), "Hexanoic": np.zeros(200),
+            "Methylhexanoic": np.full(200, 0.007682), "Station": ["SYA"] * 200,
+        })
+
+        issue = checks(scan(frame), "constant")[0]
+
+        self.assertEqual(set(issue.columns), {"Hexanoic", "Methylhexanoic", "Station"})
+        self.assertIn("Hexanoic is 0 in every row", issue.detail)
+        long = replace(roles_for(frame), table_shape="long")
+        self.assertNotIn("Station", checks(scan(frame, long), "constant")[0].columns)
+
+    def test_a_reading_mostly_zero_is_named_but_rain_is_not(self):
+        rng = np.random.default_rng(86)
+        detected = rng.random(300) < 0.35
+        frame = pd.DataFrame({
+            "Pentanoic": np.where(detected, rng.gamma(2, 1, 300), 0.0),
+            "Rainfall": np.where(rng.random(300) < 0.4, rng.gamma(1, 4, 300), 0.0),
+            "Acetic": rng.gamma(5, 6, 300),
+        })
+
+        issue = checks(scan(frame), "zeros")[0]
+
+        self.assertEqual(issue.columns, ("Pentanoic",))
 
 
 class SpeedTests(unittest.TestCase):
