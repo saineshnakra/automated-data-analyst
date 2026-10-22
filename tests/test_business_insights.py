@@ -7,6 +7,8 @@ import pandas as pd
 from ada.aggregation import driver_frame, heatmap_frame, segment_frame, segment_period_change, trend_frame
 from ada.business_insights import (
     Evidence,
+    _Groupings,
+    _item_readings,
     _numbers_cases,
     _shown_evidence,
     analyze_business,
@@ -2041,6 +2043,24 @@ class DefinedGroupingTests(unittest.TestCase):
 
         assert outliers is not None
         self.assertNotIn("of their own band", outliers.statement)
+
+    def test_a_visit_reading_already_counted_once_per_visit_is_kept(self):
+        rng = np.random.default_rng(76)
+        visit = np.repeat([f"v{index}" for index in range(60)], 6)
+        chemistry = dict(zip([f"v{index}" for index in range(60)], rng.normal(300, 50, 60), strict=True))
+        frame = pd.DataFrame({
+            "visit": visit,
+            "site_year": [f"s{name}" for name in visit],
+            "chemistry": [chemistry[name] for name in visit],
+            "length": rng.normal(20, 4, 360),
+        })
+        roles = roles_for(frame, "length", None)
+
+        alone = _item_readings(frame, ["chemistry", "length"], roles, _Groupings(chosen=()))
+        counted = _item_readings(frame, ["chemistry", "length"], roles, _Groupings(chosen=(), entity="visit"))
+
+        self.assertEqual(alone, {"chemistry": "visit"})
+        self.assertEqual(counted, {})
 
     def test_ask_can_check_whether_a_grouping_is_built_from_a_reading(self):
         rng = np.random.default_rng(72)

@@ -1620,7 +1620,7 @@ def _differences_evidence(
     # species by how often it was recorded.
     if fixed is None:
         kept = [reading for reading in readings if reading not in dropped]
-        fixed = item_attributes(frame, kept, _items(frame, roles, found))
+        fixed = _item_readings(frame, kept, roles, found)
     readings = [reading for reading in readings if reading not in dropped and reading not in fixed]
     if rules is None:
         rules = grouping_rules(frame, readings, _rule_groupings(roles, found), date=roles.date)
@@ -1902,6 +1902,22 @@ def _items(dataframe: pd.DataFrame, roles: ColumnRoles, found: _Groupings) -> li
         if MAX_SCAN_LEVELS < levels <= ITEM_LEVEL_SHARE * dataframe[column].notna().sum():
             items.append(column)
     return items
+
+
+def _item_readings(
+    dataframe: pd.DataFrame, readings: list[str], roles: ColumnRoles, found: _Groupings
+) -> dict[str, str]:
+    """Readings fixed for each item (``item_attributes``), bar those the subject column already counts once.
+
+    A site visit's chemistry, the same on each species row of the visit, is
+    compared once per visit when the visit is the subject, so it is no longer
+    weighed by how many species were recorded.
+    """
+    fixed = item_attributes(dataframe, readings, _items(dataframe, roles, found))
+    if fixed and found.entity in dataframe.columns:
+        counted = item_attributes(dataframe, list(fixed), [found.entity])
+        fixed = {reading: item for reading, item in fixed.items() if reading not in counted}
+    return fixed
 
 
 def _defined_text(pairs: list[tuple[str, str, str]], limit: int = DIFFERENCES_NAMED) -> str:
@@ -4518,7 +4534,7 @@ def analyze_business(
     built = _construction(tested_statistics, roles, readings)
     masked = built.masked(tested) if built is not None else tested
     rules = grouping_rules(masked, readings, _rule_groupings(roles, found), date=roles.date)
-    fixed = item_attributes(tested_statistics, readings, _items(tested_statistics, roles, found))
+    fixed = _item_readings(tested_statistics, readings, roles, found)
     # A grouping cut from the measure (a band of it, the largest of its parts) moves
     # with it by definition, so it is no segment to follow the measure's change in.
     segmented = roles
