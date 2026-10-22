@@ -15,8 +15,8 @@ ADA is MIT-licensed and depends only on permissively licensed libraries.
 |---|---|---|
 | [pandas](https://pandas.pydata.org) | BSD-3-Clause | Reading CSV and Excel files, cleaning, grouping and every aggregation |
 | [NumPy](https://numpy.org) | BSD-3-Clause | The array arithmetic behind the vectorised group tests, correlations and trendlines |
-| [SciPy](https://scipy.org) | BSD-3-Clause | The t, F, chi-squared and normal distributions behind every p-value; `scipy.stats.chi2_contingency` and `fisher_exact` for rate comparisons; `studentized_range` for Tukey's HSD on the pairs of groups that differ; ranks; `kstwo`, `kurtosis` and `binom` for the data checks and the outlier counts |
-| [statsmodels](https://www.statsmodels.org) | BSD-3-Clause | The Benjamini-Hochberg false-discovery-rate adjustment (`multipletests`); Newcombe's interval for a difference in rates (`confint_proportions_2indep`); ordinary least squares for the joint model, with `variance_inflation_factor` for collinearity; logistic regression (`Logit`) for a yes/no measure |
+| [SciPy](https://scipy.org) | BSD-3-Clause | The t, F, chi-squared and normal distributions behind every p-value; `scipy.stats.chi2_contingency` and `fisher_exact` for rate comparisons; `contingency.association` for Cramér's V between two groupings; `studentized_range` for Tukey's HSD on the pairs of groups that differ; `ttest_rel`, `wilcoxon` and `friedmanchisquare` for groups that hold the same subjects; ranks; `kstwo`, `kurtosis` and `binom` for the data checks and the outlier counts |
+| [statsmodels](https://www.statsmodels.org) | BSD-3-Clause | The Benjamini-Hochberg false-discovery-rate adjustment (`multipletests`); Newcombe's interval for a difference in rates (`confint_proportions_2indep`); ordinary least squares for the joint model and for what readings add within a grouping's levels, with `variance_inflation_factor` for collinearity; logistic regression (`Logit`) for a yes/no measure; the repeated-measures ANOVA follows `AnovaRM`, whose figures it reproduces for every reading at once |
 | [ruptures](https://centre-borelli.github.io/ruptures-docs/) | BSD-2-Clause | Binary segmentation (`Binseg`) to find a lasting change in the level of the measure's period series |
 | [python-calamine](https://github.com/dimastbk/python-calamine) | MIT | Reading `.xlsx` and `.xlsm` workbooks through pandas, built on the Rust [calamine](https://github.com/tafia/calamine) crate (MIT) |
 
@@ -61,6 +61,11 @@ The methods ADA applies, with the papers that introduced them:
 | Mann-Whitney U test | Two groups compared on ranks | Mann, H. B. and Whitney, D. R. (1947), *Annals of Mathematical Statistics* 18, 50–60 |
 | Kruskal-Wallis test | Three or more groups compared on ranks | Kruskal, W. H. and Wallis, W. A. (1952), *JASA* 47, 583–621 |
 | Tukey's honestly significant difference | Which pairs of groups differ | Tukey, J. W. (1949), *Biometrics* 5, 99–114 |
+| Paired t-test | Two groups holding the same subjects | Student (1908), *Biometrika* 6, 1–25 |
+| Wilcoxon signed-rank test | Two groups holding the same subjects, on ranks | Wilcoxon, F. (1945), *Biometrics Bulletin* 1, 80–83 |
+| Repeated-measures ANOVA | Three or more groups holding the same subjects | Fisher, R. A. (1925), *Statistical Methods for Research Workers*, Oliver and Boyd |
+| Friedman test | Three or more groups holding the same subjects, on ranks | Friedman, M. (1937), *JASA* 32, 675–701 |
+| Kendall's W | The effect size of the Friedman test | Kendall, M. G. and Babington Smith, B. (1939), *Annals of Mathematical Statistics* 10, 275–287 |
 | Hedges' g | Group comparisons | Hedges, L. V. (1981), *Journal of Educational Statistics* 6, 107–128 |
 | Spearman's rank correlation | Relationships, trend tests across ordered levels | Spearman, C. (1904), *American Journal of Psychology* 15, 72–101 |
 | Fisher's z-transform | Confidence intervals for r | Fisher, R. A. (1915), *Biometrika* 10, 507–521 |

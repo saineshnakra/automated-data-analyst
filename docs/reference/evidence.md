@@ -273,7 +273,34 @@ Kruskal-Wallis check for more, and an effect size. A skewed or capped measure
 is compared by medians and ranks, a mostly-zero one by its means and the share
 of values that are not zero, and a grouping of ordered numeric levels also
 gets a trend test. When a subject column repeats, each subject counts once per
-group, and each group's figure says so ("mean of per-Bird medians").
+group, and each group's figure says so ("mean of per-Bird medians"), as does
+the card's title and KPI ("Highest per-Bird average by phenotype"). The subject
+can be the sample the measure was read on: a site visit's conductivity copied
+onto each species row counts once per visit, and the summary says so. When
+every subject appears in every group, the groups are compared within
+subjects (a repeated-measures ANOVA, Friedman test, paired t-test or Wilcoxon
+signed-rank test). When each subject's rows follow a clock (a day or time
+point counted per subject) and the groups were followed for different lengths
+(animals that died stop early), only the stretch every group was followed
+over is compared.
+
+**Another grouping behind the gap.** The comparison is repeated within the
+levels of another grouping (`stratified_comparison`; see
+[Comparing groups](compare.md#comparing-within-the-levels-of-another-grouping))
+when that grouping is tied to the compared one (Cramér's V of 0.5 or more) and
+explains at least 14% of the measure, or explains half of it or more on its
+own (which joint an angle comes from). Every grouping with a few levels is a
+candidate, scanned or not. The card gives the comparison within each level:
+"Soil_Type_Gravel is tied to Landslide (Cramér's V = 0.59), which explains
+74% of Earthquake_Activity on its own, so the comparison is repeated within
+each Landslide: within Landslide 0, no clear difference, mean 2.02 in
+Soil_Type_Gravel 0 vs 1.93 in Soil_Type_Gravel 1 (...); Landslide 1 holds only
+Soil_Type_Gravel 0. Within the levels of Landslide the difference does not
+hold, so the pooled gap reflects Landslide rather than Soil_Type_Gravel." When
+it runs the other way in a level, or no level shows it clearly and it keeps
+less than half its size within the levels, the stratified result leads the
+headline instead of the pooled gap. A gap that keeps its size in levels too
+small to confirm it still stands; one that shrinks is said to.
 
 A summed per-row score (seconds of looking time per infant) is compared this
 way too, since its shares mostly count rows; the card adds the leading group's
@@ -313,14 +340,26 @@ including numeric codes listed in `ColumnRoles.factors`, with
 codes, design labels, time parts, yes/no flags or numbers for a grouping's
 levels (a `Group` 1 to 12 beside its `Gp` label). A grouping made of two others
 (a cell code for contour and depth) is replaced by those two, and the subject
-column is never a grouping. Nor, in a table with a date, is a column holding a
-part of it (a year, month or day number): the cycle over the year belongs to
-the timeline.
+column is never a grouping, nor a reading: its code and its clock (a time
+point climbing within each subject, `within_axis`) are left out of the
+readings, since how long a subject was followed differs between groups by
+design, not as a finding. A numeric setting with 2 to 4 values fixed within
+each subject (a test case's depth of cut) groups the subjects and is scanned
+as a grouping. Nor, in a table with a date, is a column holding a part of it
+(a year, month or day number): the cycle over the year belongs to the
+timeline. When every subject appears in every group of a grouping, its
+readings are compared within subjects, and the card says so: "Every subject
+appears in every joint group, so each is compared with itself
+(repeated-measures ANOVA)."
 
 The groupings are taken design factors first: the grouping column, then text
 labels, then two-level codes, then other codes by how few levels they have, so
-a rating item read as a code comes last. At most six are scanned
-(`MAX_SCAN_GROUPINGS`), and the calculation names the ones past the cap. Also
+a rating item read as a code comes last. Up to twelve are scanned
+(`MAX_SCAN_GROUPINGS`), so a table with a handful has every one scanned; a
+long, wide table, whose rows scanned times readings times groupings would
+pass 2.5 million values (`SCAN_GROUPING_CELLS`), keeps fewer, but never fewer
+than six. With more candidates than that, the codes that explain most of the
+measure come first, and the calculation names the ones past the cap. Also
 left out, and named:
 
 | Left out | Why |
@@ -389,18 +428,26 @@ sex, gender, race, ethnicity, treatment, arm, cohort, condition, group, block,
 batch, phase, site, visit, or check as in a manipulation check;
 `NOT_OUTCOME_WORDS`), is never the outcome: the
 share of women among smokers is the sample's makeup. The outcome is compared
-across every other grouping, Holm-adjusted for their number; a grouping in
+across every other grouping, past the scan's cap too since a rate is a cheap
+count, Holm-adjusted for their number; a grouping in
 which every group is all yes or all no, or one named for the same thing
 (`diabetes` beside `diabetes.1`; `same_stem`), is another code for the outcome
 and is left out. The card appears when a rate differs clearly, and gives each group's rate
 and n, the chi-squared or Fisher test, Cramér's V and the risk difference with
 its interval: "The share of rows with Result 1 is 55.7% in Gender 1 (n = 740)
 against 30.5% in Gender 0 (n = 681): a difference of 25.1 percentage points
-(95% CI 20.1 to 30.0)". When the outcome is cut from a reading at a cut-off
-that moves with the grouping compared (anaemic below 12 g/dL for women and
-13.5 for men), the gap is built into the label: the card says so, says
-whether the reading itself differs across the grouping, ranks that grouping
-after the others and never leads the brief with it.
+(95% CI 20.1 to 30.0)". When the outcome is fixed for each subject (a cell
+line's methylation flag on each of its drug rows), each subject counts once
+and n counts subjects. When another grouping is tied to the rate's grouping
+and goes with the outcome too, the rate is compared within its levels, the
+table's main grouping first: "htn is tied to classification (Cramér's V =
+0.59), which goes with ane = yes too (Cramér's V = 0.32), so the comparison is
+repeated within each classification: within ckd, 31.3% in htn = yes vs 13.6%
+in htn = no (...); notckd holds only htn = no." When the outcome is cut from
+a reading at a cut-off that moves with the grouping compared (anaemic below 12
+g/dL for women and 13.5 for men), the gap is built into the label: the card
+says so, says whether the reading itself differs across the grouping, ranks
+that grouping after the others and never leads the brief with it.
 
 ### Changes in level
 
@@ -453,7 +500,11 @@ recorded beside it, so it gets the model of the outcome on all of them (up to
 only whether it leads. The card gives R² and adjusted R², the fitted
 equation, each coefficient with its 95% interval, a sentence for each reversed
 reading, the readings that add little once the others are known, and a
-collinearity warning when a variance inflation factor is above 5. Its lead
+collinearity warning when a variance inflation factor is above 5. It is left
+out when a grouping that explains at least 14% of the measure (a 0/1 outcome
+the readings differ by) takes away what the readings explain: once its
+levels are in the fit, they add less than 0.1 to R² (`gain_within`), so the
+fit would only restate the gap between its groups. Its lead
 names only the readings that stay clear. A model whose readings all share the
 measure's name stem or unit (other acids of the same sample) never leads.
 
@@ -530,7 +581,14 @@ directions never enter the scan.
 
 Tables longer than 50,000 rows are screened on a fixed random sample of that
 many rows, the same one the comparisons use; the pairs the card names are
-computed on every row.
+computed on every row. When the measure is copied onto every row of a sample
+and at least half the readings are too (a site visit's chemistry on each
+species row), the scan, the card and the joint model use one row per sample,
+leaving out the columns that vary within it, and the calculation says so.
+When the rows are instead repeated readings of subjects (a mouse measured each
+day), the card says how many subjects they come from and that the intervals
+are narrower than the evidence, since readings of one subject are not
+independent.
 
 Each pair the card states is checked, and the sentence leads with the figure
 that one record or a few extreme ones do not decide:
@@ -543,7 +601,7 @@ that one record or a few extreme ones do not decide:
 | Spearman r more than 0.25 above Pearson r (`RANK_DIVERGENCE`), and dropping records over 5 robust SDs out closes the gap | Leads with r without those records; the extreme records hide the relationship |
 | Spearman r more than 0.25 above Pearson r otherwise | Leads with the rank correlation: consistent but not a straight line |
 | Spearman r more than 0.25 below Pearson r | Leads with the rank correlation and gives the cause: a few extreme records (with r without them), one unbroken stretch of records far beyond the rest (a phase of a run), or a pile-up at a column's floor or ceiling, which ties in rank |
-| The r within the groups of a grouping differs in sign, or by 0.1 or more beyond sampling noise (`WITHIN_GROUP_GAP`) | "Within each block it is stronger: r = 0.91 in Block 1 and 0.94 in Block 2 (0.92 once each block's own means are removed)", or that it is weaker or runs the other way. The grouping column is always checked and reported when it differs; another grouping is added when it differs more. Groupings set by either column, or that it is built from, are not used |
+| The r within the groups of a grouping differs in sign, or by 0.1 or more beyond sampling noise (`WITHIN_GROUP_GAP`) | "Within each block it is stronger: r = 0.91 in Block 1 and 0.94 in Block 2 (0.92 once each block's own means are removed)", or that it is weaker or runs the other way. The grouping column and the text labels are checked, and so is any code that explains at least 14% of either column (a 0/1 label the readings differ by); the grouping column is always reported when it differs, and another grouping is added when it differs more. When r of 0.3 or more falls below 0.1 within the groups, the card says "Within each landslide it all but vanishes: ..., so the pooled figure comes from the difference between the landslide groups". A grouping set by either column, or that it is built from, narrows that column's range within each group, so it is reported only when r all but vanishes there |
 
 Participant numbers, plate positions and other labels are not readings, so
 they never enter the scan. Wide tables are scanned on the measure and the 299
