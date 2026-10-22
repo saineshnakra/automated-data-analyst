@@ -128,7 +128,7 @@ def _build(args: argparse.Namespace) -> int:
     print(f"Built {len(built.assets)} assets in {built.out}")
     for asset in built.assets:
         if asset.section in ("main", "supplement"):
-            print(f"  {asset.number or asset.title:12} {asset.title}")
+            print(f"  {asset.number:12} {asset.title}")
     if checks:
         print(f"\nThe data audit lists {checks} item(s) to check: {built.out / 'audit' / 'data-audit.md'}")
     changed = [change for change in built.changes if change.status != "new"]
