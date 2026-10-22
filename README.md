@@ -72,6 +72,7 @@ From the command line:
 ada analyze measurements.csv          # the same report
 ada analyze measurements.csv --json   # as JSON
 ada schema measurements.csv           # which column ADA used for what, and how it combines
+ada analyze results.xlsx --sheet Data # one worksheet of a workbook
 ada ask orders.csv "which category made the most revenue"
 ```
 
