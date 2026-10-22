@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 import ruptures
+from scipy import stats
 
 MAD_SCALE = 1.4826  # converts MAD to a standard deviation for normal data
 # 1/sqrt(2/pi): puts the mean absolute deviation on the same scale as MAD_SCALE,
@@ -75,12 +76,15 @@ def period_grain(periods: pd.DatetimeIndex) -> str:
     return "Y"
 
 
-def period_positions(periods: pd.DatetimeIndex) -> np.ndarray:
+def period_positions(periods: pd.DatetimeIndex, grain: str | None = None) -> np.ndarray:
     """Number periods by the calendar, so gaps stay visible to the fit.
 
     Consecutive periods are one apart and a skipped period leaves a hole.
     Counting calendar periods instead of dividing elapsed days avoids drift
-    from unequal month and quarter lengths.
+    from unequal month and quarter lengths. Pass the ``grain`` the periods
+    were built at: inferred from the periods that hold values, months with
+    gaps between them can read as quarters, and the slope would then be per
+    quarter while labelled per month.
     """
     index = pd.DatetimeIndex(periods)
     if len(index) == 0:
@@ -88,7 +92,7 @@ def period_positions(periods: pd.DatetimeIndex) -> np.ndarray:
     if len(index) == 1:
         return np.zeros(1)
 
-    ordinals = pd.PeriodIndex(index, freq=period_grain(index)).asi8.astype(float)
+    ordinals = pd.PeriodIndex(index, freq=grain or period_grain(index)).asi8.astype(float)
     return ordinals - ordinals[0]
 
 
@@ -121,11 +125,106 @@ def theil_sen(positions: np.ndarray, values: np.ndarray) -> tuple[float, float]:
     return slope, intercept
 
 
-def fit_trendline(periods: pd.DatetimeIndex, values: np.ndarray) -> TrendLine:
-    """Fit a robust trendline against the calendar positions of ``periods``."""
-    positions = period_positions(periods)
+def fit_trendline(periods: pd.DatetimeIndex, values: np.ndarray, grain: str | None = None) -> TrendLine:
+    """Fit a robust trendline against the calendar positions of ``periods`` at ``grain``."""
+    positions = period_positions(periods, grain)
     slope, intercept = theil_sen(positions, values)
     return TrendLine(slope=slope, intercept=intercept, positions=tuple(float(p) for p in positions))
+
+
+# Confidence of the slope's interval, and the most points the test and interval
+# use: beyond it the series is thinned evenly, as for the trendline itself.
+TREND_CONFIDENCE = 0.95
+MAX_TEST_POINTS = 2_000
+
+
+@dataclass(frozen=True)
+class TrendTest:
+    """A Theil-Sen slope with its confidence interval and a Mann-Kendall test.
+
+    The test and the interval allow for lag-1 autocorrelation in the detrended
+    series, which makes a wandering series look trending when ignored.
+    """
+
+    slope: float
+    intercept: float
+    low: float
+    high: float
+    #: Kendall's tau between position and value.
+    tau: float
+    #: Two-sided Mann-Kendall p-value, after the autocorrelation allowance.
+    p_value: float
+    points: int
+    #: Lag-1 autocorrelation of the detrended values (0 when negative or unknown).
+    autocorrelation: float = 0.0
+
+    @property
+    def clear(self) -> bool:
+        """Whether the interval leaves out zero, so the series has a trend one way."""
+        return self.low > 0 or self.high < 0
+
+
+def autocorrelation_inflation(residuals: np.ndarray) -> tuple[float, float]:
+    """How much positive lag-1 autocorrelation inflates the variance of Kendall's S.
+
+    Yue and Wang's (2004) effective-sample-size factor
+    ``1 + 2 sum (1 - k/n) r^k`` for an AR(1) series with lag-1 autocorrelation
+    ``r`` of the detrended values. Returns ``(factor, r)``; negative
+    autocorrelation is not credited, so the factor is never below 1.
+    """
+    values = np.asarray(residuals, dtype=float)
+    size = values.size
+    centred = values - values.mean()
+    total = float(np.sum(centred**2))
+    if size < 4 or total == 0:
+        return 1.0, 0.0
+    rho = float(np.sum(centred[:-1] * centred[1:]) / total)
+    if rho <= 0:
+        return 1.0, 0.0
+    lags = np.arange(1, size)
+    return float(1 + 2 * np.sum((1 - lags / size) * rho**lags)), rho
+
+
+def trend_test(positions: np.ndarray, values: np.ndarray) -> TrendTest | None:
+    """Test a series for a monotonic trend and size its slope, or None with fewer than 4 points.
+
+    The slope and its interval come from ``scipy.stats.theilslopes`` and the
+    Mann-Kendall test from ``scipy.stats.kendalltau`` (its asymptotic form is
+    the Mann-Kendall statistic). Both are widened by
+    ``autocorrelation_inflation``: the test's z is divided by the square root
+    of the factor, and the interval is taken at the matching higher confidence.
+    """
+    positions = np.asarray(positions, dtype=float)
+    values = np.asarray(values, dtype=float)
+    finite = np.isfinite(positions) & np.isfinite(values)
+    positions, values = positions[finite], values[finite]
+    if values.size > MAX_TEST_POINTS:
+        keep = np.unique(np.linspace(0, values.size - 1, MAX_TEST_POINTS).round().astype(int))
+        positions, values = positions[keep], values[keep]
+    if values.size < 4 or np.ptp(positions) == 0:
+        return None
+    if np.ptp(values) == 0:
+        return TrendTest(0.0, float(values[0]), 0.0, 0.0, 0.0, 1.0, int(values.size))
+    slope, intercept = theil_sen(positions, values)
+    factor, rho = autocorrelation_inflation(values - (intercept + slope * positions))
+    tau, p_value = stats.kendalltau(positions, values, method="asymptotic")
+    tau, p_value = float(tau), float(p_value)
+    if np.isfinite(p_value) and factor > 1:
+        z = stats.norm.isf(p_value / 2) / np.sqrt(factor)
+        p_value = float(2 * stats.norm.sf(z))
+    critical = stats.norm.isf((1 - TREND_CONFIDENCE) / 2) * np.sqrt(factor)
+    confidence = min(float(1 - 2 * stats.norm.sf(critical)), 0.999999)
+    fitted = stats.theilslopes(values, positions, alpha=confidence)
+    return TrendTest(
+        slope=slope,
+        intercept=intercept,
+        low=float(fitted.low_slope),
+        high=float(fitted.high_slope),
+        tau=tau,
+        p_value=p_value if np.isfinite(p_value) else 1.0,
+        points=int(values.size),
+        autocorrelation=rho,
+    )
 
 
 def robust_scale(residuals: np.ndarray) -> float:
@@ -206,7 +305,7 @@ def season_numbers(periods: pd.DatetimeIndex, grain: str) -> np.ndarray:
 
 
 def yearly_pattern(
-    periods: pd.DatetimeIndex, residuals: np.ndarray, *, min_cycles: int = 2
+    periods: pd.DatetimeIndex, residuals: np.ndarray, *, min_cycles: int = 2, grain: str | None = None
 ) -> np.ndarray | None:
     """Each period's usual offset from the trendline for its time of year, or None.
 
@@ -217,7 +316,7 @@ def yearly_pattern(
     season, or a season of the year that explains little of the variation.
     """
     index = pd.DatetimeIndex(periods)
-    grain = period_grain(index)
+    grain = grain or period_grain(index)
     length = PERIODS_PER_YEAR.get(grain)
     residuals = np.asarray(residuals, dtype=float)
     if length is None or len(residuals) - length < MIN_SEASONAL_DF:

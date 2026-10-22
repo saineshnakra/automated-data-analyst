@@ -1979,6 +1979,43 @@ class DatePartTests(unittest.TestCase):
         self.assertIn("2018 is left out because the data starts part-way through it", answer.calculation)
 
 
+class TrendSlopeTests(unittest.TestCase):
+    def test_a_slope_over_sparse_months_is_per_month(self):
+        months = ["2003-06-15", "2003-09-15", "2003-11-15", "2004-04-15", "2004-05-15",
+                  "2004-08-15", "2004-10-15", "2005-04-15", "2005-07-15", "2005-10-15"]
+        dates = pd.to_datetime(months)
+        elapsed = (dates.year - 2003) * 12 + dates.month - 6
+        frame = pd.DataFrame({"Date": dates, "Depth": 1.0 + 0.1 * elapsed})
+        roles = replace(detect_roles(frame), date="Date", measure="Depth")
+
+        answer = answer_question("Depth trend by month", frame, roles)
+
+        self.assertIn("The Theil-Sen trend is +0.1 per month", answer.answer)
+
+    def test_a_slope_whose_interval_spans_zero_is_no_clear_trend(self):
+        frame = pd.DataFrame({
+            "Date": pd.date_range("2023-01-01", periods=5, freq="MS"),
+            "AQI": [60.0, 70.0, 58.0, 65.0, 68.0],
+        })
+        roles = replace(detect_roles(frame), date="Date", measure="AQI")
+
+        answer = answer_question("AQI trend", frame, roles)
+
+        self.assertIn("95% CI", answer.answer)
+        self.assertIn("no clear trend", answer.answer)
+
+    def test_a_series_that_never_moves_is_stated_once(self):
+        frame = pd.DataFrame({"Year": [2005 + index for index in range(11)], "Index": [100.0] * 11})
+        frame["Year"] = pd.to_datetime(frame["Year"].astype(str))
+        roles = replace(detect_roles(frame), date="Year", measure="Index")
+
+        answer = answer_question("Index trend by year", frame, roles)
+
+        self.assertIn("in every year", answer.answer)
+        self.assertNotIn("peaked", answer.answer)
+        self.assertNotIn("Theil-Sen", answer.answer)
+
+
 class GroupedAnswerTests(unittest.TestCase):
     def test_a_share_within_groups_is_the_rate_in_each_group(self):
         frame = pd.DataFrame({"Gender": [0] * 10 + [1] * 10, "Result": [1] * 3 + [0] * 7 + [1] * 6 + [0] * 4})

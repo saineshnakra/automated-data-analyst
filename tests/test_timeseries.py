@@ -2,6 +2,7 @@ import unittest
 
 import numpy as np
 import pandas as pd
+from scipy import stats
 
 from ada.timeseries import (
     MAD_SCALE,
@@ -16,6 +17,7 @@ from ada.timeseries import (
     robust_scale,
     shift_critical_value,
     theil_sen,
+    trend_test,
     yearly_pattern,
 )
 
@@ -57,6 +59,12 @@ class PeriodPositionTests(unittest.TestCase):
         self.assertEqual(period_grain(pd.date_range("2024-01-01", periods=5, freq="MS")), "M")
         self.assertEqual(period_grain(pd.date_range("2024-01-01", periods=5, freq="QS")), "Q")
         self.assertEqual(period_grain(pd.date_range("2024-01-01", periods=5, freq="YS")), "Y")
+
+    def test_sparse_months_keep_the_grain_they_were_built_at(self):
+        periods = pd.DatetimeIndex(["2003-06-01", "2003-09-01", "2003-11-01", "2004-04-01", "2004-05-01"])
+
+        self.assertEqual(period_positions(periods, "M").tolist(), [0.0, 3.0, 5.0, 10.0, 11.0])
+        self.assertNotEqual(period_positions(periods).tolist(), [0.0, 3.0, 5.0, 10.0, 11.0])
 
     def test_single_and_empty_inputs_are_safe(self):
         self.assertEqual(len(period_positions(pd.DatetimeIndex([]))), 0)
@@ -255,6 +263,52 @@ class YearlyPatternTests(unittest.TestCase):
         offsets = yearly_pattern(quarters, residuals, min_cycles=3)
 
         self.assertLess(offsets[8], 25)
+
+
+class TrendTestTests(unittest.TestCase):
+    def test_a_steady_rise_has_an_interval_above_zero(self):
+        rng = np.random.default_rng(70)
+        years = np.arange(1910, 2010, dtype=float)
+        values = 26 + 0.014 * (years - 1910) + rng.normal(0, 0.3, years.size)
+
+        found = trend_test(years, values)
+
+        assert found is not None
+        self.assertTrue(found.clear)
+        self.assertLess(found.low, 0.014)
+        self.assertGreater(found.high, 0.014)
+        self.assertLess(found.p_value, 0.001)
+
+    def test_five_noisy_points_have_no_clear_trend(self):
+        found = trend_test(np.arange(5.0), np.array([60.0, 70.0, 58.0, 65.0, 68.0]))
+
+        assert found is not None
+        self.assertFalse(found.clear)
+        self.assertLess(found.low, 0)
+        self.assertGreater(found.high, 0)
+
+    def test_autocorrelation_widens_the_interval_and_weakens_the_test(self):
+        rng = np.random.default_rng(71)
+        noise = np.zeros(60)
+        for step in range(1, 60):
+            noise[step] = 0.8 * noise[step - 1] + rng.normal()
+        positions = np.arange(60.0)
+        values = 0.03 * positions + noise
+
+        found = trend_test(positions, values)
+        assert found is not None
+        tau, naive_p = stats.kendalltau(positions, values, method="asymptotic")
+
+        self.assertGreater(found.autocorrelation, 0.3)
+        self.assertGreater(found.p_value, naive_p)
+        naive = stats.theilslopes(values, positions)
+        self.assertGreater(found.high - found.low, naive.high_slope - naive.low_slope)
+
+    def test_too_few_points_or_a_flat_series(self):
+        self.assertIsNone(trend_test(np.arange(3.0), np.array([1.0, 2.0, 3.0])))
+        flat = trend_test(np.arange(6.0), np.full(6, 4.0))
+        assert flat is not None
+        self.assertFalse(flat.clear)
 
 
 class LevelShiftTests(unittest.TestCase):

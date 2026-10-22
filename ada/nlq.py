@@ -62,7 +62,7 @@ from .metrics import metric_for
 from .quality import VALUE_CHECKS, QualityIssue, prefers_log_scale, show_value
 from .quality import scan as scan_quality
 from .schema import ColumnRoles, running_total_columns
-from .timeseries import period_positions, theil_sen
+from .timeseries import TREND_CONFIDENCE, period_positions, theil_sen, trend_test
 
 Intent = Literal[
     "aggregate", "count", "rank", "breakdown", "trend", "growth", "correlation", "compare", "correlates",
@@ -3005,9 +3005,18 @@ def _execute_trend(
         f"{named} per {grain_name}{_phrase(applied)} moved from {start} to {end} ({movement}), "
         f"from {first_period} to {last_period}."
     )
-    slope, slope_calculation = _trend_slope(present, grain, plan.measure, column)
+    if present["Value"].nunique() == 1:
+        # A series that never moves has no slope, peak or low worth naming.
+        answer = (
+            f"{named} per {grain_name}{_phrase(applied)} is "
+            f"{format_number(first, plan.measure, column_values=column)} in every {grain_name} with a value, "
+            f"from {first_period} to {last_period}."
+        )
+        slope, slope_calculation = "", ""
+    else:
+        slope, slope_calculation = _trend_slope(present, grain, plan.measure, column)
     answer += slope
-    if len(present) >= 4:
+    if len(present) >= 4 and slope:
         peak, low = present.loc[present["Value"].idxmax()], present.loc[present["Value"].idxmin()]
         answer += (
             f" It peaked at {format_number(float(peak['Value']), plan.measure, column_values=column)} in "
@@ -3071,19 +3080,46 @@ def _trend_slope(
         full = counts[counts >= 0.9 * per_year].index
         yearly = frame[frame["year"].isin(full)].groupby("year")["value"].mean()
         if len(yearly) >= SLOPE_YEARS:
-            slope, _ = theil_sen(yearly.index.to_numpy(dtype=float), yearly.to_numpy())
+            positions = yearly.index.to_numpy(dtype=float)
+            slope, _ = theil_sen(positions, yearly.to_numpy())
             text = _per_year_text(slope, len(yearly), measure, column)
+            verdict, tested = _slope_verdict(positions, yearly.to_numpy(), measure, column)
             return (
                 f" The Theil-Sen trend is {text}, fitted on the yearly averages of {len(yearly)} "
-                "complete years.",
-                f"Theil-Sen slope over the yearly averages of {len(yearly)} complete years",
+                f"complete years{verdict}",
+                f"Theil-Sen slope over the yearly averages of {len(yearly)} complete years{tested}",
             )
-    slope, _ = theil_sen(period_positions(periods), values)
+    # Positions at the answer's own grain: re-inferred from the periods that
+    # hold values, sparse months can read as quarters.
+    positions = period_positions(periods, grain)
+    slope, _ = theil_sen(positions, values)
     if grain == "Y":
         text = _per_year_text(slope, len(values), measure, column)
     else:
         text = f"{_signed(slope, measure, column)} per {GRAIN_NAMES.get(grain, 'period')}"
-    return f" The Theil-Sen trend is {text}.", f"Theil-Sen slope over {len(values)} periods"
+    verdict, tested = _slope_verdict(positions, values, measure, column)
+    return f" The Theil-Sen trend is {text}{verdict}", f"Theil-Sen slope over {len(values)} periods{tested}"
+
+
+def _slope_verdict(
+    positions: np.ndarray, values: np.ndarray, measure: str | None, column: pd.Series | None
+) -> tuple[str, str]:
+    """The slope's interval and Mann-Kendall test, ending the sentence.
+
+    An interval that spans zero is "no clear trend", whatever the slope's size.
+    """
+    test = trend_test(positions, values)
+    if test is None:
+        return ".", ""
+    low, high = _signed(test.low, measure, column), _signed(test.high, measure, column)
+    interval = f"{TREND_CONFIDENCE:.0%} CI {low} to {high}"
+    tested = (
+        f"; {TREND_CONFIDENCE:.0%} CI by scipy.stats.theilslopes and Mann-Kendall test by "
+        "scipy.stats.kendalltau, both allowing for lag-1 autocorrelation"
+    )
+    if not test.clear:
+        return f" ({interval}), so there is no clear trend: the interval spans zero.", tested
+    return f" ({interval}; Mann-Kendall {format_p(test.p_value)}).", tested
 
 
 def _per_year_text(slope: float, years: int, measure: str | None, column: pd.Series | None) -> str:

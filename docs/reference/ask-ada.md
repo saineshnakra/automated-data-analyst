@@ -518,7 +518,12 @@ Other behaviour:
 - A trend says where the measure started and ended and between which periods,
   its Theil-Sen slope (per year, fitted on yearly averages of complete years
   once three or more are covered, so seasons can't tilt it; per decade too
-  over 20 years), and its peak and low. A first period the data starts
+  over 20 years) with its 95% interval and Mann-Kendall p-value
+  (`timeseries.trend_test`), and its peak and low. An interval that spans
+  zero is "no clear trend". The slope is per period of the answer's own grain,
+  so sparse months are not re-read as quarters. A series with one value
+  throughout is stated once ("is 100.0% in every year") with no slope, peak or
+  low. A first period the data starts
   part-way through is left out, as the last one is when it is still in
   progress, and the calculation says so. Period rankings leave it out too.
 - `describe` gives n, mean, SD, median, quartiles, IQR, range and skewness,

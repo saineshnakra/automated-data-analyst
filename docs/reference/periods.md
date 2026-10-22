@@ -169,7 +169,24 @@ elapsed days would drift, because months and quarters differ in length.
 `period_grain` classifies the median spacing between periods as `s`, `min` or
 `h` (up to 1.5 of each), `D` (up to 1.5 days), `W` (up to 10), `M` (up to 45),
 `Q` (up to 130) or `Y`. Using the median means one gap in a regular series
-does not change the result.
+does not change the result. Callers that know the grain the periods were built
+at pass it (`period_positions(periods, grain)`, `fit_trendline(..., grain)`):
+read from the periods that hold values, months with gaps between them can look
+like quarters, and a slope per quarter would then be labelled per month. The
+anomaly check and the forecast read the grain from the evenly spaced trend
+frame before they drop its empty periods.
+
+### Trend test
+
+`trend_test` sizes a series' trend and tests it: the Theil-Sen slope with its
+95% confidence interval (`scipy.stats.theilslopes`) and the Mann-Kendall test
+(the asymptotic form of `scipy.stats.kendalltau` against position). A slowly
+wandering series looks trending to both, so both allow for lag-1
+autocorrelation in the detrended values (Yue and Wang's effective sample size,
+`autocorrelation_inflation`): the test's z is divided by the square root of the
+variance factor and the interval is taken at the matching higher confidence.
+`TrendTest.clear` is False when the interval spans zero, which the brief and
+Ask call "no clear trend".
 
 ### Yearly patterns
 

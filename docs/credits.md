@@ -15,7 +15,7 @@ ADA is MIT-licensed and depends only on permissively licensed libraries.
 |---|---|---|
 | [pandas](https://pandas.pydata.org) | BSD-3-Clause | Reading CSV and Excel files, cleaning, grouping and every aggregation |
 | [NumPy](https://numpy.org) | BSD-3-Clause | The array arithmetic behind the vectorised group tests, correlations and trendlines |
-| [SciPy](https://scipy.org) | BSD-3-Clause | The t, F, chi-squared and normal distributions behind every p-value; `scipy.stats.chi2_contingency` and `fisher_exact` for rate comparisons; `studentized_range` for Tukey's HSD on the pairs of groups that differ; ranks; `kstwo`, `kurtosis` and `binom` for the data checks and the outlier counts |
+| [SciPy](https://scipy.org) | BSD-3-Clause | The t, F, chi-squared and normal distributions behind every p-value; `scipy.stats.chi2_contingency` and `fisher_exact` for rate comparisons; `studentized_range` for Tukey's HSD on the pairs of groups that differ; `theilslopes` and `kendalltau` for trend intervals and the Mann-Kendall test; ranks; `kstwo`, `kurtosis` and `binom` for the data checks and the outlier counts |
 | [statsmodels](https://www.statsmodels.org) | BSD-3-Clause | The Benjamini-Hochberg false-discovery-rate adjustment (`multipletests`); Newcombe's interval for a difference in rates (`confint_proportions_2indep`); ordinary least squares for the joint model, with `variance_inflation_factor` for collinearity |
 | [ruptures](https://centre-borelli.github.io/ruptures-docs/) | BSD-2-Clause | Binary segmentation (`Binseg`) to find a lasting change in the level of the measure's period series |
 | [python-calamine](https://github.com/dimastbk/python-calamine) | MIT | Reading `.xlsx` and `.xlsm` workbooks through pandas, built on the Rust [calamine](https://github.com/tafia/calamine) crate (MIT) |
@@ -74,4 +74,7 @@ The methods ADA applies, with the papers that introduced them:
 | Variance inflation factor | The joint model | Marquardt, D. W. (1970), *Technometrics* 12, 591–612 |
 | Fences at 1.5 × IQR | Exceptional records | Tukey, J. W. (1977), *Exploratory Data Analysis*, Addison-Wesley |
 | Kolmogorov-Smirnov distance | Data checks: columns that look simulated | Kolmogorov, A. N. (1933), *Giornale dell'Istituto Italiano degli Attuari* 4, 83–91; Smirnov, N. (1948), *Annals of Mathematical Statistics* 19, 279–281 |
-| Theil-Sen slope | Trendlines, anomalies, forecasts | Theil, H. (1950), *Indagationes Mathematicae* 12; Sen, P. K. (1968), *JASA* 63, 1379–1389 |
+| Theil-Sen slope | Trendlines, anomalies, forecasts, trend tests (`scipy.stats.theilslopes` for the interval) | Theil, H. (1950), *Indagationes Mathematicae* 12; Sen, P. K. (1968), *JASA* 63, 1379–1389 |
+| Mann-Kendall trend test | Long-run trends and trend answers (`scipy.stats.kendalltau`) | Mann, H. B. (1945), *Econometrica* 13, 245–259; Kendall, M. G. (1975), *Rank Correlation Methods*, 4th ed., Griffin |
+| Effective sample size for autocorrelated trends | Trend tests | Yue, S. and Wang, C. Y. (2004), *Water Resources Management* 18, 201–218 |
+| MASE against a seasonal no-change forecast | Forecast backtests | Hyndman, R. J. and Koehler, A. B. (2006), *International Journal of Forecasting* 22, 679–688 |

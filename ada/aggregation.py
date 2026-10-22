@@ -584,7 +584,8 @@ def seasonal_context(series: TrendSeries, *, relative: bool) -> SeasonalContext 
         return None
     periods = pd.DatetimeIndex(pd.to_datetime(trend["Period"]))
     values = trend["Value"].to_numpy(dtype=float)
-    if yearly_pattern(periods, fit_trendline(periods, values).residuals(values)) is None:
+    line = fit_trendline(periods, values, series.frequency)
+    if yearly_pattern(periods, line.residuals(values), grain=series.frequency) is None:
         return None
     by_period = pd.Series(values, index=periods)
     latest = periods[-1]

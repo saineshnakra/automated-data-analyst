@@ -617,7 +617,7 @@ def _anomaly_evidence(
     finer = finer_trend(dataframe, roles, series)
     checked = finer or series
     metric = metric_for(roles.measure, roles)
-    anomalies = detect_anomalies(checked.frame, floor_at_zero=metric.floors_at_zero)
+    anomalies = detect_anomalies(checked.frame, floor_at_zero=metric.floors_at_zero, grain=checked.frequency)
     if not anomalies:
         return None
     # Label at the series' own grain, which a fixed frequency may have set.
