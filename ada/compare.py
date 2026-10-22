@@ -15,6 +15,7 @@ import itertools
 import re
 import warnings
 from dataclasses import dataclass, replace
+from functools import cached_property
 
 import numpy as np
 import pandas as pd
@@ -22,7 +23,7 @@ from scipy import stats
 
 from .formatting import format_number, format_values_apart, group_label, list_names, normalized_name
 from .metrics import metric_for
-from .schema import ColumnRoles, is_entity_name
+from .schema import COORDINATE_TOKENS, ColumnRoles, is_entity_name
 
 ALPHA = 0.05
 # A group needs two values to have a spread to test against.
@@ -67,6 +68,12 @@ DERIVED_SHARE = 0.9
 # Rounding allowance: half the column's own step, but never more than this share of its spread.
 DERIVED_STEP_LIMIT = 0.1
 DERIVED_EXPLAINED = 0.99
+# A free combination of columns (weights other than ±1 or 1/n) must hold on this share of rows.
+COMBINATION_SHARE = 0.99
+# Weights snapped to simple fractions are kept when they match at most this share of rows fewer.
+SIMPLE_MARGIN = 0.01
+# Times a fit is redone on the rows it matches best.
+REFITS = 3
 MAX_PARTS = 8
 PART_CANDIDATES = 15
 DERIVATION_ROWS = 2_000
@@ -92,6 +99,15 @@ AGGREGATE_NAME_WORDS = frozenset({
 
 # A pooled standard deviation below this share of the means counts as no spread at all.
 NO_SPREAD = 1e-9
+# A reading whose groups explain this share of its variance barely varies within a
+# group: it describes the group (a site's coordinates, a station's battery), not its members.
+ATTRIBUTE_EXPLAINED = 0.99
+# A numeric column repeats a part of the date when it matches on this share of rows.
+DATE_PART_SHARE = 0.99
+# A grouping is nested in another when this share of the cells expected to hold
+# NESTING_EXPECTED or more rows are empty.
+NESTED_EMPTY_SHARE = 0.5
+NESTING_EXPECTED = 5
 
 
 @dataclass(frozen=True)
@@ -516,10 +532,26 @@ class DifferenceScan:
     available: int = 0
     #: Rows in the table; above SCAN_ROWS the scan ran on a sample of SCAN_ROWS.
     rows: int = 0
+    #: Pairs left out because the reading barely varies within each group: it
+    #: describes the group (a reef's coordinates, a station's battery), not its members.
+    attributes: tuple[tuple[str, str], ...] = ()
+    #: Readings never compared: coordinates, which place a row, and compass directions,
+    #: whose mean means nothing.
+    placed: tuple[str, ...] = ()
 
     @property
     def sampled(self) -> bool:
         return self.rows > SCAN_ROWS
+
+
+def _explained_share(values: pd.Series, groups: pd.Series) -> float:
+    """Eta squared: the share of the values' variance between the groups' means."""
+    data = pd.DataFrame({"value": values.to_numpy(dtype=float), "group": groups.to_numpy()}).dropna()
+    total = float(((data["value"] - data["value"].mean()) ** 2).sum())
+    if total == 0:
+        return 0.0
+    means = data.groupby("group", observed=True)["value"].transform("mean")
+    return float(((means - data["value"].mean()) ** 2).sum()) / total
 
 
 def scan_differences(
@@ -533,13 +565,20 @@ def scan_differences(
 ) -> DifferenceScan | None:
     """Compare each reading across each grouping and rank the differences by size.
 
-    ``skip`` holds (reading, grouping) pairs reported elsewhere. P-values are
-    Holm-adjusted over every test run, so the scan's chance of naming any
-    difference that isn't there stays at 5%. Very wide tables are scanned on
+    ``skip`` holds (reading, grouping) pairs reported elsewhere or related by
+    construction. P-values are Holm-adjusted over every test run, so the
+    scan's chance of naming any difference that isn't there stays at 5%. A
+    reading that barely varies within the groups of a grouping is an
+    attribute of the group and is not compared across it; coordinates and
+    compass directions are never compared. Very wide tables are scanned on
     their MAX_SCAN_COLUMNS most variable readings, and very long ones on a
     fixed random sample of SCAN_ROWS rows, which still detects any difference
     large enough to report.
     """
+    placed = tuple(
+        reading for reading in readings if is_coordinate(reading) or is_angle(reading, dataframe[reading])
+    )
+    readings = [reading for reading in readings if reading not in placed]
     available = len(readings)
     if available > MAX_SCAN_COLUMNS:
         variance = dataframe[readings].var()
@@ -551,6 +590,7 @@ def scan_differences(
     entries: list[tuple[float, float, object]] = []
     flagged: list[tuple[str, str]] = []
     recoded: list[tuple[str, str]] = []
+    attributes: list[tuple[str, str]] = []
     used_entity = None
     for grouping in groupings:
         columns = [
@@ -586,6 +626,9 @@ def scan_differences(
                 if not np.nansum(omnibus.sd[:, index]) > 0:
                     recoded.append((column, grouping))
                     continue
+                if omnibus.eta2[index] >= ATTRIBUTE_EXPLAINED:
+                    attributes.append((column, grouping))
+                    continue
                 pending = (omnibus, index, block[column], groups, column, grouping, fields)
                 uses_ranks = bool(_shape(omnibus, index, column))
                 explained = omnibus.epsilon2[index] if uses_ranks else omnibus.eta2[index]
@@ -593,6 +636,9 @@ def scan_differences(
                 entries.append((float(explained), float(p), pending))
         for column in columns:
             if column in regular:
+                continue
+            if _explained_share(block[column], groups) >= ATTRIBUTE_EXPLAINED:
+                attributes.append((column, grouping))
                 continue
             single = _single(block[column], groups, column, grouping, fields)
             if single is not None:
@@ -628,6 +674,8 @@ def scan_differences(
         recoded=tuple(recoded),
         available=available,
         rows=rows,
+        attributes=tuple(attributes),
+        placed=placed,
     )
 
 
@@ -674,11 +722,416 @@ def combined_groupings(dataframe: pd.DataFrame, groupings: list[str]) -> dict[st
                 continue
             # One pair per level and one level per pair: as many distinct (level,
             # pair) couples as distinct levels and as distinct pairs.
-            couples = np.unique(cells * (levels[first] * levels[second]) + pairs).size
-            if couples == np.unique(cells).size == np.unique(pairs).size:
+            couples = _distinct(cells * (levels[first] * levels[second]) + pairs)
+            if couples == _distinct(cells) == _distinct(pairs):
                 found[grouping] = (first, second)
                 break
     return found
+
+
+def _distinct(codes: np.ndarray) -> int:
+    """How many different non-negative integer codes an array holds, by counting rather than sorting."""
+    return int(np.count_nonzero(np.bincount(codes))) if codes.size else 0
+
+
+def date_part(values: pd.Series, dates: pd.Series) -> str | None:
+    """Which part of the date a numeric column repeats ("month" for 1-12 matching each row's date), or None.
+
+    A month or year column beside the date it came from is the date again:
+    grouping by it shows the seasonal cycle or the trend, not a factor.
+    """
+    numbers = pd.to_numeric(values, errors="coerce")
+    stamps = pd.to_datetime(dates, errors="coerce")
+    both = numbers.notna() & stamps.notna()
+    if int(both.sum()) < MIN_CORRELATION_PAIRS:
+        return None
+    numbers, stamps = numbers[both], stamps[both].dt
+    parts = (
+        ("year", stamps.year),
+        ("year", stamps.year % 100),
+        ("quarter", stamps.quarter),
+        ("month", stamps.month),
+        ("week", stamps.isocalendar().week.astype(int)),
+        ("day", stamps.day),
+        ("weekday", stamps.dayofweek),
+        ("weekday", stamps.dayofweek + 1),
+        ("hour", stamps.hour),
+    )
+    for name, part in parts:
+        if float((numbers == part).mean()) >= DATE_PART_SHARE and part.nunique() > 1:
+            return name
+    return None
+
+
+def nested_within(dataframe: pd.DataFrame, finer: str, coarser: str) -> bool:
+    """Whether the levels of ``finer`` each occur with only some levels of ``coarser``.
+
+    Concentrations 3 to 12 used only with the blue dyes and 15 to 25 only with
+    the yellow ones repeat the dye difference: across such a grouping the two
+    can't be told apart. A cell counts as missing only where enough rows were
+    expected in it, so thin data is not mistaken for nesting.
+    """
+    data = dataframe[[finer, coarser]].dropna()
+    if data.empty:
+        return False
+    rows, columns = pd.factorize(data[finer])[0], pd.factorize(data[coarser])[0]
+    height, width = int(rows.max()) + 1, int(columns.max()) + 1
+    if width < 2 or height <= width:
+        return False
+    table = np.bincount(rows * width + columns, minlength=height * width).reshape(height, width).astype(float)
+    expected = np.outer(table.sum(axis=1), table.sum(axis=0)) / table.sum()
+    testable = expected >= NESTING_EXPECTED
+    if testable.sum() < table.shape[0]:
+        return False
+    return bool(((table == 0) & testable).sum() >= NESTED_EMPTY_SHARE * testable.sum())
+
+
+# --- Groupings set by the readings --------------------------------------------
+
+# A grouping is cut from a reading when the best set of cut points puts this
+# share of rows in their own group's band (a value rounded onto a cut may sit
+# on the wrong side) ...
+RULE_SHARE = 0.995
+# ... and neighbouring bands meet: no more than one step of the reading, or
+# this share of its spread, lies between them. Groups that merely differ a
+# lot leave a wider gap.
+RULE_GAP = 0.02
+RULE_MIN_ROWS = 20
+RULE_MIN_VALUES = 10
+RULE_MIN_BAND = 5
+# Pooled bands that place less than this share of the rows outside the largest
+# group are not worth trying within each level of another grouping.
+RULE_TRY_WITHIN = 0.5
+# Rows a likely rule is screened on before it is checked on every row.
+RULE_SCREEN_ROWS = 1_000
+# A grouping that names the largest of several columns does so on this share of rows.
+LARGEST_SHARE = 0.9
+
+
+@dataclass(frozen=True)
+class GroupingRule:
+    """A grouping that the readings set, row by row, rather than one measured beside them.
+
+    "bands": each level is a range of one reading (sizes of 1-10, 11-50 and
+    51-100 acres). "cut-offs": the bands move with the level of another
+    grouping (anaemic below 12 g/dL for women and below 13.5 for men).
+    "largest": each level names whichever of several columns is largest on
+    that row. Comparing those readings across the grouping only restates how
+    it was made.
+    """
+
+    grouping: str
+    kind: str
+    readings: tuple[str, ...]
+    share: float
+    rows: int
+    by: str | None = None
+    #: For "bands": (level, lowest, highest) from the lowest band up.
+    bands: tuple[tuple[object, float, float], ...] = ()
+    #: For "cut-offs" between two levels: (level of ``by``, lower level, the cut).
+    cuts: tuple[tuple[object, object, float], ...] = ()
+    #: The step the reading was recorded at, so cuts print as it does (12.0, not 12).
+    step: float = 0.0
+
+    def describe(self) -> str:
+        share = _share_text(self.share)
+        if self.kind == "largest":
+            return f"{self.grouping} names the largest of {_joined(self.readings)} on {share} of rows"
+        reading = self.readings[0]
+
+        def number(value: float) -> str:
+            decimals = _decimals(self.step)
+            if decimals is None:
+                return format_number(value, reading, compact=False)
+            return f"{value:,.{decimals}f}"
+
+        if self.kind == "bands":
+            spans = []
+            for index, (level, low, high) in enumerate(self.bands):
+                label = group_label(self.grouping, level)
+                if index == 0:
+                    spans.append(f"{label} up to {number(high)}")
+                elif index == len(self.bands) - 1:
+                    spans.append(f"{label} from {number(low)}")
+                else:
+                    spans.append(f"{label} {number(low)} to {number(high)}")
+            return f"{self.grouping} is set by {reading}: {_joined(spans)}, on {share} of rows"
+        lower = {lower for _, lower, _ in self.cuts}
+        if self.cuts and len(lower) == 1:
+            cuts = _joined(
+                [f"below {number(cut)} for {group_label(self.by, level)}" for level, _, cut in self.cuts]
+            )
+            label = group_label(self.grouping, next(iter(lower)))
+            return f"{self.grouping} is set by {reading}: {label} {cuts}, on {share} of rows"
+        return f"{self.grouping} is set by {reading}, in bands that differ by {self.by}, on {share} of rows"
+
+
+def _decimals(step: float) -> int | None:
+    """The decimals a value recorded at this step is written with: 1 for 0.1, 0 for whole numbers."""
+    for places in range(7):
+        scaled = step * 10**places
+        if scaled > 0 and abs(scaled - round(scaled)) <= 1e-3 * scaled:
+            return places
+    return None
+
+
+@dataclass(frozen=True)
+class _BandFit:
+    share: float
+    #: (level, lowest, highest) of the rows each band places correctly, lowest band first.
+    bands: tuple[tuple[object, float, float], ...]
+    #: Whether every pair of neighbouring bands meets.
+    meets: bool
+    step: float = 0.0
+
+
+def _band_fit(x: np.ndarray, codes: np.ndarray, labels: list) -> _BandFit | None:
+    """The cut points that put the most rows in their own group's band, with groups ordered by median.
+
+    ``x`` and ``codes`` hold complete rows only; ``codes`` index ``labels``.
+    A dynamic programme over the sorted values finds the cuts in one pass
+    per group; cuts fall only between distinct values, so tied values stay
+    together.
+    """
+    present = np.flatnonzero(np.bincount(codes, minlength=len(labels)))
+    k = present.size
+    if k < 2:
+        return None
+    medians = np.array([np.median(x[codes == code]) for code in present])
+    order = present[np.argsort(medians, kind="stable")]
+    rank = np.zeros(len(labels), dtype=int)
+    rank[order] = np.arange(k)
+    sorting = np.argsort(x, kind="stable")
+    x = x[sorting]
+    ranked = rank[codes[sorting]]
+    n = len(x)
+    starts = np.r_[0, np.flatnonzero(x[1:] != x[:-1]) + 1, n]
+    cumulative = np.zeros((k, n + 1))
+    cumulative[:, 1:] = np.cumsum(ranked[None, :] == np.arange(k)[:, None], axis=1)
+    counts = cumulative[:, starts]
+    best = counts[0]
+    choices = []
+    positions = np.arange(len(starts))
+    for level in range(1, k):
+        offset = best - counts[level]
+        running = np.maximum.accumulate(offset)
+        choices.append(np.maximum.accumulate(np.where(offset == running, positions, 0)))
+        best = running + counts[level]
+    cuts = [len(starts) - 1]
+    for choice in reversed(choices):
+        cuts.append(int(choice[cuts[-1]]))
+    cuts.append(0)
+    cuts.reverse()
+    share = float(best[-1]) / n
+    bands, sizes = [], []
+    for level in range(k):
+        rows = slice(starts[cuts[level]], starts[cuts[level + 1]])
+        placed = x[rows][ranked[rows] == level]
+        if not placed.size:
+            return _BandFit(share, (), False)
+        bands.append((labels[order[level]], float(placed.min()), float(placed.max())))
+        sizes.append(placed.size)
+    spread = _spread(x)
+    step = _step(x, spread)
+    allowed = max(step * (1 + 1e-3), RULE_GAP * spread)
+    # A band of a handful of rows can't show where its edge lies, so only
+    # neighbours that both have RULE_MIN_BAND rows are held to meeting.
+    checked = [index for index in range(k - 1) if min(sizes[index], sizes[index + 1]) >= RULE_MIN_BAND]
+    meets = bool(checked) and all(bands[index + 1][1] - bands[index][2] <= allowed for index in checked)
+    return _BandFit(share, tuple(bands), meets, step)
+
+
+def _screened(rows: np.ndarray) -> np.ndarray:
+    """At most RULE_SCREEN_ROWS of the row positions, spread evenly."""
+    if len(rows) <= RULE_SCREEN_ROWS:
+        return rows
+    return rows[np.linspace(0, len(rows) - 1, RULE_SCREEN_ROWS).astype(int)]
+
+
+@dataclass(frozen=True)
+class _Codes:
+    """A grouping column as integer codes (-1 where missing) and the labels they index."""
+
+    codes: np.ndarray
+    labels: list
+
+
+def _as_codes(values: pd.Series) -> _Codes:
+    codes, labels = pd.factorize(values, sort=True)
+    return _Codes(codes.astype(np.int64), list(labels))
+
+
+def _reading_rule(
+    x: np.ndarray,
+    reading: str,
+    grouping: str,
+    groups: _Codes,
+    others: dict[str, _Codes],
+    needed: float = RULE_SHARE,
+) -> GroupingRule | None:
+    """Whether ``grouping`` is cut from ``reading`` on ``needed`` of rows, overall or at moving cut-offs."""
+    rows = np.flatnonzero(~np.isnan(x) & (groups.codes >= 0))
+    if len(rows) < RULE_MIN_ROWS:
+        return None
+    sample = _screened(rows)
+    screen = _band_fit(x[sample], groups.codes[sample], groups.labels)
+    # Putting every row in the largest group already places that group's
+    # share, so the screen asks how much of the rest the bands place.
+    base = float(np.bincount(groups.codes[sample]).max()) / len(sample)
+    if screen is None or base >= 1 or (screen.share - base) / (1 - base) < RULE_TRY_WITHIN:
+        return None
+    if screen.share >= needed - 0.01:
+        fit = _band_fit(x[rows], groups.codes[rows], groups.labels) if len(rows) > len(sample) else screen
+        if fit is not None and fit.share >= needed and fit.meets:
+            return GroupingRule(
+                grouping, "bands", (reading,), fit.share, len(rows), bands=fit.bands, step=screen.step
+            )
+    for by, split in others.items():
+        if by in (reading, grouping):
+            continue
+        both = rows[split.codes[rows] >= 0]
+        if not 2 <= np.unique(split.codes[both]).size <= MAX_SCAN_LEVELS:
+            continue
+        screened = _cut_offs(x, groups, split, _screened(both))
+        if screened is None or screened[0] < needed - 0.01:
+            continue
+        found = _cut_offs(x, groups, split, both) if len(both) > RULE_SCREEN_ROWS else screened
+        if found is not None and found[0] >= needed:
+            return GroupingRule(
+                grouping, "cut-offs", (reading,), found[0], len(both), by=by, cuts=found[1], step=screen.step
+            )
+    return None
+
+
+def _cut_offs(
+    x: np.ndarray, groups: _Codes, split: _Codes, rows: np.ndarray
+) -> tuple[float, tuple[tuple[object, object, float], ...]] | None:
+    """Bands of ``x`` fitted within each level of ``split``: the share of rows placed, and two-level cuts.
+
+    None unless the bands meet in every level and at least two levels hold
+    two groups to separate.
+    """
+    placed, compared, cuts = 0.0, 0, []
+    for level in np.unique(split.codes[rows]):
+        part = rows[split.codes[rows] == level]
+        sizes = np.bincount(groups.codes[part])
+        if (sizes >= 3).sum() < 2:
+            placed += float(sizes.max())
+            continue
+        fit = _band_fit(x[part], groups.codes[part], groups.labels)
+        if fit is None or not fit.meets:
+            return None
+        placed += fit.share * len(part)
+        compared += 1
+        if len(fit.bands) == 2:
+            cuts.append((split.labels[level], fit.bands[0][0], fit.bands[1][1]))
+    if compared < 2:
+        return None
+    return placed / len(rows), tuple(cuts) if len(cuts) == compared else ()
+
+
+def _match_key(name: object) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(name).lower())
+
+
+def _largest_rule(frame: pd.DataFrame, grouping: str, columns: list[str]) -> GroupingRule | None:
+    """Whether each level of ``grouping`` names the column that is largest on its row."""
+    keys = {_match_key(column): column for column in columns if column != grouping}
+    levels = frame[grouping].dropna().unique()
+    named = {level: keys[_match_key(level)] for level in levels if _match_key(level) in keys}
+    if len(set(named.values())) < 2:
+        return None
+    rows = frame[frame[grouping].isin(list(named))]
+    block = rows[list(dict.fromkeys(named.values()))].apply(pd.to_numeric, errors="coerce")
+    recorded = block.notna().any(axis=1)
+    rows, block = rows[recorded], block[recorded]
+    if len(rows) < RULE_MIN_ROWS:
+        return None
+    top = block.max(axis=1).to_numpy()
+    chosen = np.full(len(rows), np.nan)
+    labels = rows[grouping].to_numpy()
+    for level, column in named.items():
+        mask = labels == level
+        chosen[mask] = block[column].to_numpy(dtype=float)[mask]
+    share = float(np.mean(chosen == top))
+    if share < LARGEST_SHARE:
+        return None
+    used = tuple(column for column in columns if column in set(named.values()))
+    return GroupingRule(grouping, "largest", used, share, len(rows))
+
+
+def _in_stretches(dataframe: pd.DataFrame, grouping: str, date: str | None) -> bool:
+    """Whether each level of ``grouping`` covers one unbroken stretch of rows or of time.
+
+    Phases of a run and logs stacked one after another are such stretches,
+    and a reading that drifts through them, or that another instrument
+    records on another scale, can band by stretch without being what they
+    were cut from.
+    """
+    orders = [dataframe[grouping]]
+    if date is not None and date in dataframe.columns:
+        orders.append(dataframe[[date, grouping]].dropna().sort_values(date, kind="stable")[grouping])
+    for values in orders:
+        codes = pd.factorize(values.dropna())[0]
+        if codes.size >= 2 and 1 + int(np.count_nonzero(codes[1:] != codes[:-1])) <= 2 * int(codes.max() + 1):
+            return True
+    return False
+
+
+def grouping_rules(
+    dataframe: pd.DataFrame,
+    readings: list[str],
+    groupings: list[str],
+    *,
+    date: str | None = None,
+) -> tuple[GroupingRule, ...]:
+    """The groupings that the readings set row by row: bands of a reading, or the largest of several.
+
+    A grouping cut from a reading separates it perfectly by definition, so
+    the brief leaves such pairs out of every comparison and states the rule
+    instead. A grouping whose levels are unbroken stretches of rows or of
+    time (phases of a run, stacked logs) can separate a reading almost
+    perfectly for other reasons, so it must separate it on every row. Long
+    tables are checked on the same fixed sample of SCAN_ROWS rows the
+    comparisons use.
+    """
+    groupings = [grouping for grouping in dict.fromkeys(groupings) if grouping in dataframe.columns]
+    if not groupings:
+        return ()
+    frame = dataframe.sample(SCAN_ROWS, random_state=0) if len(dataframe) > SCAN_ROWS else dataframe
+    readings = [reading for reading in readings if reading in frame.columns]
+    if len(readings) > MAX_SCAN_COLUMNS:
+        # As in the comparisons themselves, a very wide table is checked on its most variable readings.
+        kept = set(frame[readings].var().nlargest(MAX_SCAN_COLUMNS).index)
+        readings = [reading for reading in readings if reading in kept]
+    codes = {grouping: _as_codes(frame[grouping]) for grouping in groupings}
+    matrix = frame[readings].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+    # A reading of a few values is a code itself, not something to cut into bands.
+    values = {
+        reading: matrix[:, index]
+        for index, reading in enumerate(readings)
+        if np.unique(matrix[~np.isnan(matrix[:, index]), index]).size >= RULE_MIN_VALUES
+    }
+    rules: list[GroupingRule] = []
+    for grouping in groupings:
+        largest = _largest_rule(frame, grouping, readings)
+        if largest is not None:
+            rules.append(largest)
+        if not 2 <= len(codes[grouping].labels) <= MAX_SCAN_LEVELS:
+            continue
+        needed = 1.0 if _in_stretches(dataframe, grouping, date) else RULE_SHARE
+        others = {
+            other: codes[other]
+            for other in groupings
+            if other != grouping and 2 <= len(codes[other].labels) <= MAX_SCAN_LEVELS
+        }
+        for reading in values:
+            if reading == grouping or (largest is not None and reading in largest.readings):
+                continue
+            rule = _reading_rule(values[reading], reading, grouping, codes[grouping], others, needed)
+            if rule is not None:
+                rules.append(rule)
+    return tuple(rules)
 
 
 def entity_column(dataframe: pd.DataFrame, roles: ColumnRoles) -> str | None:
@@ -1020,19 +1473,36 @@ def _robust_z(values: np.ndarray) -> np.ndarray | None:
     return np.abs(values - centre) / spread
 
 
+def far_out(first: np.ndarray, second: np.ndarray) -> np.ndarray | None:
+    """Which records lie over EXTREME_Z robust SDs out in either column, or None when neither has a spread."""
+    z_first, z_second = _robust_z(first), _robust_z(second)
+    if z_first is None and z_second is None:
+        return None
+    outside = np.zeros(len(first), dtype=bool)
+    for z in (z_first, z_second):
+        if z is not None:
+            outside |= z > EXTREME_Z
+    return outside
+
+
+def longest_stretch(marked: np.ndarray) -> int:
+    """The longest run of consecutive marked records."""
+    if not marked.any():
+        return 0
+    edges = np.diff(np.r_[0, marked.astype(int), 0])
+    return int((np.flatnonzero(edges == -1) - np.flatnonzero(edges == 1)).max())
+
+
 def without_extremes(first: np.ndarray, second: np.ndarray) -> tuple[float, int] | None:
     """Pearson r after dropping records more than EXTREME_Z robust SDs out in either column.
 
     Returns None when nothing is that extreme, or when so much is (over 5% of
     records) that the extremes are part of the distribution rather than errors.
     """
-    z_first, z_second = _robust_z(first), _robust_z(second)
-    if z_first is None and z_second is None:
+    outside = far_out(first, second)
+    if outside is None:
         return None
-    keep = np.ones(len(first), dtype=bool)
-    for z in (z_first, z_second):
-        if z is not None:
-            keep &= z <= EXTREME_Z
+    keep = ~outside
     dropped = int((~keep).sum())
     if dropped == 0 or dropped > max(3, 0.05 * len(first)) or keep.sum() < MIN_CORRELATION_PAIRS:
         return None
@@ -1052,6 +1522,8 @@ class WithinGroups:
     median: float
     low: float
     high: float
+    #: (group, r, rows) for each group with enough rows, in the grouping's order.
+    per_group: tuple[tuple[object, float, int], ...] = ()
 
 
 def within_group_correlation(
@@ -1068,10 +1540,11 @@ def within_group_correlation(
     data = dataframe[[first, second, grouping]].dropna()
     sizes = data.groupby(grouping, observed=True)[first].transform("size")
     data = data[sizes >= min_rows]
-    per_group = []
-    for _, part in data.groupby(grouping, observed=True):
+    per_group, details = [], []
+    for level, part in data.groupby(grouping, observed=True):
         if part[first].nunique() > 1 and part[second].nunique() > 1:
             per_group.append(float(np.corrcoef(part[first], part[second])[0, 1]))
+            details.append((level, per_group[-1], len(part)))
     if len(per_group) < 2:
         return None
     centred = data[[first, second]] - data.groupby(grouping, observed=True)[[first, second]].transform("mean")
@@ -1085,25 +1558,48 @@ def within_group_correlation(
         median=float(np.median(per_group)),
         low=float(min(per_group)),
         high=float(max(per_group)),
+        per_group=tuple(details),
     )
 
 
 @dataclass(frozen=True)
 class Derivation:
-    """A column that a fixed combination of other columns reproduces."""
+    """A column that other columns reproduce row by row."""
 
     column: str
     parts: tuple[str, ...]
     coefficients: tuple[float, ...]
     intercept: float
-    #: "sum", "mean", "difference" or "combination".
+    #: "sum", "mean", "difference", "combination", "complement" (the column and its
+    #: parts add up to a fixed total), "maximum" or "minimum" (the largest or
+    #: smallest of the parts), or "standardised" (a z-score of its part, within
+    #: each group of ``within`` when that is set).
     kind: str
+    #: Share of the rows holding the column and its parts on which the formula holds.
+    share: float = 1.0
+    #: Rows that break the formula, and the range of what the formula gives there
+    #: (for a complement, what the column and its parts add up to).
+    breaks: int = 0
+    broken: tuple[float, float] | None = None
+    within: str | None = None
+    #: Rows where the column reads 0 although every part is blank: a placeholder, not a value.
+    blank_rows: int = 0
 
     def describe(self) -> str:
         if self.kind == "sum":
             return f"{self.column} = {' + '.join(self.parts)}"
         if self.kind == "mean":
-            return f"{self.column} = mean of {_joined(self.parts)}"
+            return f"{self.column} = mean of {_listed_parts(self.parts)}"
+        if self.kind in ("maximum", "minimum"):
+            word = "largest" if self.kind == "maximum" else "smallest"
+            return f"{self.column} = the {word} of {_listed_parts(self.parts)}"
+        if self.kind == "complement":
+            total = format_number(self.intercept, self.column, compact=False)
+            return f"{_joined([*self.parts, self.column])} add up to {total}"
+        if self.kind == "standardised":
+            scope = f" within each {self.within}" if self.within else ""
+            source = f"{self.parts[0]} standardised" if self.parts else "standardised"
+            return f"{self.column} is {source}{scope} (mean 0, SD 1)"
         if self.kind == "difference":
             ordered = sorted(zip(self.coefficients, self.parts, strict=True), key=lambda item: -item[0])
             formula = ordered[0][1] + "".join(
@@ -1112,10 +1608,49 @@ class Derivation:
             return f"{self.column} = {formula}"
         return f"{self.column} is a fixed combination of {_joined(self.parts)}"
 
+    @property
+    def block(self) -> tuple[str, ...]:
+        """The column and its parts."""
+        return (*self.parts, self.column)
+
+    def exceptions(self) -> list[str]:
+        """Sentences on the rows that break a block of shares or hold a placeholder 0."""
+        notes = []
+        if self.kind == "complement" and self.breaks and self.broken:
+            low, high = (format_number(value, self.column, compact=False) for value in self.broken)
+            spread = low if low == high else f"{low} to {high}"
+            total = format_number(self.intercept, self.column, compact=False)
+            notes.append(
+                f"On {_count_rows(self.breaks)}, {_joined([*self.parts, self.column])} add up to {spread} "
+                f"rather than {total}, as they do on {_share_text(self.share)} of rows."
+            )
+        if self.blank_rows:
+            notes.append(
+                f"On {_count_rows(self.blank_rows)}, {self.column} reads 0 although every column it "
+                "summarises is blank, so those zeros are treated as missing."
+            )
+        return notes
+
 
 def _joined(names: tuple[str, ...] | list[str]) -> str:
     names = list(names)
     return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def _listed_parts(names: tuple[str, ...]) -> str:
+    """The parts of a formula, or the first and last of a long run of them."""
+    if len(names) <= 6:
+        return _joined(names)
+    return f"the {len(names):,} columns {names[0]} … {names[-1]}"
+
+
+def _share_text(share: float) -> str:
+    """A share of rows as "100%" or "99.6%", never rounding a near-miss up to 100%."""
+    return "100%" if share >= 1 else f"{min(share, 0.999):.1%}"
+
+
+def _count_rows(count: int) -> str:
+    return f"{count:,} row{'' if count == 1 else 's'}"
 
 
 def _simple_fraction(weight: float) -> float:
@@ -1136,16 +1671,50 @@ def _classify(coefficients: np.ndarray, intercept: float, tolerance: float) -> s
             return "mean"
         if near(np.abs(coefficients), 1.0, rtol=0, atol=0.02).all():
             return "difference"
+    elif near(coefficients, -1.0, rtol=0, atol=0.02).all():
+        # The column is what the others leave of a fixed total: shares of 100.
+        return "complement"
     return "combination"
 
 
-def find_derivation(frame: pd.DataFrame, column: str, candidates: list[str]) -> Derivation | None:
+def _spread(values: np.ndarray) -> float:
+    """A spread measured on the middle half of the values, so a few huge readings can't widen it."""
+    quartiles = np.percentile(values, [25, 75])
+    return float(quartiles[1] - quartiles[0]) / 1.349 or float(values.std())
+
+
+def _step(values: np.ndarray, spread: float) -> float:
+    """The smallest gap between distinct values: the step a column was recorded at."""
+    if not spread > 0:
+        return 0.0
+    grain = spread * 1e-6
+    steps = np.diff(np.unique(np.round(values / grain))) * grain
+    return float(steps[steps > 0].min()) if (steps > 0).any() else 0.0
+
+
+def _tolerance(values: np.ndarray) -> tuple[float, float]:
+    """How closely a formula must reproduce a column, and the column's spread.
+
+    1% of the spread, or half the column's own step when it was rounded after
+    it was computed (whole degrees, then converted), but never more than
+    DERIVED_STEP_LIMIT of the spread.
+    """
+    spread = _spread(values)
+    half_step = _step(values, spread) / 2 * (1 + 1e-3)
+    return max(DERIVED_TOLERANCE * spread, min(half_step, DERIVED_STEP_LIMIT * spread)), spread
+
+
+def find_derivation(
+    frame: pd.DataFrame, column: str, candidates: list[str], steps: dict[str, float] | None = None
+) -> Derivation | None:
     """Whether ``column`` is a fixed combination of a few of ``candidates``: a sum, a mean, a difference.
 
     Candidates should come strongest-correlated first. They are added one at a
     time, each the one closest to what the others leave unexplained, until the
     combination reproduces the column on DERIVED_SHARE of its rows. A fit
     needs three rows per term, so a few rows can't be matched by chance.
+    ``steps`` caches the step each column was recorded at, when many columns
+    are searched over the same rows.
     """
     # A part recorded on only some rows (acidity measured only on acid soils)
     # still shows the identity on the rows that have it, so candidates are
@@ -1173,22 +1742,25 @@ def find_derivation(frame: pd.DataFrame, column: str, candidates: list[str]) -> 
     total = float((centred**2).sum())
     if total == 0:
         return None
-    # Measured on the middle half of the values, so a few huge readings can't
-    # widen the tolerance until anything matches.
-    quartiles = np.percentile(target, [25, 75])
-    spread = float(quartiles[1] - quartiles[0]) / 1.349 or float(target.std())
-    # A column stored at a coarser step (whole degrees, then converted) can only
-    # match its formula to within half that step.
-    grain = spread * 1e-6
-    steps = np.diff(np.unique(np.round(target / grain))) * grain
-    half_step = float(steps[steps > 0].min()) / 2 * (1 + 1e-3) if (steps > 0).any() else 0.0
-    tolerance = max(DERIVED_TOLERANCE * spread, min(half_step, DERIVED_STEP_LIMIT * spread))
+    tolerance, spread = _tolerance(target)
+    # Parts recorded at a coarser step than the column (whole-number sensor
+    # readings averaged, then truncated) move the formula by up to that step
+    # times their weight.
+    steps = {} if steps is None else steps
+    for index, candidate in enumerate(candidates):
+        if candidate not in steps:
+            steps[candidate] = _step(inputs[:, index], _spread(inputs[:, index]))
+    part_steps = np.array([steps[candidate] for candidate in candidates])
     ones = np.ones(rows)
 
-    def matched(residual: np.ndarray) -> float:
-        return float(np.mean(np.abs(residual) <= tolerance))
+    def allowance(indices: list[int], weights: np.ndarray) -> float:
+        rounding = float((np.abs(weights) * part_steps[indices]).sum())
+        return tolerance + min(rounding, max(DERIVED_STEP_LIMIT * spread - tolerance, 0.0))
 
-    def fit(indices: list[int]) -> tuple[np.ndarray, np.ndarray]:
+    def matched(residual: np.ndarray, limit: float) -> float:
+        return float(np.mean(np.abs(residual) <= limit))
+
+    def fit(indices: list[int]) -> tuple[np.ndarray, np.ndarray, float]:
         """Least squares, refitted on the rows it matches best, or its weights as simple fractions.
 
         A few rows entered by hand, or a column rounded after it was computed,
@@ -1198,26 +1770,33 @@ def find_derivation(frame: pd.DataFrame, column: str, candidates: list[str]) -> 
         """
         design = np.column_stack([ones, inputs[:, indices]])
         coefficients = np.linalg.lstsq(design, target, rcond=None)[0]
-        residual = np.abs(target - design @ coefficients)
-        close = residual <= np.quantile(residual, DERIVED_SHARE)
-        coefficients = np.linalg.lstsq(design[close], target[close], rcond=None)[0]
+        # A few far-off rows can pull the first fit towards them, so the rows
+        # it matches best are refitted until they settle.
+        for _ in range(REFITS):
+            residual = np.abs(target - design @ coefficients)
+            close = residual <= np.quantile(residual, DERIVED_SHARE)
+            coefficients = np.linalg.lstsq(design[close], target[close], rcond=None)[0]
         residual = target - design @ coefficients
+        limit = allowance(indices, coefficients[1:])
         snapped = np.array([_simple_fraction(weight) for weight in coefficients[1:]])
+        simple_limit = allowance(indices, snapped)
         offset = float(np.median(target - design[:, 1:] @ snapped))
-        offset = 0.0 if abs(offset) <= tolerance else offset
+        offset = 0.0 if abs(offset) <= simple_limit else offset
         simple = np.r_[offset, snapped]
         simple_residual = target - design @ simple
-        if matched(simple_residual) >= matched(residual):
-            return simple, simple_residual
-        return coefficients, residual
+        # A simple formula that matches about as many rows is the likelier one:
+        # least squares bends towards the few rows that break it.
+        if matched(simple_residual, simple_limit) >= matched(residual, limit) - SIMPLE_MARGIN:
+            return simple, simple_residual, simple_limit
+        return coefficients, residual, limit
 
-    def reproduces(residual: np.ndarray) -> bool:
-        # Matching most rows is not enough when they are mostly one value (a
-        # column of zeros with a few readings): the fit must also explain the spread.
-        explained = 1 - float((residual**2).sum()) / total
-        return matched(residual) >= DERIVED_SHARE and explained >= DERIVED_EXPLAINED
+    def reproduces(residual: np.ndarray, limit: float, simple: bool = True) -> bool:
+        # A free combination has more weights to fit than a sum or a mean, so
+        # it must hold on nearly every row.
+        needed = DERIVED_SHARE if simple else COMBINATION_SHARE
+        return _reproduces(target, residual, limit, spread, needed)
 
-    if not reproduces(fit(list(range(usable)))[1]):
+    if not reproduces(*fit(list(range(usable)))[1:]):
         return None
     scale = inputs.std(axis=0)
     standardised = (inputs - inputs.mean(axis=0)) / np.where(scale > 0, scale, 1.0)
@@ -1227,22 +1806,158 @@ def find_derivation(frame: pd.DataFrame, column: str, candidates: list[str]) -> 
         scores = np.abs(standardised.T @ residual)
         scores[chosen] = -np.inf
         chosen.append(int(np.argmax(scores)))
-        coefficients, residual = fit(chosen)
-        if reproduces(residual):
+        coefficients, residual, limit = fit(chosen)
+        if reproduces(residual, limit):
             weights = coefficients[1:]
             used = np.abs(weights) * scale[chosen] > 1e-6 * spread
             if used.sum() < 2:
                 return None
             parts = tuple(candidates[index] for index, keep in zip(chosen, used, strict=True) if keep)
             weights = weights[used]
+            kind = _classify(weights, float(coefficients[0]), limit)
+            if kind == "combination" and not reproduces(residual, limit, simple=False):
+                return None
             return Derivation(
                 column=column,
                 parts=parts,
                 coefficients=tuple(float(weight) for weight in weights),
                 intercept=float(coefficients[0]),
-                kind=_classify(weights, float(coefficients[0]), tolerance),
+                kind=kind,
+                share=matched(residual, limit),
             )
     return None
+
+
+def _reproduces(target: np.ndarray, residual: np.ndarray, limit: float, spread: float, needed: float) -> bool:
+    """Whether a formula with these residuals reproduces ``target`` on ``needed`` of its rows."""
+    close = np.abs(residual) <= limit
+    if close.mean() < needed:
+        return False
+    # Matching most rows is not enough when they are mostly one value (a
+    # column of zeros with a few readings): the formula must also explain the spread.
+    total = float(((target - target.mean()) ** 2).sum())
+    if total > 0 and 1 - float((residual**2).sum()) / total >= DERIVED_EXPLAINED:
+        return True
+    # A few rows that break the identity (shares that no longer add up once
+    # one was clipped at zero) must not hide it, provided the rows that keep
+    # it span the column's range.
+    kept = target[close]
+    held = float(((kept - kept.mean()) ** 2).sum())
+    return (
+        held > 0
+        and 1 - float((residual[close] ** 2).sum()) / held >= DERIVED_EXPLAINED
+        and _spread(kept) >= 0.5 * spread
+    )
+
+
+def find_row_extreme(frame: pd.DataFrame, column: str, candidates: list[str]) -> Derivation | None:
+    """Whether ``column`` is the largest (or smallest) of some of ``candidates`` on each row.
+
+    A daily index reported as the worst of several sub-indices is a row
+    maximum: never below any of them, and equal to one of them on almost
+    every row. The parts are the candidates that never exceed the column and
+    supply its value on some rows; each row uses the parts it has.
+    """
+    if len(candidates) < 2:
+        return None
+    matrix = frame[[column, *candidates]].to_numpy(dtype=float)
+    matrix = matrix[~np.isnan(matrix[:, 0])]
+    if len(matrix) < DERIVATION_MIN_ROWS:
+        return None
+    if len(matrix) > 5 * DERIVATION_ROWS:
+        matrix = matrix[np.linspace(0, len(matrix) - 1, 5 * DERIVATION_ROWS).astype(int)]
+    target = matrix[:, 0]
+    # A first look at a few rows rules out most columns: a row maximum is at
+    # least as large as two or more of the others on nearly every row.
+    head = matrix[np.linspace(0, len(matrix) - 1, min(len(matrix), 200)).astype(int)]
+    margin = 0.01 * (np.nanmax(head[:, 0]) - np.nanmin(head[:, 0]))
+    directions = [
+        (kind, sign)
+        for kind, sign in (("maximum", 1.0), ("minimum", -1.0))
+        if (np.mean(~(sign * head[:, 1:] > sign * head[:, :1] + margin), axis=0) >= 0.97).sum() >= 2
+    ]
+    if not directions or np.unique(target).size < 3:
+        return None
+    tolerance, spread = _tolerance(target)
+    for kind, sign in directions:
+        values = sign * matrix[:, 1:]
+        reference = sign * target
+        recorded = ~np.isnan(values)
+        within = np.where(recorded, values <= reference[:, None] + tolerance, True)
+        attains = recorded & (np.abs(values - reference[:, None]) <= tolerance)
+        # A part never exceeds the column (bar a stray row) and supplies its value on some rows.
+        keep = (within.mean(axis=0) >= 0.99) & (attains.sum(axis=0) >= 2)
+        if keep.sum() < 2:
+            continue
+        rows = recorded[:, keep].any(axis=1)
+        if rows.sum() < DERIVATION_MIN_ROWS:
+            continue
+        extreme = np.max(np.where(recorded[rows][:, keep], values[rows][:, keep], -np.inf), axis=1)
+        residual = reference[rows] - extreme
+        if _reproduces(reference[rows], residual, tolerance, spread, DERIVED_SHARE):
+            parts = tuple(candidate for candidate, kept in zip(candidates, keep, strict=True) if kept)
+            share = float(np.mean(np.abs(residual) <= tolerance))
+            return Derivation(column, parts, (1.0,) * len(parts), 0.0, kind, share=share)
+    return None
+
+
+# A score is standardised when its mean is within this of 0 and its SD within this of 1:
+# loosely overall, and tightly within each group, where chance can't produce it.
+STANDARDISED_CLOSE = 0.05
+STANDARDISED_EXACT = 0.005
+STANDARDISED_MIN_GROUPS = 3
+
+
+def find_standardised(
+    frame: pd.DataFrame, column: str, candidates: list[str], groupings: list[str]
+) -> Derivation | None:
+    """Whether ``column`` is a z-score: mean 0 and SD 1 overall, or within each group of a grouping.
+
+    A score standardised within each drug of a screen has mean 0 and SD 1 for
+    every drug and is its source column rescaled drug by drug, so its mean says
+    nothing and its correlation with the source is built in. ``frame`` must
+    hold every row, since a sample of a group is not standardised. Any
+    grouping made of whole groups passes too, so the finest one that passes
+    is named. The source is named when one of ``candidates`` rescales to the
+    column on DERIVED_SHARE of rows.
+    """
+    values = frame[column]
+    present = values.dropna()
+    if len(present) < DERIVATION_MIN_ROWS:
+        return None
+    # Mean 0 and SD 1 within every group leaves mean 0 and SD 1 overall.
+    if abs(present.mean()) > STANDARDISED_CLOSE or abs(present.std() - 1) > STANDARDISED_CLOSE:
+        return None
+    share, within, levels = 0.0, None, 0
+    for grouping in groupings:
+        if grouping == column or grouping not in frame.columns:
+            continue
+        summary = values.groupby(frame[grouping], observed=True).agg(["mean", "std", "size"])
+        summary = summary[summary["size"] >= 3]
+        if len(summary) < STANDARDISED_MIN_GROUPS:
+            continue
+        fits = (summary["mean"].abs() <= STANDARDISED_EXACT) & (
+            (summary["std"] - 1).abs() <= STANDARDISED_EXACT
+        )
+        covered = float(summary.loc[fits, "size"].sum() / summary["size"].sum())
+        if covered >= DERIVED_SHARE and len(summary) > levels:
+            share, within, levels = covered, grouping, len(summary)
+    for candidate in candidates:
+        source = frame[candidate]
+        if within is None:
+            rescaled = (source - source.mean()) / source.std()
+        else:
+            grouped = source.groupby(frame[within], observed=True)
+            rescaled = (source - grouped.transform("mean")) / grouped.transform("std")
+        both = values.notna() & rescaled.notna()
+        if both.sum() < DERIVATION_MIN_ROWS:
+            continue
+        close = float(((values[both] - rescaled[both]).abs() <= 2 * DERIVED_TOLERANCE).mean())
+        if close >= DERIVED_SHARE:
+            return Derivation(column, (candidate,), (1.0,), 0.0, "standardised", share=close, within=within)
+    if within is None:
+        return None
+    return Derivation(column, (), (), 0.0, "standardised", share=share, within=within)
 
 
 @dataclass(frozen=True)
@@ -1315,6 +2030,421 @@ class Pair:
     p_value: float
 
 
+# Words naming a compass direction. Its 0 and 360 are the same place, so a
+# linear mean or correlation of it means nothing.
+DIRECTION_NAME_WORDS = frozenset({
+    "direction", "dir", "wdir", "winddir", "wd", "dr", "bearing", "heading", "azimuth",
+})
+MIN_ANGLE_VALUES = 8
+
+
+def is_angle(name: str, values: pd.Series) -> bool:
+    """Whether a column holds compass directions: a direction word in its name and values from 0 to 360."""
+    if not set(re.findall(r"[a-z]+", normalized_name(name))) & DIRECTION_NAME_WORDS:
+        return False
+    numbers = pd.to_numeric(values, errors="coerce").dropna()
+    return bool(numbers.nunique() >= MIN_ANGLE_VALUES and numbers.min() >= 0 and numbers.max() <= 360)
+
+
+def is_coordinate(name: str) -> bool:
+    """Whether the name marks a map coordinate, which places a row rather than measures it."""
+    return bool(set(re.findall(r"[a-z]+", normalized_name(name))) & COORDINATE_TOKENS)
+
+
+def _families(
+    columns: list[str], pearson: np.ndarray, spearman: np.ndarray, values: np.ndarray
+) -> tuple[list[int], list[tuple[str, str, float]]]:
+    """Group columns that are one quantity recorded twice: |r| ≥ 0.99 with ranks that agree.
+
+    One huge record (a taxon holding half of all reads) can make two columns
+    look identical, so the pair must also stay at 0.99 without its most
+    influential record.
+    """
+    parent = list(range(len(columns)))
+
+    def root(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    duplicates = []
+    first, second = np.where(np.triu(np.abs(pearson) >= NEAR_DUPLICATE_CORRELATION, k=1))
+    for i, j in zip(first, second, strict=True):
+        if abs(pearson[i, j]) - abs(spearman[i, j]) > RANK_DIVERGENCE:
+            continue
+        both = ~np.isnan(values[:, i]) & ~np.isnan(values[:, j])
+        influence = most_influential(values[both, i], values[both, j])
+        if influence is not None and abs(influence[1]) < NEAR_DUPLICATE_CORRELATION:
+            continue
+        parent[root(i)] = root(j)
+        duplicates.append((columns[i], columns[j], float(pearson[i, j])))
+    return [root(index) for index in range(len(columns))], duplicates
+
+
+def _names_an_aggregate(column: str) -> bool:
+    return bool(set(normalized_name(column).split()) & AGGREGATE_NAME_WORDS)
+
+
+def _derivations(
+    frame: pd.DataFrame,
+    columns: list[str],
+    targets: set[int],
+    pearson: np.ndarray,
+    counts: np.ndarray,
+    family: list[int],
+) -> dict[str, Derivation]:
+    """Columns built from two or more others, with their parts traced to columns not built themselves.
+
+    An exact identity can be read either way round (a total is the sum of its
+    items, and an item is the total minus the others), so a column is matched
+    against the columns before it, where computed columns are usually
+    appended. A column named as a total or mean may also be the sum or mean of
+    columns after it. A total can be rebuilt from other totals ("CorIncor =
+    CorrectTotal − IncorrectTotal"), so each derivation is then retraced to the
+    columns that are not derived themselves, which names the items it was made
+    from. Only the columns in ``targets`` are tried as derived; the others can
+    only be parts.
+    """
+    present = counts.diagonal()
+
+    def candidates(index: int, allowed: set[int]) -> list[str]:
+        strength = np.nan_to_num(np.abs(pearson[index]), nan=-1.0)
+        order = np.argsort(-strength)
+        return [
+            columns[other]
+            for other in order
+            if other in allowed
+            and family[other] != family[index]
+            and strength[other] > 0
+            and counts[index, other] >= DERIVATION_MIN_SHARE * present[index]
+        ][:PART_CANDIDATES]
+
+    steps: dict[str, float] = {}
+
+    def search(index: int, allowed: set[int]) -> Derivation | None:
+        column = columns[index]
+        found = find_derivation(frame, column, candidates(index, allowed & set(range(index))), steps)
+        if found is None and _names_an_aggregate(column):
+            found = find_derivation(frame, column, candidates(index, allowed), steps)
+            if found is not None and found.kind not in ("sum", "mean"):
+                found = None
+        return found
+
+    everything = set(range(len(columns)))
+    derived = {}
+    for index in sorted(targets):
+        found = search(index, everything)
+        if found is not None:
+            derived[columns[index]] = found
+    leaves = {index for index, column in enumerate(columns) if column not in derived}
+    for column in list(derived):
+        refined = search(columns.index(column), leaves)
+        if refined is not None:
+            derived[column] = refined
+    # Name the parts in table order, as a reader would write the formula.
+    for column, found in derived.items():
+        ordered = sorted(
+            zip(found.parts, found.coefficients, strict=True), key=lambda item: columns.index(item[0])
+        )
+        derived[column] = replace(
+            found,
+            parts=tuple(part for part, _ in ordered),
+            coefficients=tuple(weight for _, weight in ordered),
+        )
+    return derived
+
+
+def _summaries(
+    dataframe: pd.DataFrame,
+    frame: pd.DataFrame,
+    columns: list[str],
+    targets: set[int],
+    pearson: np.ndarray,
+    family: list[int],
+) -> dict[str, Derivation]:
+    """Columns that summarise others row by row without a fixed formula: a row maximum, a z-score.
+
+    ``frame`` holds a spread of rows, enough for a row maximum; a z-score is
+    checked on every row of ``dataframe``.
+    """
+    found: dict[str, Derivation] = {}
+    groupings: list[str] | None = None
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        highs, lows = np.nanmax(frame.to_numpy(), axis=0), np.nanmin(frame.to_numpy(), axis=0)
+    for index in sorted(targets):
+        column = columns[index]
+        # A part that rarely sets the maximum need not correlate with it.
+        strength = np.nan_to_num(np.abs(pearson[index]), nan=-1.0)
+        nearest = [
+            other
+            for other in np.argsort(-strength)
+            if other != index and family[other] != family[index] and strength[other] >= 0
+        ][:PART_CANDIDATES]
+        # A row maximum reaches the largest value of its parts, and a row minimum the smallest.
+        close = 0.01 * (highs[index] - lows[index])
+        reaches = nearest and (
+            abs(highs[index] - np.nanmax(highs[nearest])) <= close
+            or abs(lows[index] - np.nanmin(lows[nearest])) <= close
+        )
+        extreme = find_row_extreme(frame, column, [columns[other] for other in nearest]) if reaches else None
+        if extreme is not None:
+            found[column] = extreme
+            continue
+        values = frame[column].dropna()
+        if len(values) < DERIVATION_MIN_ROWS or abs(values.mean()) > STANDARDISED_CLOSE:
+            continue
+        if groupings is None:
+            # Columns of repeated labels, such as the drug each row was screened with.
+            labels = dataframe.select_dtypes(include=["object", "category", "string"])
+            groupings = [
+                name for name in labels.columns
+                if STANDARDISED_MIN_GROUPS <= labels[name].nunique() <= len(labels) / 3
+            ]
+        closest = np.argsort(-np.abs(np.nan_to_num(pearson[index])))
+        sources = [columns[other] for other in closest if other != index][:5]
+        standardised = find_standardised(dataframe, column, sources, groupings)
+        if standardised is not None:
+            found[column] = standardised
+    return found
+
+
+def _checked(dataframe: pd.DataFrame, derivation: Derivation) -> tuple[Derivation, pd.Index]:
+    """The derivation with its exceptions counted on every row, and the rows holding a placeholder 0.
+
+    Shares that should add up to a fixed total are checked row by row, so the
+    rows that break the total can be named. A sum, mean or row maximum that
+    reads 0 where every part is blank was filled in, not measured.
+    """
+    parts = [part for part in derivation.parts if part in dataframe.columns]
+    blank = dataframe.index[:0]
+    if not parts or derivation.column not in dataframe.columns:
+        return derivation, blank
+    target = pd.to_numeric(dataframe[derivation.column], errors="coerce")
+    if derivation.kind in ("sum", "mean", "maximum", "minimum") and len(parts) == len(derivation.parts):
+        blank = dataframe.index[(target == 0) & dataframe[parts].isna().all(axis=1)]
+    if derivation.kind == "complement" and len(parts) == len(derivation.parts):
+        block = dataframe[[*parts, derivation.column]].apply(pd.to_numeric, errors="coerce").dropna()
+        if len(block):
+            totals = block.sum(axis=1).to_numpy(dtype=float)
+            limit = _tolerance(block[derivation.column].to_numpy(dtype=float))[0] + sum(
+                _step(block[part].to_numpy(dtype=float), _spread(block[part].to_numpy(dtype=float)))
+                for part in parts
+            )
+            off = np.abs(totals - derivation.intercept) > limit
+            derivation = replace(
+                derivation,
+                share=float(1 - off.mean()),
+                breaks=int(off.sum()),
+                broken=(float(totals[off].min()), float(totals[off].max())) if off.any() else None,
+            )
+    return replace(derivation, blank_rows=len(blank)), blank
+
+
+@dataclass(frozen=True, eq=False)
+class Construction:
+    """How a table's numeric columns are built from one another.
+
+    One quantity recorded twice (a temperature in °C and in °F), a column
+    computed from others (a total, a mean, the largest of several readings, a
+    score standardised within each group, shares that add up to 100), and a
+    flag marking where another column hits its cap. A pair related this way
+    says nothing new, so the comparison and relationship scans both set it
+    aside. The correlations it is found from serve the relationship scan.
+    """
+
+    #: Every column screened, in table order: the readings and any items.
+    columns: tuple[str, ...]
+    readings: tuple[str, ...]
+    #: Readings that vary, before the cap on very wide tables.
+    available: int
+    #: Rows in the table; above SCAN_ROWS the screen ran on a fixed random sample of SCAN_ROWS.
+    rows: int
+    frame: pd.DataFrame
+    ranked: _Ranked
+    pearson: np.ndarray
+    spearman: np.ndarray
+    counts: np.ndarray
+    family: tuple[int, ...]
+    near_duplicates: tuple[tuple[str, str, float], ...]
+    derived: tuple[Derivation, ...]
+    flags: tuple[CapFlag, ...]
+    #: Compass directions, left out of every linear calculation.
+    angles: tuple[str, ...] = ()
+    #: For each summary that reads 0 where its parts are blank, the rows holding that 0.
+    blanks: tuple[tuple[str, pd.Index], ...] = ()
+
+    @property
+    def sampled(self) -> bool:
+        return self.rows > SCAN_ROWS
+
+    @cached_property
+    def position(self) -> dict[str, int]:
+        return {column: index for index, column in enumerate(self.columns)}
+
+    @cached_property
+    def _built(self) -> dict[str, Derivation]:
+        return {item.column: item for item in self.derived}
+
+    def derivation(self, column: str) -> Derivation | None:
+        return self._built.get(column)
+
+    def same_quantity(self, first: str, second: str) -> bool:
+        i, j = self.position.get(first), self.position.get(second)
+        return i is not None and j is not None and self.family[i] == self.family[j]
+
+    def representative(self, column: str, prefer: tuple[str, ...] = ()) -> str:
+        """The column that stands for ``column``'s family: a preferred one, or the first in the table."""
+        if column not in self.position:
+            return column
+        members = [other for other in self.columns if self.same_quantity(column, other)]
+        return next((other for other in prefer if other in members), members[0])
+
+    @cached_property
+    def _parts(self) -> dict[str, frozenset]:
+        """Each derived column's parts, as the families they belong to (or their names, when not screened)."""
+        return {
+            item.column: frozenset(
+                self.family[self.position[part]] if part in self.position else part for part in item.parts
+            )
+            for item in self.derived
+        }
+
+    def _part_families(self, column: str) -> frozenset:
+        return self._parts.get(column, frozenset())
+
+    def built_from(self, column: str, other: str) -> bool:
+        """Whether ``column`` is computed from ``other``, or from a copy of it."""
+        families = self._part_families(column)
+        key = self.family[self.position[other]] if other in self.position else other
+        return key in families
+
+    def relation(self, first: str, second: str) -> str | None:
+        """Why two columns are related by construction: "copy", "flag", "built", "total", or None."""
+        if self.same_quantity(first, second):
+            return "copy"
+        if any({flag.flag, flag.column} == {first, second} for flag in self.flags):
+            return "flag"
+        if self.built_from(first, second) or self.built_from(second, first):
+            return "built"
+        one, other = self._part_families(first), self._part_families(second)
+        if one and other and (one <= other or other <= one):
+            return "built"
+        for item in self.derived:
+            if item.kind == "complement" and first in item.block and second in item.block:
+                return "total"
+        return None
+
+    def masked(self, dataframe: pd.DataFrame) -> pd.DataFrame:
+        """The table with each summary's placeholder zeros set to missing."""
+        if not self.blanks:
+            return dataframe
+        dataframe = dataframe.copy()
+        for column, rows in self.blanks:
+            dataframe.loc[rows, column] = np.nan
+        return dataframe
+
+
+def construction(
+    dataframe: pd.DataFrame,
+    columns: list[str],
+    measure: str | None = None,
+    *,
+    items: tuple[str, ...] | list[str] = (),
+    known: tuple[Derivation, ...] = (),
+) -> Construction | None:
+    """Screen numeric ``columns`` for pairs related by construction, on at most SCAN_ROWS rows.
+
+    ``items`` are further numeric columns, such as rating items read as
+    categories, that a score in ``columns`` may be built from; they are tried
+    as parts but never as derived columns. ``known`` holds derivations the
+    caller already knows, such as a row mean it added. Returns None when fewer
+    than two columns vary.
+    """
+    columns = list(dict.fromkeys(column for column in columns if column in dataframe.columns))
+    angles = tuple(column for column in columns if column != measure and is_angle(column, dataframe[column]))
+    columns = [column for column in columns if column not in angles]
+    with np.errstate(invalid="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        variance = np.nanvar(dataframe[columns].to_numpy(dtype=float), axis=0)
+    # A column that never varies relates to nothing.
+    varying = pd.Series(variance, index=columns)
+    varying = varying[varying > 0]
+    columns = [column for column in columns if column in varying.index]
+    available = len(columns)
+    if available > MAX_SCAN_COLUMNS:
+        rest = varying.drop(measure) if measure in varying.index else varying
+        kept = set(rest.nlargest(MAX_SCAN_COLUMNS - (measure in varying.index)).index) | {measure}
+        columns = [column for column in columns if column in kept]
+    if len(columns) < 2:
+        return None
+    extra = [
+        column
+        for column in dict.fromkeys(items)
+        if column in dataframe.columns
+        and column not in columns
+        and column not in angles
+        and pd.api.types.is_numeric_dtype(dataframe[column])
+        and dataframe[column].nunique() > 1
+    ]
+    order = {column: index for index, column in enumerate(dataframe.columns)}
+    screened = sorted([*columns, *extra], key=order.__getitem__)
+    rows = len(dataframe)
+    sample = dataframe.sample(SCAN_ROWS, random_state=0) if rows > SCAN_ROWS else dataframe
+    frame = sample[screened].astype(float)
+
+    def correlations(values: np.ndarray) -> tuple[_Ranked, np.ndarray, np.ndarray, np.ndarray]:
+        ranked = _rank_columns(values)
+        pearson, counts = pairwise_correlations(values)
+        spearman, _ = pairwise_correlations(ranked.ranks)
+        usable = counts >= MIN_CORRELATION_PAIRS
+        np.fill_diagonal(usable, False)
+        return ranked, np.where(usable, pearson, np.nan), np.where(usable, spearman, np.nan), counts
+
+    values = frame.to_numpy()
+    ranked, pearson, spearman, counts = correlations(values)
+    family, duplicates = _families(screened, pearson, spearman, values)
+    # Exact identities hold on every row, so a spread of rows is enough to find them.
+    thinned = frame.iloc[np.linspace(0, len(frame) - 1, min(len(frame), 5 * DERIVATION_ROWS)).astype(int)]
+    targets = {screened.index(column) for column in columns}
+    derived = _derivations(thinned, screened, targets, pearson, counts, family)
+    remaining = {index for index in targets if screened[index] not in derived}
+    for column, found in _summaries(dataframe, thinned, screened, remaining, pearson, family).items():
+        derived[column] = replace(found, parts=tuple(sorted(found.parts, key=order.__getitem__)))
+    for item in known:
+        derived[item.column] = item
+    blanks = []
+    checked = []
+    for item in derived.values():
+        item, blank = _checked(dataframe, item)
+        checked.append(item)
+        if len(blank):
+            blanks.append((item.column, blank))
+    if blanks:
+        # A summary's placeholder zeros are missing values, not readings of 0.
+        for column, blank in blanks:
+            frame.loc[frame.index.intersection(blank), column] = np.nan
+        ranked, pearson, spearman, counts = correlations(frame.to_numpy())
+    return Construction(
+        columns=tuple(screened),
+        readings=tuple(columns),
+        available=available,
+        rows=rows,
+        frame=frame,
+        ranked=ranked,
+        pearson=pearson,
+        spearman=spearman,
+        counts=counts,
+        family=tuple(family),
+        near_duplicates=tuple(sorted(duplicates, key=lambda item: -abs(item[2]))),
+        derived=tuple(checked),
+        flags=tuple(_cap_flags(frame, ranked, counts)),
+        angles=angles,
+        blanks=tuple(blanks),
+    )
+
+
 @dataclass(frozen=True)
 class RelationshipScan:
     """Every pair of numeric columns screened, with pairs related by construction set aside."""
@@ -1334,92 +2464,20 @@ class RelationshipScan:
     flags: tuple[CapFlag, ...]
     near_duplicates: tuple[tuple[str, str, float], ...]
     shared_stems: tuple[tuple[str, str, float], ...]
+    #: Pairs of map coordinates, which describe where the rows were taken rather than how they relate.
+    coordinates: tuple[tuple[str, str], ...] = ()
+    #: Compass directions left out, since a linear correlation of an angle means nothing.
+    angles: tuple[str, ...] = ()
+    #: Rows in the table; above SCAN_ROWS the pairs were screened on a sample of SCAN_ROWS.
+    rows: int = 0
+    #: The measure's columns set aside as related to it by construction, with the reason:
+    #: "copy" (the same quantity, or the same name above SHARED_STEM_CORRELATION),
+    #: "built", "flag", "total" or "place" (two map coordinates).
+    set_aside: tuple[tuple[str, str], ...] = ()
 
-
-def _families(
-    columns: list[str], pearson: np.ndarray, spearman: np.ndarray
-) -> tuple[list[int], list[tuple[str, str, float]]]:
-    """Group columns that are one quantity recorded twice: |r| ≥ 0.99 with ranks that agree."""
-    parent = list(range(len(columns)))
-
-    def root(index: int) -> int:
-        while parent[index] != index:
-            parent[index] = parent[parent[index]]
-            index = parent[index]
-        return index
-
-    duplicates = []
-    first, second = np.where(np.triu(np.abs(pearson) >= NEAR_DUPLICATE_CORRELATION, k=1))
-    for i, j in zip(first, second, strict=True):
-        if abs(pearson[i, j]) - abs(spearman[i, j]) <= RANK_DIVERGENCE:
-            parent[root(i)] = root(j)
-            duplicates.append((columns[i], columns[j], float(pearson[i, j])))
-    return [root(index) for index in range(len(columns))], duplicates
-
-
-def _names_an_aggregate(column: str) -> bool:
-    return bool(set(normalized_name(column).split()) & AGGREGATE_NAME_WORDS)
-
-
-def _derivations(
-    frame: pd.DataFrame, columns: list[str], pearson: np.ndarray, counts: np.ndarray, family: list[int]
-) -> dict[str, Derivation]:
-    """Columns built from two or more others, with their parts traced to columns not built themselves.
-
-    An exact identity can be read either way round (a total is the sum of its
-    items, and an item is the total minus the others), so a column is matched
-    against the columns before it, where computed columns are usually
-    appended. A column named as a total or mean may also be the sum or mean of
-    columns after it. A total can be rebuilt from other totals ("CorIncor =
-    CorrectTotal − IncorrectTotal"), so each derivation is then retraced to the
-    columns that are not derived themselves, which names the items it was made
-    from.
-    """
-    present = counts.diagonal()
-
-    def candidates(index: int, allowed: set[int]) -> list[str]:
-        strength = np.nan_to_num(np.abs(pearson[index]), nan=-1.0)
-        order = np.argsort(-strength)
-        return [
-            columns[other]
-            for other in order
-            if other in allowed
-            and family[other] != family[index]
-            and strength[other] > 0
-            and counts[index, other] >= DERIVATION_MIN_SHARE * present[index]
-        ][:PART_CANDIDATES]
-
-    def search(index: int, allowed: set[int]) -> Derivation | None:
-        column = columns[index]
-        found = find_derivation(frame, column, candidates(index, allowed & set(range(index))))
-        if found is None and _names_an_aggregate(column):
-            found = find_derivation(frame, column, candidates(index, allowed))
-            if found is not None and found.kind not in ("sum", "mean"):
-                found = None
-        return found
-
-    everything = set(range(len(columns)))
-    derived = {}
-    for index, column in enumerate(columns):
-        found = search(index, everything)
-        if found is not None:
-            derived[column] = found
-    leaves = {index for index, column in enumerate(columns) if column not in derived}
-    for column in list(derived):
-        refined = search(columns.index(column), leaves)
-        if refined is not None:
-            derived[column] = refined
-    # Name the parts in table order, as a reader would write the formula.
-    for column, found in derived.items():
-        ordered = sorted(
-            zip(found.parts, found.coefficients, strict=True), key=lambda item: columns.index(item[0])
-        )
-        derived[column] = replace(
-            found,
-            parts=tuple(part for part, _ in ordered),
-            coefficients=tuple(weight for _, weight in ordered),
-        )
-    return derived
+    @property
+    def sampled(self) -> bool:
+        return self.rows > SCAN_ROWS
 
 
 def _cap_flags(frame: pd.DataFrame, ranked: _Ranked, counts: np.ndarray) -> list[CapFlag]:
@@ -1454,76 +2512,69 @@ def scan_relationships(
     *,
     limit: int = 12,
     others: bool = True,
+    built: Construction | None = None,
 ) -> RelationshipScan | None:
     """Rank what relates to ``measure``, then the strongest pairs among the other columns.
 
     Pearson and Spearman r for every pair come from matrix products over the
     complete rows of each pair; Spearman r ranks each column once, so with
     missing values it is a close screen, and the pairs returned are recomputed
-    exactly. Pairs related by construction are left out and returned for the
-    calculation: near-duplicates, a column built from the other (or both built
-    from the same items), a flag marking the other's cap, and same-stem names
-    above SHARED_STEM_CORRELATION. Returns None when no pair has
-    MIN_CORRELATION_PAIRS complete rows.
+    exactly. Tables longer than SCAN_ROWS are screened on a fixed random
+    sample of that many rows. Pairs related by construction are left out and
+    returned for the calculation: near-duplicates, a column built from the
+    other (or both built from the same items), shares that add up to a fixed
+    total, a flag marking the other's cap, and same-stem names above
+    SHARED_STEM_CORRELATION. ``built`` is a screen already made of the same
+    columns. Returns None when no pair has MIN_CORRELATION_PAIRS complete rows.
     """
-    columns = list(dict.fromkeys(columns))
-    with np.errstate(invalid="ignore"), warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        variance = np.nanvar(dataframe[columns].to_numpy(dtype=float), axis=0)
-    # A column that never varies relates to nothing.
-    columns = [column for column, spread in zip(columns, variance, strict=True) if spread > 0]
-    available = len(columns)
-    if available > MAX_SCAN_COLUMNS:
-        spread = pd.Series(variance[variance > 0], index=columns)
-        rest = spread.drop(measure) if measure in spread.index else spread
-        kept = set(rest.nlargest(MAX_SCAN_COLUMNS - (measure in spread.index)).index) | {measure}
-        columns = [column for column in columns if column in kept]
+    built = built if built is not None else construction(dataframe, columns, measure)
+    if built is None:
+        return None
+    columns = [column for column in built.readings if column in set(columns) | {measure}]
     if len(columns) < 2:
         return None
-    frame = dataframe[columns].astype(float)
-    values = frame.to_numpy()
-    ranked = _rank_columns(values)
-    pearson, counts = pairwise_correlations(values)
-    spearman, _ = pairwise_correlations(ranked.ranks)
+    position = {column: built.position[column] for column in columns}
+    indices = np.array([position[column] for column in columns])
+    values = built.frame.to_numpy()
+    pearson = built.pearson[np.ix_(indices, indices)]
+    spearman = built.spearman[np.ix_(indices, indices)]
+    counts = built.counts[np.ix_(indices, indices)]
+    family = [built.family[index] for index in indices]
     usable = counts >= MIN_CORRELATION_PAIRS
     np.fill_diagonal(usable, False)
     if not usable.any():
         return None
-    pearson = np.where(usable, pearson, np.nan)
-    spearman = np.where(usable, spearman, np.nan)
     screen = np.fmax(np.abs(pearson), np.abs(spearman))
-    family, duplicates = _families(columns, pearson, spearman)
-    # Exact identities hold on every row, so a spread of rows is enough to find them.
-    thinned = frame.iloc[np.linspace(0, len(frame) - 1, min(len(frame), 5 * DERIVATION_ROWS)).astype(int)]
-    derived = _derivations(thinned, columns, pearson, counts, family)
-    flags = _cap_flags(frame, ranked, counts)
-    flagged = {frozenset((flag.flag, flag.column)) for flag in flags}
-    position = {column: index for index, column in enumerate(columns)}
-
-    def parts_of(column: str) -> set[int] | None:
-        found = derived.get(column)
-        return {family[position[part]] for part in found.parts} if found else None
-
+    local = {column: index for index, column in enumerate(columns)}
     stems: list[tuple[str, str, float]] = []
+    coordinates: list[tuple[str, str]] = []
 
-    def related(first: str, second: str) -> bool:
-        i, j = position[first], position[second]
-        if family[i] == family[j] or frozenset((first, second)) in flagged:
-            return True
-        first_parts, second_parts = parts_of(first), parts_of(second)
-        if first_parts and family[j] in first_parts or second_parts and family[i] in second_parts:
-            return True
-        if first_parts and second_parts and (first_parts <= second_parts or second_parts <= first_parts):
-            return True
+    def related(first: str, second: str) -> str | None:
+        reason = built.relation(first, second)
+        if reason:
+            return reason
+        i, j = local[first], local[second]
+        if is_coordinate(first) and is_coordinate(second):
+            coordinates.append((first, second))
+            return "place"
         if abs(pearson[i, j]) > SHARED_STEM_CORRELATION and _stems(first) & _stems(second):
-            stems.append((first, second, float(pearson[i, j])))
-            return True
-        return False
+            # One huge record can make two columns look like one, so the ranks,
+            # and r without that record, must agree as closely.
+            x, y = paired(first, second)
+            influence = most_influential(x, y)
+            steady = abs(influence[1]) if influence is not None else abs(pearson[i, j])
+            if min(steady, abs(spearman[i, j])) > SHARED_STEM_CORRELATION:
+                stems.append((first, second, float(pearson[i, j])))
+                return "copy"
+        return None
+
+    def paired(first: str, second: str) -> tuple[np.ndarray, np.ndarray]:
+        both = ~np.isnan(values[:, position[first]]) & ~np.isnan(values[:, position[second]])
+        return values[both, position[first]], values[both, position[second]]
 
     def detail(first: str, second: str) -> Pair:
-        i, j = position[first], position[second]
-        both = ~np.isnan(values[:, i]) & ~np.isnan(values[:, j])
-        x, y = values[both, i], values[both, j]
+        i, j = local[first], local[second]
+        x, y = paired(first, second)
         value = float(pearson[i, j])
         rank_r = float(spearman[i, j])
         if counts[i, j] < min(counts[i, i], counts[j, j]):
@@ -1541,7 +2592,7 @@ def scan_relationships(
         # MaxTemp ~ MinTemp and its copy in other units, MAX ~ MIN, are one pair.
         seen: set[frozenset[int]] = set()
         for first, second in candidates:
-            key = frozenset((family[position[first]], family[position[second]]))
+            key = frozenset((family[local[first]], family[local[second]]))
             if key in seen or related(first, second):
                 continue
             seen.add(key)
@@ -1552,33 +2603,47 @@ def scan_relationships(
 
     correlates: list[Pair] = []
     measure_tests = 0
-    if measure in position:
-        i = position[measure]
+    set_aside: list[tuple[str, str]] = []
+    if measure in local:
+        i = local[measure]
         order = [j for j in np.argsort(-np.nan_to_num(screen[i], nan=-1.0)) if usable[i, j]]
         measure_tests = len(order)
         correlates = best([(measure, columns[j]) for j in order], max(limit, 15))
+        for j in order:
+            reason = related(measure, columns[j])
+            if reason:
+                set_aside.append((columns[j], reason))
     pair_list: list[Pair] = []
     if others:
         upper = np.triu(usable, k=1)
-        if measure in position:
+        if measure in local:
             # A pair with the measure's own duplicate is a pair with the measure.
-            same = [index for index in range(len(columns)) if family[index] == family[position[measure]]]
+            same = [index for index in range(len(columns)) if family[index] == family[local[measure]]]
             upper[same, :] = False
             upper[:, same] = False
         first, second = np.where(upper)
         order = np.argsort(-screen[first, second], kind="stable")[:200]
         pair_list = best([(columns[first[k]], columns[second[k]]) for k in order], 30)
     pair_tests = int(np.triu(usable, k=1).sum())
+    scanned = set(columns)
     return RelationshipScan(
-        measure=measure if measure in position else None,
+        measure=measure if measure in local else None,
         columns=tuple(columns),
-        available=available,
+        available=built.available,
         correlates=tuple(correlates[:limit]),
         others=tuple(pair_list[:limit]),
         measure_tests=measure_tests,
         pair_tests=pair_tests,
-        derived=tuple(derived.values()),
-        flags=tuple(flags),
-        near_duplicates=tuple(sorted(duplicates, key=lambda item: -abs(item[2]))),
+        derived=tuple(
+            item for item in built.derived if item.column in scanned and (item.parts or item.within)
+        ),
+        flags=tuple(flag for flag in built.flags if {flag.flag, flag.column} <= scanned),
+        near_duplicates=tuple(
+            item for item in built.near_duplicates if item[0] in scanned and item[1] in scanned
+        ),
         shared_stems=tuple(dict.fromkeys(stems)),
+        coordinates=tuple(dict.fromkeys(coordinates)),
+        angles=built.angles,
+        rows=built.rows,
+        set_aside=tuple(set_aside),
     )

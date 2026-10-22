@@ -6,16 +6,23 @@ from scipy import stats
 
 from ada.compare import (
     MAX_SCAN_COLUMNS,
+    SCAN_ROWS,
     cap_flag,
     combined_groupings,
     compare_groups,
     comparison_calculation,
     comparison_table,
+    construction,
+    date_part,
     describe_comparison,
     entity_column,
     find_derivation,
+    find_standardised,
+    grouping_rules,
     holm_adjust,
+    is_angle,
     most_influential,
+    nested_within,
     pairwise_correlations,
     scan_differences,
     scan_relationships,
@@ -530,6 +537,273 @@ class RelationshipScanTests(unittest.TestCase):
         frame = pd.DataFrame({"x": np.arange(8.0), "y": np.arange(8.0) ** 2})
 
         self.assertIsNone(scan_relationships(frame, ["x", "y"]))
+
+    def test_one_huge_record_does_not_make_two_columns_one_quantity(self):
+        rng = np.random.default_rng(25)
+        first = rng.gamma(1.0, 10.0, 400)
+        second = first * rng.uniform(0.2, 1.8, 400)
+        first[0], second[0] = 500_000.0, 450_000.0
+        frame = pd.DataFrame({"SampleA": first, "SampleB": second})
+
+        scan = scan_relationships(frame, list(frame.columns), "SampleA")
+
+        assert scan is not None
+        self.assertEqual(scan.near_duplicates, ())
+        self.assertEqual(scan.correlates[0].second, "SampleB")
+
+    def test_a_copy_in_other_units_stays_one_quantity(self):
+        rng = np.random.default_rng(26)
+        celsius = rng.normal(20, 5, 300)
+        frame = pd.DataFrame({"TempC": celsius, "TempF": celsius * 1.8 + 32, "Wind": rng.normal(size=300)})
+
+        scan = scan_relationships(frame, list(frame.columns))
+
+        assert scan is not None
+        self.assertEqual([pair[:2] for pair in scan.near_duplicates], [("TempC", "TempF")])
+
+    def test_shares_that_add_up_to_a_total_are_not_paired(self):
+        rng = np.random.default_rng(27)
+        shares = rng.dirichlet([4, 3, 2, 1], 500) * 100
+        frame = pd.DataFrame(shares.round(1), columns=["Bact", "Firm", "Prot", "Other"])
+        frame["Other"] = (100 - frame[["Bact", "Firm", "Prot"]].sum(axis=1)).round(1)
+        broken = frame.index[:30]
+        frame.loc[broken, "Other"] = 0.0
+        frame.loc[broken, "Bact"] += 50.0
+        frame["Weight"] = rng.normal(400, 50, 500)
+
+        scan = scan_relationships(frame, list(frame.columns), "Weight")
+
+        assert scan is not None
+        block = next(item for item in scan.derived if item.kind == "complement")
+        self.assertEqual(set(block.block), {"Bact", "Firm", "Prot", "Other"})
+        self.assertEqual(block.breaks, 30)
+        self.assertIn("On 30 rows, Bact, Firm, Prot and Other add up to", block.exceptions()[0])
+        for pair in scan.others:
+            self.assertFalse({pair.first, pair.second} <= set(block.block))
+
+    def test_a_score_is_not_paired_with_items_read_as_codes(self):
+        rng = np.random.default_rng(28)
+        items = pd.DataFrame(rng.integers(0, 11, (200, 3)), columns=["Item1", "Item2", "Item3"])
+        frame = items.assign(Score=items.mean(axis=1), Other=rng.normal(size=200))
+
+        built = construction(frame, ["Score", "Other"], "Score", items=list(items.columns))
+
+        assert built is not None
+        self.assertEqual(built.derivation("Score").describe(), "Score = mean of Item1, Item2 and Item3")
+        self.assertTrue(built.built_from("Score", "Item2"))
+        self.assertEqual(built.relation("Score", "Item1"), "built")
+
+    def test_a_compass_direction_is_left_out(self):
+        rng = np.random.default_rng(29)
+        frame = pd.DataFrame({
+            "Wind Direction": rng.uniform(0, 360, 200).round(),
+            "Temperature": rng.normal(20, 5, 200),
+            "Humidity": rng.normal(60, 10, 200),
+        })
+
+        scan = scan_relationships(frame, list(frame.columns))
+
+        assert scan is not None
+        self.assertEqual(scan.angles, ("Wind Direction",))
+        self.assertNotIn("Wind Direction", scan.columns)
+        self.assertFalse(is_angle("Temperature", frame["Temperature"]))
+
+    def test_two_coordinates_are_not_a_relationship(self):
+        rng = np.random.default_rng(30)
+        latitude = rng.uniform(21, 23, 200)
+        frame = pd.DataFrame({
+            "latitude": latitude,
+            "longitude": -89 + latitude * 0.5 + rng.normal(0, 0.1, 200),
+            "count": rng.poisson(5, 200).astype(float),
+        })
+
+        scan = scan_relationships(frame, list(frame.columns))
+
+        assert scan is not None
+        self.assertEqual(scan.coordinates, (("latitude", "longitude"),))
+        self.assertNotIn({"latitude", "longitude"}, [{pair.first, pair.second} for pair in scan.others])
+
+    def test_a_long_table_is_screened_on_a_sample(self):
+        rng = np.random.default_rng(31)
+        frame = pd.DataFrame({"x": rng.normal(size=SCAN_ROWS + 500)})
+        frame["y"] = frame["x"] + rng.normal(size=len(frame))
+
+        scan = scan_relationships(frame, ["x", "y"], "y")
+
+        assert scan is not None
+        self.assertTrue(scan.sampled)
+        self.assertEqual(scan.correlates[0].pairs, SCAN_ROWS)
+
+
+class SummaryDerivationTests(unittest.TestCase):
+    def test_a_row_maximum_is_found_and_its_blank_zeros_counted(self):
+        rng = np.random.default_rng(40)
+        parts = pd.DataFrame(
+            rng.integers(10, 200, (300, 4)).astype(float), columns=["pm10", "so2", "co", "o3"]
+        )
+        frame = parts.assign(index=parts.max(axis=1))
+        frame.loc[:2, ["pm10", "so2", "co", "o3"]] = np.nan
+        frame.loc[:2, "index"] = 0.0
+
+        built = construction(frame, list(frame.columns))
+
+        assert built is not None
+        found = built.derivation("index")
+        self.assertEqual(found.kind, "maximum")
+        self.assertEqual(set(found.parts), {"pm10", "so2", "co", "o3"})
+        self.assertEqual(found.blank_rows, 3)
+        self.assertTrue(built.masked(frame).loc[:2, "index"].isna().all())
+
+    def test_a_mean_of_whole_number_parts_truncated_after_averaging_is_still_a_mean(self):
+        rng = np.random.default_rng(41)
+        exact = rng.uniform(50, 200, (400, 6))
+        frame = pd.DataFrame(np.floor(exact), columns=[f"mq{index}" for index in range(6)])
+        frame["GasIndex"] = exact.mean(axis=1)
+
+        found = find_derivation(frame, "GasIndex", [f"mq{index}" for index in range(6)])
+
+        assert found is not None
+        self.assertEqual(found.kind, "mean")
+
+    def test_a_free_combination_must_hold_on_nearly_every_row(self):
+        rng = np.random.default_rng(42)
+        frame = pd.DataFrame({"a": rng.normal(size=300), "b": rng.normal(size=300)})
+        frame["c"] = 0.37 * frame["a"] + 1.43 * frame["b"]
+        off = frame.index[:25]
+        frame.loc[off, "c"] += rng.normal(0, 0.05, 25)
+
+        self.assertIsNone(find_derivation(frame, "c", ["a", "b"]))
+
+    def test_a_score_standardised_within_each_group_names_its_source(self):
+        rng = np.random.default_rng(43)
+        drugs = np.repeat([f"drug{index}" for index in range(12)], 60)
+        source = rng.normal(0, 1, len(drugs)) + np.repeat(rng.normal(0, 3, 12), 60)
+        frame = pd.DataFrame({"Drug": drugs, "Arm": rng.choice(["A", "B", "C"], len(drugs)), "IC50": source})
+        grouped = frame.groupby("Drug")["IC50"]
+        frame["Z"] = (frame["IC50"] - grouped.transform("mean")) / grouped.transform("std")
+
+        found = find_standardised(frame, "Z", ["IC50"], ["Arm", "Drug"])
+
+        assert found is not None
+        self.assertEqual((found.parts, found.within), (("IC50",), "Drug"))
+        self.assertEqual(found.describe(), "Z is IC50 standardised within each Drug (mean 0, SD 1)")
+        self.assertIsNone(find_standardised(frame, "IC50", [], ["Drug"]))
+
+
+class GroupingRuleTests(unittest.TestCase):
+    def test_bands_of_a_reading_are_a_rule(self):
+        rng = np.random.default_rng(50)
+        acres = rng.integers(1, 101, 600)
+        frame = pd.DataFrame({
+            "Acres": acres,
+            "Size": np.select([acres <= 10, acres <= 50], ["Small", "Medium"], "Large"),
+            "Weight": rng.normal(400, 50, 600),
+        })
+
+        rules = grouping_rules(frame, ["Acres", "Weight"], ["Size"])
+
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(
+            rules[0].describe(),
+            "Size is set by Acres: Small up to 10, Medium 11 to 50 and Large from 51, on 100% of rows",
+        )
+
+    def test_cut_offs_that_move_with_another_grouping_are_a_rule(self):
+        rng = np.random.default_rng(51)
+        sex = rng.integers(0, 2, 800)
+        hemoglobin = rng.normal(13, 2, 800).round(1)
+        frame = pd.DataFrame({
+            "Gender": sex,
+            "Hemoglobin": hemoglobin,
+            "Result": np.where(hemoglobin < np.where(sex == 0, 12.0, 13.5), 1, 0),
+            "MCV": rng.normal(85, 5, 800),
+        })
+
+        rules = grouping_rules(frame, ["Hemoglobin", "MCV"], ["Result", "Gender"])
+
+        self.assertEqual([rule.kind for rule in rules], ["cut-offs"])
+        self.assertEqual(
+            rules[0].describe(),
+            "Result is set by Hemoglobin: Result 1 below 12.0 for Gender 0 and below 13.5 for Gender 1, "
+            "on 100% of rows",
+        )
+
+    def test_a_label_naming_the_largest_column_is_a_rule(self):
+        rng = np.random.default_rng(52)
+        frame = pd.DataFrame(rng.uniform(0, 100, (300, 3)), columns=["pm10", "o3", "so2"])
+        frame["critical"] = frame.idxmax(axis=1).str.upper()
+
+        rules = grouping_rules(frame, ["pm10", "o3", "so2"], ["critical"])
+
+        self.assertEqual(rules[0].kind, "largest")
+        self.assertEqual(rules[0].readings, ("pm10", "o3", "so2"))
+
+    def test_groups_that_differ_a_lot_but_overlap_are_not_a_rule(self):
+        rng = np.random.default_rng(53)
+        frame = pd.DataFrame({
+            "Class": np.repeat([0, 1], 300),
+            "Marker": np.r_[rng.normal(16, 4, 300), rng.normal(51, 12, 300)],
+        })
+
+        self.assertEqual(grouping_rules(frame, ["Marker"], ["Class"]), ())
+
+    def test_phases_of_a_run_must_separate_a_reading_on_every_row(self):
+        rng = np.random.default_rng(54)
+        reading = np.r_[rng.uniform(0, 100, 500), rng.uniform(100, 5_000, 500)]
+        reading[[600, 601]] = [50.0, 60.0]
+        frame = pd.DataFrame({"Phase": np.repeat([0, 1], 500), "TVOC": reading.round()})
+
+        self.assertEqual(grouping_rules(frame, ["TVOC"], ["Phase"]), ())
+        shuffled = frame.sample(frac=1, random_state=0).reset_index(drop=True)
+        self.assertEqual(len(grouping_rules(shuffled, ["TVOC"], ["Phase"])), 1)
+
+
+class GroupingLayoutTests(unittest.TestCase):
+    def test_a_month_column_is_a_part_of_the_date(self):
+        dates = pd.Series(pd.date_range("2020-01-01", periods=400, freq="D"))
+
+        self.assertEqual(date_part(dates.dt.month, dates), "month")
+        self.assertEqual(date_part(dates.dt.year % 100, dates), "year")
+        self.assertIsNone(date_part(pd.Series(np.arange(400) % 7 * 3), dates))
+
+    def test_nesting_is_told_from_crossing(self):
+        frame = pd.DataFrame({
+            "Dye": np.repeat(["blue", "green", "red", "yellow"], 60),
+            "Concentration": np.r_[np.tile([3, 6, 9], 40), np.tile([15, 25], 60)],
+            "Condition": np.tile(["Open", "Closed"], 120),
+        })
+
+        self.assertTrue(nested_within(frame, "Concentration", "Dye"))
+        self.assertFalse(nested_within(frame, "Dye", "Condition"))
+        self.assertFalse(nested_within(frame, "Condition", "Dye"))
+
+    def test_a_reading_fixed_within_each_group_is_an_attribute(self):
+        rng = np.random.default_rng(55)
+        station = np.repeat(["North", "South", "East"], 100)
+        frame = pd.DataFrame({
+            "Station": station,
+            "Battery": np.repeat([11.9, 13.4, 15.1], 100) + rng.normal(0, 0.05, 300),
+            "Rain": rng.gamma(1, 1, 300),
+            "latitude": np.repeat([41.9, 41.8, 41.7], 100),
+        })
+
+        scan = scan_differences(frame, ["Battery", "Rain", "latitude"], ["Station"])
+
+        assert scan is not None
+        self.assertEqual(scan.attributes, (("Battery", "Station"),))
+        self.assertEqual(scan.placed, ("latitude",))
+        self.assertEqual(scan.tested, 1)
+
+    def test_within_group_r_is_given_for_each_group(self):
+        rng = np.random.default_rng(56)
+        frame = pd.DataFrame({"Block": np.repeat(["1", "2"], 200), "x": rng.normal(size=400)})
+        frame["y"] = frame["x"] + rng.normal(0, 0.3, 400) + np.repeat([0.0, 5.0], 200)
+
+        within = within_group_correlation(frame, "x", "y", "Block")
+
+        assert within is not None
+        self.assertEqual([level for level, _, _ in within.per_group], ["1", "2"])
+        self.assertEqual([rows for _, _, rows in within.per_group], [200, 200])
 
 
 if __name__ == "__main__":
