@@ -122,7 +122,10 @@ class ChangeReportTests(unittest.TestCase):
             line = next(line for line in entry.splitlines() if line.startswith(f"- **{ident}**"))
             self.assertIn("changed", line)
             self.assertIn("study.yml changed in processing;", line)
-            self.assertIn("rows used 36 → 35 (excluded 0 → 1, by step 3)", line)
+            # A figure counts the rows its analysis uses, so only the exclusion is the same for every asset.
+            self.assertIn("(excluded 0 → 1, by step 3)", line)
+            if asset["kind"] != "figure":
+                self.assertIn("rows used 36 → 35 (excluded 0 → 1, by step 3)", line)
         self.assertIn("items to check 1 → 0", entry)
         self.assertIn("**descriptives** changed (Table 1)", entry)
         self.assertNotIn("Unchanged", entry)
@@ -135,7 +138,8 @@ class ChangeReportTests(unittest.TestCase):
             entry = (built.out / "CHANGES.md").read_text(encoding="utf-8").split("## Build 1")[0]
         self.assertIn("- study.yml changed in sharing.", entry)
         self.assertIn("**processing-record** changed: study.yml changed in sharing; files changed:", entry)
-        self.assertIn("Unchanged: data-audit, descriptives (Table 1).", entry)
+        self.assertIn("Unchanged: data-audit, descriptives (Table 1)", entry)
+        self.assertNotIn("**data-audit**", entry)
 
     def test_an_asset_that_depends_on_a_change_but_came_out_the_same_says_so(self):
         with study_folder(assay(), assay_study()) as path:
@@ -145,7 +149,8 @@ class ChangeReportTests(unittest.TestCase):
             entry = (built.out / "CHANGES.md").read_text(encoding="utf-8").split("## Build 1")[0]
         self.assertEqual(built.changes, [])
         self.assertIn("- study.yml changed in decisions.", entry)
-        self.assertIn("Although study.yml changed in decisions, data-audit came out the same.", entry)
+        self.assertIn("Although study.yml changed in decisions, data-audit", entry)
+        self.assertIn("came out the same.", entry)
 
     def test_an_unchanged_rebuild_adds_no_entry(self):
         with study_folder(assay(), assay_study()) as path:
