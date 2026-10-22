@@ -74,7 +74,10 @@ D between the sides is at least 2.5, and each side holds a tenth of the
 readings; a single hump split in two would pass Ashman's D alone. The card
 then gives the share of readings in the upper range over time: *"34.5% of
 readings are at 61.25 or above; by month of the year that share runs from
-7.7% in April to 80.0% in January."*
+7.7% in April to 80.0% in January."* The histogram never has more bins than
+the reading has distinct values, so whole numbers leave no false gaps. When
+the latest movement is no clear change, this leads the headline ahead of
+rates and the scan of differences.
 
 ### Snapshots and undated rows
 
@@ -199,8 +202,9 @@ by the shared F test. When the series also has a change in level, it gives the
 slope within each stretch either side of it and says whether the trend runs on
 both sides or the long-run slope is mostly the step.
 
-When most units (the column naming each row's site or station) appear in
-only one year, a yearly average follows which sites were visited as much as
+When most units (the column naming each row's site or station; a key that
+names one visit, each value on a single date, is passed over for the next
+column named like a unit) appear in only one year, a yearly average follows which sites were visited as much as
 any change in the reading (`aggregation.unit_turnover`, for an averaged
 measure). The card says so, gives the trend measured from each recurring
 site's own level instead (`within_unit_yearly`), and does not lead the

@@ -398,7 +398,9 @@ def two_modes(values: np.ndarray) -> TwoModes | None:
     values = values[np.isfinite(values)]
     if values.size < MIN_MODE_READINGS or np.ptp(values) == 0:
         return None
-    bins = int(np.clip(np.sqrt(values.size), *MODE_BINS))
+    # Never more bins than distinct values: a reading on whole numbers would
+    # otherwise leave empty bins between them that look like gaps.
+    bins = int(min(np.clip(np.sqrt(values.size), *MODE_BINS), np.unique(values).size))
     counts, edges = np.histogram(values, bins=bins)
     centres = (edges[:-1] + edges[1:]) / 2
     weight = np.cumsum(counts)[:-1]

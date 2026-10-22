@@ -979,8 +979,10 @@ def _long_run_evidence(
         per_decade = (
             f"{TREND_CONFIDENCE:.0%} CI {_signed_figure(test.low * 10)} to {_signed_figure(test.high * 10)}"
         )
+        # A column name keeps its own case ("metANN"); "the yearly average of" starts the sentence.
+        subject = what if one_per_year else f"{what[0].upper()}{what[1:]}"
         lead = (
-            f"{what[0].upper()}{what[1:]} {verb} by {decade[1:]} from {first} to {last} ({per_decade}; "
+            f"{subject} {verb} by {decade[1:]} from {first} to {last} ({per_decade}; "
             f"Mann-Kendall {format_p(test.p_value)})."
         )
     grain = GRAIN_NAMES.get(series.frequency, "period")
@@ -1388,6 +1390,11 @@ def _modes_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | N
             "dips between the peaks to a quarter of the smaller one, Ashman's D is at least "
             f"{MIN_MODE_SEPARATION:g} and each side holds 10% of the readings; share of readings at or above "
             f"it {over}"
+        ),
+        lead=(
+            f"{roles.measure} is either around {low} or around {high}; the share of readings at {cut} or "
+            f"above runs from {format_percentage(float(shares.min()))} {name[shares.idxmin()]} to "
+            f"{format_percentage(float(shares.max()))} {name[shares.idxmax()]}."
         ),
     )
 
@@ -4745,7 +4752,8 @@ def _headline(
     does, and so does any measure whose latest movement is unusual. A latest
     movement within the usual variation is "no clear change" and gives way to
     a finding about the measure: its own group comparison, a change in its
-    level, a rate, the largest difference found. Without a date, a joint model
+    level, how often it sits in the upper of two modes, a rate, the largest
+    difference found. Without a date, a joint model
     or a relationship can lead too; over time a quiet movement says more than
     a correlation between two readings. A bare overall figure leads only when
     nothing else was found, and a group is never named on fewer than five
@@ -4760,7 +4768,7 @@ def _headline(
     def leads(*kinds: str) -> list[str]:
         return [by_kind[kind].lead for kind in kinds if kind in by_kind and by_kind[kind].lead]
 
-    findings = leads("leader", "shift", "rates", "differences")
+    findings = leads("leader", "shift", "modes", "rates", "differences")
     if growth and (metric.additive or not growth.quiet):
         movement = f"{growth.value} latest movement" + (", within the usual range" if growth.quiet else "")
         if leader:

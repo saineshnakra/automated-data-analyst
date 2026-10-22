@@ -649,6 +649,16 @@ class UnitTurnoverTests(unittest.TestCase):
         assert turnover is not None
         self.assertEqual((turnover.unit, turnover.units, turnover.once), ("SITE_ID", 505, 500))
 
+    def test_a_key_for_one_visit_is_not_taken_for_the_site(self):
+        frame = visited_sites()
+        frame.insert(0, "Station_Date", frame["SITE_ID"] + "_" + frame["Date"].dt.strftime("%Y%m%d"))
+        frame = pd.concat([frame, frame.assign(COND=frame["COND"] + 1)], ignore_index=True)
+
+        turnover = unit_turnover(frame, self.roles())
+
+        assert turnover is not None
+        self.assertEqual(turnover.unit, "SITE_ID")
+
     def test_a_total_is_not_checked(self):
         self.assertIsNone(unit_turnover(visited_sites(), self.roles(aggregation="sum")))
 

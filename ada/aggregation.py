@@ -769,21 +769,30 @@ def unit_turnover(dataframe: pd.DataFrame, roles: ColumnRoles) -> UnitTurnover |
     An average over whichever sites happened to be visited each year tracks
     the sampling plan as much as the reading. A total is everything
     recorded, and customers coming and going are part of it, so a summed
-    measure is not checked. Returns None otherwise.
+    measure is not checked. A key that names one visit (a station and its
+    date) is not a site: each of its values is on a single date by
+    construction, so the next column named like a unit is tried. Returns None
+    otherwise.
     """
     if not roles.date or not roles.measure or metric_for(roles.measure, roles).additive:
         return None
-    unit = entity_column(dataframe, roles)
-    if unit is None:
-        return None
-    working = dataframe[[roles.date, unit, roles.measure]].dropna()
-    years = working.groupby(unit)[roles.date].agg(lambda dates: dates.dt.year.nunique())
-    if len(years) < MIN_TURNOVER_UNITS or working[roles.date].dt.year.nunique() < MIN_TURNOVER_YEARS:
-        return None
-    once = int((years == 1).sum())
-    if once <= TURNOVER_SHARE * len(years):
-        return None
-    return UnitTurnover(unit=unit, units=int(len(years)), once=once)
+    named = (column for column in dataframe.columns if is_entity_name(column))
+    candidates = [entity_column(dataframe, roles), *named]
+    for unit in dict.fromkeys(column for column in candidates if column and column != roles.measure):
+        working = dataframe[[roles.date, unit, roles.measure]].dropna()
+        if working.empty or not working[unit].duplicated().any():
+            continue
+        if (working[[unit, roles.date]].drop_duplicates()[unit].value_counts() == 1).all():
+            continue
+        pairs = pd.DataFrame({"unit": working[unit], "year": working[roles.date].dt.year}).drop_duplicates()
+        years = pairs["unit"].value_counts()
+        if len(years) < MIN_TURNOVER_UNITS or pairs["year"].nunique() < MIN_TURNOVER_YEARS:
+            return None
+        once = int((years == 1).sum())
+        if once <= TURNOVER_SHARE * len(years):
+            return None
+        return UnitTurnover(unit=unit, units=int(len(years)), once=once)
+    return None
 
 
 def within_unit_yearly(dataframe: pd.DataFrame, roles: ColumnRoles, unit: str) -> pd.Series:

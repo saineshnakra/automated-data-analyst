@@ -330,6 +330,9 @@ class TwoModeTests(unittest.TestCase):
         self.assertIsNone(two_modes(rng.normal(10, 3, 5_000)))
         self.assertIsNone(two_modes(rng.uniform(0, 10, 5_000)))
 
+    def test_whole_numbers_spread_evenly_are_not_two_modes(self):
+        self.assertIsNone(two_modes(np.tile(np.arange(7.0), 150)))
+
     def test_a_few_values_are_not_judged(self):
         self.assertIsNone(two_modes(np.r_[np.zeros(50), np.ones(50)]))
 

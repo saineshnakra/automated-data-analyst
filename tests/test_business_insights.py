@@ -2169,6 +2169,7 @@ class TwoModeCardTests(unittest.TestCase):
         self.assertRegex(modes.statement, r"two separate ranges, around 42(\.\d+)? or around 81")
         self.assertIn("by month of the year that share runs from", modes.statement)
         self.assertRegex(modes.statement, r"to 8\d\.\d% in (December|January|February)")
+        self.assertTrue(modes.lead.startswith("Sound is either around 42"))
 
 
 class SnapshotAndUndatedTests(unittest.TestCase):
