@@ -800,6 +800,176 @@ class BlankCodeTests(unittest.TestCase):
         self.assertNotIn("sentinel", [issue.check for issue in scan(masked)])
 
 
+class HeaderAndPanelTests(unittest.TestCase):
+    def test_a_range_written_in_the_header_bounds_the_values(self):
+        rng = np.random.default_rng(70)
+        sound = np.r_[rng.uniform(40, 100, 500).round(), [0.0] * 6, [180.0, 245.0]]
+
+        issues = checks(scan(pd.DataFrame({"Sound Level (dBA)\n(40 - 100)": sound})), "impossible")
+
+        self.assertEqual(issues[0].rows, 8)
+        self.assertIn("40 to 100", issues[0].rule)
+
+    def test_a_stretch_may_pass_100_percent(self):
+        self.assertEqual(name_bounds("Elongation (%)")[:2], (0.0, float("inf")))
+        self.assertEqual(name_bounds("Viability %")[:2], (0.0, 100.0))
+
+    def test_water_readings_are_bounded_in_a_water_table(self):
+        rng = np.random.default_rng(71)
+        frame = pd.DataFrame({
+            "WaterTemp (C)": np.r_[rng.normal(20, 6, 498).round(1), [59.0, 74.0]],
+            "pH": np.r_[rng.normal(7.2, 0.6, 499).round(1), [0.3]],
+            "Salinity (ppt)": rng.gamma(2, 1, 500).round(2),
+        })
+
+        found = {issue.columns[0]: issue for issue in checks(scan(frame), "impossible")}
+
+        self.assertEqual(found["WaterTemp (C)"].rows, 2)
+        self.assertEqual(found["pH"].rows, 1)
+        self.assertIn("natural surface water", found["pH"].rule)
+
+    def test_a_ph_alone_is_not_read_as_natural_water(self):
+        rng = np.random.default_rng(72)
+        frame = pd.DataFrame({"pH": np.r_[rng.normal(7, 0.5, 199), [1.2]], "Yield": rng.gamma(3, 2, 200)})
+
+        self.assertFalse(checks(scan(frame), "impossible"))
+
+    def test_many_values_beyond_critical_limits_are_implausible(self):
+        rng = np.random.default_rng(73)
+        sodium = rng.normal(140, 4, 500).round(1)
+        sodium[:100] = rng.uniform(165, 195, 100).round(1)
+        frame = pd.DataFrame({"Na": sodium, "K": rng.normal(4.3, 0.4, 500).round(2)})
+
+        issues = checks(scan(frame), "implausible")
+
+        self.assertEqual(issues[0].columns, ("Na",))
+        self.assertEqual(issues[0].rows, 100)
+        self.assertFalse(checks(scan(frame.iloc[100:]), "implausible"))
+
+    def test_a_lone_seven_among_broken_codes_is_a_category(self):
+        histology = np.r_[[1] * 200, [2] * 40, [4] * 20, [5] * 10, [7]]
+        likert = np.r_[np.repeat([1, 2, 3, 4, 5], 54), [7]]
+        frame = pd.DataFrame({"histtype": histology, "answer": likert})
+
+        issues = checks(scan(frame, roles_for(frame, factors=("histtype", "answer"))), "survey_code")
+
+        self.assertEqual([issue.columns for issue in issues], [("answer",)])
+
+    def test_a_rare_zero_below_codes_from_one_is_named(self):
+        thal = np.r_[[0] * 2, [1] * 18, [2] * 166, [3] * 117]
+        counts = np.r_[[0] * 150, [1] * 90, [2] * 50, [3] * 13]
+        frame = pd.DataFrame({"thal": thal, "children": counts})
+
+        issues = checks(scan(frame), "rare_code")
+
+        self.assertEqual([issue.columns for issue in issues], [("thal",)])
+        self.assertEqual(issues[0].rows, 2)
+
+
+class LimitShapeTests(unittest.TestCase):
+    def test_a_converted_blank_at_the_minimum_stands_apart(self):
+        rng = np.random.default_rng(74)
+        fahrenheit = rng.normal(68, 15, 2300).round()
+        fahrenheit = fahrenheit[fahrenheit > 12]
+        celsius = np.r_[(fahrenheit - 32) * 5 / 9, [(0 - 32) * 5 / 9] * 70]
+
+        issues = checks(scan(pd.DataFrame({"AirTemp (C)": celsius})), "sentinel")
+
+        self.assertEqual(issues[0].rows, 70)
+        self.assertIn("0 °F", issues[0].detail)
+
+    def test_a_round_maximum_hit_a_few_times_is_a_ceiling(self):
+        rng = np.random.default_rng(75)
+        index = rng.lognormal(4, 0.8, 2000).round()
+        index = np.r_[index[index < 480], [500.0] * 5]
+
+        issues = checks(scan(pd.DataFrame({"AQI": index})), "cap")
+
+        self.assertEqual(issues[0].group, ("maximum", 500.0))
+
+    def test_a_column_at_its_reporting_limit_is_almost_constant(self):
+        phosphate = np.r_[[0.001] * 381, [0.002] * 20, [0.003] * 2, [0.005]]
+
+        issues = checks(scan(pd.DataFrame({"phosphate": phosphate})), "cap")
+
+        self.assertEqual(issues[0].rows, 381)
+        self.assertIn("almost no information", issues[0].detail)
+
+    def test_values_bunched_under_a_round_maximum_are_squeezed(self):
+        rng = np.random.default_rng(76)
+        potassium = np.r_[rng.uniform(25, 79.4, 830), rng.uniform(79.5, 79.99, 40), [80.0] * 5].round(3)
+
+        issues = checks(scan(pd.DataFrame({"Potassium": potassium})), "cap")
+
+        self.assertEqual(issues[0].group, ("near maximum", 80.0))
+        self.assertGreaterEqual(issues[0].rows, 45)
+
+    def test_columns_clipped_at_both_ends_are_one_issue(self):
+        rng = np.random.default_rng(77)
+
+        def winsorised(values):
+            return np.clip(values, *np.percentile(values, [0.5, 99.5]))
+
+        frame = pd.DataFrame({
+            "weight": winsorised(rng.normal(80, 20, 5000).round(1)),
+            "height": winsorised(rng.normal(170, 10, 5000).round(1)),
+            "glucose": winsorised(rng.lognormal(4.9, 0.3, 5000).round()),
+        })
+
+        issues = scan(frame)
+
+        clipped = checks(issues, "clipped")
+        self.assertEqual(len(clipped), 1)
+        self.assertEqual(len(clipped[0].columns), 3)
+        self.assertFalse(checks(issues, "cap"))
+
+    def test_a_limit_shared_by_many_columns_is_one_clip(self):
+        rng = np.random.default_rng(78)
+        frame = pd.DataFrame({f"gene_{i}": np.clip(rng.standard_t(3, 300) * 0.3, -2, 2) for i in range(40)})
+        for i in range(40):
+            frame.iloc[i, i] = 2.0
+
+        issues = scan(frame)
+
+        caps = checks(issues, "cap")
+        self.assertEqual(len(caps), 1)
+        self.assertEqual(caps[0].group[0], "shared")
+        self.assertFalse(checks(issues, "extreme"))
+
+    def test_a_round_pile_inside_the_range_within_one_group_is_a_cap(self):
+        rng = np.random.default_rng(79)
+        test = np.r_[["C"] * 300, ["T"] * 300]
+        compression = np.r_[rng.uniform(1, 83, 240), [50.0] * 60]
+        elongation = np.r_[compression, rng.uniform(1, 105, 297), [50.0] * 3].round(1)
+        frame = pd.DataFrame({"Type of test": test, "Elongation (%)": elongation})
+
+        issues = checks(scan(frame), "cap")
+
+        self.assertEqual(issues[0].group[:2], ("within", 50.0))
+        self.assertIn("C", issues[0].detail)
+
+    def test_a_detached_handful_far_out_on_a_log_scale_is_extreme(self):
+        rng = np.random.default_rng(80)
+        tail = rng.lognormal(4.3, 0.6, 600)
+        bulk = rng.lognormal(4.05, 0.08, 4000)
+        sensor = np.r_[bulk, tail[tail < 600], rng.uniform(1800, 10300, 16)].round()
+
+        issues = checks(scan(pd.DataFrame({"mq8": sensor})), "extreme")
+
+        self.assertEqual(issues[0].rows, 16)
+
+    def test_extreme_values_in_many_columns_are_listed_once(self):
+        rng = np.random.default_rng(81)
+        frame = pd.DataFrame({f"probe_{i}": rng.normal(0, 0.1, 300) for i in range(15)})
+        for i in range(15):
+            frame.iloc[i, i] = 50.0 + i
+
+        issues = checks(scan(frame), "extreme")
+
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(len(issues[0].columns), 15)
+
+
 class SpeedTests(unittest.TestCase):
     def test_a_large_table_is_scanned_quickly(self):
         rng = np.random.default_rng(23)

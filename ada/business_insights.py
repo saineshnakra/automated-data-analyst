@@ -3038,7 +3038,10 @@ def _outlier_sentence(result: _Outliers) -> str:
 def _pile_note(column: str, issues: tuple[QualityIssue, ...]) -> str:
     """A sentence when a cap or floor in the column narrows its IQR, so the count partly reflects the pile."""
     for issue in issues:
-        if issue.check == "cap" and column in issue.columns and issue.share >= 10:
+        if (
+            issue.check == "cap" and column in issue.columns and issue.share >= 10
+            and issue.group[0] in ("maximum", "minimum")
+        ):
             side, value = issue.group
             kind = "cap" if side == "maximum" else "floor"
             return (
