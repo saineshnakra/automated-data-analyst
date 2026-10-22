@@ -1323,6 +1323,7 @@ def _long_layout(
         ),
         None,
     )
+    measured = dataframe[measure].notna()
     parameter = next(
         (
             column
@@ -1330,6 +1331,8 @@ def _long_layout(
             if column != units
             and (_core_words(column) or [""])[-1] in PARAMETER_WORDS
             and 2 <= dataframe[column].nunique() <= dataframe[column].notna().sum() / 2
+            # A parameter names what most values measure, not a note on a few of them.
+            and float(dataframe.loc[measured, column].notna().mean()) >= 0.5
         ),
         None,
     )
@@ -1728,6 +1731,35 @@ def _separations(dataframe: pd.DataFrame, columns: list[str], outcome: str) -> d
         column: float(adjusted[index]) if usable[index] else float("-inf")
         for index, column in enumerate(columns)
     }
+
+
+# Only readings whose ranks tell the outcome's two groups apart this nearly
+# (the area under the curve, either way round) are checked for a cut point.
+NEARLY_APART = 0.98
+
+
+def _nearly_apart(dataframe: pd.DataFrame, columns: list[str], outcome: str) -> list[str]:
+    """The columns whose values all but separate the two groups of ``outcome``, judged on their ranks at once.
+
+    A cut point that places 99.5% of rows needs ranks almost entirely apart,
+    so this screens the many columns of a wide table before ``_sets_outcome``
+    checks each survivor.
+    """
+    if not columns:
+        return []
+    data = _thin(dataframe[[*columns, outcome]])
+    data = data[data[outcome].notna()]
+    codes = pd.factorize(data[outcome])[0]
+    if codes.max(initial=-1) != 1:
+        return []
+    ranks = data[columns].rank().to_numpy(dtype=float)
+    present = ~np.isnan(ranks)
+    first = (codes == 1)[:, None] & present
+    ones, zeros = first.sum(axis=0), (present & ~first).sum(axis=0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        area = (np.where(first, ranks, 0).sum(axis=0) - ones * (ones + 1) / 2) / (ones * zeros)
+    apart = np.maximum(area, 1 - area) >= NEARLY_APART
+    return [column for index, column in enumerate(columns) if apart[index]]
 
 
 def _sets_outcome(values: pd.Series, outcome: pd.Series) -> float | None:
@@ -2239,11 +2271,20 @@ def _block_units(
     """
     rows = len(dataframe)
     units: dict[str, list[str]] = {}
+    columns = [column for column in columns if not is_bool_dtype(dataframe[column])]
+    if not columns or rows < 2:
+        return units
+    # Each value on one unbroken run: as many runs as values, judged for all columns at once.
+    values = dataframe[columns]
+    runs = values.ne(values.shift()).sum()
+    levels = values.nunique()
+    complete = values.notna().all()
     for column in columns:
         series = dataframe[column]
         if (
-            is_bool_dtype(series)
-            or series.isna().any()
+            not complete[column]
+            or not MIN_BLOCK_UNITS <= levels[column] <= rows / 3
+            or runs[column] != levels[column]
             or _named_as_quantity(column)
             or set(_head_words(column)) & (QUANTITY_WORDS | LABEL_NAME_WORDS)
             or is_level_name(column)
@@ -2251,10 +2292,6 @@ def _block_units(
             or _has_unit(column)
             or is_time_part(column, series)
         ):
-            continue
-        values = series.to_numpy()
-        levels = int(pd.unique(values).size)
-        if not MIN_BLOCK_UNITS <= levels <= rows / 3 or 1 + int((values[1:] != values[:-1]).sum()) != levels:
             continue
         rest = [other for other in others if other != column]
         if not rest:
@@ -2293,7 +2330,9 @@ def detect_roles(dataframe: pd.DataFrame, source_name: str | None = None) -> Col
     depth of georgian_bay_secchi.csv is what that file is about. A file that
     stacks several tables (see ``_stacked_tables``) is read as its largest
     table, which becomes the ``focus`` of the column naming the tables, much as
-    a long table's commonest parameter is.
+    a long table's commonest parameter is. When that table is itself long and
+    its measure is recorded nowhere else, its own parameter is the focus
+    instead, which keeps readings in different units apart.
     """
     words = _source_words(source_name)
     stacked = _stacked_tables(dataframe)
@@ -2302,6 +2341,14 @@ def detect_roles(dataframe: pd.DataFrame, source_name: str | None = None) -> Col
     column, focus = stacked
     part = dataframe[dataframe[column].astype(str) == focus]
     roles = _detect_roles(part[[name for name in part.columns if part[name].notna().any()]], words)
+    note = _stacked_note(dataframe, column, focus)
+    measured = dataframe[roles.measure].notna() if roles.measure else None
+    if roles.table_shape == "long" and measured is not None and measured.any() and bool(
+        (dataframe.loc[measured, column].astype(str) == focus).all()
+    ):
+        # The largest table is itself long, and its measure is recorded nowhere
+        # else, so its own parameter alone picks the rows the brief covers.
+        return replace(roles, dimensions=(*roles.dimensions, column), notes=(note, *roles.notes))
     # The focus is applied later (``pipeline.apply_focus``) and regroups by the
     # first other dimension, so the table's own grouping goes first.
     follow = [roles.dimension] if roles.dimension else []
@@ -2311,7 +2358,7 @@ def detect_roles(dataframe: pd.DataFrame, source_name: str | None = None) -> Col
         dimensions=(*follow, *(name for name in roles.dimensions if name not in follow), column),
         table_shape="stacked",
         focus=focus,
-        notes=(_stacked_note(dataframe, column, focus), *roles.notes),
+        notes=(note, *roles.notes),
     )
 
 
@@ -2480,7 +2527,7 @@ def _detect_roles(dataframe: pd.DataFrame, source_words: frozenset[str] = frozen
             outcome_notes.append(_follow_up_note(times, outcome))
     if outcome:
         settled = [
-            (column, share) for column in candidates
+            (column, share) for column in _nearly_apart(dataframe, candidates, outcome)
             if (share := _sets_outcome(dataframe[column], dataframe[outcome]) or 0.0) >= SET_BY_SHARE
         ]
         if settled and len(settled) < len(candidates):
