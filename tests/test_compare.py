@@ -650,6 +650,18 @@ class RelationshipScanTests(unittest.TestCase):
         assert scan is not None
         self.assertEqual([pair[:2] for pair in scan.near_duplicates], [("TempC", "TempF")])
 
+    def test_two_replicates_that_agree_closely_are_not_one_quantity(self):
+        rng = np.random.default_rng(32)
+        base = rng.lognormal(6, 1.5, 400)
+        frame = pd.DataFrame({"SampleA": base, "SampleB": base * rng.lognormal(0, 0.05, 400)})
+        frame["Batch"] = rng.normal(size=400)
+
+        built = construction(frame, list(frame.columns))
+
+        assert built is not None
+        self.assertFalse(built.same_quantity("SampleA", "SampleB"))
+        self.assertEqual(built.relation("SampleA", "SampleB"), "near")
+
     def test_shares_that_add_up_to_a_total_are_not_paired(self):
         rng = np.random.default_rng(27)
         shares = rng.dirichlet([4, 3, 2, 1], 500) * 100

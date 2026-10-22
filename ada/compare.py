@@ -83,6 +83,8 @@ ADJUSTED_BY = {
 
 MIN_CORRELATION_PAIRS = 12
 NEAR_DUPLICATE_CORRELATION = 0.99
+# Two columns are one quantity recorded twice when this share of their values are identical.
+IDENTICAL_SHARE = 0.9
 RANK_DIVERGENCE = 0.25
 # Columns sharing a name stem ("MaxTemp" and "MeanTemp") and correlating above
 # this are one measurement in two forms.
@@ -3217,14 +3219,39 @@ def is_coordinate(name: str) -> bool:
     return bool(set(re.findall(r"[a-z]+", normalized_name(name))) & COORDINATE_TOKENS)
 
 
+def _recorded_again(first: np.ndarray, second: np.ndarray) -> bool:
+    """Whether two columns hold one quantity: mostly identical values, or one a linear function of the other.
+
+    Two replicate samples or two counters that rise together correlate at
+    0.99 without being one quantity; a temperature in °C and in °F is one,
+    so the linear map must hold, to the columns' own rounding, on
+    COMBINATION_SHARE of rows.
+    """
+    if len(first) < MIN_CORRELATION_PAIRS:
+        return False
+    if float(np.mean(first == second)) >= IDENTICAL_SHARE:
+        return True
+    design = np.column_stack([np.ones(len(first)), first])
+    coefficients = np.linalg.lstsq(design, second, rcond=None)[0]
+    residual = np.abs(second - design @ coefficients)
+    close = residual <= np.quantile(residual, COMBINATION_SHARE)
+    coefficients = np.linalg.lstsq(design[close], second[close], rcond=None)[0]
+    tolerance, spread = _tolerance(second)
+    rounding = abs(coefficients[1]) * _step(first, _spread(first))
+    allowance = tolerance + min(rounding, DERIVED_STEP_LIMIT * spread)
+    return float(np.mean(np.abs(second - design @ coefficients) <= allowance)) >= COMBINATION_SHARE
+
+
 def _families(
     columns: list[str], pearson: np.ndarray, spearman: np.ndarray, values: np.ndarray
 ) -> tuple[list[int], list[tuple[str, str, float]]]:
-    """Group columns that are one quantity recorded twice: |r| ≥ 0.99 with ranks that agree.
+    """Group columns that are one quantity recorded twice, and list pairs that move together almost exactly.
 
-    One huge record (a taxon holding half of all reads) can make two columns
-    look identical, so the pair must also stay at 0.99 without its most
-    influential record.
+    A pair moves together almost exactly at |r| ≥ 0.99 with ranks that agree,
+    and stays at 0.99 without its most influential record, since one huge
+    record (a taxon holding half of all reads) can make two columns look
+    identical. Only a pair that ``_recorded_again`` finds to be one quantity
+    joins a family; replicate samples that agree closely stay two columns.
     """
     parent = list(range(len(columns)))
 
@@ -3243,8 +3270,11 @@ def _families(
         influence = most_influential(values[both, i], values[both, j])
         if influence is not None and abs(influence[1]) < NEAR_DUPLICATE_CORRELATION:
             continue
-        parent[root(i)] = root(j)
         duplicates.append((columns[i], columns[j], float(pearson[i, j])))
+        rows = np.flatnonzero(both)
+        rows = rows[np.linspace(0, len(rows) - 1, min(len(rows), 5 * DERIVATION_ROWS)).astype(int)]
+        if _recorded_again(values[rows, i], values[rows, j]):
+            parent[root(i)] = root(j)
     return [root(index) for index in range(len(columns))], duplicates
 
 
@@ -3727,10 +3757,16 @@ class Construction:
         key = self.family[self.position[other]] if other in self.position else other
         return key in families
 
+    @cached_property
+    def _near(self) -> frozenset:
+        return frozenset(frozenset((first, second)) for first, second, _ in self.near_duplicates)
+
     def relation(self, first: str, second: str) -> str | None:
-        """Why two columns are related by construction: "copy", "summary", "flag", "built", "total"."""
+        """Why two columns relate by construction: "copy", "near", "summary", "flag", "built" or "total"."""
         if self.same_quantity(first, second):
             return "copy"
+        if frozenset((first, second)) in self._near:
+            return "near"
         if first in self._summary_of and self._summary_of.get(first) == self._summary_of.get(second):
             return "summary"
         if any({flag.flag, flag.column} == {first, second} for flag in self.flags):

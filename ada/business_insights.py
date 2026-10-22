@@ -2049,6 +2049,7 @@ def _figures(dataframe: pd.DataFrame, pair: Pair, sampled: bool) -> str:
 # Why a column paired with the measure was set aside, by the scan's reason.
 SET_ASIDE_REASONS = {
     "copy": "the same measurement under another name or unit",
+    "near": "moving with it almost exactly",
     "summary": "other statistics of the same reading",
     "built": "built from it, or it from them",
     "flag": "marking where it hits its cap",
