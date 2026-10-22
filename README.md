@@ -208,12 +208,16 @@ or a random sample of one without, and every answer says which.
 
 ## What it doesn't do
 
-It describes one table. It has no domain knowledge and is not a statistics
-package: it runs a fixed set of tests (group comparisons and correlations)
-and knows nothing of the study design behind them, such as paired or nested
-measurements beyond one value per subject, or covariates to adjust for. The
-recommendations it prints are suggestions for what to look at next, not
-causal claims. For a confirmatory analysis, ADA is the step before that.
+It runs standard tests (Welch, Mann-Whitney, Kruskal-Wallis, chi-squared,
+Fisher, Tukey's HSD, least squares) through SciPy and statsmodels, adjusts
+the p-values for how many it ran, and names the method behind every figure.
+What it can't know is your study design: it doesn't model paired or repeated
+measures beyond one value per subject, nested or blocked designs, or
+covariates you planned to adjust for, and it picks its tests by rule, after
+seeing the data, not from a plan written before. So treat what it finds as a
+first pass and its recommendations as what to look at next, not as causal
+claims. For a confirmatory analysis, ADA is the step before that, and its
+calculation lines tell you which test to start from.
 
 ## Using it from Python
 
@@ -338,10 +342,25 @@ New analysis rules need a test, including how they behave on thin data.
 
 If ADA is useful to you, a star helps other people find it.
 
+## Built on
+
+ADA decides what to compute and says it in plain words; the computing is done
+by open-source scientific Python: [pandas](https://pandas.pydata.org),
+[NumPy](https://numpy.org), [SciPy](https://scipy.org),
+[statsmodels](https://www.statsmodels.org) and
+[ruptures](https://centre-borelli.github.io/ruptures-docs/), with
+[Streamlit](https://streamlit.io) and [Plotly](https://plotly.com/python/) for
+the app. All are permissively licensed.
+[Credits](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/credits.md)
+lists what each one does in ADA, how to cite it, and the paper behind each
+method.
+
 ## Citing
 
 There is a `CITATION.cff` in the repository root; GitHub's **Cite this
-repository** button turns it into BibTeX or APA.
+repository** button turns it into BibTeX or APA. If you publish results from
+ADA, please cite the libraries that computed them too (see
+[Credits](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/credits.md)).
 
 ## License
 

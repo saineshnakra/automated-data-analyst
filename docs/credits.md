@@ -15,7 +15,7 @@ ADA is MIT-licensed and depends only on permissively licensed libraries.
 |---|---|---|
 | [pandas](https://pandas.pydata.org) | BSD-3-Clause | Reading CSV and Excel files, cleaning, grouping and every aggregation |
 | [NumPy](https://numpy.org) | BSD-3-Clause | The array arithmetic behind the vectorised group tests, correlations and trendlines |
-| [SciPy](https://scipy.org) | BSD-3-Clause | The t, F, chi-squared and normal distributions behind every p-value; `scipy.stats.chi2_contingency` and `fisher_exact` for rate comparisons; `tukey_hsd` for the pairs of groups that differ; ranks |
+| [SciPy](https://scipy.org) | BSD-3-Clause | The t, F, chi-squared and normal distributions behind every p-value; `scipy.stats.chi2_contingency` and `fisher_exact` for rate comparisons; `tukey_hsd` for the pairs of groups that differ; ranks; `kstwo`, `kurtosis` and `binom` for the data checks and the outlier counts |
 | [statsmodels](https://www.statsmodels.org) | BSD-3-Clause | The Benjamini-Hochberg false-discovery-rate adjustment (`multipletests`); Newcombe's interval for a difference in rates (`confint_proportions_2indep`); ordinary least squares for the joint model, with `variance_inflation_factor` for collinearity |
 | [ruptures](https://centre-borelli.github.io/ruptures-docs/) | BSD-2-Clause | Binary segmentation (`Binseg`) to find a lasting change in the level of the measure's period series |
 | [openpyxl](https://openpyxl.readthedocs.io) | MIT | Reading `.xlsx` files through pandas |
@@ -58,12 +58,20 @@ The methods ADA applies, with the papers that introduced them:
 | Method | Where | Reference |
 |---|---|---|
 | Welch's t-test and ANOVA | Group comparisons | Welch, B. L. (1947), *Biometrika* 34, 28–35; Welch, B. L. (1951), *Biometrika* 38, 330–336 |
+| Mann-Whitney U test | Two groups compared on ranks | Mann, H. B. and Whitney, D. R. (1947), *Annals of Mathematical Statistics* 18, 50–60 |
+| Kruskal-Wallis test | Three or more groups compared on ranks | Kruskal, W. H. and Wallis, W. A. (1952), *JASA* 47, 583–621 |
 | Tukey's honestly significant difference | Which pairs of groups differ | Tukey, J. W. (1949), *Biometrics* 5, 99–114 |
 | Hedges' g | Group comparisons | Hedges, L. V. (1981), *Journal of Educational Statistics* 6, 107–128 |
+| Spearman's rank correlation | Relationships, trend tests across ordered levels | Spearman, C. (1904), *American Journal of Psychology* 15, 72–101 |
+| Fisher's z-transform | Confidence intervals for r | Fisher, R. A. (1915), *Biometrika* 10, 507–521 |
+| Pearson's chi-squared test | Rate comparisons | Pearson, K. (1900), *Philosophical Magazine* 50, 157–175 |
+| Cramér's V | Rate comparisons | Cramér, H. (1946), *Mathematical Methods of Statistics*, Princeton University Press |
 | Holm's adjustment | Scans of many comparisons | Holm, S. (1979), *Scandinavian Journal of Statistics* 6, 65–70 |
 | Benjamini-Hochberg false discovery rate | Screens of hundreds of readings | Benjamini, Y. and Hochberg, Y. (1995), *Journal of the Royal Statistical Society B* 57, 289–300 |
 | Newcombe's interval for a difference in proportions | Rate comparisons | Newcombe, R. G. (1998), *Statistics in Medicine* 17, 873–890 |
 | Binary segmentation | Changes in level | Scott, A. J. and Knott, M. (1974), *Biometrics* 30, 507–512 |
 | Bias of the lag-1 autocorrelation | Changes in level | Kendall, M. G. (1954), *Biometrika* 41, 403–404 |
 | Variance inflation factor | The joint model | Marquardt, D. W. (1970), *Technometrics* 12, 591–612 |
+| Fences at 1.5 × IQR | Exceptional records | Tukey, J. W. (1977), *Exploratory Data Analysis*, Addison-Wesley |
+| Kolmogorov-Smirnov distance | Data checks: columns that look simulated | Kolmogorov, A. N. (1933), *Giornale dell'Istituto Italiano degli Attuari* 4, 83–91; Smirnov, N. (1948), *Annals of Mathematical Statistics* 19, 279–281 |
 | Theil-Sen slope | Trendlines, anomalies, forecasts | Theil, H. (1950), *Indagationes Mathematicae* 12; Sen, P. K. (1968), *JASA* 63, 1379–1389 |
