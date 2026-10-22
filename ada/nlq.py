@@ -4677,9 +4677,11 @@ def _execute_grouping(
     if not (plan.time_part or plan.bins) and len(rankable) > 1:
         # Rows with no value for the grouping, or a placeholder such as "-" or "unknown", are
         # counted and listed, but they are not a group to name as the highest or the lowest.
-        placeholder = _placeholders(rankable[key], working[plan.dimension])
-        if not placeholder.all():
-            rankable = rankable[~placeholder.to_numpy()]
+        # Only the leading groups can be named, so a long list is checked at its head.
+        head = rankable.head(PLACEHOLDER_CHECKS)
+        placeholder = _placeholders(head[key], working[plan.dimension])
+        if placeholder.any() and len(rankable) > int(placeholder.sum()):
+            rankable = rankable.drop(head.index[placeholder.to_numpy()])
     extremes = False
     if ordered:
         table = _in_group_order(grouped, key)
@@ -4794,17 +4796,21 @@ PLACEHOLDER_LABELS = frozenset({
     "", "na", "n a", "nan", "none", "null", "unknown", "missing", "not recorded", "not available",
     "not applicable",
 })
+# Leading groups of a ranking checked for placeholder labels.
+PLACEHOLDER_CHECKS = 200
 # Share of single-row groups at which a ranking of groups ranks the rows instead.
 SINGLE_ROW_GROUPS = 0.5
 
 
 def _placeholders(labels: pd.Series, column: pd.Series) -> pd.Series:
     """Which group labels stand for no value: the label for rows without one, or a placeholder text."""
-    unlabelled = unlabelled_label(column.dropna().unique())
-    texts = not is_numeric_dtype(column) or is_bool_dtype(column)
-    return labels.map(
-        lambda label: str(label) == unlabelled or (texts and _norm(str(label)) in PLACEHOLDER_LABELS)
-    ).astype(bool)
+    shown = labels.astype(str)
+    found = shown == unlabelled_label(column.dropna().unique())
+    if not is_numeric_dtype(column) or is_bool_dtype(column):
+        # Normalized at once for the whole column, as _norm would: lower case, words only.
+        words = shown.str.lower().str.replace(r"[^0-9a-z]+", " ", regex=True).str.strip()
+        found |= words.isin(PLACEHOLDER_LABELS)
+    return found.astype(bool)
 
 
 def _rank_rows(
