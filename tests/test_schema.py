@@ -19,6 +19,7 @@ from ada.schema import (
     is_time_part,
     is_year_name,
     looks_like_identifier,
+    row_summary_columns,
 )
 
 
@@ -765,6 +766,7 @@ class MatrixTests(unittest.TestCase):
         note = next(note for note in roles.notes if note.startswith("This table looks like a matrix"))
         self.assertIn("columns of counts", note)
         self.assertIn("common scale", note)
+        self.assertEqual(row_summary_columns(roles, frame), samples)
 
     def test_a_few_count_columns_beside_readings_are_not_a_matrix(self):
         frame = pd.DataFrame({

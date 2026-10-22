@@ -1027,14 +1027,19 @@ def row_summary_name(columns: int) -> str:
     return f"Row mean ({columns:,} columns)"
 
 
-def row_summary_columns(roles: ColumnRoles) -> list[str]:
+def row_summary_columns(roles: ColumnRoles, dataframe: pd.DataFrame | None = None) -> list[str]:
     """The columns averaged into the row mean ``add_row_summary`` made the measure, or [].
 
     Each of them is part of that mean, so none can be said to relate to it.
+    The block is found as ``add_row_summary`` found it: by name, or, for counts
+    beside an identifier, from the values in ``dataframe``.
     """
     if roles.table_shape != "matrix" or not roles.measure:
         return []
-    block = _matrix_columns([column for column in roles.numeric if column != roles.measure])
+    numeric = [column for column in roles.numeric if column != roles.measure]
+    block = _matrix_columns(numeric)
+    if not block and roles.identifier and dataframe is not None:
+        block = _count_matrix_columns(dataframe, numeric)
     return block if roles.measure == row_summary_name(len(block)) else []
 
 

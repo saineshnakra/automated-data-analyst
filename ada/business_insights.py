@@ -2085,7 +2085,7 @@ def _construction(dataframe: pd.DataFrame, roles: ColumnRoles, readings: list[st
     tried as parts. A row mean added to a matrix table is built from its columns.
     """
     items = [column for column in roles.factors if column in dataframe.columns and column not in readings]
-    block = row_summary_columns(roles)
+    block = row_summary_columns(roles, dataframe)
     known = (
         (Derivation(roles.measure, tuple(block), (1 / len(block),) * len(block), 0.0, "mean"),)
         if block and roles.measure

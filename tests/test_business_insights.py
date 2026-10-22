@@ -1325,6 +1325,21 @@ class RelationshipScanCardTests(unittest.TestCase):
         self.assertEqual(relationship.title, "Strongest measurable relationship")
         self.assertIn("is part of it", relationship.statement)
 
+    def test_a_row_mean_of_counts_named_by_sample_is_not_modelled_on_its_own_columns(self):
+        samples = ["CL3", "CC1", "SV1", "M31Fcsw", "M11Tong", "AQC1cm", "AQC4cm", "NP2", "TRRsed1", "TS28",
+                   "Even1", "Even2"]
+        rng = np.random.default_rng(64)
+        frame = pd.DataFrame(rng.poisson(30, (300, len(samples))).astype(float), columns=samples)
+        frame.insert(0, "OTU", [f"OTU{549000 + index}" for index in range(300)])
+        prepared = prepare_analysis(frame, row_limit=5000)
+
+        brief = analyze_business(prepared.dataframe, prepared.detected_roles)
+
+        self.assertEqual(prepared.detected_roles.measure, "Row mean (12 columns)")
+        self.assertNotIn("model", [item.kind for item in brief.evidence])
+        relationship = next(item for item in brief.evidence if item.kind == "relationship")
+        self.assertIn("is part of it", relationship.statement)
+
     def test_shares_that_break_their_total_are_named(self):
         rng = np.random.default_rng(62)
         shares = (rng.dirichlet([4, 3, 2, 1], 400) * 100).round(1)
