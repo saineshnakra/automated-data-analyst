@@ -552,7 +552,7 @@ the evidence card it comes from.
 
 | Evidence | Recommendation |
 |---|---|
-| `trend`, negative | Start with the driver segment, or find where the adverse change started |
+| `trend`, negative and not quiet | Start with the driver segment, or find where the adverse change started |
 | `trend`, positive or neutral and not quiet | Check whether the change holds |
 | `shift` | Find what changed when the new level began |
 | `concentration`, warning | Check how much rests on the largest group, named |

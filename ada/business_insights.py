@@ -3159,7 +3159,7 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
     if driver and trend and driver.value.startswith("-") != trend.value.startswith("-"):
         driver = None
     adverse = "decline" if metric.increase_is_welcome else "increase"
-    if trend and trend.tone == "negative":
+    if trend and trend.tone == "negative" and not trend.quiet:
         recommendations.append(
             Recommendation(
                 "Now",
