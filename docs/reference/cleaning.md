@@ -193,6 +193,14 @@ negative. `$1,203.55`, `(48.10)` and `1 234,50` are all numbers. A value with
 any other character, such as a slash, is not read this way, so a date cannot
 become a large integer.
 
+The decimal mark is decided once per column, from all its values. A lone
+comma is ambiguous: `1,234` may be a thousand. When some values can only be
+using commas as decimal points (`-2,95`, `0,307`, `306,27883`, `1.234,5`) and
+none uses them to group thousands (`1,234.5`, `1,234,567`), every comma in
+the column is read as a decimal point, so `-0,307` is -0.307 beside `-2,95`
+rather than -307. In such a column `1.234` groups a thousand. A note names
+the columns where this changed how a value would otherwise be read.
+
 Cells holding a missing-value marker (`MISSING_MARKERS`: `NA`, `n/a`, `nd`,
 `null`, `unknown`, `-`, `#DIV/0!`, `<LOD`, `below detection limit` and
 similar; a "not stated" phrase from `NOT_STATED_MARKERS`, below; or a censored

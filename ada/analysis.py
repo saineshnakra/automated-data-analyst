@@ -570,13 +570,16 @@ def _digit_groups(body: str) -> tuple[list[str], list[str]] | None:
     return groups, marks
 
 
-def _integer_and_fraction(body: str) -> tuple[str, str] | None:
+def _integer_and_fraction(body: str, decimal_comma: bool = False) -> tuple[str, str] | None:
     """Return the integer and fraction digits of a formatted number, or None if malformed.
 
     With several marks, the earlier ones must match and are grouping; a different last
-    "," or "." is the decimal point. A single "," is a decimal only before one or two
-    digits ("1,234" is a thousand); a single "." is always a decimal, as in pd.to_numeric.
-    Spaces and apostrophes only group. Integer groups after the first need three digits.
+    "," or "." is the decimal point. A single "," is a decimal before one or two digits,
+    after a lone 0 ("0,307"), or anywhere in a column that writes its decimals with
+    commas (``decimal_comma``); otherwise "1,234" is a thousand. A single "." is a
+    decimal, as in pd.to_numeric, except before three digits in such a column, where
+    "1.234" is a thousand. Spaces and apostrophes only group. Integer groups after the
+    first need three digits.
     """
     split = _digit_groups(body)
     if split is None:
@@ -587,9 +590,10 @@ def _integer_and_fraction(body: str) -> tuple[str, str] | None:
     last = marks[-1]
     if len(marks) == 1:
         if last == ",":
-            decimal = len(groups[-1]) in (1, 2)
+            decimal = decimal_comma or len(groups[-1]) in (1, 2) or groups[0] == "0"
         else:
-            decimal = last == "."
+            # Where commas are the decimals, "1.234" groups a thousand.
+            decimal = last == "." and not (decimal_comma and len(groups[-1]) == 3)
     else:
         grouping = set(marks[:-1])
         if len(grouping) != 1:
@@ -606,12 +610,13 @@ def _integer_and_fraction(body: str) -> tuple[str, str] | None:
     return "".join(integer_groups), fraction
 
 
-def _read_formatted_number(text: str) -> float | None:
+def _read_formatted_number(text: str, decimal_comma: bool = False) -> float | None:
     """Parse one business-formatted number, or return None.
 
     A sign, a currency symbol and enclosing parentheses may lead in any order, each at
     most once ("$-100", "-$100", "($100)"). A minus or parentheses make the value
-    negative. The remaining digits must pass _integer_and_fraction.
+    negative. The remaining digits must pass _integer_and_fraction, which reads a
+    single comma as the decimal point when ``decimal_comma`` says the column does.
     """
     raw = text.strip()
     negative = False
@@ -638,7 +643,7 @@ def _read_formatted_number(text: str) -> float | None:
             break
     if not raw or raw.endswith(")"):
         return None
-    digits = _integer_and_fraction(raw)
+    digits = _integer_and_fraction(raw, decimal_comma)
     if digits is None:
         return None
     integer, fraction = digits
@@ -1203,32 +1208,68 @@ def _merge_label_variants(distinct: _Distinct, column: str) -> tuple[dict, str |
     return mapping, note
 
 
-def _read_numbers(distinct: _Distinct) -> tuple[pd.Series, np.ndarray]:
+# Number bodies, once signs, currency, brackets and spaces are set aside, that
+# show how a column writes its decimals. A comma before other than three digits,
+# or after a lone 0, is a decimal point, as is one after dot-grouped thousands;
+# a comma before a dot, or several commas, groups thousands.
+_COMMA_DECIMAL = re.compile(r"^(?:\d+,(?:\d{1,2}|\d{4,})|0,\d+|\d{1,3}(?:\.\d{3})+,\d+)$")
+_COMMA_GROUPING = re.compile(r"^\d{1,3}(?:,\d{3})+\.\d+$|^\d{1,3}(?:,\d{3}){2,}$")
+# Thousands grouped with dots and no decimals: "1.234" in a column of "999,5".
+_DOT_THOUSANDS = re.compile(r"^[-+]?\d{1,3}(?:\.\d{3})+$")
+# A comma read differently once the column's decimal mark is known: one before
+# three digits or more ("-0,307", "306,27883").
+_LONG_COMMA_FRACTION = re.compile(r"^[-+]?\d+,\d{3,}$")
+
+
+def _decimal_comma(text: pd.Series) -> bool:
+    """Whether a column writes its decimal point as a comma, judged from all its values.
+
+    One value is often ambiguous on its own: "0,307" or "-2,95" can only be
+    decimals, but "1,234" may be a thousand. When some values show commas used
+    as decimal points and none shows them grouping thousands ("1,234.5"), every
+    comma in the column is a decimal point, so one column is never read on two
+    scales.
+    """
+    bodies = text.dropna().astype(str).str.replace(r"[\s'$€£¥₹()+\-]", "", regex=True)
+    commas = bodies[bodies.str.contains(",", regex=False)]
+    if commas.empty:
+        return False
+    return bool(commas.str.match(_COMMA_DECIMAL.pattern).any()) and not bool(
+        commas.str.match(_COMMA_GROUPING.pattern).any()
+    )
+
+
+def _read_numbers(distinct: _Distinct) -> tuple[pd.Series, np.ndarray, bool]:
     """Parse the distinct values as numbers.
 
-    Returns the numbers, worked out on ``distinct.cells`` for ``expand``, and
-    which distinct values were missing-value markers.
+    Returns the numbers, worked out on ``distinct.cells`` for ``expand``, which
+    distinct values were missing-value markers, and whether the column writes
+    decimals with commas (see ``_decimal_comma``).
     """
     markers = _missing_markers(distinct)
     cells = distinct.cells
     marked = distinct.on_cells(markers)
     numbers = pd.to_numeric(cells.mask(marked), errors="coerce")
+    comma = _decimal_comma(distinct.values.mask(markers))
     # Retry cells plain parsing missed as formatted numbers ("$1,203.55",
     # "(48.10)"). Large values are the ones with separators, so skipping
-    # them biases totals down. Values already read ("1e3") are kept.
+    # them biases totals down. Values already read ("1e3") are kept, except
+    # dot-grouped thousands in a column whose decimals are commas.
     gaps = numbers.isna().to_numpy() & cells.notna().to_numpy() & ~marked
+    if comma:
+        gaps |= _flags(cells.astype("string").str.strip().str.match(_DOT_THOUSANDS.pattern)) & ~marked
     if gaps.any():
         formatted = cells.where(gaps).map(
-            lambda value: _read_formatted_number(value) if isinstance(value, str) else None
+            lambda value: _read_formatted_number(value, comma) if isinstance(value, str) else None
         )
-        numbers = numbers.astype("float64").fillna(formatted.astype("float64"))
-    return numbers, markers
+        numbers = numbers.astype("float64").mask(gaps, formatted.astype("float64"))
+    return numbers, markers, comma
 
 
 def _numeric_share(values: pd.Series) -> float:
     """Share of the non-marker cells that read as numbers."""
     distinct = _Distinct.of(values)
-    numbers, markers = _read_numbers(distinct)
+    numbers, markers, _ = _read_numbers(distinct)
     counts = distinct.counts
     readable = int(counts[~markers].sum())
     read = numbers.notna().to_numpy()[: len(distinct.values)]
@@ -1299,6 +1340,17 @@ def _marker_notes(
                 )
             notes.append(note + ".")
     return notes
+
+
+def _decimal_comma_note(columns: list[tuple[str, str, float]]) -> str:
+    """Say which columns were read with commas as decimal points, with one value as written and as read."""
+    names = [column for column, _, _ in columns]
+    shown = ", ".join(names[:3]) + (f" and {len(names) - 3:,} more" if len(names) > 3 else "")
+    _, written, read = columns[0]
+    return (
+        f'Commas mark the decimal point in {shown}, as other values there show, so every comma '
+        f'in {"it" if len(names) == 1 else "them"} was read that way: "{written}" is {read:.10g}.'
+    )
 
 
 def _unread_note(column: str, unread: pd.Series) -> str:
@@ -1377,6 +1429,8 @@ def clean_dataframe(
 
     clock_columns: list[str] = []
     upper_limits: dict[str, pd.Series] = {}
+    # Columns read with commas as decimal points, each with a value as written and as read.
+    comma_columns: list[tuple[str, str, float]] = []
     # The text columns that stay text, for the checks after inference.
     still_text: dict[str, _Distinct] = {}
     for column in _text_columns(cleaned):
@@ -1433,7 +1487,7 @@ def clean_dataframe(
         # are measurements whatever the name says.
         keys = is_identifier_name(column) and not _holds_decimals(distinct)
         if not keys and not leading_zero and _numeric_share(probe) >= PROBE_RATIO:
-            numbers, markers = _read_numbers(distinct)
+            numbers, markers, comma = _read_numbers(distinct)
             parsed_numeric = distinct.expand(numbers)
             unread_values = numbers.isna().to_numpy()[: len(distinct.values)] & ~markers
             unread = distinct.rows(unread_values)
@@ -1448,6 +1502,12 @@ def clean_dataframe(
                     parsed_numeric = parsed_numeric.mask(token_cells, 0.0)
                 cleaned[column] = parsed_numeric
                 numeric_columns_inferred += 1
+                if comma:
+                    long_fraction = _flags(distinct.text.str.match(_LONG_COMMA_FRACTION.pattern))
+                    if long_fraction.any():
+                        first = int(np.flatnonzero(long_fraction)[0])
+                        written = str(distinct.values.iloc[first]).strip()
+                        comma_columns.append((column, written, float(numbers.iloc[first])))
                 notes.extend(_marker_notes(column, distinct, markers, token_cells, token, non_null_before))
                 limits = _upper_limits(distinct, markers)
                 if len(limits):
@@ -1472,6 +1532,9 @@ def clean_dataframe(
                     cleaned[column] = _drop_timezone(parsed_dates)
                     datetime_columns_inferred += 1
                     del still_text[column]
+
+    if comma_columns:
+        notes.append(_decimal_comma_note(comma_columns))
 
     # Codes typed in place of a reading (-999, 999.9) would drive every figure
     # on their columns, so they are set to missing before anything is computed.

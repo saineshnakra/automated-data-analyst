@@ -253,6 +253,27 @@ class BusinessFormattedNumberTests(unittest.TestCase):
 
         self.assertEqual(cleaned["Amount"].tolist(), [1234.5, 2345.6, 1234.5, 1234.5])
 
+    def test_one_column_is_never_read_with_two_decimal_marks(self):
+        frame = pd.DataFrame({
+            "Error (mDa)": ["-0,307", "0,069", "-2,95", "-1,222"],
+            "Mass": ["306,27883", "941,5104", "225,07509", "316,28438"],
+        })
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["Error (mDa)"].tolist(), [-0.307, 0.069, -2.95, -1.222])
+        self.assertEqual(cleaned["Mass"].tolist(), [306.27883, 941.5104, 225.07509, 316.28438])
+        named = "Commas mark the decimal point in Error (mDa), Mass"
+        self.assertTrue(any(named in note for note in report.notes))
+
+    def test_commas_grouping_thousands_still_read_as_thousands(self):
+        frame = pd.DataFrame({"Amount": ["1,234", "5,678", "12", "99"]})
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["Amount"].tolist(), [1234.0, 5678.0, 12.0, 99.0])
+        self.assertFalse(any("decimal point" in note for note in report.notes))
+
     def test_a_value_plain_parsing_already_read_is_never_replaced(self):
         frame = pd.DataFrame({"Amount": ["1e3"] + ["1,000"] * 19})
 
