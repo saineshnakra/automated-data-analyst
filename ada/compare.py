@@ -1259,8 +1259,8 @@ def scan_differences(
         ]
         two_levels = dataframe[grouping].nunique(dropna=True) == 2
         marks = [
-            reading for reading in columns
-            if two_levels and cap_flag(dataframe[grouping], dataframe[reading])
+            reading for reading in (_at_an_edge(dataframe, grouping, columns) if two_levels else [])
+            if cap_flag(dataframe[grouping], dataframe[reading])
         ]
         flagged.extend((reading, grouping) for reading in marks)
         columns = [reading for reading in columns if reading not in marks]
@@ -1276,11 +1276,16 @@ def scan_differences(
         if groups.nunique() < 2:
             continue
         trends = _trend_screen(block, groups) if ordered_levels(dataframe[grouping], grouping) else {}
-        present = block.notna().groupby(groups, observed=True).sum()
+        # Each column's fewest values in any group, and whether it varies at all, at once.
+        fewest = block.notna().groupby(groups, observed=True).sum().min()
+        values = block[columns].to_numpy(dtype=float, na_value=np.nan)
+        with np.errstate(all="ignore"), warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            varies = np.nanmax(values, axis=0) > np.nanmin(values, axis=0)
         regular = [
             column
-            for column in columns
-            if int(present[column].min()) >= MIN_GROUP_SIZE and block[column].nunique() >= 2
+            for column, spread in zip(columns, varies, strict=True)
+            if int(fewest[column]) >= MIN_GROUP_SIZE and spread
         ]
         if regular:
             omnibus = _omnibus(block[regular], groups)
@@ -2877,6 +2882,24 @@ class CapFlag:
             f"{self.flag} marks the {self.rows:,} records where {self.column} sits at its "
             f"{self.edge} ({format_number(self.value, self.column, compact=False)})"
         )
+
+
+def _at_an_edge(dataframe: pd.DataFrame, flag: str, columns: list[str]) -> list[str]:
+    """The columns with two or more rows at their maximum or minimum where ``flag`` is set.
+
+    Only these can be marked by a cap flag (see ``cap_flag``), and finding them
+    takes one pass over the block rather than a check per column.
+    """
+    columns = [column for column in columns if pd.api.types.is_numeric_dtype(dataframe[column])]
+    if not columns:
+        return []
+    rows = dataframe[flag].notna().to_numpy()
+    values = dataframe.loc[rows, columns].to_numpy(dtype=float, na_value=np.nan)
+    with np.errstate(all="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        top = (values == np.nanmax(values, axis=0)).sum(axis=0)
+        bottom = (values == np.nanmin(values, axis=0)).sum(axis=0)
+    return [column for column, high, low in zip(columns, top, bottom, strict=True) if high >= 2 or low >= 2]
 
 
 def cap_flag(flag: pd.Series, values: pd.Series) -> CapFlag | None:

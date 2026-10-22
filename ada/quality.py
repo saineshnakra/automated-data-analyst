@@ -21,6 +21,7 @@ takes a fraction of a second.
 from __future__ import annotations
 
 import re
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -1405,25 +1406,30 @@ def _row_extreme_of(table: pd.DataFrame, column: str, columns: list[str]) -> fro
     everywhere is a copy of it. Judged on an evenly spaced sample.
     """
     frame = _sampled(table)[columns]
-    target = frame[column]
     others = [other for other in columns if other != column]
     if len(others) < 2:
         return frozenset()
-    values = frame[others]
+    # Arrays rather than frames: a wide table checks thousands of columns here.
+    target = frame[column].to_numpy(dtype="float64", na_value=np.nan)
+    values = frame[others].to_numpy(dtype="float64", na_value=np.nan)
+    present = ~np.isnan(values) & ~np.isnan(target)[:, None]
+    counts = present.sum(axis=0)
     for below in (True, False):
-        holds = values.le(target, axis=0) if below else values.ge(target, axis=0)
-        present = values.notna() & target.notna().to_numpy()[:, None]
-        within = (holds | ~present).mean()
-        parts = [other for other in others if within[other] >= 0.98 and present[other].sum() >= 20]
-        if len(parts) < 2:
+        holds = values <= target[:, None] if below else values >= target[:, None]
+        within = (holds | ~present).mean(axis=0)
+        chosen = np.flatnonzero((within >= 0.98) & (counts >= 20))
+        if chosen.size < 2:
             continue
-        extreme = frame[parts].max(axis=1) if below else frame[parts].min(axis=1)
-        both = target.notna() & extreme.notna()
+        block = values[:, chosen]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            extreme = np.nanmax(block, axis=1) if below else np.nanmin(block, axis=1)
+        both = ~np.isnan(target) & ~np.isnan(extreme)
         if both.sum() < 20 or float((target[both] == extreme[both]).mean()) < ROW_EXTREME_SHARE:
             continue
-        supplying = frame.loc[both, parts].eq(target[both], axis=0).mean()
+        supplying = (block[both] == target[both][:, None]).mean(axis=0)
         if (supplying >= 0.01).sum() >= 2 and supplying.max() < ROW_EXTREME_SHARE:
-            return frozenset(parts)
+            return frozenset(others[index] for index in chosen)
     return frozenset()
 
 
