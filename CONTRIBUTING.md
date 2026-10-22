@@ -24,7 +24,7 @@ streamlit run app.py
 
 The extras: `app` adds Streamlit and Plotly, `ai` adds the OpenAI client and
 Pydantic, `dev` adds Ruff. The engine alone needs only `pip install -e .`. No
-API key is needed; the app opens with a built-in demo dataset.
+API key is needed; the app opens on the bundled lab sample.
 
 ## Tests and lint
 
