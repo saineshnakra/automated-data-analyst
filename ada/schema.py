@@ -467,7 +467,7 @@ def is_time_part(name: str, values: pd.Series | None = None) -> bool:
 
     The last word must name the part ("Month", "MO", "DA", "survey_yr"). With
     ``values``, numbers must fall within that part's range: months 1 to 12,
-    days 1 to 31, hours 0 to 23, years 1000 to 2999. "Age_months" holding
+    days 1 to 31, hours 0 to 24, years 1000 to 2999. "Age_months" holding
     12 to 66 or "Duration Hours" up to 200 are amounts of time, not parts of a
     date. Text is judged by the name, except that a month column must hold month
     names.
@@ -733,16 +733,14 @@ def _groups_rows(series: pd.Series) -> bool:
     Up to MAX_LABEL_LEVELS values, any column whose values repeat enough (see
     MAX_GROUPING_SHARE) qualifies. Beyond that, most groups need at least
     MIN_ROWS_PER_GROUP rows, so 101 districts of 3 to 20 samples each group a
-    table, while names that each appear once or twice do not.
+    table, while names that each appear once or twice do not. Judged on an even
+    sample of a large table.
     """
-    values = series.dropna()
-    levels = int(values.nunique())
-    if levels < 2 or levels > MAX_GROUPING_SHARE * len(values):
-        return False
-    if levels <= MAX_LABEL_LEVELS:
-        return True
+    values = _sample(series).dropna()
     counts = values.value_counts().to_numpy()
-    return float((counts >= MIN_ROWS_PER_GROUP).mean()) >= 0.5
+    if len(counts) < 2 or len(counts) > MAX_GROUPING_SHARE * len(values):
+        return False
+    return len(counts) <= MAX_LABEL_LEVELS or float((counts >= MIN_ROWS_PER_GROUP).mean()) >= 0.5
 
 
 def _family_stem(name: str) -> str | None:
@@ -1227,12 +1225,14 @@ def _numbers_rows(name: str, series: pd.Series) -> bool:
     """
     if set(_head_words(name)) & QUANTITY_WORDS or is_bool_dtype(series):
         return False
-    values = series.dropna()
-    if len(values) < MIN_ROWS_FOR_KEY or _sample(values).duplicated().any():
+    sample = _sample(series).dropna().to_numpy(dtype=float)
+    steps = np.diff(sample)
+    if len(sample) < MIN_ROWS_FOR_KEY or not ((steps > 0).all() or (steps < 0).all()):
         return False
-    numbers = values.to_numpy(dtype=float)
-    if not np.all(numbers % 1 == 0) or pd.unique(numbers).size != numbers.size:
+    numbers = series.dropna().to_numpy(dtype=float)
+    if not np.all(numbers % 1 == 0):
         return False
+    # Climbing or falling at every step, so no value repeats.
     steps = np.diff(numbers)
     return bool((steps > 0).all() or (steps < 0).all())
 
@@ -1377,11 +1377,17 @@ def _choose_measure(
     return best[5], tuple(close[:MAX_ALTERNATIVES])
 
 
-def _shares_rows(dataframe: pd.DataFrame, grouping: str, measure: str) -> bool:
-    """Whether a grouping and the measure are recorded together on enough rows, in two groups or more."""
-    both = dataframe[grouping].notna() & dataframe[measure].notna()
-    needed = max(min(MIN_SHARED_ROWS, 0.5 * int(dataframe[measure].notna().sum())), 2)
-    return int(both.sum()) >= needed and dataframe.loc[both, grouping].nunique() >= 2
+def _shares_rows(dataframe: pd.DataFrame, grouping: str, measured: np.ndarray) -> bool:
+    """Whether a grouping and the measure are recorded together on enough rows, in two groups or more.
+
+    ``measured`` marks the rows where the measure is recorded.
+    """
+    both = dataframe[grouping].notna().to_numpy() & measured
+    needed = max(min(MIN_SHARED_ROWS, 0.5 * int(measured.sum())), 2)
+    if int(both.sum()) < needed:
+        return False
+    shared = dataframe[grouping].to_numpy()[both]
+    return bool((shared != shared[0]).any())
 
 
 def _refines(dataframe: pd.DataFrame, fine: str, coarse: str) -> bool:
@@ -1391,10 +1397,17 @@ def _refines(dataframe: pd.DataFrame, fine: str, coarse: str) -> bool:
     return levels > data[coarse].nunique() and len(data.drop_duplicates()) == levels
 
 
-def _same_groups(dataframe: pd.DataFrame, first: str, second: str) -> bool:
-    """Whether two columns split the rows where both are recorded into the same groups, one for one."""
-    data = _sample(dataframe[[first, second]]).dropna()
-    return not data.empty and len(data.drop_duplicates()) == data[first].nunique() == data[second].nunique()
+def _same_groups(first: np.ndarray, second: np.ndarray) -> bool:
+    """Whether two columns split the rows where both are recorded into the same groups.
+
+    Each column comes as its group codes from ``pd.factorize``, -1 where it is missing.
+    """
+    both = (first >= 0) & (second >= 0)
+    if not both.any():
+        return False
+    first, second = first[both].astype(np.int64), second[both].astype(np.int64)
+    pairs = np.unique(first * (int(second.max()) + 1) + second).size
+    return pairs == np.unique(first).size == np.unique(second).size
 
 
 def _outcome_label(dataframe: pd.DataFrame, ranked: list[str]) -> str | None:
@@ -1419,12 +1432,19 @@ def _choose_dimension(
     materials that explain 1%. One that only splits another's groups further,
     as specimens split materials, is left out of that comparison.
     """
-    if measure:
-        candidates = [candidate for candidate in candidates if _shares_rows(dataframe, candidate[2], measure)]
-    if not candidates:
+    measured = dataframe[measure].notna().to_numpy() if measure else None
+    # The best score among groupings that share rows with the measure, checked
+    # one score at a time since most tables settle it at the first.
+    for top in sorted({candidate[0] for candidate in candidates}, reverse=True):
+        tied = [
+            candidate
+            for candidate in candidates
+            if candidate[0] == top and (measured is None or _shares_rows(dataframe, candidate[2], measured))
+        ]
+        if tied:
+            break
+    else:
         return None
-    top = max(candidate[0] for candidate in candidates)
-    tied = [candidate for candidate in candidates if candidate[0] == top]
     sized = max(tied, key=lambda candidate: candidate[1])
     if measure is None or len(tied) == 1:
         return sized[2]
@@ -1455,10 +1475,11 @@ def _twins(
     """
     notes: list[str] = []
     described: set[str] = set()
-    coverage = {column: float(dataframe[column].notna().mean()) for column in candidates}
+    codes = {column: pd.factorize(_sample(dataframe[column]))[0] for column in candidates}
+    coverage = {column: float((codes[column] >= 0).mean()) for column in candidates}
     if dimension:
         for other in candidates:
-            if other == dimension or not _same_groups(dataframe, dimension, other):
+            if other == dimension or not _same_groups(codes[dimension], codes[other]):
                 continue
             if coverage[other] >= coverage[dimension] + COMPLETENESS_GAIN:
                 notes.append(
@@ -1479,7 +1500,7 @@ def _twins(
     levels: dict[int, list[str]] = {}
     for column in sorted(candidates, key=list(dataframe.columns).index):
         if coverage[column] > 0:
-            levels.setdefault(int(dataframe[column].nunique()), []).append(column)
+            levels.setdefault(int(codes[column].max()) + 1, []).append(column)
     pairs = [
         f"{first} and {second}"
         for alike in levels.values()
@@ -1487,7 +1508,7 @@ def _twins(
         for second in alike[position + 1:]
         if {first, second} != described
         and abs(coverage[first] - coverage[second]) < 0.01
-        and _same_groups(dataframe, first, second)
+        and _same_groups(codes[first], codes[second])
     ]
     if pairs:
         listed = "; ".join(pairs[:NAMED_IN_NOTES])
@@ -1549,14 +1570,19 @@ def _stacked_tables(dataframe: pd.DataFrame) -> tuple[str, str] | None:
     sample = _sample(dataframe)
     present = sample.notna()
     others = len(dataframe.columns) - 1
-    if others < 4 or int((~present).any().sum()) < 4:
+    missing = 1 - present.mean()
+    if others < 4 or int((missing > 0).sum()) < 4:
         return None
     for column in dataframe.columns:
         series = sample[column]
-        if is_numeric_dtype(series) or is_datetime64_any_dtype(series) or series.isna().mean() > 0.05:
+        if is_numeric_dtype(series) or is_datetime64_any_dtype(series) or missing[column] > 0.05:
             continue
         counts = series.value_counts()
         if not 2 <= len(counts) <= MAX_STACKED_TABLES:
+            continue
+        # Columns another table owns are missing on nearly all of the largest
+        # table's rows, so at least that share of the file's rows.
+        if int((missing >= (1 - ABSENT_SHARE) * counts.iloc[0] / len(series)).sum()) < 2:
             continue
         shares = present.drop(columns=column).groupby(series).mean()
         largest = shares.loc[counts.index[0]]
@@ -1608,6 +1634,7 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
 
 
 def _detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
+    """The roles of one table, flat, long or a matrix (see ``detect_roles``)."""
     numeric = dataframe.select_dtypes(include=np.number).columns.tolist()
     # A date that never changes, such as a compilation stamp, places no row in time.
     date_columns = [
