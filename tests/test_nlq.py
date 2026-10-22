@@ -1714,6 +1714,14 @@ class RefusalHintTests(unittest.TestCase):
 
         self.assertIsNone(answer_question("average B within", frame, roles))
 
+    def test_a_grouping_by_rows_no_column_names_is_refused(self):
+        frame, roles = dye_frame()
+
+        question = "average B per patient"
+
+        self.assertIsNone(answer_question(question, frame, roles))
+        self.assertIn("needs a column that names each one", rephrase_hint(question, frame, roles))
+
 
 class ResearchQuestionTests(unittest.TestCase):
     def setUp(self):
@@ -1988,6 +1996,18 @@ class GroupedAnswerTests(unittest.TestCase):
         self.assertEqual(answer.plan.intent, "crosstab")
         self.assertEqual(answer.table.columns.tolist(), ["Crop", "north", "south"])
         self.assertIn("chi-square", answer.answer)
+
+    def test_a_segment_by_year_is_a_cross_table(self):
+        frame = pd.DataFrame({
+            "Date": pd.date_range("2020-01-01", periods=60, freq="MS"),
+            "Site": ["a", "b", "c"] * 20,
+            "pH": np.linspace(6.5, 7.5, 60),
+        })
+
+        answer = answer_question("mean pH by Site and year", frame, detect_roles(frame))
+
+        self.assertEqual((answer.plan.intent, answer.plan.time_part), ("crosstab", "year"))
+        self.assertEqual(answer.plan.second_dimension, "Site")
 
     def test_a_filter_cue_reads_the_filter(self):
         frame, roles = trial_frame()

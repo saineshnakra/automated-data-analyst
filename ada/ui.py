@@ -526,7 +526,7 @@ def _chat_answer_figure(result: QueryAnswer) -> go.Figure | None:
     if result.chart == "line":
         # Groups of a numbered column (timepoint 0, 1, 2...) or its quantile bins, in the table's order.
         category, value = table.columns[:2]
-        table = table.assign(**{category: table[category].astype(str)})
+        table = _labels_as_text(table, category)
         figure = px.line(
             table, x=category, y=value, markers=True, title=f"{value} by {category}",
             color_discrete_sequence=[ACCENT],
@@ -537,8 +537,7 @@ def _chat_answer_figure(result: QueryAnswer) -> go.Figure | None:
     value = next((name for name in ("Change %", "Change") if name in table.columns), table.columns[1])
     if not is_numeric_dtype(table[value]):
         return None
-    # Bins and other ordered groups are labels on the axis, not a scale.
-    table = table.assign(**{category: table[category].astype(str)})
+    table = _labels_as_text(table, category)
     figure = px.bar(
         table.sort_values(value),
         x=value,
@@ -549,6 +548,13 @@ def _chat_answer_figure(result: QueryAnswer) -> go.Figure | None:
     )
     figure.update_traces(marker_line_width=0, hovertemplate="%{y}: %{x:,.2f}<extra></extra>")
     return style_chart(figure, height=320)
+
+
+def _labels_as_text(table: pd.DataFrame, column: str) -> pd.DataFrame:
+    """Quantile bins as text, so they label the axis in order rather than as a category type."""
+    if isinstance(table[column].dtype, pd.CategoricalDtype):
+        return table.assign(**{column: table[column].astype(str)})
+    return table
 
 
 def render_chat_answer(result: QueryAnswer, *, key: str) -> None:

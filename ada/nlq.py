@@ -33,6 +33,7 @@ from .business_insights import (
 )
 from .compare import (
     NOTABLE_CORRELATION,
+    SCAN_ROWS,
     GroupComparison,
     compare_groups,
     comparison_calculation,
@@ -2027,7 +2028,7 @@ def _plan_from_reading(reading: _Reading, dataframe: pd.DataFrame, roles: Column
         return None
     measure, dimension = chosen
     time_part = reading.time_part
-    by_year = re.search(r"\b(?:by|per|each|every)\s+(?:the\s+)?(?:years?|yearly)\b", unnamed)
+    by_year = re.search(r"\b(?:by|per|each|every|and)\s+(?:the\s+)?(?:years?|yearly)\b", unnamed)
     if dimension and roles.date and (time_part or by_year) and dimension != roles.date:
         # "count of crop by year", "average PM2.5 by station and month of the year": a cross-table.
         pair = (roles.date, dimension)
@@ -2399,6 +2400,10 @@ def _unused_part(
         )
     if reading.time_part and plan.time_part != reading.time_part:
         return f"The answer would leave out the {reading.time_part} grouping."
+    entity_at = reading.original.find(reading.entity) if reading.entity else -1
+    if entity_at >= 0 and not plan.dimension and _follows(reading.original, entity_at):
+        # "average growth per patient" asks for a grouping no column provides.
+        return f'Grouping by "{reading.entity}" needs a column that names each one, and ADA found none.'
     return _unused_analysis_word(plan, reading)
 
 
@@ -2671,12 +2676,15 @@ MIN_RANK_VALUES = 5
 
 
 def _grouped_frame(
-    dataframe: pd.DataFrame, plan: QueryPlan, value_label: str
+    dataframe: pd.DataFrame, plan: QueryPlan, value_label: str, groups: pd.Series | None = None
 ) -> pd.DataFrame:
-    """The plan's value per group, with how many values each group has (``n``) when a measure is combined."""
+    """The plan's value per group, with how many values each group has (``n``) when a measure is combined.
+
+    ``groups`` is each row's group when the caller has it already (see ``_group_values``).
+    """
     assert plan.dimension is not None
     key = _group_key(plan, dataframe)
-    groups = _group_values(dataframe, plan).rename(key)
+    groups = (_group_values(dataframe, plan) if groups is None else groups).rename(key)
     if plan.time_part:
         groups = groups[dataframe[plan.dimension].notna()]
     working = dataframe.loc[groups.index]
@@ -3605,7 +3613,8 @@ def _execute_grouping(
         value_label = f"Distinct {plan.count_column}" if plan.count_column else "Rows"
     else:
         value_label = with_aggregate(_aggregation_label(plan), plan.measure)
-    grouped = _grouped_frame(working, plan, value_label)
+    groups = _group_values(working, plan)
+    grouped = _grouped_frame(working, plan, value_label, groups)
     key = grouped.columns[0]
     single_rows = not counted and not (plan.time_part or plan.bins) and 1 < len(grouped) == len(working)
     if single_rows:
@@ -3700,8 +3709,8 @@ def _execute_grouping(
             f" Every {grouping} group has fewer than {MIN_RANK_VALUES} values, so this ranking is fragile."
         )
     if not counted and not single_rows:
-        answer += _group_difference_line(plan, working, roles, rankable)
-        answer += _skew_note(plan, working, leaders)
+        answer += _group_difference_line(plan, working, roles, rankable, groups)
+        answer += _skew_note(plan, working, leaders, groups)
     if plan.bins:
         where = " at its median" if len(grouped) == 2 else " at its quartiles" if len(grouped) == 4 else ""
         answer += (
@@ -3765,7 +3774,7 @@ def _grouping_name(plan: QueryPlan) -> str:
 
 
 def _group_difference_line(
-    plan: QueryPlan, working: pd.DataFrame, roles: ColumnRoles, rankable: pd.DataFrame
+    plan: QueryPlan, working: pd.DataFrame, roles: ColumnRoles, rankable: pd.DataFrame, groups: pd.Series
 ) -> str:
     """One sentence on whether the groups of a ranked average really differ, from ``compare_groups``."""
     if plan.aggregation not in ("mean", "median") or plan.measure is None:
@@ -3776,18 +3785,24 @@ def _group_difference_line(
     entity = entity_column(working, roles)
     entity = entity if entity not in (None, plan.dimension, plan.measure) else None
     columns = [plan.measure, *([entity] if entity else [])]
-    frame = working[columns].assign(**{key: _group_values(working, plan)})
+    frame = working[columns].assign(**{key: groups})
     if plan.time_part:
         frame = frame[working[plan.dimension].notna()]
+    sampled = ""
+    if entity is None and len(frame) > SCAN_ROWS:
+        # A long table is tested on a fixed random sample, as the brief's scan is.
+        frame = frame.sample(SCAN_ROWS, random_state=0)
+        sampled = f", on a random sample of {SCAN_ROWS:,} rows"
     # Only the groups that were ranked are tested, so a group of two can't decide it.
     ranked = set(rankable.iloc[:, 0].map(str))
     codes = {str(number): str(name) for number, name in _part_names(plan.time_part).items()}
-    frame = frame[frame[key].map(lambda value: codes.get(str(value), str(value))).isin(ranked)]
+    kept = [value for value in frame[key].dropna().unique() if codes.get(str(value), str(value)) in ranked]
+    frame = frame[frame[key].isin(kept)]
     comparison = compare_groups(frame, plan.measure, key, entity=entity)
     if comparison is None:
         return ""
     groups = f"{plan.dimension} groups" if plan.bins else f"{_grouping_name(plan)} groups"
-    evidence = f"{comparison.test}, {format_p(comparison.decisive_p)}; {effect_text(comparison)}"
+    evidence = f"{comparison.test}, {format_p(comparison.decisive_p)}; {effect_text(comparison)}{sampled}"
     if comparison.verdict == "none":
         return f" The {groups} do not clearly differ ({evidence}), so this ranking may be chance."
     if comparison.verdict == "negligible":
@@ -3795,11 +3810,10 @@ def _group_difference_line(
     return f" The {groups} do differ ({evidence})."
 
 
-def _skew_note(plan: QueryPlan, working: pd.DataFrame, leaders: list) -> str:
+def _skew_note(plan: QueryPlan, working: pd.DataFrame, leaders: list, groups: pd.Series) -> str:
     """Say when a few large values carry the leading group's mean, with its median."""
     if plan.aggregation != "mean" or plan.measure is None or len(leaders) != 1:
         return ""
-    groups = _group_values(working, plan)
     codes = {name: number for number, name in _part_names(plan.time_part).items()}
     leader = codes.get(leaders[0], leaders[0])
     values = working.loc[(groups == leader).to_numpy(), plan.measure].dropna()
