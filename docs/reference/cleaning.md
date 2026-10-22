@@ -11,25 +11,26 @@ table or as a note.
 
 | # | Step | Detail |
 |---|---|---|
-| 1 | Normalize and de-duplicate column names | Whitespace collapsed; a blank name becomes `column_<position>`; a repeated name gets `_2`, `_3` and so on. A note names each repeated header, and says whether the two columns differ |
-| 2 | Drop empty columns | Every value missing or whitespace; a note names them |
-| 3 | Drop empty rows | Every value missing or whitespace |
-| 4 | Drop exported index columns | See below |
-| 5 | Drop timezones | Timezone-aware columns keep their wall-clock time |
-| 6 | Trim text | Leading and trailing whitespace removed; empty strings become missing |
-| 7 | Read times of day | See [Times with no date](#times-with-no-date) |
-| 8 | Infer dates in date-named columns | See below |
-| 9 | Infer numbers | See below |
-| 10 | Infer dates in other columns | See below |
-| 11 | Set missing-value codes to missing | See [Missing-value codes](#missing-value-codes) |
-| 12 | Join a date column and a time column | See [Times with no date](#times-with-no-date) |
-| 13 | Read elapsed time | See [Elapsed time](#elapsed-time) |
-| 14 | Read "not stated", `ND` and placeholder labels as missing in text columns | See below |
-| 15 | Build dates from years | See below |
-| 16 | Merge label spellings | See below |
-| 17 | Widen overflowing integers | An integer column whose total would overflow int64 becomes float64 |
-| 18 | Replace infinities | `inf` and `-inf` in float columns become missing |
-| 19 | Count identical rows | Counted and kept |
+| 1 | Read a second header row | See [Two-row headers](#two-row-headers) |
+| 2 | Normalize and de-duplicate column names | Whitespace collapsed; a blank name becomes `column_<position>`; a repeated name gets `_2`, `_3` and so on. A note names each repeated header, and says whether the two columns differ |
+| 3 | Drop empty columns | Every value missing or whitespace; a note names them |
+| 4 | Drop empty rows | Every value missing or whitespace |
+| 5 | Drop exported index columns | See below |
+| 6 | Drop timezones | Timezone-aware columns keep their wall-clock time |
+| 7 | Trim text | Leading and trailing whitespace removed; empty strings become missing |
+| 8 | Read times of day | See [Times with no date](#times-with-no-date) |
+| 9 | Infer dates in date-named columns | See below |
+| 10 | Infer numbers | See below |
+| 11 | Infer dates in other columns | See below |
+| 12 | Set missing-value codes to missing | See [Missing-value codes](#missing-value-codes) |
+| 13 | Join a date column and a time column | See [Times with no date](#times-with-no-date) |
+| 14 | Read elapsed time | See [Elapsed time](#elapsed-time) |
+| 15 | Read "not stated", `ND` and placeholder labels as missing in text columns | See below |
+| 16 | Build dates from years | See below |
+| 17 | Merge label spellings | See below |
+| 18 | Widen overflowing integers | An integer column whose total would overflow int64 becomes float64 |
+| 19 | Replace infinities | `inf` and `-inf` in float columns become missing |
+| 20 | Count identical rows | Counted and kept |
 
 If nothing is left, `clean_dataframe` raises `ValueError` rather than
 returning an empty frame.
@@ -42,6 +43,24 @@ over the rows. A site, a status or a date repeats many times, so a table of
 parsed in full as numbers or as times of day, 200 of its cells drawn at random
 are tried. A column needs 95% of its cells to convert, so one where fewer than
 half of the drawn cells read as numbers (or times) is not parsed in full.
+
+## Two-row headers
+
+A spreadsheet often puts a label over a run of columns, with the real names
+in the row below: `Weld Output Response` over `UTS (MPa)` and `% Elongation`.
+Read with one header row, the label's blank cells become `Unnamed: 6` and the
+names become a row of text in numeric columns, which would then count as data
+and leave a missing cell in every column.
+
+The first row is read as a second header row when the header has at least one
+blank cell (`Unnamed: N`) and one label, and the first row holds text in at
+least two columns whose values below it read as numbers, never a number in
+such a column, and text under every blank header cell with data below it. A
+column under a group label takes its name from the second row; a label over a
+single column is joined with the text below it (`Temperature` over `(°C)`
+becomes `Temperature (°C)`); a column with nothing in the second row keeps its
+label. Names the second row repeats are prefixed with their group label. The
+row is dropped, and a note names the group labels.
 
 ## Identical rows are kept
 
@@ -313,7 +332,7 @@ count for each operation: empty rows, empty columns and index columns removed,
 text columns whose values trimming changed, numeric and datetime columns
 inferred, identical rows found and removed, unreadable date values and
 infinite values. Its `notes` hold the sentences shown above the dashboard
-(repeated headers, dropped empty columns, date-order assumptions, timezones,
+(a two-row header, repeated headers, dropped empty columns, date-order assumptions, timezones,
 unreadable dates, missing-value codes set to missing, dates built from years,
 missing-value markers, values past a detection limit, lone tokens, unreadable
 numbers, "not stated" phrases, `ND` and placeholder labels, merged label
@@ -351,6 +370,7 @@ app.
 | `Lead` holding numbers and `ND` | Converted; `ND` counts as below a detection limit, with a note |
 | `PM` and nine other columns holding `-999` | Those cells become missing, with a note per column, and the data checks list the code |
 | `pm10`, `pm1_0` and `pm2_5` all `-1` on the same 4 rows, never otherwise negative | Those cells become missing, with a note per column |
+| A header row of group labels over the real names | Names taken from the second row, which is dropped, with a note |
 | A CSV header repeated, read as `diabetes` and `diabetes.1` | Both kept, with a note saying on how many rows they differ |
 
 ## Changing this

@@ -897,6 +897,51 @@ class MissingValueCodeTests(unittest.TestCase):
         self.assertEqual(report.blanked_codes, ())
 
 
+class TwoRowHeaderTests(unittest.TestCase):
+    def test_group_labels_over_the_names_make_a_two_row_header(self):
+        frame = pd.DataFrame({
+            "Weld No.": [None, "L-a", "L-b", "L-c"],
+            "Inputs": ["Pin Dia (mm)", 5, 7, 7],
+            "Unnamed: 2": ["Speed (rpm)", 710, 710, 450],
+            "Outputs": ["UTS (MPa)", 200.5, 205.2, 196.1],
+            "Unnamed: 4": ["% Elongation", 11.3, 15.3, 8.4],
+        })
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(
+            list(cleaned.columns), ["Weld No.", "Pin Dia (mm)", "Speed (rpm)", "UTS (MPa)", "% Elongation"]
+        )
+        self.assertEqual(len(cleaned), 3)
+        self.assertEqual(cleaned["UTS (MPa)"].dtype.kind, "f")
+        self.assertFalse(cleaned.isna().any().any())
+        note = next(note for note in report.notes if note.startswith("The header has two rows"))
+        self.assertIn('"Inputs" and "Outputs" label groups of columns', note)
+
+    def test_a_label_over_one_column_is_joined_with_the_text_below_it(self):
+        frame = pd.DataFrame({
+            "Site": [None, "A", "B", "C"],
+            "Temperature": ["(°C)", 20.1, 21.3, 19.8],
+            "Readings": ["pH", 6.1, 6.4, 7.0],
+            "Unnamed: 3": ["Nitrate (mg/L)", 1.2, 0.8, 2.5],
+        })
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(list(cleaned.columns), ["Site", "Temperature (°C)", "pH", "Nitrate (mg/L)"])
+
+    def test_a_first_row_of_numbers_is_data(self):
+        frame = pd.DataFrame({
+            "Unnamed: 0": ["x", "y", "z", "w"], "Value": [1.5, 2.5, 3.5, 4.5], "Count": [1, 2, 3, 4],
+        })
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(len(cleaned), 4)
+        self.assertIn("Value", cleaned.columns)
+        self.assertFalse(any("two rows" in note for note in report.notes))
+
+
 class NotDetectedTests(unittest.TestCase):
     def test_nd_in_a_numeric_column_is_below_a_detection_limit(self):
         frame = pd.DataFrame({"Lead": ["0.81", "ND", "0.77", "0.92", "ND", "1.10"]})

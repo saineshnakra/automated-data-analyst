@@ -775,6 +775,85 @@ def _make_unique_columns(columns: pd.Index) -> list[str]:
     return result
 
 
+# The name a reader gives a column whose header cell is blank: "Unnamed: 3".
+_BLANK_HEADER = re.compile(r"^Unnamed: \d+(?:_level_\d+)?$")
+# Rows below the header looked at to judge whether the first row holds names.
+HEADER_PROBE_ROWS = 200
+
+
+def _names_in_first_row(frame: pd.DataFrame) -> bool:
+    """Whether the first row holds names over numbers, as a second header row does.
+
+    It must be text in at least two columns whose values below it read as
+    numbers, never a number in such a column, and text in every column with a
+    blank header cell over data.
+    """
+    first = frame.iloc[0]
+    below = frame.iloc[1 : HEADER_PROBE_ROWS + 1]
+    labels = 0
+    for position, name in enumerate(frame.columns):
+        cell = first.iloc[position]
+        named = isinstance(cell, str) and bool(cell.strip())
+        values = below.iloc[:, position].dropna()
+        if values.empty:
+            continue
+        if _BLANK_HEADER.match(str(name)) and not named:
+            return False
+        if pd.to_numeric(values, errors="coerce").notna().mean() < 0.9:
+            continue
+        if named and pd.isna(pd.to_numeric(pd.Series([cell]), errors="coerce").iloc[0]):
+            labels += 1
+        elif not pd.isna(cell):
+            return False
+    return labels >= 2
+
+
+def _two_row_header(frame: pd.DataFrame) -> tuple[pd.DataFrame, str | None]:
+    """Name the columns from both header rows when the first holds labels over groups of them.
+
+    A spreadsheet often puts a label over a run of columns ("Weld Output
+    Response" over "UTS (MPa)" and "% Elongation") with the names in the row
+    below. Read with one header row, the label's blank cells become "Unnamed: 6"
+    and the names become a row of text in numeric columns, which then counts as
+    data. Each column under a group label takes its name from the second row; a
+    label over a single column is joined with the text below it ("Temperature"
+    over "(°C)"). Returns the frame without that row, and a note, or the frame
+    unchanged and None.
+    """
+    names = [str(name) for name in frame.columns]
+    blank = [bool(_BLANK_HEADER.match(name)) for name in names]
+    if len(frame) < 3 or not any(blank) or all(blank) or not _names_in_first_row(frame):
+        return frame, None
+    subs = [cell.strip() if isinstance(cell, str) and cell.strip() else None for cell in frame.iloc[0]]
+    groups: list[str | None] = []
+    for name, is_blank in zip(names, blank, strict=True):
+        groups.append((groups[-1] if groups else None) if is_blank else name.strip())
+    spanning = {group for group, is_blank in zip(groups, blank, strict=True) if is_blank and group}
+    built = []
+    for name, is_blank, group, sub in zip(names, blank, groups, subs, strict=True):
+        if not is_blank and group not in spanning:
+            built.append(f"{group} {sub}" if sub else str(group))
+        else:
+            built.append(sub or group or name)
+    repeated = {name for name in built if built.count(name) > 1}
+    built = [
+        f"{group} {name}" if name in repeated and group and group != name else name
+        for name, group in zip(built, groups, strict=True)
+    ]
+    promoted = frame.iloc[1:].reset_index(drop=True).set_axis(built, axis=1).infer_objects()
+    labels = [f'"{group}"' for group in dict.fromkeys(groups) if group in spanning]
+    if labels:
+        listed = labels[0] if len(labels) == 1 else f"{', '.join(labels[:-1])} and {labels[-1]}"
+        over = "labels a group" if len(labels) == 1 else "label groups"
+        note = (
+            f"The header has two rows: {listed} {over} of columns named in the row below, so the "
+            "columns take their names from that row, which is not read as data."
+        )
+    else:
+        note = "The header has two rows, so the columns are named from both, and the second is not data."
+    return promoted, note
+
+
 def _looks_like_exported_index(series: pd.Series, name: str) -> bool:
     """True for a row-number column left behind by to_csv(index=True).
 
@@ -1078,10 +1157,12 @@ def clean_dataframe(
     if dataframe.empty or len(dataframe.columns) == 0:
         raise ValueError("The CSV does not contain any rows and columns to analyze.")
 
-    cleaned = dataframe.copy()
+    frame, header_note = _two_row_header(dataframe)
+    cleaned = frame.copy()
     original_rows, original_columns = cleaned.shape
     cleaned.columns = _make_unique_columns(cleaned.columns)
-    notes: list[str] = _duplicate_header_notes(dataframe.columns, cleaned)
+    notes: list[str] = [header_note] if header_note else []
+    notes.extend(_duplicate_header_notes(frame.columns, cleaned))
 
     # Each text column is factorised once here, and every later check on it
     # works from its distinct values.
