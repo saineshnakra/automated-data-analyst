@@ -1195,9 +1195,13 @@ def _identifier_note(column: str, series: pd.Series) -> str:
     return f"{column} is different on every row, so it is read as the row label."
 
 
+# How the notes describe a running total; ``running_total_columns`` reads it back.
+RUNNING_TOTAL_PHRASE = "keeps climbing, dropping back only when it resets"
+
+
 def _running_total_note(counter: str, sibling: str | None) -> str:
     note = (
-        f"{counter} keeps climbing, dropping back only when it resets, like a gauge or meter "
+        f"{counter} {RUNNING_TOTAL_PHRASE}, like a gauge or meter "
         "reading, so adding it up or averaging it over a period would mean nothing; it is not "
         "used as the measure."
     )
@@ -1288,6 +1292,12 @@ def _summary_statistics(dataframe: pd.DataFrame, candidates: list[str]) -> tuple
         size = format_number(float(dataframe[count].dropna().iloc[0]), compact=False)
         note += f" {count} is {size} on every row: each row summarises that many values."
     return mean, note
+
+
+def running_total_columns(roles: ColumnRoles) -> tuple[str, ...]:
+    """The columns the notes set aside as running totals, which nothing should add up or average."""
+    marker = f" {RUNNING_TOTAL_PHRASE}"
+    return tuple(note.split(marker)[0] for note in roles.notes if marker in note)
 
 
 def _choose_measure(

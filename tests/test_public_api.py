@@ -123,7 +123,7 @@ class RefusalTests(unittest.TestCase):
         answer = ada.analyze(frame, row_limit=40).ask("average value by group")
         refusal = ada.analyze(frame, row_limit=40).ask("average value for zz9")
 
-        self.assertIn("The row limit left out 20 rows", answer.answer)
+        self.assertIn("Based on the 40 sampled rows (of 60).", answer.answer)
         self.assertIn("the row limit left out 20 others", refusal.message)
 
     def test_ask_answers_a_supported_question_with_its_calculation(self):
@@ -455,9 +455,7 @@ class RowsLeftOutTests(unittest.TestCase):
     def test_every_answer_says_which_rows_it_used(self):
         report = ada.analyze(self.frame, row_limit=400)
         answer = report.ask("average Signal by Material")
-        self.assertTrue(answer.answer.endswith(
-            "The row limit left out 800 rows, so this answer covers only a random sample of 400."
-        ))
+        self.assertTrue(answer.answer.endswith("Based on the 400 sampled rows (of 1,200)."))
         self.assertEqual(report.rows_note, "a random sample of 400 of 1,200 rows")
         self.assertEqual(report.to_dict()["rows_note"], report.rows_note)
         self.assertIn("Analyzed a random sample of 400 of 1,200 rows", str(report))
