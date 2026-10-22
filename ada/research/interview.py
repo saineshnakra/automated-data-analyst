@@ -336,15 +336,20 @@ class _Asker:
         answer = self.ask(f"{question}{shown}: ").strip()
         return answer or default
 
-    def columns_of(self, question: str, default: list[str], allow_none: bool = True) -> list[str]:
+    def columns_of(
+        self, question: str, default: list[str], allow_none: bool = True, single: bool = False
+    ) -> list[str]:
+        hint = "a column name" if single else "comma-separated column names"
         while True:
             answer = self.text(
-                question + " (comma-separated column names" + (", or none" if allow_none else "") + ")",
+                f"{question} ({hint}" + (", or none" if allow_none else "") + ")",
                 ", ".join(default) or ("none" if allow_none else ""),
             )
             if answer.lower() in ("none", "-", ""):
                 return []
-            names = [name.strip() for name in answer.split(",") if name.strip()]
+            names = (
+                [answer.strip()] if single else [name.strip() for name in answer.split(",") if name.strip()]
+            )
             unknown = [name for name in names if name not in self.columns]
             if not unknown or not self.interactive:
                 return [name for name in names if name in self.columns]
@@ -368,6 +373,7 @@ def interview(
     asker = _Asker(ask, say, interactive, found.columns)
     if interactive:
         say(f"\nADA read {found.data_path}: {len(found.frame):,} rows, {len(found.columns)} columns.")
+        say(f"Columns: {', '.join(found.columns)}")
         say("Press Enter to accept the suggestion in brackets.\n")
     found.title = asker.text("Study title", found.title)
     found.observation = asker.text("What does one row represent", found.observation)
@@ -378,7 +384,7 @@ def interview(
         "Outcomes, the measurements the study is about", found.outcomes, allow_none=False
     )
     found.groups = asker.columns_of("Groups or conditions compared", found.groups)
-    times = asker.columns_of("Time point column", [found.time] if found.time else [])
+    times = asker.columns_of("Time point column", [found.time] if found.time else [], single=True)
     found.time = times[0] if times else None
     found.covariates = asker.columns_of(
         "Covariates to adjust for or relate to the outcomes",
@@ -406,6 +412,7 @@ def interview(
             "Column naming the subject measured more than once",
             [found.subject] if found.subject else found.identifiers[:1],
             allow_none=False,
+            single=True,
         )
         found.subject = subjects[0] if subjects else None
     if found.design == "clustered":
@@ -413,6 +420,7 @@ def interview(
             "Column naming the cluster each row belongs to",
             [found.cluster] if found.cluster else found.identifiers[-1:],
             allow_none=False,
+            single=True,
         )
         found.cluster = clusters[0] if clusters else None
     found.analyses = propose_analyses(found)
