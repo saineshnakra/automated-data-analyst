@@ -2027,18 +2027,29 @@ def cohens_dz(differences: np.ndarray, confidence: float) -> dict:
 
 
 def noncentral_t_interval(t: float, freedom: float, confidence: float) -> tuple[float, float]:
-    """The noncentrality parameters whose t distributions put ``t`` at the interval's two tail points."""
+    """The noncentrality parameters whose t distributions put ``t`` at the interval's two tail points.
+
+    SciPy's noncentral t returns NaN far in its tails; the cdf falls from 1 to 0 as the noncentrality
+    grows, so a NaN is read as the limit on its side. An end that cannot be found is NaN, never an error.
+    """
     alpha = 1 - confidence
+
+    def cdf(ncp: float) -> float:
+        value = float(stats.nct.cdf(t, freedom, ncp))
+        return (0.0 if ncp > t else 1.0) if math.isnan(value) else value
 
     def solve(target: float) -> float:
         def gap(ncp: float) -> float:
-            return float(stats.nct.cdf(t, freedom, ncp)) - target
+            return cdf(ncp) - target
 
         width = 10.0 + abs(t)
         low, high = t - width, t + width
         for _ in range(60):
             if gap(low) > 0 > gap(high):
-                return float(optimize.brentq(gap, low, high, xtol=1e-12))
+                try:
+                    return float(optimize.brentq(gap, low, high, xtol=1e-12))
+                except (ValueError, RuntimeError):
+                    return math.nan
             low, high = low - width, high + width
             width *= 2
         return math.nan

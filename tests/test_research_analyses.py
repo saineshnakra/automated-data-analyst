@@ -214,6 +214,18 @@ class IndependentComparisonTests(unittest.TestCase):
         se = math.sqrt((n1 + n2) / (n1 * n2) + d**2 / (2 * (n1 + n2)))
         self.assertAlmostEqual(effect["ci_low"], correction * (d - 1.96 * se), delta=0.15)
 
+    def test_the_effect_interval_survives_the_noncentral_t_tails(self):
+        # SciPy's nct.cdf is NaN for t = -3 and a noncentrality of 20 or more on 15 df.
+        from ada.research.analyses import noncentral_t_interval  # noqa: PLC0415
+
+        low, high = noncentral_t_interval(-3.0, 15, 0.95)
+        self.assertAlmostEqual(stats.nct.cdf(-3.0, 15, low), 0.975, places=6)
+        self.assertAlmostEqual(stats.nct.cdf(-3.0, 15, high), 0.025, places=6)
+        reference = np.array([90.1, 91.4, 89.7, 92.2, 90.8, 91.1, 90.4, 89.9, 91.7, 90.6])
+        other = np.array([86.2, 85.9, 87.1, 86.6, 85.4, 86.8, 87.3])
+        effect = hedges_g(reference, other, 0.95)
+        self.assertTrue(effect["ci_low"] < effect["value"] < effect["ci_high"] < 0)
+
     def test_welch_anova_and_games_howell(self):
         frame = three_groups()
         _, _, results = run_analyses(
