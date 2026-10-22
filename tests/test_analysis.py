@@ -1059,6 +1059,29 @@ class PlaceholderTests(unittest.TestCase):
         self.assertIn("not a group of its own", note)
 
 
+class MangledRangeTests(unittest.TestCase):
+    def test_a_range_a_spreadsheet_turned_into_a_date_is_restored(self):
+        frame = pd.DataFrame({"Depth": ["0-10", "Oct-30", "30-60", "60-90"] * 3, "Ca": np.arange(12.0)})
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["Depth"].unique().tolist(), ["0-10", "10-30", "30-60", "60-90"])
+        self.assertIn(
+            '3 Depth values read "Oct-30", which is how a spreadsheet shows the range "10-30" once it '
+            'has read it as a date; they were restored to "10-30".',
+            report.notes,
+        )
+
+    def test_a_range_that_fits_no_other_is_only_named(self):
+        frame = pd.DataFrame({"Band": ["0-5", "5-15", "Mar-40", "15-25"] * 2, "Ca": np.arange(8.0)})
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertIn("Mar-40", cleaned["Band"].tolist())
+        named = 'may be how a spreadsheet shows the range "3-40"'
+        self.assertTrue(any(named in note for note in report.notes))
+
+
 def hourly_log(start, hours, value=1.0, seed=0):
     rng = np.random.default_rng(seed)
     return pd.DataFrame({

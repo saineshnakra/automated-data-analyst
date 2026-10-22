@@ -333,6 +333,63 @@ def _unstated(column: str, distinct: _Distinct) -> tuple[np.ndarray, list[str]]:
     return stated | detected | placeholders, notes
 
 
+# "10-30" or "0.5 - 2": a numeric range written as text, with the mark between its ends.
+_NUMERIC_RANGE = re.compile(r"^(\d+(?:\.\d+)?)(\s*[-–]\s*)(\d+(?:\.\d+)?)$")
+# "Oct-30" or "30-Oct": how a spreadsheet shows "10-30" once it has read it as a date.
+_MONTH_AND_NUMBER = re.compile(r"^(?:([A-Za-z]{3})-(\d{1,2})|(\d{1,2})-([A-Za-z]{3}))$")
+# A column of ranges (depth bands, age bands) has few labels; one with more is not checked.
+MAX_RANGE_LABELS = 200
+
+
+def _mangled_ranges(column: str, distinct: _Distinct) -> tuple[pd.Series | None, str | None]:
+    """Find numeric ranges ("10-30") that a spreadsheet turned into dates ("Oct-30").
+
+    Only a column made mostly of numeric ranges is checked, and such a column
+    has few labels. The likely original is the month's number and the other
+    number, low end first. When that range shares an end with another in the
+    column ("0-10", "10-30", "30-60"), the values are restored to it; otherwise
+    they are only named in the note. Returns the restored values (or None) and
+    the note (or None).
+    """
+    if len(distinct.values) > MAX_RANGE_LABELS:
+        return None, None
+    text = distinct.values.astype("string").str.strip()
+    ranges = text.str.extract(_NUMERIC_RANGE)
+    parts = text.str.extract(_MONTH_AND_NUMBER)
+    month = parts[0].fillna(parts[3]).str.lower().map(MONTH_NUMBERS)
+    number = pd.to_numeric(parts[1].fillna(parts[2]), errors="coerce")
+    dated = month.notna() & number.notna()
+    is_range = ranges[0].notna()
+    if not dated.any() or is_range.sum() < 2 or is_range.sum() < 0.5 * (~dated).sum():
+        return None, None
+    ends = set(pd.to_numeric(ranges[0], errors="coerce").dropna()) | set(
+        pd.to_numeric(ranges[2], errors="coerce").dropna()
+    )
+    mark = str(ranges[1][is_range].iloc[0])
+    originals: dict[str, str] = {}
+    chained = True
+    for position in np.flatnonzero(dated.to_numpy()):
+        low, high = sorted((int(month.iloc[position]), int(number.iloc[position])))
+        originals[str(distinct.values.iloc[position])] = f"{low}{mark}{high}"
+        chained &= low in ends or high in ends
+    count = int(distinct.counts[dated.to_numpy()].sum())
+    written = " or ".join(f'"{value}"' for value in originals)
+    restored = " and ".join(f'"{value}"' for value in dict.fromkeys(originals.values()))
+    one = len(set(originals.values())) == 1
+    subject = f"{count:,} {column} values read" if count > 1 else f"1 {column} value reads"
+    shows = (
+        f"how a spreadsheet shows the range {restored} once it has read it as a date"
+        if one
+        else f"how a spreadsheet shows the ranges {restored} once it has read them as dates"
+    )
+    pronoun = "they were" if count > 1 else "it was"
+    if not chained:
+        return None, f"{subject} {written}, which may be {shows}; {pronoun} left as written."
+    target = restored if one else "those ranges"
+    note = f"{subject} {written}, which is {shows}; {pronoun} restored to {target}."
+    return distinct.values.map(lambda value: originals.get(str(value), value)), note
+
+
 _MANGLED_DUPLICATE = re.compile(r"^(.+)\.(\d+)$")
 
 
@@ -1407,14 +1464,20 @@ def clean_dataframe(
         )
 
     # Text columns that stayed text: "not stated" phrases and placeholders are
-    # missing values, not a group, and labels spelled several ways are written
-    # one way. Keys keep their case: "ab12" and "AB12" may be two accounts.
+    # missing values, not a group; ranges a spreadsheet read as dates are put
+    # back; and labels spelled several ways are written one way. Keys keep their
+    # case: "ab12" and "AB12" may be two accounts.
     for column, distinct in still_text.items():
         unstated, unstated_notes = _unstated(column, distinct)
         changed = bool(unstated.any())
         if changed:
             notes.extend(unstated_notes)
             distinct = distinct.relabel(distinct.values.mask(unstated))
+        restored, range_note = _mangled_ranges(column, distinct)
+        if range_note:
+            notes.append(range_note)
+        if restored is not None:
+            distinct, changed = distinct.relabel(restored), True
         if not is_identifier_name(column):
             mapping, merge_note = _merge_label_variants(distinct, column)
             if mapping:

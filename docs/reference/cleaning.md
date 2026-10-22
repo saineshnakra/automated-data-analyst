@@ -27,11 +27,12 @@ table or as a note.
 | 14 | Join a date column and a time column | See [Times with no date](#times-with-no-date) |
 | 15 | Read elapsed time | See [Elapsed time](#elapsed-time) |
 | 16 | Read "not stated", `ND` and placeholder labels as missing in text columns | See below |
-| 17 | Merge label spellings | See below |
-| 18 | Build dates from years | See below |
-| 19 | Widen overflowing integers | An integer column whose total would overflow int64 becomes float64 |
-| 20 | Replace infinities | `inf` and `-inf` in float columns become missing |
-| 21 | Count identical rows | Counted and kept |
+| 17 | Restore ranges a spreadsheet read as dates | See [Ranges read as dates](#ranges-read-as-dates) |
+| 18 | Merge label spellings | See below |
+| 19 | Build dates from years | See below |
+| 20 | Widen overflowing integers | An integer column whose total would overflow int64 becomes float64 |
+| 21 | Replace infinities | `inf` and `-inf` in float columns become missing |
+| 22 | Count identical rows | Counted and kept |
 
 If nothing is left, `clean_dataframe` raises `ValueError` rather than
 returning an empty frame.
@@ -309,6 +310,16 @@ hold. A YYYYMM value becomes the first of its month. A note gives the layout
 and the span. Codes are set to missing first, so a `-999` in such a column
 does not stop it being read.
 
+## Ranges read as dates
+
+A spreadsheet reads a range such as `10-30` as a date and shows it as
+`Oct-30` (or `30-Oct`). In a text column made mostly of numeric ranges, with
+at most 200 labels, such a value is matched to its likely original: the
+month's number and the other number, low end first. When that range shares an
+end with another range in the column (`0-10`, `10-30`, `30-60`), the values
+are restored to it and a note says so. Otherwise they are left as written, and
+the note names the range they may have been.
+
 ## Dates from years
 
 Annual data often has a `year` column of plain numbers and no date. When no
@@ -353,16 +364,16 @@ count for each operation: empty rows, empty columns and index columns removed,
 text columns whose values trimming changed, numeric and datetime columns
 inferred, identical rows found and removed, unreadable date values and
 infinite values. Its `notes` hold the sentences shown above the dashboard
-(a two-row header, repeated headers, dropped empty columns, date-order assumptions, timezones,
-unreadable dates, missing-value codes set to missing, dates read from whole
-numbers, dates built from years,
-missing-value markers, values past a detection limit, lone tokens, unreadable
-numbers, "not stated" phrases, `ND` and placeholder labels, merged label
-spellings, widened columns, infinities, identical rows). Its `blanked_codes` hold the data-check issues
-for the codes set to missing, which `Analysis.quality()` and the app's data
-checks list beside the rest. `pipeline.prepare_analysis` adds what schema
-detection concluded about the columns (see
-[Schema detection](schema-detection.md#notes)).
+(a two-row header, repeated headers, dropped empty columns, date-order
+assumptions, timezones, unreadable dates, missing-value codes set to missing,
+dates read from whole numbers, dates built from years, missing-value markers,
+values past a detection limit, lone tokens, unreadable numbers, "not stated"
+phrases, `ND` and placeholder labels, ranges read as dates, merged label
+spellings, widened columns, infinities, identical rows). Its `blanked_codes`
+hold the data-check issues for the codes set to missing, which
+`Analysis.quality()` and the app's data checks list beside the rest.
+`pipeline.prepare_analysis` adds what schema detection concluded about the
+columns (see [Schema detection](schema-detection.md#notes)).
 
 `pipeline.cleaning_audit_frame` turns the counts into the table shown in the
 app.
@@ -393,6 +404,7 @@ app.
 | `PM` and nine other columns holding `-999` | Those cells become missing, with a note per column, and the data checks list the code |
 | `pm10`, `pm1_0` and `pm2_5` all `-1` on the same 4 rows, never otherwise negative | Those cells become missing, with a note per column |
 | `MESS_DATUM` holding `19540601` to `20221231`, and no date column | Read as dates, with a note |
+| `Depth` holding `0-10`, `Oct-30`, `30-60` | `Oct-30` restored to `10-30`, with a note |
 | A header row of group labels over the real names | Names taken from the second row, which is dropped, with a note |
 | A CSV header repeated, read as `diabetes` and `diabetes.1` | Both kept, with a note saying on how many rows they differ |
 

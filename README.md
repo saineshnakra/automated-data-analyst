@@ -76,12 +76,15 @@ ada ask orders.csv "which category made the most revenue"
 ## What it does
 
 - **Cleans conservatively and says what it changed**: encodings (UTF-8,
-  UTF-16, Latin-1), `;` and tab delimiters, a title line above the header,
-  `$1,203.55` and `(48.10)` style numbers, day/month order in dates, missing-value
-  markers (including a lone `T` for a trace, `<3,87` below a detection limit and
-  "not stated" phrases such as `no indica`), labels spelled differently only in
-  case or accents (`Con riego`, `CON RIEGO`). Identical rows are counted, not
-  dropped; repeated headers and dropped empty columns are named.
+  UTF-16, Latin-1), `;` and tab delimiters, a title line above the header, a
+  second header row under group labels, `$1,203.55` and `(48.10)` style
+  numbers, day/month order in dates, dates written as `19540601`, missing-value
+  markers (including a lone `T` for a trace, `<3,87` or `ND` below a detection
+  limit, "not stated" phrases such as `no indica` or `tidak ada data`, and
+  placeholders such as `Unknown`), ranges a spreadsheet turned into dates
+  (`Oct-30` for `10-30`), labels spelled differently only in case or accents
+  (`Con riego`, `CON RIEGO`). Identical rows are counted, not dropped;
+  repeated headers and dropped empty columns are named.
 - **Checks the data before trusting it**: every numeric column is scanned for
   values its name rules out (a percentage over 100, a negative yield, pH past
   14), codes such as `-999` or `999.9`, values piled up at a limit, filled-in
