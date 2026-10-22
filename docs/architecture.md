@@ -44,7 +44,7 @@ with the `app` extra, and the OpenAI client and Pydantic with the `ai` extra.
 | Presentation | `app.py`, `ada/ui.py` | Draws results. Does not calculate. |
 | Public interface | `ada/api.py`, `ada/cli.py` | Wraps the engine for Python and the shell. No analysis of its own. |
 | Orchestration | `ada/pipeline.py` | Sequences cleaning, role detection and the row limit. |
-| Engine | `analysis.py`, `schema.py`, `metrics.py`, `aggregation.py`, `timeseries.py`, `anomalies.py`, `forecasting.py`, `compare.py`, `quality.py`, `business_insights.py`, `nlq.py`, `autovis.py`, `selection.py` | Functions over DataFrames. No network, no global state. |
+| Engine | `analysis.py`, `schema.py`, `metrics.py`, `aggregation.py`, `timeseries.py`, `anomalies.py`, `forecasting.py`, `survival.py`, `compare.py`, `quality.py`, `business_insights.py`, `nlq.py`, `autovis.py`, `selection.py` | Functions over DataFrames. No network, no global state. |
 | Input | `ada/file_io.py`, `ada/demo_data.py` | Parses and validates input. No analysis. |
 | Output formatting | `ada/formatting.py` | Decides how a value is displayed, never what it is. |
 | Optional AI | `ada/ai_insights.py` | The only module that makes a network call. `app.py` imports it inside a `try`, so a missing dependency disables the AI features and nothing else. |
@@ -63,9 +63,10 @@ with the `app` extra, and the OpenAI client and Pydantic with the `ai` extra.
 | `ada/schema.py` | `ColumnRoles` and role detection |
 | `ada/metrics.py` | Whether a measure is summed or averaged, and whether a rise is good news |
 | `ada/aggregation.py` | The definition of a period; trend, segment, driver and heatmap frames |
-| `ada/timeseries.py` | Theil-Sen trendline, calendar positions, robust scale |
+| `ada/timeseries.py` | Theil-Sen trendline, calendar positions, robust scale, trend test |
 | `ada/anomalies.py` | Anomaly detection and the calibrated threshold table |
 | `ada/forecasting.py` | Baseline forecast, prediction band, backtest |
+| `ada/survival.py` | Follow-up time and event pairs, Kaplan-Meier survival, log-rank tests, a Cox model |
 | `ada/quality.py` | The data checks: impossible values, codes, caps, fill values, extreme values, swapped, copied and stuck columns, copied rows, simulated-looking data, patterns in missing data; setting clear missing-value codes to missing during cleaning; the frame statistics are computed on |
 | `ada/business_insights.py` | Evidence cards, KPIs, recommendations, the executive brief |
 | `ada/nlq.py` | Question to `QueryPlan` to local execution |

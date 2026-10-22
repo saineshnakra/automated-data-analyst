@@ -135,6 +135,14 @@ from .schema import (
     looks_like_identifier,
     row_summary_columns,
 )
+from .survival import (
+    SurvivalPair,
+    SurvivalSummary,
+    describe_survival,
+    is_time_name,
+    summarize_survival,
+    survival_pair,
+)
 from .timeseries import (
     MIN_SHIFT_EFFECT,
     TREND_CONFIDENCE,
@@ -999,6 +1007,54 @@ def _campaign_evidence(dataframe: pd.DataFrame, roles: ColumnRoles, trips: Sampl
     )
 
 
+def _survival_evidence(
+    dataframe: pd.DataFrame, roles: ColumnRoles, pair: SurvivalPair
+) -> tuple[Evidence, SurvivalSummary]:
+    """Survival for a follow-up time and its event flag: Kaplan-Meier, log-rank tests and a Cox model."""
+    summary = summarize_survival(dataframe, roles, pair)
+    statement, lead = describe_survival(summary)
+    clear = [item for item in summary.groups if item.adjusted_p < ALPHA]
+    evidence = Evidence(
+        kind="survival",
+        title="Survival",
+        value=f"by {clear[0].grouping}" if clear else f"{summary.events:,} events",
+        statement=statement,
+        calculation=(
+            f"Kaplan-Meier estimates (statsmodels SurvfuncRight), with {pair.time} censored where "
+            f"{pair.event} = {pair.censored_value}; log-rank tests across each grouping of 2 to 8 levels "
+            "(statsmodels survdiff), Holm-adjusted; Cox proportional-hazards model of the clear groupings "
+            "(statsmodels PHReg), hazard ratios with 95% CIs"
+        ),
+        lead=lead,
+    )
+    return evidence, summary
+
+
+def _survival_kpi(summary: SurvivalSummary) -> KPI:
+    """The tile that replaces an average of censored follow-up times."""
+    share = format_percentage(summary.overall * 100) if np.isfinite(summary.overall) else "—"
+    moment = f"{summary.landmark:,.3g}"
+    return KPI(
+        f"Event-free at {summary.pair.time} = {moment}",
+        share,
+        f"Kaplan-Meier, {summary.events:,} events in {summary.subjects:,}",
+    )
+
+
+def _follow_up_pairs(
+    dataframe: pd.DataFrame, roles: ColumnRoles, readings: list[str]
+) -> list[tuple[str, str]]:
+    """Follow-up times paired with the event that censors them, which are never compared as groups.
+
+    Subjects who had the event were followed for less time by construction,
+    so a difference in any follow-up time across the event flag restates it.
+    """
+    pair = survival_pair(dataframe, roles)
+    if pair is None:
+        return []
+    return [(reading, pair.event) for reading in readings if is_time_name(reading)]
+
+
 def _long_run_headline(long_run: Evidence, evidence: list[Evidence]) -> str:
     """The headline of a long record: its trend, or without a clear one, the brief's other findings."""
     if long_run.lead:
@@ -1755,13 +1811,14 @@ def _differences_evidence(
     measure_values = dataframe[roles.measure].dropna() if roles.measure in dataframe.columns else None
     compared_on_card = not metric.additive or not _counts_money_or_things(roles, metric, measure_values)
     covered = (roles.measure, roles.dimension) if roles.measure and compared_on_card else None
-    skip = tuple(set_by + items + ([covered] if covered else []))
+    follow_up = _follow_up_pairs(dataframe, roles, readings)
+    skip = tuple(set_by + items + ([covered] if covered else []) + follow_up)
     scan = scan_differences(frame, readings, scanned, entity=entity, skip=skip)
     used_rules = [rule for rule in rules if rule.grouping in scanned or rule.grouping == roles.dimension]
     # A flag that only marks where the measure hit its cap explains it by definition,
     # as does a grouping cut from the measure or one of its items.
     flags = {grouping for reading, grouping in (scan.flagged if scan else ()) if reading == roles.measure}
-    circular = {grouping for reading, grouping in [*set_by, *items] if reading == roles.measure}
+    circular = {grouping for reading, grouping in [*set_by, *items, *follow_up] if reading == roles.measure}
     sharing = [grouping for grouping in groupings if grouping not in flags | circular]
     shares = (
         variance_explained(frame, roles.measure, sharing, entity=entity)
@@ -4138,7 +4195,19 @@ def analyze_business(
     masked = built.masked(tested) if built is not None else tested
     found = _find_groupings(tested, roles)
     rules = grouping_rules(masked, readings, _rule_groupings(roles, found), date=roles.date)
-    evidence.extend(_segment_evidence(dataframe, roles, tested, note, found, rules=rules, built=built))
+    # A follow-up time is censored by its event, so survival is estimated, and the
+    # time is never compared across its own event flag. The log-rank test takes
+    # each row as a separate subject, so a table that follows units over several
+    # rows (each bird tested fifteen times) gets no survival card.
+    pair = survival_pair(dataframe, roles)
+    estimable = pair is not None and entity_column(dataframe, roles) is None
+    survival, survived = _survival_evidence(dataframe, roles, pair) if estimable else (None, None)
+    if survival:
+        evidence.append(survival)
+    segments = _segment_evidence(dataframe, roles, tested, note, found, rules=rules, built=built)
+    if pair and (roles.measure, roles.dimension) == (pair.time, pair.event):
+        segments = [item for item in segments if item.kind != "leader"]
+    evidence.extend(segments)
     evidence = _flag_driven_leader(evidence, dataframe, roles, issues)
     shift = _level_shift_evidence(dataframe, roles, frequency) if timeline else None
     if shift:
@@ -4235,12 +4304,17 @@ def analyze_business(
         if not any(item.label == candidate.label for item in kpis):
             kpis.append(candidate)
     kpis = kpis[:4]
+    if survived is not None and roles.measure == survived.pair.time:
+        kpis = [_survival_kpi(survived) if item.label == with_aggregate("Average", roles.measure) else item
+                for item in kpis]
 
     recommendations = _recommendations(evidence, roles)
     headline = _headline(evidence, growth, dataframe, roles)
     if long_run and not (growth and growth.lead):
         # A long record leads with its trend unless the latest move is outside its usual range.
         headline = _long_run_headline(long_run, evidence)
+    if survival is not None:
+        headline = survival.lead
 
     # Without a trend the headline already gives the one finding there is, so
     # the summary says what the table seems to be instead of repeating it.
@@ -4250,6 +4324,8 @@ def analyze_business(
         summary_parts = [_table_description(dataframe, roles)]
     if long_run:
         summary_parts.insert(0, long_run.statement)
+    if survival:
+        summary_parts.insert(1, survival.statement)
     if design:
         summary_parts.append(design.sentence)
     if repeats:

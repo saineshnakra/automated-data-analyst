@@ -39,6 +39,7 @@ assembled in this order:
 | Kind | Reports | Skipped when |
 |---|---|---|
 | `campaigns` | When the dates cluster into a few sampling trips with most periods between them empty, the trips instead of periods: how many, their sizes, the latest trip against the one before, and the trend across trips (see [Sampling trips](#sampling-trips)) | Fewer than 3 trips, or most periods hold data |
+| `survival` | For a follow-up time beside its 0/1 event flag, Kaplan-Meier survival, log-rank tests across the groupings and a Cox model (see [Survival](#survival)) | No such pair, fewer than 20 subjects or fewer than 5 events |
 | `longtrend` | The trend across a record of 20 or more complete years: Theil-Sen slope per year and per decade with its 95% interval and a Mann-Kendall test, the months it runs highest and lowest in, and the slopes either side of a change in level (see [Long records](#long-records)) | No date, or fewer than 20 complete years |
 | `trend` | Latest period-over-period change on the groups present in both periods, compared with the series' usual movement or with the time of year | No date, fewer than 2 periods, a percentage change from a previous period of zero, or rows counted where the design fixes how many each period holds (see [Fixed designs](#fixed-designs)) |
 | `driver` | The segment that moved the measure most between the last two periods | No date, measure or segment |
@@ -204,6 +205,38 @@ with the one before and fits the Theil-Sen slope across trips on each trip's
 middle date, per year, with its interval and Mann-Kendall test.
 `Analysis.forecast()` and `Analysis.anomalies` return a `Refusal` with code
 `not_enough_periods` that names the trips.
+
+### Survival
+
+A follow-up time (a non-negative column named like `survival`, `OS_months`,
+`futime` or `days_to_death`) beside a two-valued event column (`eventdeath`,
+`vital_status`, `relapse`, or a `censored` flag read the other way) is
+censored: subjects without the event were still event-free when last seen.
+`ada/survival.py` pairs them by name (a shared stem such as `os_time` and
+`os_status`, or both about death), codes the event (1, True, the larger of
+1 and 2, or a text value such as "Dead"; a text pair without one is left
+alone), and summarises survival with statsmodels:
+
+- Kaplan-Meier (`SurvfuncRight`): the median survival, or that it was not
+  reached, and the share still event-free at a round landmark within the
+  follow-up (the largest of 1, 2, 2.5 or 5 times a power of ten below the
+  75th percentile of follow-up);
+- the log-rank test (`survdiff`) across every grouping of 2 to 8 levels with
+  at least 5 subjects each, Holm-adjusted, with each level's survival at the
+  landmark;
+- a Cox proportional-hazards model (`PHReg`) of up to three clear groupings,
+  giving hazard ratios of the clearest one's levels against its first level,
+  adjusted for the others; left out when the fit does not converge to finite
+  estimates.
+
+*"survival is follow-up time, censored where eventdeath = 0: 77 of 272
+subjects had the event ... Survival differs by grade (log-rank χ² = 35.4,
+df = 2, Holm-adjusted p < 0.001): at survival = 10, 96.9% for grade 1, 72.9%
+for grade 2 and 50.5% for grade 3."* The card leads the headline. The time is
+never compared across its own event flag: the leading-group card that would
+do so is dropped, follow-up times are left out of the differences scan across
+the event and of the measure's variance shares, and the average-measure tile
+becomes the share event-free at the landmark.
 
 ### Drivers on the same groups
 

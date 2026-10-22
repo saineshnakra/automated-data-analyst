@@ -144,6 +144,10 @@ ada ask orders.csv "which category made the most revenue"
   change, a fire) is found by binary segmentation and reported with its start
   and the levels before and after. Both are calibrated by simulation so a
   stable series raises a false alarm in about one analysis in twenty.
+- **Reads survival data**: a follow-up time beside its event flag is treated
+  as censored, never averaged or compared across its own event. ADA gives
+  Kaplan-Meier survival, log-rank tests across the groupings and a Cox model's
+  hazard ratios.
 - **Forecasts with a backtest**: a trendline plus the usual offset of each
   month, quarter or week of the year, scored on held-out periods against a
   no-change forecast and, for a seasonal series, against repeating the same
