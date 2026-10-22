@@ -2947,6 +2947,94 @@ def _stems(name: str) -> set[str]:
     return {word for word in words if len(word) >= 3 and word not in GENERIC_NAME_WORDS}
 
 
+# Words naming a statistic of one reading. pollutant_min, pollutant_avg and
+# pollutant_max summarise one reading three ways, so they move together by construction.
+LOW_WORDS = frozenset({"min", "minimum", "lowest"})
+HIGH_WORDS = frozenset({"max", "maximum", "highest"})
+CENTRE_WORDS = frozenset({"mean", "avg", "average", "median", "50%"})
+SPREAD_WORDS = frozenset({"std", "sd", "stdev", "var", "variance"})
+SUMMARY_WORDS = LOW_WORDS | HIGH_WORDS | CENTRE_WORDS | SPREAD_WORDS | frozenset({"25%", "75%", "q1", "q3"})
+# A minimum and a maximum of one reading keep that order on this share of rows.
+SUMMARY_ORDER_SHARE = 0.95
+
+
+def _summary_key(name: str) -> tuple[str, str] | None:
+    """The reading a column summarises and the statistic it takes, ("pollutant", "max"), or None.
+
+    Columns named only for a statistic ("mean", "25%") summarise each row's
+    own set of values, and their reading is "".
+    """
+    words = [word for word in re.split(r"[^a-z0-9%]+", normalized_name(name)) if word]
+    statistics = [word for word in words if word in SUMMARY_WORDS]
+    if len(statistics) != 1:
+        return None
+    return " ".join(word for word in words if word not in SUMMARY_WORDS), statistics[0]
+
+
+def summary_statistic(name: str) -> str | None:
+    """The statistic a summary column takes, "max" for "pollutant_max", or None."""
+    found = _summary_key(name)
+    return found[1] if found else None
+
+
+def summarises_rows(family: tuple[str, ...]) -> bool:
+    """Whether a summary family is named only for statistics, so each row summarises its own set of values."""
+    return bool(family) and all((_summary_key(column) or ("?", ""))[0] == "" for column in family)
+
+
+def _window_key(key: str) -> str:
+    """A summary key with the numbers of windows or positions blanked: "obs1 bilirubin" → "obs# bilirubin"."""
+    return re.sub(r"(?<=[a-z])\d+\b", "#", key)
+
+
+def summary_families(frame: pd.DataFrame, columns: list[str]) -> tuple[tuple[str, ...], ...]:
+    """Columns that summarise one reading: its minimum, mean and maximum, or a row's own statistics.
+
+    A family needs a centre (a mean or median) or both a minimum and a
+    maximum, and a minimum that stays below the maximum on SUMMARY_ORDER_SHARE
+    of rows, so "max_speed" and "min_price" are not one reading. Columns
+    named only for a statistic form a family when there are three or more,
+    including a centre, as in a table of each probe's count, mean, std and
+    quartiles. Summaries of one named test over numbered windows or
+    positions ("OBS1_bilirubin_max", "OBS2_bilirubin_min") are one reading
+    recorded twice and join one family; a bare numbered item ("Q1_mean",
+    "Q2_mean") names no test and does not.
+    """
+    keys = {column: _summary_key(column) for column in columns}
+    grouped: dict[str, list[str]] = {}
+    for column, found in keys.items():
+        if found is not None:
+            grouped.setdefault(found[0], []).append(column)
+
+    def holds(members: list[str]) -> bool:
+        statistics = {keys[member][1] for member in members}
+        if len(members) < (3 if not keys[members[0]][0] else 2):
+            return False
+        if not statistics & CENTRE_WORDS and not (statistics & LOW_WORDS and statistics & HIGH_WORDS):
+            return False
+        lows = [member for member in members if keys[member][1] in LOW_WORDS]
+        highs = [member for member in members if keys[member][1] in HIGH_WORDS]
+        for low, high in itertools.product(lows, highs):
+            both = frame[[low, high]].apply(pd.to_numeric, errors="coerce").dropna()
+            if len(both) and float((both[low] <= both[high]).mean()) < SUMMARY_ORDER_SHARE:
+                return False
+        return True
+
+    windows: dict[str, list[str]] = {}
+    for key, members in grouped.items():
+        blanked = _window_key(key)
+        if blanked != key and any("#" not in word for word in blanked.split()):
+            windows.setdefault(blanked, []).extend(members)
+    windowed = {member for members in windows.values() for member in members}
+    families = [members for members in grouped.values() if not set(members) & windowed and holds(members)]
+    families += [
+        members for members in windows.values()
+        if len({keys[member][0] for member in members}) > 1 or holds(members)
+    ]
+    order = {column: index for index, column in enumerate(columns)}
+    return tuple(tuple(sorted(members, key=order.__getitem__)) for members in families)
+
+
 @dataclass(frozen=True)
 class Pair:
     """Two columns' correlation over their complete rows."""
@@ -3181,8 +3269,9 @@ class Construction:
 
     One quantity recorded twice (a temperature in °C and in °F), a column
     computed from others (a total, a mean, the largest of several readings, a
-    score standardised within each group, shares that add up to 100), and a
-    flag marking where another column hits its cap. A pair related this way
+    score standardised within each group, shares that add up to 100), the
+    statistics of one reading (its minimum, mean and maximum), and a flag
+    marking where another column hits its cap. A pair related this way
     says nothing new, so the comparison and relationship scans both set it
     aside. The correlations it is found from serve the relationship scan.
     """
@@ -3207,10 +3296,21 @@ class Construction:
     angles: tuple[str, ...] = ()
     #: For each summary that reads 0 where its parts are blank, the rows holding that 0.
     blanks: tuple[tuple[str, pd.Index], ...] = ()
+    #: Columns that summarise one reading (see ``summary_families``), each family in table order.
+    summaries: tuple[tuple[str, ...], ...] = ()
 
     @property
     def sampled(self) -> bool:
         return self.rows > SCAN_ROWS
+
+    @cached_property
+    def _summary_of(self) -> dict[str, int]:
+        return {column: index for index, members in enumerate(self.summaries) for column in members}
+
+    def summary_family(self, column: str) -> tuple[str, ...]:
+        """The columns that summarise the same reading as ``column``, itself included, or ()."""
+        index = self._summary_of.get(column)
+        return () if index is None else self.summaries[index]
 
     @cached_property
     def position(self) -> dict[str, int]:
@@ -3254,9 +3354,11 @@ class Construction:
         return key in families
 
     def relation(self, first: str, second: str) -> str | None:
-        """Why two columns are related by construction: "copy", "flag", "built", "total", or None."""
+        """Why two columns are related by construction: "copy", "summary", "flag", "built", "total"."""
         if self.same_quantity(first, second):
             return "copy"
+        if first in self._summary_of and self._summary_of.get(first) == self._summary_of.get(second):
+            return "summary"
         if any({flag.flag, flag.column} == {first, second} for flag in self.flags):
             return "flag"
         if self.built_from(first, second) or self.built_from(second, first):
@@ -3375,6 +3477,7 @@ def construction(
         flags=tuple(_cap_flags(frame, ranked, counts)),
         angles=angles,
         blanks=tuple(blanks),
+        summaries=summary_families(frame, screened),
     )
 
 
@@ -3405,8 +3508,11 @@ class RelationshipScan:
     rows: int = 0
     #: The measure's columns set aside as related to it by construction, with the reason:
     #: "copy" (the same quantity, or the same name above SHARED_STEM_CORRELATION),
-    #: "built", "flag", "total" or "place" (two map coordinates).
+    #: "summary" (another statistic of the same reading), "built", "flag", "total"
+    #: or "place" (two map coordinates).
     set_aside: tuple[tuple[str, str], ...] = ()
+    #: Families of columns that summarise one reading, with two or more members scanned.
+    summaries: tuple[tuple[str, ...], ...] = ()
 
     @property
     def sampled(self) -> bool:
@@ -3455,9 +3561,9 @@ def scan_relationships(
     exactly. Tables longer than SCAN_ROWS are screened on a fixed random
     sample of that many rows. Pairs related by construction are left out and
     returned for the calculation: near-duplicates, a column built from the
-    other (or both built from the same items), shares that add up to a fixed
-    total, a flag marking the other's cap, and same-stem names above
-    SHARED_STEM_CORRELATION. ``built`` is a screen already made of the same
+    other (or both built from the same items), two statistics of one reading,
+    shares that add up to a fixed total, a flag marking the other's cap, and
+    same-stem names above SHARED_STEM_CORRELATION. ``built`` is a screen already made of the same
     columns. Returns None when no pair has MIN_CORRELATION_PAIRS complete rows.
     """
     built = built if built is not None else construction(dataframe, columns, measure)
@@ -3579,6 +3685,7 @@ def scan_relationships(
         angles=built.angles,
         rows=built.rows,
         set_aside=tuple(set_aside),
+        summaries=tuple(family for family in built.summaries if len(set(family) & scanned) > 1),
     )
 
 

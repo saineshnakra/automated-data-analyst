@@ -1,5 +1,5 @@
 import unittest
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
@@ -1864,6 +1864,48 @@ class JointModelCardTests(unittest.TestCase):
         self.assertIn("Together, ", model.statement)
         self.assertEqual(model.lead, "")
         self.assertIn("every reading recorded beside it", model.calculation)
+
+
+class SummaryStatisticTests(unittest.TestCase):
+    def test_a_table_of_row_statistics_ranks_its_rows_instead_of_correlating_them(self):
+        rng = np.random.default_rng(66)
+        values = rng.normal(rng.uniform(3, 14, (300, 1)), rng.uniform(0.2, 2, (300, 1)), (300, 20))
+        frame = pd.DataFrame({
+            "probe": [f"p{index}" for index in range(300)],
+            "mean": values.mean(axis=1),
+            "std": values.std(axis=1),
+            "min": values.min(axis=1),
+            "max": values.max(axis=1),
+        })
+        roles = replace(roles_for(frame, "mean", None), identifier="probe")
+
+        brief = analyze_business(frame, roles)
+
+        self.assertIsNone(brief_card(brief, "relationship"))
+        ranking = brief_card(brief, "ranking")
+        assert ranking is not None
+        top = frame.loc[frame["mean"].idxmax(), "probe"]
+        self.assertTrue(ranking.statement.startswith(f"Highest mean: {top} ("))
+        self.assertIn("Largest std: ", ranking.statement)
+        self.assertTrue(brief.headline.startswith(f"{top} has the highest mean"))
+
+    def test_the_statistics_of_one_reading_are_compared_across_groups_once(self):
+        rng = np.random.default_rng(67)
+        group = np.repeat(["urban", "rural"], 150)
+        low = rng.uniform(5, 50, 300) + np.where(group == "urban", 20, 0)
+        frame = pd.DataFrame({
+            "area": group,
+            "pm_min": low,
+            "pm_avg": low + rng.uniform(5, 30, 300),
+            "rain": rng.normal(10, 2, 300),
+        })
+        frame["pm_max"] = frame["pm_avg"] + rng.uniform(5, 60, 300)
+        roles = replace(roles_for(frame, "rain", None), dimensions=("area",))
+
+        differences = brief_card(analyze_business(frame, roles), "differences")
+
+        assert differences is not None
+        self.assertIn("pm_min and pm_max summarise the same reading as pm_avg", differences.calculation)
 
 
 class TwoFactorTests(unittest.TestCase):

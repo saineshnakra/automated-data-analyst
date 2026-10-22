@@ -39,6 +39,7 @@ from ada.compare import (
     same_stem,
     scan_differences,
     scan_relationships,
+    summary_families,
     variance_explained,
     within_group_correlation,
     without_extremes,
@@ -720,6 +721,47 @@ class RelationshipScanTests(unittest.TestCase):
         assert scan is not None
         self.assertTrue(scan.sampled)
         self.assertEqual(scan.correlates[0].pairs, SCAN_ROWS)
+
+
+class SummaryFamilyTests(unittest.TestCase):
+    def test_the_statistics_of_one_reading_are_one_family(self):
+        rng = np.random.default_rng(45)
+        low = rng.uniform(5, 50, 300)
+        frame = pd.DataFrame({
+            "pollutant_min": low,
+            "pollutant_avg": low + rng.uniform(5, 30, 300),
+            "max_speed": rng.uniform(0, 100, 300),
+            "min_price": rng.uniform(0, 100, 300),
+        })
+        frame["pollutant_max"] = frame["pollutant_avg"] + rng.uniform(5, 60, 300)
+
+        families = summary_families(frame, list(frame.columns))
+
+        self.assertEqual(families, (("pollutant_min", "pollutant_avg", "pollutant_max"),))
+
+    def test_a_summary_of_two_windows_of_one_test_is_one_family_but_numbered_items_are_not(self):
+        rng = np.random.default_rng(46)
+        frame = pd.DataFrame(
+            rng.uniform(0, 10, (100, 6)),
+            columns=["OBS1_bilirubin_max", "OBS2_bilirubin_min", "Q1_mean", "Q2_mean", "Q3_mean", "age"],
+        )
+
+        families = summary_families(frame, list(frame.columns))
+
+        self.assertEqual(families, (("OBS1_bilirubin_max", "OBS2_bilirubin_min"),))
+
+    def test_two_statistics_of_one_reading_are_not_paired(self):
+        rng = np.random.default_rng(47)
+        low = rng.uniform(5, 50, 300)
+        frame = pd.DataFrame({"temp_min": low, "temp_max": low + rng.uniform(5, 40, 300)})
+        frame["rain"] = frame["temp_max"] * 0.5 + rng.normal(0, 5, 300)
+
+        scan = scan_relationships(frame, list(frame.columns), "temp_max")
+
+        assert scan is not None
+        self.assertEqual(scan.set_aside, (("temp_min", "summary"),))
+        self.assertEqual(scan.summaries, (("temp_min", "temp_max"),))
+        self.assertEqual([pair.second for pair in scan.correlates], ["rain"])
 
 
 class SummaryDerivationTests(unittest.TestCase):

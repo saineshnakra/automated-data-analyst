@@ -32,6 +32,7 @@ from .compare import (
     CAP_MIN_DISTINCT,
     CAP_MIN_ROWS,
     CAP_SHARE,
+    CENTRE_WORDS,
     EXACT_FIT,
     FALSE_DISCOVERY,
     INFLUENCE_CHANGE,
@@ -44,6 +45,7 @@ from .compare import (
     RANK_DIVERGENCE,
     SCAN_ROWS,
     SHARED_STEM_CORRELATION,
+    SPREAD_WORDS,
     Construction,
     Derivation,
     GroupComparison,
@@ -79,6 +81,8 @@ from .compare import (
     same_stem,
     scan_differences,
     scan_relationships,
+    summarises_rows,
+    summary_statistic,
     variance_explained,
     within_group_correlation,
     without_extremes,
@@ -1380,13 +1384,26 @@ def _differences_evidence(
     frame = built.masked(dataframe) if built is not None else dataframe
     # One quantity in two units (°C and °F) is compared once, as the measure where it is one.
     copies = []
+    summarised: list[tuple[list[str], str]] = []
     if built is not None:
         prefer = (roles.measure,) if roles.measure else ()
         for reading in readings:
             kept = built.representative(reading, prefer)
             if kept != reading and kept in readings:
                 copies.append((reading, kept))
-    readings = [reading for reading in readings if reading not in {copy for copy, _ in copies}]
+        # The statistics of one reading (its minimum, mean and maximum) differ
+        # across groups together, so one of them stands for the rest.
+        for family in built.summaries:
+            members = [reading for reading in family if reading in readings]
+            if len(members) < 2:
+                continue
+            kept = next(
+                (member for member in members if member == roles.measure),
+                next((member for member in members if summary_statistic(member) in CENTRE_WORDS), members[0]),
+            )
+            summarised.append(([member for member in members if member != kept], kept))
+    dropped = {copy for copy, _ in copies} | {member for others, _ in summarised for member in others}
+    readings = [reading for reading in readings if reading not in dropped]
     if rules is None:
         rules = grouping_rules(frame, readings, _rule_groupings(roles, found), date=roles.date)
     # A cell code made of two other groupings explains as much as both together,
@@ -1543,6 +1560,11 @@ def _differences_evidence(
         calculation += f"; left out as a score compared with its own items: {_pairs_text(items)}"
     for copy, kept in copies:
         calculation += f"; {copy} is {kept} recorded again, so only {kept} is compared"
+    for others, kept in summarised:
+        verb = "summarises" if len(others) == 1 else "summarise"
+        calculation += (
+            f"; {_joined_names(others)} {verb} the same reading as {kept}, so only {kept} is compared"
+        )
     if scan.attributes:
         calculation += (
             "; left out as fixed within each group (an attribute of the group, not a difference "
@@ -2027,6 +2049,7 @@ def _figures(dataframe: pd.DataFrame, pair: Pair, sampled: bool) -> str:
 # Why a column paired with the measure was set aside, by the scan's reason.
 SET_ASIDE_REASONS = {
     "copy": "the same measurement under another name or unit",
+    "summary": "other statistics of the same reading",
     "built": "built from it, or it from them",
     "flag": "marking where it hits its cap",
     "total": "adding up to a fixed total with it",
@@ -2064,6 +2087,8 @@ def _left_out(scan: RelationshipScan) -> list[str]:
             named.append(f"{len(scan.derived) - DERIVED_NAMED} more")
         notes.append("pairs of columns built from one another (" + "; ".join(named) + ")")
     notes.extend(f"{flag.describe()}" for flag in scan.flags)
+    for family in scan.summaries[:DERIVED_NAMED]:
+        notes.append(f"statistics of one reading ({_joined_names(list(family))})")
     if scan.shared_stems:
         named = [f"{first} and {second}" for first, second, _ in scan.shared_stems[:NEAR_DUPLICATES_NAMED]]
         notes.append(f"same-stem pairs above |r| = {SHARED_STEM_CORRELATION} ({', '.join(named)})")
@@ -2274,6 +2299,71 @@ def _relationship_evidence(
         statement=" ".join(parts),
         calculation=calculation + note,
         lead=headline,
+    )
+
+
+ROWS_RANKED = 3
+
+
+def _summary_rows_evidence(
+    dataframe: pd.DataFrame, roles: ColumnRoles, built: Construction | None
+) -> Evidence | None:
+    """Rows ranked by their mean and their spread, when each row summarises a set of values.
+
+    A table of each probe's count, mean, std and quartiles holds statistics
+    of one set of values per row, which correlate by construction; what it
+    can show is which rows sit highest and lowest, and which vary most.
+    """
+    family = built.summary_family(roles.measure) if built is not None and roles.measure else ()
+    if not summarises_rows(family) or roles.measure not in dataframe.columns:
+        return None
+    labels = (
+        dataframe[roles.identifier].astype(str)
+        if roles.identifier in dataframe.columns
+        else pd.Series([f"row {index + 1:,}" for index in range(len(dataframe))], index=dataframe.index)
+    )
+    centre = pd.to_numeric(dataframe[roles.measure], errors="coerce").dropna()
+    if len(centre) < 2 * ROWS_RANKED:
+        return None
+
+    def listed(values: pd.Series, column: str) -> str:
+        return _joined_names([
+            f"{labels[index]} ({format_number(float(value), column, compact=False)})"
+            for index, value in values.items()
+        ])
+
+    top, bottom = centre.nlargest(ROWS_RANKED), centre.nsmallest(ROWS_RANKED)
+    statement = (
+        f"Highest {roles.measure}: {listed(top, roles.measure)}. Lowest: {listed(bottom, roles.measure)}."
+    )
+    calculation = f"rows ranked by {roles.measure}"
+    spread = next((column for column in family if summary_statistic(column) in SPREAD_WORDS), None)
+    if spread is not None and spread in dataframe.columns:
+        widths = pd.to_numeric(dataframe[spread], errors="coerce").dropna()
+        statement += f" Largest {spread}: {listed(widths.nlargest(ROWS_RANKED), spread)}."
+        positive = centre[centre > 0]
+        if len(positive) >= 2 * ROWS_RANKED and len(positive) == len(centre):
+            relative = (widths / positive).dropna()
+            named = _joined_names([
+                f"{labels[index]} ({value:.2f})" for index, value in relative.nlargest(ROWS_RANKED).items()
+            ])
+            statement += f" Largest relative to {roles.measure} (coefficient of variation): {named}."
+            calculation += f", by {spread} and by {spread} ÷ {roles.measure}"
+    highest = format_number(float(top.iloc[0]), roles.measure, compact=False)
+    lowest = format_number(float(bottom.iloc[0]), roles.measure, compact=False)
+    others = [column for column in family if column != roles.measure]
+    statement += (
+        f" {_joined_names(others)} are statistics of the same values as {roles.measure}, so they move with "
+        "it by construction and no correlation among them is reported."
+    )
+    return Evidence(
+        kind="ranking",
+        title=f"Rows by {roles.measure}",
+        value=highest,
+        statement=statement,
+        calculation=calculation,
+        lead=f"{labels[top.index[0]]} has the highest {roles.measure}, {highest}, and "
+        f"{labels[bottom.index[0]]} the lowest, {lowest}.",
     )
 
 
@@ -3679,7 +3769,7 @@ def _headline(
         if leader and leader.subject is None and roles.dimension:
             return f"{quiet}; no clear difference between {sentence_case(roles.dimension)} groups."
         return f"{quiet}."
-    findings += leads("model", "relationship")
+    findings += leads("model", "relationship", "ranking")
     if findings:
         return findings[0]
     if leader:
@@ -3765,6 +3855,7 @@ def analyze_business(
             left_out,
         ),
         _noting(_joint_model_evidence(tested_statistics, roles, relationships, note), left_out),
+        _summary_rows_evidence(dataframe, roles, built),
         _noting(_outlier_evidence(statistics, roles, readings, issues), left_out),
         # A scan that found nothing ranks below the findings.
         None if found_difference else differences,
