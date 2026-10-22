@@ -27,7 +27,7 @@ from .audit import EXTREME_Z
 from .descriptives import grouping
 from .processing import levels_of
 from .provenance import Asset
-from .tables import Table, add_docx_table, docx_document, markdown, number, p_value
+from .tables import Table, add_docx_table, docx_document, markdown, number, p_value, save_docx
 
 #: Every part of study.yml. The drafts describe the whole study, so any change to it can change them.
 WHOLE_STUDY = (
@@ -1283,7 +1283,7 @@ def to_docx(draft: Draft, path: Path) -> None:
             if picture.width > Mm(160):
                 picture.height = int(picture.height * Mm(160) / picture.width)
                 picture.width = Mm(160)
-    document.save(path)
+    save_docx(document, path)
 
 
 def _runs(paragraph, text: str) -> None:
