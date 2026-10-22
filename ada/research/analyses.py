@@ -2248,8 +2248,15 @@ def _unit_text(study: Study, found: AnalysisResult, measure: str) -> str:
     if measure in ("mean difference", "median difference", "change", "difference in change"):
         return outcome_unit
     if measure in ("slope", "slope difference"):
-        predictor_unit = study.variable(found.spec.predictor).unit
-        per = f"per {SINGULAR_UNITS.get(predictor_unit, predictor_unit)}" if predictor_unit else "per unit"
+        predictor = study.variable(found.spec.predictor)
+        name = (predictor.label or predictor.name).strip()
+        if predictor.unit:
+            per = f"per {SINGULAR_UNITS.get(predictor.unit, predictor.unit)}"
+        elif name.lower() in SINGULAR_UNITS or name.lower() in SINGULAR_UNITS.values():
+            # A time variable named for its unit ("Week", "Days") counts in that unit.
+            per = f"per {SINGULAR_UNITS.get(name.lower(), name.lower())}"
+        else:
+            per = f"per unit of {name}"
         return f"{outcome_unit} {per}".strip()
     return ""
 

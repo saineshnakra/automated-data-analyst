@@ -345,8 +345,12 @@ def index_markdown(result: Build) -> str:
             files = ", ".join(
                 f"[{path.name}]({path.relative_to(result.out).as_posix()})" for path in asset.files
             )
-            title = asset.caption or asset.title
-            lines.append(f"- **{title}**: {files}")
+            heading = (
+                f"{asset.number}. {asset.title}"
+                if asset.number.startswith(("Table", "Figure"))
+                else asset.title
+            )
+            lines.append(f"- **{heading}**: {files}")
         lines.append("")
     if result.tables:
         lines += ["## Tables", ""] + [
