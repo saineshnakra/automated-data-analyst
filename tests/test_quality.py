@@ -576,6 +576,18 @@ class ClusterAndSwapTests(unittest.TestCase):
         # The swap explains the far values, so they are not listed again.
         self.assertFalse(checks(issues, "cluster") + checks(issues, "extreme"))
 
+    def test_empty_numeric_columns_are_skipped_by_the_value_checks(self):
+        frame = pd.DataFrame({
+            "Food": [f"item {index}" for index in range(60)],
+            "Particles": ["5.66 ± 1.69 items/10 g"] * 60,
+            "Mean concentration": np.full(60, np.nan),
+            "Sample size": np.full(60, np.nan),
+        })
+
+        issues = scan(frame)
+
+        self.assertFalse([issue for issue in issues if not issue.check.startswith("missing")])
+
 
 class TableCheckTests(unittest.TestCase):
     def test_copied_rows_are_counted_with_the_distinct_rows_left(self):

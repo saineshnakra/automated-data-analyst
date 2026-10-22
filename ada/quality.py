@@ -2400,6 +2400,9 @@ def _profiles(frame: pd.DataFrame, roles: ColumnRoles | None) -> dict[str, _Colu
         if is_design_name(name) or _BUILT_NAME.match(name):
             continue
         profile = _Column.of(name, series)
+        # An empty column has no values to check; the gap checks report it.
+        if profile.size == 0:
+            continue
         if profile.size >= 20 and profile.uniques.size == profile.size and profile.whole:
             continue
         if _keys_or_labels(name, profile.uniques):
