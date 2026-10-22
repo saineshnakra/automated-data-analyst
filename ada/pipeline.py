@@ -4,13 +4,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
+import numpy as np
 import pandas as pd
+from pandas.api.types import is_datetime64_any_dtype
 
 from .aggregation import preferred_frequency
-from .analysis import CleaningReport, clean_dataframe
+from .analysis import (
+    CleaningReport,
+    _make_unique_columns,
+    clean_dataframe,
+    separate_stacked_logs,
+    set_aside_coarser_rows,
+)
 from .business_insights import BusinessBrief, Evidence, analyze_business
+from .formatting import format_moment
 from .metrics import metric_for
-from .schema import ColumnRoles, detect_roles
+from .schema import ColumnRoles, add_row_summary, detect_roles
 from .selection import Selection, SliceComparison, compare_slice
 
 
@@ -22,58 +31,158 @@ class PreparedAnalysis:
     truncated_rows: int
     analyzed_from: pd.Timestamp | None = None
     analyzed_to: pd.Timestamp | None = None
+    #: How the analyzed rows were chosen when some were left out: "sample" for
+    #: a random sample of a table with no date, "newest" for the latest rows.
+    row_selection: str = ""
+    #: Rows in the cleaned table before any were left out.
+    available_rows: int = 0
+
+    @property
+    def rows_note(self) -> str:
+        """Which rows were analyzed, as a clause, or "" when every row was."""
+        return rows_note(
+            self.row_selection, len(self.dataframe), self.available_rows, self.analyzed_from
+        )
 
     def analyze(self, roles: ColumnRoles | None = None) -> BusinessBrief:
         return analyze_business(self.dataframe, roles or self.detected_roles)
 
 
+def rows_note(selection: str, analyzed: int, available: int, start: pd.Timestamp | None) -> str:
+    """Say which rows were analyzed: "a random sample of 1,000 of 3,000 rows", or ""."""
+    if not selection or analyzed >= available:
+        return ""
+    if selection == "sample":
+        return f"a random sample of {analyzed:,} of {available:,} rows"
+    since = f", from {format_moment(start)}" if start is not None else ""
+    return f"the newest {analyzed:,} of {available:,} rows{since}"
+
+
+# Seed for the row sample of a table with no date, so a rerun analyzes the same rows.
+SAMPLE_SEED = 0
+# Rows cleaned to find out whether a table too large to analyze whole has a date.
+PROBE_ROWS = 2_000
+
+
+def _has_date(raw: pd.DataFrame, date: str | None) -> bool:
+    """Whether a table has a date column, judged on its opening rows."""
+    if date is not None:
+        return True
+    try:
+        probe, _ = clean_dataframe(raw.head(PROBE_ROWS))
+    except ValueError:
+        return True
+    return detect_roles(probe).date is not None
+
+
+def _ordered_sample(dataframe: pd.DataFrame, size: int) -> pd.DataFrame:
+    """A seeded random sample of ``size`` rows that keeps the file's row order."""
+    rng = np.random.default_rng(SAMPLE_SEED)
+    positions = np.sort(rng.choice(len(dataframe), size=size, replace=False))
+    return dataframe.iloc[positions]
+
+
+def _missing_groups(raw: pd.DataFrame, sample: pd.DataFrame, roles: ColumnRoles) -> str:
+    """Name the grouping columns with fewer values in the sample than in the whole file."""
+    names = dict(zip(_make_unique_columns(raw.columns), raw.columns, strict=True))
+    short = []
+    for column in roles.dimensions:
+        if column not in names or column not in sample.columns:
+            continue
+        everywhere = int(raw[names[column]].nunique(dropna=True))
+        sampled = int(sample[column].nunique(dropna=True))
+        if sampled < everywhere:
+            short.append(f"{column} has {everywhere:,} values in the file but {sampled:,} in the sample")
+    if not short:
+        return ""
+    listed = "; ".join(short)
+    return f"{listed[0].upper()}{listed[1:]}, so groups missing from the sample are not compared."
+
+
 def _most_recent(dataframe: pd.DataFrame, date_column: str | None, row_limit: int) -> pd.DataFrame:
     """Keep the newest ``row_limit`` rows, not the first ones.
 
-    Exports are usually oldest-first. Rows are ranked by ``date_column`` when it
-    exists; otherwise the tail of the file is kept.
+    Exports are usually oldest-first, so rows are ranked by ``date_column``.
     """
     if len(dataframe) <= row_limit:
         return dataframe
-    if date_column and date_column in dataframe.columns:
-        order = dataframe[date_column].rank(method="first", ascending=False, na_option="bottom")
-        kept = dataframe.loc[order <= row_limit]
-        # Drop the oldest period if the cut removed any of its rows; a half-present
-        # first period would read as growth into the next.
-        dates = kept[date_column].dropna()
-        if not dates.empty:
-            grain = preferred_frequency(dates)
-            buckets = dataframe[date_column].dt.to_period(grain)
-            oldest = dates.min().to_period(grain)
-            if (buckets[~dataframe.index.isin(kept.index)] == oldest).any():
-                whole = kept[buckets.loc[kept.index] != oldest]
-                # Skip the drop when every kept row is in that period (a large
-                # export from one busy week), since it would leave no rows.
-                if not whole.empty:
-                    kept = whole
-        return kept
-    return dataframe.tail(row_limit)
+    order = dataframe[date_column].rank(method="first", ascending=False, na_option="bottom")
+    kept = dataframe.loc[order <= row_limit]
+    # Drop the oldest period if the cut removed any of its rows; a half-present
+    # first period would read as growth into the next.
+    dates = kept[date_column].dropna()
+    if not dates.empty:
+        grain = preferred_frequency(dates)
+        buckets = dataframe[date_column].dt.to_period(grain)
+        oldest = dates.min().to_period(grain)
+        if (buckets[~dataframe.index.isin(kept.index)] == oldest).any():
+            whole = kept[buckets.loc[kept.index] != oldest]
+            # Skip the drop when every kept row is in that period (a large
+            # export from one busy week), since it would leave no rows.
+            if not whole.empty:
+                kept = whole
+    return kept
 
 
 def prepare_analysis(
     raw_dataframe: pd.DataFrame, *, row_limit: int, date: str | None = None
 ) -> PreparedAnalysis:
-    """Clean the data, keep the most recent slice of it, and detect its schema.
+    """Clean the data, keep at most ``row_limit`` rows of it, and detect its schema.
 
-    ``date`` names a column the caller wants as the date, so cleaning can turn
-    a column of years into dates before the schema is detected.
+    A table with a date keeps its newest rows. One without a date has no
+    newest rows, so a random sample is taken instead, before cleaning so the
+    rows left out cost nothing. ``date`` names a column the caller wants as the
+    date, so cleaning can turn a column of years into dates before the schema
+    is detected. A matrix table gains a per-row mean to measure (see
+    ``schema.add_row_summary``). What detection concluded about the columns is
+    added to the cleaning notes, so every surface that lists the notes explains
+    the roles too.
     """
-    dataframe, cleaning_report = clean_dataframe(raw_dataframe, date=date)
+    raw = raw_dataframe
+    sampled = len(raw) > row_limit and not _has_date(raw, date)
+    if sampled:
+        raw = _ordered_sample(raw, row_limit)
+    dataframe, cleaning_report = clean_dataframe(raw, date=date)
     roles = detect_roles(dataframe)
+    notes: list[str] = []
 
-    available = len(dataframe)
-    dataframe = _most_recent(dataframe, roles.date, row_limit).reset_index(drop=True)
-    if len(dataframe) < available:
-        # Re-detect so the numeric and dimension candidates describe the kept rows.
+    # The column the caller named as the date, once cleaning has read it as dates.
+    timeline = date if date in dataframe.columns and is_datetime64_any_dtype(dataframe[date]) else roles.date
+    if timeline:
+        dataframe, set_aside = set_aside_coarser_rows(dataframe, timeline)
+        if set_aside:
+            notes.append(set_aside)
+        dataframe, _, stacked = separate_stacked_logs(dataframe, timeline)
+        if stacked:
+            notes.append(stacked)
+    if notes:
+        # Rows were set aside or a Block column added, so the candidates have changed.
         roles = detect_roles(dataframe)
 
-    dated = roles.date is not None and roles.date in dataframe.columns
-    span = dataframe[roles.date].dropna() if dated else pd.Series(dtype="datetime64[ns]")
+    available = len(raw_dataframe) if sampled else len(dataframe)
+    selection = "sample" if sampled else ""
+    if not sampled and len(dataframe) > row_limit:
+        if timeline:
+            dataframe = _most_recent(dataframe, timeline, row_limit).reset_index(drop=True)
+            selection = "newest"
+        else:
+            dataframe = _ordered_sample(dataframe, row_limit).reset_index(drop=True)
+            selection = "sample"
+        # Re-detect so the numeric and dimension candidates describe the kept rows.
+        roles = detect_roles(dataframe)
+    dataframe, roles = add_row_summary(dataframe, roles)
+    cleaning_report = replace(
+        cleaning_report, notes=tuple(dict.fromkeys((*cleaning_report.notes, *roles.notes)))
+    )
+
+    dated = timeline is not None and timeline in dataframe.columns
+    span = dataframe[timeline].dropna() if dated else pd.Series(dtype="datetime64[ns]")
+    if selection == "sample":
+        missing = _missing_groups(raw_dataframe, dataframe, roles)
+        if missing:
+            notes.insert(0, missing)
+    if notes:
+        cleaning_report = replace(cleaning_report, notes=(*notes, *cleaning_report.notes))
     return PreparedAnalysis(
         dataframe=dataframe,
         cleaning_report=cleaning_report,
@@ -81,6 +190,8 @@ def prepare_analysis(
         truncated_rows=available - len(dataframe),
         analyzed_from=span.min() if not span.empty else None,
         analyzed_to=span.max() if not span.empty else None,
+        row_selection=selection,
+        available_rows=available,
     )
 
 
@@ -92,14 +203,18 @@ def apply_role_selection(
     dimension: str,
     aggregation: str | None = None,
 ) -> ColumnRoles:
-    return ColumnRoles(
+    chosen = None if dimension == "None" else dimension
+    picked = None if measure == "None" else measure
+    return replace(
+        detected,
         date=None if date == "None" else date,
-        measure=None if measure == "None" else measure,
-        dimension=None if dimension == "None" else dimension,
-        identifier=detected.identifier,
-        numeric=detected.numeric,
-        dimensions=detected.dimensions,
+        measure=picked,
+        dimension=chosen,
         aggregation=aggregation,
+        # The runners-up were for the detected measure, and the focus is a value
+        # of the detected grouping, so each lapses when its role is changed.
+        measure_alternatives=detected.measure_alternatives if picked == detected.measure else (),
+        focus=detected.focus if chosen == detected.dimension else None,
     )
 
 
@@ -116,7 +231,11 @@ def apply_focus(
     roles: ColumnRoles,
     focus: str | None,
 ) -> tuple[pd.DataFrame, ColumnRoles]:
-    """Drill into one segment value and regroup by the next useful dimension."""
+    """Drill into one segment value and regroup by the next useful dimension.
+
+    The returned roles have no ``focus`` left to apply, since the rows already
+    hold only that value.
+    """
     if not focus or not roles.dimension:
         return dataframe, roles
     filtered = dataframe[dataframe[roles.dimension].astype(str) == focus]
@@ -132,7 +251,7 @@ def apply_focus(
         ),
         None,
     )
-    return filtered.reset_index(drop=True), replace(roles, dimension=replacement)
+    return filtered.reset_index(drop=True), replace(roles, dimension=replacement, focus=None)
 
 
 @dataclass(frozen=True)

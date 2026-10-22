@@ -34,7 +34,9 @@ The files are installed with the package.
 - Ask *"lowest treatment by viability %"*: the answer is Compound B, which
   declines across the run. Then ask *"live cells by treatment"*.
 - Nine `Viability %` cells are blank, as in an instrument export. The data
-  completeness card reports them; ADA does not fill them in.
+  checks card reports them; ADA does not fill them in. It also flags the bad
+  plate's 12 readings as extreme values, cut off from the rest, and the summary
+  says to check them first.
 
 **`saas-subscriptions.csv`**
 - Anomaly detection flags April 2025, where a drop is planted.

@@ -56,11 +56,17 @@ schema detection" panel, or with `date=`, `measure=` and `dimension=` in
 
 `prepare_analysis` in `ada/pipeline.py`
 
-At most 250,000 rows are analyzed (`MAX_ANALYSIS_ROWS` in `app.py`,
+At most 1,000,000 rows are analyzed (`MAX_ANALYSIS_ROWS` in `app.py`,
 `DEFAULT_ROW_LIMIT` in `ada/api.py`). ADA keeps the most recent rows by the
-detected date column, or the last rows of the file when there is no date. If
-the cut splits the oldest period, that period is dropped too. The app reports
-how many rows were skipped and the date range analyzed.
+detected date column. A table with no date has no most recent rows, so a
+seeded random sample is taken instead, in file order, before cleaning so the
+rows left out cost nothing. If the cut splits the oldest period, that period
+is dropped too. The app, `print(report)` and every answer from `report.ask`
+say which rows were analyzed.
+
+Before the limit, rows at a coarser grain (daily summaries below hourly
+readings) are set aside, and logs stacked one after another in the file get a
+`Block` column; see [Cleaning](reference/cleaning.md#rows-at-a-coarser-grain).
 
 ## 5. Build the timeline
 
@@ -107,8 +113,17 @@ a no-change forecast. With too little history it returns nothing.
 Builds the `BusinessBrief`: a headline, up to four KPIs, up to six evidence
 cards and up to four prioritized recommendations.
 
-Evidence kinds: `trend`, `driver`, `leader`, `concentration`, `anomaly`,
-`relationship`, `outliers`, `quality`. Each card carries its calculation.
+Evidence kinds: `trend`, `driver`, `leader`, `concentration`, `differences`,
+`anomaly`, `relationship`, `outliers`, `quality`. Each card carries its
+calculation. Group comparisons and the relationship scan come from
+`ada/compare.py` ([details](reference/compare.md)).
+
+Before the cards are built, the data checks in `ada/quality.py` scan every
+numeric column for impossible values, missing-value codes, caps, fill values,
+extreme values, copied columns and patterns in the gaps
+([details](reference/quality.md)). The `quality` card lists the leading issues,
+and the summary says which to check first when one touches the measure or the
+leading group.
 
 ## 10. Draw it
 
@@ -135,6 +150,8 @@ flowchart LR
     X --> ANS["Answer and calculation"]
 ```
 
+The rule parser gives no plan when the question names a column, value,
+grouping or condition the plan would leave out, and says which part and why.
 The AI planner runs only when the rules cannot parse a question and an API key
 is set. It sees column names, types and roles, not rows. Its plan is validated,
 described in one sentence, and run only if the user approves it. Both paths end

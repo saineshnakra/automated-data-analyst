@@ -19,7 +19,7 @@ from typing import Any
 
 import pandas as pd
 
-from .aggregation import TrendSeries, build_trend, segment_frame
+from .aggregation import TrendSeries, build_trend, group_coverage, segment_frame
 from .analysis import column_profile
 from .anomalies import MIN_PERIODS as ANOMALY_MIN_PERIODS
 from .anomalies import Anomaly, detect_anomalies
@@ -27,14 +27,18 @@ from .business_insights import BusinessBrief, analyze_business, build_business_r
 from .file_io import list_sample_datasets as _list_sample_datasets
 from .file_io import read_tabular_file
 from .forecasting import Forecast, build_forecast
+from .formatting import format_moment, is_undated
 from .metrics import AGGREGATION_CHOICES, metric_for
 from .nlq import QueryAnswer, answer_question, rephrase_hint, suggested_questions, unsupported_phrasing
 from .pipeline import apply_focus, focus_options, prepare_analysis
+from .quality import mask_sentinels, quality_frame
+from .quality import scan as scan_quality
 from .schema import ColumnRoles
 
-#: Rows analyzed by default. The oldest rows are dropped first; see
-#: :attr:`Analysis.rows_not_analyzed`.
-DEFAULT_ROW_LIMIT = 250_000
+#: Rows analyzed by default. Over it, a table with a date keeps its newest
+#: rows and one without a date is sampled at random; see
+#: :attr:`Analysis.rows_not_analyzed` and :attr:`Analysis.rows_note`.
+DEFAULT_ROW_LIMIT = 1_000_000
 
 #: Upload limit of the hosted app. Not enforced by the library.
 MAX_FILE_BYTES = 25 * 1024 * 1024
@@ -135,7 +139,7 @@ def analyze(
     on its own; ``date``, ``measure`` and ``dimension`` override that choice
     (``ada schema FILE`` prints what was picked). A ``date`` column of whole
     years is read as 1 January of each year. ``frequency`` fixes the
-    period grain to one of ``D W M Q Y``; without it the grain follows how
+    period grain to one of ``s min h D W M Q Y``; without it the grain follows how
     often the data was recorded. Fix it for scheduled jobs so the grain
     doesn't change between runs.
 
@@ -171,14 +175,38 @@ def analyze(
     if measure is not None and not pd.api.types.is_numeric_dtype(cleaned[measure]):
         raise AdaError(f"{measure!r} is not numeric, so it can't be the measure.")
     roles = replace(prepared.detected_roles, **overrides, aggregation=aggregation)
+    if measure is not None:
+        # The runners-up were for ADA's own pick; a chosen measure has none. A
+        # column chosen as the measure is a quantity, even if it looked like codes.
+        roles = replace(
+            roles,
+            measure_alternatives=(),
+            factors=tuple(column for column in roles.factors if column != measure),
+            flags=tuple(column for column in roles.flags if column != measure),
+            dimensions=tuple(
+                column for column in roles.dimensions if column != measure or column not in roles.factors
+            ),
+        )
+    name = source_name or detected_name
+    # A clear code such as 999.9 or -100000 in the measure would drive every
+    # average, so it alone is set to missing, with a note; other columns keep theirs.
+    cleaning = prepared.cleaning_report
+    frame, masked = mask_sentinels(prepared.dataframe, roles.measure)
+    if masked:
+        cleaning = replace(cleaning, notes=(*cleaning.notes, masked))
+    if roles.focus and dimension is None:
+        # A long table's rows measure different things; the brief covers one of them.
+        name = f"{name} · {roles.focus}"
+        frame, roles = apply_focus(frame, roles, roles.focus)
     return Analysis(
-        frame=prepared.dataframe,
-        roles=roles,
-        cleaning=prepared.cleaning_report,
+        frame=frame,
+        roles=replace(roles, focus=None),
+        cleaning=cleaning,
         rows_not_analyzed=prepared.truncated_rows,
         period=(prepared.analyzed_from, prepared.analyzed_to),
         frequency=frequency,
-        source_name=source_name or detected_name,
+        source_name=name,
+        rows_note=prepared.rows_note,
     )
 
 
@@ -224,6 +252,9 @@ class Analysis:
     period: tuple[pd.Timestamp | None, pd.Timestamp | None]
     frequency: str | None = None
     source_name: str = "DataFrame"
+    #: Which rows were analyzed when some were left out ("a random sample of
+    #: 1,000,000 of 3,108,545 rows"), or "" when every row was.
+    rows_note: str = ""
     _trends: dict = field(default_factory=dict, repr=False, compare=False)
 
     @property
@@ -265,6 +296,16 @@ class Analysis:
         """One row per column: type, missing values, distinct values and an example."""
         return column_profile(self.frame)
 
+    def quality(self) -> pd.DataFrame:
+        """Every issue the data checks found, one row each, the most consequential first.
+
+        Columns: ``Check``, ``Columns``, ``Rows`` (cells or rows affected),
+        ``Share %``, ``Detail`` (a plain sentence), ``Rule`` (what fired) and
+        ``Examples``. Nothing is changed by the checks; an empty frame means
+        nothing was flagged. See ``ada/quality.py`` for the rules.
+        """
+        return quality_frame(scan_quality(self.frame, self.roles))
+
     def trend(self, frequency: str | None = None) -> TrendSeries | Refusal:
         """The measure per period. ``.notes`` lists any adjustments made to the periods."""
         if not self.roles.date:
@@ -303,7 +344,9 @@ class Analysis:
                 needed=f"{ANOMALY_MIN_PERIODS} periods",
                 had=f"{periods} periods",
             )
-        return detect_anomalies(series.frame)
+        return detect_anomalies(
+            series.frame, floor_at_zero=metric_for(self.roles.measure, self.roles).floors_at_zero
+        )
 
     def forecast(self, horizon: int = 6) -> Forecast | Refusal:
         """Trend-based forecast with a backtest. Check ``.backtest`` before using it."""
@@ -326,10 +369,18 @@ class Analysis:
         return result
 
     def segments(self, limit: int = 12) -> pd.DataFrame | Refusal:
-        """The measure broken down by the grouping column, as a DataFrame."""
+        """The measure broken down by the grouping column, as a DataFrame.
+
+        With a date column, From and To give each group's first and last date
+        with a value, since groups ranked side by side may cover different years.
+        A group with no values for the measure has a missing Value, not zero.
+        """
         if not self.roles.dimension:
             return Refusal("no_dimension_column", "This table has no segment column to group by.")
-        return segment_frame(self.frame, self.roles, limit=limit)
+        frame = segment_frame(self.frame, self.roles, limit=limit)
+        if self.roles.date:
+            frame = frame.join(group_coverage(self.frame, self.roles), on="Segment")
+        return frame
 
     def ask(self, question: str) -> QueryAnswer | Refusal:
         """Answer a plain-English question with pandas, locally.
@@ -344,10 +395,10 @@ class Analysis:
                 "unsupported_phrasing",
                 "ADA has no way to represent that question, so it will not guess at a near one.",
             )
-        answer = answer_question(question, self.frame, self.roles)
+        answer = answer_question(question, self.frame, self.roles, rows_not_analyzed=self.rows_not_analyzed)
         if answer is None:
             message = "ADA could not build a plan for that question against this table."
-            hint = rephrase_hint(question, self.frame, self.roles)
+            hint = rephrase_hint(question, self.frame, self.roles, rows_not_analyzed=self.rows_not_analyzed)
             return Refusal("unrepresentable_question", f"{message} {hint}" if hint else message)
         return answer
 
@@ -366,6 +417,7 @@ class Analysis:
             period=self.period,
             frequency=self.frequency,
             source_name=f"{self.source_name} · {value}",
+            rows_note=self.rows_note,
         )
 
     def to_markdown(self) -> str:
@@ -384,9 +436,10 @@ class Analysis:
             "source": self.source_name,
             "rows_analyzed": self.rows_analyzed,
             "rows_not_analyzed": self.rows_not_analyzed,
+            "rows_note": self.rows_note,
             "period": {
-                "from": start.isoformat() if start is not None else None,
-                "to": end.isoformat() if end is not None else None,
+                "from": _moment(start),
+                "to": _moment(end),
             },
             "roles": {
                 "date": self.roles.date,
@@ -399,6 +452,7 @@ class Analysis:
             "headline": self.headline,
             "summary": self.summary,
             "cleaning_notes": list(self.cleaning.notes),
+            "data_checks": self.quality().to_dict(orient="records"),
             "evidence": [
                 {
                     "kind": item.kind,
@@ -427,7 +481,9 @@ class Analysis:
     def __str__(self) -> str:
         start, end = self.period
         dated = start is not None and end is not None
-        span = f"{start:%d %b %Y} to {end:%d %b %Y}" if dated else "no date range"
+        span = f"{format_moment(start)} to {format_moment(end)}" if dated else "no date range"
+        if dated and is_undated(start):
+            span += " (times with no calendar date)"
         roles = self.roles
         combined = f" ({metric_for(roles.measure, roles).aggregation})" if roles.measure else ""
         lines = [
@@ -438,8 +494,8 @@ class Analysis:
         ]
         if self.summary and self.summary != self.headline:
             lines.append(self.summary)
-        if self.rows_not_analyzed:
-            lines.append(f"\n{self.rows_not_analyzed:,} older rows were not analyzed (row limit).")
+        if self.rows_note:
+            lines.append(f"\nAnalyzed {self.rows_note} (row limit).")
         if self.evidence:
             lines.append("")
             for item in self.evidence:
@@ -447,3 +503,10 @@ class Analysis:
                 lines.append(f"      {item.statement}")
                 lines.append(f"      calc: {item.calculation}")
         return "\n".join(lines)
+
+
+def _moment(stamp: pd.Timestamp | None) -> str | None:
+    """ISO text for a timestamp, or the time alone ("15:06:28") when it has no calendar date."""
+    if stamp is None:
+        return None
+    return format_moment(stamp) if is_undated(stamp) else stamp.isoformat()

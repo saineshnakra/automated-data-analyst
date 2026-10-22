@@ -16,7 +16,15 @@ from pydantic import BaseModel, Field
 
 from .business_insights import BusinessBrief
 from .metrics import metric_for
-from .nlq import AGGREGATION_LABELS, QueryAnswer, QueryPlan, ValueFilter, execute_plan
+from .nlq import (
+    AGGREGATION_LABELS,
+    OPERATOR_WORDS,
+    QueryAnswer,
+    QueryPlan,
+    ValueFilter,
+    execute_plan,
+    matching_values,
+)
 from .schema import ColumnRoles, looks_like_identifier
 
 
@@ -193,15 +201,13 @@ def build_planner_payload(question: str, dataframe: pd.DataFrame, roles: ColumnR
 
 
 def _resolve_filter(item: AIQueryFilter, dataframe: pd.DataFrame) -> ValueFilter | None:
-    """Match a filter phrase to column values case-insensitively; None if nothing matches."""
-    if item.column not in dataframe.columns:
-        return None
-    wanted = item.value.casefold().strip()
-    matched = tuple(
-        str(value)
-        for value in dataframe[item.column].dropna().unique()
-        if str(value).casefold().strip() == wanted
-    )
+    """Match a filter phrase to column values the way questions are; None if nothing matches.
+
+    "west" names "West", and "Tartrazine" the one label that starts with it. A
+    phrase several values share names none, so the plan is refused rather than
+    run on a guess.
+    """
+    matched = matching_values(dataframe, item.column, item.value)
     return ValueFilter(column=item.column, values=matched) if matched else None
 
 
@@ -378,6 +384,13 @@ def _scope_clause(plan: QueryPlan) -> str:
     parts = [
         f"{item.column} = {', '.join(item.values)}" for item in plan.filters if item.values
     ]
+    for condition in plan.conditions:
+        if condition.operator == "missing":
+            parts.append(f"{condition.column} missing")
+        else:
+            value = float(condition.value or 0.0)
+            shown = f"{int(value)}" if value.is_integer() else f"{value:g}"
+            parts.append(f"{condition.column} {OPERATOR_WORDS[condition.operator]} {shown}")
     clause = f" for {' and '.join(parts)}" if parts else ""
     if plan.month is not None:
         label = MONTH_NAMES.get(plan.month, str(plan.month))
@@ -400,11 +413,18 @@ def describe_query_plan(plan: QueryPlan, roles: ColumnRoles | None = None) -> st
     # Periods combine the way the measure does: a total, or an average for a rate or level.
     per_period = "average" if plan.measure and not metric_for(plan.measure, roles).additive else "total"
 
+    grouping = f"the {plan.time_part} of {plan.dimension}" if plan.time_part else plan.dimension
+    counted = f"distinct {plan.count_column} values" if plan.count_column else "rows"
     if plan.intent == "count":
         if plan.count_column:
             description = f"count the distinct {plan.count_column} values"
         else:
             description = "count the matching records"
+    elif plan.intent == "missing":
+        description = (
+            f"count the missing values of {plan.measure}" if plan.measure
+            else "count the missing values in every column"
+        )
     elif plan.intent == "correlation":
         description = (
             f"correlate {plan.measure} with {plan.partner} over the rows that have both "
@@ -425,12 +445,12 @@ def describe_query_plan(plan: QueryPlan, roles: ColumnRoles | None = None) -> st
     elif plan.intent == "rank":
         direction = "lowest" if plan.ascending else "highest"
         showing = f"the {plan.top_n} {direction}" if plan.top_n else f"every one, {direction} first"
-        described = "rows" if plan.aggregation == "count" else f"{aggregation.lower()} {measure}"
-        description = f"rank {plan.dimension} by {described}, showing {showing}"
+        described = counted if plan.aggregation == "count" else f"{aggregation.lower()} {measure}"
+        description = f"rank {grouping} by {described}, showing {showing}"
     elif plan.intent == "breakdown":
         # Name the aggregation that will actually run.
-        described = "rows" if plan.aggregation == "count" else f"{aggregation.lower()} {measure}"
-        description = f"break {described} down by {plan.dimension}"
+        described = counted if plan.aggregation == "count" else f"{aggregation.lower()} {measure}"
+        description = f"break {described} down by {grouping}"
     else:
         description = f"{aggregation.lower()} of {measure}"
 
@@ -445,11 +465,15 @@ def execute_approved_ai_plan(
     roles: ColumnRoles,
     *,
     approved: bool,
+    rows_not_analyzed: int = 0,
 ) -> QueryAnswer | None:
-    """Run a validated AI plan locally; returns None unless ``approved`` is True."""
+    """Run a validated AI plan locally; returns None unless ``approved`` is True.
+
+    ``rows_not_analyzed`` is how many rows the row limit left out, which the answer says.
+    """
     if not approved:
         return None
-    executed = execute_plan(plan, dataframe, roles)
+    executed = execute_plan(plan, dataframe, roles, rows_not_analyzed=rows_not_analyzed)
     return QueryAnswer(
         question=question,
         plan=executed.plan,

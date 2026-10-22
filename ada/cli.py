@@ -137,7 +137,7 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--date", help="override the detected date column")
         sub.add_argument("--measure", help="override the detected measure column")
         sub.add_argument("--dimension", help="override the detected segment column")
-        sub.add_argument("--frequency", choices=list("DWMQY"), help="pin the period grain")
+        sub.add_argument("--frequency", choices=["s", "min", "h", *"DWMQY"], help="pin the period grain")
         sub.add_argument(
             "--aggregation", choices=AGGREGATION_CHOICES,
             help="combine the measure's rows as a total (sum) or an average (mean)",

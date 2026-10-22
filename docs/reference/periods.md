@@ -14,26 +14,45 @@ decision.
 
 ## Choosing the grain
 
-The grain is `W` (weekly), `M` (monthly), `Q` (quarterly) or `Y` (yearly). Two
-rules each suggest a grain, and the coarser one wins.
+The grain is `s` (by the second), `min` (minute), `h` (hour), `D` (daily),
+`W` (weekly), `M` (monthly), `Q` (quarterly) or `Y` (yearly). Two rules each
+suggest a grain, and the coarser one wins. The grains finer than a week are
+open only to timestamps that carry a time of day (more than half of the
+distinct timestamps fall at a time other than midnight), so a table of plain
+dates is never charted by the hour.
 
 **1. Span of the dates**
 
 | Span | Suggests |
 |---|---|
+| Up to 10 minutes, with times of day | By the second |
+| Up to 8 hours, with times of day | By the minute |
+| Up to 10 days, with times of day | Hourly |
+| Up to 31 days, with times of day | Daily |
 | Up to 120 days | Weekly |
 | Up to 900 days | Monthly |
 | Longer | Quarterly |
 
-**2. Recording cadence** (median gap between distinct dates)
+**2. Recording cadence** (median gap between distinct timestamps)
 
 | Typical gap | Suggests |
 |---|---|
-| Fewer than 3 distinct dates | Weekly |
+| Fewer than 3 distinct timestamps | The finest grain open to the data |
+| Up to 1 second, with times of day | By the second |
+| Up to 1 minute, with times of day | By the minute |
+| Up to 1 hour, with times of day | Hourly |
+| Up to 1 day, with times of day | Daily |
 | Up to 10 days | Weekly |
 | Up to 45 days | Monthly |
 | Up to 140 days | Quarterly |
 | Longer | Yearly |
+
+A fifty-minute sensor log read once a second is charted by the minute (fifty
+periods, enough for the anomaly check and the forecast), and four days of
+hourly readings by the hour. A log of clock times with no date, or of elapsed
+time, is placed on a stand-in day (see
+[Cleaning](cleaning.md#times-with-no-date)) and its periods are labelled by
+the time alone (`15:47`).
 
 Five monthly readings over four months would be seventeen weeks by span alone,
 twelve of them empty. Taking the coarser grain keeps them monthly. Annual
@@ -44,7 +63,7 @@ cleaning dates to 1 January of each year (see
 
 Callers can fix the grain instead: `build_trend(..., frequency="W")`,
 `ada.analyze(..., frequency="W")`, or a grain word in an Ask ADA question
-("daily", "monthly"). A fixed grain is useful for scheduled jobs, so it does not
+("hourly", "by minute", "daily", "monthly"). A fixed grain is useful for scheduled jobs, so it does not
 change between runs. With `ada.analyze`, the fixed grain applies everywhere:
 the headline, the trend, driver and anomaly findings, `anomalies` and
 `forecast()` all use the same periods.
@@ -82,12 +101,18 @@ the check does not run and the latest period is described as "so far" rather
 than "complete".
 
 The note reads: *"Aug 2026 is still in progress (12 of 31 days) and is
-excluded, so a half-finished period cannot read as a collapse."*
+excluded, so a half-finished period cannot read as a collapse."* The reach is
+counted in days for a week or longer, hours for a day, minutes for an hour and
+seconds for a minute. The unit the data stops in counts as covered, so data
+ending on a Saturday covers 6 of a week's 7 days. A period of one second has no
+part to cover and is never excluded.
 
 If the last period is more than 0.05 below the median but within 0.2
 (`SHORT_COVERAGE_MARGIN`), it is kept and a note says part of its shortfall may
 be missing data: *"The last period only reaches 26 of 30 days, ..."*. A cut
-late in the month and a few quiet days look the same at this level.
+late in the month and a few quiet days look the same at this level. The note
+is never given for a period the data reaches the last day of, and the brief
+then calls it the latest period, not the latest complete one.
 
 ### Filling empty periods
 
@@ -107,10 +132,13 @@ keeping the timeline evenly spaced."*
 | Function | Returns | Default limit |
 |---|---|---|
 | `build_trend` / `trend_frame` | The measure per period (`TrendSeries` / its frame) | – |
-| `segment_frame` | The measure per segment value | Top 12 |
-| `segment_period_change` | Latest period-over-period change per segment | – |
+| `segment_frame` | The measure per segment value; a segment with no values has no figure (NaN), not zero | Top 12 |
+| `segment_period_change` | Latest period-over-period change per segment, for segments with figures in both periods; the others are in `attrs["left_out"]` | – |
+| `matched_period_change` | The trend's latest change recomputed on the segments in both periods, when the segments differ | – |
+| `group_coverage` | Each segment's first and last date with a value | – |
+| `seasonal_context` | The latest period against the same move in earlier years and the same period a year earlier, when the trend has a yearly pattern | – |
 | `driver_frame` | Movement waterfall inputs, with an "Other segments" bar for summed measures | Top 9 |
-| `heatmap_frame` | Segment × period matrix; empty cells are zero for a summed measure and blank for an averaged one | Top 8 segments |
+| `heatmap_frame` | Segment × period matrix; a cell with no rows is zero for a summed measure and blank for an averaged one, and a cell whose rows have no values is blank | Top 8 segments |
 
 Rows with no segment value are kept under the label `(not recorded)`, so the
 segment values add up to the total. The limits are arguments and can be
@@ -138,9 +166,26 @@ are 1 apart, and a skipped period leaves a gap in the fit. Numbering by row
 order would shorten a timeline with gaps and flatten the slope; dividing
 elapsed days would drift, because months and quarters differ in length.
 
-`period_grain` classifies the median spacing between periods as `D` (up to 1.5
-days), `W` (up to 10), `M` (up to 45), `Q` (up to 130) or `Y`. Using the median
-means one gap in a regular series does not change the result.
+`period_grain` classifies the median spacing between periods as `s`, `min` or
+`h` (up to 1.5 of each), `D` (up to 1.5 days), `W` (up to 10), `M` (up to 45),
+`Q` (up to 130) or `Y`. Using the median means one gap in a regular series
+does not change the result.
+
+### Yearly patterns
+
+`yearly_pattern` decides whether a monthly or quarterly series has a yearly
+cycle, and gives each period the usual offset of its month or quarter. It
+groups the residuals from the trendline by month (or quarter) of the year and
+runs an F test of those groups (`f_test_p_value`); the cycle counts when the
+p-value is 0.05 or less (`SEASONAL_SIGNIFICANCE`). Missing a real cycle flags
+every winter, while mistaking noise for one only compares each period with the
+same months of other years, so the bar is not set higher. The test needs 8
+degrees of freedom after fitting each season (`MIN_SEASONAL_DF`: three years of
+quarters or two of months) and every season seen at least twice.
+
+A period's offset is the median residual of the same month in the other
+years, centred so the offsets cannot shift the level. Leaving the period out
+means an unusual winter does not set its own expectation.
 
 ### Robust scale
 

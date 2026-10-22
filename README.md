@@ -14,7 +14,8 @@ that produced it.
 It works on sales exports, but it was also built for research data: lab
 assays, field surveys, instrument logs. It sums only money and counts, averages
 measurements such as temperature, pH or concentration instead of adding them
-up, and reads `NA`, `nd` or `<LOD` in a numeric column as missing.
+up, reads `NA`, `nd` or `<LOD` in a numeric column as missing, and checks every
+column for values that should not drive a result before it reports one.
 
 [**Try the web app**](https://automated-data-analyst.streamlit.app/) (no sign-up, no API key) or `pip install` it.
 
@@ -37,16 +38,27 @@ print(report)
 lab-measurements.csv — 936 rows, 02 Sep 2024 to 23 Feb 2026
   date=Run Date  measure=Viability % (mean)  segment=Treatment
 
-+0.1 pts latest movement; Control has the highest average, at 91.6%.
++0.1 pts latest movement; Control has the highest median, at 91.9%.
 ...
-  91.6%  Leading treatment
-      Control has the highest average Viability %, at 91.6%. Compound B has the lowest, at 84.8%.
-      calc: mean Viability % per Treatment; averages are not split into shares
+  91.9%  Highest median by treatment
+      Viability % differs across Treatment: Control has the highest median, 91.9%, and Compound B
+      the lowest, 85.1% (n = 232 and 233). Treatment explains 64% of the variation in its ranks
+      (ε² = 0.64, Kruskal-Wallis, p < 0.001); a value from Control is the larger in 98% of pairs
+      against Compound B. Medians and ranks are used because it is strongly skewed.
+      calc: median Viability % per Treatment; Kruskal-Wallis with ε² = H ÷ (n − 1); checked with
+      Welch's ANOVA; highest vs lowest median; ranks because it is strongly skewed
+  1 of 3  What differs between groups
+      Live Cells differs across Treatment: medians from 1.1M (Compound B) to 1.2M (Compound C),
+      ε² = 0.08. It is the only clear difference among 3 comparisons across Treatment and
+      Replicate, after a Holm adjustment for all 3.
+      calc: each numeric reading compared across Treatment and Replicate: ...
   1  Anomalous periods
       Jul 2025 is the sharpest anomaly: viability % reached 81.5%, below the expected 88.1%–90.1% range.
       1 period sits outside the trendline band.
       calc: Period values vs Theil–Sen trendline ± a band calibrated so that only 1 stable series in 20 raises a flag
-  ...
+  1 issue  Data checks
+      The data checks found 1 issue to look at before trusting these figures. Viability %: 12
+      extreme values (50.95 to 62.64). ...
 ```
 
 That file ships with the package: `ada.sample("Lab Measurements")` loads it,
@@ -66,9 +78,24 @@ ada ask orders.csv "which category made the most revenue"
 - **Cleans conservatively and says what it changed**: encodings (UTF-8,
   UTF-16, Latin-1), `;` and tab delimiters, a title line above the header,
   `$1,203.55` and `(48.10)` style numbers, day/month order in dates, missing-value
-  markers. Identical rows are counted, not dropped.
+  markers (including a lone `T` for a trace, `<3,87` below a detection limit and
+  "not stated" phrases such as `no indica`), labels spelled differently only in
+  case or accents (`Con riego`, `CON RIEGO`). Identical rows are counted, not
+  dropped; repeated headers and dropped empty columns are named.
+- **Checks the data before trusting it**: every numeric column is scanned for
+  values its name rules out (a percentage over 100, a negative yield, pH past
+  14), codes such as `-999` or `999.9`, values piled up at a limit, filled-in
+  gaps, values far from the rest, copied columns, max below min, and gaps that
+  follow a group or another column. The brief lists the leading issues and
+  says which to check first; `report.quality()` returns them all. Only a clear
+  code in the measure is set aside, with a note.
 - **Detects column roles**: the date, the measure, the grouping column and an
-  ID column, from names, types and cardinality. Override any of them with
+  ID column, from names, values and cardinality. Numeric category codes (a 0/1
+  flag, a status, a set dose) group rows instead of being added up; a column of
+  unique row numbers is an ID; a running total such as a rain gauge's is never
+  the measure. A long table (one column naming the parameter, one holding the
+  result) is analyzed one parameter at a time, and a matrix of sample or
+  channel columns is measured by its row mean. Override any role with
   `ada.analyze(df, measure="OD600")` or in the app.
 - **Knows what can be added up**: money and counts are summed; rates
   (`Viability %`, `Churn Rate`), measured levels (`Water Temp (°C)`, `pH`,
@@ -77,31 +104,63 @@ ada ask orders.csv "which category made the most revenue"
   "share of total", and a change in a rate is reported in percentage points.
   When the name misleads, `aggregation="sum"` or `"mean"` (or **Combine rows
   by** in the app) says how the measure combines.
-- **Builds a timeline**: picks a period grain the data can fill, drops a final
-  period the data only partly covers, and notes both under the chart. A
-  `Year` column (with a `Month` column, if there is one) counts as a date.
-- **Flags anomalies**: periods outside a band around a Theil-Sen trendline. The
-  band is calibrated by simulation so a stable series raises a false alarm in
-  about one analysis in twenty.
+- **Prints readings in full**: `K` and `M` are kept for money and large
+  counts, so a heart rate of 1,111 is not shown as `1.1K`; very small or very
+  large readings use scientific notation (`3.624e+11`). A `$` needs both a
+  money name and values that look like money, so an income band coded 1 to 15
+  is not printed as dollars. Figures compared in one sentence never print
+  alike, numeric groups are named with their column ("Status 2"), and an
+  average resting on fewer than 30 rows says so.
+- **Builds a timeline**: picks a period grain the data can fill, down to the
+  hour, minute or second for a sensor log, drops a final period the data only
+  partly covers, and notes both under the chart. A `Year` column (with a
+  `Month` column, if there is one) counts as a date. Clock times with no date
+  are read as times of day, never given today's date, and a column of elapsed
+  seconds or minutes can be the time axis.
+- **Compares like with like**: the latest change is measured on the groups
+  that reported in both periods, a series with a yearly cycle is set against
+  the same time of year, and a group's figure says when it covers only part
+  of the dates. Logs stacked one after another in a file, and daily summaries
+  appended below hourly readings, are found and kept apart.
+- **Flags anomalies**: periods outside a band around a Theil-Sen trendline, or
+  around the usual level for the time of year when the series has a yearly
+  cycle. The band is calibrated by simulation so a stable series raises a false
+  alarm in about one analysis in twenty.
 - **Forecasts with a backtest**: a trendline plus month-of-year seasonality,
   scored on held-out periods against a no-change forecast. It refuses to run on
-  too little history.
+  too little history, and says plainly when the forecast did worse than
+  assuming no change.
 - **Answers plain-English questions** ("average pH by site", "mean signal by
   timepoint", "which month had the highest wind", "is pH correlated with
-  temperature") by turning them into a fixed query plan that pandas runs. A
-  question it can't represent is refused rather than answered approximately;
-  one that names only part of a column ("body" for `body_mass_g`) is refused
-  with the columns it may mean.
-- **Reports correlations with a 95% interval**, the sample size and a rank
-  correlation check. In the brief it says that the pair was picked as the
-  strongest of several; ask about a pair and it reports the same figures for
-  that pair. Participant numbers, plate positions and near-duplicate pairs (a
-  reading and its adjusted copy) are left out of the brief's pick.
+  temperature", "does pH differ by site", "what correlates with strength",
+  "how many samples have pH below 5.5", "what share have diabetes", "average
+  PM2.5 by hour") by turning them into a fixed query plan that pandas runs. Every column, value, grouping and condition the question
+  names must reach the plan; otherwise the question is refused with the part
+  ADA couldn't use, rather than answered approximately. A short name that fits
+  one column ("strength" for `Concrete compressive strength (MPa)`) is used
+  and the answer says so. Each answer states its filters, how many rows it
+  used and whether the row limit left rows out.
+- **Tests group differences**: a measure compared across groups gets the n per
+  group, Welch's test with a Mann-Whitney check (or Welch's ANOVA and
+  Kruskal-Wallis for more groups) and an effect size, by medians and ranks when
+  the data are skewed or capped. A gap within the noise reads as "no clear
+  difference", never as a ranking. A scan of every reading across every
+  grouping names the largest differences, with p-values adjusted for the
+  number of tests, and repeated rows of one subject count once.
+- **Reports what relates to the measure**: every numeric column's Pearson and
+  Spearman r with the measure, with a 95% interval and the sample size, then
+  the strongest other pair, or a plain "none of N pairs reaches |r| = 0.3".
+  A total and its items, a mean of other columns, a censoring flag and its
+  capped reading, near-duplicates, participant numbers and plate positions
+  are left out and listed. It says when a correlation rests on one record,
+  and when it reverses within groups.
+  Ask about a pair and it reports the same figures for that pair.
 - **Analyzes a slice you select**: draw a box or lasso on the Explore chart, or
   click some bars, and get the same analysis for those rows beside the whole.
 
-The web app accepts files up to 25 MB. By default the most recent 250,000 rows
-are analyzed (`row_limit=` changes that).
+The web app accepts files up to 25 MB. By default up to 1,000,000 rows are
+analyzed (`row_limit=` changes that): the newest rows of a table with a date,
+or a random sample of one without, and every answer says which.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/anomaly-forecast.png" width="49%" alt="ADA dashboard for the lab sample: viability over time with an anomaly and a forecast, change per treatment, heatmap, distribution and scatter">
@@ -111,10 +170,11 @@ are analyzed (`row_limit=` changes that).
 ## What it doesn't do
 
 It describes one table. It has no domain knowledge and is not a statistics
-package: no hypothesis tests, no study design, no multiple-comparison
-correction. The recommendations it prints are suggestions for what to look at
-next, not causal claims. If you need a p-value for a specific comparison, ADA
-is the step before that.
+package: it runs a fixed set of tests (group comparisons and correlations)
+and knows nothing of the study design behind them, such as paired or nested
+measurements beyond one value per subject, or covariates to adjust for. The
+recommendations it prints are suggestions for what to look at next, not
+causal claims. For a confirmatory analysis, ADA is the step before that.
 
 ## Using it from Python
 
@@ -123,6 +183,7 @@ report = ada.analyze(df, date="Survey Date", measure="Water Temp (°C)", dimensi
 ada.analyze(df, measure="Rainfall (mm)", aggregation="sum")   # monthly totals, not averages
 
 report.profile()          # one row per column: type, missing, distinct values
+report.quality()          # every data-check issue, with its rows and the rule that fired
 report.evidence           # findings, each with .statement and .calculation
 report.trend()            # the measure per period, with notes on adjustments
 report.segments()         # the measure by group, as a DataFrame

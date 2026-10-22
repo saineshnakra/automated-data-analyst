@@ -14,7 +14,7 @@ cannot parse, and a written AI summary of the evidence.
 
 **What files can I analyze?**
 CSV (comma, semicolon, tab or pipe separated), XLSX and XLSM, one worksheet at
-a time. The app accepts files up to 25 MB and analyzes up to 250,000 rows. See
+a time. The app accepts files up to 25 MB and analyzes up to 1,000,000 rows. See
 [Reading files](reference/reading-files.md).
 
 **How is this different from pasting a CSV into a chatbot?**

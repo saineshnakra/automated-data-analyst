@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 
 import numpy as np
 import pandas as pd
@@ -7,6 +8,7 @@ from ada import ui
 from ada.business_insights import describe_correlation, measure_correlation
 from ada.demo_data import make_demo_data
 from ada.nlq import (
+    Condition,
     QueryPlan,
     answer_question,
     execute_plan,
@@ -237,7 +239,7 @@ class ColumnNameIntentTests(unittest.TestCase):
         answer = answer_question("total cell count", frame, roles)
         self.assertIsNotNone(answer)
         self.assertIn("sum(Cell Count)", answer.calculation, answer.calculation)
-        self.assertIn("1.0K", answer.answer, answer.answer)
+        self.assertIn("1,000", answer.answer, answer.answer)
 
     def test_a_count_column_breaks_down_by_its_own_values(self):
         frame, roles = frame_with("Cell Count")
@@ -329,13 +331,27 @@ class RefusedPhrasingTests(unittest.TestCase):
 
     def test_unrepresentable_phrasings_are_refused_before_parsing(self):
         for question in (
-            "Revenue > 200", "Revenue in January and February", "Revenue this year",
-            "Revenue for West or Partner", "total revenue last quarter", "revenue in 2024 and 2025",
-            "revenue at least 300", "revenue over 1000", "revenue more than 50",
+            "Revenue in January and February", "Revenue this year", "Revenue for West or Partner",
+            "total revenue last quarter", "revenue in 2024 and 2025", "revenue != 200",
         ):
             with self.subTest(question=question):
                 self.assertTrue(unsupported_phrasing(question))
                 self.assertIsNone(answer_question(question, self.frame, self.roles))
+
+    def test_a_threshold_on_a_named_column_counts_the_rows_it_keeps(self):
+        for question, kept in (
+            ("Revenue > 200", 2), ("revenue at least 300", 2), ("revenue over 1000", 0),
+            ("revenue more than 50", 4), ("how many rows have revenue below 250", 2),
+        ):
+            with self.subTest(question=question):
+                self.assertFalse(unsupported_phrasing(question))
+                answer = answer_question(question, self.frame, self.roles)
+                self.assertEqual(answer.plan.intent, "count")
+                self.assertTrue(answer.answer.startswith(f"{kept} of the 4 rows"), answer.answer)
+
+    def test_a_threshold_that_names_no_column_is_refused(self):
+        self.assertIsNone(answer_question("total revenue above 200 units", self.frame, self.roles))
+        self.assertIsNone(answer_question("how many are over 50", self.frame, self.roles))
 
     def test_plans_the_executor_would_misanswer_are_refused_by_the_parser(self):
         # These pass the phrasing check; the parser rejects the plan.
@@ -629,7 +645,9 @@ class UnfamiliarMeasureTests(unittest.TestCase):
         result = answer_question("which origin has the highest mpg", frame, detect_roles(frame))
 
         self.assertEqual(result.plan.aggregation, "mean")
-        self.assertTrue(result.answer.startswith("japan is the leading origin by average mpg"), result.answer)
+        self.assertTrue(
+            result.answer.startswith("japan has the highest average mpg of any origin"), result.answer
+        )
 
     def test_a_daily_price_trend_by_year_averages_the_days(self):
         days = pd.date_range("2020-01-01", "2021-12-31", freq="D")
@@ -750,11 +768,13 @@ class UnitAnnotatedNameTests(unittest.TestCase):
                 self.assertEqual(answer.plan.intent, intent)
                 self.assertEqual(answer.plan.measure, "Concentration (mg/L)")
 
-    def test_a_partial_name_is_refused_and_the_column_named(self):
+    def test_a_partial_name_one_column_fits_names_that_column(self):
         frame, roles = measurement_frame()
 
-        self.assertIsNone(answer_question("average body by island", frame, roles))
-        self.assertEqual(rephrase_hint("average body by island", frame, roles), "Did you mean body_mass_g?")
+        answer = answer_question("average body by island", frame, roles)
+
+        self.assertEqual(answer.plan.measure, "body_mass_g")
+        self.assertIn('Read "body" as body_mass_g.', answer.answer)
 
     def test_a_word_in_several_names_names_each_of_them(self):
         frame, roles = measurement_frame()
@@ -810,6 +830,15 @@ class NumericGroupingTests(unittest.TestCase):
         self.assertEqual((answer.plan.measure, answer.plan.dimension), ("signal", "timepoint"))
         self.assertEqual(answer.plan.aggregation, "mean")
         self.assertIn("timepoint 5 has the highest average signal", answer.answer)
+
+    def test_a_numeric_code_among_the_segments_still_groups(self):
+        frame, roles = timepoint_frame()
+        roles = replace(roles, dimensions=("Region", "timepoint"), factors=("timepoint",))
+
+        for question in ("mean signal by timepoint", "which timepoint has the highest signal"):
+            with self.subTest(question=question):
+                answer = answer_question(question, frame, roles)
+                self.assertEqual((answer.plan.measure, answer.plan.dimension), ("signal", "timepoint"))
 
     def test_numbered_groups_keep_their_order_past_the_breakdown_limit(self):
         frame, roles = timepoint_frame()
@@ -1065,6 +1094,501 @@ class ConsistentAggregationTests(unittest.TestCase):
         plan = parse_question("temp by timepoint", frame, detect_roles(frame))
 
         self.assertEqual((plan.measure, plan.aggregation), ("Temp (°C)", "mean"))
+
+
+class RankingWordingTests(unittest.TestCase):
+    def test_groups_tied_at_the_top_are_all_named(self):
+        frame = pd.DataFrame({"Site": ["North", "South", "East"] * 4, "pH": [7.0, 7.0, 6.5] * 4})
+
+        answer = answer_question("which site has the highest pH", frame, detect_roles(frame))
+
+        self.assertTrue(answer.answer.startswith("North and South tie for the highest average pH"))
+
+    def test_a_symbol_keeps_its_case_and_a_total_is_not_named_twice(self):
+        frame = pd.DataFrame({"Station": ["A", "B"] * 6, "Total Rain": [1.5, 0.5] * 6, "Ca": [13.4, 4.8] * 6})
+        roles = detect_roles(frame)
+
+        rain = answer_question("total rain by station", frame, roles)
+        calcium = answer_question("average Ca by station", frame, roles)
+
+        self.assertNotIn("total total", rain.answer.lower())
+        self.assertIn("average Ca", calcium.answer)
+
+    def test_a_coded_band_is_not_answered_in_dollars(self):
+        frame = pd.DataFrame({"income": [1.0, 5.0, 12.0, 15.0] * 5})
+
+        answer = answer_question("average income", frame, detect_roles(frame))
+
+        self.assertNotIn("$", answer.answer)
+
+
+def dye_frame() -> tuple[pd.DataFrame, ColumnRoles]:
+    """Two dyes with long labels; blue falls with concentration only for the yellow dye."""
+    concentration = np.tile(np.arange(1, 21, dtype=float), 2)
+    blue = np.concatenate([200 - 5 * np.arange(20), 100 + 0 * np.arange(20)]).astype(float)
+    blue[::7] += 3
+    frame = pd.DataFrame({
+        "Dye Label": ["Tartrazine, FD&C Yellow 5 (US), E102 (EU)"] * 20
+        + ["Sunset Yellow, FD&C Yellow 6 (US)"] * 20,
+        "Condition": ["Open", "Closed"] * 20,
+        "Concentration": concentration,
+        "B": blue,
+    })
+    roles = ColumnRoles(date=None, measure="Concentration", dimension="Dye Label", identifier=None,
+                        numeric=("Concentration", "B"), dimensions=("Dye Label", "Condition"))
+    return frame, roles
+
+
+class NothingLeftOutTests(unittest.TestCase):
+    """Every column, value and grouping a question names is used, or the question is refused."""
+
+    def test_a_value_matches_on_the_first_word_of_a_long_label(self):
+        frame, roles = dye_frame()
+
+        answer = answer_question("correlation between Concentration and B for Tartrazine", frame, roles)
+
+        self.assertEqual(answer.plan.filters[0].values, ("Tartrazine, FD&C Yellow 5 (US), E102 (EU)",))
+        self.assertIn("n = 20", answer.answer)
+        self.assertIn("Based on 20 of 40 rows.", answer.answer)
+
+    def test_a_word_in_several_labels_is_refused_with_them(self):
+        frame, roles = dye_frame()
+        question = "average B for Yellow"
+
+        self.assertIsNone(answer_question(question, frame, roles))
+        self.assertIn("matches several Dye Label values", rephrase_hint(question, frame, roles))
+
+    def test_a_value_the_table_lacks_is_refused_and_named(self):
+        frame, roles = dye_frame()
+        question = "average B for A1_1"
+
+        self.assertIsNone(answer_question(question, frame, roles))
+        self.assertIn('"A1_1"', rephrase_hint(question, frame, roles))
+        hint = rephrase_hint(question, frame, roles, rows_not_analyzed=500)
+        self.assertIn("the row limit left out 500 others", hint)
+
+    def test_a_second_measure_is_not_dropped(self):
+        frame, roles = dye_frame()
+        question = "does B change with Concentration"
+
+        self.assertIsNone(answer_question(question, frame, roles))
+        self.assertIn("names B and Concentration", rephrase_hint(question, frame, roles))
+
+    def test_a_filter_written_with_its_column(self):
+        frame, roles = dye_frame()
+
+        answer = answer_question("average B by Dye Label where Condition is Open", frame, roles)
+
+        self.assertEqual((answer.plan.dimension, answer.plan.filters[0].values), ("Dye Label", ("Open",)))
+
+    def test_a_grouping_with_many_groups_shows_the_highest_and_lowest(self):
+        frame = pd.DataFrame({"Site": [f"Site {index:02d}" for index in range(30)] * 2,
+                              "Reading": np.arange(60, dtype=float)})
+        roles = ColumnRoles(date=None, measure="Reading", dimension=None, identifier=None,
+                            numeric=("Reading",), dimensions=())
+
+        answer = answer_question("average Reading by Site", frame, roles)
+
+        self.assertEqual((answer.plan.intent, answer.plan.dimension), ("breakdown", "Site"))
+        self.assertEqual(len(answer.table), 20)
+        self.assertIn("Site has 30 groups; the table shows the 10 highest and the 10 lowest", answer.answer)
+        self.assertEqual(answer.table.iloc[-1]["Site"], "Site 00")
+
+    def test_a_grouping_with_one_value_is_refused_with_the_reason(self):
+        frame = pd.DataFrame({"Sample": ["O"] * 20, "Signal": np.arange(20, dtype=float)})
+        roles = detect_roles(frame)
+        question = "average Signal by Sample"
+
+        self.assertIsNone(answer_question(question, frame, roles))
+        self.assertIn("Sample has a single value (O)", rephrase_hint(question, frame, roles))
+
+    def test_a_text_column_is_not_swapped_for_the_default_measure(self):
+        frame = pd.DataFrame({"Date": pd.date_range("2024-01-01", periods=60, freq="D"),
+                              "Precip": ["T", "0", "1.2"] * 20, "Snow": np.arange(60, dtype=float)})
+        roles = detect_roles(frame)
+        question = "average Precip by month"
+
+        self.assertIsNone(answer_question(question, frame, roles))
+        self.assertIn("Precip holds text", rephrase_hint(question, frame, roles))
+
+    def test_top_n_without_a_grouping_is_refused(self):
+        frame = pd.DataFrame({"Reading": np.linspace(0.5, 30.0, 60)})
+        question = "top 5 Reading"
+
+        self.assertIsNone(answer_question(question, frame, detect_roles(frame)))
+        self.assertIn('"top 5" needs a column to rank', rephrase_hint(question, frame, detect_roles(frame)))
+
+    def test_a_value_of_the_grouping_column_is_refused(self):
+        frame, roles = dye_frame()
+        question = "average B by Condition for Open"
+
+        self.assertIsNone(answer_question(question, frame, roles))
+        self.assertIn("which the answer groups by", rephrase_hint(question, frame, roles))
+
+    def test_two_groupings_are_refused_with_the_reason(self):
+        frame, roles = dye_frame()
+
+        self.assertIn("two groupings", rephrase_hint("average B by Dye Label by Condition", frame, roles))
+
+
+class AggregationWordTests(unittest.TestCase):
+    def test_an_explicit_total_is_honoured_in_a_breakdown(self):
+        frame = pd.DataFrame({"Station": ["North", "South"] * 5, "Interval Rain": np.arange(10, dtype=float)})
+        roles = detect_roles(frame)
+
+        answer = answer_question("total Interval Rain by Station", frame, roles)
+
+        self.assertEqual(answer.plan.aggregation, "sum")
+        self.assertIn("Total Interval Rain", answer.table.columns)
+
+    def test_an_aggregation_word_that_starts_a_column_name_is_read_as_the_aggregation(self):
+        frame = pd.DataFrame({"Wind Speed": [2.0, 3.0, 999.9], "Maximum Wind Speed": [4.0, 5.0, 6.0]})
+        roles = detect_roles(frame)
+
+        answer = answer_question("maximum Wind Speed", frame, roles)
+        column = answer_question("average Maximum Wind Speed", frame, roles)
+
+        self.assertEqual((answer.plan.measure, answer.plan.aggregation), ("Wind Speed", "max"))
+        self.assertIn("999.90", answer.answer)
+        self.assertIn('ask for "average Maximum Wind Speed"', answer.answer)
+        self.assertEqual((column.plan.measure, column.plan.aggregation), ("Maximum Wind Speed", "mean"))
+
+
+class ShortNameTests(unittest.TestCase):
+    def setUp(self):
+        self.frame = pd.DataFrame({
+            "Depth": ["0-10", "10-30"] * 6,
+            "Conduc": np.linspace(1.0, 2.0, 12),
+            "Concrete compressive strength (MPa)": np.linspace(20.0, 60.0, 12),
+            "1001": np.arange(12, dtype=float),
+            "1": np.arange(12, dtype=float) ** 2,
+        })
+        self.roles = detect_roles(self.frame)
+
+    def test_a_word_one_column_name_holds(self):
+        answer = answer_question("what is the maximum strength", self.frame, self.roles)
+
+        self.assertEqual(answer.plan.measure, "Concrete compressive strength (MPa)")
+        self.assertIn('Read "strength" as Concrete compressive strength (MPa).', answer.answer)
+
+    def test_an_abbreviated_name_that_starts_the_word(self):
+        answer = answer_question("average conductivity by depth", self.frame, self.roles)
+
+        self.assertEqual((answer.plan.measure, answer.plan.dimension), ("Conduc", "Depth"))
+
+    def test_numeric_column_names(self):
+        answer = answer_question("correlation between 1001 and 1", self.frame, self.roles)
+
+        self.assertEqual((answer.plan.measure, answer.plan.partner), ("1001", "1"))
+
+
+class ConditionTests(unittest.TestCase):
+    def setUp(self):
+        self.frame = pd.DataFrame({
+            "OBJECT": [0, 1, 2, 0] * 6,
+            "Status": [0, 1, 2, 2] * 6,
+            "TIME": np.arange(24, dtype=float) * 10,
+            "Yield": [-5.0, 10.0, 20.0, 30.0] * 6,
+            "Age of testing (day)": [7, 28, 28, 90] * 6,
+        })
+        self.roles = ColumnRoles(date=None, measure="TIME", dimension=None, identifier=None,
+                                 numeric=("OBJECT", "Status", "TIME", "Yield", "Age of testing (day)"),
+                                 dimensions=("Status",), factors=("Status",))
+
+    def ask(self, question):
+        answer = answer_question(question, self.frame, self.roles)
+        self.assertIsNotNone(answer, rephrase_hint(question, self.frame, self.roles))
+        return answer
+
+    def test_a_value_after_is_or_a_code_column(self):
+        for question, column, value in (
+            ("average TIME when OBJECT is 0", "OBJECT", 0.0),
+            ("average TIME for Status 2", "Status", 2.0),
+            ("average TIME at 28 days", "Age of testing (day)", 28.0),
+        ):
+            with self.subTest(question=question):
+                answer = self.ask(question)
+                self.assertEqual(answer.plan.conditions, (Condition(column, "=", value),))
+                self.assertEqual(answer.plan.measure, "TIME")
+
+    def test_thresholds_and_signs(self):
+        for question, operator, value in (
+            ("how many rows have Yield below 15", "<", 15.0),
+            ("where Yield < 0 how many rows", "<", 0.0),
+            ("how many rows have negative Yield", "<", 0.0),
+            ("average TIME where Yield >= 20", ">=", 20.0),
+        ):
+            with self.subTest(question=question):
+                self.assertEqual(self.ask(question).plan.conditions, (Condition("Yield", operator, value),))
+
+    def test_a_count_with_a_condition_gives_its_share(self):
+        answer = self.ask("how many rows have negative Yield")
+
+        self.assertIn("6 of the 24 rows (25.0%) have Yield below 0", answer.answer)
+
+    def test_a_numeric_grouping_is_named_with_its_column(self):
+        answer = self.ask("average TIME by Status")
+
+        self.assertEqual(answer.plan.dimension, "Status")
+        self.assertTrue(answer.answer.startswith("Status 2 has the highest average TIME"), answer.answer)
+
+
+class CountTests(unittest.TestCase):
+    def test_how_many_in_each_group(self):
+        frame = pd.DataFrame({"ParticipantId": [str(index) for index in range(10)],
+                              "Condition": [1, 2] * 5, "Score": np.arange(10, dtype=float)})
+        roles = detect_roles(frame)
+
+        each = answer_question("how many in each Condition", frame, roles)
+        participants = answer_question("how many participants per Condition", frame, roles)
+
+        self.assertEqual((each.plan.intent, each.plan.aggregation, each.plan.dimension),
+                         ("breakdown", "count", "Condition"))
+        self.assertEqual(participants.plan.dimension, "Condition")
+        self.assertEqual(list(participants.table.iloc[:, 1]), [5, 5])
+
+    def test_entity_nouns_count_rows_or_distinct_ids(self):
+        frame = pd.DataFrame({"ID": ["43", "43", "47", "47", "68"],
+                              "Result": ["positive", "negative"] * 2 + ["positive"],
+                              "TIME": [1.0, 2.0, 3.0, 4.0, 5.0]})
+        roles = detect_roles(frame)
+
+        birds = answer_question("how many birds are there", frame, roles)
+        unnumbered = frame.drop(columns=["ID"])
+        positive = answer_question("how many patients are positive", unnumbered, detect_roles(unnumbered))
+
+        self.assertEqual(birds.plan.count_column, "ID")
+        self.assertIn("There are 3 distinct ID values", birds.answer)
+        self.assertIn("Counted the birds as distinct ID values.", birds.answer)
+        self.assertEqual(positive.plan.filters[0].values, ("positive",))
+        self.assertTrue(positive.answer.startswith("3 of the 5 rows (60.0%) have Result = positive"))
+        self.assertIn("Each row counts as one of the patients.", positive.answer)
+
+    def test_a_flag_gives_its_share_of_the_rows_that_record_it(self):
+        frame = pd.DataFrame({"diabetes": [0.0, 1.0, 0.0, 0.0, np.nan],
+                              "age": [30.0, 40.0, 50.0, 60.0, 70.0]})
+        roles = detect_roles(frame)
+
+        share = answer_question("what share have diabetes", frame, roles)
+        people = answer_question("how many people have diabetes", frame, roles)
+
+        self.assertEqual(share.plan.conditions, (Condition("diabetes", "=", 1.0),))
+        self.assertIn("1 of the 4 rows with diabetes recorded (25.0%)", share.answer)
+        self.assertIn("Each row counts as one of the people.", people.answer)
+
+    def test_a_quantity_counts_by_its_total(self):
+        frame = pd.DataFrame({"Region": ["a", "b"] * 3, "Units": [1, 2, 3, 4, 5, 6]})
+
+        answer = answer_question("how many units", frame, detect_roles(frame))
+
+        self.assertEqual((answer.plan.intent, answer.plan.aggregation), ("aggregate", "sum"))
+
+
+class RowLabelTests(unittest.TestCase):
+    def setUp(self):
+        self.frame = pd.DataFrame({
+            "Taxonomy": ["Hungatella hathewayi", "Prevotella copri", "Bacteroides fragilis",
+                         "Dorea longicatena"],
+            "A101": [6849.0, 120.0, 3000.0, 120.0],
+        })
+        self.roles = ColumnRoles(date=None, measure="A101", dimension=None, identifier=None,
+                                 numeric=("A101",), dimensions=())
+
+    def test_which_label_has_the_highest_value_names_the_row(self):
+        answer = answer_question("which Taxonomy has the highest A101", self.frame, self.roles)
+
+        self.assertEqual((answer.plan.intent, answer.plan.dimension), ("rank", "Taxonomy"))
+        self.assertTrue(answer.answer.startswith("Hungatella hathewayi has the highest A101"), answer.answer)
+
+    def test_top_n_labels_and_ties(self):
+        top = answer_question("top 2 Taxonomy by A101", self.frame, self.roles)
+        lowest = answer_question("which Taxonomy has the shortest A101", self.frame, self.roles)
+
+        self.assertEqual(list(top.table["Taxonomy"]), ["Hungatella hathewayi", "Bacteroides fragilis"])
+        self.assertIn("Dorea longicatena and Prevotella copri have the lowest A101, at 120", lowest.answer)
+
+
+class MissingValueTests(unittest.TestCase):
+    def setUp(self):
+        self.frame = pd.DataFrame({"Condition": [1, 2] * 5, "EngTime": [1.0, np.nan] * 5,
+                                   "Button": [np.nan] * 3 + [1.0] * 7})
+        self.roles = detect_roles(self.frame)
+
+    def test_which_columns_have_missing_values(self):
+        for question in ("which columns have missing values", "how much is missing"):
+            with self.subTest(question=question):
+                answer = answer_question(question, self.frame, self.roles)
+                self.assertEqual(answer.plan.intent, "missing")
+                self.assertEqual(list(answer.table["Column"]), ["EngTime", "Button"])
+                self.assertIn("2 of 3 columns have missing values", answer.answer)
+
+    def test_how_many_rows_miss_one_column(self):
+        answer = answer_question("how many rows have missing EngTime", self.frame, self.roles)
+
+        self.assertIn("5 of the 10 rows (50.0%) have EngTime missing", answer.answer)
+
+
+class TimePartTests(unittest.TestCase):
+    def test_hour_and_weekday_groupings(self):
+        stamps = pd.date_range("2024-01-01", periods=24 * 14, freq="h")
+        frame = pd.DataFrame({"Datetime": stamps, "PM2.5": np.where(stamps.hour == 8, 90.0, 30.0)})
+        roles = detect_roles(frame)
+
+        hourly = answer_question("average PM2.5 by hour", frame, roles)
+        weekly = answer_question("average PM2.5 by weekday", frame, roles)
+
+        self.assertEqual((hourly.plan.time_part, len(hourly.table)), ("hour", 24))
+        self.assertTrue(hourly.answer.startswith("Hour 8 has the highest average PM2.5"), hourly.answer)
+        self.assertEqual(list(weekly.table["Weekday"])[:2], ["Monday", "Tuesday"])
+
+    def test_an_hour_needs_times_of_day(self):
+        frame = pd.DataFrame({"Date": pd.date_range("2024-01-01", periods=30, freq="D"),
+                              "Value": np.arange(30, dtype=float)})
+        question = "average Value by hour"
+
+        self.assertIsNone(answer_question(question, frame, detect_roles(frame)))
+        self.assertIn("without times of day", rephrase_hint(question, frame, detect_roles(frame)))
+
+
+class ScopeEchoTests(unittest.TestCase):
+    def test_each_answer_says_how_many_rows_it_used(self):
+        frame, roles = dye_frame()
+
+        breakdown = answer_question("average B by Condition", frame, roles)
+        limited = answer_question("average B by Condition", frame, roles, rows_not_analyzed=300)
+
+        self.assertIn("Based on all 40 rows.", breakdown.answer)
+        self.assertIn("The row limit left out 300 rows", limited.answer)
+
+
+class SubDayTrendTests(unittest.TestCase):
+    def setUp(self):
+        stamps = pd.date_range("2024-05-01 15:00:00", periods=3000, freq="s")
+        self.frame = pd.DataFrame({"Time": stamps, "TVOC": np.arange(3000) % 50 + 10.0})
+        self.roles = detect_roles(self.frame)
+
+    def test_a_trend_by_the_minute_is_named_in_minutes(self):
+        answer = answer_question("TVOC trend by minute", self.frame, self.roles)
+
+        self.assertEqual(answer.plan.grain, "min")
+        self.assertIn("TVOC per minute", answer.answer)
+        self.assertIn("across 50 minutes", answer.answer)
+
+    def test_hour_of_day_is_not_read_as_an_hourly_trend(self):
+        plan = parse_question("average TVOC by hour of day", self.frame, self.roles)
+
+        self.assertTrue(plan is None or plan.grain != "h")
+
+
+def trial_frame() -> tuple[pd.DataFrame, ColumnRoles]:
+    """Patients by result and condition: troponin separates the results, sugar does not."""
+    rng = np.random.default_rng(11)
+    result = np.where(np.arange(200) % 2 == 0, "positive", "negative")
+    frame = pd.DataFrame({
+        "Troponin": rng.normal(1.0, 0.3, 200) + np.where(result == "positive", 0.8, 0.0),
+        "Sugar": rng.normal(140, 40, 200),
+        "Age": rng.normal(55, 10, 200),
+        "Condition": np.tile([1, 2], 100),
+        "Result": result,
+    })
+    frame["Score"] = frame["Age"] * 0.5 + rng.normal(0, 2, 200)
+    roles = ColumnRoles(
+        date=None, measure="Sugar", dimension="Result", identifier=None,
+        numeric=("Troponin", "Sugar", "Age", "Condition", "Score"), dimensions=("Result",),
+    )
+    return frame, roles
+
+
+class GroupComparisonQuestionTests(unittest.TestCase):
+    def setUp(self):
+        self.frame, self.roles = trial_frame()
+
+    def ask(self, question):
+        return answer_question(question, self.frame, self.roles)
+
+    def test_each_phrasing_asks_for_a_comparison(self):
+        for question in (
+            "does Troponin differ by Result", "is Troponin different between results",
+            "compare Troponin across Result", "does Troponin vary by result",
+        ):
+            with self.subTest(question=question):
+                plan = parse_question(question, self.frame, self.roles)
+                self.assertEqual(
+                    (plan.intent, plan.measure, plan.dimension), ("compare", "Troponin", "Result")
+                )
+
+    def test_the_answer_carries_the_test_effect_size_and_a_table(self):
+        answer = self.ask("does Troponin differ by Result")
+
+        self.assertTrue(answer.answer.startswith("Troponin is higher in positive than in negative"))
+        self.assertIn("95% CI", answer.answer)
+        self.assertIn("Hedges' g", answer.calculation)
+        self.assertEqual(answer.chart, "bar")
+        self.assertEqual(list(answer.table.columns[:3]), ["Result", "Mean Troponin", "n"])
+
+    def test_a_directed_question_gets_its_yes_or_no_first(self):
+        higher = self.ask("is Troponin higher in positive patients than negative")
+        lower = self.ask("is Troponin lower in positive than negative")
+
+        self.assertEqual(higher.plan.filters[0].values, ("positive", "negative"))
+        self.assertTrue(higher.answer.startswith("Yes. Troponin is higher in positive"))
+        self.assertTrue(lower.answer.startswith("No, the other way round."))
+
+    def test_no_clear_difference_is_said_plainly(self):
+        answer = self.ask("does Sugar differ between positive and negative")
+
+        self.assertIn("Sugar shows no clear difference between", answer.answer)
+        directed = self.ask("is Sugar higher in positive than negative")
+        self.assertTrue(directed.answer.startswith("Not clearly."))
+
+    def test_numbered_groups_can_be_named(self):
+        plan = parse_question("is Age higher in condition 2 than condition 1", self.frame, self.roles)
+
+        self.assertEqual((plan.intent, plan.dimension), ("compare", "Condition"))
+        self.assertEqual(plan.filters[0].values, ("2", "1"))
+        self.assertEqual(plan.aggregation, "max")
+
+    def test_comparing_a_summed_measure_is_left_to_the_breakdown(self):
+        frame, roles = frame_with("Revenue")
+
+        plan = parse_question("compare Revenue across Team", frame, roles)
+
+        self.assertEqual(plan.intent, "breakdown")
+
+    def test_a_correlation_of_two_named_columns_is_unchanged(self):
+        plan = parse_question("is Age related to Score", self.frame, self.roles)
+
+        self.assertEqual((plan.intent, plan.measure, plan.partner), ("correlation", "Age", "Score"))
+
+
+class CorrelatesQuestionTests(unittest.TestCase):
+    def setUp(self):
+        self.frame, self.roles = trial_frame()
+
+    def test_each_phrasing_ranks_the_columns_against_one(self):
+        for question in ("what correlates with Score", "what is most related to Score",
+                         "which variables are most correlated with Score"):
+            with self.subTest(question=question):
+                plan = parse_question(question, self.frame, self.roles)
+                self.assertEqual((plan.intent, plan.measure), ("correlates", "Score"))
+
+    def test_the_answer_names_the_strongest_and_ranks_the_rest(self):
+        answer = answer_question("what correlates with Score", self.frame, self.roles)
+
+        self.assertTrue(answer.answer.startswith("Age relates most to Score of the 3 numeric columns tested"))
+        self.assertIn("Pearson r =", answer.answer)
+        self.assertEqual(answer.chart, "bar")
+        self.assertEqual(answer.table.iloc[0]["Column"], "Age")
+        self.assertEqual(
+            list(answer.table.columns),
+            ["Column", "Pearson r", "95% CI low", "95% CI high", "Spearman r", "n"],
+        )
+        self.assertNotIn("Condition", set(answer.table["Column"]))
+
+    def test_nothing_related_is_a_plain_answer(self):
+        answer = answer_question("what correlates with Sugar", self.frame, self.roles)
+
+        self.assertTrue(answer.answer.startswith("Nothing relates to Sugar"))
 
 
 if __name__ == "__main__":

@@ -228,7 +228,18 @@ def metric_for(column: str | None, roles: ColumnRoles | None = None) -> MetricSp
 
     Callers that hold the roles ask here rather than ``resolve_metric``, so an
     override set in the app, the CLI or ``ada.analyze`` reaches the trend, the
-    breakdown, the brief, the charts and the answers alike.
+    breakdown, the brief, the charts and the answers alike. A 0/1 flag (see
+    ``ColumnRoles.flags``) averages to the share of rows that are 1, so it is a
+    rate whatever its name, unless the override says to count the 1s.
     """
     override = roles.aggregation if roles is not None and column and column == roles.measure else None
+    if roles is not None and column in roles.flags and override != "sum":
+        named = _named_direction(column)
+        return MetricSpec(
+            name=column,
+            aggregation="mean",
+            unit="rate",
+            increase_is_welcome=named is not False,
+            direction_known=named is not None,
+        )
     return resolve_metric(column, override)

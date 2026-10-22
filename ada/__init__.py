@@ -4,8 +4,8 @@
     report = ada.analyze("measurements.csv")
     print(report)
 
-The core depends only on pandas, numpy and openpyxl. Streamlit, plotly and
-the optional AI layer are extras and are imported only when used.
+The core depends only on pandas, numpy, scipy and openpyxl. Streamlit, plotly
+and the optional AI layer are extras and are imported only when used.
 """
 
 from .api import (

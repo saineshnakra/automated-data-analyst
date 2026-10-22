@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import re
+import unicodedata
 import warnings
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -11,7 +13,7 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_dtype
 
-from .formatting import normalized_name
+from .formatting import UNDATED_DAY, format_moment, normalized_name
 from .schema import is_identifier_name, is_month_name, is_year_name
 
 
@@ -51,14 +53,171 @@ MISSING_MARKERS = frozenset({
     "?", ".", "#n/a", "#value!", "#div/0!", "not detected", "bdl", "bql", "lod", "loq",
     "<lod", "<loq", "<dl", "below detection limit",
 })
-_CENSORED_VALUE = re.compile(r"^[<>]\s*[\d.]")
+# Phrases for "not stated" in the languages exports most often arrive in, and a
+# spreadsheet's lookup error. They are missing values in a text column as much
+# as in a numeric one, and left as labels they become a group of their own.
+NOT_STATED_MARKERS = frozenset({
+    "n/a", "#n/a", "error: #n/a", "nd", "n.d.", "not stated", "not specified",
+    "not indicated", "not available", "no indica", "no indicado", "no indicada",
+    "sin dato", "sin datos", "nicht angegeben", "non renseigné", "non renseigne",
+})
+# Censoring markers without a number: the reading was below what the method sees.
+BELOW_LIMIT_MARKERS = frozenset({
+    "<lod", "<loq", "<dl", "bdl", "bql", "below detection limit", "not detected",
+})
+# "<0.5" or "<3,87": a reading below, or above, a detection limit.
+_CENSORED_VALUE = re.compile(r"^[<>]\s*[\d.,]")
+# A lone token that means a trace amount when it is the column's only text.
+TRACE_TOKENS = frozenset({"t", "tr", "trace"})
+
+
+def _normalized_text(series: pd.Series) -> pd.Series:
+    return series.astype("string").str.strip().str.lower().str.replace(r"\s+", " ", regex=True)
+
+
+def _cells_matching(series: pd.Series, matches) -> pd.Series:
+    """True for cells whose normalised text ``matches`` marks; judged once per distinct value."""
+    distinct = pd.Series(series.dropna().unique(), dtype=object)
+    if distinct.empty:
+        return pd.Series(False, index=series.index)
+    hits = distinct[matches(_normalized_text(distinct)).fillna(False).astype(bool).to_numpy()]
+    return series.isin(hits.tolist())
+
+
+def _per_value(series: pd.Series, transform) -> pd.Series:
+    """Run ``transform`` once per distinct value and spread the result back over the rows.
+
+    Text columns repeat a few values many times (a site, a status, a date), so
+    working on the distinct values keeps cleaning a large file fast. ``transform``
+    takes and returns a Series; missing cells reach it as one missing value.
+    """
+    codes, uniques = pd.factorize(series, use_na_sentinel=True)
+    distinct = np.asarray(uniques, dtype=object)
+    missing = codes < 0
+    if missing.any():
+        distinct = np.append(distinct, None)
+        codes = np.where(missing, len(distinct) - 1, codes)
+    result = transform(pd.Series(distinct, dtype=object))
+    return result.iloc[codes].set_axis(series.index)
 
 
 def _missing_markers(series: pd.Series) -> pd.Series:
-    """True for cells holding a missing-value marker such as "NA", "nd" or "<0.1"."""
-    text = series.astype("string").str.strip().str.lower()
-    marked = text.isin(MISSING_MARKERS) | text.str.match(_CENSORED_VALUE.pattern)
-    return marked.fillna(False).astype(bool)
+    """True for cells holding a missing-value marker such as "NA", "nd", "no indica" or "<0.1"."""
+    markers = MISSING_MARKERS | NOT_STATED_MARKERS
+    return _cells_matching(series, lambda text: text.isin(markers) | text.str.match(_CENSORED_VALUE.pattern))
+
+
+def _censored(series: pd.Series) -> tuple[pd.Series, pd.Series]:
+    """Cells below a detection limit, and cells above one ("<0.1", "BDL"; ">12,88")."""
+    below = _cells_matching(
+        series, lambda text: text.str.match(r"^<\s*[\d.,]") | text.isin(BELOW_LIMIT_MARKERS)
+    )
+    return below, _cells_matching(series, lambda text: text.str.match(r"^>\s*[\d.,]"))
+
+
+def _limits(values: pd.Series) -> list[float]:
+    """The detection limits written in censored cells, parsed like any number: "<3,87" is 3.87."""
+    numbers = values.astype("string").str.strip().str.lstrip("<>").str.strip()
+    parsed = {_read_formatted_number(number) for number in numbers.dropna().unique()}
+    return sorted(value for value in parsed if value is not None)
+
+
+def _censored_note(column: str, values: pd.Series, below: pd.Series, above: pd.Series, total: int) -> str:
+    """Say how many cells were past a detection limit, and which way that biases the mean."""
+    censored = below | above
+    count = int(censored.sum())
+    limits = _limits(values[censored])
+    side = "below" if below.sum() >= above.sum() else "above"
+    shown = ""
+    if limits:
+        mark = "<" if side == "below" else ">"
+        low, high = (f"{mark}{limit:g}" for limit in (limits[0], limits[-1]))
+        shown = f" ({low})" if low == high else f" ({low} to {high})"
+    share = count / max(total, 1) * 100
+    portion = "under 0.1%" if share < 0.05 else f"{share:.1f}%"
+    subject = f"{count:,} cells in {column} ({portion}) were" if count > 1 else f"1 cell in {column} was"
+    note = f"{subject} {side} a detection limit{shown} and read as missing"
+    if share >= CENSORED_SHARE * 100:
+        direction = "upward" if side == "below" else "downward"
+        note += f"; with this many left out, the mean of the rest is biased {direction}"
+    return note + "."
+
+
+#: Share of a column past a detection limit at which its note warns that the mean is biased.
+CENSORED_SHARE = 0.10
+
+
+def _lone_token(values: pd.Series, unread: pd.Series) -> str | None:
+    """The single text token left in an otherwise numeric column, when it reads as a marker.
+
+    Weather records write "T" for a trace of rain and instrument logs write "M"
+    or "*": one short token, repeated, with numbers everywhere else. A longer
+    word ("Control" among doses) is a real level and is not returned.
+    """
+    if not unread.any():
+        return None
+    tokens = _normalized_text(pd.Series(values[unread].unique(), dtype=object)).dropna().unique()
+    if len(tokens) != 1:
+        return None
+    token = str(tokens[0])
+    if token in TRACE_TOKENS or (len(token) <= 3 and not any(char.isdigit() for char in token)):
+        return token
+    return None
+
+
+def _not_stated(series: pd.Series) -> pd.Series:
+    """True for text cells holding a NOT_STATED_MARKERS phrase.
+
+    "ND" is left alone in a column of two-letter codes, where it is North Dakota.
+    """
+    markers = NOT_STATED_MARKERS
+    distinct = _normalized_text(pd.Series(series.dropna().unique(), dtype=object))
+    if len(distinct) and distinct.str.fullmatch(r"[a-z]{2}").mean() >= 0.5:
+        markers = markers - {"nd"}
+    return _cells_matching(series, lambda text: text.isin(markers))
+
+
+_MANGLED_DUPLICATE = re.compile(r"^(.+)\.(\d+)$")
+
+
+def _duplicate_header_notes(original: pd.Index, frame: pd.DataFrame) -> list[str]:
+    """Name each repeated header and the name its copy now has, and say whether they differ.
+
+    A reader renames a repeated "diabetes" to "diabetes.1"; ADA renames one in a
+    DataFrame to "diabetes_2". Either way the two columns may hold different data.
+    """
+    notes = []
+    renamed: list[tuple[str, str]] = []
+    names = [str(name) for name in frame.columns]
+    for name in names:
+        match = _MANGLED_DUPLICATE.match(name)
+        # Numbers as headers ("400" and "400.5" nm) are not a repeat.
+        if match and match.group(1) in names and any(char.isalpha() for char in match.group(1)):
+            renamed.append((match.group(1), name))
+    seen: dict[str, int] = {}
+    for position, raw_name in enumerate(original):
+        base = " ".join(str(raw_name).strip().split()) or f"column_{position + 1}"
+        seen[base] = seen.get(base, 0) + 1
+        if seen[base] > 1:
+            renamed.append((base, names[position]))
+    for first, copy in renamed:
+        a, b = frame[first], frame[copy]
+        if not (is_numeric_dtype(a) and is_numeric_dtype(b)):
+            a, b = a.astype("string"), b.astype("string")
+        differ = int((a.ne(b) & ~(a.isna() & b.isna())).sum())
+        rows = "row" if differ == 1 else "rows"
+        same = "They hold the same values." if differ == 0 else f"They differ on {differ:,} {rows}."
+        notes.append(f'The header "{first}" appears more than once; the repeat is named "{copy}". {same}')
+    return notes
+
+
+def _dropped_columns_note(columns: list[str]) -> str:
+    shown = [str(column) for column in columns]
+    if len(shown) > 8:
+        shown = [*shown[:8], f"{len(shown) - 8} more"]
+    listed = shown[0] if len(shown) == 1 else f"{', '.join(shown[:-1])} and {shown[-1]}"
+    noun = "columns were" if len(columns) > 1 else "column was"
+    return f"{len(columns)} empty {noun} dropped: {listed}."
 
 
 def _speculative_dates(values: pd.Series) -> pd.Series:
@@ -73,10 +232,12 @@ def _speculative_dates(values: pd.Series) -> pd.Series:
 
 def _is_blank(series: pd.Series) -> pd.Series:
     """True for missing cells and for text that is only whitespace."""
-    blank = series.isna()
     if series.dtype == object or str(series.dtype) == "string":
-        blank = blank | series.astype("string").str.strip().eq("").fillna(False)
-    return blank
+        return _per_value(
+            series,
+            lambda values: values.isna() | values.astype("string").str.strip().eq("").fillna(False),
+        ).astype(bool)
+    return series.isna()
 
 
 def _drop_timezone(series: pd.Series) -> pd.Series:
@@ -229,17 +390,159 @@ def _numeric_from_text(values: pd.Series) -> pd.Series:
 
     Non-string and unreadable cells become NaN.
     """
-    return values.map(
-        lambda value: _read_formatted_number(value) if isinstance(value, str) else None
-    ).astype("float64")
+    return _per_value(
+        values,
+        lambda distinct: distinct.map(
+            lambda value: _read_formatted_number(value) if isinstance(value, str) else None
+        ).astype("float64"),
+    )
 
 
 # Day-or-month-first dates such as "3/1/2024" or "03-01-24". Year-first (ISO)
 # dates are unambiguous.
 _DAY_OR_MONTH_FIRST = re.compile(r"^\s*\d{1,2}[/-]\d{1,2}[/-]\d{2,4}")
+_ISO_DATE = r"^\s*\d{4}-\d{1,2}-\d{1,2}"
+# A time of day with no date: "15:47", "15:47:03.250", "3:05 PM".
+_TIME_OF_DAY = re.compile(r"^\s*\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?\s*(?:[AaPp]\.?[Mm]\.?)?\s*$")
+# A clock that goes back this far between rows has passed midnight.
+MIDNIGHT_DROP = pd.Timedelta(hours=12)
+# Share of backward steps a clock column may have and still be read as one log in time order.
+CLOCK_ORDER_TOLERANCE = 0.01
 
 
-def _dated(values: pd.Series, *, dayfirst: bool) -> pd.Series:
+def _time_only(values: pd.Series) -> pd.Series:
+    """True for bare times of day ("15:47:03", "3:05 PM") and spreadsheet time cells."""
+    text = values.astype("string").str.match(_TIME_OF_DAY.pattern, na=False).astype(bool)
+    cells = values.map(lambda value: isinstance(value, dt.time))
+    return text | cells.astype(bool)
+
+
+def _clock_times(values: pd.Series) -> tuple[pd.Series, int]:
+    """Place bare times of day on ``UNDATED_DAY`` rather than on any real date.
+
+    A log in time order that passes midnight moves on to the next day, so its
+    order survives. Returns the timestamps and the number of midnights passed.
+    """
+
+    def of_day(distinct: pd.Series) -> pd.Series:
+        text = distinct.astype("string")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", (UserWarning, FutureWarning))
+            parsed = pd.to_datetime(text, errors="coerce", format="%H:%M:%S")
+            others = parsed.isna() & text.notna()
+            if others.any():
+                parsed[others] = pd.to_datetime(text[others], errors="coerce", format="mixed")
+        # The parser fills in a date of its own; only the time of day is kept.
+        return parsed - parsed.dt.normalize()
+
+    times = _per_value(values, of_day)
+    steps = times.dropna().diff().dropna()
+    midnights = steps < -MIDNIGHT_DROP
+    backward = (steps < pd.Timedelta(0)) & ~midnights
+    if not (midnights.any() and backward.mean() <= CLOCK_ORDER_TOLERANCE):
+        return UNDATED_DAY + times, 0
+    days = midnights.reindex(times.index, fill_value=False).astype(int).cumsum()
+    return UNDATED_DAY + pd.to_timedelta(days, unit="D") + times, int(midnights.sum())
+
+
+def _clock_note(column: str, clock: pd.Series, midnights: int) -> str:
+    readings = clock.dropna()
+    span = f" ({format_moment(readings.min())} to {format_moment(readings.max())})" if len(readings) else ""
+    crossing = ""
+    if midnights:
+        crossing = f", passing midnight {midnights} time{'s' if midnights > 1 else ''}"
+    return (
+        f"{column} holds times of day with no calendar date{span}{crossing}. They are read "
+        "as times of day, and no date is attached to them."
+    )
+
+
+# Words that name an elapsed-time column ("Time (s)", "elapsed_min", "t [ms]"), and
+# the units it may be counted in, in seconds.
+ELAPSED_WORDS = frozenset({"time", "elapsed", "t"})
+ELAPSED_QUALIFIERS = frozenset({"since", "start", "from", "run"})
+TIME_UNITS = {
+    "ms": 0.001, "msec": 0.001, "millisecond": 0.001, "milliseconds": 0.001,
+    "s": 1.0, "sec": 1.0, "secs": 1.0, "second": 1.0, "seconds": 1.0,
+    "min": 60.0, "mins": 60.0, "minute": 60.0, "minutes": 60.0,
+    "h": 3600.0, "hr": 3600.0, "hrs": 3600.0, "hour": 3600.0, "hours": 3600.0,
+}
+
+
+UNIT_NAMES = {0.001: "milliseconds", 1.0: "seconds", 60.0: "minutes", 3600.0: "hours"}
+
+
+def _date_and_time(frame: pd.DataFrame, clock_columns: list[str]) -> tuple[str, str] | None:
+    """Pair a column of bare times with the one column of plain dates beside it.
+
+    Logs often split a timestamp into a Date and a Time column; together they
+    are the real time of each row. Returns (date column, time column) or None.
+    """
+    if len(clock_columns) != 1:
+        return None
+    dated = [
+        column
+        for column in frame.columns
+        if column not in clock_columns and is_datetime64_any_dtype(frame[column])
+    ]
+    if len(dated) != 1:
+        return None
+    days = frame[dated[0]].dropna()
+    if days.empty or not bool((days == days.dt.normalize()).all()):
+        return None
+    return dated[0], clock_columns[0]
+
+
+def _elapsed_unit(name: str) -> tuple[bool, float | None]:
+    """Whether the name is an elapsed-time column, and the unit it states in seconds.
+
+    Every word must be a time word, a unit or a qualifier such as "since start",
+    so "Time to failure (h)" or "Max T" is not an elapsed time.
+    """
+    words = re.findall(r"[a-z]+", normalized_name(name))
+    units = [TIME_UNITS[word] for word in words if word in TIME_UNITS]
+    rest = [word for word in words if word not in TIME_UNITS]
+    named = bool(rest) and set(rest) <= ELAPSED_WORDS | ELAPSED_QUALIFIERS and bool(set(rest) & ELAPSED_WORDS)
+    if not named or len(units) > 1:
+        return False, None
+    return True, units[0] if units else None
+
+
+def _elapsed_column(frame: pd.DataFrame, requested: str | None) -> tuple[str, float] | None:
+    """Choose a numeric column of elapsed time to use as the time axis, with its unit.
+
+    A column the caller asked for as the date qualifies on its name alone, and
+    counts seconds when the name states no unit. Otherwise one is found only when the
+    table has no date column: an elapsed-time name with a stated unit, and
+    values that never go below zero and never fall from one row to the next.
+    """
+    if requested in frame.columns:
+        series = frame[requested]
+        named, unit = _elapsed_unit(requested)
+        if named and is_numeric_dtype(series) and not is_bool_dtype(series):
+            if series.dropna().ge(0).all():
+                return requested, unit or 1.0
+        return None
+    if any(is_datetime64_any_dtype(frame[column]) for column in frame.columns):
+        return None
+    for column in frame.columns:
+        series = frame[column]
+        if is_bool_dtype(series) or not is_numeric_dtype(series):
+            continue
+        named, unit = _elapsed_unit(column)
+        values = series.dropna()
+        if (
+            named
+            and unit is not None
+            and values.nunique() >= 3
+            and bool(values.ge(0).all())
+            and bool((values.diff().dropna() >= 0).all())
+        ):
+            return column, unit
+    return None
+
+
+def _parse_dates(values: pd.Series, *, dayfirst: bool) -> pd.Series:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", (UserWarning, FutureWarning))
         parsed = pd.to_datetime(values, errors="coerce", dayfirst=dayfirst)
@@ -248,7 +551,21 @@ def _dated(values: pd.Series, *, dayfirst: bool) -> pd.Series:
             # object dtype. There is no single wall clock to keep, so use UTC.
             parsed = pd.to_datetime(values, errors="coerce", dayfirst=dayfirst, utc=True)
             parsed = parsed.dt.tz_localize(None)
-        return parsed
+        # The format is inferred from the first value, so ISO dates with and
+        # without a time ("2019-04-02" after "2015-01-01 01:00:00") need a second pass.
+        unread = values[parsed.isna() & values.notna()]
+        retry = unread[unread.astype("string").str.match(_ISO_DATE, na=False).astype(bool)]
+        if len(retry):
+            iso = pd.to_datetime(retry, errors="coerce", format="ISO8601")
+            if not isinstance(iso.dtype, pd.DatetimeTZDtype) and iso.dtype != object:
+                parsed = parsed.where(~parsed.index.isin(retry.index), iso)
+        # A bare time of day ("15:47:03") is given today's date; it is never a date.
+        today = values[parsed.dt.normalize() == pd.Timestamp.today().normalize()]
+        return parsed.mask(_time_only(today).reindex(parsed.index, fill_value=False))
+
+
+def _dated(values: pd.Series, *, dayfirst: bool) -> pd.Series:
+    return _per_value(values, lambda distinct: _parse_dates(distinct, dayfirst=dayfirst))
 
 
 def _read_dates(values: pd.Series) -> tuple[pd.Series, str]:
@@ -260,7 +577,10 @@ def _read_dates(values: pd.Series) -> tuple[pd.Series, str]:
     """
     month_first = _dated(values, dayfirst=False)
     # Only day-or-month-first values (01/03/2024, not 2024-03-01) can be read two ways.
-    two_ways = values.astype("string").str.match(_DAY_OR_MONTH_FIRST, na=False)
+    two_ways = _per_value(
+        values,
+        lambda distinct: distinct.astype("string").str.match(_DAY_OR_MONTH_FIRST, na=False).astype(bool),
+    )
     if not bool(two_ways.any()):
         return month_first, ""
 
@@ -422,11 +742,157 @@ def _first_days(years: pd.Series, months: pd.Series | None = None) -> pd.Series:
     return pd.to_datetime(parts, errors="coerce")
 
 
+def _holds_decimals(values: pd.Series) -> bool:
+    """True when the text reads as numbers, nearly all of them, and some have a fractional part.
+
+    Missing-value markers ("NA", "<LOD") are left out of the count.
+    """
+    present = values[~_missing_markers(values)].dropna()
+    numbers = pd.to_numeric(present, errors="coerce").dropna()
+    return len(numbers) >= 0.95 * max(len(present), 1) and bool((numbers % 1 != 0).any())
+
+
+# Text columns with more distinct values than this are free text, not labels to merge.
+MAX_LABELS_TO_MERGE = 20_000
+
+
+def _label_key(value: str) -> str:
+    """A label compared without case, accents or spacing: "No indica" and "NO INDICA" match."""
+    decomposed = unicodedata.normalize("NFKD", value)
+    plain = "".join(char for char in decomposed if not unicodedata.combining(char))
+    return " ".join(plain.casefold().split())
+
+
+def _merge_label_variants(series: pd.Series, column: str) -> tuple[pd.Series, str | None]:
+    """Write labels that differ only in case, accents or spacing one way, the most common one.
+
+    "NO INDICA", "No indica" and "no Indica" are one answer; left apart, they
+    split one group into three in every breakdown. Returns the series and a
+    note, or the series unchanged and None.
+    """
+    counts = series.dropna().value_counts()
+    labels = [label for label in counts.index if isinstance(label, str)]
+    if not 2 <= len(labels) <= MAX_LABELS_TO_MERGE:
+        return series, None
+    spellings: dict[str, list[str]] = {}
+    for label in labels:
+        # Most common first, so each group's first spelling is the one kept.
+        spellings.setdefault(_label_key(label), []).append(label)
+    merged = [group for group in spellings.values() if len(group) > 1]
+    if not merged:
+        return series, None
+    mapping = {variant: group[0] for group in merged for variant in group[1:]}
+    changed = int(series.isin(list(mapping)).sum())
+    largest = max(merged, key=lambda group: int(counts[group].sum()))
+    shown = " and ".join(f'"{variant}"' for variant in largest[1:3])
+    others = ""
+    if len(merged) > 1:
+        others = f", and {len(merged) - 1:,} other label{'s' if len(merged) > 2 else ''} likewise"
+    note = (
+        f"{changed:,} {column} values spelled differently only in case, accents or spacing were "
+        f'merged: {shown} became "{largest[0]}"{others}.'
+    )
+    return series.replace(mapping), note
+
+
+def _read_numbers(values: pd.Series) -> tuple[pd.Series, pd.Series]:
+    """Parse text cells as numbers; return the numbers and which cells were missing markers."""
+    markers = _missing_markers(values)
+    parsed = _per_value(values.mask(markers), lambda cells: pd.to_numeric(cells, errors="coerce"))
+    # Retry cells plain parsing missed as formatted numbers ("$1,203.55",
+    # "(48.10)"). Large values are the ones with separators, so skipping
+    # them biases totals down. Values already read ("1e3") are kept.
+    gaps = parsed.isna() & values.notna() & ~markers
+    if gaps.any():
+        parsed = parsed.astype("float64").fillna(_numeric_from_text(values.where(gaps)))
+    return parsed, markers
+
+
+def _numeric_share(values: pd.Series) -> float:
+    """Share of the non-marker cells that read as numbers."""
+    parsed, markers = _read_numbers(values)
+    readable = int(values.notna().sum() - markers.sum())
+    return float(parsed.notna().sum() / readable) if readable else 0.0
+
+
+# Cells drawn at random from a text column to rule out a type before parsing all
+# of it. A column needs 95% of its cells to convert, so one where under half the
+# drawn cells read as numbers (or times) cannot, and is not parsed in full.
+PROBE_SIZE = 200
+PROBE_RATIO = 0.5
+
+
+def _probe(values: pd.Series) -> pd.Series:
+    present = values.dropna()
+    return present if len(present) <= PROBE_SIZE else present.sample(PROBE_SIZE, random_state=0)
+
+
 def _missing_marker_note(column: str, marked: pd.Series) -> str:
     examples = list(dict.fromkeys(marked.astype(str).str.strip()))
     shown = ", ".join(f'"{value}"' for value in examples[:4]) + (", ..." if len(examples) > 4 else "")
     noun = "cells" if len(marked) > 1 else "cell"
     return f"{len(marked):,} {noun} in {column} read as missing: {shown}."
+
+
+def _not_stated_note(column: str, stated: pd.Series) -> str:
+    phrases = "This phrase means" if stated.astype(str).str.strip().nunique() == 1 else "These phrases mean"
+    return f"{_missing_marker_note(column, stated)} {phrases} the value was not stated."
+
+
+def _marker_notes(
+    column: str,
+    values: pd.Series,
+    markers: pd.Series,
+    token_cells: pd.Series,
+    token: str | None,
+    total: int,
+) -> list[str]:
+    """Notes for the markers read in a column that became numeric.
+
+    Values past a detection limit get their own note, since leaving them out
+    biases the mean; other markers and a lone token are listed as read.
+    """
+    notes = []
+    below, above = _censored(values)
+    censored = (below | above) & markers
+    plain = markers & ~censored
+    if plain.any():
+        notes.append(_missing_marker_note(column, values[plain]))
+    if censored.any():
+        notes.append(_censored_note(column, values, below & markers, above & markers, total))
+    if token_cells.any():
+        count = int(token_cells.sum())
+        shown = str(values[token_cells].astype(str).str.strip().iloc[0])
+        noun, verb = ("cells", "were") if count > 1 else ("cell", "was")
+        if token in TRACE_TOKENS - {"t"}:
+            notes.append(
+                f'{count:,} {noun} in {column} held "{shown}" and {verb} read as 0: a trace is below the '
+                "smallest amount measured."
+            )
+        else:
+            note = (
+                f'{count:,} {noun} in {column} held "{shown}", the only text in the column, and {verb} '
+                "read as missing"
+            )
+            if token in TRACE_TOKENS:
+                note += (
+                    f'; if "{shown}" marks a trace, the true values are near zero and the mean of the '
+                    "rest runs high"
+                )
+            notes.append(note + ".")
+    return notes
+
+
+def _unread_note(column: str, unread: pd.Series) -> str:
+    """Name the cells a numeric column could not read, which became missing."""
+    examples = list(dict.fromkeys(unread.astype(str).str.strip()))
+    shown = ", ".join(f'"{value}"' for value in examples[:4]) + (", ..." if len(examples) > 4 else "")
+    if len(unread) == 1:
+        return f"1 cell in {column} could not be read as a number and was treated as missing: {shown}."
+    return (
+        f"{len(unread):,} cells in {column} could not be read as numbers and were treated as "
+        f"missing: {shown}."
+    )
 
 
 def clean_dataframe(
@@ -446,24 +912,31 @@ def clean_dataframe(
     cleaned = dataframe.copy()
     original_rows, original_columns = cleaned.shape
     cleaned.columns = _make_unique_columns(cleaned.columns)
+    notes: list[str] = _duplicate_header_notes(dataframe.columns, cleaned)
 
-    empty_columns = [column for column in cleaned.columns if _is_blank(cleaned[column]).all()]
-    cleaned = cleaned.drop(columns=empty_columns)
+    blanks = {column: _is_blank(cleaned[column]).to_numpy() for column in cleaned.columns}
+    empty_columns = [column for column, blank in blanks.items() if blank.all()]
+    # Each drop copies the whole frame, so only drop what is there.
+    if empty_columns:
+        cleaned = cleaned.drop(columns=empty_columns)
+        notes.append(_dropped_columns_note(empty_columns))
 
-    empty_row_mask = cleaned.apply(_is_blank).all(axis=1)
+    kept = [blank for column, blank in blanks.items() if column not in empty_columns]
+    empty_row_mask = np.logical_and.reduce(kept) if kept else np.ones(len(cleaned), dtype=bool)
     empty_rows_removed = int(empty_row_mask.sum())
-    cleaned = cleaned.loc[~empty_row_mask].copy()
+    if empty_rows_removed:
+        cleaned = cleaned.loc[~empty_row_mask].copy()
 
     index_columns = [
         column for column in cleaned.columns if _looks_like_exported_index(cleaned[column], column)
     ]
-    cleaned = cleaned.drop(columns=index_columns)
+    if index_columns:
+        cleaned = cleaned.drop(columns=index_columns)
 
     trimmed_text_columns = 0
     numeric_columns_inferred = 0
     datetime_columns_inferred = _normalize_datetime_columns(cleaned)
     unparsed_date_cells = 0
-    notes: list[str] = []
 
     if datetime_columns_inferred:
         notes.append(
@@ -474,19 +947,43 @@ def clean_dataframe(
     named_date_ratio, numeric_ratio, unnamed_date_ratio = 0.8, 0.95, 0.95
     date_sample_size = 50
 
+    clock_columns: list[str] = []
     for column in cleaned.select_dtypes(include=["object", "string"]).columns:
         series = cleaned[column]
         non_null_before = int(series.notna().sum())
-        stripped = series.map(lambda value: value.strip() if isinstance(value, str) else value)
-        if series.map(lambda value: isinstance(value, str) and value != value.strip()).any():
+        distinct = pd.Series(series.dropna().unique(), dtype=object)
+        if distinct.map(lambda value: isinstance(value, str) and value != value.strip()).any():
             trimmed_text_columns += 1
-        cleaned[column] = stripped.replace("", pd.NA)
+        cleaned[column] = _per_value(
+            series,
+            lambda values: values.map(
+                lambda value: (value.strip() or pd.NA) if isinstance(value, str) else value
+            ),
+        )
 
         if non_null_before == 0:
             continue
 
         normalized_name = column.lower()
         named_like_a_date = any(token in normalized_name for token in date_tokens)
+        clock_ratio = named_date_ratio if named_like_a_date else unnamed_date_ratio
+        clock = (
+            _per_value(cleaned[column], _time_only)
+            if _time_only(_probe(cleaned[column])).mean() >= PROBE_RATIO
+            else None
+        )
+        if clock is not None and clock.sum() / non_null_before >= clock_ratio:
+            times, midnights = _clock_times(cleaned[column].where(clock))
+            unreadable = int(non_null_before - times.notna().sum())
+            if unreadable:
+                unparsed_date_cells += unreadable
+                notes.append(f"{unreadable} {column} values could not be read as times.")
+            notes.append(_clock_note(column, times, midnights))
+            cleaned[column] = times
+            clock_columns.append(column)
+            datetime_columns_inferred += 1
+            continue
+
         if named_like_a_date:
             parsed_dates, ordering = _read_dates(cleaned[column])
             if parsed_dates.notna().sum() / non_null_before >= named_date_ratio:
@@ -502,24 +999,28 @@ def clean_dataframe(
 
         values = cleaned[column]
         # "02134" or "007" is a code: converting it would drop the leading zero.
-        leading_zero = values.astype("string").str.match(r"^0\d").fillna(False).astype(bool).any()
-        if not is_identifier_name(column) and not leading_zero:
-            markers = _missing_markers(values)
-            readable = non_null_before - int(markers.sum())
-            parsed_numeric = pd.to_numeric(values.mask(markers), errors="coerce")
-            if parsed_numeric.notna().sum() < readable:
-                # Retry cells plain parsing missed as formatted numbers ("$1,203.55",
-                # "(48.10)"). Large values are the ones with separators, so skipping
-                # them biases totals down. Values already read ("1e3") are kept.
-                gaps = parsed_numeric.isna() & values.notna() & ~markers
-                if gaps.any():
-                    formatted = _numeric_from_text(values.where(gaps))
-                    parsed_numeric = parsed_numeric.astype("float64").fillna(formatted)
+        distinct = pd.Series(values.dropna().unique(), dtype=object)
+        leading_zero = distinct.astype("string").str.match(r"^0\d").fillna(False).astype(bool).any()
+        # Whole numbers under a key name ("Order No") are keys; decimals under one
+        # are measurements whatever the name says.
+        keys = is_identifier_name(column) and not _holds_decimals(values)
+        if not keys and not leading_zero and _numeric_share(_probe(values)) >= PROBE_RATIO:
+            parsed_numeric, markers = _read_numbers(values)
+            unread = parsed_numeric.isna() & values.notna() & ~markers
+            # One short token repeated among numbers ("T" for a trace) is a marker,
+            # as long as it is not most of the column.
+            token = _lone_token(values, unread)
+            token_cells = unread if token and unread.sum() <= 0.5 * non_null_before else unread & False
+            readable = non_null_before - int(markers.sum()) - int(token_cells.sum())
             if readable and parsed_numeric.notna().sum() / readable >= numeric_ratio:
+                if token_cells.any() and token in TRACE_TOKENS - {"t"}:
+                    parsed_numeric = parsed_numeric.mask(token_cells, 0.0)
                 cleaned[column] = parsed_numeric
                 numeric_columns_inferred += 1
-                if markers.any():
-                    notes.append(_missing_marker_note(column, values[markers]))
+                notes.extend(_marker_notes(column, values, markers, token_cells, token, non_null_before))
+                skipped = unread & ~token_cells
+                if skipped.any():
+                    notes.append(_unread_note(column, values[skipped]))
                 continue
 
         if not named_like_a_date:
@@ -536,8 +1037,36 @@ def clean_dataframe(
                     cleaned[column] = _drop_timezone(parsed_dates)
                     datetime_columns_inferred += 1
 
+    paired = _date_and_time(cleaned, clock_columns)
+    if paired:
+        day, time = paired
+        times = cleaned[time]
+        cleaned[day] = cleaned[day] + (times - times.dt.normalize())
+        cleaned = cleaned.drop(columns=[time])
+        datetime_columns_inferred -= 1
+        notes = [note for note in notes if not note.startswith(f"{time} holds times of day")]
+        notes.append(f"{day} and {time} were combined into one column, {day}, holding the date and time.")
+
+    # Runs after inference, so a column of elapsed seconds held as text is a number.
+    elapsed = _elapsed_column(cleaned, date)
+    if elapsed:
+        column, unit = elapsed
+        cleaned[column] = UNDATED_DAY + pd.to_timedelta(cleaned[column].astype("float64") * unit, unit="s")
+        datetime_columns_inferred += 1
+        notes.append(
+            f"{column} counts {UNIT_NAMES[unit]} from the start, so it is used as a time axis "
+            "starting at 00:00:00; no calendar date is attached to it."
+        )
+
+    # Text columns that stayed text: "not stated" phrases are missing values, not a group.
+    for column in cleaned.select_dtypes(include=["object", "string"]).columns:
+        stated = _not_stated(cleaned[column])
+        if stated.any():
+            notes.append(_not_stated_note(column, cleaned[column][stated]))
+            cleaned[column] = cleaned[column].mask(stated)
+
     # Runs after inference, so year columns held as text have become numbers.
-    year_columns = _year_columns(cleaned, date)
+    year_columns = _year_columns(cleaned, None if elapsed else date)
     if year_columns:
         year, month = year_columns
         dates = _first_days(cleaned[year], _month_numbers(cleaned[month]) if month else None)
@@ -558,6 +1087,14 @@ def clean_dataframe(
             if unreadable:
                 unparsed_date_cells += unreadable
                 notes.append(f"{unreadable} {year} values could not be read as dates.")
+
+    # Runs after inference, so only columns that stayed text are merged. Keys
+    # keep their case: "ab12" and "AB12" may be two accounts.
+    for column in cleaned.select_dtypes(include=["object", "string"]).columns:
+        if not is_identifier_name(column):
+            cleaned[column], merge_note = _merge_label_variants(cleaned[column], column)
+            if merge_note:
+                notes.append(merge_note)
 
     # Runs after inference, which can create new int64 columns.
     if _widen_columns_that_would_overflow(cleaned):
@@ -602,6 +1139,202 @@ def clean_dataframe(
         notes=tuple(dict.fromkeys(notes)),
     )
     return cleaned, report
+
+
+# A run of date-only rows after rows with times of day is read as summaries at a
+# coarser grain when it is this long, covers this many days, and overlaps the timed rows.
+MIN_SUMMARY_ROWS = 24
+MIN_SUMMARY_SHARE = 0.01
+MIN_SUMMARY_DAYS = 3
+
+
+def _timed(dates: pd.Series) -> np.ndarray:
+    """True for rows whose timestamp carries a time of day other than midnight."""
+    return (dates.notna() & (dates != dates.dt.normalize())).to_numpy()
+
+
+def set_aside_coarser_rows(frame: pd.DataFrame, date_column: str) -> tuple[pd.DataFrame, str]:
+    """Leave out a run of date-only rows that follows (or precedes) rows with times of day.
+
+    Daily averages appended below hourly readings repeat what those readings
+    say. Mixed in, they would weight their days twice and blend two grains in
+    every average, so they are set aside with a note. Returns the frame and the
+    note, which is "" when nothing was set aside.
+    """
+    dates = frame[date_column]
+    timed = _timed(dates)
+    if not timed.any() or timed.mean() < 0.5:
+        return frame, ""
+    first, last = np.flatnonzero(timed)[[0, -1]]
+    # A reading at midnight that keeps the rows' usual step belongs with them.
+    values = dates.to_numpy().astype("int64")
+    step = np.median(np.diff(values[timed][-1_000:]))
+    while last + 1 < len(frame) and values[last + 1] - values[last] == step:
+        last += 1
+    while first > 0 and values[first] - values[first - 1] == step:
+        first -= 1
+    runs = {"last": slice(last + 1, len(frame)), "first": slice(0, first)}
+    for where, rows in runs.items():
+        run = dates.iloc[rows].dropna()
+        if len(run) < max(MIN_SUMMARY_ROWS, MIN_SUMMARY_SHARE * len(frame)):
+            continue
+        days = run.dt.normalize()
+        rest = dates[timed]
+        overlapping = days.between(rest.min().normalize(), rest.max()).mean()
+        if days.nunique() < MIN_SUMMARY_DAYS or overlapping < 0.5:
+            continue
+        kept = frame.drop(index=frame.index[rows]).reset_index(drop=True)
+        note = (
+            f"The {where} {rows.stop - rows.start:,} rows give {date_column} as a date with no "
+            f"time of day ({format_moment(run.min())} to {format_moment(run.max())}), unlike the "
+            "rows with times of day beside them. They look like summaries at a coarser grain, "
+            "so they were set aside rather than mixed with the readings they summarize."
+        )
+        return kept, note
+    return frame, ""
+
+
+# A log that starts again part-way through the file goes back to before this
+# share of the readings so far; a clock correction or a re-sent stretch does not.
+RESTART_QUANTILE = 0.1
+MIN_BLOCK_ROWS = 100
+MIN_BLOCK_SHARE = 0.01
+MAX_BLOCKS = 12
+# Columns with more distinct values than this are not checked as the series label.
+MAX_LABEL_VALUES = 1_000
+
+
+def _restarts(dates: np.ndarray) -> list[int]:
+    """Positions where a log in time order starts again from an earlier time.
+
+    Small steps back (a clock reset by minutes, a re-sent stretch) are not
+    restarts: the time must fall back to the earliest tenth of the block so far.
+    The block is in time order apart from such steps, so its earliest tenth
+    ends about a tenth of the way through it.
+    """
+    backward = np.flatnonzero(np.diff(dates) < 0) + 1
+    # Many steps back mean rows that are not in time order at all.
+    if len(backward) > max(10 * MAX_BLOCKS, 0.01 * len(dates)):
+        return [0]
+    starts = [0]
+    for position in backward:
+        start = starts[-1]
+        if position - start < MIN_BLOCK_ROWS:
+            continue
+        if dates[position] <= dates[start + int((position - start) * RESTART_QUANTILE)]:
+            starts.append(int(position))
+    smallest = max(MIN_BLOCK_ROWS, MIN_BLOCK_SHARE * len(dates))
+    ends = [*starts[1:], len(dates)]
+    return [start for start, end in zip(starts, ends, strict=True) if start == 0 or end - start >= smallest]
+
+
+def _labels_series(frame: pd.DataFrame, date_column: str, starts: np.ndarray) -> bool:
+    """Whether some column already names each log (a file sorted by site, then by date).
+
+    Such a column changes value wherever time starts again, and within each of
+    its values time never starts again. Its groups must be large enough for a
+    restart to show, so a day number does not pass for a log label.
+    """
+    present = frame[frame[date_column].notna()]
+    for column in present.columns:
+        series = present[column]
+        if column == date_column or is_datetime64_any_dtype(series):
+            continue
+        if is_numeric_dtype(series) and bool((series.dropna() % 1 != 0).any()):
+            continue  # a reading, not a label
+        if not 2 <= series.nunique(dropna=True) <= MAX_LABEL_VALUES:
+            continue
+        values = series.to_numpy()
+        if any(values[start] == values[start - 1] for start in starts if start > 0):
+            continue
+        if series.value_counts().median() < 2 * MIN_BLOCK_ROWS:
+            continue
+        groups = present[date_column].groupby(series, sort=False)
+        if all(len(_restarts(dates.to_numpy().astype("int64"))) == 1 for _, dates in groups):
+            return True
+    return False
+
+
+def _block_name(frame: pd.DataFrame) -> str:
+    return next(name for name in ("Block", "File block", "Log block") if name not in frame.columns)
+
+
+def separate_stacked_logs(
+    frame: pd.DataFrame, date_column: str
+) -> tuple[pd.DataFrame, str | None, str]:
+    """Label the logs in a file that holds several, one after another.
+
+    When time starts again part-way through a file and no column says which
+    log a row came from, every pooled figure mixes the logs. Each stretch is
+    labelled in a new Block column so it can be compared as its own series.
+    Returns the frame, the new column's name (None when there is one log) and
+    a note. A file whose timestamps mostly repeat a fixed number of times with
+    nothing to tell the repeats apart gets a note only.
+    """
+    dates = frame[date_column]
+    present = dates.notna().to_numpy()
+    if present.sum() < 2 * MIN_BLOCK_ROWS:
+        return frame, None, ""
+    positions = np.flatnonzero(present)
+    starts = _restarts(dates.to_numpy()[present].astype("int64"))
+    if len(starts) < 2:
+        return frame, None, _side_by_side_note(frame, date_column)
+    if len(starts) > MAX_BLOCKS:
+        return frame, None, ""
+    if _labels_series(frame.iloc[positions], date_column, np.asarray(starts)):
+        return frame, None, ""
+    blocks = np.searchsorted(positions[starts], np.arange(len(frame)), side="right")
+    blocks = np.maximum(blocks, 1)
+    name = _block_name(frame)
+    labelled = frame.assign(**{name: [f"Block {block}" for block in blocks]})
+    pairs = pd.DataFrame({"date": dates, "block": blocks}).dropna().drop_duplicates()
+    shared = int((pairs.groupby("date").size() > 1).sum())
+    described = []
+    for block in range(1, len(starts) + 1):
+        rows = np.flatnonzero(blocks == block)
+        covered = dates.iloc[rows].dropna()
+        described.append(
+            f"Block {block} (rows {rows[0] + 1:,} to {rows[-1] + 1:,}, "
+            f"{format_moment(covered.min())} to {format_moment(covered.max())})"
+        )
+    note = (
+        f"{date_column} starts again part-way through the file, so it holds {len(starts)} logs "
+        f"one after another: {', '.join(described[:-1])} and {described[-1]}."
+    )
+    if shared:
+        note += f" {shared:,} timestamps appear in more than one of them."
+    note += f" They are kept apart in a {name} column, so each can be read as its own series."
+    return labelled, name, note
+
+
+# Share of timestamps that must repeat the same number of times for a file to
+# read as several series recorded side by side.
+SIDE_BY_SIDE_SHARE = 0.8
+
+
+def _side_by_side_note(frame: pd.DataFrame, date_column: str) -> str:
+    """Note a log whose timestamps nearly all repeat k times with nothing telling the repeats apart."""
+    dates = frame[date_column].dropna()
+    if _timed(dates).mean() < 0.5:
+        return ""
+    counts = dates.value_counts()
+    repeats = int(counts.mode().iloc[0]) if not counts.empty else 1
+    if not 2 <= repeats <= MAX_BLOCKS or (counts == repeats).mean() < SIDE_BY_SIDE_SHARE:
+        return ""
+    if frame.loc[dates.index].duplicated(keep=False).mean() > 0.5:
+        return ""
+    # A label naming the series has about as many values as there are repeats; a
+    # reading tells the repeats apart only by differing.
+    for column in frame.columns:
+        if column == date_column or not 2 <= frame[column].nunique(dropna=True) <= 2 * repeats:
+            continue
+        if not frame.loc[dates.index, [date_column, column]].duplicated().any():
+            return ""
+    return (
+        f"Most {date_column} timestamps appear {repeats} times with different readings, and no "
+        f"column says which reading is which, so the file may hold {repeats} series recorded "
+        "side by side. Every figure pools them."
+    )
 
 
 def column_profile(dataframe: pd.DataFrame) -> pd.DataFrame:

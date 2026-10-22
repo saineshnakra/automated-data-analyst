@@ -10,9 +10,13 @@ from ada.formatting import (
     format_number,
     format_rate_change,
     format_values_apart,
+    group_label,
+    is_money,
+    list_names,
     normalized_name,
     rate_scale,
     sentence_case,
+    with_aggregate,
 )
 
 
@@ -83,17 +87,98 @@ class NumberDisplayTests(unittest.TestCase):
         self.assertEqual(sentence_case("SKU"), "SKU")
         self.assertEqual(sentence_case("pH"), "pH")
 
+    def test_sentence_case_keeps_chemical_symbols_and_short_codes(self):
+        for name in ("Ca", "Na", "Mg", "CO", "NO2", "PM2.5", "Gp"):
+            with self.subTest(name=name):
+                self.assertEqual(sentence_case(name), name)
+        self.assertEqual(sentence_case("Average Ca"), "average Ca")
+        self.assertEqual(sentence_case("Co2 Level"), "Co2 level")
+        self.assertEqual(sentence_case("Age"), "age")
+        self.assertEqual(sentence_case("Dye Label"), "dye label")
+
+    def test_a_median_of_a_count_column_prints_like_its_counts(self):
+        counts = pd.Series([1_116_330.0, 1_204_567.0, 1_190_002.0])
+
+        self.assertEqual(format_number(1_204_567.5, "Live Cells", column_values=counts), "1.2M")
+
+    def test_readings_keep_their_digits(self):
+        # "1.1K" would hide that a heart rate of 1,111 is impossible.
+        self.assertEqual(format_number(1_111, "Heart rate"), "1,111")
+        self.assertEqual(format_number(1_944.66, "Looking Time"), "1,944.7")
+        self.assertEqual(format_number(55_034.3, "result"), "55,034")
+        self.assertEqual(format_number(101_325, "Pressure (Pa)"), "101,325")
+
+    def test_only_money_and_large_counts_are_compacted(self):
+        self.assertEqual(format_number(1_250_000, "Revenue"), "$1.2M")
+        self.assertEqual(format_number(12_000, "Units"), "12.0K")
+        self.assertEqual(format_number(9_999, "Units"), "9,999")
+        self.assertEqual(format_number(212_019), "212.0K")
+        # A summed reading with fractions is not a count of anything.
+        self.assertEqual(
+            format_number(15_489_238.4, "Total Rain", column_values=pd.Series([0.2, 184.7])), "15,489,238"
+        )
+        self.assertEqual(format_number(12_000, "Units", compact=False), "12,000")
+
+    def test_very_small_and_very_large_readings_use_scientific_notation(self):
+        self.assertEqual(format_number(3.624e11, "1001"), "3.624e+11")
+        self.assertEqual(format_number(-1.098e10, "1001"), "-1.098e+10")
+        self.assertEqual(format_number(0.000123, "Concentration"), "1.23e-04")
+        self.assertEqual(format_number(0, "Concentration"), "0")
+        # Money keeps its scale words.
+        self.assertEqual(format_number(1.5e12, "Revenue"), "$1.5T")
+
+
+class MoneyTests(unittest.TestCase):
+    def test_a_coded_band_is_not_money(self):
+        bands = pd.Series([1.0, 2.0, 5.0, 14.0, 15.0])
+
+        self.assertFalse(is_money("income", bands))
+        self.assertEqual(format_number(8.11, "income", column_values=bands), "8.11")
+
+    def test_amounts_are_money(self):
+        self.assertTrue(is_money("income", pd.Series([1_250.0, 30_000.0, 52_000.0])))
+        self.assertTrue(is_money("Price", pd.Series([2.5, 4.99])))
+        self.assertEqual(format_number(8.11, "Price", column_values=pd.Series([2.5, 8.11])), "$8.11")
+
+    def test_without_the_column_the_name_decides(self):
+        self.assertTrue(is_money("income"))
+        self.assertFalse(is_money("Heart rate", pd.Series([60.0, 80.0])))
+
+
+class LabelTests(unittest.TestCase):
+    def test_an_aggregate_word_is_not_repeated(self):
+        self.assertEqual(with_aggregate("Total", "Total Rain"), "Total Rain")
+        self.assertEqual(with_aggregate("Total", "CorrectTotal"), "CorrectTotal")
+        self.assertEqual(with_aggregate("Average", "Mean Temp"), "Mean Temp")
+        self.assertEqual(with_aggregate("Maximum", "Max Wind Speed"), "Max Wind Speed")
+
+    def test_a_different_aggregate_is_kept(self):
+        self.assertEqual(with_aggregate("Total", "Revenue"), "Total Revenue")
+        self.assertEqual(with_aggregate("Average", "Total Rain"), "Average Total Rain")
+
+    def test_names_are_listed_for_a_sentence(self):
+        self.assertEqual(list_names(["A"]), "A")
+        self.assertEqual(list_names(["A", "B"]), "A and B")
+        self.assertEqual(list_names(["A", "B", "C"]), "A, B and C")
+        self.assertEqual(list_names(["A", "B", "C", "D"]), "A, B, C and 1 other")
+
 
 
 class ChangeEndsTests(unittest.TestCase):
     def test_ends_that_round_alike_are_written_out(self):
-        self.assertEqual(format_number(1_211.3), format_number(1_214.8))
-        self.assertEqual(format_values_apart(1_211.3, 1_214.8), ("1,211.30", "1,214.80"))
+        self.assertEqual(format_number(3_004.25), format_number(3_004.21))
+        self.assertEqual(format_values_apart(3_004.25, 3_004.21), ("3,004.25", "3,004.21"))
+        self.assertEqual(format_values_apart(15_700, 15_740, column="Units"), ("15,700", "15,740"))
         self.assertEqual(
             format_values_apart(2_700_100, 2_700_400, column="Revenue"), ("$2,700,100.00", "$2,700,400.00")
         )
         self.assertEqual(format_values_apart(0.2501, 0.2504, column="Conversion Rate"), ("25.01%", "25.04%"))
         self.assertEqual(format_values_apart(12.3401, 12.3412, column="pH"), ("12.340", "12.341"))
+
+    def test_readings_in_scientific_notation_are_kept_apart(self):
+        self.assertEqual(
+            format_values_apart(3.62412e11, 3.62438e11, column="1001"), ("3.6241e+11", "3.6244e+11")
+        )
 
     def test_ends_that_already_differ_keep_the_usual_rendering(self):
         self.assertEqual(format_values_apart(36_800, 41_300, column="Revenue"), ("$36.8K", "$41.3K"))
@@ -107,8 +192,19 @@ class ChangeEndsTests(unittest.TestCase):
 
     def test_equal_ends_print_alike(self):
         self.assertEqual(format_values_apart(5.0, 5.0, column="pH"), ("5", "5"))
-        self.assertEqual(format_values_apart(1_200.0, 1_200.0), ("1.2K", "1.2K"))
+        self.assertEqual(format_values_apart(12_000.0, 12_000.0, column="Units"), ("12.0K", "12.0K"))
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GroupLabelTests(unittest.TestCase):
+    def test_a_numeric_group_is_named_with_its_column(self):
+        self.assertEqual(group_label("Status", 2), "Status 2")
+        self.assertEqual(group_label("Dose", 2.5), "Dose 2.5")
+        self.assertEqual(group_label("Dose", np.float64(10.0)), "Dose 10")
+        self.assertEqual(group_label("Treated", True), "Treated 1")
+
+    def test_a_text_group_is_left_as_it_is(self):
+        self.assertEqual(group_label("Site", "North Marsh"), "North Marsh")

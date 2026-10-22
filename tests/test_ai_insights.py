@@ -22,7 +22,7 @@ from ada.ai_insights import (
 )
 from ada.business_insights import analyze_business
 from ada.demo_data import make_demo_data
-from ada.nlq import QueryPlan, execute_plan
+from ada.nlq import Condition, QueryPlan, execute_plan
 from ada.schema import detect_roles
 
 
@@ -422,6 +422,39 @@ class AIQueryPlannerTests(unittest.TestCase):
         self.assertIn("2 highest", description)
         self.assertIn("Region = West", description)
 
+    def test_a_filter_phrase_matches_a_long_label_by_its_first_word(self):
+        frame = pd.DataFrame({
+            "Dye Label": ["Tartrazine, FD&C Yellow 5 (US), E102 (EU)",
+                          "Sunset Yellow, FD&C Yellow 6 (US)"] * 10,
+            "B": [float(index) for index in range(20)],
+        })
+        roles = detect_roles(frame)
+
+        named = _to_query_plan(
+            AIQueryPlan(answerable=True, intent="aggregate", aggregation="mean", measure="B",
+                        filters=[AIQueryFilter(column="Dye Label", value="Tartrazine")]),
+            frame, roles,
+        )
+        shared = _to_query_plan(
+            AIQueryPlan(answerable=True, intent="aggregate", aggregation="mean", measure="B",
+                        filters=[AIQueryFilter(column="Dye Label", value="Yellow")]),
+            frame, roles,
+        )
+
+        self.assertEqual(named.filters[0].values, ("Tartrazine, FD&C Yellow 5 (US), E102 (EU)",))
+        self.assertIsNone(shared)
+
+    def test_the_description_names_conditions_and_time_parts(self):
+        plan = QueryPlan(
+            intent="breakdown", aggregation="mean", measure="Revenue", dimension="Order Date",
+            time_part="hour", conditions=(Condition("Units", ">=", 2.0),),
+        )
+
+        description = describe_query_plan(plan)
+
+        self.assertIn("by the hour of Order Date", description)
+        self.assertIn("Units at least 2", description)
+
     def test_rejected_plan_is_not_executed(self):
         plan = QueryPlan(intent="aggregate", aggregation="sum", measure="Revenue", source="ai")
 
@@ -446,7 +479,7 @@ class AIQueryPlannerTests(unittest.TestCase):
                 approved=True,
             )
             self.assertIsNotNone(result)
-            execute.assert_called_once_with(plan, self.dataframe, self.roles)
+            execute.assert_called_once_with(plan, self.dataframe, self.roles, rows_not_analyzed=0)
 
 
 if __name__ == "__main__":

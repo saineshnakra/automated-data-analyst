@@ -38,6 +38,11 @@ class Backtest:
     def beats_no_change(self) -> bool | None:
         return None if self.mase is None else self.mase < 1.0
 
+    @property
+    def worse_than_no_change(self) -> bool:
+        """True when assuming next period equals this one did better on the held-out periods."""
+        return self.mase is not None and self.mase > 1.0
+
 
 @dataclass(frozen=True)
 class Forecast:
@@ -47,6 +52,21 @@ class Forecast:
     upper: tuple[float, ...]
     backtest: Backtest
     method: str
+
+    @property
+    def reliable(self) -> bool:
+        """False when the backtest did worse than assuming no change, so the line misleads."""
+        return not self.backtest.worse_than_no_change
+
+    @property
+    def summary(self) -> str:
+        """The projection and its backtest in one plain sentence."""
+        start, end = self.values[0], self.values[-1]
+        projection = (
+            f"Projects {len(self.values)} periods ahead, from {start:,.4g} to {end:,.4g} "
+            f"({self.method})"
+        )
+        return f"{projection}; backtest: {describe_backtest(self.backtest)}."
 
 
 def describe_backtest(backtest: Backtest) -> str:
@@ -64,7 +84,12 @@ def describe_backtest(backtest: Backtest) -> str:
     elif backtest.periods_without_mape:
         parts.append("every held-out period was zero, so a percentage error says nothing")
 
-    if backtest.mase is not None:
+    if backtest.worse_than_no_change:
+        parts.append(
+            f"MASE {backtest.mase:.2f}: worse than simply assuming no change, so do not rely "
+            "on this forecast"
+        )
+    elif backtest.mase is not None:
         verdict = "better" if backtest.beats_no_change else "no better"
         parts.append(f"MASE {backtest.mase:.2f}, {verdict} than assuming no change")
 

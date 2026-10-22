@@ -15,7 +15,21 @@ detected automatically and can be overridden in the app or in `ada.analyze`.
 | Identifier | Names a row; not a quantity | `Order ID`, `Invoice Number` |
 
 The identifier role mainly keeps columns such as `Order Number` out of the
-measure slot: they are numeric, but their sum means nothing.
+measure slot: they are numeric, but their sum means nothing. A column of unique
+row numbers (`seqn`, `index`) and a text column naming each row once (a taxon,
+a file name) are identifiers too.
+
+A numeric column can hold category codes rather than quantities: a 0/1 flag,
+a status or phenotype code, an income band, a set dose. ADA calls these
+*factors*. They can be the segment (`Status 2` names a group), are never the
+measure, and are left out of totals and correlations. A 0/1 flag's average is
+the share of rows that are 1.
+
+Two table shapes are handled apart. In a *long* table one column names what
+each row measures (a determinand, an analyte) and one holds the result, often
+in several units, so ADA analyzes one parameter at a time. In a *matrix* most
+columns are one kind of reading (60 samples, 7,932 spectral channels), so no
+single column is the measure; ADA follows each row's mean instead.
 
 See [Schema detection](reference/schema-detection.md).
 

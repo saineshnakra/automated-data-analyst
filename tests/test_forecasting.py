@@ -184,5 +184,29 @@ class BlankPeriodTests(unittest.TestCase):
         self.assertIsNone(build_forecast(make_trend(values, freq="ME", start="2022-01-31"), min_periods=8))
 
 
+class ReliabilityTests(unittest.TestCase):
+    def test_a_forecast_worse_than_no_change_says_so_plainly(self):
+        backtest = Backtest(mape=40.0, mase=2.11, holdout_periods=3, periods_without_mape=0)
+
+        note = describe_backtest(backtest)
+
+        self.assertTrue(backtest.worse_than_no_change)
+        self.assertIn("worse than simply assuming no change, so do not rely on this forecast", note)
+
+    def test_an_unreliable_forecast_is_marked(self):
+        rng = np.random.default_rng(1)
+        walk = np.cumsum(rng.normal(0, 10, 30)) + 500
+        forecast = build_forecast(make_trend(walk))
+
+        self.assertEqual(forecast.reliable, not forecast.backtest.worse_than_no_change)
+        self.assertIn("backtest:", forecast.summary)
+
+    def test_a_clean_trend_is_reliable(self):
+        forecast = build_forecast(make_trend([100 + 10 * index for index in range(16)]))
+
+        self.assertTrue(forecast.reliable)
+        self.assertIn("Projects 6 periods ahead", forecast.summary)
+
+
 if __name__ == "__main__":
     unittest.main()

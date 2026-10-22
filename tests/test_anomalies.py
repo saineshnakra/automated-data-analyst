@@ -193,5 +193,46 @@ class BlankPeriodTests(unittest.TestCase):
         self.assertTrue(detect_anomalies(make_trend(values, freq="ME", start="2022-01-31")))
 
 
+class SeasonalAnomalyTests(unittest.TestCase):
+    def winters(self, years=6):
+        rng = np.random.default_rng(5)
+        return np.tile([30.0, 10.0, 2.0, 12.0], years) + rng.normal(0, 1, 4 * years)
+
+    def test_every_winter_is_not_an_anomaly(self):
+        trend = make_trend(self.winters(), freq="QS", start="1940-01-01")
+
+        self.assertEqual(detect_anomalies(trend), ())
+
+    def test_an_unusual_winter_is_flagged_against_other_winters(self):
+        values = self.winters()
+        values[12] += 20
+        trend = make_trend(values, freq="QS", start="1940-01-01")
+
+        anomalies = detect_anomalies(trend)
+
+        self.assertEqual([anomaly.period for anomaly in anomalies], [pd.Timestamp("1943-01-01")])
+        self.assertTrue(anomalies[0].seasonal)
+        self.assertGreater(anomalies[0].expected, 25)
+
+    def test_the_expected_range_of_a_measure_that_cannot_be_negative_stops_at_zero(self):
+        rng = np.random.default_rng(3)
+        values = np.abs(rng.normal(0, 1, 24)) * 0.01
+        values[10] = 0.5
+
+        anomalies = detect_anomalies(make_trend(values))
+
+        self.assertTrue(anomalies)
+        self.assertTrue(all(anomaly.expected_low >= 0 for anomaly in anomalies))
+
+    def test_a_level_that_can_go_below_zero_keeps_its_range(self):
+        rng = np.random.default_rng(3)
+        values = np.abs(rng.normal(0, 1, 24)) * 0.01
+        values[10] = 0.5
+
+        anomalies = detect_anomalies(make_trend(values), floor_at_zero=False)
+
+        self.assertLess(anomalies[0].expected_low, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

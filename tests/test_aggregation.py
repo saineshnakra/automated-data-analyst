@@ -6,9 +6,13 @@ import pandas as pd
 
 from ada.aggregation import (
     build_trend,
+    group_coverage,
     heatmap_frame,
+    matched_period_change,
     preferred_frequency,
+    seasonal_context,
     segment_frame,
+    segment_period_change,
     trend_frame,
 )
 from ada.anomalies import detect_anomalies
@@ -340,6 +344,170 @@ class HeatmapTests(unittest.TestCase):
                             numeric=("Revenue",), dimensions=("Store",))
         self.assertEqual(len(segment_frame(frame, roles, limit=None)), 150)
         self.assertEqual(len(segment_frame(frame, roles)), 12)
+
+
+def sensor_log(start, periods, freq, *, seed=3):
+    rng = np.random.default_rng(seed)
+    return pd.DataFrame({
+        "Time": pd.date_range(start, periods=periods, freq=freq),
+        "Reading": 100 + rng.normal(0, 1, periods),
+    })
+
+
+class SubDayGrainTests(unittest.TestCase):
+    def test_a_fifty_minute_log_a_second_apart_is_charted_by_the_minute(self):
+        frame = sensor_log("2024-05-01 15:06:28", 2974, "s")
+
+        series = build_trend(frame, detect_roles(frame))
+
+        self.assertEqual(series.frequency, "min")
+        self.assertGreaterEqual(len(series.frame), 49)
+
+    def test_a_few_days_of_hourly_readings_get_an_hourly_trend(self):
+        frame = sensor_log("2024-05-01", 24 * 4, "h")
+
+        self.assertEqual(preferred_frequency(frame["Time"]), "h")
+
+    def test_three_weeks_of_hourly_readings_are_charted_by_the_day(self):
+        frame = sensor_log("2024-05-01", 24 * 21, "h")
+
+        self.assertEqual(preferred_frequency(frame["Time"]), "D")
+
+    def test_a_few_minutes_of_readings_are_charted_by_the_second(self):
+        frame = sensor_log("2024-05-01 10:00", 300, "s")
+
+        self.assertEqual(preferred_frequency(frame["Time"]), "s")
+
+    def test_dates_without_a_time_of_day_keep_weeks_as_the_finest_grain(self):
+        dates = pd.Series(pd.date_range("2025-01-01", periods=20, freq="D"))
+
+        self.assertEqual(preferred_frequency(dates), "W")
+
+    def test_a_minute_cut_short_reports_seconds(self):
+        frame = sensor_log("2024-05-01 15:00:00", 60 * 20 + 2, "s")
+
+        series = build_trend(frame, detect_roles(frame))
+
+        self.assertEqual(series.partial_coverage, "2 of 60 seconds")
+        self.assertIn("15:20 is still in progress", series.notes[0])
+
+    def test_sub_day_periods_feed_the_anomaly_check(self):
+        frame = sensor_log("2024-05-01 15:00", 3000, "s")
+        frame.loc[2400:2459, "Reading"] += 50
+
+        series = build_trend(frame, detect_roles(frame))
+        flagged = detect_anomalies(series.frame)
+
+        self.assertEqual([anomaly.period for anomaly in flagged], [pd.Timestamp("2024-05-01 15:40")])
+
+
+class ShortPeriodNoteTests(unittest.TestCase):
+    def test_a_week_ending_on_saturday_covers_six_days(self):
+        """Hourly readings to Saturday 23:59: the last week has 6 of its 7 days."""
+        stamps = pd.date_range("2024-09-02", "2025-01-04 23:00", freq="h")
+        frame = pd.DataFrame({"Time": stamps, "CO": 400.0 + np.arange(len(stamps)) % 5})
+
+        series = build_trend(frame, detect_roles(frame), frequency="W")
+
+        self.assertEqual(series.short_coverage, "6 of 7 days")
+
+    def test_a_period_covered_to_its_last_day_is_never_called_short(self):
+        stamps = pd.date_range("2024-09-02", "2025-01-05 01:00", freq="h")
+        frame = pd.DataFrame({"Time": stamps, "CO": 400.0 + np.arange(len(stamps)) % 5})
+
+        series = build_trend(frame, detect_roles(frame), frequency="W")
+
+        self.assertEqual(series.short_coverage, "")
+        self.assertFalse(any("7 of 7" in note for note in series.notes))
+
+
+def station_rows(station, months, value):
+    return pd.DataFrame({"Date": months, "Station": station, "Rain (mm)": value})
+
+
+class GroupsAcrossPeriodsTests(unittest.TestCase):
+    def setUp(self):
+        months = pd.date_range("2024-01-01", periods=6, freq="MS")
+        self.frame = pd.concat([
+            station_rows("North", months, 10.0),
+            station_rows("South", months[:5], 50.0),
+            station_rows("East", months[5:], 90.0),
+        ], ignore_index=True)
+        self.roles = ColumnRoles(
+            date="Date", measure="Rain (mm)", dimension="Station", identifier=None,
+            numeric=("Rain (mm)",), dimensions=("Station",),
+        )
+
+    def test_the_latest_change_is_measured_on_groups_in_both_periods(self):
+        series = build_trend(self.frame, self.roles)
+
+        matched = matched_period_change(self.frame, self.roles, series)
+
+        self.assertEqual((matched.previous, matched.current, matched.groups), (10.0, 10.0, 1))
+        self.assertEqual(matched.stopped, ("South",))
+        self.assertEqual(matched.started, ("East",))
+
+    def test_the_same_groups_in_both_periods_need_no_matching(self):
+        frame = self.frame[self.frame["Station"] == "North"]
+
+        self.assertIsNone(matched_period_change(frame, self.roles, build_trend(frame, self.roles)))
+
+    def test_a_group_that_stops_reporting_is_not_a_change(self):
+        grouped, _, _ = segment_period_change(self.frame, self.roles)
+
+        self.assertEqual(list(grouped.index), ["North"])
+        self.assertEqual(set(grouped.attrs["left_out"]), {"South", "East"})
+
+    def test_a_group_with_no_values_has_no_total(self):
+        frame = pd.concat([self.frame, station_rows("Foster", self.frame["Date"].unique(), np.nan)])
+        roles = replace(self.roles, aggregation="sum")
+
+        segments = segment_frame(frame, roles, limit=None).set_index("Segment")["Value"]
+
+        self.assertTrue(np.isnan(segments["Foster"]))
+        self.assertEqual(segments["North"], 60.0)
+
+    def test_each_group_reports_its_own_dates(self):
+        coverage = group_coverage(self.frame, self.roles)
+
+        self.assertEqual(coverage.loc["East", "From"], pd.Timestamp("2024-06-01"))
+        self.assertEqual(coverage.loc["South", "To"], pd.Timestamp("2024-05-01"))
+
+
+def seasonal_months(years=3, *, start="2021-01-01"):
+    months = pd.date_range(start, periods=12 * years, freq="MS")
+    rng = np.random.default_rng(11)
+    cycle = 10 * np.cos(2 * np.pi * (months.month - 1) / 12)
+    return pd.DataFrame({"Date": months, "Temperature": 15 + cycle + rng.normal(0, 0.5, len(months))})
+
+
+class SeasonalContextTests(unittest.TestCase):
+    def test_the_latest_month_is_set_beside_the_same_month_a_year_earlier(self):
+        frame = seasonal_months(years=2)
+        series = build_trend(frame, detect_roles(frame))
+
+        context = seasonal_context(series, relative=False)
+
+        self.assertEqual(series.frequency, "M")
+        self.assertEqual(context.year_ago, pd.Timestamp("2021-12-01"))
+        self.assertEqual(len(context.usual_changes), 1)
+        self.assertGreater(context.usual_changes[0], 0)
+
+    def test_quarters_are_compared_with_the_same_quarter(self):
+        frame = seasonal_months(years=4)
+        series = build_trend(frame, detect_roles(frame))
+
+        context = seasonal_context(series, relative=False)
+
+        self.assertEqual(series.frequency, "Q")
+        self.assertEqual(context.year_ago, pd.Timestamp("2023-10-01"))
+        self.assertEqual(len(context.usual_changes), 3)
+
+    def test_a_series_without_a_yearly_pattern_has_no_context(self):
+        frame = seasonal_months(years=2)
+        frame["Temperature"] = 15 + np.random.default_rng(2).normal(0, 0.5, len(frame))
+
+        self.assertIsNone(seasonal_context(build_trend(frame, detect_roles(frame)), relative=False))
 
 
 if __name__ == "__main__":

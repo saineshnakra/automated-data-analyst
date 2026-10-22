@@ -6,6 +6,7 @@ from io import BytesIO
 
 import pandas as pd
 
+from ada import file_io
 from ada.file_io import list_excel_sheets, list_sample_datasets, read_tabular_file, safe_csv
 
 
@@ -122,6 +123,29 @@ class DelimiterRescueTests(unittest.TestCase):
         frame = read_tabular_file(b"Revenue\n100\n200\n500\tX\n", "one.csv")
 
         self.assertEqual(list(frame.columns), ["Revenue"])
+
+    def test_a_large_semicolon_file_is_split_from_its_opening_lines(self):
+        body = "".join(f"{n};A{n % 4};{n * 0.5}\n" for n in range(40_000)).encode()
+        raw = b"index;Sample;Signal (mV)\n" + body
+
+        frame = read_tabular_file(raw, "sweep.csv")
+
+        self.assertGreater(len(raw), file_io.SNIFF_BYTES)
+        self.assertEqual(list(frame.columns), ["index", "Sample", "Signal (mV)"])
+        self.assertEqual(len(frame), 40_000)
+        self.assertEqual(frame["Signal (mV)"].iloc[-1], 19_999.5)
+
+    def test_a_quoted_line_break_at_the_sample_edge_still_reads(self):
+        # The last line break in the opening bytes is inside a quoted note, so
+        # the opening lines alone end mid-field and the whole file is used.
+        opening = b'Id,Note\n' + b"1,short\n" * ((file_io.SNIFF_BYTES - 40) // 8)
+        raw = opening + b'2,"a note\n' + b"x" * 60 + b' that spans lines"\n3,short\n'
+
+        frame = read_tabular_file(raw, "notes.csv")
+
+        self.assertGreater(len(raw), file_io.SNIFF_BYTES)
+        self.assertEqual(list(frame.columns), ["Id", "Note"])
+        self.assertTrue(frame["Note"].iloc[-2].startswith("a note\n"))
 
     def test_a_report_title_above_the_header_is_skipped(self):
         raw = b"Q3 Sales Report\nDate,Region,Revenue\n2024-01-01,North,100\n2024-02-01,South,200\n"

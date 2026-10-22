@@ -6,12 +6,14 @@ import pandas as pd
 from ada.timeseries import (
     MAD_SCALE,
     MEAN_ABS_DEV_SCALE,
+    f_test_p_value,
     fit_trendline,
     observed_periods,
     period_grain,
     period_positions,
     robust_scale,
     theil_sen,
+    yearly_pattern,
 )
 
 
@@ -201,6 +203,55 @@ class ObservedPeriodsTests(unittest.TestCase):
         self.assertTrue(observed_periods(pd.DataFrame()).empty)
         odd = pd.DataFrame({"Period": []})
         self.assertIs(observed_periods(odd), odd)
+
+
+class SubDayGrainTests(unittest.TestCase):
+    def test_periods_finer_than_a_day_are_named(self):
+        for freq, grain in (("s", "s"), ("min", "min"), ("h", "h")):
+            periods = pd.date_range("2024-01-01", periods=10, freq=freq)
+            self.assertEqual(period_grain(periods), grain)
+
+    def test_minutes_are_numbered_by_the_minute(self):
+        periods = pd.date_range("2024-01-01 15:00", periods=4, freq="min").delete(2)
+
+        self.assertEqual(period_positions(periods).tolist(), [0.0, 1.0, 3.0])
+
+
+class YearlyPatternTests(unittest.TestCase):
+    def test_the_f_test_matches_its_table(self):
+        self.assertAlmostEqual(f_test_p_value(4.94, 3, 20), 0.01, places=3)
+        self.assertAlmostEqual(f_test_p_value(4.96, 1, 10), 0.05, places=3)
+
+    def test_a_cycle_that_repeats_every_year_is_found(self):
+        quarters = pd.date_range("2018-01-01", periods=24, freq="QS")
+        rng = np.random.default_rng(4)
+        residuals = np.tile([20.0, 0.0, -15.0, -5.0], 6) + rng.normal(0, 2, 24)
+
+        offsets = yearly_pattern(quarters, residuals)
+
+        self.assertIsNotNone(offsets)
+        self.assertGreater(offsets[0], 15)
+        self.assertLess(offsets[2], -10)
+
+    def test_noise_has_no_yearly_pattern(self):
+        months = pd.date_range("2018-01-01", periods=36, freq="MS")
+        residuals = np.random.default_rng(9).normal(0, 1, 36)
+
+        self.assertIsNone(yearly_pattern(months, residuals))
+
+    def test_too_short_a_history_is_not_judged(self):
+        quarters = pd.date_range("2022-01-01", periods=8, freq="QS")
+
+        self.assertIsNone(yearly_pattern(quarters, np.tile([5.0, 0.0, -5.0, 0.0], 2)))
+
+    def test_an_unusual_period_does_not_set_its_own_expectation(self):
+        quarters = pd.date_range("2018-01-01", periods=24, freq="QS")
+        residuals = np.tile([20.0, 0.0, -15.0, -5.0], 6)
+        residuals[8] = 80.0
+
+        offsets = yearly_pattern(quarters, residuals, min_cycles=3)
+
+        self.assertLess(offsets[8], 25)
 
 
 if __name__ == "__main__":

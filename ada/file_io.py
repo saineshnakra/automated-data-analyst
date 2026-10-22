@@ -112,43 +112,82 @@ def _header_line(contents: bytes, encoding: str) -> str:
     return head.decode(encoding, errors="replace")
 
 
-def _resplit_single_column(parsed: pd.DataFrame, contents: bytes, encoding: str) -> pd.DataFrame:
-    """Re-read a one-column parse with ";", tab or "|" when that separator is in the header.
+def _resplit_options(parsed: pd.DataFrame, contents: bytes, encoding: str) -> dict:
+    """Pick ";", tab or "|" for a one-column parse when that separator is in the header.
 
     Only the header line is checked; sniffing the body would split a one-column file
-    of sentences on their semicolons.
+    of sentences on their semicolons. Returns the read_csv options, empty for a comma.
     """
     if len(parsed.columns) != 1:
-        return parsed
+        return {}
     header = _header_line(contents, encoding)
     for separator in (";", "\t", "|"):
         if separator not in header:
             continue
         candidate = _read_csv(contents, encoding, sep=separator)
         if len(candidate.columns) > 1:
-            return candidate
-    return parsed
+            return {"sep": separator}
+    return {}
 
 
-def _skip_title_row(parsed: pd.DataFrame, contents: bytes, encoding: str) -> pd.DataFrame:
+def _title_row_options(parsed: pd.DataFrame, contents: bytes, encoding: str) -> dict:
     """Use the second line as the header when the first is a report title.
 
     Exported reports often put a title above the table; read as the header, it
-    yields a single column in place of the real ones.
+    yields a single column in place of the real ones. Returns the read_csv
+    options, empty when the first line is the header.
     """
     if len(parsed.columns) > 1 or parsed.empty:
-        return parsed
+        return {}
     # Decode before splitting: in UTF-16 the newline is two bytes.
     lines = contents.decode(encoding, errors="replace").lstrip("\ufeff").split("\n")[:3]
     if len(lines) < 3:
-        return parsed
+        return {}
     title, header, first_row = lines
     # Only commas count as delimiters here, so a one-column file of sentences
     # containing semicolons is left as it is.
     if "," in title or not header.count(",") or header.count(",") != first_row.count(","):
-        return parsed
+        return {}
     candidate = _read_csv(contents, encoding, header=1)
-    return candidate if len(candidate.columns) > 1 else parsed
+    return {"header": 1} if len(candidate.columns) > 1 else {}
+
+
+# Bytes read to settle the separator and header line before the whole file is parsed.
+SNIFF_BYTES = 256 * 1024
+
+
+def _sample(contents: bytes, encoding: str) -> bytes:
+    """The opening lines of the file, cut at a line end, or the whole file when it is short.
+
+    UTF-16 is never cut, since its newline is two bytes and a cut could split one.
+    """
+    if len(contents) <= SNIFF_BYTES or encoding == "utf-16":
+        return contents
+    end = contents.rfind(b"\n", 0, SNIFF_BYTES)
+    return contents[: end + 1] if end > 0 else contents
+
+
+def _parse_csv(contents: bytes, encoding: str) -> pd.DataFrame:
+    """Settle the separator and header line from the opening lines, then parse once.
+
+    Deciding on a sample means a large file is parsed once rather than once per
+    separator tried. A sample that does not parse (a quoted field cut at its
+    line break) falls back to the whole file.
+    """
+    sample = _sample(contents, encoding)
+    try:
+        parsed = _read_csv(sample, encoding)
+    except pd.errors.ParserError:
+        if sample is contents:
+            raise
+        sample = contents
+        parsed = _read_csv(sample, encoding)
+    options = _resplit_options(parsed, sample, encoding) or _title_row_options(
+        parsed, sample, encoding
+    )
+    if not options and sample is contents:
+        return parsed
+    return _read_csv(contents, encoding, **options)
 
 
 def read_tabular_file(
@@ -176,9 +215,7 @@ def read_tabular_file(
     parse_errors: list[Exception] = []
     for encoding in _candidate_encodings(contents):
         try:
-            parsed = _read_csv(contents, encoding)
-            parsed = _resplit_single_column(parsed, contents, encoding)
-            return _skip_title_row(parsed, contents, encoding)
+            return _parse_csv(contents, encoding)
         except (UnicodeDecodeError, pd.errors.ParserError) as error:
             parse_errors.append(error)
     raise ValueError("The file could not be parsed as CSV.") from parse_errors[-1]

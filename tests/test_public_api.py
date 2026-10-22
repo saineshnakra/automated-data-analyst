@@ -99,22 +99,32 @@ class RefusalTests(unittest.TestCase):
 
     def test_ask_tells_the_two_refusals_apart(self):
         report = ada.analyze(ada.sample())
-        self.assertEqual(report.ask("revenue greater than 200").code, "unsupported_phrasing")
+        self.assertEqual(report.ask("revenue this year").code, "unsupported_phrasing")
         self.assertEqual(
             report.ask("revenue divided by the moon phase").code, "unrepresentable_question"
         )
 
-    def test_a_refusal_names_the_column_a_partial_name_may_mean(self):
+    def test_a_refusal_names_the_columns_a_partial_name_may_mean(self):
         report = ada.analyze(pd.DataFrame({
             "island": ["Biscoe", "Dream"] * 10,
             "bill_depth_mm": [18.0 + index / 10 for index in range(20)],
             "body_mass_g": [3_500.0 + index * 40 for index in range(20)],
+            "body_length_mm": [400.0 + index for index in range(20)],
         }))
 
         refusal = report.ask("average body by island")
 
         self.assertEqual(refusal.code, "unrepresentable_question")
-        self.assertIn("Did you mean body_mass_g?", refusal.message)
+        self.assertIn("Did you mean body_mass_g or body_length_mm?", refusal.message)
+
+    def test_an_answer_says_when_the_row_limit_left_rows_out(self):
+        frame = pd.DataFrame({"group": ["a", "b"] * 30, "value": range(60)})
+
+        answer = ada.analyze(frame, row_limit=40).ask("average value by group")
+        refusal = ada.analyze(frame, row_limit=40).ask("average value for zz9")
+
+        self.assertIn("The row limit left out 20 rows", answer.answer)
+        self.assertIn("the row limit left out 20 others", refusal.message)
 
     def test_ask_answers_a_supported_question_with_its_calculation(self):
         answer = ada.analyze(ada.sample()).ask("total revenue")
@@ -157,7 +167,7 @@ class SurfaceTests(unittest.TestCase):
         self.assertIn("#", self.report.to_markdown())
 
     def test_the_limits_are_readable(self):
-        self.assertEqual(ada.DEFAULT_ROW_LIMIT, 250_000)
+        self.assertEqual(ada.DEFAULT_ROW_LIMIT, 1_000_000)
         self.assertEqual(ada.MAX_FILE_BYTES, 25 * 1024 * 1024)
 
     def test_samples_ship_with_the_package(self):
@@ -295,6 +305,42 @@ class OverrideTests(unittest.TestCase):
         profile = ada.analyze(steady()).profile()
         self.assertEqual(profile["Column"].tolist(), ["Date", "Team", "Revenue"])
 
+    def test_a_chosen_measure_has_no_runners_up(self):
+        frame = pd.DataFrame({
+            "HGB": [13.0 + index / 10 for index in range(30)],
+            "HCT": [40.0 + index / 7 for index in range(30)],
+        })
+        self.assertTrue(ada.analyze(frame).roles.measure_alternatives)
+        self.assertEqual(ada.analyze(frame, measure="HGB").roles.measure_alternatives, ())
+
+
+def long_readings() -> pd.DataFrame:
+    """Readings of three parameters in three units, one per row."""
+    levels = {"Ammonia": ("mg/l", 0.2), "pH": ("phunits", 7.5), "Conductivity": ("us/cm", 450.0)}
+    return pd.DataFrame([
+        {"Site": f"Site {site % 3}", "Parameter": parameter, "Unit": unit,
+         "Result": level * (1 + 0.01 * site + 0.03 * repeat)}
+        for site in range(12)
+        for parameter, (unit, level) in levels.items()
+        for repeat in range(3 if parameter == "Ammonia" else 2)
+    ])
+
+
+class LongTableTests(unittest.TestCase):
+    def test_the_brief_covers_the_most_common_parameter_only(self):
+        report = ada.analyze(long_readings())
+
+        self.assertTrue((report.frame["Parameter"] == "Ammonia").all())
+        self.assertEqual(report.roles.dimension, "Site")
+        self.assertIn("Ammonia", report.source_name)
+        self.assertTrue(any("never combined" in note for note in report.cleaning.notes))
+
+    def test_naming_the_grouping_keeps_every_row(self):
+        report = ada.analyze(long_readings(), dimension="Site")
+
+        self.assertEqual(len(report.frame), len(long_readings()))
+        self.assertIsNone(report.roles.focus)
+
 
 class AggregationTests(unittest.TestCase):
     def test_a_reading_is_averaged_unless_told_otherwise(self):
@@ -397,6 +443,100 @@ class YearTimelineTests(unittest.TestCase):
     def test_anomalies_and_the_forecast_run_on_a_yearly_series(self):
         self.assertNotIsInstance(self.report.anomalies, ada.Refusal)
         self.assertNotIsInstance(self.report.forecast(), ada.Refusal)
+
+
+class RowsLeftOutTests(unittest.TestCase):
+    def setUp(self):
+        self.frame = pd.DataFrame({
+            "Material": [name for name in "ABCD" for _ in range(300)],
+            "Signal": [float(n % 17) for n in range(1200)],
+        })
+
+    def test_every_answer_says_which_rows_it_used(self):
+        report = ada.analyze(self.frame, row_limit=400)
+        answer = report.ask("average Signal by Material")
+        self.assertTrue(answer.answer.endswith(
+            "The row limit left out 800 rows, so this answer covers only a random sample of 400."
+        ))
+        self.assertEqual(report.rows_note, "a random sample of 400 of 1,200 rows")
+        self.assertEqual(report.to_dict()["rows_note"], report.rows_note)
+        self.assertIn("Analyzed a random sample of 400 of 1,200 rows", str(report))
+        self.assertNotIn("older", str(report))
+
+    def test_a_table_analyzed_whole_adds_nothing_to_its_answers(self):
+        report = ada.analyze(self.frame)
+        self.assertNotIn("row limit", report.ask("average Signal by Material").answer)
+        self.assertEqual(report.to_dict()["rows_note"], "")
+
+
+class UndatedTimeTests(unittest.TestCase):
+    def setUp(self):
+        stamps = pd.date_range("2024-01-01 15:06:28", periods=2974, freq="s")
+        self.report = ada.analyze(pd.DataFrame({
+            "Time": stamps.strftime("%H:%M:%S"),
+            "Signal": [100.0 + (n > 2400) * 200 + n % 5 for n in range(2974)],
+        }))
+
+    def test_the_span_is_written_without_a_date(self):
+        text = str(self.report)
+        self.assertIn("15:06:28 to 15:56:01 (times with no calendar date)", text)
+        self.assertNotIn("2026", text)
+        period = self.report.to_dict()["period"]
+        self.assertEqual((period["from"], period["to"]), ("15:06:28", "15:56:01"))
+
+
+def gauges() -> pd.DataFrame:
+    """Hourly wind at two stations, four hours logged as the code 999.9, and a humidity over 100%."""
+    hours = pd.date_range("2024-01-01", periods=400, freq="h")
+    speed = [2.0 + (hour % 7) * 0.4 for hour in range(400)]
+    speed[10:14] = [999.9] * 4
+    humidity = [60.0 + (hour % 11) for hour in range(400)]
+    humidity[50] = 180.0
+    return pd.DataFrame({
+        "Time": hours,
+        "Station": ["North", "South"] * 200,
+        "Wind Speed": speed,
+        "Humidity": humidity,
+    })
+
+
+class DataCheckTests(unittest.TestCase):
+    def test_quality_lists_every_issue_as_a_frame(self):
+        report = ada.analyze(gauges(), measure="Humidity")
+
+        table = report.quality()
+
+        self.assertEqual(
+            list(table.columns), ["Check", "Columns", "Rows", "Share %", "Detail", "Rule", "Examples"]
+        )
+        self.assertIn("Impossible values", set(table["Check"]))
+        self.assertIn("Sentinel codes", set(table["Check"]))
+        self.assertEqual(report.to_dict()["data_checks"], table.to_dict(orient="records"))
+
+    def test_a_clear_code_in_the_measure_is_set_aside_and_noted(self):
+        report = ada.analyze(gauges(), measure="Wind Speed")
+
+        self.assertEqual(int(report.frame["Wind Speed"].isna().sum()), 4)
+        self.assertTrue(any("999.9" in note for note in report.cleaning.notes), report.cleaning.notes)
+        self.assertLess(report.frame["Wind Speed"].max(), 10)
+
+    def test_codes_in_other_columns_are_reported_not_changed(self):
+        report = ada.analyze(gauges(), measure="Humidity")
+
+        self.assertEqual(report.frame["Wind Speed"].max(), 999.9)
+
+    def test_a_clean_table_has_an_empty_frame(self):
+        self.assertTrue(ada.analyze(steady()).quality().empty)
+
+
+class ChosenMeasureTests(unittest.TestCase):
+    def test_a_column_chosen_as_the_measure_is_not_also_a_code(self):
+        frame = pd.DataFrame({"Site": ["A", "B"] * 60, "Mark": [n % 7 + 1 for n in range(120)]})
+
+        report = ada.analyze(frame, measure="Mark")
+
+        self.assertNotIn("Mark", report.roles.factors)
+        self.assertNotIn("Mark", report.roles.dimensions)
 
 
 if __name__ == "__main__":

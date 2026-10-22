@@ -54,9 +54,17 @@ the rest, and the held-out periods are scored.
 | MASE | Mean absolute error on the held-out periods ÷ the in-sample mean absolute error of a one-step no-change forecast |
 
 A MASE below 1.0 means the forecast beat "next period equals this period". At
-1.0 or above it did not, and `describe_backtest` says so in the interface, for
-example: "held out the last 3 periods, ±14.9% average error, MASE 2.33, no
-better than assuming no change".
+1.0 it did not, and above 1.0 it did worse; `describe_backtest` says so
+plainly, for example: "held out the last 3 periods, ±14.9% average error,
+MASE 2.33: worse than simply assuming no change, so do not rely on this
+forecast". `Backtest.worse_than_no_change` and `Forecast.reliable` carry the
+same verdict, and `Forecast.summary` puts the projection and the backtest in
+one sentence.
+
+The dashboard does not draw a forecast whose backtest is worse than no change.
+It says why under the chart, with a toggle to draw it anyway, since a dashed
+line that lost to "no change" on held-out periods would still look like a
+prediction.
 
 `periods_without_mape` counts held-out periods whose actual value is zero.
 They are excluded from MAPE, since a percentage error against zero is
@@ -73,6 +81,8 @@ undefined.
 | History never negative | Forecast and lower band clamped at 0, unless the measure is a level |
 | Held-out values of zero | Excluded from MAPE, counted separately |
 | No variation in history | Zero-width band, stated in `method` |
+| Backtest worse than no change (MASE above 1) | Stated plainly; not drawn on the dashboard unless asked for |
+| Grain finer than a day | Forecast in seconds, minutes or hours, labelled by the clock |
 
 `ada.Analysis.forecast()` returns a `Refusal` with code `thin_history` where
 `build_forecast` returns `None`.

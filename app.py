@@ -26,8 +26,8 @@ _PACKAGE = "ada"
 _LOCAL_MODULES = tuple(  # dependency order: each module imports only from those above it
     f"{_PACKAGE}.{name}"
     for name in (
-        "formatting", "metrics", "schema", "timeseries", "anomalies", "forecasting", "aggregation",
-        "analysis", "autovis", "file_io", "demo_data", "business_insights", "nlq", "selection",
+        "formatting", "metrics", "schema", "timeseries", "quality", "anomalies", "forecasting",
+        "aggregation", "analysis", "autovis", "file_io", "demo_data", "business_insights", "nlq", "selection",
         "pipeline", "ai_insights", "ui",
     )
 )
@@ -102,6 +102,8 @@ from ada.pipeline import (  # noqa: E402
     prepare_analysis,
     schema_frame,
 )
+from ada.quality import mask_sentinels, quality_frame  # noqa: E402
+from ada.quality import scan as scan_quality  # noqa: E402
 
 # The AI layer and its dependencies are optional. Any import failure disables
 # only the narrative and the query planner.
@@ -124,6 +126,7 @@ except Exception as error:  # noqa: BLE001 - any import failure must degrade, no
     DEFAULT_PRESET, MODEL_PRESETS, AINarrative = "", {}, ()
 
 from ada.ui import (  # noqa: E402
+    group_names,
     inject_styles,
     render_ai_narrative,
     render_brief,
@@ -153,7 +156,9 @@ SAMPLE_NOTES = {
 }
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
-MAX_ANALYSIS_ROWS = 250_000
+# The library's DEFAULT_ROW_LIMIT. Cleaning, not the row count, sets the time a
+# file takes, so a file the upload limit admits is analyzed whole.
+MAX_ANALYSIS_ROWS = 1_000_000
 
 st.set_page_config(
     page_title="ADA | Exploratory data analysis for CSV and Excel",
@@ -321,8 +326,13 @@ def dataset_fingerprint(dataframe: pd.DataFrame, roles, source_name: str) -> str
     return hashlib.sha256("|".join(parts).encode()).hexdigest()
 
 
-def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str, api_key: str) -> None:
-    """Chat over the analyzed dataset; every answer is a local calculation."""
+def render_ask_ada(
+    dataframe: pd.DataFrame, roles, source_name: str, api_key: str, rows_not_analyzed: int = 0
+) -> None:
+    """Chat over the analyzed dataset; every answer is a local calculation.
+
+    ``rows_not_analyzed`` is how many rows the row limit left out; answers say so.
+    """
     fingerprint = dataset_fingerprint(dataframe, roles, source_name)
     if st.session_state.get("chat_fingerprint") != fingerprint:
         st.session_state.chat_fingerprint = fingerprint
@@ -343,7 +353,7 @@ def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str, api_key: st
         st.session_state.pending_ai_plan = None
         pending = None
     if question:
-        result = answer_question(question, dataframe, roles)
+        result = answer_question(question, dataframe, roles, rows_not_analyzed=rows_not_analyzed)
         if result is not None:
             st.session_state.chat_history.append({"question": question, "result": result})
         elif api_key and pending is None:
@@ -375,6 +385,7 @@ def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str, api_key: st
                 dataframe,
                 roles,
                 approved=True,
+                rows_not_analyzed=rows_not_analyzed,
             )
             if result is not None:
                 st.session_state.chat_history.append(
@@ -402,7 +413,8 @@ def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str, api_key: st
             elif entry["result"] is not None:
                 render_chat_answer(entry["result"], key=str(position))
             else:
-                render_chat_fallback(suggestions, rephrase_hint(entry["question"], dataframe, roles))
+                hint = rephrase_hint(entry["question"], dataframe, roles, rows_not_analyzed=rows_not_analyzed)
+                render_chat_fallback(suggestions, hint)
 
 
 inject_styles()
@@ -491,16 +503,8 @@ except (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError, Val
     st.error(f"ADA could not read this file: {error}")
     st.stop()
 
-if prepared.truncated_rows:
-    covered = ""
-    if prepared.analyzed_from is not None and prepared.analyzed_to is not None:
-        covered = (
-            f", covering {prepared.analyzed_from:%d %b %Y} to {prepared.analyzed_to:%d %b %Y}"
-        )
-    st.warning(
-        f"ADA analyzed the {MAX_ANALYSIS_ROWS:,} most recent rows for predictable performance "
-        f"and skipped {prepared.truncated_rows:,} older ones{covered}."
-    )
+if prepared.rows_note:
+    st.warning(f"ADA analyzed {prepared.rows_note} for predictable performance.")
 
 for note in prepared.cleaning_report.notes:
     st.info(note)
@@ -518,8 +522,16 @@ date_options = [
 measure_options = ["None", *detected.numeric]
 dimension_options = ["None", *detected.dimensions]
 
-with st.expander("Tune ADA's schema detection", expanded=False):
+# Runners-up for the measure, when the pick was a close call. Older ColumnRoles have no such field.
+close_measures = [
+    column for column in getattr(detected, "measure_alternatives", ()) or () if column != detected.measure
+]
+with st.expander("Tune ADA's schema detection", expanded=bool(close_measures)):
     st.caption("ADA picked these columns automatically. Change any that are wrong.")
+    if close_measures:
+        st.caption(
+            f"The metric was a close call: {', '.join(close_measures)} could also be it."
+        )
     selectors = st.columns(3)
     selected_date = selectors[0].selectbox(
         "Date",
@@ -561,25 +573,39 @@ roles = apply_role_selection(
     dimension=selected_dimension,
     aggregation=selected_aggregation,
 )
+# A clear code such as 999.9 in the chosen measure is set aside before anything is computed.
+dataframe, masked = mask_sentinels(dataframe, roles.measure)
+if masked:
+    st.info(masked)
 
 focus_value = None
+focus_label = None
 focus_values = focus_options(dataframe, roles)
 if focus_values:
     everything = f"All {roles.dimension} values"
+    # A numeric code reads as "Status 2" rather than a bare "2".
+    focus_labels = dict(zip(focus_values, group_names(dataframe, roles.dimension, focus_values), strict=True))
+    # A long table's rows measure different things, so they are never pooled:
+    # the brief starts on the detected focus and offers no "all" option.
+    pooled = [] if roles.focus in focus_values else [everything]
+    focus_choices = [*pooled, *focus_values]
     focus_columns = st.columns([0.34, 0.66])
     choice = focus_columns[0].selectbox(
         f"Drill into one {roles.dimension}",
-        [everything, *focus_values],
+        focus_choices,
+        index=focus_choices.index(roles.focus) if roles.focus in focus_choices else 0,
+        format_func=lambda value: focus_labels.get(value, value),
         help="Focus the brief, dashboard, chat, and exports on a single slice. "
         "ADA regroups the slice by the next useful segment.",
     )
     if choice != everything:
         focus_value = choice
+        focus_label = focus_labels[choice]
 
 dataframe, roles = apply_focus(dataframe, roles, focus_value)
 brief = analyze_business(dataframe, roles)
 
-render_dataset_bar(source_name, dataframe, roles, focus=focus_value)
+render_dataset_bar(source_name, dataframe, roles, focus=focus_label)
 render_brief(brief)
 render_kpis(brief)
 
@@ -640,7 +666,7 @@ with ask_tab:
         "supplied a key, is the question itself sent to the planner, which returns a plan "
         "for you to approve, never an answer.",
     )
-    render_ask_ada(dataframe, roles, source_name, api_key)
+    render_ask_ada(dataframe, roles, source_name, api_key, rows_not_analyzed=prepared.truncated_rows)
 
 with dashboard_tab:
     render_section_heading(
@@ -709,6 +735,10 @@ with data_tab:
             hide_index=True,
             width="stretch",
         )
+
+    with st.expander("Data checks"):
+        st.caption("Values to look at before trusting the figures. None of them was changed.")
+        st.dataframe(quality_frame(scan_quality(dataframe, roles)), hide_index=True, width="stretch")
 
     st.subheader("Cleaned data")
     st.dataframe(dataframe.head(1_000), width="stretch", height=420)

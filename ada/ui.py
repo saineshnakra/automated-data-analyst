@@ -17,7 +17,7 @@ from .anomalies import detect_anomalies
 from .autovis import fold_small_series, recommend_chart
 from .business_insights import BusinessBrief
 from .forecasting import build_forecast, describe_backtest
-from .formatting import format_number, format_period
+from .formatting import format_number, format_period, group_label, is_undated
 from .metrics import metric_for
 from .nlq import QueryAnswer
 from .pipeline import analyze_selection
@@ -133,7 +133,7 @@ def render_brief(brief: BusinessBrief) -> None:
     st.markdown(
         f"""
         <section class="brief">
-          <div class="brief-top"><span class="signal-orb"></span><div class="eyebrow">Executive signal</div></div>
+          <div class="brief-top"><span class="signal-orb"></span><div class="eyebrow">Headline</div></div>
           <h1>{escape(brief.headline)}</h1>
           <p>{escape(brief.summary)}</p>
           <div class="brief-trust">CALCULATED FROM THE FILE · INTERPRETATION SHOWN SEPARATELY · NO CAUSAL CLAIMS</div>
@@ -211,7 +211,10 @@ def render_ai_narrative(narrative: AINarrative, *, model: str) -> None:
     )
 
 
-GRAIN_NAMES = {"D": "Day", "W": "Week", "M": "Month", "Q": "Quarter", "Y": "Year"}
+GRAIN_NAMES = {
+    "s": "Second", "min": "Minute", "h": "Hour",
+    "D": "Day", "W": "Week", "M": "Month", "Q": "Quarter", "Y": "Year",
+}
 
 
 def axis_names(roles: ColumnRoles, frequency: str | None = None) -> dict[str, str]:
@@ -248,15 +251,54 @@ def _hover_format(values) -> str:
     return ",.0f" if not finite.empty and finite.median() >= 100 else ",.2f"
 
 
+def group_names(dataframe: pd.DataFrame, dimension: str | None, values) -> list[str]:
+    """Chart labels for groups: "Status 2" for a numeric code, the text itself otherwise.
+
+    The aggregations may hand back a numeric code as text ("2"), so it is read
+    back as a number when the grouping column is numeric. A label that isn't a
+    number, such as "Other segments", is kept as it is.
+    """
+    numeric = bool(dimension) and pd.api.types.is_numeric_dtype(dataframe[dimension])
+    if not numeric:
+        return [str(value) for value in values]
+    codes = pd.to_numeric(pd.Series(list(values), dtype=object), errors="coerce")
+    return [
+        group_label(dimension, float(code)) if pd.notna(code) else str(value)
+        for value, code in zip(values, codes, strict=True)
+    ]
+
+
+# How a period is written in a hover label, by grain; plotly reads d3 time formats.
+HOVER_DATES = {
+    "Y": "%Y", "Q": "%b %Y", "M": "%b %Y", "W": "%d %b %Y", "D": "%d %b %Y",
+    "h": "%d %b %Y %H:%M", "min": "%d %b %Y %H:%M", "s": "%d %b %Y %H:%M:%S",
+}
+
+
+def _hover_date(periods, frequency: str | None) -> str:
+    """The d3 format for a period in a hover label; times with no date show the time alone."""
+    shown = HOVER_DATES.get(frequency or "", "%d %b %Y")
+    if len(periods) and is_undated(pd.Series(periods).iloc[0]):
+        return "%H:%M:%S" if frequency == "s" else "%H:%M"
+    return shown
+
+
+def _undated_axis(figure: go.Figure, periods) -> go.Figure:
+    """Label a time axis with no calendar date by its clock time, never by its stand-in date."""
+    if len(periods) and is_undated(pd.Series(periods).iloc[0]):
+        figure.update_xaxes(tickformat="%H:%M:%S")
+    return figure
+
+
 def _trend_figure(frame: pd.DataFrame, averaged: bool, **options) -> go.Figure:
     """Period values as a filled area for totals, or a plain line for averages."""
     if averaged:
         figure = px.line(frame, x="Period", y="Value", markers=True, color_discrete_sequence=[ACCENT], **options)
         figure.update_traces(line={"width": 3})
-        return figure
+        return _undated_axis(figure, frame["Period"])
     figure = px.area(frame, x="Period", y="Value", markers=True, color_discrete_sequence=[ACCENT], **options)
     figure.update_traces(line={"width": 3}, fillcolor="rgba(99,91,255,.11)")
-    return figure
+    return _undated_axis(figure, frame["Period"])
 
 
 def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
@@ -264,6 +306,8 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
     series = build_trend(dataframe, roles)
     trend = series.frame
     segments = segment_frame(dataframe, roles)
+    if not segments.empty:
+        segments["Segment"] = group_names(dataframe, roles.dimension, segments["Segment"])
     chart_columns = st.columns(2, gap="medium")
     with chart_columns[0]:
         if not trend.empty:
@@ -273,7 +317,8 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 title=f"{roles.measure or 'Records'} over time",
                 labels=axis_names(roles, series.frequency),
             )
-            anomalies = detect_anomalies(trend)
+            anomalies = detect_anomalies(trend, floor_at_zero=metric.floors_at_zero)
+            when = _hover_date(trend["Period"], series.frequency)
             if anomalies:
                 figure.add_trace(
                     go.Scatter(
@@ -287,11 +332,22 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                             "color": "#E35D6A",
                             "line": {"width": 2, "color": "white"},
                         },
-                        hovertemplate=f"%{{x|%b %Y}}: %{{y:{_hover_format(trend['Value'])}}}, outside the expected band<extra>Anomaly</extra>",
+                        hovertemplate=f"%{{x|{when}}}: %{{y:{_hover_format(trend['Value'])}}}, outside the expected band<extra>Anomaly</extra>",
                     )
                 )
             forecast = build_forecast(trend, floor_at_zero=metric.floors_at_zero)
-            if forecast:
+            chart = st.empty()
+            drawn = bool(forecast) and forecast.reliable
+            if forecast and not forecast.reliable:
+                # A line that did worse than "no change" on held-out periods would
+                # look like a prediction, so it is shown only when asked for.
+                st.caption(
+                    "The forecast is not drawn: on the last "
+                    f"{forecast.backtest.holdout_periods} periods it did worse than simply "
+                    f"assuming no change (MASE {forecast.backtest.mase:.2f})."
+                )
+                drawn = st.toggle("Draw it anyway", key="draw_unreliable_forecast")
+            if drawn:
                 figure.add_trace(
                     go.Scatter(
                         x=[*forecast.periods, *reversed(forecast.periods)],
@@ -311,11 +367,11 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                         mode="lines",
                         name="Forecast",
                         line={"width": 2.5, "dash": "dash", "color": "#8B5CF6"},
-                        hovertemplate=f"%{{x|%b %Y}}: %{{y:{_hover_format(trend['Value'])}}} (forecast)<extra></extra>",
+                        hovertemplate=f"%{{x|{when}}}: %{{y:{_hover_format(trend['Value'])}}} (forecast)<extra></extra>",
                     )
                 )
-            st.plotly_chart(style_chart(figure), width="stretch", config={"displayModeBar": False})
-            if forecast:
+            chart.plotly_chart(style_chart(figure), width="stretch", config={"displayModeBar": False})
+            if drawn:
                 st.caption(
                     f"Baseline forecast: {forecast.method} · {describe_backtest(forecast.backtest)}."
                 )
@@ -338,7 +394,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
             figure.update_traces(marker_line_width=0, hovertemplate="%{y}: %{x:,.2f}<extra></extra>")
             st.plotly_chart(style_chart(figure), width="stretch", config={"displayModeBar": False})
         else:
-            st.markdown('<div class="empty-state">Select a segment column to reveal contribution.</div>', unsafe_allow_html=True)
+            st.markdown('<div class="empty-state">Pick a grouping column to compare groups.</div>', unsafe_allow_html=True)
 
     movement_columns = st.columns(2, gap="medium")
     with movement_columns[0]:
@@ -348,7 +404,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
             # they are shown side by side rather than stacked into a total.
             changes = go.Figure(
                 go.Bar(
-                    x=list(drivers["Segment"]),
+                    x=group_names(dataframe, roles.dimension, drivers["Segment"]),
                     y=list(drivers["Change"]),
                     marker_color=[RISE if change >= 0 else FALL for change in drivers["Change"]],
                     hovertemplate=f"%{{x}}: %{{y:+{_hover_format(drivers['Change'])}}}<extra></extra>",
@@ -361,7 +417,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
         elif not drivers.empty:
             waterfall = go.Figure(
                 go.Waterfall(
-                    x=[*drivers["Segment"], "Net change"],
+                    x=[*group_names(dataframe, roles.dimension, drivers["Segment"]), "Net change"],
                     y=[*drivers["Change"], 0],
                     measure=[*(["relative"] * len(drivers)), "total"],
                     connector={"line": {"color": "#E5E7EB"}},
@@ -375,7 +431,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
             st.plotly_chart(style_chart(waterfall), width="stretch", config={"displayModeBar": False})
         else:
             st.markdown(
-                '<div class="empty-state">A date, metric, and segment together unlock the movement waterfall.</div>',
+                '<div class="empty-state">A date, a measure and a grouping column together show what changed between the last two periods.</div>',
                 unsafe_allow_html=True,
             )
 
@@ -386,7 +442,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 go.Heatmap(
                     z=heat.to_numpy(),
                     x=[format_period(period, series.frequency) for period in heat.columns],
-                    y=[str(segment) for segment in heat.index],
+                    y=group_names(dataframe, roles.dimension, heat.index),
                     colorscale=[[0, "#F6F7F9"], [0.5, "#B9B1FF"], [1, "#4E43C7"]],
                     hovertemplate=f"%{{y}} · %{{x}}: %{{z:{_hover_format(heat.to_numpy().ravel())}}}<extra></extra>",
                     showscale=False,
@@ -409,7 +465,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
             st.plotly_chart(style_chart(heatmap), width="stretch", config={"displayModeBar": False})
         else:
             st.markdown(
-                '<div class="empty-state">A date and a segment together unlock the intensity heatmap.</div>',
+                '<div class="empty-state">A date and a grouping column together show each group over time.</div>',
                 unsafe_allow_html=True,
             )
 
@@ -522,7 +578,8 @@ def render_chat_answer(result: QueryAnswer, *, key: str) -> None:
 def render_chat_fallback(suggestions: list[str], hint: str | None = None) -> None:
     """Render the reply for a question that maps to no local calculation.
 
-    ``hint`` names the column the question may have meant, from ``rephrase_hint``.
+    ``hint`` is the reason from ``rephrase_hint``: the part of the question ADA
+    could not use, or the column the question may have meant.
     """
     st.markdown(
         "I map questions to transparent calculations, and I could not map that one. "
@@ -535,7 +592,7 @@ def render_chat_fallback(suggestions: list[str], hint: str | None = None) -> Non
 # Points the Explore chart draws along one axis.
 EXPLORE_POINTS = 400
 # A long date axis steps up through these until the whole range fits.
-EXPLORE_GRAINS = ("D", "W", "M", "Q", "Y")
+EXPLORE_GRAINS = ("s", "min", "h", "D", "W", "M", "Q", "Y")
 
 
 def _fit_date_axis(
@@ -544,10 +601,10 @@ def _fit_date_axis(
     """Group a date axis by the finest period that fits ``limit`` points.
 
     Drawing only the latest dates would drop the start of a long series without
-    a word, so dates step up through days, weeks, months, quarters and years
-    until the whole range fits. Returns the rows with each date moved to its
-    period's start, and a caption saying what a point is, or, when even years
-    don't fit, how many are shown.
+    a word, so dates step up through seconds, minutes, hours, days, weeks,
+    months, quarters and years until the whole range fits. Returns the rows
+    with each date moved to its period's start, and a caption saying what a
+    point is, or, when even years don't fit, how many are shown.
     """
     if not (spec.x and spec.x in dataframe.columns and is_datetime64_any_dtype(dataframe[spec.x])):
         return dataframe, None

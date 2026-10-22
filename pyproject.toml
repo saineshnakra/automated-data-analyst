@@ -33,11 +33,13 @@ classifiers = [
     "Topic :: Office/Business :: Financial :: Spreadsheet",
 ]
 
-# openpyxl is a core dependency so .xlsx files work out of the box.
+# openpyxl is a core dependency so .xlsx files work out of the box, and scipy
+# supplies the distributions behind the group comparisons and correlation tests.
 dependencies = [
     "pandas>=2.2,<3",
     "numpy>=1.26,<3",
     "openpyxl>=3.1,<4",
+    "scipy>=1.11,<2",
 ]
 
 [project.optional-dependencies]
