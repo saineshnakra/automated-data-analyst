@@ -172,6 +172,34 @@ significant results, and every result says whether it was planned.
   outcomes in repeated or clustered designs are not fitted. ADA says so and
   points to `custom` for your own analysis.
 
+### How each analysis is fitted
+
+Each analysis uses its complete cases and reports how many rows it left out.
+
+| Design | `compare:` a group | `relate:` a number | `change:` time |
+|---|---|---|---|
+| independent | Welch's t-test (2 groups) or Welch's ANOVA with Games–Howell contrasts (3 or more); linear regression with covariates | linear regression slope, with Pearson's r and Spearman's ρ | not fitted |
+| paired | paired t-test on the per-subject differences | mixed model | mixed model |
+| repeated | linear mixed model, random intercept per subject | mixed model | mixed model over time |
+| clustered | linear mixed model, random intercept per cluster | mixed model | not fitted for subjects nested in clusters |
+
+A binary outcome is compared with the risk difference (Newcombe's interval),
+the odds ratio, and a χ² test, or Fisher's exact test when an expected count
+is below 5; related to a number, or compared with covariates, by logistic
+regression. Binary outcomes in paired, repeated and clustered designs are not
+fitted.
+
+`test:` names another test the design allows, such as `mann-whitney`,
+`kruskal`, `wilcoxon`, `student-t` or `anova`; ADA refuses one that does not
+fit and lists those that do. In a change analysis, time with six or fewer
+points is categorical (one level per time point) and otherwise a straight line;
+`time_as: categorical` or `time_as: linear` chooses. With `by:`, the key result
+is the time × group interaction: whether the groups change differently.
+
+Results go in `tables/results` (planned analyses) and
+`supplement/exploratory-analyses` (the rest), with each model's full output,
+diagnostics and warnings in `supplement/models/`.
+
 ### Your own tables and figures
 
 List a Python file under `custom`. In it, mark functions that take the

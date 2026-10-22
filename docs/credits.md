@@ -117,3 +117,32 @@ the build used, and also:
   `fdr_bh`: the references in the table above.
 
 [python-docx](https://python-docx.readthedocs.io) (MIT) writes the Word files.
+
+## The analyses behind the paper assets
+
+`ada build` fits each analysis in `study.yml` with these methods. The model
+output in `supplement/models/` names the library call behind every number.
+
+| Method | Library function | Reference |
+|---|---|---|
+| Welch's t-test, with its interval | `scipy.stats.ttest_ind(equal_var=False)` | Welch, B. L. (1947), *Biometrika* 34, 28–35 |
+| Welch's ANOVA | `statsmodels.stats.oneway.anova_oneway(use_var="unequal")` | Welch, B. L. (1951), *Biometrika* 38, 330–336 |
+| Games–Howell pairwise contrasts | `scipy.stats.studentized_range` | Games, P. A. and Howell, J. F. (1976), *Journal of Educational Statistics* 1, 113–125 |
+| Tukey–Kramer pairwise contrasts (`test: anova`) | `scipy.stats.tukey_hsd` | Tukey, J. W. (1949), *Biometrics* 5, 99–114; Kramer, C. Y. (1956), *Biometrics* 12, 307–310 |
+| Hedges' g with an exact small-sample correction | `scipy.special.gammaln` | Hedges, L. V. (1981), *Journal of Educational Statistics* 6, 107–128; Hedges, L. V. and Olkin, I. (1985), *Statistical Methods for Meta-Analysis* |
+| Noncentral-t intervals for g and Cohen's dz | `scipy.stats.nct`, `scipy.optimize.brentq` | Steiger, J. H. and Fouladi, R. T. (1997), in *What If There Were No Significance Tests?*, 221–257; Cohen, J. (1988), *Statistical Power Analysis for the Behavioral Sciences* |
+| ω² and partial ω² with a noncentral-F interval | `statsmodels.stats.oneway.confint_noncentrality` | Olejnik, S. and Algina, J. (2003), *Psychological Methods* 8, 434–447; Steiger, J. H. (2004), *Psychological Methods* 9, 164–182 |
+| Paired t-test | `scipy.stats.ttest_rel` | Student (1908), *Biometrika* 6, 1–25 |
+| Mann–Whitney, Kruskal–Wallis and Wilcoxon signed-rank tests | `scipy.stats.mannwhitneyu`, `kruskal`, `wilcoxon` | Mann and Whitney (1947); Kruskal and Wallis (1952); Wilcoxon, F. (1945), *Biometrics Bulletin* 1, 80–83 |
+| Hodges–Lehmann estimates with intervals from inverting the rank test | the SciPy tests above | Hodges, J. L. and Lehmann, E. L. (1963), *Annals of Mathematical Statistics* 34, 598–611; Bauer, D. F. (1972), *JASA* 67, 687–690 |
+| Linear regression, F-tests of model terms | `statsmodels.formula.api.ols` | |
+| Linear mixed models with a random intercept, fitted by REML | `statsmodels.formula.api.mixedlm` | Laird, N. M. and Ware, J. H. (1982), *Biometrics* 38, 963–974; Patterson, H. D. and Thompson, R. (1971), *Biometrika* 58, 545–554 |
+| Intraclass correlation from the variance components | | Snijders, T. A. B. and Bosker, R. J. (2012), *Multilevel Analysis* (2nd ed.) |
+| Pearson's r with a Fisher z interval; Spearman's ρ | `scipy.stats.pearsonr`, `spearmanr` | Pearson, K. (1896), *Phil. Trans. R. Soc. A* 187, 253–318; Fisher (1915); Spearman (1904) |
+| Risk difference with Newcombe's interval | `statsmodels.stats.proportion.confint_proportions_2indep(method="newcomb")` | Newcombe, R. G. (1998), *Statistics in Medicine* 17, 873–890 |
+| Odds ratio with Woolf's interval | `statsmodels.stats.contingency_tables.Table2x2` | Woolf, B. (1955), *Annals of Human Genetics* 19, 251–253 |
+| χ² and Fisher's exact tests (Freeman–Halton by seeded Monte Carlo for larger tables) | `scipy.stats.chi2_contingency`, `fisher_exact` | Pearson (1900); Fisher, R. A. (1922), *JRSS* 85, 87–94; Freeman, G. H. and Halton, J. H. (1951), *Biometrika* 38, 141–149 |
+| Wilson intervals for proportions | `statsmodels.stats.proportion.proportion_confint(method="wilson")` | Wilson, E. B. (1927), *JASA* 22, 209–212 |
+| Logistic regression | `statsmodels.formula.api.logit` | Cox, D. R. (1958), *JRSS B* 20, 215–242 |
+| Holm, Bonferroni and Benjamini–Hochberg adjustment | `statsmodels.stats.multitest.multipletests` | Holm, S. (1979), *Scandinavian Journal of Statistics* 6, 65–70; Dunn, O. J. (1961), *JASA* 56, 52–64; Benjamini and Hochberg (1995) |
+| Shapiro–Wilk, Levene (median-centred) and Breusch–Pagan tests; variance inflation factors | `scipy.stats.shapiro`, `levene`; `statsmodels.stats.diagnostic.het_breuschpagan`, `variance_inflation_factor` | Shapiro and Wilk (1965); Brown and Forsythe (1974); Breusch and Pagan (1979); Marquardt (1970) |
