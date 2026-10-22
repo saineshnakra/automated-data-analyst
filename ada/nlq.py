@@ -4921,8 +4921,24 @@ def _scope_words(plan: QueryPlan) -> list[str]:
     return [_describe_filter(item) for item in plan.filters] + _describe_conditions(plan.conditions)
 
 
+def _names_parameter(question: str, whole: WholeTable) -> bool:
+    """Whether a question names a long table's parameter column or one of its other values.
+
+    A quick screen, so a question about the focus is not read twice against every row.
+    """
+    q = _norm(_question_text(question))
+    words = set(q.split())
+    named = set(_partial_words([whole.parameter])[whole.parameter]) - QUERY_GRAMMAR
+    if any(_word_variants(word) & words for word in named if len(word) >= 4):
+        return True
+    others = [value for value in whole.frame[whole.parameter].dropna().unique() if str(value) != whole.focus]
+    return any((text := _norm(value)) and re.search(_word_regex(text), q) for value in others)
+
+
 def _whole_table_answer(question: str, whole: WholeTable, rows_not_analyzed: int) -> QueryAnswer | None:
     """Answer from every parameter of a long table when the question picks another one, or groups by them."""
+    if not _names_parameter(question, whole):
+        return None
     frame, roles = whole.frame, replace(whole.roles, focus=None)
     plan = parse_question(question, frame, roles)
     if plan is None:
