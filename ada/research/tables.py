@@ -173,8 +173,17 @@ def _docx(table: Table, path: Path) -> None:
 
 def write_docx(tables: list[Table], path: Path) -> None:
     """Write tables to one Word file, each with its caption above and notes below, all editable."""
+    document = docx_document()
+    for position, table in enumerate(tables):
+        if position:
+            document.add_paragraph()
+        add_docx_table(document, table)
+    save_docx(document, path)
+
+
+def docx_document():
+    """A new Word document in the tables' font, with metadata fixed so rebuilds match."""
     from docx import Document  # noqa: PLC0415
-    from docx.enum.text import WD_ALIGN_PARAGRAPH  # noqa: PLC0415
     from docx.shared import Pt  # noqa: PLC0415
 
     document = Document()
@@ -182,29 +191,33 @@ def write_docx(tables: list[Table], path: Path) -> None:
     style = document.styles["Normal"]
     style.font.name = "Arial"
     style.font.size = Pt(10)
-    for position, table in enumerate(tables):
-        if position:
-            document.add_paragraph()
-        caption = document.add_paragraph()
-        run = caption.add_run(f"{table.number}. " if table.number else "")
-        run.bold = True
-        caption.add_run(table.title)
-        frame = table.display
-        grid = document.add_table(rows=1, cols=len(frame.columns))
-        grid.style = "Table Grid"
-        for cell, column in zip(grid.rows[0].cells, frame.columns, strict=True):
-            cell.text = ""
-            cell.paragraphs[0].add_run(str(column)).bold = True
-        for row in frame.itertuples(index=False):
-            cells = grid.add_row().cells
-            for index, (cell, value) in enumerate(zip(cells, row, strict=True)):
-                cell.text = str(value)
-                if index:
-                    cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        for note in table.notes:
-            paragraph = document.add_paragraph()
-            paragraph.add_run(note).font.size = Pt(8)
-    save_docx(document, path)
+    return document
+
+
+def add_docx_table(document, table: Table) -> None:
+    """Add ``table`` to a Word document: caption above, an editable grid, notes below."""
+    from docx.enum.text import WD_ALIGN_PARAGRAPH  # noqa: PLC0415
+    from docx.shared import Pt  # noqa: PLC0415
+
+    caption = document.add_paragraph()
+    run = caption.add_run(f"{table.number}. " if table.number else "")
+    run.bold = True
+    caption.add_run(table.title)
+    frame = table.display
+    grid = document.add_table(rows=1, cols=len(frame.columns))
+    grid.style = "Table Grid"
+    for cell, column in zip(grid.rows[0].cells, frame.columns, strict=True):
+        cell.text = ""
+        cell.paragraphs[0].add_run(str(column)).bold = True
+    for row in frame.itertuples(index=False):
+        cells = grid.add_row().cells
+        for index, (cell, value) in enumerate(zip(cells, row, strict=True)):
+            cell.text = str(value)
+            if index:
+                cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    for note in table.notes:
+        paragraph = document.add_paragraph()
+        paragraph.add_run(note).font.size = Pt(8)
 
 
 #: The date stamped on every part of a Word file, so the same content gives the same bytes.
