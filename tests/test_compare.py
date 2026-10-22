@@ -876,6 +876,14 @@ class BuiltInGroupingTests(unittest.TestCase):
 
         self.assertIsNone(built_in_grouping(frame, "pollutant_max", "pollutant_id"))
 
+    def test_a_grouping_too_fine_for_the_scan_is_not_checked(self):
+        rng = np.random.default_rng(59)
+        code = rng.integers(0, 40, 2000)
+        frame = pd.DataFrame({"level": code + rng.normal(0, 0.01, 2000), "level_band": code.astype(str)})
+
+        self.assertIsNone(built_in_grouping(frame, "level", "level_band"))
+        self.assertEqual(built_in_grouping(frame[code < 4], "level", "level_band"), "complete")
+
     def test_a_reading_fixed_for_each_species_is_an_attribute_of_the_species(self):
         rng = np.random.default_rng(56)
         species = rng.choice([f"sp{index}" for index in range(40)], 800)

@@ -1552,8 +1552,8 @@ class DifferenceScan:
         return self.rows > SCAN_ROWS
 
 
-def _built_in(omnibus: _Omnibus, column: int, reading: str, grouping: str) -> str | None:
-    """Why ``grouping`` holds a reading by definition, from the omnibus arrays, or None.
+def _built_in(omnibus: _Omnibus, columns: list[str], grouping: str) -> list[str | None]:
+    """Why ``grouping`` holds each of ``columns`` by definition, from the omnibus arrays, or None for each.
 
     "constant": a group holding CONSTANT_GROUP_SHARE of the values sits at a
     single value at the reading's floor or ceiling while others vary, as days
@@ -1562,49 +1562,70 @@ def _built_in(omnibus: _Omnibus, column: int, reading: str, grouping: str) -> st
     NAMED_GROUPING_SHARE of its ranks, or the two share a name stem and it
     explains INDEX_GROUPING_SHARE of them. "index": the grouping grades an index
     and explains INDEX_GROUPING_SHARE of them. "complete": it explains all of
-    them, one cluster of values per group.
+    them, one cluster of values per group. The arrays are judged for every
+    column at once; names are compared only where the share explained could
+    make them count.
     """
-    sizes, spread = omnibus.n[:, column], np.nan_to_num(omnibus.sd[:, column], nan=0.0)
-    explained = max(float(omnibus.epsilon2[column]), float(omnibus.eta2[column]))
-    if explained >= ATTRIBUTE_EXPLAINED:
-        return "complete"
+    explained = np.maximum(omnibus.epsilon2, omnibus.eta2)
+    sizes, spread = omnibus.n, np.nan_to_num(omnibus.sd, nan=0.0)
     # A large group pinned at the reading's floor or ceiling, as days coded "no
     # precipitation" all hold an amount of 0; a few records that happen to agree are not.
-    centre = omnibus.mean[:, column]
-    edge = np.isclose(centre, omnibus.minimum[column]) | np.isclose(centre, omnibus.maximum[column])
-    flat = (sizes >= max(MIN_NAMED_GROUP, CONSTANT_GROUP_SHARE * sizes.sum())) & (spread == 0) & edge
-    if flat.any() and int((spread > 0).sum()) >= 2 and omnibus.distinct[column] >= CAP_MIN_DISTINCT:
-        return "constant"
-    # A name that extends the reading's (RSKF beside RSK) is a strong sign; one
-    # word in common (pollutant_id beside pollutant_max) needs a near-complete split.
-    key = _match_key(reading)
-    extends = len(key) >= 3 and _match_key(grouping).startswith(key)
-    if (extends and explained >= NAMED_GROUPING_SHARE) or (
-        same_stem(reading, grouping) and explained >= INDEX_GROUPING_SHARE
-    ):
-        return "named"
-    words = set(re.findall(r"[a-z]+", normalized_name(grouping)))
-    if explained >= INDEX_GROUPING_SHARE and words & INDEX_GRADE_WORDS:
-        return "index"
-    return None
+    with np.errstate(invalid="ignore"):
+        edge = np.isclose(omnibus.mean, omnibus.minimum[None, :]) | np.isclose(
+            omnibus.mean, omnibus.maximum[None, :]
+        )
+    large = sizes >= np.maximum(MIN_NAMED_GROUP, CONSTANT_GROUP_SHARE * sizes.sum(axis=0))
+    constant = (
+        (large & (spread == 0) & edge).any(axis=0)
+        & ((spread > 0).sum(axis=0) >= 2)
+        & (omnibus.distinct >= CAP_MIN_DISTINCT)
+    )
+    grade = bool(set(re.findall(r"[a-z]+", normalized_name(grouping))) & INDEX_GRADE_WORDS)
+    grouping_key = _match_key(grouping)
+    reasons: list[str | None] = []
+    for index, reading in enumerate(columns):
+        share = float(explained[index])
+        if share >= ATTRIBUTE_EXPLAINED:
+            reasons.append("complete")
+        elif constant[index]:
+            reasons.append("constant")
+        elif not share >= NAMED_GROUPING_SHARE:  # also a share that could not be measured
+            reasons.append(None)
+        else:
+            # A name that extends the reading's (RSKF beside RSK) is a strong sign; one
+            # word in common (pollutant_id beside pollutant_max) needs a near-complete split.
+            key = _match_key(reading)
+            extends = len(key) >= 3 and grouping_key.startswith(key)
+            near_complete = share >= INDEX_GROUPING_SHARE
+            if extends or (near_complete and same_stem(reading, grouping)):
+                reasons.append("named")
+            elif near_complete and grade:
+                reasons.append("index")
+            else:
+                reasons.append(None)
+    return reasons
 
 
 def built_in_grouping(dataframe: pd.DataFrame, reading: str, grouping: str) -> str | None:
     """Why ``grouping`` holds ``reading`` by definition (a key of BUILT_IN_REASONS), or None.
 
     The brief leaves such pairs out of its comparisons; Ask can use the same
-    check before it tests a reading across a grouping.
+    check before it tests a reading across a grouping. As in the scan, a
+    grouping of more than MAX_SCAN_LEVELS levels is not checked, and a long
+    table is checked on its fixed sample of SCAN_ROWS rows.
     """
     if reading not in dataframe.columns or grouping not in dataframe.columns or reading == grouping:
         return None
+    frame = dataframe.sample(SCAN_ROWS, random_state=0) if len(dataframe) > SCAN_ROWS else dataframe
     data = pd.DataFrame({
-        "value": pd.to_numeric(dataframe[reading], errors="coerce"), "group": dataframe[grouping],
+        "value": pd.to_numeric(frame[reading], errors="coerce"), "group": frame[grouping],
     }).dropna()
     sizes = data["group"].value_counts()
     data = data[data["group"].isin(sizes[sizes >= MIN_GROUP_SIZE].index)]
-    if data["group"].nunique() < 2 or data["value"].nunique() < 2:
+    levels = data["group"].nunique()
+    if not 2 <= levels <= MAX_SCAN_LEVELS or data["value"].nunique() < 2:
         return None
-    return _built_in(_omnibus(data[["value"]], data["group"]), 0, reading, grouping)
+    return _built_in(_omnibus(data[["value"]], data["group"]), [reading], grouping)[0]
 
 
 def item_attributes(dataframe: pd.DataFrame, readings: list[str], items: list[str]) -> dict[str, str]:
@@ -1791,6 +1812,7 @@ def scan_differences(
                 if paired is not None
                 else _omnibus(block[regular], groups)
             )
+            reasons = _built_in(omnibus, regular, grouping) if paired is None else [None] * len(regular)
             for index, column in enumerate(regular):
                 # A reading with one value in each group is another code for the
                 # grouping (a 0/1 flag behind a condition label), not a finding.
@@ -1800,7 +1822,7 @@ def scan_differences(
                 if paired is None and omnibus.eta2[index] >= ATTRIBUTE_EXPLAINED:
                     attributes.append((column, grouping))
                     continue
-                reason = _built_in(omnibus, index, column, grouping) if paired is None else None
+                reason = reasons[index]
                 if reason is not None:
                     defined.append((column, grouping, reason))
                     continue
