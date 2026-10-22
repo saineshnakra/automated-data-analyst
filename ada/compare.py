@@ -177,6 +177,29 @@ NO_SPREAD = 1e-9
 # A reading whose groups explain this share of its variance barely varies within a
 # group: it describes the group (a site's coordinates, a station's battery), not its members.
 ATTRIBUTE_EXPLAINED = 0.99
+# A group holding this share of a reading's values, all at its floor or ceiling,
+# marks where the reading is absent rather than measured.
+CONSTANT_GROUP_SHARE = 0.1
+# A grouping named after a reading (RSKF beside RSK, trophic_group beside
+# trophic_level) that explains this share of its ranks is a code describing it.
+NAMED_GROUPING_SHARE = 0.5
+# A grouping named as a grade of an index (an AQI level, a risk band) that
+# explains this share of a reading's ranks was most likely cut from it.
+INDEX_GROUPING_SHARE = 0.8
+INDEX_GRADE_WORDS = frozenset({
+    "aqi", "index", "level", "category", "categori", "band", "grade", "tier", "rating",
+})
+# Why a grouping holds a reading by definition, for a sentence.
+BUILT_IN_REASONS = {
+    "constant": "one of its groups holds a single value of the reading",
+    "named": "it is named after the reading",
+    "index": "it grades an index and splits the reading almost completely",
+    "complete": "it splits the reading completely",
+}
+# A reading that never varies within each value of an item column (a species'
+# trophic level) on this share of the items describes the item, not the record.
+ITEM_FIXED_SHARE = 0.99
+ITEM_MIN_ITEMS = 10
 # A numeric column repeats a part of the date when it matches on this share of rows.
 DATE_PART_SHARE = 0.99
 # A grouping is nested in another when this share of the cells expected to hold
@@ -1197,10 +1220,97 @@ class DifferenceScan:
     trends: int = 0
     #: Reading and grouping pairs compared; ``tested`` adds the trend tests.
     compared: int = 0
+    #: (reading, grouping, reason) left out because the grouping holds the reading by
+    #: definition, with the reason a key of BUILT_IN_REASONS.
+    defined: tuple[tuple[str, str, str], ...] = ()
 
     @property
     def sampled(self) -> bool:
         return self.rows > SCAN_ROWS
+
+
+def _built_in(omnibus: _Omnibus, column: int, reading: str, grouping: str) -> str | None:
+    """Why ``grouping`` holds a reading by definition, from the omnibus arrays, or None.
+
+    "constant": a group holding CONSTANT_GROUP_SHARE of the values sits at a
+    single value at the reading's floor or ceiling while others vary, as days
+    coded "no precipitation" hold an amount of 0.
+    "named": the grouping is named after the reading and explains
+    NAMED_GROUPING_SHARE of its ranks. "index": the grouping grades an index
+    and explains INDEX_GROUPING_SHARE of them. "complete": it explains all of
+    them, one cluster of values per group.
+    """
+    sizes, spread = omnibus.n[:, column], np.nan_to_num(omnibus.sd[:, column], nan=0.0)
+    explained = max(float(omnibus.epsilon2[column]), float(omnibus.eta2[column]))
+    if explained >= ATTRIBUTE_EXPLAINED:
+        return "complete"
+    # A large group pinned at the reading's floor or ceiling, as days coded "no
+    # precipitation" all hold an amount of 0; a few records that happen to agree are not.
+    centre = omnibus.mean[:, column]
+    edge = np.isclose(centre, omnibus.minimum[column]) | np.isclose(centre, omnibus.maximum[column])
+    flat = (sizes >= max(MIN_NAMED_GROUP, CONSTANT_GROUP_SHARE * sizes.sum())) & (spread == 0) & edge
+    if flat.any() and int((spread > 0).sum()) >= 2 and omnibus.distinct[column] >= CAP_MIN_DISTINCT:
+        return "constant"
+    key = _match_key(reading)
+    if explained >= NAMED_GROUPING_SHARE and (
+        (len(key) >= 3 and _match_key(grouping).startswith(key)) or same_stem(reading, grouping)
+    ):
+        return "named"
+    words = set(re.findall(r"[a-z]+", normalized_name(grouping)))
+    if explained >= INDEX_GROUPING_SHARE and words & INDEX_GRADE_WORDS:
+        return "index"
+    return None
+
+
+def built_in_grouping(dataframe: pd.DataFrame, reading: str, grouping: str) -> str | None:
+    """Why ``grouping`` holds ``reading`` by definition (a key of BUILT_IN_REASONS), or None.
+
+    The brief leaves such pairs out of its comparisons; Ask can use the same
+    check before it tests a reading across a grouping.
+    """
+    if reading not in dataframe.columns or grouping not in dataframe.columns or reading == grouping:
+        return None
+    data = pd.DataFrame({
+        "value": pd.to_numeric(dataframe[reading], errors="coerce"), "group": dataframe[grouping],
+    }).dropna()
+    sizes = data["group"].value_counts()
+    data = data[data["group"].isin(sizes[sizes >= MIN_GROUP_SIZE].index)]
+    if data["group"].nunique() < 2 or data["value"].nunique() < 2:
+        return None
+    return _built_in(_omnibus(data[["value"]], data["group"]), 0, reading, grouping)
+
+
+def item_attributes(dataframe: pd.DataFrame, readings: list[str], items: list[str]) -> dict[str, str]:
+    """Readings fixed within each value of an item column, with that column: a species' trophic level.
+
+    An item column names what a row records (a species, a product) and
+    repeats across rows. A reading that never varies within an item on
+    ITEM_FIXED_SHARE of the items recorded twice or more describes the item,
+    so comparing or counting it record by record weights each item by how
+    often it was recorded. Long tables are checked on a fixed sample of
+    SCAN_ROWS rows.
+    """
+    frame = dataframe.sample(SCAN_ROWS, random_state=0) if len(dataframe) > SCAN_ROWS else dataframe
+    readings = [reading for reading in readings if reading in frame.columns][:MAX_SCAN_COLUMNS]
+    found: dict[str, str] = {}
+    for item in items:
+        if item not in frame.columns or not readings:
+            continue
+        sizes = frame[item].value_counts()
+        repeated = sizes[sizes >= 2].index
+        if len(repeated) < ITEM_MIN_ITEMS:
+            continue
+        rows = frame[frame[item].isin(repeated)]
+        grouped = rows.groupby(item, observed=True)[readings]
+        recorded = grouped.count() >= 2
+        fixed = ((grouped.nunique() <= 1) | ~recorded).mean()
+        varies = rows[readings].nunique() >= 2
+        for reading in readings:
+            enough = int(recorded[reading].sum()) >= ITEM_MIN_ITEMS
+            if varies[reading] and enough and float(fixed[reading]) >= ITEM_FIXED_SHARE:
+                found[reading] = item
+        readings = [reading for reading in readings if reading not in found]
+    return found
 
 
 def _explained_share(values: pd.Series, groups: pd.Series) -> float:
@@ -1295,6 +1405,7 @@ def scan_differences(
     flagged: list[tuple[str, str]] = []
     recoded: list[tuple[str, str]] = []
     attributes: list[tuple[str, str]] = []
+    defined: list[tuple[str, str, str]] = []
     used_entity = None
     for grouping in groupings:
         columns = [
@@ -1340,6 +1451,10 @@ def scan_differences(
                     continue
                 if omnibus.eta2[index] >= ATTRIBUTE_EXPLAINED:
                     attributes.append((column, grouping))
+                    continue
+                reason = _built_in(omnibus, index, column, grouping)
+                if reason is not None:
+                    defined.append((column, grouping, reason))
                     continue
                 judged = _judge(omnibus, index, column)
                 entries.append(_Entry(
@@ -1448,6 +1563,7 @@ def scan_differences(
         attributes=tuple(attributes),
         placed=placed,
         correction=correction,
+        defined=tuple(defined),
         passing=int((raw < ALPHA).sum()),
         trends=len(trend_at),
         compared=len(entries),
@@ -3917,8 +4033,6 @@ def construction(
     remaining = {index for index in remaining if screened[index] not in derived}
     derived.update(_built_from_built(thinned, screened, remaining, derived, family))
     remaining = {index for index in remaining if screened[index] not in derived}
-    derived.update(_capped(thinned, screened, remaining, pearson, family))
-    remaining = {index for index in remaining if screened[index] not in derived}
     transforms = _transforms(thinned, screened, remaining, spearman, family)
     derived.update(transforms)
     remaining = {index for index in remaining if screened[index] not in derived}
@@ -3928,6 +4042,13 @@ def construction(
         family = [into if member == joined else member for member in family]
     for column, found in _summaries(dataframe, thinned, screened, remaining, pearson, family).items():
         derived[column] = replace(found, parts=tuple(sorted(found.parts, key=order.__getitem__)))
+    remaining = {index for index in remaining if screened[index] not in derived}
+    # A part of a row maximum never exceeds it either, so a cut-off is only sought
+    # between columns that no formula already ties together.
+    tied = {frozenset((column, part)) for column, found in derived.items() for part in found.parts}
+    for column, found in _capped(thinned, screened, remaining, pearson, family).items():
+        if frozenset((column, found.parts[0])) not in tied:
+            derived[column] = found
     derived = {column: _in_table_order(found, order) for column, found in derived.items()}
     for item in known:
         derived[item.column] = item

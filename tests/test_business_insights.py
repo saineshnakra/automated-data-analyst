@@ -11,6 +11,7 @@ from ada.business_insights import (
     analyze_business,
     build_business_report,
     describe_correlation,
+    grouping_set_by,
     measure_correlation,
     numeric_readings,
 )
@@ -1906,6 +1907,98 @@ class SummaryStatisticTests(unittest.TestCase):
 
         assert differences is not None
         self.assertIn("pm_min and pm_max summarise the same reading as pm_avg", differences.calculation)
+
+
+class DefinedGroupingTests(unittest.TestCase):
+    def test_a_finer_grouping_inside_one_region_is_kept_and_the_region_split_through_it(self):
+        rng = np.random.default_rng(68)
+        zone = rng.choice(["no-take", "partly protected", "open"], 600)
+        frame = pd.DataFrame({
+            "Diver": rng.choice(["Ana", "Ben"], 600),
+            "zone": zone,
+            "region": np.where(zone == "open", "South", "North"),
+            "fish": rng.poisson(np.select([zone == "no-take", zone == "open"], [30, 15], 8)).astype(float),
+            "depth": rng.normal(10, 2, 600),
+        })
+        roles = replace(roles_for(frame, "depth", "Diver"), dimensions=("Diver", "region", "zone"))
+
+        differences = brief_card(analyze_business(frame, roles), "differences")
+
+        assert differences is not None
+        self.assertIn("zone", differences.calculation.split(":")[0])
+        self.assertIn("compared through the finer one", differences.statement)
+        self.assertIn("region by zone", differences.statement)
+
+    def test_a_rate_set_by_a_cut_off_that_moves_with_the_grouping_says_so_and_does_not_lead(self):
+        rng = np.random.default_rng(69)
+        gender = np.repeat([0, 1], 300)
+        hemoglobin = rng.normal(13.3, 1.5, 600).round(1)
+        frame = pd.DataFrame({
+            "Gender": gender,
+            "Hemoglobin": hemoglobin,
+            "Result": (hemoglobin < np.where(gender == 1, 13.5, 12.0)).astype(int),
+        })
+        roles = roles_for(frame, "Hemoglobin", "Result", factors=("Gender",))
+
+        brief = analyze_business(frame, roles)
+
+        rates = brief_card(brief, "rates")
+        assert rates is not None
+        self.assertIn("at a cut-off that differs by Gender", rates.statement)
+        self.assertIn("Hemoglobin itself does not clearly differ by Gender", rates.statement)
+        self.assertEqual(rates.lead, "")
+        self.assertNotIn("share of rows with Result", brief.headline)
+
+    def test_a_standardised_copy_and_a_restating_grouping_are_left_out(self):
+        rng = np.random.default_rng(70)
+        drug = np.repeat([f"d{index}" for index in range(12)], 50)
+        frame = pd.DataFrame({
+            "Drug": drug,
+            "Tissue": rng.choice(["lung", "skin", "blood"], 600),
+            "IC50": rng.normal(0, 1, 600) + np.repeat(rng.normal(0, 3, 12), 50),
+        })
+        grouped = frame.groupby("Drug")["IC50"]
+        frame["Z"] = (frame["IC50"] - grouped.transform("mean")) / grouped.transform("std")
+        frame["Lot"] = frame["IC50"].round(6).astype(str)
+        roles = replace(roles_for(frame, "IC50", "Tissue"), dimensions=("Tissue", "Drug"))
+
+        differences = brief_card(analyze_business(frame, roles), "differences")
+
+        assert differences is not None
+        self.assertIn("Z is IC50 standardised within each Drug (mean 0, SD 1), so only IC50 is compared",
+                      differences.calculation)
+        self.assertNotIn("Z by", differences.statement)
+
+    def test_outlier_fences_never_come_from_a_band_of_the_reading(self):
+        rng = np.random.default_rng(71)
+        index = rng.gamma(3, 25, 4000).round()
+        frame = pd.DataFrame({
+            "station": rng.choice(["a", "b"], 4000),
+            "index": index,
+            "band": np.select([index <= 50, index <= 100], ["good", "moderate"], "unhealthy"),
+        })
+        # A run of days labelled good although the reading sits above the band.
+        frame.loc[:14, "index"] = 95.0
+        roles = replace(roles_for(frame, "index", "station"), dimensions=("station", "band"))
+
+        outliers = brief_card(analyze_business(frame, roles), "outliers")
+
+        assert outliers is not None
+        self.assertNotIn("of their own band", outliers.statement)
+
+    def test_ask_can_check_whether_a_grouping_is_built_from_a_reading(self):
+        rng = np.random.default_rng(72)
+        reading = rng.gamma(3, 25, 400).round()
+        frame = pd.DataFrame({
+            "max": reading,
+            "categori": np.select([reading <= 50, reading <= 100], ["BAIK", "SEDANG"], "TIDAK SEHAT"),
+            "station": rng.choice(["a", "b"], 400),
+            "humidity": rng.normal(70, 5, 400),
+        })
+        roles = replace(roles_for(frame, "humidity", "station"), dimensions=("station", "categori"))
+
+        self.assertTrue(grouping_set_by(frame, roles, "max", "categori").startswith("categori is set by max"))
+        self.assertEqual(grouping_set_by(frame, roles, "humidity", "categori"), "")
 
 
 class TwoFactorTests(unittest.TestCase):

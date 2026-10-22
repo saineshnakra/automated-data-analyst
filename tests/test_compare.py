@@ -11,6 +11,7 @@ from ada.compare import (
     MAX_SCAN_COLUMNS,
     SCAN_ROWS,
     benjamini_hochberg,
+    built_in_grouping,
     cap_flag,
     centre_word,
     combined_groupings,
@@ -30,6 +31,7 @@ from ada.compare import (
     grouping_rules,
     holm_adjust,
     is_angle,
+    item_attributes,
     lead_sentence,
     most_influential,
     nested_within,
@@ -820,6 +822,47 @@ class NeighbourRowTests(unittest.TestCase):
 
         assert built is not None
         self.assertEqual([item.describe() for item in built.derived], ["60 = mean of 50 and 70"])
+
+
+class BuiltInGroupingTests(unittest.TestCase):
+    def test_a_code_marking_where_the_amount_is_zero_holds_it_by_definition(self):
+        rng = np.random.default_rng(54)
+        code = rng.choice([0, 6, 7, 8], 600, p=[0.4, 0.3, 0.2, 0.1])
+        frame = pd.DataFrame({"RSKF": code, "RSK": np.where(code == 0, 0.0, rng.gamma(1.5, 3, 600).round(1))})
+
+        self.assertEqual(built_in_grouping(frame, "RSK", "RSKF"), "constant")
+        scan = scan_differences(frame, ["RSK"], ["RSKF"])
+        self.assertTrue(scan is None or ("RSK", "RSKF", "constant") in scan.defined)
+
+    def test_a_grouping_named_after_its_reading_or_grading_an_index_holds_it(self):
+        rng = np.random.default_rng(55)
+        level = rng.uniform(2, 4.5, 500)
+        pm = rng.gamma(2, 40, 500)
+        frame = pd.DataFrame({
+            "trophic_level": level,
+            "trophic_group": np.select([level < 2.8, level < 3.6], ["Herbivore", "Omnivore"], "Piscivore"),
+            "pm2_5": pm,
+            "AQI_Level": np.select([pm < 50, pm < 100], ["Good", "Moderate"], "Unhealthy"),
+            "Site": rng.choice(["a", "b", "c"], 500),
+        })
+        frame.loc[frame.sample(40, random_state=1).index, "AQI_Level"] = "Moderate"
+
+        self.assertEqual(built_in_grouping(frame, "trophic_level", "trophic_group"), "named")
+        self.assertEqual(built_in_grouping(frame, "pm2_5", "AQI_Level"), "index")
+        self.assertIsNone(built_in_grouping(frame, "pm2_5", "Site"))
+
+    def test_a_reading_fixed_for_each_species_is_an_attribute_of_the_species(self):
+        rng = np.random.default_rng(56)
+        species = rng.choice([f"sp{index}" for index in range(40)], 800)
+        level = dict(zip([f"sp{index}" for index in range(40)], rng.uniform(2, 4.5, 40), strict=True))
+        frame = pd.DataFrame({
+            "species": species,
+            "trophic_level": [level[name] for name in species],
+            "size": rng.gamma(3, 5, 800),
+        })
+
+        fixed = item_attributes(frame, ["trophic_level", "size"], ["species"])
+        self.assertEqual(fixed, {"trophic_level": "species"})
 
 
 class CappedTests(unittest.TestCase):
