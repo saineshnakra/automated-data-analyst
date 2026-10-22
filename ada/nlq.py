@@ -6480,42 +6480,96 @@ def _named_columns(question: str, frame: pd.DataFrame) -> list[str]:
     return list(_mentions(_norm(_question_text(question)), _name_index(frame.columns)))
 
 
-def _parts_recording(whole: WholeTable, columns: list[str]) -> list[str]:
-    """The values of the parameter whose rows record every one of ``columns``, in table order."""
+def _parts_recording(whole: WholeTable, columns: list[str], by: str | None = None) -> list[str]:
+    """The values of ``by`` (the parameter) whose rows record every one of ``columns``, in table order.
+
+    Rows with no value of ``by`` are no part anyone can name, so they are left out.
+    """
     frame = whole.frame
-    recorded = frame[columns].notna().groupby(frame[whole.parameter].astype(str), sort=False).any()
-    return [str(part) for part, row in recorded.iterrows() if bool(row.all())]
+    by = by or whole.parameter
+    present = frame[frame[by].notna()]
+    recorded = present[columns].notna().groupby(present[by].astype(str), sort=False).any()
+    parts = [str(part) for part, row in recorded.iterrows() if bool(row.all())]
+    return [part for part in parts if by != whole.parameter or part != whole.focus]
 
 
-def _part_frame(whole: WholeTable, part: str) -> tuple[pd.DataFrame, ColumnRoles]:
+def _stacking_column(whole: WholeTable, columns: list[str]) -> str:
+    """The column whose values mark the part of the file that records ``columns``: the parameter first.
+
+    A file stacking several tables can mark them in a column of its own
+    ("source_table") while the brief follows a long table inside one of them.
+    That column is used when the parameter has no part recording them and
+    every row recording all of them holds one of its values. The column whose
+    part records them on the largest share of its rows wins, then the first.
+    """
+    if _parts_recording(whole, columns):
+        return whole.parameter
+    frame = whole.frame
+    recording = frame[columns].notna().all(axis=1)
+    if not recording.any():
+        return whole.parameter
+    best: tuple[float, str] | None = None
+    for column in frame.columns:
+        if column == whole.parameter or is_numeric_dtype(frame[column]):
+            continue
+        held = frame.loc[recording, column]
+        if held.isna().any() or held.nunique() != 1 or not 2 <= frame[column].nunique() <= GROUPING_LIMIT:
+            continue
+        share = float(recording.sum()) / float((frame[column] == held.iloc[0]).sum())
+        if best is None or share > best[0]:
+            best = (share, str(column))
+    return best[1] if best else whole.parameter
+
+
+def _unit_reading(parameter: str, columns: pd.Index) -> str | None:
+    """The one column a unit column describes, by name: "abundance unit" describes abundance.
+
+    A column called just "unit" describes every reading beside it, so None.
+    """
+    words = _norm(parameter).split()
+    if len(words) < 2 or words[-1] not in ("unit", "units", "uom"):
+        return None
+    named = [column for column in columns if _norm(column) == " ".join(words[:-1])]
+    return named[0] if len(named) == 1 else None
+
+
+def _part_frame(whole: WholeTable, part: str, by: str | None = None) -> tuple[pd.DataFrame, ColumnRoles]:
     """The rows of one part of the file, with roles regrouped for it as the brief would."""
     # Imported here because the pipeline itself builds on this module.
     from .pipeline import apply_focus
 
+    if by and by != whole.parameter:
+        return whole.frame[whole.frame[by].astype(str) == part], whole.roles
     roles = replace(whole.roles, dimension=whole.parameter, focus=None)
     return apply_focus(whole.frame, roles, part)
 
 
 def _answer_in_part(
-    question: str, whole: WholeTable, part: str, rows_not_analyzed: int
+    question: str, whole: WholeTable, part: str, rows_not_analyzed: int, by: str | None = None
 ) -> tuple[QueryAnswer | None, pd.DataFrame, ColumnRoles, WholeTable | None]:
     """Answer within one part of a stacked file, with the roles detected on that part's own columns.
 
     Another part has its own columns, which the roles detected for the part
     the brief follows know nothing of. A part that is itself a long table (a
     unit beside each value) follows one of its values, as the brief would.
+    ``by`` names the column that marks the part, the parameter by default.
     Returns the answer with the frame, roles and long table it came from.
     """
     # Imported here because the pipeline itself builds on this module.
     from .pipeline import apply_focus
 
-    frame, _ = _part_frame(whole, part)
+    frame, _ = _part_frame(whole, part, by)
     frame = frame.loc[:, frame.notna().any().to_numpy()]
     roles = detect_roles(frame)
     inner = None
     plan = parse_question(question, frame, replace(roles, focus=None)) if roles.focus else None
-    # Only values in different units need the one-unit view; counting rows does not.
-    if roles.focus and roles.dimension and (plan is None or plan.measure or plan.partner):
+    # Only values in different units need the one-unit view; counting rows does not, nor does a
+    # reading other than the one a unit column is named for ("abundance unit" is abundance's).
+    described = _unit_reading(roles.dimension, frame.columns) if roles.dimension else None
+    readings = (plan.measure, plan.partner) if plan else ()
+    if roles.focus and roles.dimension and (plan is None or any(readings)) and (
+        described is None or plan is None or described in readings
+    ):
         inner = WholeTable(frame, replace(roles, focus=None), roles.dimension, roles.focus)
         frame, roles = apply_focus(frame, roles, roles.focus)
     roles = replace(roles, focus=None)
@@ -6547,16 +6601,19 @@ def _part_answer(
     empty = [column for column in named if column in dataframe.columns and dataframe[column].isna().all()]
     if not empty:
         return None
-    parts = [part for part in _parts_recording(whole, named) if part != whole.focus]
+    by = _stacking_column(whole, named)
+    parts = _parts_recording(whole, named, by)
     if len(parts) != 1:
         return None
-    found, frame, _, _ = _answer_in_part(question, whole, parts[0], rows_not_analyzed)
+    found, frame, roles, _ = _answer_in_part(question, whole, parts[0], rows_not_analyzed, by)
     if found is None:
         return None
+    # A name inside a value the question types ("organ" in "human_organs_tissues") is no column it uses.
+    empty = [column for column in empty if column in _plan_columns(found.plan, frame, roles)] or empty
     verb = "is" if len(empty) == 1 else "are"
-    rows = int((whole.frame[whole.parameter].astype(str) == parts[0]).sum())
+    rows = int((whole.frame[by].astype(str) == parts[0]).sum())
     note = (
-        f" {_and_listed(empty)} {verb} only recorded in the rows with {whole.parameter} = {parts[0]} "
+        f" {_and_listed(empty)} {verb} only recorded in the rows with {by} = {parts[0]} "
         f"({rows:,} rows), so this answer covers that part of the file, not the "
         f"{whole.parameter} = {whole.focus} part the brief follows."
     )
@@ -6580,20 +6637,23 @@ def _part_reason(question: str, dataframe: pd.DataFrame, whole: WholeTable) -> s
             continue
         values = dataframe[column].dropna()
         if values.empty:
-            parts = [part for part in _parts_recording(whole, [column]) if part != whole.focus]
-            if not parts:
+            if whole.frame[column].isna().all():
                 return f"{column} has no values anywhere in the file."
+            by = _stacking_column(whole, [column])
+            parts = _parts_recording(whole, [column], by)
+            if not parts:
+                return f"{column} has no values in {focus}; it is recorded only in rows with no {by}."
             others = [other for other in named if other != column]
-            together = [part for part in _parts_recording(whole, named)] if others else parts
+            together = _parts_recording(whole, named, _stacking_column(whole, named)) if others else parts
             where = _listed_capped(parts, 4)
             if others and not together:
                 return (
-                    f"{column} has no values in {focus}; it is recorded only where {whole.parameter} is "
+                    f"{column} has no values in {focus}; it is recorded only where {by} is "
                     f"{where}, and no part of the file records {_and_listed(named)} together."
                 )
             return (
-                f"{column} has no values in {focus}; it is recorded where {whole.parameter} is {where}. "
-                f'Name one, as in "{question.strip().rstrip("?")} for {whole.parameter} {parts[0]}".'
+                f"{column} has no values in {focus}; it is recorded where {by} is {where}. "
+                f'Name one, as in "{question.strip().rstrip("?")} for {by} {parts[0]}".'
             )
         everywhere = whole.frame[column].dropna()
         if values.nunique() == 1 and everywhere.nunique() > 1:

@@ -2256,6 +2256,40 @@ class StackedTableTests(unittest.TestCase):
         self.assertTrue(answer.answer.startswith("food has the most rows of any source_table, at 40"))
         self.assertNotIn("own scale", answer.answer)
 
+    def test_a_long_table_inside_one_part_answers_from_the_column_marking_the_parts(self):
+        # The brief follows a unit beside the food readings; the other tables have no unit at all.
+        units = np.where(self.frame["source_table"] == "food", "items", None)
+        frame = self.frame.assign(**{"particles unit": units})
+        frame.loc[:9, "particles unit"] = "mg"
+        roles = detect_roles(frame)
+        whole = WholeTable(frame, roles, "particles unit", "items")
+        focused = frame[frame["particles unit"] == "items"].reset_index(drop=True)
+        roles = replace(roles, dimension="food_category")
+
+        answer = answer_question("average sample_size by organ_system", focused, roles, whole=whole)
+
+        self.assertIn("only recorded in the rows with source_table = organs (20 rows)", answer.answer)
+        self.assertNotIn("None", answer.answer)
+
+    def test_a_unit_column_named_for_one_reading_leaves_the_others_whole(self):
+        rng = np.random.default_rng(11)
+        organs = pd.DataFrame({
+            "organ_system": rng.choice(["skin", "liver"], 20),
+            "sample_size": rng.integers(10, 200, 20).astype(float),
+            "abundance": rng.uniform(1, 90, 20), "abundance unit": np.tile(["particles", "particles/g"], 10),
+        })
+        others = self.frame[self.frame["source_table"] != "organs"]
+        frame = pd.concat([others, organs.assign(source_table="organs")], ignore_index=True)
+        roles = detect_roles(frame)
+        whole = WholeTable(frame, roles, "source_table", "food")
+        focused = frame[frame["source_table"] == "food"].reset_index(drop=True)
+        roles = replace(roles, dimension="food_category")
+
+        answer = answer_question("average sample_size by organ_system", focused, roles, whole=whole)
+
+        self.assertIn("Based on all 20 rows", answer.answer)
+        self.assertNotIn("abundance unit", answer.answer)
+
 
 class PerUnitTests(unittest.TestCase):
     def test_a_measure_per_unit_by_a_grouping_compares_the_units(self):

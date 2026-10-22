@@ -590,9 +590,14 @@ within that part, with roles detected on its own columns, and the answer
 says so: "sample_size and organ_system are only recorded in the rows with
 source_table = human_organs_tissues (20 rows), so this answer covers that
 part of the file". Naming the part ("for source_table human_organs_tissues")
-does the same. When no one part records every column named, the reason says
-where each is recorded. "How many rows per source_table" counts and ranks
-the parts.
+does the same. Rows with no value of the parameter are no part. When the
+brief follows a long table inside one of the stacked tables (a unit beside
+its readings), the part is found by the column that marks the tables: the
+one whose single value every row recording the named columns holds. Within
+a part that is itself a long table, a unit column named for one reading
+("abundance unit") narrows the rows only for that reading. When no one part
+records every column named, the reason says where each is recorded. "How
+many rows per source_table" counts and ranks the parts.
 
 **Cautions.** An answer that combines a measure's values looks them up in the
 data checks (`quality.scan`, run once per table and shared with the brief:
