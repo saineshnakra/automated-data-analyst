@@ -54,7 +54,8 @@ class ColumnRoles:
     #: What ADA concluded about the columns, in plain sentences.
     notes: tuple[str, ...] = ()
     #: Numeric columns that place or describe a row rather than measure it:
-    #: coordinates, compass directions, quality flags and parts of a date. They
+    #: coordinates, compass directions, quality flags, parts of a date, and
+    #: running totals and counters (see ``running_total_columns``). They
     #: stay in ``numeric`` so questions can name them, but are never the
     #: measure, a grouping or a reading to compare or correlate.
     non_readings: tuple[str, ...] = ()
@@ -1068,7 +1069,7 @@ def _running_total(name: str, values: np.ndarray, groups: np.ndarray) -> bool:
     and neither does a day of the month. A name such as "Cumulative Cases" is
     enough without a reset, and so is counting up by one at most steps while
     almost never falling, as a packet or frame counter numbers the messages a
-    device sends. Money is never counted up that way.
+    device sends. Money and named levels (an age) are never counted up that way.
     """
     words = _head_words(name)
     if is_time_part(name, pd.Series(values)):
@@ -1085,9 +1086,11 @@ def _running_total(name: str, values: np.ndarray, groups: np.ndarray) -> bool:
         return False
     if set(words) & RUNNING_TOTAL_WORDS:
         return True
-    # A counter of messages falls back almost never and steps up by one; money never counts so.
+    # A counter of messages falls back almost never and steps up by one; money
+    # and named levels such as an age never count so.
     counting = (
         not is_currency(name)
+        and not is_level_name(name)
         and falls <= COUNTER_FALLS * len(current)
         and bool(np.all(values % 1 == 0))
         and float(np.mean(current - previous == 1)) >= COUNTING_STEPS
@@ -1119,6 +1122,11 @@ def _matrix_columns(numeric: list[str]) -> list[str]:
     return numbered
 
 
+def _name_shape(name: str) -> str:
+    """A name with each run of letters and digits written as "x": "x_x_x_x" for "20A_508_1_2107"."""
+    return re.sub(r"[A-Za-z0-9]+", "x", str(name))
+
+
 def _count_matrix_columns(dataframe: pd.DataFrame, numeric: list[str]) -> list[str]:
     """The count columns of a table that is mostly a matrix of counts, whatever their names, or [].
 
@@ -1126,7 +1134,9 @@ def _count_matrix_columns(dataframe: pd.DataFrame, numeric: list[str]) -> list[s
     on each row, are one kind of reading spread across columns too. They must
     be MIN_COUNT_MATRIX_COLUMNS or more columns of whole numbers of at least
     zero, most of the numeric columns, with typical sizes within
-    MATRIX_SCALE_SPREAD of one another.
+    MATRIX_SCALE_SPREAD of one another. When most of them share a structured
+    name ("20A_508_1_2107", see ``_name_shape``), only those are kept, so an
+    annotation code or a plot setting beside 147 injections is not averaged in.
     """
     if len(numeric) < MIN_COUNT_MATRIX_COLUMNS:
         return []
@@ -1139,6 +1149,10 @@ def _count_matrix_columns(dataframe: pd.DataFrame, numeric: list[str]) -> list[s
     ]
     if len(counts) < MIN_COUNT_MATRIX_COLUMNS or len(counts) < MATRIX_SHARE * len(numeric):
         return []
+    shapes = Counter(_name_shape(column) for column in counts)
+    shape, sharing = shapes.most_common(1)[0]
+    if shape != "x" and sharing >= MIN_COUNT_MATRIX_COLUMNS and sharing >= MATRIX_SHARE * len(counts):
+        counts = [column for column in counts if _name_shape(column) == shape]
     means = dataframe[counts].mean().to_numpy(dtype=float)
     if not (means > 0).all() or means.max() > MATRIX_SCALE_SPREAD * means.min():
         return []
@@ -2606,9 +2620,11 @@ def _detect_roles(dataframe: pd.DataFrame, source_words: frozenset[str] = frozen
         table_shape=table_shape,
         focus=focus,
         notes=tuple(notes),
+        # A running total or a message counter is no reading to compare or correlate either.
         non_readings=tuple(
             column for column in numeric
-            if column in set_aside or (column not in in_matrix and is_time_part(column, dataframe[column]))
+            if column in set_aside or column in counters
+            or (column not in in_matrix and is_time_part(column, dataframe[column]))
         ),
     )
 

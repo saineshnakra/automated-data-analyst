@@ -205,7 +205,11 @@ measure. So does a table of counts whose columns have no numbered names, such
 as 26 samples of read counts named `AQC1cm`, `CC1` … `Even3` beside an OTU id:
 at least 10 columns of whole numbers of at least zero, three quarters of the
 numeric columns or more, with average sizes within a factor of 1,000 of one
-another, and an identifier naming each row. It is `"matrix"`: `measure` is
+another, and an identifier naming each row. When most of those columns share
+a structured name, with each run of letters and digits counted as one part
+(`20A_508_1_2107` and `QC9_112_1_2104` are both `x_x_x_x`), only they are
+kept, so an annotation code (`AQ`) or a plot setting (`Boxplot`) beside the
+injections is not averaged into the row mean. It is `"matrix"`: `measure` is
 `None`, and a note says what the table appears to be, suggests reshaping it to
 long form, and names prefix groups (`A*` and `B*`) that may be groups to
 compare. For counts it also says how far the columns' totals differ and to put
@@ -348,7 +352,8 @@ the last value or less. A name such as `Cumulative Cases` (`cumulative`,
 `cum`, `running`, `accumulated`, `ytd`, `odometer`) is enough without a reset,
 and so is counting up by exactly one at half the steps or more while falling
 back at no more than 1% of them, as a packet or frame counter numbers the
-messages a device sends. A money column is never read as such a counter.
+messages a device sends. A money column or a named level such as an age is
+never read as such a counter.
 Rainfall that falls back to zero after each shower rises and falls as often,
 so it does not qualify, and neither does a day-of-month column. A sibling
 column recording each reading's own amount (`Interval Rain`, `Hourly ...`,
@@ -440,6 +445,7 @@ A note names them, except parts of a date.
 | Quality flags | A word `qn`, `qc`, `qa` or `qf` (`QN_3`), a name starting with `quality` and ending in `flag` or `code`, or a name ending in `flag` after another column's name (`TMK_flag` beside `TMK`) (`is_quality_flag`). `Fraud_Flag` on its own is an outcome to compare. Text quality flags are not groupings either |
 | Numbered rows | A different whole number on every row, in order, not named as a quantity: a key or a date stored as a number |
 | Parts of a date | A time-part name with values that fit it (see [Category codes](#category-codes)) |
+| Running totals and counters | See [Running totals](#running-totals): a gauge reading or a message counter compared across groups or correlated with anything says nothing. Their own note names them |
 
 ## Notes
 

@@ -926,6 +926,7 @@ class RunningTotalTests(unittest.TestCase):
         roles = detect_roles(frame)
 
         self.assertEqual(roles.measure, "Sound Level (dBA)")
+        self.assertIn("Packet Count", roles.non_readings)
         self.assertTrue(any(note.startswith("Packet Count keeps climbing") for note in roles.notes))
 
 
@@ -1036,6 +1037,18 @@ class MatrixTests(unittest.TestCase):
         note = next(note for note in roles.notes if note.startswith("This table looks like a matrix"))
         self.assertIn("columns of counts", note)
         self.assertIn("common scale", note)
+        self.assertEqual(row_summary_columns(roles, frame), samples)
+
+    def test_codes_beside_structured_sample_names_are_left_out_of_the_matrix(self):
+        rng = np.random.default_rng(32)
+        samples = [f"{index}A_{100 + index}_1_{2000 + index}" for index in range(20)]
+        frame = pd.DataFrame(rng.poisson(5000, (50, 20)), columns=samples)
+        frame.insert(0, "AQ", rng.choice([10220, 20110, 20210], 50))
+        frame.insert(0, "Feature_ID", [f"F{index}" for index in range(50)])
+
+        _, roles = add_row_summary(frame, detect_roles(frame))
+
+        self.assertEqual(roles.measure, "Row mean (20 columns)")
         self.assertEqual(row_summary_columns(roles, frame), samples)
 
     def test_a_few_count_columns_beside_readings_are_not_a_matrix(self):
