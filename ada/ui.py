@@ -70,13 +70,13 @@ def render_landing() -> None:
         """
         <section class="hero">
           <div class="hero-copy">
-            <div class="eyebrow">Exploratory analysis for any table</div>
-            <h1>Drop in the messy table.<br><span class="grad">Every number shows its math.</span></h1>
-            <p>Lab results, field measurements, survey exports, sales. ADA reads the columns, finds the structure, flags what looks odd, and shows the arithmetic behind every figure. No guessing which column is which, no groupby after groupby, no chart redone because the dates parsed as text.</p>
+            <div class="eyebrow">A first look at research data</div>
+            <h1>See what is in your data.<br><span class="grad">Every number shows its math.</span></h1>
+            <p>Drop in a table of measurements: a lab assay, an instrument log, a field survey, a clinical panel. In seconds ADA checks it for problems, tests which groups differ, finds what relates to what, and flags what changed over time. Each finding names the test behind it and shows the arithmetic, so you can check it.</p>
             <div class="proof-row">
-              <span class="proof-pill"><strong>01</strong> No model computes a number</span>
-              <span class="proof-pill"><strong>02</strong> No API key, no setup</span>
-              <span class="proof-pill"><strong>03</strong> It says when it cannot</span>
+              <span class="proof-pill"><strong>01</strong> Checks the data first</span>
+              <span class="proof-pill"><strong>02</strong> Standard tests, shown in full</span>
+              <span class="proof-pill"><strong>03</strong> No sign-up, no API key</span>
             </div>
           </div>
         </section>
@@ -89,9 +89,10 @@ def render_how_it_works() -> None:
     st.markdown(
         """
         <section class="how-grid">
-          <article class="how-card"><div class="how-number">01 · DROP</div><h3>Any table you have</h3><p>Upload CSV or Excel. ADA detects the date, the measure, the segment and the identifiers, cleans common problems, and reports what it changed.</p></article>
-          <article class="how-card"><div class="how-number">02 · TRACE</div><h3>Arithmetic, not assertion</h3><p>Trend, breakdown, anomaly flags, correlation with a confidence interval. Every finding shows the calculation that produced it. All local, no network call.</p></article>
-          <article class="how-card"><div class="how-number">03 · REFUSE</div><h3>It says when it cannot</h3><p>The forecast will not run on thin history. Ask ADA declines a question it cannot represent. Recommendations are labelled interpretation, never cause.</p></article>
+          <article class="how-card"><div class="how-number">01 · CHECK</div><h3>Can I trust it?</h3><p>Codes such as -999, impossible values, stuck sensors, swapped or copied columns and repeated rows are found before anything is reported.</p></article>
+          <article class="how-card"><div class="how-number">02 · COMPARE</div><h3>Do my groups differ?</h3><p>Each grouping gets the right test, an effect size, the n per group and the pairs that differ. A gap within the noise is called no clear difference.</p></article>
+          <article class="how-card"><div class="how-number">03 · RELATE</div><h3>What goes with what?</h3><p>Every reading is correlated with the measure, with a 95% interval, leaving out columns built from one another, and the strongest are fitted together.</p></article>
+          <article class="how-card"><div class="how-number">04 · TRACK</div><h3>Did anything change?</h3><p>With a date, ADA draws the trend, flags periods outside the usual range, finds lasting changes in level and tests a forecast against no change.</p></article>
         </section>
         """,
         unsafe_allow_html=True,

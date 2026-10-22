@@ -157,20 +157,23 @@ SAMPLE_NOTES = {
     "Ecommerce Orders": "Orders by category and channel, with returns as negative rows so totals have to handle mixed signs.",
 }
 
+# The app opens on this bundled sample, a lab assay, since most first visitors bring measurements.
+DEMO_SAMPLE = "Lab Measurements"
+
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 # The library's DEFAULT_ROW_LIMIT. Cleaning, not the row count, sets the time a
 # file takes, so a file the upload limit admits is analyzed whole.
 MAX_ANALYSIS_ROWS = 1_000_000
 
 st.set_page_config(
-    page_title="ADA | Exploratory data analysis for CSV and Excel",
+    page_title="ADA | See what is in your data",
     page_icon="◈",
     layout="wide",
     initial_sidebar_state="collapsed",
     menu_items={
         "Get Help": "https://github.com/saineshnakra/automated-data-analyst/issues",
         "Report a bug": "https://github.com/saineshnakra/automated-data-analyst/issues/new",
-        "About": "ADA analyzes CSV and Excel tables and shows the calculation behind every number.",
+        "About": "ADA takes a first look at a table of measurements and shows the calculation behind every number.",
     },
 )
 
@@ -355,7 +358,9 @@ def render_ask_ada(
         if chip.button(suggestion, key=f"chip_{suggestion}", width="stretch"):
             question = suggestion
 
-    typed = st.chat_input("Ask about this data, e.g. “top 5 by revenue”, “what drives revenue?” or “outliers in price”")
+    typed = st.chat_input(
+        "Ask about this data, e.g. “average pH by site”, “does yield differ by treatment?” or “outliers in glucose”"
+    )
     question = typed or question
     pending = st.session_state.get("pending_ai_plan")
     if pending is not None and question and question != pending["question"]:
@@ -435,19 +440,19 @@ render_landing()
 api_key = render_sidebar(server_api_key=get_openai_api_key())
 
 sample_datasets = list_sample_datasets()
-source_options = ["Explore the live demo", "Upload your file"]
+source_options = ["Explore the lab demo", "Upload your file"]
 if sample_datasets:
     source_options.insert(1, "Try a sample dataset")
 
 source_mode = st.segmented_control(
     "Choose a source",
     source_options,
-    default="Explore the live demo",
+    default="Explore the lab demo",
     label_visibility="collapsed",
 )
 # A segmented control returns None when the selected option is clicked again.
 if source_mode is None:
-    source_mode = "Explore the live demo"
+    source_mode = "Explore the lab demo"
 
 uploaded_file = None
 business_context = ""
@@ -461,13 +466,13 @@ if source_mode == "Try a sample dataset":
     st.caption(SAMPLE_NOTES.get(selected_sample, "A synthetic dataset for trying ADA."))
 if source_mode == "Upload your file":
     uploaded_file = st.file_uploader(
-        "Upload a CSV or Excel workbook",
+        "Upload a table of measurements: CSV or Excel",
         type=["csv", "xlsx", "xlsm"],
         help="Maximum file size: 25 MB. A workbook with several sheets lets you pick one.",
     )
     business_context = st.text_input(
         "Optional context for the AI summary",
-        placeholder="Example: Subscription revenue by customer, product, and month",
+        placeholder="Example: Weekly cell viability by treatment arm, three replicates per plate",
         max_chars=500,
     )
     if uploaded_file is None:
@@ -476,7 +481,12 @@ if source_mode == "Upload your file":
         st.stop()
 
 try:
-    if source_mode == "Explore the live demo":
+    if source_mode == "Explore the lab demo" and DEMO_SAMPLE in sample_datasets:
+        sample_path = sample_datasets[DEMO_SAMPLE]
+        raw_dataframe = read_uploaded_file(sample_path.read_bytes(), sample_path.name)
+        source_name = f"{DEMO_SAMPLE} · demo"
+        business_context = SAMPLE_NOTES[DEMO_SAMPLE]
+    elif source_mode == "Explore the lab demo":
         raw_dataframe = make_demo_data()
         source_name = "Acme operating data · demo"
         business_context = "Two years of orders across products, regions, and sales channels."
@@ -517,8 +527,12 @@ except (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError, Val
 if prepared.rows_note:
     st.warning(f"ADA analyzed {prepared.rows_note} for predictable performance.")
 
-for note in prepared.cleaning_report.notes:
-    st.info(note)
+# One collapsed list, so a file with many fixes still opens on its headline.
+cleaning_notes = prepared.cleaning_report.notes
+if cleaning_notes:
+    count = len(cleaning_notes)
+    with st.expander(f"What ADA changed while reading the file ({count} {'note' if count == 1 else 'notes'})"):
+        st.markdown("\n".join(f"- {note}" for note in cleaning_notes))
 
 dataframe = prepared.dataframe
 detected = prepared.detected_roles
@@ -537,12 +551,13 @@ dimension_options = ["None", *detected.dimensions]
 close_measures = [
     column for column in getattr(detected, "measure_alternatives", ()) or () if column != detected.measure
 ]
-with st.expander("Tune ADA's schema detection", expanded=bool(close_measures)):
+if close_measures:
+    st.caption(
+        f"ADA measured {detected.measure}, but it was a close call: {', '.join(close_measures)} could "
+        "also be it. Change it under Tune ADA's schema detection."
+    )
+with st.expander("Tune ADA's schema detection"):
     st.caption("ADA picked these columns automatically. Change any that are wrong.")
-    if close_measures:
-        st.caption(
-            f"The metric was a close call: {', '.join(close_measures)} could also be it."
-        )
     selectors = st.columns(3)
     selected_date = selectors[0].selectbox(
         "Date",
@@ -621,21 +636,21 @@ render_dataset_bar(source_name, dataframe, roles, focus=focus_label)
 render_brief(brief)
 render_kpis(brief)
 
-executive_tab, ask_tab, dashboard_tab, explore_tab, evidence_tab, data_tab = st.tabs(
-    ["Executive brief", "Ask ADA", "Live dashboard", "Explore", "Evidence ledger", "Data room"]
+summary_tab, ask_tab, charts_tab, explore_tab, findings_tab, data_tab = st.tabs(
+    ["Summary", "Ask ADA", "Charts", "Explore", "Findings", "Data"]
 )
 
-with executive_tab:
+with summary_tab:
     render_section_heading(
         "Summary",
         "Suggested next steps",
         "Each recommendation sits beside the evidence it is based on.",
     )
-    executive_columns = st.columns([1.08, 0.92], gap="large")
-    with executive_columns[0]:
+    summary_columns = st.columns([1.08, 0.92], gap="large")
+    with summary_columns[0]:
         st.markdown('<div class="section-label">What ADA would do next</div>', unsafe_allow_html=True)
         render_recommendations(brief)
-    with executive_columns[1]:
+    with summary_columns[1]:
         st.markdown('<div class="section-label">What the data says</div>', unsafe_allow_html=True)
         render_evidence(brief, limit=4)
         st.markdown(
@@ -682,7 +697,7 @@ with ask_tab:
         dataframe, roles, source_name, api_key, rows_not_analyzed=prepared.truncated_rows, whole=whole
     )
 
-with dashboard_tab:
+with charts_tab:
     render_section_heading(
         "Overview",
         "The main charts",
@@ -693,9 +708,9 @@ with dashboard_tab:
 with explore_tab:
     render_explore(dataframe, roles, brief)
 
-with evidence_tab:
+with findings_tab:
     render_section_heading(
-        "Evidence ledger",
+        "Findings",
         "Trace every conclusion",
         "Every figure shows the calculation behind it. If ADA picked the wrong column for a role, change it under Tune ADA's schema detection.",
     )
@@ -705,9 +720,9 @@ with evidence_tab:
 
 with data_tab:
     render_section_heading(
-        "Data room",
+        "Data",
         "Clean, inspect, and take it with you",
-        "Review ADA's cleaning audit, inspect the normalized table, and export both the executive brief and analysis-ready data.",
+        "Review ADA's cleaning audit, inspect the cleaned table, and export the report and the analysis-ready data.",
     )
     report = build_business_report(
         dataframe,

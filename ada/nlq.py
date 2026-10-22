@@ -5082,12 +5082,22 @@ def suggested_questions(dataframe: pd.DataFrame, roles: ColumnRoles) -> list[str
             suggestions.append(roles.measure)
         else:
             suggestions.append(f"{metric_for(roles.measure, roles).combines_as.capitalize()} {roles.measure}")
+    # Money and counts are ranked and grown; a reading is compared and related, as a researcher would.
+    additive = bool(roles.measure) and metric_for(roles.measure, roles).additive
     if roles.measure and roles.dimension:
-        suggestions.append(f"Top 5 {roles.dimension} by {roles.measure}")
+        suggestions.append(
+            f"Top 5 {roles.dimension} by {roles.measure}"
+            if additive
+            else f"Does {roles.measure} differ by {roles.dimension}?"
+        )
     if roles.measure and roles.date:
         suggestions.append(f"Monthly {roles.measure} trend")
-    if roles.dimension and roles.date:
+    if additive and roles.dimension and roles.date:
         suggestions.append(f"Which {roles.dimension} grew fastest?")
+    elif roles.measure and len(roles.numeric) > 1:
+        suggestions.append(f"What relates to {roles.measure}?")
+    if roles.measure and len(suggestions) < 4:
+        suggestions.append(f"Outliers in {roles.measure}")
     if not suggestions:
         suggestions.append("How many rows are there?")
     return suggestions[:4]

@@ -73,7 +73,7 @@ with the `app` extra, and the OpenAI client and Pydantic with the `ai` extra.
 | `ada/selection.py` | Turns a selection on the Explore chart into filters, states them in words, and compares the slice with the whole |
 | `ada/formatting.py` | `format_number`, `format_period`, `normalized_name` |
 | `ada/ai_insights.py` | Typed Responses API calls for the query planner and the AI summary |
-| `ada/demo_data.py` | The seeded synthetic demo dataset |
+| `ada/demo_data.py` | A seeded synthetic sales dataset, used by the tests and by the app when the bundled samples are missing |
 | `tools/` | Offline calibration script, not imported by the app or the package |
 
 ## Design rules

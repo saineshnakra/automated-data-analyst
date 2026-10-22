@@ -1,8 +1,9 @@
 # ADA documentation
 
-ADA reads a CSV or Excel file and produces a dashboard, an executive brief and
-answers to plain-English questions. Each number is shown with the calculation
-that produced it.
+ADA takes a first look at a table of measurements: it checks the data for
+problems, tests which groups differ, finds what relates to what, flags changes
+over time and answers plain-English questions. Each number is shown with the
+calculation that produced it.
 
 The engine is the `ada` package. The Streamlit app is `app.py` at the
 repository root, and the bundled sample files are in `ada/samples/`.
@@ -12,8 +13,9 @@ repository root, and the bundled sample files are in `ada/samples/`.
 | # | Page | Contents |
 |---|---|---|
 | 1 | [Concepts](concepts.md) | The terms ADA uses: measure, segment, period, evidence, plan |
-| 2 | [How it works](how-it-works.md) | The path from uploaded file to dashboard |
-| 3 | [Architecture](architecture.md) | Which module does what, and the rules between them |
+| 2 | [What ADA does](features.md) | Everything each step does, in detail |
+| 3 | [How it works](how-it-works.md) | The path from uploaded file to dashboard |
+| 4 | [Architecture](architecture.md) | Which module does what, and the rules between them |
 
 ## Reference
 
