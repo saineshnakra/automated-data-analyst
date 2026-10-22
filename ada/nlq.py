@@ -30,6 +30,7 @@ from .business_insights import (
     describe_correlation,
     measure_correlation,
     numeric_readings,
+    set_aside_note,
 )
 from .compare import (
     NOTABLE_CORRELATION,
@@ -4556,6 +4557,7 @@ def _execute_correlates(
         answer += (
             " It was picked from several columns, so treat it as a lead to check, not as evidence of cause."
         )
+    answer += set_aside_note(scan)
     intervals = [correlation_interval(pair.pearson, pair.pairs) for pair in scan.correlates]
     table = pd.DataFrame(
         {

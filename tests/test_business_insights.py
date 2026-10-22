@@ -1235,10 +1235,10 @@ class RelationshipScanCardTests(unittest.TestCase):
 
         assert correlation is not None
         self.assertTrue(correlation.rests_on_one_record)
-        self.assertIn(
-            "It rests on one record: without the one where HCT is 3,715 and MCH is 3,117",
-            describe_correlation(correlation),
-        )
+        statement = describe_correlation(correlation)
+        # The figure that one record does not decide comes first.
+        self.assertTrue(statement.startswith("HCT and MCH move together only weakly once one record is"))
+        self.assertIn("It rests on one record: with the one where HCT is 3,715 and MCH is 3,117", statement)
         relationship = card(frame, roles, "relationship")
         self.assertEqual(relationship.value, "|r| < 0.3")
 
@@ -1291,6 +1291,182 @@ class RelationshipScanCardTests(unittest.TestCase):
         readings = numeric_readings(frame, detect_roles(frame))
 
         self.assertEqual(sorted(readings), ["Age_months", "Shannon_Index"])
+
+    def test_the_main_grouping_is_reported_when_the_pair_is_stronger_within_it(self):
+        rng = np.random.default_rng(60)
+        frame = pd.DataFrame({"Log": np.repeat(["first", "second"], 300), "PM10": rng.normal(size=600)})
+        frame["PM25"] = frame["PM10"] + rng.normal(0, 0.4, 600)
+        frame.loc[frame["Log"] == "second", "PM10"] += 3.0
+        roles = ColumnRoles(date=None, measure="PM10", dimension="Log", identifier=None,
+                            numeric=("PM10", "PM25"), dimensions=("Log",))
+
+        relationship = card(frame, roles, "relationship")
+
+        stronger = "Within each Log it is stronger: r = 0.92 in first and 0.92 in second"
+        self.assertIn(stronger, relationship.statement)
+
+    def test_a_row_mean_is_not_related_to_the_columns_it_averages(self):
+        rng = np.random.default_rng(61)
+        counts = rng.poisson(5, (300, 24)).astype(float)
+        frame = pd.DataFrame(counts, columns=[f"S{index}" for index in range(24)])
+        frame.insert(0, "Taxon", [f"t{index}" for index in range(300)])
+        prepared = prepare_analysis(frame, row_limit=5000)
+
+        relationship = card(prepared.dataframe, prepared.detected_roles, "relationship")
+
+        self.assertEqual(relationship.title, "Strongest measurable relationship")
+        self.assertIn("is part of it", relationship.statement)
+
+    def test_shares_that_break_their_total_are_named(self):
+        rng = np.random.default_rng(62)
+        shares = (rng.dirichlet([4, 3, 2, 1], 400) * 100).round(1)
+        frame = pd.DataFrame(shares, columns=["Bact", "Firm", "Prot", "Other"])
+        frame["Other"] = (100 - frame[["Bact", "Firm", "Prot"]].sum(axis=1)).round(1)
+        frame.loc[:24, "Other"] = 0.0
+        frame.loc[:24, "Bact"] += 50.0
+        frame["Weight"] = rng.normal(400, 50, 400)
+        roles = ColumnRoles(date=None, measure="Weight", dimension=None, identifier=None,
+                            numeric=tuple(frame.columns), dimensions=())
+
+        relationship = card(frame, roles, "relationship")
+
+        self.assertIn("On 25 rows, Bact, Firm, Prot and Other add up to", relationship.statement)
+        self.assertNotIn("Bact and Other move", relationship.statement)
+
+
+class CorrelationWordingTests(unittest.TestCase):
+    def test_one_record_hiding_a_relationship_leads_with_the_figure_without_it(self):
+        rng = np.random.default_rng(63)
+        frame = pd.DataFrame({"RBC": rng.normal(4.5, 0.5, 400)})
+        frame["HGB"] = frame["RBC"] * 3 + rng.normal(0, 0.6, 400)
+        frame.loc[3, "RBC"] = 90.8
+
+        statement = describe_correlation(measure_correlation(frame))
+
+        self.assertTrue(statement.startswith("RBC and HGB move together once one record is set aside"))
+        self.assertIn("One record hides a strong relationship: with the one where RBC is 90.80", statement)
+        self.assertNotIn("rests on", statement)
+
+    def test_extreme_records_hiding_a_line_lead_with_r_without_them(self):
+        rng = np.random.default_rng(64)
+        frame = pd.DataFrame({"MCV": rng.normal(85, 8, 500)})
+        frame["MCH"] = frame["MCV"] * 0.33 + rng.normal(0, 1, 500)
+        frame.loc[:7, "MCH"] = rng.uniform(2_000, 3_000, 8)
+
+        statement = describe_correlation(measure_correlation(frame))
+
+        self.assertTrue(statement.startswith("MCV and MCH move together once 8 extreme records are set"))
+        self.assertIn("with them, Pearson r is only", statement)
+
+    def test_a_long_stretch_and_a_floor_are_named_instead_of_a_few_extremes(self):
+        rng = np.random.default_rng(65)
+        quiet = rng.uniform(0, 100, 2_000)
+        fire = rng.uniform(5_000, 40_000, 400)
+        floor = rng.random(2_000) < 0.3
+        eco2 = np.r_[np.where(floor, 400.0, 400 + quiet * rng.uniform(0, 3, 2_000)), fire * 1.5]
+        frame = pd.DataFrame({"TVOC": np.r_[quiet, fire], "eCO2": eco2})
+
+        statement = describe_correlation(measure_correlation(frame))
+
+        self.assertIn("by rank: the rank correlation is only", statement)
+        self.assertIn("one unbroken stretch of", statement)
+        self.assertIn("eCO2 sits at its minimum of 400", statement)
+        self.assertNotIn("few extreme records", statement)
+
+
+class ConstructionCardTests(unittest.TestCase):
+    def test_a_grouping_set_by_a_reading_is_stated_and_not_compared(self):
+        rng = np.random.default_rng(66)
+        sex = rng.integers(0, 2, 800)
+        hemoglobin = rng.normal(13, 2, 800).round(1)
+        frame = pd.DataFrame({
+            "Gender": sex,
+            "Hemoglobin": hemoglobin,
+            "MCV": rng.normal(85, 5, 800),
+            "Result": np.where(hemoglobin < np.where(sex == 0, 12.0, 13.5), 1, 0),
+        })
+        roles = ColumnRoles(date=None, measure="MCV", dimension="Result", identifier=None,
+                            numeric=tuple(frame.columns), dimensions=("Gender", "Result"),
+                            factors=("Gender", "Result"), flags=("Gender", "Result"))
+
+        brief = analyze_business(frame, roles)
+        differences = brief_card(brief, "differences")
+
+        assert differences is not None
+        self.assertIn("Result is set by Hemoglobin: Result 1 below 12.0 for Gender 0", differences.statement)
+        self.assertIn("left out as set by the reading: Hemoglobin by Result", differences.calculation)
+        self.assertNotIn("Hemoglobin is higher", brief.headline)
+
+    def test_no_group_ranking_when_the_grouping_is_cut_from_the_measure(self):
+        rng = np.random.default_rng(67)
+        acres = rng.integers(1, 101, 500)
+        frame = pd.DataFrame({
+            "Acres": acres.astype(float),
+            "Size": np.select([acres <= 10, acres <= 50], ["Small", "Medium"], "Large"),
+            "Weight": rng.normal(400, 50, 500),
+        })
+        roles = ColumnRoles(date=None, measure="Acres", dimension="Size", identifier=None,
+                            numeric=("Acres", "Weight"), dimensions=("Size",), aggregation="mean")
+
+        brief = analyze_business(frame, roles)
+
+        self.assertIsNone(brief_card(brief, "leader"))
+        self.assertNotIn("Acres differs across Size", brief.headline)
+
+    def test_a_score_is_not_compared_across_its_own_items(self):
+        rng = np.random.default_rng(68)
+        items = pd.DataFrame(rng.integers(0, 11, (240, 3)), columns=["RDB1", "RDB2", "RDB3"])
+        frame = items.assign(
+            arm=np.tile(["A", "B"], 120),
+            risky=items.mean(axis=1),
+            other=rng.normal(size=240),
+        )
+        roles = ColumnRoles(date=None, measure="risky", dimension="arm", identifier=None,
+                            numeric=("RDB1", "RDB2", "RDB3", "risky", "other"),
+                            dimensions=("arm", "RDB1", "RDB2", "RDB3"), factors=("RDB1", "RDB2", "RDB3"))
+
+        brief = analyze_business(frame, roles)
+        differences = brief_card(brief, "differences")
+
+        assert differences is not None
+        self.assertNotIn("risky differs across RDB", differences.statement)
+        self.assertIn("left out as a score compared with its own items: risky by", differences.calculation)
+        self.assertNotIn("RDB1 explains", differences.statement)
+
+    def test_date_parts_and_nested_groupings_are_not_compared(self):
+        rng = np.random.default_rng(69)
+        dates = pd.date_range("2020-01-01", periods=480, freq="D")
+        frame = pd.DataFrame({
+            "Date": dates,
+            "MO": dates.month,
+            "Dye": np.repeat(["blue", "green", "red", "yellow"], 120),
+            "Concentration": np.r_[np.tile([3, 6, 9], 80), np.tile([15, 25], 120)],
+            "B": rng.normal(100, 20, 480),
+            "G": rng.normal(100, 20, 480) + np.repeat([0, 40, 80, 120], 120),
+        })
+        roles = ColumnRoles(date="Date", measure="B", dimension="Dye", identifier=None,
+                            numeric=("MO", "Concentration", "B", "G"),
+                            dimensions=("Dye", "MO", "Concentration"), factors=("MO", "Concentration"))
+
+        differences = brief_card(analyze_business(frame, roles), "differences")
+
+        assert differences is not None
+        self.assertIn("MO is the month of Date, so it is not used as a grouping", differences.calculation)
+        self.assertIn("Concentration within Dye", differences.statement)
+        self.assertNotIn("by MO", differences.statement)
+
+    def test_the_scan_compares_across_a_handful_of_groupings(self):
+        rng = np.random.default_rng(70)
+        flags = {f"flag{index}": rng.integers(0, 2, 300) for index in range(9)}
+        frame = pd.DataFrame({"Arm": rng.choice(["A", "B"], 300), **flags, "y": rng.normal(size=300)})
+        frame["z"] = rng.normal(size=300)
+        roles = ColumnRoles(date=None, measure="y", dimension="Arm", identifier=None,
+                            numeric=(*flags, "y", "z"), dimensions=("Arm", *flags), factors=tuple(flags))
+
+        differences = brief_card(analyze_business(frame, roles), "differences")
+
+        assert differences is not None
+        self.assertIn("first 6 groupings only, so flag5, flag6, flag7 and 1 other", differences.calculation)
 
 
 def lab_roles(frame: pd.DataFrame, measure: str, dimension: str | None = None, date: str | None = None):

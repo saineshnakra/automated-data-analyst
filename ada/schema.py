@@ -1027,6 +1027,17 @@ def row_summary_name(columns: int) -> str:
     return f"Row mean ({columns:,} columns)"
 
 
+def row_summary_columns(roles: ColumnRoles) -> list[str]:
+    """The columns averaged into the row mean ``add_row_summary`` made the measure, or [].
+
+    Each of them is part of that mean, so none can be said to relate to it.
+    """
+    if roles.table_shape != "matrix" or not roles.measure:
+        return []
+    block = _matrix_columns([column for column in roles.numeric if column != roles.measure])
+    return block if roles.measure == row_summary_name(len(block)) else []
+
+
 def _prefix_groups(columns: list[str]) -> list[tuple[str, int]]:
     """Name prefixes that split the matrix columns into a few groups, such as A* and B*."""
     matches = [_NUMBERED_NAME.match(str(column).strip()) for column in columns]

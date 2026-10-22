@@ -1618,6 +1618,19 @@ class CorrelatesQuestionTests(unittest.TestCase):
 
         self.assertTrue(answer.answer.startswith("Nothing relates to Sugar"))
 
+    def test_the_columns_left_out_of_the_ranking_are_named(self):
+        rng = np.random.default_rng(12)
+        base = rng.normal(size=200)
+        frame = pd.DataFrame({
+            "Even1": base,
+            "Even2": base + rng.normal(0, 0.05, 200),
+            "Depth": base * 0.5 + rng.normal(size=200),
+        })
+
+        answer = answer_question("what correlates with Even1", frame, detect_roles(frame))
+
+        self.assertIn("Left out of the ranking for Even1: Even2 (the same measurement", answer.answer)
+
 
 def survey_frame() -> tuple[pd.DataFrame, ColumnRoles]:
     """A table without a date whose column names hold time and aggregation words."""
