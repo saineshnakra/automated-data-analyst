@@ -2009,6 +2009,17 @@ class GroupedAnswerTests(unittest.TestCase):
         self.assertEqual((answer.plan.intent, answer.plan.time_part), ("crosstab", "year"))
         self.assertEqual(answer.plan.second_dimension, "Site")
 
+    def test_a_date_of_whole_years_beside_a_segment_is_a_cross_table(self):
+        frame = pd.DataFrame({
+            "Year": pd.to_datetime([f"{2005 + index // 3}-01-01" for index in range(30)]),
+            "Crop": ["maize", "rice", "soy"] * 10,
+        })
+
+        answer = answer_question("count of Crop by Year", frame, detect_roles(frame))
+
+        self.assertEqual((answer.plan.intent, answer.plan.time_part), ("crosstab", "year"))
+        self.assertEqual(answer.table.columns.tolist(), ["Year", "maize", "rice", "soy"])
+
     def test_a_filter_cue_reads_the_filter(self):
         frame, roles = trial_frame()
 

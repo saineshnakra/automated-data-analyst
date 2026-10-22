@@ -2038,6 +2038,9 @@ def _plan_from_reading(reading: _Reading, dataframe: pd.DataFrame, roles: Column
     # "revenue by order date" asks for the trend; with a segment as well it asks for two groupings.
     by_date = roles.date in mentioned and _follows(q, mentioned[roles.date], GROUPING_WORDS)
     if by_date and dimension:
+        if preferred_frequency(dataframe[roles.date]) == "Y":
+            # A date of whole years ("count of crop by Year") groups like a year.
+            return _crosstab_plan(reading, dataframe, roles, (roles.date, dimension), "year", measure)
         reading.refusal = _two_groupings([dimension, str(roles.date)])
         return None
     # A continuous grouping is split at its quartiles: "average growth by temperature".
@@ -2622,6 +2625,9 @@ def _group_key(plan: QueryPlan, dataframe: pd.DataFrame) -> str:
     if not plan.time_part:
         return plan.dimension
     name = plan.time_part.capitalize()
+    if name.lower() == str(plan.dimension).lower():
+        # A date column called "Year" grouped by its year is still "Year".
+        return plan.dimension
     return f"{name} of {plan.dimension}" if name in dataframe.columns else name
 
 
