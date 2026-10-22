@@ -252,8 +252,9 @@ design: it finds subjects, samples and fully crossed within-subject designs
 from the table itself, but it doesn't fit mixed models, survival curves,
 nested or blocked designs, or covariates you planned to adjust for (asked
 to, Ask holds a reading fixed only as a straight line would), and it picks
-its tests by rule, after seeing the data, not from a plan written before. So treat what it finds as a first pass and its recommendations as
-what to look at next, not as causal claims. For a confirmatory analysis, ADA
+its tests by rule, after seeing the data, not from a plan written before.
+So treat what it finds as a first pass and its recommendations as what to
+look at next, not as causal claims. For a confirmatory analysis, ADA
 is the step before that, and its calculation lines tell you which test to
 start from.
 

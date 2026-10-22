@@ -5221,8 +5221,8 @@ def _comparison_plan(question: str, dataframe: pd.DataFrame, roles: ColumnRoles)
         # A yes/no outcome is compared by its rate in each group, with a chi-squared or Fisher test.
         if reading.adjusted:
             raise _ComparisonRefused(
-                f"{measure} holds only 0 and 1, so it is compared as a rate in each group, and ADA fits no "
-                f"model that holds {_and_listed(reading.adjusted)} fixed for a rate; ask "
+                f"{measure} holds only 0 and 1, so it is compared as a rate in each group, and Ask holds "
+                f"{_and_listed(reading.adjusted)} fixed only for a numeric measure; ask "
                 f'"does {measure} differ by {grouping}" for the rates as they are.'
             )
         if compared:

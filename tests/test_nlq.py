@@ -1961,7 +1961,7 @@ class MorePhrasingTests(unittest.TestCase):
         self.assertIsNone(answer_question(question, frame, roles))
         hint = rephrase_hint(question, frame, roles)
         self.assertIn("relapse holds only 0 and 1", hint)
-        self.assertIn("holds dose fixed for a rate", hint)
+        self.assertIn("holds dose fixed only for a numeric measure", hint)
 
 
 class FilterPhrasingTests(unittest.TestCase):

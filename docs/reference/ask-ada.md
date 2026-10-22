@@ -131,6 +131,11 @@ column whose values the question names. The groups are settled before any
 filter: in "compare risk between Probiotics 0 and 1", "0 and 1" names the two
 groups, not a range of values. Values of other columns filter the rows.
 Without a numeric column named, the detected measure is compared.
+"compare X across Y" for a summed measure such as revenue asks for each
+group's total, so it becomes a `breakdown`; words of difference still ask for
+the test. A question naming two numeric columns ("is x related to y") stays a
+`correlation`, and anything this grammar can't read goes on to the steps
+below.
 
 A yes/no outcome (0 and 1, or two labels such as yes and no) is compared as a
 rate: each group's share of rows where it is 1, with a chi-squared test, or
@@ -149,16 +154,12 @@ held reading as it is: two groups give the adjusted gap with its 95%
 interval, more groups an F test that every adjusted gap is zero, and the gap
 without adjusting is given beside it. The answer says this holds Z fixed only
 as a straight line would. For a yes/no outcome the question is refused with
-that reason, since ADA fits no model that holds a reading fixed for a rate. "Per transect" first totals the measure within each
-transect, then compares those totals; when transects are numbered again
-within each reef, the unit is the reef and the transect together, and the
-answer says how many units there are. When the grouping changes within a
-unit, the question is refused.
-"compare X across Y" for a summed measure such as revenue asks for each
-group's total, so it becomes a `breakdown`; words of difference still ask for
-the test. A question naming two numeric columns ("is x related to y") stays a
-`correlation`, and anything this grammar can't read goes on to the steps
-below.
+that reason, since Ask holds a reading fixed only for a numeric measure.
+
+"Per transect" first totals the measure within each transect, then compares
+those totals; when transects are numbered again within each reef, the unit
+is the reef and the transect together, and the answer says how many units
+there are. When the grouping changes within a unit, the question is refused.
 
 A `compare` answer is the brief's group comparison (see
 [Comparing groups](compare.md)): the n, mean and median per group, Welch's
