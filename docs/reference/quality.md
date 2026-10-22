@@ -10,9 +10,10 @@ gaps, values far from the rest, copied columns, and gaps that follow a pattern.
 Each issue says how many cells or rows it covers, gives examples and names the
 rule that fired.
 
-The checks change nothing, with one exception: a clear code in the measure (see
-[Codes in the measure](#codes-in-the-measure)). Everything else is reported for
-the reader to decide on.
+The checks change nothing, with one exception: cleaning sets clear
+missing-value codes to missing in every numeric column (see
+[Codes set to missing](#codes-set-to-missing)), and the checks list them as
+such. Everything else is reported for the reader to decide on.
 
 ## Where the results appear
 
@@ -187,16 +188,28 @@ that a value from a missing row outranks one from a recorded row is measured
 mostly where pH is high: median pH 6.19 where missing against 4.99 where
 recorded".
 
-## Codes in the measure
+## Codes set to missing
 
-`mask_sentinels` sets a code in the measure to missing, before anything is
-computed, when it is a sentinel code that stands alone and is either negative
-in a column that is otherwise not, or at least ten times the 99th percentile of
-the other values. A cleaning note says how many cells and which values.
-`ada.analyze` applies it to the measure it ends up with, overrides included,
-and the app to the measure picked in the schema controls. Codes in other
-columns stay, and are reported by the checks. A value that only looks like a
-code, such as a price of 9,999 among prices up to 3,000, stays.
+`blank_codes` runs during cleaning, before roles are detected or anything is
+computed, on every numeric column except keys and layout numbers. It sets two
+kinds of code to missing:
+
+- a sentinel code that stands alone and is either negative in a column that
+  is otherwise not, or at least ten times the 99th percentile of the other
+  values: `-999` among pressures near 950, `999.9` among wind speeds below 20
+- one negative value that three or more columns (`SHARED_CODE_COLUMNS`), each
+  otherwise never negative, hold on the same rows: `-1` in every sensor channel
+  of the rows where a read failed. A column of a few whole-number codes (`-1`,
+  `0`, `1` for disagree, neutral and agree) is a scale, and is left alone
+
+A cleaning note per column says how many cells and which value. The issues
+`blank_codes` returns are kept on the cleaning report (`blanked_codes`), and
+`scan(frame, roles, blanked=...)` ranks them with the rest, so
+`Analysis.quality()` and the app's Data checks still list each code, with a
+detail saying cleaning set those cells to missing. A value that only looks
+like a code, such as a price of 9,999 among prices up to 3,000, stays, and so
+does a converted blank found by its frequency (`-17.78` in a temperature
+column), which the checks report for the reader to judge.
 
 ## Speed
 

@@ -14,6 +14,7 @@ import pandas as pd
 from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_dtype
 
 from .formatting import UNDATED_DAY, format_moment, normalized_name
+from .quality import QualityIssue, blank_codes
 from .schema import is_identifier_name, is_month_name, is_year_name
 
 
@@ -34,6 +35,9 @@ class CleaningReport:
     unparsed_date_cells: int = 0
     non_finite_cells: int = 0
     notes: tuple[str, ...] = ()
+    #: What the data checks list for the missing-value codes set to missing
+    #: (see ``quality.blank_codes``); pass it to ``quality.scan`` as ``blanked``.
+    blanked_codes: tuple[QualityIssue, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -1037,6 +1041,11 @@ def clean_dataframe(
                     cleaned[column] = _drop_timezone(parsed_dates)
                     datetime_columns_inferred += 1
 
+    # Codes typed in place of a reading (-999, 999.9) would drive every figure
+    # on their columns, so they are set to missing before anything is computed.
+    cleaned, blanked_codes, blanked_notes = blank_codes(cleaned)
+    notes.extend(blanked_notes)
+
     paired = _date_and_time(cleaned, clock_columns)
     if paired:
         day, time = paired
@@ -1137,6 +1146,7 @@ def clean_dataframe(
         unparsed_date_cells=unparsed_date_cells,
         non_finite_cells=non_finite_cells,
         notes=tuple(dict.fromkeys(notes)),
+        blanked_codes=blanked_codes,
     )
     return cleaned, report
 

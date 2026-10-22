@@ -2,7 +2,8 @@
 
 Each check reports what it found, how many cells or rows it covers, a few
 examples and the rule that fired. Nothing here changes the data except
-``mask_sentinels``, which the pipeline applies to the measure alone: an
+``blank_codes``, which cleaning applies to every numeric column: a code typed
+in place of a reading (-999, 999.9) is not a value at all, while an
 impossible reading, a fill value or a copied column is something to look at,
 not something to delete unseen.
 
@@ -66,6 +67,9 @@ SAMPLE_ROWS = 5_000
 #: Above this many columns, only pairs with the measure are compared for copies:
 #: every pair of a wide matrix (a spectrum, a panel of samples) costs more than the rest of the scan.
 PAIR_COLUMNS = 100
+#: Columns that must hold the same negative value on the same rows for it to read
+#: as a code for no reading, as a logger writes -1 in every channel when a read fails.
+SHARED_CODE_COLUMNS = 3
 
 #: Check names, in the order issues are ranked: wrong values before gaps.
 CHECKS = {
@@ -1192,6 +1196,18 @@ def _span(shares: pd.Series) -> str:
     return low if low == high else f"{low} to {high}"
 
 
+def _keys_or_labels(name: str, values: np.ndarray) -> bool:
+    """Whether a numeric column holds layout numbers or keys rather than readings.
+
+    A key or label name ("Patient", "No") holds keys only when its values are
+    whole numbers; decimal readings under such a name (nitric oxide as "NO") are checked.
+    """
+    if is_design_name(name):
+        return True
+    whole = bool(np.all(values == np.round(values)))
+    return whole and (is_identifier_name(name) or is_entity_name(name))
+
+
 def _profiles(frame: pd.DataFrame, roles: ColumnRoles | None) -> dict[str, _Column]:
     """Sorted values of each numeric column that holds measurements.
 
@@ -1210,21 +1226,23 @@ def _profiles(frame: pd.DataFrame, roles: ColumnRoles | None) -> dict[str, _Colu
         profile = _Column.of(name, series)
         if profile.size >= 20 and profile.uniques.size == profile.size and profile.whole:
             continue
-        # A key or label name ("Patient", "No") holds keys only when its values are
-        # whole numbers; decimal readings under such a name (nitric oxide as "NO") are checked.
-        if (is_identifier_name(name) or is_entity_name(name)) and profile.whole:
+        if _keys_or_labels(name, profile.uniques):
             continue
         profiles[column] = profile
     return profiles
 
 
-def scan(frame: pd.DataFrame, roles: ColumnRoles | None = None) -> tuple[QualityIssue, ...]:
+def scan(
+    frame: pd.DataFrame, roles: ColumnRoles | None = None, blanked: tuple[QualityIssue, ...] = ()
+) -> tuple[QualityIssue, ...]:
     """Run every check and return the issues, the most consequential first.
 
     Issues are ordered by check (``CHECKS``), the measure's first within each.
     ``roles`` names the measure, the grouping column and the columns that hold
     codes; without it, codes are judged from the values alone and no group
-    checks run.
+    checks run. ``blanked`` holds the issues ``blank_codes`` returned when
+    cleaning set codes to missing; they are no longer in ``frame``, so they are
+    ranked with the rest here and the checks still list them.
     """
     profiles = _profiles(frame, roles)
     factors = tuple(roles.factors) if roles else ()
@@ -1233,7 +1251,7 @@ def scan(frame: pd.DataFrame, roles: ColumnRoles | None = None) -> tuple[Quality
     issues: list[QualityIssue] = []
     for profile in profiles.values():
         issues.extend(_value_issues(profile, factors))
-    issues = _merge_alike(issues)
+    issues = [*_merge_alike(issues), *blanked]
     quantities = [column for column, profile in profiles.items() if not _is_coded(profile, factors)]
     wide = [column for column in quantities if profiles[column].uniques.size >= 10]
     issues.extend(_equal_columns(frame, wide, dimension, measure))
@@ -1273,43 +1291,181 @@ def flagged_index(issues: tuple[QualityIssue, ...], column: str) -> pd.Index:
     return flagged
 
 
-def mask_sentinels(frame: pd.DataFrame, column: str | None) -> tuple[pd.DataFrame, str | None]:
-    """Set clear sentinel codes in ``column`` to missing, returning the frame and a note.
+def _clear_codes(column: _Column) -> tuple[list[float], float]:
+    """Standing codes that no reading could be, and the median of the other values.
 
-    Only an unmistakable code goes: a run of nines, a repeated digit or a large
-    negative power of ten, standing alone, at least EXTREME_Z robust standard
-    deviations from the median, and either negative in a column that is
-    otherwise not or ten times the 99th percentile of the rest. Everything else
-    stays and is reported by ``scan``. Returns the frame unchanged, and None,
-    when nothing qualifies.
+    Only an unmistakable code qualifies: a run of nines, a repeated digit or a
+    large negative power of ten, standing alone, at least EXTREME_Z robust
+    standard deviations from the median, and either negative in a column that
+    is otherwise not or ten times the 99th percentile of the rest.
     """
-    if not column or column not in frame.columns:
-        return frame, None
-    series = frame[column]
-    if not is_numeric_dtype(series) or is_bool_dtype(series):
-        return frame, None
-    profile = _Column.of(column, series)
-    if profile.size < 12:
-        return frame, None
-    standing, _ = _standing_codes(profile, profile.ordered)
+    if column.size < 12:
+        return [], 0.0
+    standing, centre = _standing_codes(column, column.ordered)
     if not standing:
-        return frame, None
-    rest = profile.ordered[~np.isin(profile.ordered, standing)]
+        return [], centre
+    rest = column.ordered[~np.isin(column.ordered, standing)]
     ceiling = float(np.percentile(np.abs(rest), 99))
     clear = [
         value
         for value in standing
         if (value < 0 and (rest < 0).mean() <= 0.01) or abs(value) >= 10 * max(ceiling, 1e-12)
     ]
-    if not clear:
-        return frame, None
-    cells = series.isin(clear)
-    count = int(cells.sum())
-    masked = frame.copy()
-    masked[column] = series.mask(cells)
-    noun = "cells" if count > 1 else "cell"
-    note = (
-        f"{count:,} {noun} in {column} holding {_listed([show_value(value) for value in clear])}, a code "
-        "for a missing reading far from every other value, were treated as missing."
+    return clear, centre
+
+
+def _shared_negatives(arrays: dict[str, np.ndarray]) -> dict[float, tuple[list[str], np.ndarray]]:
+    """Negative values that SHARED_CODE_COLUMNS or more columns hold on the same rows.
+
+    Each column must be otherwise never negative and hold readings rather than
+    a few whole-number codes (-1, 0 and 1 for disagree, neutral and agree).
+    Returns, for each value, the columns and the rows where at least
+    SHARED_CODE_COLUMNS of them hold it.
+    """
+    candidates: dict[float, list[str]] = {}
+    for name, array in arrays.items():
+        present = array[np.isfinite(array)]
+        negatives = pd.unique(present[present < 0])
+        if negatives.size != 1:
+            continue
+        if bool(np.all(present == np.round(present))) and pd.unique(present).size <= CODED_LEVELS:
+            continue
+        candidates.setdefault(float(negatives[0]), []).append(name)
+    found: dict[float, tuple[list[str], np.ndarray]] = {}
+    for value, names in candidates.items():
+        if len(names) < SHARED_CODE_COLUMNS:
+            continue
+        hits = np.column_stack([arrays[name] == value for name in names])
+        shared = hits.sum(axis=1) >= SHARED_CODE_COLUMNS
+        kept = [name for name, column in zip(names, hits.T, strict=True) if (column & shared).any()]
+        if len(kept) >= SHARED_CODE_COLUMNS:
+            found[value] = (kept, shared)
+    return found
+
+
+def _cells(count: int) -> str:
+    return "1 cell" if count == 1 else f"{count:,} cells"
+
+
+def _standing_issue(value: float, counts: dict[str, tuple[int, float, int]]) -> QualityIssue:
+    """The data-check issue for one standing code set to missing in one or more columns.
+
+    ``counts`` gives, by column, the cells set to missing, the median of the
+    other values and how many values the column had.
+    """
+    columns = tuple(counts)
+    cells = sum(count for count, _, _ in counts.values())
+    share = max(count / max(size, 1) * 100 for count, _, size in counts.values())
+    shown = show_value(value)
+    if len(columns) == 1:
+        count, centre, _ = counts[columns[0]]
+        detail = (
+            f"{columns[0]} held {shown} in {_plural(count, 'row')}, far from its other values (median "
+            f"{show_value(centre)}): a code for a missing reading. Cleaning set those cells to missing."
+        )
+        summary = f"{columns[0]}: {shown} in {_plural(count, 'row')}, a missing-value code set to missing"
+    else:
+        sizes = sorted(count for count, _, _ in counts.values())
+        spread = f"{sizes[0]:,}" if sizes[0] == sizes[-1] else f"{sizes[0]:,} to {sizes[-1]:,}"
+        detail = (
+            f"{_listed(list(columns))} held {shown} in {cells:,} cells ({spread} per column), far from "
+            "their other values: a code for a missing reading. Cleaning set those cells to missing."
+        )
+        summary = f"{_listed(list(columns))}: {shown} in {_cells(cells)}, a missing-value code set to missing"
+    rule = (
+        "a code value (a run of nines, a repeated digit, a large negative power of ten) standing alone, "
+        "negative in a column otherwise not or ten times the rest's 99th percentile; set to missing"
     )
-    return masked, note
+    return QualityIssue("sentinel", columns, cells, share, detail, summary, rule, (shown,), group=value)
+
+
+def _shared_issue(value: float, columns: list[str], cells: int, rows: int, total: int) -> QualityIssue:
+    """The data-check issue for one negative value set to missing where several columns share it."""
+    shown = show_value(value)
+    named = _listed(columns)
+    detail = (
+        f"{named} held {shown} in {_cells(cells)} on {_plural(rows, 'row')}, each row holding it in "
+        f"{SHARED_CODE_COLUMNS} or more of them, though none is otherwise negative: a code for no "
+        "reading. Cleaning set those cells to missing."
+    )
+    summary = f"{named}: {shown} on {_plural(rows, 'row')} at once, a missing-value code set to missing"
+    rule = (
+        f"one negative value on the same rows in {SHARED_CODE_COLUMNS} or more columns that are "
+        "otherwise never negative; set to missing"
+    )
+    return QualityIssue(
+        "sentinel", tuple(columns), rows, rows / max(total, 1) * 100, detail, summary, rule, (shown,),
+        group=value,
+    )
+
+
+def blank_codes(frame: pd.DataFrame) -> tuple[pd.DataFrame, tuple[QualityIssue, ...], tuple[str, ...]]:
+    """Set clear missing-value codes to missing in every numeric column.
+
+    Two kinds go. One is a standing code (see ``_clear_codes``): -999 among
+    pressures near 950, 999.9 among wind speeds below 20. The other is one
+    negative value that SHARED_CODE_COLUMNS or more otherwise non-negative
+    columns hold on the same rows, as a logger writes -1 in every channel when
+    a read fails. Left in, either drives every average and correlation it
+    touches. Keys and layout numbers are left alone, and everything else stays
+    and is reported by ``scan``.
+
+    Returns the frame (the same object when nothing qualifies), the issues the
+    data checks list for what was set to missing, and one note per column.
+    """
+    arrays: dict[str, np.ndarray] = {}
+    for column in frame.columns:
+        series = frame[column]
+        if not is_numeric_dtype(series) or is_bool_dtype(series):
+            continue
+        array = series.to_numpy(dtype="float64", na_value=np.nan)
+        present = array[np.isfinite(array)]
+        if present.size and not _keys_or_labels(str(column), present):
+            arrays[column] = array
+    blank: dict[str, np.ndarray] = {}
+    standing: dict[float, dict[str, tuple[int, float, int]]] = {}
+    notes: list[str] = []
+    for column, array in arrays.items():
+        # Profiling sorts the column, so only a column holding a code value is profiled.
+        if not _is_code(array[np.isfinite(array)]).any():
+            continue
+        profile = _Column.of(str(column), frame[column])
+        clear, centre = _clear_codes(profile)
+        if not clear:
+            continue
+        hits = np.isin(array, clear)
+        blank[column] = hits
+        for value in clear:
+            standing.setdefault(value, {})[column] = (int((array == value).sum()), centre, profile.size)
+        count = int(hits.sum())
+        kind = "codes" if len(clear) > 1 else "a code"
+        notes.append(
+            f"{_cells(count)} in {column} held {' or '.join(show_value(value) for value in clear)}, {kind} "
+            f"for a missing reading far from every other value (median {show_value(centre)}), and "
+            f"{'were' if count > 1 else 'was'} set to missing."
+        )
+    issues = [_standing_issue(value, counts) for value, counts in standing.items()]
+    left = {
+        column: np.where(blank[column], np.nan, array) if column in blank else array
+        for column, array in arrays.items()
+    }
+    for value, (columns, rows) in _shared_negatives(left).items():
+        hits = {column: (left[column] == value) & rows for column in columns}
+        for column in columns:
+            others = [other for other in columns if other != column and (hits[other] & hits[column]).any()]
+            named = _listed(others) if len(others) <= 3 else f"{len(others)} other columns"
+            blank[column] = blank.get(column, np.zeros(len(frame), dtype=bool)) | hits[column]
+            count = int(hits[column].sum())
+            notes.append(
+                f"{_cells(count)} in {column} held {show_value(value)} on rows where {named}, none of them "
+                "otherwise negative, hold it too: a code for no reading, so "
+                f"{'they were' if count > 1 else 'it was'} set to missing."
+            )
+        cells = sum(int(mask.sum()) for mask in hits.values())
+        issues.append(_shared_issue(value, columns, cells, int(rows.sum()), len(frame)))
+    if not blank:
+        return frame, (), ()
+    masked = frame.copy()
+    for column, hits in blank.items():
+        masked[column] = masked[column].mask(hits)
+    return masked, tuple(issues), tuple(notes)

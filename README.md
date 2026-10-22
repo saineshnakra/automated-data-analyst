@@ -87,8 +87,9 @@ ada ask orders.csv "which category made the most revenue"
   14), codes such as `-999` or `999.9`, values piled up at a limit, filled-in
   gaps, values far from the rest, copied columns, max below min, and gaps that
   follow a group or another column. The brief lists the leading issues and
-  says which to check first; `report.quality()` returns them all. Only a clear
-  code in the measure is set aside, with a note.
+  says which to check first; `report.quality()` returns them all. Only clear
+  missing-value codes are changed: they are set to missing in every column,
+  with a note per column, before anything is computed.
 - **Detects column roles**: the date, the measure, the grouping column and an
   ID column, from names, values and cardinality. Numeric category codes (a 0/1
   flag, a status, a set dose, a swept frequency) group rows instead of being

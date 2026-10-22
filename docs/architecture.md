@@ -65,7 +65,7 @@ OpenAI client and Pydantic with the `ai` extra.
 | `ada/timeseries.py` | Theil-Sen trendline, calendar positions, robust scale |
 | `ada/anomalies.py` | Anomaly detection and the calibrated threshold table |
 | `ada/forecasting.py` | Baseline forecast, prediction band, backtest |
-| `ada/quality.py` | The data checks: impossible values, codes, caps, fill values, extreme values, copied columns, patterns in missing data; setting a clear code in the measure aside |
+| `ada/quality.py` | The data checks: impossible values, codes, caps, fill values, extreme values, copied columns, patterns in missing data; setting clear missing-value codes to missing during cleaning |
 | `ada/business_insights.py` | Evidence cards, KPIs, recommendations, the executive brief |
 | `ada/nlq.py` | Question to `QueryPlan` to local execution |
 | `ada/autovis.py` | Chart form for a set of columns, and the sentence explaining it |

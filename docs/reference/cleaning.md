@@ -21,14 +21,15 @@ table or as a note.
 | 8 | Infer dates in date-named columns | See below |
 | 9 | Infer numbers | See below |
 | 10 | Infer dates in other columns | See below |
-| 11 | Join a date column and a time column | See [Times with no date](#times-with-no-date) |
-| 12 | Read elapsed time | See [Elapsed time](#elapsed-time) |
-| 13 | Read "not stated" as missing in text columns | See below |
-| 14 | Build dates from years | See below |
-| 15 | Merge label spellings | See below |
-| 16 | Widen overflowing integers | An integer column whose total would overflow int64 becomes float64 |
-| 17 | Replace infinities | `inf` and `-inf` in float columns become missing |
-| 18 | Count identical rows | Counted and kept |
+| 11 | Set missing-value codes to missing | See [Missing-value codes](#missing-value-codes) |
+| 12 | Join a date column and a time column | See [Times with no date](#times-with-no-date) |
+| 13 | Read elapsed time | See [Elapsed time](#elapsed-time) |
+| 14 | Read "not stated" as missing in text columns | See below |
+| 15 | Build dates from years | See below |
+| 16 | Merge label spellings | See below |
+| 17 | Widen overflowing integers | An integer column whose total would overflow int64 becomes float64 |
+| 18 | Replace infinities | `inf` and `-inf` in float columns become missing |
+| 19 | Count identical rows | Counted and kept |
 
 If nothing is left, `clean_dataframe` raises `ValueError` rather than
 returning an empty frame.
@@ -227,6 +228,30 @@ that is 5% unparseable as numbers is probably not numeric.
 also keeps such columns as text from the start: see
 [Reading files](reading-files.md).
 
+## Missing-value codes
+
+Instruments and exports write a code in place of a missing reading: `-999`
+among pressures near 950 hPa, `999.9` among wind speeds below 20. Left in, a
+code drives every average, correlation and comparison on its column, and a
+count of missing values misses it. After inference, `quality.blank_codes` sets
+clear codes to missing in every numeric column, before roles are detected or
+any figure is computed. Two kinds qualify:
+
+- a code value (a run of nines, a repeated digit, a large negative power of
+  ten) standing alone, far from the rest, and either negative in a column that
+  is otherwise not or ten times the 99th percentile of the other values; see
+  [Data checks](quality.md#codes-set-to-missing)
+- one negative value that three or more columns, each otherwise never
+  negative and holding readings rather than a few whole-number codes, hold on
+  the same rows, as a logger writes `-1` in every channel when a read fails
+
+Key columns and layout numbers are left alone. Each column gets a note with
+its count ("11,177 cells in PM held -999, a code for a missing reading far from
+every other value (median 955.6), and were set to missing"), and the data
+checks still list each code, saying it was set to missing. The cells count as
+missing everywhere afterwards: in the completeness figure, the data
+dictionary and "how many rows have missing PM".
+
 ## Dates from years
 
 Annual data often has a `year` column of plain numbers and no date. When no
@@ -272,13 +297,14 @@ text columns whose values trimming changed, numeric and datetime columns
 inferred, identical rows found and removed, unreadable date values and
 infinite values. Its `notes` hold the sentences shown above the dashboard
 (repeated headers, dropped empty columns, date-order assumptions, timezones,
-unreadable dates, dates built from years, missing-value markers, values past a
-detection limit, lone tokens, unreadable numbers, "not stated" phrases, merged
-label spellings, widened columns, infinities, identical rows).
-`pipeline.prepare_analysis` adds what schema detection concluded about the
-columns (see [Schema detection](schema-detection.md#notes)), and `ada.analyze`
-adds one more when it sets a clear code in the measure aside; see
-[Data checks](quality.md#codes-in-the-measure).
+unreadable dates, missing-value codes set to missing, dates built from years,
+missing-value markers, values past a detection limit, lone tokens, unreadable
+numbers, "not stated" phrases, merged label spellings, widened columns,
+infinities, identical rows). Its `blanked_codes` hold the data-check issues
+for the codes set to missing, which `Analysis.quality()` and the app's data
+checks list beside the rest. `pipeline.prepare_analysis` adds what schema
+detection concluded about the columns (see
+[Schema detection](schema-detection.md#notes)).
 
 `pipeline.cleaning_audit_frame` turns the counts into the table shown in the
 app.
@@ -304,6 +330,8 @@ app.
 | `Precip` holding numbers and 14% `T` | Converted; the `T` cells become missing, with a note |
 | `P mg/kg` holding `<3,87` in 15% of rows | Converted; those cells become missing, with a note on the limit and the biased mean |
 | `Drainage` holding `No indica` and `ERROR: #N/A` | Those cells become missing, with a note |
+| `PM` and nine other columns holding `-999` | Those cells become missing, with a note per column, and the data checks list the code |
+| `pm10`, `pm1_0` and `pm2_5` all `-1` on the same 4 rows, never otherwise negative | Those cells become missing, with a note per column |
 | A CSV header repeated, read as `diabetes` and `diabetes.1` | Both kept, with a note saying on how many rows they differ |
 
 ## Changing this

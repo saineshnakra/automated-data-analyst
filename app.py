@@ -103,7 +103,7 @@ from ada.pipeline import (  # noqa: E402
     prepare_analysis,
     schema_frame,
 )
-from ada.quality import mask_sentinels, quality_frame  # noqa: E402
+from ada.quality import quality_frame  # noqa: E402
 from ada.quality import scan as scan_quality  # noqa: E402
 
 # The AI layer and its dependencies are optional. Any import failure disables
@@ -574,11 +574,6 @@ roles = apply_role_selection(
     dimension=selected_dimension,
     aggregation=selected_aggregation,
 )
-# A clear code such as 999.9 in the chosen measure is set aside before anything is computed.
-dataframe, masked = mask_sentinels(dataframe, roles.measure)
-if masked:
-    st.info(masked)
-
 focus_value = None
 focus_label = None
 focus_values = focus_options(dataframe, roles)
@@ -738,8 +733,12 @@ with data_tab:
         )
 
     with st.expander("Data checks"):
-        st.caption("Values to look at before trusting the figures. None of them was changed.")
-        st.dataframe(quality_frame(scan_quality(dataframe, roles)), hide_index=True, width="stretch")
+        st.caption(
+            "Values to look at before trusting the figures. Clear missing-value codes were set to "
+            "missing during cleaning; nothing else was changed."
+        )
+        issues = scan_quality(dataframe, roles, blanked=prepared.cleaning_report.blanked_codes)
+        st.dataframe(quality_frame(issues), hide_index=True, width="stretch")
 
     st.subheader("Cleaned data")
     st.dataframe(show_undated(dataframe.head(1_000)), width="stretch", height=420)

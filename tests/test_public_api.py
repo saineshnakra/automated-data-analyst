@@ -533,10 +533,27 @@ class DataCheckTests(unittest.TestCase):
         self.assertTrue(any("999.9" in note for note in report.cleaning.notes), report.cleaning.notes)
         self.assertLess(report.frame["Wind Speed"].max(), 10)
 
-    def test_codes_in_other_columns_are_reported_not_changed(self):
+    def test_codes_in_other_columns_are_set_aside_and_still_listed(self):
         report = ada.analyze(gauges(), measure="Humidity")
 
-        self.assertEqual(report.frame["Wind Speed"].max(), 999.9)
+        self.assertEqual(int(report.frame["Wind Speed"].isna().sum()), 4)
+        codes = report.quality().query("Check == 'Sentinel codes'")
+        self.assertEqual(codes["Columns"].tolist(), ["Wind Speed"])
+        self.assertIn("set those cells to missing", codes["Detail"].iloc[0])
+        self.assertEqual(int(codes["Rows"].iloc[0]), 4)
+
+    def test_missing_counts_include_the_codes_set_aside(self):
+        report = ada.analyze(gauges(), measure="Humidity")
+
+        self.assertEqual(int(report.profile().set_index("Column").loc["Wind Speed", "Missing"]), 4)
+        self.assertIn("4 of the 400 rows", report.ask("how many rows have missing Wind Speed").answer)
+
+    def test_a_frame_handed_in_is_left_unchanged(self):
+        frame = gauges()
+
+        ada.analyze(frame, measure="Humidity")
+
+        self.assertEqual(frame["Wind Speed"].max(), 999.9)
 
     def test_a_clean_table_has_an_empty_frame(self):
         self.assertTrue(ada.analyze(steady()).quality().empty)

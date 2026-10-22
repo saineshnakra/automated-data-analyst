@@ -5,8 +5,8 @@ import numpy as np
 import pandas as pd
 
 from ada.quality import (
+    blank_codes,
     flagged_index,
-    mask_sentinels,
     name_bounds,
     quality_frame,
     scan,
@@ -365,25 +365,90 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(scan(frame), ())
 
 
-class MaskSentinelTests(unittest.TestCase):
-    def test_a_clear_code_in_the_measure_becomes_missing_with_a_note(self):
+class BlankCodeTests(unittest.TestCase):
+    def test_a_clear_code_becomes_missing_with_a_note_and_an_issue(self):
         rng = np.random.default_rng(21)
         frame = pd.DataFrame({"Wind Speed": np.r_[rng.gamma(2, 1.5, 996), [999.9] * 4]})
 
-        masked, note = mask_sentinels(frame, "Wind Speed")
+        masked, issues, notes = blank_codes(frame)
 
         self.assertEqual(int(masked["Wind Speed"].isna().sum()), 4)
-        self.assertIn("999.9", note)
+        self.assertEqual(len(notes), 1)
+        self.assertTrue(notes[0].startswith("4 cells in Wind Speed held 999.9"), notes)
         self.assertEqual(int(frame["Wind Speed"].isna().sum()), 0)
+        self.assertEqual([issue.check for issue in issues], ["sentinel"])
+        self.assertEqual(issues[0].rows, 4)
+
+    def test_a_code_in_every_column_gets_a_note_per_column_and_one_issue(self):
+        rng = np.random.default_rng(24)
+        pressure = np.r_[rng.normal(955, 8, 380), [-999.0] * 20]
+        temperature = np.r_[rng.normal(9, 7, 390), [-999.0] * 10]
+        frame = pd.DataFrame({"Pressure": pressure, "Temp": temperature})
+
+        masked, issues, notes = blank_codes(frame)
+
+        self.assertEqual(masked.isna().sum().to_dict(), {"Pressure": 20, "Temp": 10})
+        self.assertEqual(len(notes), 2)
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].columns, ("Pressure", "Temp"))
+        self.assertIn("set those cells to missing", issues[0].detail)
 
     def test_a_value_that_only_looks_like_a_code_stays(self):
         rng = np.random.default_rng(22)
         frame = pd.DataFrame({"Price": np.r_[rng.uniform(10, 3000, 999), [9999.0]]})
 
-        masked, note = mask_sentinels(frame, "Price")
+        masked, issues, notes = blank_codes(frame)
 
-        self.assertIsNone(note)
+        self.assertEqual((issues, notes), ((), ()))
         self.assertIs(masked, frame)
+
+    def test_a_negative_value_shared_on_the_same_rows_is_a_code(self):
+        rng = np.random.default_rng(25)
+        frame = pd.DataFrame({name: rng.gamma(3, 30, 200) for name in ("mq2", "mq7", "pm10", "pm2_5")})
+        frame.iloc[[5, 60, 61, 150]] = -1.0
+
+        masked, issues, notes = blank_codes(frame)
+
+        self.assertEqual(masked.isna().sum().tolist(), [4, 4, 4, 4])
+        self.assertEqual(len(notes), 4)
+        self.assertEqual(issues[0].rows, 4)
+        self.assertIn("on 4 rows at once", issues[0].summary)
+
+    def test_a_negative_value_in_one_column_or_on_different_rows_stays(self):
+        rng = np.random.default_rng(26)
+        frame = pd.DataFrame({name: rng.gamma(3, 30, 200) for name in ("a", "b", "c")})
+        frame.loc[3, "a"] = frame.loc[4, "b"] = frame.loc[5, "c"] = -1.0
+
+        masked, issues, _ = blank_codes(frame)
+
+        self.assertIs(masked, frame)
+        self.assertEqual(issues, ())
+
+    def test_a_scale_of_minus_one_to_one_is_not_a_code(self):
+        rng = np.random.default_rng(27)
+        frame = pd.DataFrame({f"item_{i}": rng.choice([-1, 0, 1], 100) for i in range(4)})
+        frame.iloc[:10] = -1
+
+        masked, issues, _ = blank_codes(frame)
+
+        self.assertIs(masked, frame)
+
+    def test_keys_are_left_alone(self):
+        frame = pd.DataFrame({"Station ID": [-999] * 5 + list(range(100, 195)), "Value": np.arange(100.0)})
+
+        masked, _, _ = blank_codes(frame)
+
+        self.assertIs(masked, frame)
+
+    def test_scan_lists_the_codes_cleaning_set_aside(self):
+        rng = np.random.default_rng(28)
+        frame = pd.DataFrame({"Wind Speed": np.r_[rng.gamma(2, 1.5, 996), [999.9] * 4]})
+        masked, issues, _ = blank_codes(frame)
+
+        found = scan(masked, blanked=issues)
+
+        self.assertIn("sentinel", [issue.check for issue in found])
+        self.assertNotIn("sentinel", [issue.check for issue in scan(masked)])
 
 
 class SpeedTests(unittest.TestCase):

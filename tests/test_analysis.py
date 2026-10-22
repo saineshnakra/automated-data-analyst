@@ -854,6 +854,32 @@ class PerValueCleaningTests(unittest.TestCase):
         self.assertEqual(cleaned["Amount"].iloc[3], -30.0)
 
 
+class MissingValueCodeTests(unittest.TestCase):
+    def test_a_code_is_set_to_missing_in_every_numeric_column_with_a_note_each(self):
+        rng = np.random.default_rng(32)
+        frame = pd.DataFrame({
+            "Date": pd.date_range("2020-01-01", periods=200).strftime("%Y-%m-%d"),
+            "PM": np.r_[rng.normal(955, 5, 150), [-999.0] * 50],
+            "TMK": np.r_[rng.normal(10, 6, 180), [-999.0] * 20],
+        })
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(cleaned[["PM", "TMK"]].isna().sum().tolist(), [50, 20])
+        self.assertAlmostEqual(cleaned["PM"].mean(), 955, delta=3)
+        self.assertIn("50 cells in PM held -999", " ".join(report.notes))
+        self.assertIn("20 cells in TMK held -999", " ".join(report.notes))
+        self.assertEqual([issue.columns for issue in report.blanked_codes], [("PM", "TMK")])
+
+    def test_a_table_without_codes_is_unchanged(self):
+        frame = pd.DataFrame({"Price": [9_999.0, 120.0, 3_000.0, 450.0] * 5})
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(int(cleaned["Price"].isna().sum()), 0)
+        self.assertEqual(report.blanked_codes, ())
+
+
 def hourly_log(start, hours, value=1.0, seed=0):
     rng = np.random.default_rng(seed)
     return pd.DataFrame({

@@ -31,7 +31,7 @@ from .formatting import format_moment, is_undated, show_undated
 from .metrics import AGGREGATION_CHOICES, metric_for
 from .nlq import QueryAnswer, answer_question, rephrase_hint, suggested_questions, unsupported_phrasing
 from .pipeline import apply_focus, focus_options, prepare_analysis
-from .quality import mask_sentinels, quality_frame
+from .quality import quality_frame
 from .quality import scan as scan_quality
 from .schema import ColumnRoles
 
@@ -188,12 +188,10 @@ def analyze(
             ),
         )
     name = source_name or detected_name
-    # A clear code such as 999.9 or -100000 in the measure would drive every
-    # average, so it alone is set to missing, with a note; other columns keep theirs.
+    # Cleaning has already set clear codes such as 999.9 or -100000 to missing
+    # in every numeric column, with a note for each.
     cleaning = prepared.cleaning_report
-    frame, masked = mask_sentinels(prepared.dataframe, roles.measure)
-    if masked:
-        cleaning = replace(cleaning, notes=(*cleaning.notes, masked))
+    frame = prepared.dataframe
     if roles.focus and dimension is None:
         # A long table's rows measure different things; the brief covers one of them.
         name = f"{name} · {roles.focus}"
@@ -301,10 +299,12 @@ class Analysis:
 
         Columns: ``Check``, ``Columns``, ``Rows`` (cells or rows affected),
         ``Share %``, ``Detail`` (a plain sentence), ``Rule`` (what fired) and
-        ``Examples``. Nothing is changed by the checks; an empty frame means
-        nothing was flagged. See ``ada/quality.py`` for the rules.
+        ``Examples``. Clear missing-value codes (-999, 999.9) were set to
+        missing during cleaning and are listed here as such; nothing else is
+        changed by the checks. An empty frame means nothing was flagged. See
+        ``ada/quality.py`` for the rules.
         """
-        return quality_frame(scan_quality(self.frame, self.roles))
+        return quality_frame(scan_quality(self.frame, self.roles, blanked=self.cleaning.blanked_codes))
 
     def trend(self, frequency: str | None = None) -> TrendSeries | Refusal:
         """The measure per period. ``.notes`` lists any adjustments made to the periods."""
