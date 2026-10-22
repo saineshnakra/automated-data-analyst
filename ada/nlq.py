@@ -3643,7 +3643,9 @@ def _with_scope(
             if column and column in working.columns and plan.intent != "duplicates"
         ]
         used = int(working[needed].notna().all(axis=1).sum()) if needed else len(working)
-        if used < len(working):
+        # An unfiltered aggregate already says it was calculated from those rows.
+        whole = plan.intent == "aggregate" and len(working) == len(dataframe) and not rows_not_analyzed
+        if used < len(working) and not whole:
             scoped = f", of the {len(working):,} in that scope" if len(working) < len(dataframe) else (
                 f", of {_analysed_rows(dataframe, roles, rows_not_analyzed)}"
             )

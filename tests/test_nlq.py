@@ -2101,6 +2101,14 @@ class BriefAgreementTests(unittest.TestCase):
 
         self.assertIn("Based on the 110 rows with Crabs recorded, of 120 rows.", answer.answer)
 
+    def test_an_unfiltered_aggregate_says_its_rows_once(self):
+        frame = pd.DataFrame({"Side": ["L", "R"] * 60, "Crabs": [1.0, 2.0] * 55 + [np.nan] * 10})
+
+        answer = answer_question("average Crabs", frame, detect_roles(frame))
+
+        self.assertIn("calculated from 110 rows", answer.answer)
+        self.assertNotIn("Based on", answer.answer)
+
 
 class CorrelatesWordingTests(unittest.TestCase):
     def test_nothing_to_correlate_gives_the_real_reason(self):
