@@ -2376,13 +2376,20 @@ def parse_question(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
     return _plan_question(question, dataframe, roles)[0]
 
 
+class _ComparisonRefused(Exception):
+    """A comparison the question asks for that no plan can make as asked; the message says why."""
+
+
 def _plan_question(
     question: str, dataframe: pd.DataFrame, roles: ColumnRoles, rows_not_analyzed: int = 0
 ) -> tuple[QueryPlan | None, str | None]:
     """The plan for a question, or None with the reason it was refused when there is one."""
     if not _norm(question):
         return None, None
-    compared = _comparison_plan(question, dataframe, roles)
+    try:
+        compared = _comparison_plan(question, dataframe, roles)
+    except _ComparisonRefused as refused:
+        return None, str(refused)
     if compared is None and unsupported_phrasing(question, dataframe.columns):
         return None, None
     plan, reason = (compared, None) if compared else _rule_plan(question, dataframe, roles, rows_not_analyzed)
@@ -5193,6 +5200,12 @@ def _comparison_plan(question: str, dataframe: pd.DataFrame, roles: ColumnRoles)
     year, month = scope["year"], scope["month"]
     if not bins and _is_flag(dataframe[measure]) and outcome_event(dataframe[measure]) is not None:
         # A yes/no outcome is compared by its rate in each group, with a chi-squared or Fisher test.
+        if reading.adjusted:
+            raise _ComparisonRefused(
+                f"{measure} holds only 0 and 1, so it is compared as a rate in each group, and ADA fits no "
+                f"model that holds {_and_listed(reading.adjusted)} fixed for a rate; ask "
+                f'"does {measure} differ by {grouping}" for the rates as they are.'
+            )
         if compared:
             kept.insert(0, ValueFilter(column=grouping, values=compared))
         return QueryPlan(

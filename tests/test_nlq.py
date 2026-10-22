@@ -1941,6 +1941,20 @@ class MorePhrasingTests(unittest.TestCase):
         self.assertTrue(answer.answer.startswith("With time held fixed, VB is 0.0998 higher in feed 0.5"))
         self.assertIn("Without adjusting", answer.answer)
 
+    def test_a_yes_no_outcome_is_not_compared_unadjusted_when_a_reading_should_be_held_fixed(self):
+        rng = np.random.default_rng(6)
+        frame = pd.DataFrame({
+            "dose": rng.uniform(0, 10, 200), "site": np.tile(["North", "South"], 100),
+            "relapse": rng.integers(0, 2, 200),
+        })
+        roles = detect_roles(frame)
+        question = "does relapse differ by site after accounting for dose"
+
+        self.assertIsNone(answer_question(question, frame, roles))
+        hint = rephrase_hint(question, frame, roles)
+        self.assertIn("relapse holds only 0 and 1", hint)
+        self.assertIn("holds dose fixed for a rate", hint)
+
 
 class FilterPhrasingTests(unittest.TestCase):
     def setUp(self):

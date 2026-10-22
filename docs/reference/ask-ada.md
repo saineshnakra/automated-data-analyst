@@ -148,7 +148,8 @@ squares (statsmodels) with each group but the first as a 0/1 column and each
 held reading as it is: two groups give the adjusted gap with its 95%
 interval, more groups an F test that every adjusted gap is zero, and the gap
 without adjusting is given beside it. The answer says this holds Z fixed only
-as a straight line would. "Per transect" first totals the measure within each
+as a straight line would. For a yes/no outcome the question is refused with
+that reason, since ADA fits no model that holds a reading fixed for a rate. "Per transect" first totals the measure within each
 transect, then compares those totals; when transects are numbered again
 within each reef, the unit is the reef and the transect together, and the
 answer says how many units there are. When the grouping changes within a
