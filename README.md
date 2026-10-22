@@ -100,16 +100,22 @@ ada ask orders.csv "which category made the most revenue"
   clear code in the measure is set aside, with a note, but relationships and
   group comparisons are computed without the cells the checks flagged.
 - **Detects column roles**: the date, the measure, the grouping column and an
-  ID column, from names, values and cardinality. Numeric category codes (a 0/1
-  flag, a status, a set dose, a swept frequency) group rows instead of being
-  added up, while rating items (`RDB1` to `RDB3` on 0 to 10) stay quantities; a
-  column of unique row numbers is an ID; a running total such as a rain gauge's,
-  a constant, a p-value or a date stored as a number is never the measure.
+  ID column, from names, values and cardinality. A two-level outcome the table
+  is built to explain (a `target`, a diagnosis, the label a file is named for)
+  becomes the grouping, and the measure is the reading that best tells its two
+  groups apart, never one the outcome was cut from. Numeric category codes (a
+  0/1 flag, a status, a set dose, a swept frequency, an experiment number with
+  its fixed settings) group rows instead of being added up, while rating items
+  (`RDB1` to `RDB3` on 0 to 10) and readings in a unit (`O content (wppm)`)
+  stay quantities; a column of unique row numbers is an ID; a running total
+  such as a rain gauge's, a packet counter, a constant, a p-value or a date
+  stored as a number is never the measure.
   Coordinates, compass directions and quality flags are never compared as
   readings. A long table (one column naming the parameter, one holding the
   result) is analyzed one parameter at a time, a file stacking several tables
   is read as its largest one, and a matrix of sample or channel columns is
-  measured by its row mean. Override any role with
+  measured by its row mean (or each row's spread, when the rows are centred).
+  Override any role with
   `ada.analyze(df, measure="OD600")` or in the app.
 - **Knows what can be added up**: money and counts are summed; rates
   (`Viability %`, `Churn Rate`), measured levels (`Water Temp (°C)`, `pH`,

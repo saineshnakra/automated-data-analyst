@@ -451,9 +451,11 @@ A note names them, except parts of a date.
 
 `ColumnRoles.notes` explains what detection did that a reader would not
 guess: identifiers found by their values, columns that are not readings,
-category codes and flag shares, a summary-statistics table, running totals set
-aside, groupings swapped for a twin or splitting the rows alike, a long or
-stacked table's focus, and a matrix.
+category codes and flag shares, experimental units and their settings, a
+summary-statistics table, running totals set aside, an outcome to explain and
+the readings left out because they restate it, groupings swapped for a twin
+or splitting the rows alike, a long or stacked table's focus, and a matrix,
+with the summary it follows.
 `pipeline.prepare_analysis` adds them to the cleaning notes, so the app, `ada
 schema` and `to_dict()["cleaning_notes"]` list them too.
 
@@ -486,6 +488,7 @@ prints the measure with how it combines, for example `Resolution Hours
 | Every numeric column a 0/1 flag or a labelled code | `measure` is `None`; ADA counts records by the grouping |
 | Every text column is near-unique | `dimension` is `None` unless a factor qualifies |
 | Several plausible measures | Highest score, then most information, wins; the runners-up are in `measure_alternatives` |
+| A two-level outcome every reading restates | The readings that set it are kept as candidates, so a measure is still picked |
 
 ## Changing this
 
