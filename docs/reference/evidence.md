@@ -435,7 +435,12 @@ calculation: another candidate outcome (the alternatives the roles name),
 the same quantity in another form (a sibling reading at |r| ≥ 0.95), and a
 case number (a name such as case, run or trial over whole numbers each in one
 unbroken run of rows; `NUMBERING_WORDS`). Columns related by construction
-never reach it.
+never reach it. A grouping of 2 to 4 levels across which the measure clearly
+differs (a one-way ANOVA with p below 0.05), such as a material or a cutting
+speed set by the design, enters too, each level a 0/1 indicator against the
+most common one ("material 2 +0.318 against material 1"); the subject, a case
+number and a grouping that holds the measure by definition never do, and the
+gain is then judged against the best grouping alone as well.
 
 It appears when the readings together explain clearly more than the best one
 alone (an R² at least 0.1 above its r², `MODEL_GAIN`), or when a reading's

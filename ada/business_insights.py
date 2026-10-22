@@ -2773,6 +2773,89 @@ def _model_predictors(
     return chosen[: MAX_INPUT_TERMS if inputs else MAX_MODEL_TERMS], left_out
 
 
+# Most levels a grouping may have to enter a joint model as indicators.
+MAX_FACTOR_LEVELS = 4
+
+
+@dataclass(frozen=True)
+class _Indicators:
+    """Design factors coded as 0/1 columns for a joint model, each against its most common level."""
+
+    frame: pd.DataFrame
+    #: Each indicator column, with its factor and the reference level it is measured against.
+    against: dict[str, tuple[str, str]]
+    #: Each factor's eta squared with the measure on its own.
+    explained: dict[str, float]
+
+
+def _indicators(
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles,
+    rules: tuple[GroupingRule, ...],
+    built: Construction | None,
+    room: int,
+) -> _Indicators:
+    """Groupings of 2 to MAX_FACTOR_LEVELS levels across which the measure clearly differs, as indicators.
+
+    A cutting speed, a material or a dose set by the design moves a reading
+    beside the readings recorded with it, so the model holds it fixed too.
+    The subject, a case number, the identifier and a grouping that holds the
+    measure by definition are never factors; at most ``room`` indicator
+    columns are made, from the clearest factors first.
+    """
+    frame = dataframe
+    skip = {roles.identifier, roles.date, roles.measure, entity_column(dataframe, roles)}
+    tested = []
+    candidates = (roles.dimension, *roles.dimensions, *roles.factors)
+    for factor in dict.fromkeys(column for column in candidates if column):
+        if factor in skip or factor not in dataframe.columns or _numbers_cases(factor, dataframe[factor]):
+            continue
+        data = pd.DataFrame({"value": pd.to_numeric(dataframe[roles.measure], errors="coerce"),
+                             "group": dataframe[factor]}).dropna()
+        sizes = data["group"].value_counts()
+        if not 2 <= len(sizes) <= MAX_FACTOR_LEVELS or sizes.min() < MIN_NAMED_GROUP:
+            continue
+        if _derived_grouping(dataframe, roles, rules, built, roles.measure, factor):
+            continue
+        groups = [part["value"].to_numpy(dtype=float) for _, part in data.groupby("group", observed=True)]
+        with np.errstate(all="ignore"):
+            p_value = float(stats.f_oneway(*groups).pvalue)
+        if np.isfinite(p_value) and p_value < ALPHA:
+            tested.append((p_value, factor, sizes))
+    against: dict[str, tuple[str, str]] = {}
+    explained: dict[str, float] = {}
+    columns = {}
+    for _, factor, sizes in sorted(tested, key=lambda item: item[0]):
+        levels = list(sizes.index)
+        if len(against) + len(levels) - 1 > room:
+            continue
+        reference = _level_name(factor, levels[0])
+        for level in levels[1:]:
+            name = _level_name(factor, level)
+            columns[name] = (dataframe[factor] == level).astype(float).where(dataframe[factor].notna())
+            against[name] = (factor, reference)
+        explained[factor] = _eta_squared(dataframe[roles.measure], dataframe[factor])
+    if columns:
+        frame = dataframe.assign(**columns)
+    return _Indicators(frame, against, explained)
+
+
+def _level_name(factor: str, level: object) -> str:
+    """A level named with its column: "material 2", "material steel"."""
+    label = group_label(factor, level)
+    return label if str(factor) in label else f"{factor} {label}"
+
+
+def _eta_squared(values: pd.Series, groups: pd.Series) -> float:
+    """The share of a reading's variance between the means of the groups."""
+    data = pd.DataFrame({"value": pd.to_numeric(values, errors="coerce"), "group": groups}).dropna()
+    total = float(((data["value"] - data["value"].mean()) ** 2).sum())
+    if total == 0:
+        return 0.0
+    means = data.groupby("group", observed=True)["value"].transform("mean")
+    return float(((means - data["value"].mean()) ** 2).sum()) / total
+
+
 def _exact_model_evidence(roles: ColumnRoles, model, note: str) -> Evidence:
     """A fit with no residual: the measure is a fixed combination of its predictors, named as one."""
     terms = model.clear or model.terms
@@ -2799,7 +2882,13 @@ def _exact_model_evidence(roles: ColumnRoles, model, note: str) -> Evidence:
 
 
 def _joint_model_evidence(
-    dataframe: pd.DataFrame, roles: ColumnRoles, scan: RelationshipScan | None, note: str = ""
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles,
+    scan: RelationshipScan | None,
+    note: str = "",
+    *,
+    rules: tuple[GroupingRule, ...] = (),
+    built: Construction | None = None,
 ) -> Evidence | None:
     """The measure fitted on the readings that relate to it, when the fit says more than any one of them.
 
@@ -2812,25 +2901,34 @@ def _joint_model_evidence(
     whether it leads. A fit with no residual is an identity and
     is named as one. Only predictors that stay clear with the others held
     fixed are named in the lead, and a model of a reading on its sibling
-    readings (other acids of the same sample) never leads.
+    readings (other acids of the same sample) never leads. Design factors
+    across which the measure clearly differs enter as indicators
+    (``_indicators``), and the gain is then judged against the best factor
+    alone as well.
     """
     if scan is None or not scan.measure:
         return None
     inputs = not roles.dimension and not roles.dimensions and not roles.factors
     predictors, left_out = _model_predictors(dataframe, roles, scan, inputs)
-    model = fit_joint_model(
-        dataframe, roles.measure, predictors, limit=MAX_INPUT_TERMS if inputs else MAX_MODEL_TERMS
-    )
+    limit = MAX_INPUT_TERMS if inputs else MAX_MODEL_TERMS
+    coded = _indicators(dataframe, roles, rules, built, room=limit - 1)
+    model = fit_joint_model(coded.frame, roles.measure, [*coded.against, *predictors], limit=limit)
     if model is None:
         return None
     if model.exact:
         return _exact_model_evidence(roles, model, note)
     best = model.best_single
-    gain = model.r2 - best.pairwise**2
+    single = max([best.pairwise**2, *coded.explained.values()])
+    gain = model.r2 - single
     # A reversal among predictors that largely mix the others is arithmetic, not a finding.
     reversed_terms = tuple(term for term in model.reversed if term.vif <= MAX_VIF)
-    if gain < MODEL_GAIN and not reversed_terms and not (inputs and best.pairwise**2 < SINGLE_ANSWER):
+    if gain < MODEL_GAIN and not reversed_terms and not (inputs and single < SINGLE_ANSWER):
         return None
+    factor_best = max(coded.explained, key=coded.explained.get) if coded.explained else None
+    if factor_best is not None and coded.explained[factor_best] > best.pairwise**2:
+        alone = f"against {coded.explained[factor_best]:.0%} for {factor_best} alone"
+    else:
+        alone = f"against {best.pairwise**2:.0%} for {best.name} alone"
     names = list_names(list(model.predictors), limit=len(model.predictors))
     equation = f"{roles.measure} = {model.intercept:.3g}" + "".join(
         f" {'+' if term.coefficient >= 0 else '−'} {abs(term.coefficient):.3g} × {term.name}"
@@ -2838,11 +2936,12 @@ def _joint_model_evidence(
     )
     statement = (
         f"Together, {names} explain {model.r2:.0%} of the variance in {roles.measure} (adjusted R² = "
-        f"{model.adjusted_r2:.2f}, n = {model.n:,}), against {best.pairwise**2:.0%} for {best.name} alone: "
+        f"{model.adjusted_r2:.2f}, n = {model.n:,}), {alone}: "
         f"{equation}. With the others held fixed: "
         + "; ".join(
-            f"{term.name} {_coefficient(term.coefficient)} per unit (95% CI {term.low:.3g} to "
-            f"{term.high:.3g}, {format_p(term.p_value)})"
+            f"{term.name} {_coefficient(term.coefficient)} "
+            + (f"against {coded.against[term.name][1]}" if term.name in coded.against else "per unit")
+            + f" (95% CI {term.low:.3g} to {term.high:.3g}, {format_p(term.p_value)})"
             for term in model.terms
         )
         + "."
@@ -2878,6 +2977,12 @@ def _joint_model_evidence(
         if inputs
         else f"the readings that relate to it with p < 0.05 (at most {MAX_MODEL_TERMS})"
     )
+    factors = list(dict.fromkeys(factor for factor, _ in coded.against.values()))
+    if factors:
+        picked += (
+            f" and {_joined_names(factors)}, across which it differs (one-way ANOVA, p < 0.05), each level "
+            "a 0/1 indicator against the most common one"
+        )
     calculation = (
         f"ordinary least squares of {roles.measure} on {picked}, over the {model.n:,} rows with all of them "
         "recorded (statsmodels OLS); 95% CIs from the t distribution; variance inflation factors from "
@@ -2892,7 +2997,7 @@ def _joint_model_evidence(
     together = names if len(clear) == len(model.terms) else f"{len(model.terms)} readings"
     lead = (
         f"Together, {together} explain {model.r2:.0%} of the variance in {roles.measure} (n = {model.n:,}), "
-        f"against {best.pairwise**2:.0%} for {best.name} alone."
+        f"{alone}."
     )
     if len(clear) < len(model.terms):
         lead += (
@@ -2901,7 +3006,7 @@ def _joint_model_evidence(
             if clear
             else " With the others held fixed, none of them stays clear on its own."
         )
-    if reversed_terms and gain < MODEL_GAIN:
+    if reversed_terms and gain < MODEL_GAIN and reversed_terms[0].name not in coded.against:
         term = reversed_terms[0]
         lead = (
             f"With the other readings held fixed, {term.name}'s link to {roles.measure} reverses: "
@@ -4210,7 +4315,10 @@ def analyze_business(
             ),
             left_out,
         ),
-        _noting(_joint_model_evidence(tested_statistics, roles, relationships, note), left_out),
+        _noting(
+            _joint_model_evidence(tested_statistics, roles, relationships, note, rules=rules, built=built),
+            left_out,
+        ),
         _summary_rows_evidence(dataframe, roles, built),
         _noting(
             _logistic_evidence(tested_statistics, roles, readings, note, rules=rules, built=built), left_out

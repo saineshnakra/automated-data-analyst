@@ -1854,6 +1854,19 @@ class JointModelCardTests(unittest.TestCase):
 
         self.assertIsNone(brief_card(analyze_business(frame, roles_for(frame, "secchi", "Site")), "model"))
 
+    def test_a_design_factor_enters_the_model_as_an_indicator(self):
+        rng = np.random.default_rng(62)
+        material = rng.choice(["steel", "iron"], 300)
+        frame = pd.DataFrame({"material": material, "time": rng.uniform(0, 40, 300)})
+        frame["wear"] = 0.01 * frame["time"] + np.where(material == "steel", 0.3, 0.0)
+        frame["wear"] += rng.normal(0, 0.05, 300)
+
+        model = brief_card(analyze_business(frame, roles_for(frame, "wear", "material")), "model")
+
+        assert model is not None
+        self.assertIn("against material iron", model.statement)
+        self.assertIn("each level a 0/1 indicator against the most common one", model.calculation)
+
     def test_inputs_that_explain_little_still_get_their_model(self):
         rng = np.random.default_rng(60)
         frame = pd.DataFrame(rng.uniform(100, 500, (400, 4)), columns=["Cement", "Water", "Sand", "Ash"])
