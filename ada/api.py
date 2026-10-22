@@ -417,7 +417,7 @@ class Analysis:
         or ``unrepresentable_question`` when it can't be mapped onto this table.
         The second names the column the question may have meant, when there is one.
         """
-        if unsupported_phrasing(question):
+        if unsupported_phrasing(question, self.frame.columns):
             return Refusal(
                 "unsupported_phrasing",
                 "ADA has no way to represent that question, so it will not guess at a near one.",
