@@ -919,6 +919,71 @@ def _whole_years(series: pd.Series, bounds: tuple[int, int]) -> bool:
     )
 
 
+# Whole numbers that write a date: YYYYMMDD in eight digits, YYYYMM in six.
+DIGIT_DATE_LAYOUTS = {8: ("%Y%m%d", "YYYYMMDD"), 6: ("%Y%m", "YYYYMM")}
+# Words that name a date column, in the languages files most often arrive in.
+DATE_NAME_WORDS = frozenset({
+    "date", "datum", "fecha", "data", "dt", "day", "period", "yyyymmdd", "yyyymm", "ymd",
+})
+# Years a timestamp can hold, for a column the caller names as the date.
+TIMESTAMP_YEARS = (1678, 2261)
+
+
+def _digit_dates(series: pd.Series, bounds: tuple[int, int]) -> tuple[pd.Series, str] | None:
+    """Read whole numbers written as YYYYMMDD or YYYYMM as dates, with the layout read.
+
+    Every value must be a valid date whose year lies within ``bounds``; otherwise
+    returns None, so a count or a code that only looks like a date stays a number.
+    """
+    if is_bool_dtype(series) or not is_numeric_dtype(series):
+        return None
+    values = series.dropna()
+    if values.empty:
+        return None
+    low, high = float(values.min()), float(values.max())
+    for digits, (layout, label) in DIGIT_DATE_LAYOUTS.items():
+        if not 10 ** (digits - 1) <= low <= high < 10**digits:
+            continue
+        if not bool((values % 1 == 0).all()):
+            return None
+        distinct = pd.unique(values.astype("int64"))
+        dates = pd.to_datetime(pd.Series(distinct).astype(str), format=layout, errors="coerce")
+        if dates.isna().any() or not bool(dates.dt.year.between(*bounds).all()):
+            return None
+        lookup = pd.Series(dates.to_numpy(), index=distinct)
+        read = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
+        read[values.index] = lookup.reindex(values.astype("int64").to_numpy()).to_numpy()
+        return read, label
+    return None
+
+
+def _digit_date_columns(
+    frame: pd.DataFrame, requested: str | None, dated: bool
+) -> list[tuple[str, pd.Series, str]]:
+    """The whole-number columns to read as YYYYMMDD or YYYYMM dates, read.
+
+    A column the caller names as the date qualifies on its values alone. One
+    found on its own needs plausible modern years and either a date-like name
+    and two or more values, or three or more values and no other date in the
+    table (``dated`` is False).
+    """
+    found = []
+    for column in frame.columns:
+        series = frame[column]
+        if is_bool_dtype(series) or not is_numeric_dtype(series):
+            continue
+        if column == requested:
+            read = _digit_dates(series, TIMESTAMP_YEARS)
+        else:
+            named = bool(DATE_NAME_WORDS & set(normalized_name(column).split()))
+            read = _digit_dates(series, DETECTED_YEARS) if named or not dated else None
+            if read is not None and read[0].nunique() < (2 if named else 3):
+                read = None
+        if read is not None:
+            found.append((column, *read))
+    return found
+
+
 def _month_numbers(series: pd.Series) -> pd.Series:
     """Months written as names ("March", "Mar") or as numbers 1-12; anything else is NaN."""
     text = series.astype("string").str.strip().str.lower().str.rstrip(".")
@@ -1151,8 +1216,9 @@ def clean_dataframe(
     Identical rows are counted but kept, because repeated records are common in
     real data. Pass ``drop_duplicates=True`` to remove them. ``date`` names the
     column the caller wants as the date; if it holds whole years, they become
-    1 January of each year. Raises ValueError if the input, or what remains
-    after cleaning, has no rows or columns.
+    1 January of each year, and whole numbers written as YYYYMMDD or YYYYMM
+    become those dates. Raises ValueError if the input, or what remains after
+    cleaning, has no rows or columns.
     """
     if dataframe.empty or len(dataframe.columns) == 0:
         raise ValueError("The CSV does not contain any rows and columns to analyze.")
@@ -1302,6 +1368,22 @@ def clean_dataframe(
     # on their columns, so they are set to missing before anything is computed.
     cleaned, blanked_codes, blanked_notes = blank_codes(cleaned)
     notes.extend(blanked_notes)
+
+    # Whole numbers written as dates (19540601, 202403), now that text columns
+    # of them have become numbers and codes among them are gone.
+    real_dates = any(
+        is_datetime64_any_dtype(cleaned[column]) and column not in clock_columns for column in cleaned.columns
+    )
+    for column, read, layout in _digit_date_columns(cleaned, date, real_dates):
+        cleaned[column] = read
+        datetime_columns_inferred += 1
+        first, last = (
+            stamp.strftime("%b %Y") if layout == "YYYYMM" else format_moment(stamp)
+            for stamp in (read.min(), read.max())
+        )
+        notes.append(
+            f"{column} holds whole numbers written as {layout} ({first} to {last}), so it was read as dates."
+        )
 
     paired = _date_and_time(cleaned, clock_columns)
     if paired:

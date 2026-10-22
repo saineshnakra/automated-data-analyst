@@ -942,6 +942,62 @@ class TwoRowHeaderTests(unittest.TestCase):
         self.assertFalse(any("two rows" in note for note in report.notes))
 
 
+class WholeNumberDateTests(unittest.TestCase):
+    def test_yyyymmdd_numbers_become_dates_when_the_table_has_no_other(self):
+        days = pd.date_range("1954-06-01", periods=40)
+        frame = pd.DataFrame({"MESS_DATUM": days.strftime("%Y%m%d").astype(int), "TMK": np.arange(40.0)})
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertTrue(is_datetime64_any_dtype(cleaned["MESS_DATUM"]))
+        self.assertEqual(cleaned["MESS_DATUM"].tolist(), list(days))
+        self.assertIn(
+            "MESS_DATUM holds whole numbers written as YYYYMMDD (01 Jun 1954 to 10 Jul 1954), so it was "
+            "read as dates.",
+            report.notes,
+        )
+
+    def test_yyyymm_numbers_under_a_date_name_become_months_beside_another_date(self):
+        frame = pd.DataFrame({
+            "Run Date": ["2024-01-05", "2024-02-07", "2024-03-04"],
+            "Period": [202401, 202402, 202403],
+            "Yield": [1.0, 2.0, 3.0],
+        })
+
+        cleaned, report = clean_dataframe(frame)
+
+        months = pd.to_datetime(["2024-01-01", "2024-02-01", "2024-03-01"])
+        self.assertEqual(cleaned["Period"].tolist(), list(months))
+        self.assertTrue(any("YYYYMM (Jan 2024 to Mar 2024)" in note for note in report.notes))
+
+    def test_numbers_that_are_not_all_valid_dates_stay_numbers(self):
+        frame = pd.DataFrame({"Batch": [20240101, 20241301, 20240102], "Yield": [1.0, 2.0, 3.0]})
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["Batch"].dtype.kind, "i")
+
+    def test_numbers_that_look_like_dates_stay_numbers_beside_a_real_date(self):
+        frame = pd.DataFrame({
+            "Date": ["2024-01-05", "2024-02-07", "2024-03-04"],
+            "Reads": [20240101, 20240102, 20240103],
+        })
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["Reads"].dtype.kind, "i")
+
+    def test_a_column_named_as_the_date_is_read_whatever_else_the_table_holds(self):
+        frame = pd.DataFrame({
+            "Date": ["2024-01-05", "2024-02-07", "2024-03-04"],
+            "Reads": [20240101, 20240102, 20240103],
+        })
+
+        cleaned, _ = clean_dataframe(frame, date="Reads")
+
+        self.assertTrue(is_datetime64_any_dtype(cleaned["Reads"]))
+
+
 class NotDetectedTests(unittest.TestCase):
     def test_nd_in_a_numeric_column_is_below_a_detection_limit(self):
         frame = pd.DataFrame({"Lead": ["0.81", "ND", "0.77", "0.92", "ND", "1.10"]})

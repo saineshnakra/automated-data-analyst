@@ -498,6 +498,23 @@ class UndatedTimeTests(unittest.TestCase):
         self.assertEqual(segments.loc["burn", "To"], "15:16:27")
 
 
+class WholeNumberDateTests(unittest.TestCase):
+    def setUp(self):
+        days = pd.date_range("1954-06-01", periods=400)
+        self.frame = pd.DataFrame({
+            "MESS_DATUM": days.strftime("%Y%m%d").astype(int),
+            "TMK": [10.0 + 8 * ((n % 365) / 365) for n in range(400)],
+        })
+
+    def test_a_yyyymmdd_column_is_the_timeline(self):
+        self.assertEqual(ada.analyze(self.frame).roles.date, "MESS_DATUM")
+
+    def test_a_yyyymmdd_column_can_be_named_as_the_date(self):
+        report = ada.analyze(self.frame, date="MESS_DATUM")
+
+        self.assertEqual(report.period[0], pd.Timestamp("1954-06-01"))
+
+
 def gauges() -> pd.DataFrame:
     """Hourly wind at two stations, four hours logged as the code 999.9, and a humidity over 100%."""
     hours = pd.date_range("2024-01-01", periods=400, freq="h")

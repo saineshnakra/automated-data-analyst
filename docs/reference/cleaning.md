@@ -23,14 +23,15 @@ table or as a note.
 | 10 | Infer numbers | See below |
 | 11 | Infer dates in other columns | See below |
 | 12 | Set missing-value codes to missing | See [Missing-value codes](#missing-value-codes) |
-| 13 | Join a date column and a time column | See [Times with no date](#times-with-no-date) |
-| 14 | Read elapsed time | See [Elapsed time](#elapsed-time) |
-| 15 | Read "not stated", `ND` and placeholder labels as missing in text columns | See below |
-| 16 | Build dates from years | See below |
+| 13 | Read whole numbers written as dates | See [Dates written as whole numbers](#dates-written-as-whole-numbers) |
+| 14 | Join a date column and a time column | See [Times with no date](#times-with-no-date) |
+| 15 | Read elapsed time | See [Elapsed time](#elapsed-time) |
+| 16 | Read "not stated", `ND` and placeholder labels as missing in text columns | See below |
 | 17 | Merge label spellings | See below |
-| 18 | Widen overflowing integers | An integer column whose total would overflow int64 becomes float64 |
-| 19 | Replace infinities | `inf` and `-inf` in float columns become missing |
-| 20 | Count identical rows | Counted and kept |
+| 18 | Build dates from years | See below |
+| 19 | Widen overflowing integers | An integer column whose total would overflow int64 becomes float64 |
+| 20 | Replace infinities | `inf` and `-inf` in float columns become missing |
+| 21 | Count identical rows | Counted and kept |
 
 If nothing is left, `clean_dataframe` raises `ValueError` rather than
 returning an empty frame.
@@ -175,7 +176,9 @@ counter.
 
 ## Type inference
 
-Inference runs only on text columns.
+Inference runs only on text columns, except for
+[dates written as whole numbers](#dates-written-as-whole-numbers) and
+[dates from years](#dates-from-years).
 
 **Dates in date-named columns.** A column whose name contains `date`, `time`,
 `timestamp`, `created` or `updated` is converted when at least 80% of its
@@ -288,6 +291,24 @@ checks still list each code, saying it was set to missing. The cells count as
 missing everywhere afterwards: in the completeness figure, the data
 dictionary and "how many rows have missing PM".
 
+## Dates written as whole numbers
+
+Weather and finance exports often write a date as a whole number:
+`19540601` (YYYYMMDD) or `202403` (YYYYMM). A numeric column becomes dates
+when every value is a valid date in one of these layouts, with years from 1800
+to 2100, and either:
+
+- its name has a date word (`date`, `datum`, `fecha`, `data`, `day`,
+  `period`, `yyyymmdd` and similar) and it has two or more values, or
+- the table has no other date (times of day with no date do not count) and it
+  has three or more values
+
+A column passed as the date (`ada.analyze(df, date="MESS_DATUM")`) is read
+whatever its name or the rest of the table, with any year a timestamp can
+hold. A YYYYMM value becomes the first of its month. A note gives the layout
+and the span. Codes are set to missing first, so a `-999` in such a column
+does not stop it being read.
+
 ## Dates from years
 
 Annual data often has a `year` column of plain numbers and no date. When no
@@ -333,7 +354,8 @@ text columns whose values trimming changed, numeric and datetime columns
 inferred, identical rows found and removed, unreadable date values and
 infinite values. Its `notes` hold the sentences shown above the dashboard
 (a two-row header, repeated headers, dropped empty columns, date-order assumptions, timezones,
-unreadable dates, missing-value codes set to missing, dates built from years,
+unreadable dates, missing-value codes set to missing, dates read from whole
+numbers, dates built from years,
 missing-value markers, values past a detection limit, lone tokens, unreadable
 numbers, "not stated" phrases, `ND` and placeholder labels, merged label
 spellings, widened columns, infinities, identical rows). Its `blanked_codes` hold the data-check issues
@@ -370,6 +392,7 @@ app.
 | `Lead` holding numbers and `ND` | Converted; `ND` counts as below a detection limit, with a note |
 | `PM` and nine other columns holding `-999` | Those cells become missing, with a note per column, and the data checks list the code |
 | `pm10`, `pm1_0` and `pm2_5` all `-1` on the same 4 rows, never otherwise negative | Those cells become missing, with a note per column |
+| `MESS_DATUM` holding `19540601` to `20221231`, and no date column | Read as dates, with a note |
 | A header row of group labels over the real names | Names taken from the second row, which is dropped, with a note |
 | A CSV header repeated, read as `diabetes` and `diabetes.1` | Both kept, with a note saying on how many rows they differ |
 
