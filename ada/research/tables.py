@@ -129,6 +129,9 @@ _LATEX_SPECIAL = {
     "²": r"\textsuperscript{2}",
     "≥": r"$\geq$",
     "≤": r"$\leq$",
+    "ω": r"$\omega$",
+    "χ": r"$\chi$",
+    "ρ": r"$\rho$",
 }
 
 
