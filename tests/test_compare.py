@@ -4,6 +4,7 @@ from dataclasses import replace
 import numpy as np
 import pandas as pd
 from scipy import stats
+from statsmodels.stats.multitest import multipletests
 from statsmodels.stats.proportion import confint_proportions_2indep
 
 from ada.compare import (
@@ -229,6 +230,25 @@ class EntityTests(unittest.TestCase):
         self.assertIn("Each Bird counts once per group", describe_comparison(comparison))
         self.assertIn("one value per Bird", comparison_calculation(comparison))
 
+    def test_a_skewed_reading_takes_each_subjects_median_beside_a_plain_one(self):
+        rng = np.random.default_rng(44)
+        subjects = np.repeat(np.arange(20), 5)
+        frame = pd.DataFrame({
+            "Bird": subjects.astype(str),
+            "Phenotype": np.where(subjects < 10, "bold", "shy"),
+            "Latency": rng.lognormal(3, 1.5, 100),
+            "Mass": rng.normal(30, 2, 100),
+        })
+
+        scan = scan_differences(frame, ["Latency", "Mass"], ["Phenotype"], entity="Bird")
+
+        assert scan is not None
+        latency = compare_groups(frame, "Latency", "Phenotype", entity="Bird")
+        medians = frame.groupby(["Bird", "Phenotype"])["Latency"].median()
+        bold = medians.xs("bold", level="Phenotype")
+        self.assertEqual(latency.entity_summary, "median")
+        self.assertAlmostEqual(next(g for g in latency.groups if g.label == "bold").mean, bold.mean())
+
     def test_a_subject_in_both_groups_is_flagged_as_not_independent(self):
         rng = np.random.default_rng(7)
         frame = pd.DataFrame({
@@ -308,6 +328,10 @@ class DifferenceScanTests(unittest.TestCase):
     def test_holm_adjustment(self):
         adjusted = holm_adjust(np.array([0.01, 0.04, 0.03, 0.5]))
         np.testing.assert_allclose(adjusted, [0.04, 0.09, 0.09, 0.5])
+
+    def test_holm_matches_statsmodels(self):
+        p = np.random.default_rng(43).random(40) ** 3
+        np.testing.assert_allclose(holm_adjust(p), multipletests(p, method="holm")[1])
 
 
 class GroupingStructureTests(unittest.TestCase):

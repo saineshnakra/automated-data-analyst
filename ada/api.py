@@ -22,7 +22,7 @@ import pandas as pd
 from .aggregation import TrendSeries, build_trend, group_coverage, segment_frame
 from .analysis import column_profile
 from .anomalies import MIN_PERIODS as ANOMALY_MIN_PERIODS
-from .anomalies import Anomaly, detect_anomalies
+from .anomalies import Anomaly, detect_anomalies, finer_trend
 from .business_insights import BusinessBrief, analyze_business, build_business_report
 from .file_io import list_sample_datasets as _list_sample_datasets
 from .file_io import read_tabular_file
@@ -339,8 +339,8 @@ class Analysis:
         """Periods outside the expected range of the trend.
 
         An empty tuple means nothing was flagged. A :class:`Refusal` means ADA
-        could not check (no date column, or too few periods). Both are falsy,
-        so check the type::
+        could not check (no date column, or too few periods even at a finer
+        grain than the trend's). Both are falsy, so check the type::
 
             found = report.anomalies
             if isinstance(found, ada.Refusal):
@@ -351,6 +351,8 @@ class Analysis:
         series = self.trend()
         if isinstance(series, Refusal):
             return series
+        # Too few periods at this grain may still be enough at a finer one.
+        series = finer_trend(self.frame, self.roles, series) or series
         periods = len(series.frame)
         if periods < ANOMALY_MIN_PERIODS:
             return Refusal(

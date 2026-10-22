@@ -199,6 +199,26 @@ deviation multiplied by 1.2533 is used instead (the same scale). If that is
 zero too, as for a perfectly flat series, the scale is zero and anomaly
 detection flags nothing.
 
+### Level shifts
+
+`level_shift(values)` looks for one lasting change in the level of a period
+series, the brief's `shift` card (see [Evidence](evidence.md#changes-in-level)).
+`best_split` finds the split into two stretches with the least squared error
+around their means by binary segmentation (`ruptures.Binseg` with the l2
+cost), each stretch at least 2 periods and 15% of the series. Its t statistic
+is the two-sample one, discounted by the lag-1 autocorrelation left within the
+stretches (with Kendall's small-sample correction), since a slowly wandering
+series makes any split look significant. `passes_shift_rules` then asks that
+the two-level fit beat a straight line by a BIC-like margin (squared error
+below n^(-2/n) of the line's), that the shift be at least 1.5 within-stretch
+standard deviations, and that each stretch's median lie on its own side of
+the midpoint.
+
+`tools/calibrate_level_shifts.py` simulates stable series (normal noise around
+a fixed level) and records, for each length, the t statistic above which only
+1 in 20 shows a shift that passes the other rules (`SHIFT_CRITICAL_VALUES`,
+never below 2.0). A series needs 8 periods.
+
 ## Edge cases
 
 | Situation | Behavior |

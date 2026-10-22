@@ -3,10 +3,18 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from ada.anomalies import CRITICAL_VALUES, FALSE_ALARM_RATE, critical_value, detect_anomalies
+from ada.aggregation import build_trend
+from ada.anomalies import (
+    CRITICAL_VALUES,
+    FALSE_ALARM_RATE,
+    MIN_PERIODS,
+    critical_value,
+    detect_anomalies,
+    finer_trend,
+)
 from ada.business_insights import analyze_business
 from ada.formatting import format_period
-from ada.schema import detect_roles
+from ada.schema import ColumnRoles, detect_roles
 
 
 def make_trend(values, freq="MS", start="2024-01-01"):
@@ -232,6 +240,42 @@ class SeasonalAnomalyTests(unittest.TestCase):
         anomalies = detect_anomalies(make_trend(values), floor_at_zero=False)
 
         self.assertLess(anomalies[0].expected_low, 0)
+
+
+class FinerGrainTests(unittest.TestCase):
+    def setUp(self):
+        rng = np.random.default_rng(65)
+        days = pd.date_range("2023-01-01", periods=147, freq="D")
+        values = 100 + rng.normal(0, 5, 147)
+        values[60:63] = 400
+        self.frame = pd.DataFrame({"Date": days, "AQI": values})
+        self.roles = ColumnRoles(date="Date", measure="AQI", dimension=None, identifier=None,
+                                 numeric=("AQI",), dimensions=())
+
+    def test_too_few_months_are_checked_by_week(self):
+        series = build_trend(self.frame, self.roles, "M")
+
+        finer = finer_trend(self.frame, self.roles, series)
+
+        assert finer is not None
+        self.assertEqual(finer.frequency, "W")
+        self.assertGreaterEqual(len(finer.frame), MIN_PERIODS)
+
+    def test_enough_periods_need_no_finer_grain(self):
+        series = build_trend(self.frame, self.roles, "W")
+        self.assertIsNone(finer_trend(self.frame, self.roles, series))
+
+    def test_a_grain_finer_than_the_recording_is_not_used(self):
+        weekly = self.frame.iloc[::7].head(6)
+        series = build_trend(weekly, self.roles, "M")
+        self.assertIsNone(finer_trend(weekly, self.roles, series))
+
+    def test_the_brief_says_which_grain_it_checked(self):
+        brief = analyze_business(self.frame, self.roles, frequency="M")
+
+        anomaly = next((item for item in brief.evidence if item.kind == "anomaly"), None)
+        assert anomaly is not None
+        self.assertIn("Periods are checked by week, since by month there are only 5", anomaly.statement)
 
 
 if __name__ == "__main__":

@@ -16,7 +16,8 @@ ADA is MIT-licensed and depends only on permissively licensed libraries.
 | [pandas](https://pandas.pydata.org) | BSD-3-Clause | Reading CSV and Excel files, cleaning, grouping and every aggregation |
 | [NumPy](https://numpy.org) | BSD-3-Clause | The array arithmetic behind the vectorised group tests, correlations and trendlines |
 | [SciPy](https://scipy.org) | BSD-3-Clause | The t, F, chi-squared and normal distributions behind every p-value; `scipy.stats.chi2_contingency` and `fisher_exact` for rate comparisons; ranks |
-| [statsmodels](https://www.statsmodels.org) | BSD-3-Clause | Holm and Benjamini-Hochberg adjustments (`multipletests`); Newcombe's interval for a difference in rates (`confint_proportions_2indep`); ordinary least squares for the joint model, with `variance_inflation_factor` for collinearity |
+| [statsmodels](https://www.statsmodels.org) | BSD-3-Clause | The Benjamini-Hochberg false-discovery-rate adjustment (`multipletests`); Newcombe's interval for a difference in rates (`confint_proportions_2indep`); ordinary least squares for the joint model, with `variance_inflation_factor` for collinearity |
+| [ruptures](https://centre-borelli.github.io/ruptures-docs/) | BSD-2-Clause | Binary segmentation (`Binseg`) to find a lasting change in the level of the measure's period series |
 | [openpyxl](https://openpyxl.readthedocs.io) | MIT | Reading `.xlsx` files through pandas |
 
 ## The app
@@ -46,6 +47,9 @@ The optional AI layer uses the [OpenAI Python library](https://github.com/openai
   Econometric and statistical modeling with Python. *Proceedings of the 9th
   Python in Science Conference*, 92–96.
   https://doi.org/10.25080/Majora-92bf1922-011
+- **ruptures:** Truong, C., Oudre, L. and Vayatis, N. (2020). Selective review
+  of offline change point detection methods. *Signal Processing* 167, 107299.
+  https://doi.org/10.1016/j.sigpro.2019.107299
 
 ## Methods
 
@@ -58,4 +62,7 @@ The methods ADA applies, with the papers that introduced them:
 | Holm's adjustment | Scans of many comparisons | Holm, S. (1979), *Scandinavian Journal of Statistics* 6, 65–70 |
 | Benjamini-Hochberg false discovery rate | Screens of hundreds of readings | Benjamini, Y. and Hochberg, Y. (1995), *Journal of the Royal Statistical Society B* 57, 289–300 |
 | Newcombe's interval for a difference in proportions | Rate comparisons | Newcombe, R. G. (1998), *Statistics in Medicine* 17, 873–890 |
+| Binary segmentation | Changes in level | Scott, A. J. and Knott, M. (1974), *Biometrics* 30, 507–512 |
+| Bias of the lag-1 autocorrelation | Changes in level | Kendall, M. G. (1954), *Biometrika* 41, 403–404 |
+| Variance inflation factor | The joint model | Marquardt, D. W. (1970), *Technometrics* 12, 591–612 |
 | Theil-Sen slope | Trendlines, anomalies, forecasts | Theil, H. (1950), *Indagationes Mathematicae* 12; Sen, P. K. (1968), *JASA* 63, 1379–1389 |

@@ -21,11 +21,11 @@ Evidence says what moved; recommendations say where to look.
 
 | Field | Contents |
 |---|---|
-| `headline` | One sentence from the strongest available signals |
+| `headline` | One sentence from the most informative finding (see [The headline](#the-headline)) |
 | `summary` | A short paragraph: the trend and group findings, or, without a trend, what the table seems to be (see below) |
 | `roles` | The `ColumnRoles` used |
 | `kpis` | Up to 4 `KPI`s |
-| `evidence` | Up to 6 `Evidence` cards |
+| `evidence` | Up to 8 `Evidence` cards |
 | `recommendations` | Up to 4 `Recommendation`s |
 
 ## Evidence kinds
@@ -40,18 +40,34 @@ assembled in this order:
 |---|---|---|
 | `trend` | Latest period-over-period change on the groups present in both periods, compared with the series' usual movement or with the time of year | No date, fewer than 2 periods, or a percentage change from a previous period of zero |
 | `driver` | The segment that moved the measure most between the last two periods | No date, measure or segment |
-| `leader` | For a summed measure, the group with the largest share of the total ("Largest share by ..."), or with the most rows when there is no measure ("Most rows by ..."). For an averaged measure, a comparison of the groups with its test and effect size (see below). For mixed-sign values, the largest by size with no share | No segment, or a total of zero |
+| `leader` | For money or a count of things, the group with the largest share of the total ("Largest share by ..."), or with the most rows when there is no measure ("Most rows by ..."). For any other measure, a comparison of the groups with its test and effect size (see below). For mixed-sign values, the largest by size with no share | No segment, or a total of zero |
 | `concentration` | Effective number of segments, and the top-three share | Shares are not meaningful (averaged measure or mixed signs), or the measure is neither money nor a count of things |
+| `shift` | The largest lasting change in the level of the measure's period series, with its start and the levels before and after (see [Changes in level](#changes-in-level)) | No date or measure, under 8 periods, or no shift |
 | `differences` | Which numeric readings differ between groups, largest first, after adjusting for the number of tests | No grouping, no reading, or a scan of fewer than 3 comparisons that found nothing |
-| `anomaly` | The most severe flagged period and how many were flagged, against the band for its time of year when the series has a yearly pattern | Under 8 periods, or nothing flagged |
+| `rates` | How often a yes/no outcome occurs in each group of another column (see [Rates](#rates)) | No yes/no column, or no grouping across which its rate differs clearly |
+| `anomaly` | The most severe flagged period and how many were flagged, against the band for its time of year when the series has a yearly pattern | Under 8 periods even at a finer grain, or nothing flagged |
 | `relationship` | What relates to the measure, then the strongest other pair, or a null result | Fewer than two numeric readings, or no pair with 12 complete rows |
+| `model` | The measure fitted on the readings that relate to it, together (see [A joint model](#a-joint-model)) | Fewer than two such readings, too few rows, or a fit that adds nothing to the best single reading |
 | `outliers` | Values outside 1.5 × IQR in every reading, judged on each one's shape and within the grouping that explains it; a shift when one reading's form one run in time; for a mostly-zero measure, its tail instead | No reading with more flagged values than chance gives, and no shift |
 | `quality` | The data checks' leading issues with counts, and the share of populated cells | No issue and no missing cells |
 
 A `differences` card that found nothing comes after `outliers` rather than
 after the segment cards, so a null result never pushes out a finding. If
-more than six cards qualify, the first six are shown. A `quality` card that
-falls past the sixth replaces the sixth, since it qualifies every other figure.
+more than eight cards qualify, the first eight are shown. A `quality` card that
+falls past the eighth replaces the eighth, since it qualifies every other figure.
+
+### Exact repeats
+
+When over 10% of the rows (`REPEATED_SHARE`) exactly repeat another row and the
+table has a continuous reading (a numeric column with fractional values and 20
+or more distinct ones), the repeats are copies: two records of a continuous
+measurement can't agree on every column by chance. Counting them would make
+every test over-confident, so the comparisons, rates, scans, correlations and
+the joint model run on the distinct rows, each card's calculation says so ("on
+the 534 distinct rows, leaving out 887 exact repeats"), and so does the
+summary. Counts and labels can coincide legitimately (two quadrats with no
+crabs), so a table without a continuous reading is left whole. The totals,
+trends and segment shares always use every row.
 
 The `driver` and `leader` cards name a group of a numeric grouping with its
 column (`Status 2`, not a bare `2`; see `formatting.group_label`).
@@ -78,7 +94,14 @@ changes, measured the same way. It reports whether the change is within normal
 variation, larger or quieter than usual, or unusually large or quiet, based on
 its distance from the median change in robust-scale units (under 1, under 2,
 2 or more). It needs at least five earlier changes
-(`MIN_PERIODS_FOR_VOLATILITY`). When the last period ends short of typical
+(`MIN_PERIODS_FOR_VOLATILITY`). With fewer, an averaged measure's change is
+judged against the spread of the two periods' rows instead, by Welch's t-test
+(`scipy.stats.ttest_ind`): "That is within the noise: the two periods' rows do
+not differ clearly (Welch's t-test, p = 0.76)". A change within the usual
+variation, or within the noise, marks the card `quiet`: it is no clear change,
+the KPI tile says it is within the usual range, and it neither leads the
+headline over a finding nor gets a "check whether the change holds"
+recommendation. When the last period ends short of typical
 coverage but was not excluded, the card calls it the "latest period" rather
 than the "latest complete period" and says part of the change may be missing
 data.
@@ -94,8 +117,9 @@ earlier: *"In the 6 earlier years on record, the move into Q2 ranged from
 +8.63 to +16.40 (median +13.86), so this one is within the range usual for the
 time of year. Against Q2 2022 (15.52), it is down 2.39."*
 
-**Groups that come and go.** With a grouping column, the change is measured on
-the groups that reported in both of the last two periods
+**Groups that come and go.** With a grouping column, or without one but with a
+column naming the unit each row belongs to (a station; `entity_column`), the
+change is measured on the groups that reported in both of the last two periods
 (`matched_period_change` in `ada/aggregation.py`). Weather stations that start
 reporting halfway through a record, or a site that stops, would otherwise
 move a pooled average on their own. The card names the groups left out and
@@ -140,8 +164,10 @@ net. "Up 2% overall" can hide one region up 40% and another down 38%.
 Every group is named with `group_label`, so a numeric code reads as
 "Status 2 has the highest average", never "2 has the highest average".
 
-For an averaged measure the `leader` card names the highest and the lowest
-group, printed with enough precision to differ. Groups whose averages are
+For a compared measure the `leader` card names the highest and the lowest
+group, printed with enough precision to differ, among groups of 5 or more
+values; smaller groups are listed as not ranked (see
+[Comparing groups](compare.md#small-groups)). Groups whose averages are
 equal are all named ("47 and 68 tie for the highest average"), and the KPI
 tile and recommendations say "47 (tied with 1 other)". When a named group's
 average rests on fewer than 30 rows, every named group is given with its row
@@ -237,17 +263,35 @@ More comes from the same checks:
 ### Group differences
 
 A gap between two group averages says nothing without the spread and the
-sample behind it, so for an averaged measure the `leader` card compares the
-groups with `compare_groups` (see [Comparing groups](compare.md)): the n,
-mean and median per group, Welch's test with a Mann-Whitney check for two
-groups or Welch's ANOVA with a Kruskal-Wallis check for more, and an effect
-size. A skewed or capped measure is compared by medians and ranks. When a
-subject column repeats, each subject counts once per group.
+sample behind it, so for any measure other than money or a count of things the
+`leader` card compares the groups with `compare_groups` (see
+[Comparing groups](compare.md)): the n, mean and median per group, Welch's
+test with a Mann-Whitney check for two groups or Welch's ANOVA with a
+Kruskal-Wallis check for more, and an effect size. A skewed or capped measure
+is compared by medians and ranks, a mostly-zero one by its means and the share
+of values that are not zero, and a grouping of ordered numeric levels also
+gets a trend test. When a subject column repeats, each subject counts once per
+group, and each group's figure says so ("mean of per-Bird medians").
+
+A summed per-row score (seconds of looking time per infant) is compared this
+way too, since its shares mostly count rows; the card adds the leading group's
+share beside its share of the rows: "Summed, Condition 2 holds 60.9% of all
+CorrectTotal and 17 of the 30 rows (56.7%), so its share mostly reflects how
+many rows it has."
 
 | Result | Card |
 |---|---|
 | Clear difference | Title "Highest average by *group*" (or "Highest median by *group*" when medians are compared), the top group's mean or median as the value, and "X is higher in A than in B" or the highest and lowest groups, naming any tied with them |
-| No clear difference, or a negligible one | Title "No clear difference by *group*", the effect size as the value, and the groups' figures; no group is called highest, no KPI names a top group, and the headline says there is no clear difference |
+| No clear difference, a negligible one, or tests that disagree | Title "No clear difference by *group*", the effect size as the value, and the groups' figures; no group is called highest, no KPI names a top group, and the headline says there is no clear difference |
+| A difference resting on groups of fewer than 5 | Title "Too few values to rank by *group*" |
+
+When the grouping combines two others (`combined_groupings`: a cell code for
+contour and depth, or the four conditions of a 2×2 experiment), each of the
+two factors is also compared on its own, since the cells say nothing about
+which factor matters: "condition combines contractor and fsi_high; each on its
+own: contractor shows no clear difference (...); fsi_high differs, median 5.33
+(fsi_high 0, n = 115) against 4.67 (fsi_high 1, n = 116), ...". When the cells
+are not clear but a factor is, the factor leads the headline.
 
 When too few groups have two values to test, the card falls back to naming the
 highest and lowest average and says the gap can't be tested.
@@ -288,19 +332,77 @@ card uses too (see [Comparing groups](compare.md#pairs-related-by-construction))
 A grouping set by the measure also gets no `leader` card, so it never makes
 the headline.
 
-- P-values are Holm-adjusted for every comparison run, and the calculation says
-  how many.
-- The card leads with the largest clear difference, names the next two with
-  their effect sizes, and its value is the count of clear differences ("3 of 7").
-- With nothing clear it says so and names the largest effect.
+- P-values are Holm-adjusted for every test run, or, over more than 300
+  readings, Benjamini-Hochberg adjusted, and the calculation says which and
+  how many. A screen also says how many tests passed unadjusted against the 5%
+  chance alone would give.
+- A finding needs both tests to agree and groups of 5 or more values; a
+  grouping of ordered numeric levels also gets a trend test for each reading.
+- The card leads with the largest clear finding, with each group's n, names
+  the next two with their effect sizes, and its value is the count of clear
+  findings ("3 of 7"). Findings on under 20% of the table's rows come after the
+  rest, and the lead says when few rows record both columns.
+- With nothing clear it says so, names the largest effect, and says why it is
+  not clear when the test passed (too small, a group under 5, or tests that
+  disagree).
 - With several groupings it adds the share of the measure's variance each one
-  explains: "Of the variance in Ca, Depth explains 76%, Contour 5%". Groupings
-  set by the measure, or that it is built from, are left out of the shares.
-- The measure across the grouping column is left to the `leader` card when the
-  measure is averaged.
+  explains: "Of the variance in Ca, Depth explains 76%, Contour 5%", with one
+  value per subject in each group when subjects repeat, so the shares match
+  the comparisons beside them. Groupings set by the measure, or that it is
+  built from, are left out of the shares.
+- The measure across the grouping column is left to the `leader` card when
+  that card compares the groups.
 
-When the `leader` card finds no clear difference and the `differences` card
-finds one, the headline and summary lead with the difference found.
+### Rates
+
+When a yes/no column (0/1, true/false, or yes/no words) sits beside a grouping,
+the `rates` card compares how often it is "yes" across the groups
+(`compare_rates`; see [Comparing groups](compare.md#comparing-rates)). The
+outcome is the grouping column when that is yes/no, and otherwise the last
+yes/no column in the table, where outcomes usually sit. It is compared across
+every other grouping, Holm-adjusted for their number; a grouping in which
+every group is all yes or all no is another code for the outcome and is left
+out. The card appears when a rate differs clearly, and gives each group's rate
+and n, the chi-squared or Fisher test, Cramér's V and the risk difference with
+its interval: "The share of rows with Result 1 is 55.7% in Gender 1 (n = 740)
+against 30.5% in Gender 0 (n = 681): a difference of 25.1 percentage points
+(95% CI 20.1 to 30.0)".
+
+### Changes in level
+
+The `shift` card looks for one lasting change in the level of the measure's
+period series (`level_shift` in `ada/timeseries.py`): binary segmentation
+(`ruptures.Binseg`, l2 cost) splits the series into the two stretches that fit
+it best, each at least 15% of the series. The split is reported when:
+
+- its t statistic, discounted for the autocorrelation left within the
+  stretches, passes the threshold at which only 1 stable series in 20 shows a
+  shift (`SHIFT_CRITICAL_VALUES`, from `tools/calibrate_level_shifts.py`);
+- the two-level fit beats a straight line by a BIC-like margin, so a steady rise
+  is not called a shift;
+- the shift is at least 1.5 within-stretch standard deviations
+  (`MIN_SHIFT_EFFECT`); and
+- each stretch's median lies on its own side of the midpoint, so one extreme
+  period is not a new level.
+
+The card gives the first period at the new level, the average before and
+after, and the shift in standard deviations: "PM10 rose to a new level from
+Jul 2024: it averaged 54.47 per month from May 2024 to Jun 2024 and 852.66 from
+Jul 2024 to Dec 2024". When the groups reporting changed at the same time, it
+says so, since that alone can move the level. Series whose noise wanders
+slowly show a shift more often than stable ones.
+
+### A joint model
+
+The `model` card fits the measure on the readings that relate to it with p
+below 0.05, at most six of them (`fit_joint_model`; see
+[Comparing groups](compare.md#a-joint-model)). It appears when the readings
+together explain clearly more than the best one alone (an R² at least 0.1
+above its r², `MODEL_GAIN`), or when a reading's coefficient points the other
+way from its own correlation. The card gives R² and adjusted R², the fitted
+equation, each coefficient with its 95% interval, a sentence for each reversed
+reading, and a collinearity warning when a variance inflation factor is above
+5.
 
 ### Relationships
 
@@ -383,16 +485,41 @@ of anything, so it gets no tile of its own; the rows tile says "One per
 Reading ID" instead. A label already shown is skipped, so a file with little
 structure gets fewer tiles rather than duplicates.
 
+## The headline
+
+The headline comes from the most informative finding:
+
+1. Money and counts lead with the latest movement and the leading group, as a
+   sales report does ("+12.2% latest movement, within the usual range; Apparel
+   has the largest share of revenue, at 33.3%"), and so does any measure whose
+   latest movement is unusual.
+2. Otherwise a latest movement within the usual variation is no clear change
+   and gives way to the first finding of: the measure's own clear group
+   comparison (or a clear factor of it), a change in level, a clear rate
+   difference, the largest difference found ("Largest difference found: ..."),
+   a joint model, and a relationship whose interval excludes zero.
+3. With no finding, a quiet movement reads "No clear change in AQI in May 2023
+   (+2.27, within the usual range)", and a table without a date leads with its
+   group comparison, even a null one.
+4. A bare overall average or total leads only when nothing else was found.
+
+A group is never named in the headline on fewer than 5 values or without a
+clear test, and a share of a summed per-row score never leads when the groups
+do not differ.
+
 ## Summary
 
 With a trend, the summary repeats the trend and group statements. Without
-one, the headline already carries the only finding, so the summary says what
-the table seems to be: how many rows, what one row is when an identifier names
+one, the summary says what the table seems to be: how many rows, what one row is when an identifier names
 each row once, the date span, the measure and how it combines, the groups, and
 which of a date and a grouping column is missing:
 
 > 1,319 rows. Measure: Blood sugar, averaged across rows. Groups: the 2 values
 > of Result. No date column was found.
+
+It then adds, when the headline does not already say them, the change in
+level and the largest difference found (when the measure's own comparison is
+not clear), and a sentence on exact repeats when the tests use distinct rows.
 
 When the roles list runner-up measures (`ColumnRoles.measure_alternatives`),
 the summary ends by naming them: "Measure picked: realism (also plausible:
@@ -408,22 +535,28 @@ the evidence card it comes from.
 | Evidence | Recommendation |
 |---|---|
 | `trend`, negative | Start with the driver segment, or find where the adverse change started |
-| `trend`, positive or neutral | Check whether the change holds |
+| `trend`, positive or neutral and not quiet | Check whether the change holds |
+| `shift` | Find what changed when the new level began |
 | `concentration`, warning | Check how much rests on the largest group, named |
-| `leader`, averaged measure, clear difference | Find out what sets the top group apart |
-| `leader`, averaged measure, no clear difference | Don't rank the groups on the measure |
-| `leader`, summed measure | Compare the largest group, named, with the others |
+| `leader`, compared groups, clear difference | Find out what sets the top group apart |
+| `leader`, compared groups, groups too small to rank | Collect more records per group |
+| `leader`, compared groups, no clear difference | Don't rank the groups on the measure |
+| `leader`, shares | Compare the largest group, named, with the others |
 | `anomaly` | Explain the flagged periods |
-| `relationship` | Test the relationship |
+| `relationship`, a relationship found | Test the relationship |
 | `outliers`, a level shift | Find what changed when the run began |
 | `outliers`, a heavy-tailed measure | Compare medians, not means |
 | `outliers` | Review the extreme records |
 | `quality`, data checks | Check the flagged values first (placed first, since flagged values qualify every other figure) |
 | `quality`, warning (5% or more missing), no other issue | Look into the missing values |
 
-The driver is named only when it moved in the same direction as the total. With
-no qualifying evidence, a single "Add a date or a grouping column"
-recommendation explains which columns would enable the analysis.
+The driver is named only when it moved in the same direction as the total.
+Recommendations the findings contradict are left out: no "check whether the
+change holds" for a quiet movement, no "find what sets X apart" when the groups
+do not differ, no "test the relationship" when none was found. A table with a
+date or a grouping and nothing to act on gets "Collect more before acting";
+one with neither gets "Add a date or a grouping column", which explains which
+columns would enable the analysis.
 
 Recommendations are suggestions of what to look at next, worded for any
 table: they name only the splits the table has (no "time window" without a

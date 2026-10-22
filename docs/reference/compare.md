@@ -126,9 +126,10 @@ one row per group (the centre, n, the other centre and the SD). P-values read
 `scan_differences(dataframe, readings, groupings, entity=None, skip=())`
 compares each reading across each grouping and returns a `DifferenceScan`.
 
-- P-values are Holm-adjusted over every test run
-  (`statsmodels.stats.multitest.multipletests`), so the chance of naming any
-  difference that isn't there stays at 5%.
+- P-values are Holm-adjusted over every test run, so the chance of naming any
+  difference that isn't there stays at 5%. `holm_adjust` gives the figures of
+  `statsmodels.stats.multitest.multipletests(method="holm")`, which it does not
+  call because that branch forces a full garbage collection on every call.
 - Each reading against a grouping of ordered numeric levels also gets a trend
   test, counted among the tests.
 - A difference is named when it is `clear` by the same rules as a single
@@ -155,7 +156,8 @@ compares each reading across each grouping and returns a `DifferenceScan`.
 - A table with more than 300 readings (`MAX_SCAN_COLUMNS`), such as a gene
   expression matrix, is a screen. Every reading is tested, up to 20 million
   cells (`SCREEN_CELLS`, then the most variable readings), and the p-values
-  are Benjamini-Hochberg adjusted instead (`benjamini_hochberg`), which keeps
+  are Benjamini-Hochberg adjusted instead (`benjamini_hochberg`, by
+  `statsmodels.stats.multitest.multipletests(method="fdr_bh")`), which keeps
   the expected share of false findings among those named at 5%. Holm's guard
   against any false finding would hide nearly every true difference in a
   screen. `passing` counts the tests with an unadjusted p below 0.05, to set

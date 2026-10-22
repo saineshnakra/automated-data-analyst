@@ -75,6 +75,11 @@ SCREEN_CELLS = 20_000_000
 HOLM = "Holm"
 FALSE_DISCOVERY = "Benjamini-Hochberg"
 ADJUSTED = {HOLM: "Holm-adjusted", FALSE_DISCOVERY: "false-discovery-rate adjusted"}
+# How each adjustment was computed, for a calculation line.
+ADJUSTED_BY = {
+    HOLM: "Holm's step-down method",
+    FALSE_DISCOVERY: "statsmodels multipletests, fdr_bh",
+}
 
 MIN_CORRELATION_PAIRS = 12
 NEAR_DUPLICATE_CORRELATION = 0.99
@@ -755,7 +760,9 @@ class RateComparison:
 
     @property
     def event_label(self) -> str:
-        return group_label(self.outcome, self.event)
+        """"Result 1" for a numeric outcome, "Smoker = yes" for a text one."""
+        label = group_label(self.outcome, self.event)
+        return f"{self.outcome} = {self.event}" if label == str(self.event) else label
 
     @property
     def decisive_p(self) -> float:
@@ -784,7 +791,16 @@ def compare_rates(dataframe: pd.DataFrame, outcome: str, grouping: str) -> RateC
     if event is None:
         return None
     data = dataframe[[outcome, grouping]].dropna()
-    hits = (data[outcome] == event).groupby(data[grouping], observed=True).agg(["size", "sum"])
+    # Counted with integer codes rather than a groupby, since the brief tries every grouping.
+    codes, levels = pd.factorize(data[grouping], sort=True)
+    yes = (data[outcome] == event).to_numpy(dtype=float)
+    hits = pd.DataFrame(
+        {
+            "size": np.bincount(codes, minlength=len(levels)),
+            "sum": np.bincount(codes, weights=yes, minlength=len(levels)).round().astype(int),
+        },
+        index=levels,
+    )
     hits = hits[hits["size"] >= MIN_GROUP_SIZE]
     if len(hits) < 2:
         return None
@@ -871,8 +887,7 @@ def rate_calculation(comparison: RateComparison) -> str:
         "(statsmodels confint_proportions_2indep)",
     ]
     if c.adjusted_p is not None:
-        method = "fdr_bh" if c.correction == FALSE_DISCOVERY else "holm"
-        steps.append(f"p {ADJUSTED[c.correction]} for {c.tests} tests (statsmodels multipletests, {method})")
+        steps.append(f"p {ADJUSTED[c.correction]} for {c.tests} tests ({ADJUSTED_BY[c.correction]})")
     return "; ".join(steps)
 
 
@@ -896,12 +911,12 @@ def _testing_sample(
     if not collapse:
         return frame[readings], frame[grouping], {}
     robust = {reading: _robust_on_rows(frame[reading]) for reading in readings}
-    keyed = frame.dropna(subset=[entity]).groupby([entity, grouping], observed=True, sort=False)[readings]
-    reduced = keyed.mean()
-    medians = keyed.median()
-    for reading in readings:
-        if robust[reading]:
-            reduced[reading] = medians[reading]
+    keyed = frame.dropna(subset=[entity]).groupby([entity, grouping], observed=True, sort=False)
+    reduced = keyed[readings].mean()
+    skewed = [reading for reading in readings if robust[reading]]
+    if skewed:
+        # Medians cost far more than means, so only the readings that need them get them.
+        reduced[skewed] = keyed[skewed].median()
     reduced = reduced.reset_index()
     summary = "median" if all(robust.values()) else "mean"
     if len(readings) == 1:
@@ -1003,10 +1018,16 @@ def _ordered_trend(values: pd.Series, groups: pd.Series, measure: str, grouping:
 def holm_adjust(p_values: np.ndarray) -> np.ndarray:
     """Holm's step-down adjustment, which keeps the chance of any false finding at the stated level.
 
-    Computed by ``statsmodels.stats.multitest.multipletests(method="holm")``.
+    The figures equal ``statsmodels.stats.multitest.multipletests(method="holm")``,
+    which is not called because that branch forces a full garbage collection
+    on every call, tens of milliseconds in a process holding a large table.
     """
     p = np.asarray(p_values, dtype=float)
-    return multipletests(p, method="holm")[1] if p.size else p
+    order = np.argsort(p)
+    scaled = np.minimum(1.0, p[order] * (len(p) - np.arange(len(p))))
+    adjusted = np.empty_like(p)
+    adjusted[order] = np.maximum.accumulate(scaled)
+    return adjusted
 
 
 def benjamini_hochberg(p_values: np.ndarray) -> np.ndarray:
@@ -2095,10 +2116,11 @@ def lead_sentence(comparison: GroupComparison, column_values: pd.Series | None =
             f"{c.measure} is higher in {c.higher.label} than in {c.lower.label}: {word} {first} vs "
             f"{second} (n = {c.higher.n:,} and {c.lower.n:,}).{coverage}"
         )
+    top, bottom = _tied(c, c.centre(c.higher)), _tied(c, c.centre(c.lower))
     return (
-        f"{c.measure} differs across {c.grouping}: {centre_word(c, plural=True)} from {second} "
-        f"({c.lower.label}, n = {c.lower.n:,}) to {first} ({c.higher.label}, n = {c.higher.n:,}), "
-        f"{c.explained_name} = {c.explained:.2f}.{coverage}"
+        f"{c.measure} differs across {c.grouping}: {list_names(top)} {'have' if len(top) > 1 else 'has'} "
+        f"the highest {word}, {first} (n = {c.higher.n:,}), and {list_names(bottom)} the lowest, {second} "
+        f"(n = {c.lower.n:,}); {c.explained_name} = {c.explained:.2f}.{coverage}"
     )
 
 
@@ -2159,10 +2181,9 @@ def comparison_calculation(comparison: GroupComparison) -> str:
     if c.entity:
         steps.append(f"one value per {c.entity} in each group (its {c.entity_summary}) before testing")
     if c.adjusted_p is not None:
-        method = "fdr_bh" if c.correction == FALSE_DISCOVERY else "holm"
         steps.append(
             f"p {ADJUSTED[c.correction]} for {c.tests} test{'' if c.tests == 1 else 's'} "
-            f"(statsmodels multipletests, {method})"
+            f"({ADJUSTED_BY[c.correction]})"
         )
     return "; ".join(steps)
 
