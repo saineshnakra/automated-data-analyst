@@ -126,7 +126,7 @@ class GroupsTests(unittest.TestCase):
         self.assertTrue(entry.caption.startswith("Figure 1. Viability by Treatment. Each point is one well"))
         self.assertIn("figures.viability", record["depends_on"])
         self.assertIn("analyses.primary", record["depends_on"])
-        self.assertIn("scipy.stats.t.interval", record["calculation"])
+        self.assertIn("from analysis primary", record["calculation"])
         self.assertEqual(record["rows"]["used"], len(expected))
 
     def test_the_analysis_means_are_drawn_when_the_statistics_step_gives_them(self):
@@ -281,9 +281,21 @@ class ScatterTests(unittest.TestCase):
             analyses=[{"id": "passage", "outcome": "Viability (%)", "relate": "Passage", "planned": True}],
         )
         study["variables"]["Plate"] = {"role": "identifier", "type": "categorical"}
-        with study_folder(frame, study) as path:
+        with study_folder(frame, study) as path, with_results(lambda result: None):
             caption = asset(build(path), "passage-scatter").caption
         self.assertIn("come from 4 clusters (Plate), so it is narrower than it should be", caption)
+
+    def test_a_clustered_design_draws_the_mixed_model_line(self):
+        frame = assay()
+        frame["Plate"] = [f"Plate {index % 4}" for index in range(len(frame))]
+        study = assay_with(
+            design={"type": "clustered", "cluster": "Plate"},
+            analyses=[{"id": "passage", "outcome": "Viability (%)", "relate": "Passage", "planned": True}],
+        )
+        study["variables"]["Plate"] = {"role": "identifier", "type": "categorical"}
+        with study_folder(frame, study) as path:
+            caption = asset(build(path), "passage-scatter").caption
+        self.assertIn("fixed-effect fit of analysis passage", caption)
 
 
 class OtherTypesTests(unittest.TestCase):

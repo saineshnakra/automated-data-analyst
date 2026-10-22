@@ -125,9 +125,11 @@ class ChangeReportTests(unittest.TestCase):
             line = next(line for line in entry.splitlines() if line.startswith(f"- **{ident}**"))
             self.assertIn("changed", line)
             self.assertIn("study.yml changed in processing;", line)
-            # A figure counts the rows its analysis uses, so only the exclusion is the same for every asset.
+            # A figure, a results table and a model count the rows their analysis uses, so only the
+            # exclusion is the same for every asset.
             self.assertIn("(excluded 0 → 1, by step 3)", line)
-            if asset["kind"] != "figure":
+            analysed = any(part.startswith("analyses.") for part in asset["depends_on"])
+            if asset["kind"] != "figure" and not analysed:
                 self.assertIn("rows used 36 → 35 (excluded 0 → 1, by step 3)", line)
         self.assertIn("items to check 1 → 0", entry)
         self.assertIn("**descriptives** changed (Table 1)", entry)
@@ -150,8 +152,11 @@ class ChangeReportTests(unittest.TestCase):
             edit(path, lambda study: study.update(decisions={"alpha": 0.01}))
             built = build(path)
             entry = (built.out / "CHANGES.md").read_text(encoding="utf-8").split("## Build 1")[0]
-        # Only the reproduction package changes: it holds a copy of study.yml.
-        self.assertEqual([change.asset for change in built.changes], ["reproduction-package"])
+        # Only the methods draft, which states the significance level, and the reproduction package, which
+        # holds a copy of study.yml, change.
+        self.assertEqual(
+            [change.asset for change in built.changes], ["methods-draft", "reproduction-package"]
+        )
         self.assertIn("- study.yml changed in decisions.", entry)
         self.assertIn("Although study.yml changed in decisions, data-audit", entry)
         self.assertIn("came out the same.", entry)
