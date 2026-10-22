@@ -5,6 +5,102 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-20a779.svg)](https://github.com/saineshnakra/automated-data-analyst/blob/main/LICENSE)
 [![Stars](https://img.shields.io/github/stars/saineshnakra/automated-data-analyst?style=flat&logo=github&color=f5b731)](https://github.com/saineshnakra/automated-data-analyst/stargazers)
 
+**Your paper's tables and figures, built from your data and traceable to
+it.** Install ADA in the folder that holds a study's data, answer a few
+questions about the study, and `ada build` makes what the paper needs: a data
+audit, a data dictionary, a record of every exclusion, descriptive and results
+tables in Word, LaTeX and CSV, figures with their source data and captions, a
+methods draft, and a package another researcher can rebuild it all from.
+Every number traces back to the data, and `ada verify` checks that a rebuild
+gives the same numbers.
+
+```bash
+pip install automated-data-analyst
+ada init data/measurements.csv     # asks about the study; writes study.yml
+ada build                          # writes paper-assets/
+ada verify                         # rebuilds in a scratch folder and checks every number
+```
+
+ADA also takes a [quick first look at any table](#a-first-look-at-any-table),
+in the browser or with one line of Python.
+
+## Paper assets for a study
+
+`ada demo mice` writes a small example study, sixteen mice on two diets weighed
+weekly, so you can try it before using your own data. `cd mice && ada build`
+gives this figure, among 17 assets:
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/study-figure.png" width="60%" alt="Body weight over eight weeks for mice on chow and on a high-fat diet: a thin line per mouse, and the mean with its 95% confidence interval at each week for each diet">
+</p>
+
+> **Figure 1.** Body weight over week by Diet. Thin lines join the measurements
+> of each subject (Mouse); 15 subjects (7 Chow, 8 High fat). Markers and bars
+> show the mean and 95% confidence interval at each week for each diet, offset
+> slightly so the groups do not overlap. 1 row with no value for Body weight
+> (g) is left out. Analysis weight-gain (linear mixed model over Week, random
+> intercept per subject) was planned before the data were seen.
+
+The caption is written from what was drawn, and the plotted values are saved
+beside the figure as `weight-curves.source.csv`.
+
+**You describe the study once.** `ada init` reads the data, guesses each
+column's role and unit, and asks what a row is, which columns identify a
+subject or site, the outcomes, groups, time points and covariates, the
+missing-value codes, the design (independent, paired, repeated or
+clustered), which analyses were planned before you saw the data, and what may
+be shared. The answers go into `study.yml`, a plain file you can read and edit.
+Exclusions are rules in it, each with a reason:
+
+```yaml
+processing:
+  - exclude:
+      ids: [M07]
+    reason: M07 was given the wrong diet in weeks 2 and 3 (feeding log, entry 12).
+```
+
+**`ada build` makes the assets:**
+
+| Folder | What is in it |
+|---|---|
+| `audit/` | What was read, values outside their range, duplicates, and whether the data fits the stated design |
+| `dictionary/` | Each column's meaning, unit, type, allowed and observed values |
+| `processing/` | Every step from the original file to the analysed rows, with rows before and after, and the excluded rows themselves |
+| `tables/` | Descriptive tables and the results of the planned analyses: estimates, confidence intervals, test statistics, p-values, adjusted p-values and effect sizes, as Word, LaTeX and CSV |
+| `figures/` | Every observation drawn, with means and intervals; paired and longitudinal plots that join each subject's own points; scatter with fit; PDF and SVG with editable text, PNG, TIFF or EPS at a journal's size (PLOS, Nature, Cell, Science, eLife) |
+| `methods/` | A methods draft written from what was run, with software versions and references, and a results draft |
+| `supplement/` | Exploratory analyses, model output and checks, and the supplementary material as one Word file |
+| `reproduce/` | `study.yml`, pinned package versions, input checksums and instructions |
+| `repository/` | README, `CITATION.cff`, `.zenodo.json`, and data and code availability drafts |
+
+**The statistics follow your design, not the data.** ADA runs only the
+analyses in `study.yml` and labels each one planned or exploratory. The
+design picks the test: Welch's t-test or ANOVA for independent groups, the
+paired t-test for paired data, and a linear mixed model with a random
+intercept per subject or cluster for repeated and clustered data. p-values are
+adjusted within the families you name. ADA never drops a value on its own, and
+a design it can't fit (crossover, nested random effects, survival, binary
+outcomes measured repeatedly) is refused with the reason, not approximated.
+Your own pandas tables, analysis functions and Matplotlib figures can join the
+assets through a `custom:` script.
+
+**Every number can be traced.** `provenance.json` records, for each asset, the
+input file's checksum, the rows used and the exclusion steps behind them, the
+parts of `study.yml` it depends on, the function that made it, the calculation,
+references and package versions. When you change a rule, the next build says
+in `CHANGES.md` which assets changed and how ("rows used 36 → 35, by step 3";
+the estimate old → new). `ada verify` rebuilds from `study.yml` and the data
+alone in a scratch folder and compares every file, number by number.
+
+**Restricted data.** `ada preview` lists what would be shared and flags
+withheld columns or individual rows in any file; `ada share` copies only what
+may be shared. With `sharing.data: demo`, ADA writes synthetic data with the
+same columns so others can run the reproduction without the real data.
+
+[The study.yml format, the tests used and everything ADA writes](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/research.md)
+
+## A first look at any table
+
 **See what is in a table of measurements, in seconds.** Drop in a CSV or
 Excel file from a lab assay, an instrument, a field survey or a clinical
 study, and ADA tells you what is wrong with the data, which groups differ,
@@ -12,11 +108,11 @@ what relates to what, and what changed over time. Each finding names the test
 that produced it and prints the arithmetic, so you can check it before you
 trust it.
 
-[**Try it in your browser**](https://automated-data-analyst.streamlit.app/): it opens on a lab dataset, with no sign-up or install. Or `pip install automated-data-analyst`.
+[**Try it in your browser**](https://automated-data-analyst.streamlit.app/): it opens on a lab dataset, with no sign-up or install. Or `ada analyze data.csv`.
 
 ![ADA's report on a cell-culture assay: the headline says viability differs across treatments, with the medians, group sizes and effect size, above the key numbers](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/brief.png)
 
-## What it is for
+### What it is for
 
 You have just been sent a file, or exported one from an instrument, and you
 want to know what is in it before you spend an afternoon in Excel, R or
@@ -33,7 +129,7 @@ pandas. ADA answers the questions you would ask first:
 It was built for research data and works on any table, sales exports included.
 You don't write code in the web app, and you write one line in Python.
 
-## An example
+### An example
 
 The lab sample that ships with ADA is a weekly cell-culture assay: 936
 samples, four treatments, viability and live-cell counts. ADA's report, in
@@ -99,7 +195,7 @@ Compound B the lowest, 85.1% (n = 233); ε² = 0.64.
 
 </details>
 
-## Why you can check it
+### Why you can check it
 
 - **The numbers come from pandas, SciPy and statsmodels**, never from a
   language model, and each one prints its method, for example "median
@@ -114,7 +210,7 @@ Compound B the lowest, 85.1% (n = 233); ε² = 0.64.
 - **No setup, no account, no API key.** The optional AI layer only plans
   questions and writes a summary; it never computes a number.
 
-## What it doesn't do
+### What the first look doesn't do
 
 It runs standard tests (Welch, Mann-Whitney, Kruskal-Wallis, chi-squared,
 Fisher, Tukey's HSD, least squares) through SciPy and statsmodels, adjusts
@@ -124,10 +220,10 @@ measures beyond one value per subject, nested or blocked designs, or
 covariates you planned to adjust for, and it picks its tests by rule, after
 seeing the data, not from a plan written before. So treat what it finds as a
 first pass and its recommendations as what to look at next, not as causal
-claims. For a confirmatory analysis, ADA is the step before that, and its
-calculation lines tell you which test to start from.
+claims. For results you will report, describe the study with `ada init` and
+let `ada build` fit the design and the plan you state.
 
-## Get started
+## Get started with the first look
 
 **In the browser:** [open the web app](https://automated-data-analyst.streamlit.app/).
 It starts on the lab sample; choose **Upload your file** for your own CSV or
@@ -296,6 +392,7 @@ Details: [Privacy](https://github.com/saineshnakra/automated-data-analyst/blob/m
 
 | Page | Contents |
 |---|---|
+| [Paper assets for a study](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/research.md) | `ada init`, `ada build` and `ada verify`: the study.yml format, the tests, every file written |
 | [Concepts](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/concepts.md) | Terms: measure, segment, period, rates and levels, evidence |
 | [How it works](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/how-it-works.md) | The steps from upload to report |
 | [Architecture](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/architecture.md) | Which module does what |

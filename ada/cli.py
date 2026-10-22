@@ -236,7 +236,7 @@ def _app(_: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ada",
-        description="Exploratory analysis for any table, with the arithmetic under every number.",
+        description="Paper assets for a study (init, build, verify) and a first look at any table (analyze).",
     )
     parser.add_argument("--version", action="version", version=f"ada {__version__}")
     subcommands = parser.add_subparsers(dest="command", metavar="COMMAND")
