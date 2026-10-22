@@ -95,3 +95,22 @@ with NumPy's `isclose`: they match when |rebuilt − disk| ≤ atol + rtol × |d
 (by default rtol is 1e-9 and atol 1e-12). It finds the lines of text that
 differ with Python's `difflib`, and reads the text of Word files with
 [python-docx](https://python-docx.readthedocs.io) (MIT).
+
+## The methods draft
+
+The methods draft (`ada build`, in `methods/`) cites the libraries above that
+the build used, and also:
+
+- **Python:** Van Rossum, G. and Drake, F. L. (2009). *Python 3 Reference
+  Manual*. CreateSpace.
+- **Matplotlib** (figures): Hunter, J. D. (2007). Matplotlib: a 2D graphics
+  environment. *Computing in Science & Engineering* 9, 90–95.
+  https://doi.org/10.1109/MCSE.2007.55
+- **The Bonferroni correction**, with `multiple_comparisons: bonferroni`:
+  Dunn, O. J. (1961). Multiple comparisons among means. *Journal of the
+  American Statistical Association* 56, 52–64.
+  https://doi.org/10.1080/01621459.1961.10482090
+- **Holm's method** and **the Benjamini-Hochberg procedure**, with `holm` or
+  `fdr_bh`: the references in the table above.
+
+[python-docx](https://python-docx.readthedocs.io) (MIT) writes the Word files.

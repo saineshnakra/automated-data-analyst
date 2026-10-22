@@ -257,8 +257,8 @@ paper-assets/
   processing/             processing record, excluded rows, processed data
   tables/                 descriptive and results tables (CSV, Word, LaTeX)
   figures/                figures, source data (.source.csv) and captions.md
-  methods/                methods draft (Markdown and Word)
-  supplement/             exploratory analyses, model output and diagnostics
+  methods/                methods draft (Markdown and Word) and a results draft
+  supplement/             supplement.md and .docx: supplementary tables and figures, model output
   reproduce/              study.yml, pinned requirements, input checksums, instructions
   repository/             README, CITATION.cff, .zenodo.json, data and code availability drafts
 ```
@@ -266,6 +266,27 @@ paper-assets/
 Tables come as CSV with full-precision numbers (for re-analysis) and as
 Word and LaTeX with the numbers formatted for print. Figures come as PDF and
 SVG with editable text, and as PNG, TIFF or EPS at the journal's resolution.
+
+## The methods draft and the supplement
+
+`methods/methods.md` and `methods.docx` hold a draft Methods section written
+only from what the build ran: the data file and its checksum, the design with
+its counts, each processing step with its reason and the rows it removed,
+each analysis with its test or model, the rows it used and left out and
+whether it was planned, the multiple-comparison method and its families, what
+the figures show, and the exact Python and package versions, ending with a
+numbered reference list. An analysis that was not fitted is named, with the
+reason. `methods/results.md` gives one sentence per analysis with its
+estimate, confidence interval and p-value; exploratory analyses have a
+paragraph of their own.
+
+`supplement/supplement.md` and `supplement.docx` collect the supplementary
+tables and figures, the data audit's items to check, the processing record,
+each model's printed output and the data dictionary.
+
+These are drafts for you to edit: add what ADA cannot know, such as how the
+data were collected and any ethics approval. `ada build` rewrites them, so
+copy the text into your manuscript before editing it.
 
 ## Traceability
 
