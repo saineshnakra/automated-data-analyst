@@ -60,7 +60,8 @@ so one contributor can take it from start to finish.
   [comparisons](https://github.com/saineshnakra/automated-data-analyst/issues/5)
   ("West vs East"),
   [shares](https://github.com/saineshnakra/automated-data-analyst/issues/4)
-  ("what % of revenue is Enterprise") and date ranges
+  ("what % of revenue is Enterprise") and date ranges finer than a year
+  ("since March 2020")
 
 ## Contributor-sized
 

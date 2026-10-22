@@ -162,7 +162,9 @@ ada ask orders.csv "which category made the most revenue"
   strength", "does antibiotic use affect risk", "distribution of pH",
   "outliers in HGB", "90th percentile of lead", "how many distinct species
   per reef", "count by crop and year", "share of Result 1 by Gender", "which
-  column has the highest average", "average growth by temperature") by
+  column has the highest average", "average growth by temperature", "average
+  pH since 2000", "average pH before and after 2000", "average pH by
+  season", "does VB differ by feed after accounting for time") by
   turning them into a fixed query plan that pandas runs. Every column, value,
   grouping and condition the question names must reach the plan; otherwise
   the question is refused with the part ADA couldn't use, rather than
@@ -171,7 +173,10 @@ ada ask orders.csv "which category made the most revenue"
   answer states its filters, how many rows it used and whether the row limit
   left rows out; a ranking gives each group's n and says whether the groups
   really differ, a trend gives its Theil-Sen slope and peak, and an answer
-  that uses values the data checks flag says so.
+  that uses values the data checks flag says so. Answers use the same rows
+  and leave out the same flagged values as the brief, and a yes/no outcome
+  is compared as a rate per group, so a figure in an answer matches the one
+  in the brief.
 - **Tests group differences**: a measure compared across groups gets the n per
   group, Welch's test with a Mann-Whitney check (or Welch's ANOVA and
   Kruskal-Wallis for more groups) and an effect size, by medians and ranks when
