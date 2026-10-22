@@ -163,16 +163,20 @@ ada ask orders.csv "which category made the most revenue"
   group, Welch's test with a Mann-Whitney check (or Welch's ANOVA and
   Kruskal-Wallis for more groups) and an effect size, by medians and ranks when
   the data are skewed or capped. A gap within the noise reads as "no clear
-  difference", never as a ranking. A scan of every reading across every
-  grouping names the largest differences, with p-values adjusted for the
-  number of tests, and repeated rows of one subject count once.
+  difference", never as a ranking. A scan of every reading across a handful
+  of design groupings names the largest differences, with p-values adjusted
+  for the number of tests, and repeated rows of one subject count once. A
+  grouping cut from a reading (a size band from acres, an anaemia flag from
+  haemoglobin) is stated as a rule rather than reported as a difference.
 - **Reports what relates to the measure**: every numeric column's Pearson and
   Spearman r with the measure, with a 95% interval and the sample size, then
   the strongest other pair, or a plain "none of N pairs reaches |r| = 0.3".
-  A total and its items, a mean of other columns, a censoring flag and its
-  capped reading, near-duplicates, participant numbers and plate positions
-  are left out and listed. It says when a correlation rests on one record,
-  and when it reverses within groups.
+  A total and its items, a mean or row maximum of other columns, a score
+  standardised within groups, shares that add up to 100, a censoring flag and
+  its capped reading, near-duplicates, participant numbers and plate positions
+  are left out and listed. It leads with the figure one record doesn't
+  decide, says when one record makes or hides a correlation, and when it is
+  stronger, weaker or reversed within groups.
   Ask about a pair and it reports the same figures for that pair.
 - **Analyzes a slice you select**: draw a box or lasso on the Explore chart, or
   click some bars, and get the same analysis for those rows beside the whole.

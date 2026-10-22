@@ -261,13 +261,41 @@ levels (a `Group` 1 to 12 beside its `Gp` label). A grouping made of two others
 (a cell code for contour and depth) is replaced by those two, and the subject
 column is never a grouping.
 
+The groupings are taken design factors first: the grouping column, then text
+labels, then two-level codes, then other codes by how few levels they have, so
+a rating item read as a code comes last. At most six are scanned
+(`MAX_SCAN_GROUPINGS`), and the calculation names the ones past the cap. Also
+left out, and named:
+
+| Left out | Why |
+|---|---|
+| A numeric column that repeats a part of the date column (`MO` is the month of `Date`) | It shows the season or the trend, not a factor |
+| A grouping nested within one already scanned (concentrations 3 to 12 used only with the blue dyes) | Its differences repeat the other grouping's |
+| A copy of a reading in other units (`MaxTemp` in °C beside `MAX` in °F) | The reading is compared once, as the measure when it is one |
+
+Pairs related by construction are not compared:
+
+| Pair | Example | Card |
+|---|---|---|
+| A grouping set by the reading | Farm size cut from acres; anaemia set by haemoglobin below 12 for women and 13.5 for men; a pollutant label naming the largest sub-index | The rule is stated in the card: "Result is set by Hemoglobin: Result 1 below 12.0 for Gender 0 and below 13.5 for Gender 1, on 100% of rows, so it is not compared with Hemoglobin or anything built from it" |
+| A score and the items it is built from | A scale that is the mean of its rated items, read as codes | Named in the calculation |
+| A reading fixed within each group | A station's battery voltage, a reef's coordinates | Named in the calculation as an attribute of the group |
+| Coordinates and compass directions | Latitude, wind direction | Never compared |
+
+The rules come from `grouping_rules` and the pairs built from one another from
+the brief's screen of the table (`construction`), which the `relationship`
+card uses too (see [Comparing groups](compare.md#pairs-related-by-construction)).
+A grouping set by the measure also gets no `leader` card, so it never makes
+the headline.
+
 - P-values are Holm-adjusted for every comparison run, and the calculation says
   how many.
 - The card leads with the largest clear difference, names the next two with
   their effect sizes, and its value is the count of clear differences ("3 of 7").
 - With nothing clear it says so and names the largest effect.
 - With several groupings it adds the share of the measure's variance each one
-  explains: "Of the variance in Ca, Depth explains 76%, Contour 5%".
+  explains: "Of the variance in Ca, Depth explains 76%, Contour 5%". Groupings
+  set by the measure, or that it is built from, are left out of the shares.
 - The measure across the grouping column is left to the `leader` card when the
   measure is averaged.
 
@@ -298,22 +326,37 @@ Pairs are ranked by the larger of |Spearman r| and |Pearson r without the
 pair's most influential record|, so a single impossible record can neither
 make nor hide the strongest pair. Pairs related by construction are left out
 and listed in the calculation: a column and the columns it is built from (a
-total and its items, a mean, a difference), a flag that only marks another
-column's cap, same-stem names above |r| = 0.95, and near-duplicates
-(|r| ≥ 0.99 with ranks that agree, such as a reading and its adjusted copy).
-Near-duplicates are also named in the statement: up to three of them
-(`NEAR_DUPLICATES_NAMED`), saying they probably measure the same thing or one
-is derived from another.
+total and its items, a mean, a difference, the largest of several readings, a
+score standardised within each group), shares that add up to a fixed total, a
+flag that only marks another column's cap, same-stem names above |r| = 0.95,
+two map coordinates, and near-duplicates (|r| ≥ 0.99 with ranks that agree,
+such as a reading and its adjusted copy). Near-duplicates are also named in
+the statement: up to three of them (`NEAR_DUPLICATES_NAMED`), saying they
+probably measure the same thing or one is derived from another. The columns
+left out of the measure's own ranking are named with the reason ("Left out of
+the ranking for Gas_Index: mq135, mq4, mq6 and 3 others (built from it, or it
+from them)"). When every column is part of the measure, as with the row mean
+ADA adds to a matrix table, the card says so and reports the strongest other
+pair. Rows that break a block of shares, and a summary that reads 0 where
+every part is blank (treated as missing), get a sentence of their own. Compass
+directions never enter the scan.
 
-Each pair the card states is checked:
+Tables longer than 50,000 rows are screened on a fixed random sample of that
+many rows, the same one the comparisons use; the pairs the card names are
+computed on every row.
+
+Each pair the card states is checked, and the sentence leads with the figure
+that one record or a few extreme ones do not decide:
 
 | Check | Statement |
 |---|---|
 | The 95% interval includes zero | The sample cannot rule out no relationship |
-| Dropping one record moves r by more than 0.2 | "It rests on one record: without the one where HCT is 3,715 and MCH is 3,117, r is -0.01" |
-| Spearman r more than 0.25 above Pearson r (`RANK_DIVERGENCE`) | Extreme records hide the relationship, with r without them, when dropping records over 5 robust SDs out closes the gap; otherwise the relationship is consistent but not a straight line |
-| Spearman r more than 0.25 below Pearson r | A few extreme records drive the linear figure, with r without the most extreme when that is known |
-| The r within the groups of a grouping differs in sign, or by 0.3 or more | "Within each dye the relationship runs the other way: r = -0.97 once each dye's own means are removed", or that it is stronger or weaker within groups |
+| Dropping one record moves r by more than 0.2, towards zero | "HCT and MCH move together only weakly once one record is set aside: Pearson r = 0.02 without it … It rests on one record: with the one where HCT is 3,715 and MCH is 3,117, r is 1.00" |
+| Dropping one record moves r by more than 0.2, away from zero | "RBC and HGB move together once one record is set aside: Pearson r = 0.89 without it … One record hides a strong relationship: with the one where RBC is 90.80 and HGB is 12.60, r is only 0.46" |
+| Spearman r more than 0.25 above Pearson r (`RANK_DIVERGENCE`), and dropping records over 5 robust SDs out closes the gap | Leads with r without those records; the extreme records hide the relationship |
+| Spearman r more than 0.25 above Pearson r otherwise | Leads with the rank correlation: consistent but not a straight line |
+| Spearman r more than 0.25 below Pearson r | Leads with the rank correlation and gives the cause: a few extreme records (with r without them), one unbroken stretch of records far beyond the rest (a phase of a run), or a pile-up at a column's floor or ceiling, which ties in rank |
+| The r within the groups of a grouping differs in sign, or by 0.1 or more beyond sampling noise (`WITHIN_GROUP_GAP`) | "Within each block it is stronger: r = 0.91 in Block 1 and 0.94 in Block 2 (0.92 once each block's own means are removed)", or that it is weaker or runs the other way. The grouping column is always checked and reported when it differs; another grouping is added when it differs more. Groupings set by either column, or that it is built from, are not used |
 
 Participant numbers, plate positions and other labels are not readings, so
 they never enter the scan. Wide tables are scanned on the measure and the 299

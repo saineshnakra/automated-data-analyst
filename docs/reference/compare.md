@@ -96,8 +96,14 @@ compares each reading across each grouping and returns a `DifferenceScan`.
   separates the groups by definition.
 - A reading with a single value in each group is another code for the
   grouping (a 0/1 flag behind a condition label) and is left out.
+- A reading whose groups explain 99% or more of its variance
+  (`ATTRIBUTE_EXPLAINED`) barely varies within a group: it describes the
+  group (a station's battery voltage, a reef's depth) rather than its
+  members, and is left out as an attribute (`attributes`).
+- Coordinates and compass directions are never compared (`placed`): a
+  coordinate places a row, and the mean of an angle means nothing.
 - `skip` holds pairs reported elsewhere, such as the measure across the
-  grouping column, which has its own card.
+  grouping column, which has its own card, and pairs related by construction.
 - Wide tables are scanned on their 300 most variable readings
   (`MAX_SCAN_COLUMNS`), and tables longer than 50,000 rows (`SCAN_ROWS`) on a
   fixed random sample of that many rows. A difference large enough to report
@@ -109,13 +115,57 @@ survey, depth explains 76% of calcium and contour 5%.
 `combined_groupings` finds a grouping that is the combination of two others
 (each level of a cell code such as `T0` is exactly one contour and one depth);
 it explains at least as much as either factor, which says nothing about which
-of them matters.
+of them matters. `nested_within(dataframe, finer, coarser)` asks whether the
+levels of one grouping each occur with only some levels of another: half or
+more of the cells expected to hold five or more rows are empty
+(`NESTED_EMPTY_SHARE`), as when concentrations 3 to 12 were used only with the
+blue dyes. Across such a grouping the two can't be told apart.
+`date_part(values, dates)` says which part of the date a numeric column
+repeats ("month", "year", "day" and so on) on 99% of rows: grouping by it
+shows the season or the trend, not a factor.
+
+### Groupings set by the readings
+
+`grouping_rules(dataframe, readings, groupings, date=None)` returns a
+`GroupingRule` for each grouping the readings set row by row. Comparing those
+readings across it only restates how it was made, so the brief states the
+rule instead.
+
+| Kind | Rule | Statement |
+|---|---|---|
+| `bands` | The best cut points of one reading, with the groups ordered by median, put 99.5% of rows (`RULE_SHARE`) in their own group's band, and neighbouring bands meet: no more than one step of the reading, or 2% of its spread (`RULE_GAP`), lies between them | "Farm_Size is set by Farm_Size_Acres: Small up to 10, Medium 11 to 50 and Large from 51, on 100% of rows" |
+| `cut-offs` | The same within each level of another grouping, with cut points that move with it | "Result is set by Hemoglobin: Result 1 below 12.0 for Gender 0 and below 13.5 for Gender 1, on 100% of rows" |
+| `largest` | Each level names one of several columns, and that column is the largest on 90% of rows (`LARGEST_SHARE`) | "critical names the largest of pm25, pm10, so2, co, o3 and no2 on 98.5% of rows" |
+
+The cut points come from a dynamic programme over the sorted values, one pass
+per group; cuts fall only between distinct values, so tied values stay
+together, and a value rounded onto a cut may sit on the wrong side. Groups that
+merely differ a lot overlap, or leave a gap where no rows lie, so they are not
+taken for bands. A band of fewer than five rows (`RULE_MIN_BAND`) can't show
+where its edge lies and is not held to meeting its neighbours. A reading needs
+ten distinct values (`RULE_MIN_VALUES`). A grouping whose levels are unbroken
+stretches of rows or of time (the phases of a run, logs stacked one after
+another) can separate a reading almost perfectly for other reasons, so it
+must separate it on every row. Readings are screened on 1,000 rows
+(`RULE_SCREEN_ROWS`) and a likely rule is then checked on every row, or on the
+same sample of 50,000 rows the scan uses.
 
 ## Relationships
 
-`scan_relationships(dataframe, columns, measure=None)` ranks what relates to
-the measure, then the strongest pairs among the other columns, and returns a
-`RelationshipScan`.
+`scan_relationships(dataframe, columns, measure=None, built=None)` ranks what
+relates to the measure, then the strongest pairs among the other columns, and
+returns a `RelationshipScan`.
+
+`construction(dataframe, columns, measure=None, items=(), known=())` screens
+the columns once for pairs related by construction and keeps the correlations
+it found them from, so the brief's comparison and relationship cards share one
+screen (`built`). `items` are further numeric columns, such as rating items
+read as codes, that a score may be built from; they are tried as parts but
+never as derived columns. `known` holds derivations the caller already knows,
+such as the row mean ADA adds to a matrix table. Tables longer than 50,000
+rows are screened on a fixed random sample of that many rows (`SCAN_ROWS`),
+the same one the comparisons use. Compass directions (`is_angle`: a direction
+word in the name and values from 0 to 360) are left out.
 
 ### Screening every pair at once
 
@@ -138,12 +188,15 @@ These pairs are set aside and listed in the calculation:
 
 | Kind | Rule |
 |---|---|
-| Near-duplicates | \|r\| of 0.99 or more with ranks that agree: one quantity twice, such as a temperature in °C and in °F |
-| Built from the other | One column is a fixed combination of others that include the second column, or both are built from the same items (one's items contain the other's) |
+| Near-duplicates | \|r\| of 0.99 or more with ranks that agree, and still 0.99 without the pair's most influential record: one quantity twice, such as a temperature in °C and in °F. A taxon holding half of all reads can make two count columns look identical; without it they are not |
+| Built from the other | One column is built from others that include the second column (see below), or both are built from the same items (one's items contain the other's) |
+| Shares of a total | Both belong to a block of columns that add up to a fixed total, such as phylum shares of 100 |
 | Cap flags | A two-valued column set exactly on the rows where the other sits at its maximum or minimum |
-| Same stem | The names share a word that says what was measured (not a unit, a bracketed note or a word such as `total` or `mean`) and \|r\| is above 0.95 (`SHARED_STEM_CORRELATION`), as `MaxTemp` and `MeanTemp` |
+| Same stem | The names share a word that says what was measured (not a unit, a bracketed note or a word such as `total` or `mean`), and \|Spearman r\| and \|Pearson r\| without the most influential record are both above 0.95 (`SHARED_STEM_CORRELATION`), as `MaxTemp` and `MeanTemp` |
+| Coordinates | Both are map coordinates, which describe where the rows were taken |
 
-Pairs within one near-duplicate family are reported once.
+Pairs within one near-duplicate family are reported once. `set_aside` lists
+the measure's columns left out and why, so an answer can name them.
 
 ### Finding derived columns
 
@@ -157,15 +210,39 @@ Correct3 + Correct4`), a mean, a difference, or another fixed combination.
 2. A first fit with every candidate rules out most columns at once.
 3. Otherwise parts are added one at a time, each the candidate closest to
    what the others leave unexplained, up to 8 (`MAX_PARTS`).
-4. A fit is least squares refitted on the rows it matches best, or the same
-   weights snapped to the nearest simple fraction (0.49 and 0.52 become a half
-   each), whichever matches more rows.
+4. A fit is least squares refitted three times on the rows it matches best,
+   or the same weights snapped to the nearest simple fraction (0.49 and 0.52
+   become a half each). The simple formula is kept unless least squares
+   matches more than 1% more rows (`SIMPLE_MARGIN`).
 5. It counts when it reproduces the column on 90% of rows (`DERIVED_SHARE`)
    to within 1% of the column's spread, measured on its middle half
    (`DERIVED_TOLERANCE`), or within half the column's own step when it was
-   rounded after it was computed (but never more than 10% of the spread), and
-   explains at least 99% of its variance.
-6. A fit needs three rows per term, so a few rows can't be matched by chance.
+   rounded after it was computed, plus each part's step times its weight
+   when the parts were rounded or truncated before they were combined (a mean
+   of whole-number sensor readings), but never more than 10% of the spread.
+   It must also explain at least 99% of the column's variance, or of the
+   variance of the rows it matches when those span the column's range, so a
+   few rows that break the formula (shares no longer adding up once one was
+   clipped at zero) can't hide it.
+6. A free combination, whose weights are not ±1 or 1/n, must hold on 99% of
+   rows (`COMBINATION_SHARE`), since it has more freedom to fit.
+7. A fit needs three rows per term, so a few rows can't be matched by chance.
+
+A fit whose weights are all −1 with a constant is a `complement`: the column
+and its parts add up to a fixed total ("Diet_Silage, Diet_Grains and
+Diet_Forage add up to 100"). The rows that break the total are counted on
+every row and named in a note.
+
+Two summaries have no fixed formula:
+
+| Function | Finds |
+|---|---|
+| `find_row_extreme(frame, column, candidates)` | A row maximum or minimum: never beyond any of its parts (bar 1% of rows), equal to one of them on 90% of rows, using the parts each row has. Each part must supply the value on at least two rows. A daily index reported as the worst of six sub-indices is one |
+| `find_standardised(frame, column, candidates, groupings)` | A z-score: mean 0 and SD 1 overall (within 0.05), and within 0.005 in each group of a grouping, where chance can't produce it (`STANDARDISED_EXACT`). Any grouping made of whole groups passes too, so the finest one is named. The source is named when a candidate rescales to the column on 90% of rows |
+
+A sum, mean or row maximum that reads 0 where every part is blank was filled
+in, not measured. `Construction.masked` sets those zeros to missing, and the
+derivation counts them (`blank_rows`).
 
 An exact identity reads either way round (an item is the total minus the other
 items), so a column is matched against the columns before it, where computed
@@ -181,7 +258,8 @@ the items it was made from.
 |---|---|
 | `most_influential(x, y)` | The record whose removal changes r most, and r without it, from one pass over the data. A change of more than 0.2 (`INFLUENCE_CHANGE`) means the relationship rests on that record |
 | `without_extremes(x, y)` | r after dropping records more than 5 robust SDs out in either column (`EXTREME_Z`), when there are between 1 and 5% of them |
-| `within_group_correlation(frame, x, y, grouping)` | r after removing each group's means, with the range of the per-group r. Groups that differ in both columns can produce a pooled r of the opposite sign |
+| `far_out(x, y)`, `longest_stretch(marked)` | Which records lie more than 5 robust SDs out, and the longest unbroken run of them: a phase of a run rather than a few stray values |
+| `within_group_correlation(frame, x, y, grouping)` | r after removing each group's means, with each group's own r and rows and their range. Groups that differ in both columns can produce a pooled r of the opposite sign, or hide a stronger one |
 | `correlation_interval(r, n)` | The 95% interval by the Fisher transform |
 
 ## Changing this

@@ -187,6 +187,8 @@ compare. For counts it also says how far the columns' totals differ and to put
 them on a common scale before comparing them. `pipeline.prepare_analysis`
 then adds each row's mean across the matrix columns, named
 `Row mean (60 columns)`, and uses it as the measure (`schema.add_row_summary`).
+`schema.row_summary_columns` gives the columns that mean is built from, so the
+relationship card does not report any of them as relating to it.
 
 ### Summary statistics
 

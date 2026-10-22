@@ -137,12 +137,13 @@ and is drawn as a bar chart.
 A `correlates` answer ranks every numeric reading against X as the brief's
 relationship card does, by the larger of |Spearman r| and |Pearson r| without
 the most influential record, and leaves out columns built from X or from the
-same items, near-copies of X and columns named alike that move with it. It
-states the strongest with the usual correlation wording and checks, or says
-nothing reaches |r| = 0.3, and names what it left out: "Left out as built
-from Even1 or near-copies of it: Even2 (r = 0.98), Even3 (r = 0.99)." The
-table lists each column's Pearson r, 95% interval, Spearman r and n, drawn as
-a bar chart.
+same items, and copies of X. It names the columns it left out and why ("Left
+out of the ranking for Even1: Even2 (the same measurement under another name
+or unit)"), so the column that moves most with X is never dropped silently,
+and counts only the columns it ranked. It states the strongest with the usual
+correlation wording and checks, or says nothing reaches |r| = 0.3. The table
+lists each column's Pearson r, 95% interval, Spearman r and n, drawn as a bar
+chart.
 
 Comparing every column a word names ("which genes differ") runs the brief's
 difference scan (`compare.scan_differences`), with p-values Holm-adjusted over
