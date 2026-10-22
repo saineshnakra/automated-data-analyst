@@ -1134,6 +1134,14 @@ class RateTests(unittest.TestCase):
         self.assertEqual(comparison.test, "Fisher's exact test")
         self.assertAlmostEqual(comparison.p_value, stats.fisher_exact([[6, 2], [1, 7]])[1], places=12)
 
+    def test_a_yes_no_grouping_is_named_with_its_column(self):
+        frame = pd.DataFrame({"Smoker": ["Y", "N"] * 40, "Asthma": [1, 0, 0, 0] * 20})
+
+        comparison = compare_rates(frame, "Asthma", "Smoker")
+
+        assert comparison is not None
+        self.assertEqual({group.label for group in comparison.groups}, {"Smoker = Y", "Smoker = N"})
+
     def test_yes_no_text_counts_yes(self):
         self.assertEqual(outcome_event(pd.Series(["Yes", "No", "No"])), "Yes")
         self.assertEqual(outcome_event(pd.Series([True, False])), True)

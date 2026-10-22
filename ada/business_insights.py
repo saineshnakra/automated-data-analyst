@@ -2276,12 +2276,12 @@ def _relationship_evidence(
     )
 
 
-# Last words of yes/no columns that describe who or what was studied, or how
-# it was assigned, rather than an outcome: the share of women among smokers is
-# the sample's makeup, not a finding about smoking.
+# Last words of yes/no columns that describe who or what was studied, how it
+# was assigned, or whether the procedure worked, rather than an outcome: the
+# share of women among smokers is the sample's makeup, not a finding about smoking.
 NOT_OUTCOME_WORDS = frozenset({
     "sex", "gender", "race", "ethnicity", "treatment", "arm", "cohort", "condition", "group",
-    "block", "batch", "phase", "site", "visit",
+    "block", "batch", "phase", "site", "visit", "check",
 })
 
 

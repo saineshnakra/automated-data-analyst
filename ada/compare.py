@@ -810,8 +810,14 @@ def compare_rates(dataframe: pd.DataFrame, outcome: str, grouping: str) -> RateC
         return None
     rates = hits["sum"] / hits["size"]
     hits = hits.loc[rates.sort_values(ascending=False, kind="stable").index]
+    # A yes/no grouping's values ("Y", "N") say nothing without the column's name.
+    yes_no = outcome_event(data[grouping]) is not None and not is_numeric_dtype(data[grouping])
+
+    def label(value: object) -> str:
+        return f"{grouping} = {value}" if yes_no else group_label(grouping, value)
+
     groups = tuple(
-        RateGroup(value=value, label=group_label(grouping, value), n=int(row["size"]), events=int(row["sum"]))
+        RateGroup(value=value, label=label(value), n=int(row["size"]), events=int(row["sum"]))
         for value, row in hits.iterrows()
     )
     large = [position for position, group in enumerate(groups) if group.n >= MIN_NAMED_GROUP]

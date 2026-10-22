@@ -372,7 +372,8 @@ outcome is the grouping column when that is yes/no, and otherwise the last
 yes/no column in the table, where outcomes usually sit. A column that
 describes who or what was studied, or how it was assigned (its last word is
 sex, gender, race, ethnicity, treatment, arm, cohort, condition, group, block,
-batch, phase, site or visit; `NOT_OUTCOME_WORDS`), is never the outcome: the
+batch, phase, site, visit, or check as in a manipulation check;
+`NOT_OUTCOME_WORDS`), is never the outcome: the
 share of women among smokers is the sample's makeup. The outcome is compared
 across every other grouping, Holm-adjusted for their number; a grouping in
 which every group is all yes or all no, or one named for the same thing
