@@ -496,7 +496,8 @@ class ResultsDraftTests(unittest.TestCase):
         self.assertNotIn("Passage", planned.split("> Draft", 1)[1].split("\n\n", 1)[1])
         self.assertIn("were not planned before the data were seen", exploratory)
         self.assertIn(
-            "the estimate for Slope on Passage was 0.210 percentage points per unit of Passage (95% CI −0.350 to 0.770; "
+            "the estimate for Slope on Passage was 0.210 percentage points per unit of Passage "
+            "(95% CI −0.350 to 0.770; "
             "t(29) = 0.76, p = 0.450; adjusted p = 0.450, Holm over family exploratory, 1 analysis).",
             exploratory,
         )
