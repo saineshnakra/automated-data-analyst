@@ -266,6 +266,16 @@ class BusinessFormattedNumberTests(unittest.TestCase):
         named = "Commas mark the decimal point in Error (mDa), Mass"
         self.assertTrue(any(named in note for note in report.notes))
 
+    def test_a_few_comma_decimals_do_not_turn_dot_decimals_into_thousands(self):
+        values = ["5.66", "8.08", "6.207", "5.241", "4.87", "5.82", "5,62", "4.68"]
+        frame = pd.DataFrame({"pH": values * 5})
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertIn(6.207, cleaned["pH"].tolist())
+        self.assertIn(5.62, cleaned["pH"].tolist())
+        self.assertLess(cleaned["pH"].max(), 14)
+
     def test_commas_grouping_thousands_still_read_as_thousands(self):
         frame = pd.DataFrame({"Amount": ["1,234", "5,678", "12", "99"]})
 

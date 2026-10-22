@@ -1219,6 +1219,8 @@ _DOT_THOUSANDS = re.compile(r"^[-+]?\d{1,3}(?:\.\d{3})+$")
 # A comma read differently once the column's decimal mark is known: one before
 # three digits or more ("-0,307", "306,27883").
 _LONG_COMMA_FRACTION = re.compile(r"^[-+]?\d+,\d{3,}$")
+# A dot that can only be a decimal point: one before other than three digits ("5.66").
+_DOT_DECIMAL = re.compile(r"^\d+\.(?:\d{1,2}|\d{4,})$")
 
 
 def _decimal_comma(text: pd.Series) -> bool:
@@ -1230,13 +1232,16 @@ def _decimal_comma(text: pd.Series) -> bool:
     comma in the column is a decimal point, so one column is never read on two
     scales.
     """
-    bodies = text.dropna().astype(str).str.replace(r"[\s'$€£¥₹()+\-]", "", regex=True)
+    bodies = text.dropna().astype(str).str.replace(r"[\s'$€£¥₹()+\-<>≤≥]", "", regex=True)
     commas = bodies[bodies.str.contains(",", regex=False)]
     if commas.empty:
         return False
-    return bool(commas.str.match(_COMMA_DECIMAL.pattern).any()) and not bool(
-        commas.str.match(_COMMA_GROUPING.pattern).any()
-    )
+    decimal_commas = int(commas.str.match(_COMMA_DECIMAL.pattern).sum())
+    if not decimal_commas or commas.str.match(_COMMA_GROUPING.pattern).any():
+        return False
+    # A few comma decimals among many dot decimals ("< 3,80" in a column of "5.66")
+    # are the exceptions: the column's decimal mark is the dot, and "6.207" is 6.207.
+    return decimal_commas >= int(bodies.str.match(_DOT_DECIMAL.pattern).sum())
 
 
 # Labels misspelt or abbreviated are merged only in columns of a few category
