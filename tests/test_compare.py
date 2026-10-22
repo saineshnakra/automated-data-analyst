@@ -4,6 +4,7 @@ from dataclasses import replace
 import numpy as np
 import pandas as pd
 from scipy import stats
+from statsmodels.stats.anova import AnovaRM
 from statsmodels.stats.multitest import multipletests
 from statsmodels.stats.proportion import confint_proportions_2indep
 
@@ -18,28 +19,39 @@ from ada.compare import (
     compare_rates,
     comparison_calculation,
     comparison_table,
+    constant_within,
     construction,
     date_part,
     describe_comparison,
     describe_rates,
+    describe_stratified,
+    effect_text,
     entity_column,
+    explained_share,
     find_derivation,
     find_standardised,
     fit_joint_model,
+    gain_within,
     grouping_rules,
     holm_adjust,
     is_angle,
     lead_sentence,
     most_influential,
     nested_within,
+    one_row_per,
     ordered_levels,
     outcome_event,
     pairwise_correlations,
     rate_calculation,
+    reading_key,
     same_stem,
     scan_differences,
     scan_relationships,
+    stratified_comparison,
+    stratified_lead,
+    stratified_rates,
     variance_explained,
+    within_axis,
     within_group_correlation,
     without_extremes,
 )
@@ -296,9 +308,11 @@ class EntityTests(unittest.TestCase):
 
     def test_a_subject_in_both_groups_is_flagged_as_not_independent(self):
         rng = np.random.default_rng(7)
+        # Four of the fifteen subjects saw both objects; the other eleven saw one each.
+        single = np.repeat(["familiar", "novel"] * 5 + ["familiar"], 4)
         frame = pd.DataFrame({
             "Subject": np.repeat(np.arange(15), 4).astype(str),
-            "Object": ["familiar", "novel"] * 30,
+            "Object": np.r_[single, ["familiar", "novel"] * 8],
             "Latency": rng.normal(50, 5, 60),
         })
 
@@ -306,6 +320,7 @@ class EntityTests(unittest.TestCase):
 
         assert comparison is not None
         self.assertTrue(comparison.shared_entities)
+        self.assertFalse(comparison.paired)
         self.assertIn("not independent", describe_comparison(comparison))
 
     def test_the_entity_column_is_one_that_repeats(self):
@@ -1213,6 +1228,324 @@ class JointModelTests(unittest.TestCase):
 
         self.assertIsNone(fit_joint_model(frame, "y", ["a", "b", "c"]))
         self.assertIsNotNone(fit_joint_model(frame, "y", ["a", "b"]))
+
+
+def visits(seed: int = 50, count: int = 60) -> pd.DataFrame:
+    """Species rows of site visits, each visit's conductivity copied onto every row."""
+    rng = np.random.default_rng(seed)
+    species = rng.integers(3, 12, count)
+    basin = np.where(np.arange(count) < count // 2, "upper", "lower")
+    conductivity = rng.normal(300, 60, count) + np.where(basin == "upper", 80, 0)
+    rows = np.repeat(np.arange(count), species)
+    return pd.DataFrame({
+        "Visit": [f"v{index}" for index in rows],
+        "Basin": basin[rows],
+        "Species": [f"s{index}" for index in rng.integers(0, 40, rows.size)],
+        "COND": conductivity[rows],
+        "pH": (7 + conductivity / 300 + rng.normal(0, 0.1, count))[rows],
+    })
+
+
+def followed(seed: int = 51) -> pd.DataFrame:
+    """Mice measured daily: those that died stop at day 8, survivors go on to day 15 and recover upwards."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for mouse in range(16):
+        dead = mouse < 8
+        last = 8 if dead else 15
+        for day in range(last + 1):
+            level = 6.0 if dead else 3.0
+            level += 0 if dead or day <= 8 else 10.0 * (day - 8)
+            rows.append({"mouse": 1 + mouse / 10, "group": "Dead" if dead else "Live", "day": day,
+                         "x": level + rng.normal(0, 0.5)})
+    return pd.DataFrame(rows)
+
+
+def within_subjects(seed: int = 52, conditions: int = 3) -> pd.DataFrame:
+    """Ten subjects each walking in every condition, with large differences between subjects."""
+    rng = np.random.default_rng(seed)
+    subjects = np.repeat(np.arange(10), conditions * 4)
+    condition = np.tile(np.repeat(np.arange(1, conditions + 1), 4), 10)
+    effect = np.array([0.0, -0.6, -1.0, -0.3])[condition - 1]
+    angle = rng.normal(0, 3, 10)[subjects] + effect + rng.normal(0, 0.8, subjects.size)
+    return pd.DataFrame({"subject": subjects, "condition": condition, "angle": angle})
+
+
+class UnitTests(unittest.TestCase):
+    def test_a_reading_copied_onto_each_row_of_a_sample_counts_once(self):
+        frame = visits()
+        roles = ColumnRoles(date=None, measure="COND", dimension="Basin", identifier=None,
+                            numeric=("COND", "pH"), dimensions=("Basin", "Species"))
+
+        self.assertEqual(entity_column(frame, roles), "Visit")
+        comparison = compare_groups(frame, "COND", "Basin", entity="Visit")
+
+        assert comparison is not None
+        self.assertEqual(comparison.total, 60)
+        self.assertEqual(comparison.entity_summary, "value")
+        self.assertIn("mean over Visit values", describe_comparison(comparison))
+        self.assertIn("the reading is the same on all its rows", comparison_calculation(comparison))
+
+    def test_a_reading_that_varies_within_every_label_has_no_key(self):
+        frame = visits()
+        frame["COND"] += np.random.default_rng(3).normal(0, 1, len(frame))
+
+        self.assertIsNone(reading_key(frame, "COND"))
+
+    def test_one_row_per_sample_keeps_what_is_fixed_within_it(self):
+        frame = visits()
+
+        unit, varying = one_row_per(frame, "Visit")
+
+        self.assertEqual(len(unit), 60)
+        self.assertEqual(varying, ("Species",))
+        self.assertTrue(unit["Species"].isna().all())
+        self.assertTrue(set(unit.index) <= set(frame.index))
+        self.assertTrue(constant_within(frame, "Visit", "pH"))
+
+    def test_codes_in_runs_with_a_restarting_clock_name_the_unit(self):
+        frame = followed()
+        roles = ColumnRoles(date=None, measure="x", dimension="group", identifier=None,
+                            numeric=("mouse", "day", "x"), dimensions=("group",))
+
+        self.assertEqual(entity_column(frame, roles), "mouse")
+        self.assertEqual(within_axis(frame, "mouse", exclude=("x",)), "day")
+
+    def test_a_row_counter_is_not_a_clock(self):
+        frame = followed()
+        frame["row"] = np.arange(len(frame))
+
+        self.assertNotEqual(within_axis(frame, "mouse", exclude=("x", "day")), "row")
+
+    def test_groups_followed_for_different_lengths_are_compared_over_the_stretch_they_share(self):
+        frame = followed()
+
+        comparison = compare_groups(frame, "x", "group", entity="mouse", axis="day")
+        pooled = compare_groups(frame, "x", "group", entity="mouse")
+
+        assert comparison is not None and pooled is not None
+        self.assertEqual(comparison.window, ("day", 0.0, 8.0))
+        self.assertEqual(comparison.higher.label, "Dead")
+        self.assertEqual(pooled.higher.label, "Live")
+        text = describe_comparison(comparison)
+        self.assertIn("followed for different lengths of day", text)
+        self.assertIn("only day 0 to 8, the stretch they share, is compared", text)
+
+
+class PairedTests(unittest.TestCase):
+    def test_every_subject_in_every_group_is_compared_within_subjects(self):
+        frame = within_subjects()
+
+        comparison = compare_groups(frame, "angle", "condition", entity="subject")
+
+        assert comparison is not None
+        means = frame.groupby(["subject", "condition"], as_index=False)["angle"].mean()
+        table = AnovaRM(means, "angle", "subject", within=["condition"]).fit().anova_table
+        wide = means.pivot(index="subject", columns="condition", values="angle").to_numpy()
+        self.assertTrue(comparison.paired)
+        self.assertEqual(comparison.test, "repeated-measures ANOVA")
+        self.assertAlmostEqual(comparison.p_value, float(table["Pr > F"].iloc[0]), places=10)
+        self.assertAlmostEqual(comparison.check_p_value, stats.friedmanchisquare(*wide.T).pvalue, places=10)
+        self.assertIn("each is compared with itself", describe_comparison(comparison))
+        self.assertNotIn("not independent", describe_comparison(comparison))
+        self.assertIn("Paired t-tests (Holm-adjusted)", describe_comparison(comparison))
+
+    def test_two_paired_groups_get_the_paired_t_test(self):
+        frame = within_subjects(conditions=2)
+
+        comparison = compare_groups(frame, "angle", "condition", entity="subject")
+
+        assert comparison is not None
+        wide = frame.groupby(["subject", "condition"])["angle"].mean().unstack()
+        self.assertEqual(comparison.test, "paired t-test")
+        self.assertAlmostEqual(comparison.p_value, stats.ttest_rel(wide[1], wide[2]).pvalue, places=10)
+        self.assertAlmostEqual(comparison.check_p_value, stats.wilcoxon(wide[1], wide[2]).pvalue, places=10)
+        differences = wide[1] - wide[2]
+        margin = stats.t.ppf(0.975, 9) * differences.std(ddof=1) / np.sqrt(10)
+        self.assertAlmostEqual(comparison.low, differences.mean() - margin, places=10)
+
+    def test_a_paired_gap_is_judged_within_subjects(self):
+        frame = within_subjects(conditions=2)
+
+        comparison = compare_groups(frame, "angle", "condition", entity="subject")
+
+        # The gap is small beside the spread between subjects but consistent within each.
+        assert comparison is not None
+        self.assertLess(abs(comparison.hedges_g), 0.5)
+        self.assertEqual(comparison.verdict, "clear")
+        self.assertIn("partial η²", effect_text(comparison))
+
+    def test_the_scan_compares_paired_groups_within_subjects(self):
+        frame = within_subjects()
+        frame["other"] = np.random.default_rng(5).normal(size=len(frame))
+
+        scan = scan_differences(frame, ["angle", "other"], ["condition"], entity="subject")
+        single = compare_groups(frame, "angle", "condition", entity="subject")
+
+        assert scan is not None and single is not None
+        self.assertEqual(scan.paired, ("condition",))
+        self.assertEqual(scan.named[0].test, "repeated-measures ANOVA")
+        self.assertAlmostEqual(scan.named[0].p_value, single.p_value, places=10)
+
+
+class StratifiedTests(unittest.TestCase):
+    def test_a_gap_made_by_a_label_tied_to_the_grouping_does_not_hold_within_it(self):
+        rng = np.random.default_rng(53)
+        label = np.repeat([0, 1], 300)
+        gravel = np.where(label == 0, rng.integers(0, 2, 600), 0)
+        shaking = np.where(label == 1, 6.0, 2.0) + rng.normal(0, 0.5, 600)
+        frame = pd.DataFrame({"Landslide": label, "Gravel": gravel, "Shaking": shaking})
+
+        pooled = compare_groups(frame, "Shaking", "Gravel")
+        stratified = stratified_comparison(frame, "Shaking", "Gravel", ["Landslide"])
+
+        assert pooled is not None and stratified is not None
+        self.assertEqual(pooled.verdict, "clear")
+        self.assertEqual(stratified.stratum, "Landslide")
+        self.assertTrue(stratified.confounded)
+        self.assertTrue(stratified.overturns(pooled))
+        self.assertEqual(stratified.single, (("Landslide 1", "Gravel 0"),))
+        self.assertIn("the pooled gap reflects Landslide", describe_stratified(stratified, pooled))
+        lead = stratified_lead(stratified, pooled)
+        self.assertTrue(lead.startswith("The gap in Shaking by Gravel comes from Landslide"))
+
+    def test_a_gap_that_keeps_its_size_in_small_levels_still_stands(self):
+        rng = np.random.default_rng(58)
+        shoulder = np.repeat([16, 18, 20, 22], 8)
+        pin = np.where(np.isin(shoulder, [16, 20]), np.tile([6, 8], 16), np.tile([6, 7], 16))
+        strength = 5 + 1.4 * (pin - 6) + 1.5 * np.isin(shoulder, [16, 20]) + rng.normal(0, 1.6, 32)
+        frame = pd.DataFrame({"Shoulder": shoulder, "Pin": pin, "Charpy": strength})
+
+        pooled = compare_groups(frame, "Charpy", "Pin")
+        stratified = stratified_comparison(frame, "Charpy", "Pin", ["Shoulder"])
+
+        assert pooled is not None and stratified is not None
+        self.assertFalse(stratified.holds(pooled))
+        self.assertGreater(stratified.retained(pooled), 0.5)
+        self.assertFalse(stratified.overturns(pooled))
+        self.assertNotIn("the pooled gap reflects", describe_stratified(stratified, pooled))
+
+    def test_a_channel_that_sets_the_level_is_compared_within(self):
+        rng = np.random.default_rng(54)
+        joint = np.tile([0, 1, 2], 300)
+        condition = np.repeat([1, 2, 3], 300)
+        angle = np.array([0.3, 0.5, 0.35])[joint] + rng.normal(0, 0.02, 900)
+        angle -= np.where((joint == 1) & (condition == 2), 0.05, 0)
+        frame = pd.DataFrame({"joint": joint, "condition": condition, "angle": angle})
+
+        stratified = stratified_comparison(frame, "angle", "condition", ["joint"])
+
+        assert stratified is not None
+        self.assertFalse(stratified.confounded)
+        self.assertEqual(len(stratified.within), 3)
+        self.assertIn("joint sets the level of angle", describe_stratified(stratified, compare_groups(
+            frame, "angle", "condition")))
+
+    def test_an_unrelated_grouping_is_not_a_stratum(self):
+        frame = two_groups(1.0)
+        frame["Site"] = np.random.default_rng(6).choice(["a", "b"], len(frame))
+
+        self.assertIsNone(stratified_comparison(frame, "Score", "Arm", ["Site"]))
+
+    def test_a_rate_is_compared_within_a_condition_behind_both_flags(self):
+        rng = np.random.default_rng(55)
+        disease = np.repeat(["ckd", "notckd"], 200)
+        pressure = np.where(disease == "ckd", rng.choice(["yes", "no"], 400, p=[0.6, 0.4]), "no")
+        anaemia = np.where(
+            disease == "ckd", np.where(rng.random(400) < 0.25, "yes", "no"), "no"
+        )
+        frame = pd.DataFrame({"classification": disease, "htn": pressure, "ane": anaemia})
+
+        pooled = compare_rates(frame, "ane", "htn")
+        stratified = stratified_rates(frame, "ane", "htn", ["classification"])
+
+        assert pooled is not None and stratified is not None
+        self.assertEqual(stratified.stratum, "classification")
+        self.assertEqual(stratified.single, (("notckd", "htn = no"),))
+        self.assertIn("within ckd", describe_stratified(stratified, pooled))
+
+
+class EntityRateTests(unittest.TestCase):
+    def test_an_outcome_fixed_for_each_unit_counts_each_unit_once(self):
+        rng = np.random.default_rng(56)
+        lines = pd.DataFrame({
+            "Line": [f"c{index}" for index in range(40)],
+            "Expression": ["Y"] * 30 + ["N"] * 10,
+            "Methylation": ["Y"] * 28 + ["N"] * 2 + ["Y"] * 4 + ["N"] * 6,
+        })
+        frame = lines.loc[np.repeat(lines.index, rng.integers(50, 300, 40))].reset_index(drop=True)
+
+        rows = compare_rates(frame, "Methylation", "Expression")
+        units = compare_rates(frame, "Methylation", "Expression", entity="Line")
+
+        assert rows is not None and units is not None
+        self.assertEqual(sorted(group.n for group in units.groups), [10, 30])
+        self.assertGreater(min(group.n for group in rows.groups), 300)
+        self.assertEqual(units.entity, "Line")
+        self.assertIn("Counting each Line once", describe_rates(units))
+        self.assertIn("Line values with Methylation = Y", rate_calculation(units))
+
+    def test_an_outcome_that_varies_within_a_unit_is_flagged(self):
+        frame = pd.DataFrame({
+            "Patient": np.repeat([f"p{index}" for index in range(20)], 5),
+            "Arm": np.repeat(["a", "b"], 50),
+            "Event": np.tile([1, 0, 0, 1, 0], 20),
+        })
+
+        comparison = compare_rates(frame, "Event", "Arm", entity="Patient")
+
+        assert comparison is not None
+        self.assertEqual(comparison.clustered, "Patient")
+        self.assertIn("not independent", describe_rates(comparison))
+
+
+class SmallGroupWordingTests(unittest.TestCase):
+    def test_a_lone_named_group_is_not_named_at_both_ends_of_the_zero_share(self):
+        frame = pd.DataFrame({
+            "Nudibranchs": [0] * 108 + [1] * 2,
+            "Crabs": [0] * 91 + [1, 2, 3, 5, 8, 13, 21, 34, 40, 1, 2, 3, 4, 2, 1, 3, 2] + [1, 1],
+        })
+
+        comparison = compare_groups(frame, "Crabs", "Nudibranchs")
+
+        assert comparison is not None
+        text = describe_comparison(comparison)
+        self.assertIn("(Nudibranchs 0) to 100.0% (Nudibranchs 1)", text)
+        self.assertIn("Fisher's exact test", text)
+        self.assertIn("tends to be larger in Nudibranchs 1 than in Nudibranchs 0", text)
+
+    def test_groups_left_out_are_counted_beyond_the_first_few(self):
+        frame = pd.DataFrame({"Site": [f"s{index}" for index in range(30)] + ["a", "a", "b", "b"],
+                              "Value": list(range(30)) + [1.0, 2.0, 5.0, 6.0]})
+
+        comparison = compare_groups(frame, "Value", "Site")
+
+        assert comparison is not None
+        self.assertIn("and 20 others", describe_comparison(comparison))
+
+    def test_single_values_do_not_make_a_variance_share(self):
+        frame = pd.DataFrame({"Site": [f"s{index}" for index in range(30)] + ["a", "a", "b", "b"],
+                              "Value": list(range(30)) + [1.0, 2.0, 5.0, 6.0]})
+
+        share = dict(variance_explained(frame, "Value", ["Site"]))["Site"]
+
+        self.assertAlmostEqual(share, explained_share(frame["Value"][30:], frame["Site"][30:]))
+
+
+class GainWithinTests(unittest.TestCase):
+    def test_readings_that_only_track_the_label_add_nothing_within_it(self):
+        rng = np.random.default_rng(57)
+        label = np.repeat([0, 1], 200)
+        frame = pd.DataFrame({
+            "label": label,
+            "x": label * 3 + rng.normal(0, 0.5, 400),
+            "y": label * 2 + rng.normal(0, 0.5, 400),
+        })
+
+        alone, together = gain_within(frame, "y", ["x"], "label")
+
+        self.assertGreater(alone, 0.8)
+        self.assertLess(together - alone, 0.01)
 
 
 if __name__ == "__main__":
