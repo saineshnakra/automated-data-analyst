@@ -1,11 +1,15 @@
-"""ADA: exploratory analysis for CSV and Excel tables, with the calculation behind every number.
+"""ADA: paper assets for a study, and a first look at any table.
+
+    from ada import research
+    research.build("study.yml")         # the same as `ada build`
 
     import ada
     report = ada.analyze("measurements.csv")
     print(report)
 
-The core depends only on pandas, numpy, scipy and openpyxl. Streamlit, plotly
-and the optional AI layer are extras and are imported only when used.
+``ada.research`` brings in Matplotlib, python-docx and PyYAML only when it is
+imported, so ``import ada`` stays quick. Streamlit, plotly and the optional AI
+layer are extras and are imported only when used.
 """
 
 from .api import (
