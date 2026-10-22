@@ -126,7 +126,14 @@ previous month or quarter into the latest one), says whether the latest move
 is within that range, and sets the latest value beside the same period a year
 earlier: *"In the 6 earlier years on record, the move into Q2 ranged from
 +8.63 to +16.40 (median +13.86), so this one is within the range usual for the
-time of year. Against Q2 2022 (15.52), it is down 2.39."*
+time of year. Against Q2 2022 (15.52), it is down 2.39."* A move that looks
+unusual against all past changes is set beside the same time of year even
+when the yearly pattern is too short to pass the test, as long as two earlier
+years show the same move. When the move is outside their range but the
+latest value is within the usual gap between a period and the same one a year
+earlier (the median of those gaps), the card says the latest level is
+ordinary for the time of year and the period before it was the unusual one,
+and marks the change as no clear change.
 
 **Groups that come and go.** With a grouping column, or without one but with a
 column naming the unit each row belongs to (a station; `entity_column`), the

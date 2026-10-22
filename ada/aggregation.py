@@ -611,16 +611,23 @@ class SeasonalContext:
     #: Changes into the latest period's month or quarter in earlier years,
     #: from the period before each.
     usual_changes: tuple[float, ...]
+    #: Each earlier period's change from the same period a year before it, in
+    #: the same terms, so the latest level can be judged against last year's.
+    year_over_year: tuple[float, ...] = ()
 
 
-def seasonal_context(series: TrendSeries, *, relative: bool) -> SeasonalContext | None:
+def seasonal_context(
+    series: TrendSeries, *, relative: bool, tested: bool = True
+) -> SeasonalContext | None:
     """Compare the latest period with the same time of year, when the trend has a yearly pattern.
 
     A winter-to-spring rise is not news in a series that rises every spring, so
     the latest change is set beside the same change in earlier years, and the
     latest value beside the same period a year earlier. ``relative`` gives the
     changes as percentages (for a total) rather than differences. Returns None
-    for a grain with no yearly cycle or a series without a clear yearly pattern.
+    for a grain with no yearly cycle or, while ``tested``, a series without a
+    clear yearly pattern; pass False to look at the same time of year anyway
+    before calling a move unusual.
     """
     trend = observed_periods(series.frame)
     if series.frequency not in PERIODS_PER_YEAR or len(trend) < 3:
@@ -628,7 +635,7 @@ def seasonal_context(series: TrendSeries, *, relative: bool) -> SeasonalContext 
     periods = pd.DatetimeIndex(pd.to_datetime(trend["Period"]))
     values = trend["Value"].to_numpy(dtype=float)
     line = fit_trendline(periods, values, series.frequency)
-    if yearly_pattern(periods, line.residuals(values), grain=series.frequency) is None:
+    if tested and yearly_pattern(periods, line.residuals(values), grain=series.frequency) is None:
         return None
     by_period = pd.Series(values, index=periods)
     latest = periods[-1]
@@ -649,10 +656,17 @@ def seasonal_context(series: TrendSeries, *, relative: bool) -> SeasonalContext 
         else:
             changes.append(end - start)
     has_year_ago = year_ago in by_period.index
+    earlier = by_period.reindex(periods[:-1] - pd.DateOffset(years=1)).to_numpy(dtype=float)
+    later = values[:-1]
+    paired = np.isfinite(earlier) & ((earlier != 0) if relative else np.ones(len(earlier), dtype=bool))
+    yearly = (later - earlier)[paired]
+    if relative:
+        yearly = yearly / np.abs(earlier[paired]) * 100
     return SeasonalContext(
         year_ago=year_ago if has_year_ago else None,
         year_ago_value=float(by_period[year_ago]) if has_year_ago else float("nan"),
         usual_changes=tuple(float(change) for change in changes),
+        year_over_year=tuple(float(change) for change in yearly),
     )
 
 

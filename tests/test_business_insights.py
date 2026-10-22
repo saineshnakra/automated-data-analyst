@@ -2021,6 +2021,23 @@ class MonthlySeriesTests(unittest.TestCase):
         self.assertIn("Analysis.long_form()", monthly.statement)
 
 
+class SameTimeLastYearTests(unittest.TestCase):
+    def test_a_winter_rise_back_to_last_winters_level_is_not_unusual(self):
+        quarters = pd.date_range("2022-07-01", "2025-01-01", freq="QS")
+        level = {1: 62.0, 2: 49.0, 3: 57.5, 4: 55.0}
+        values = [level[stamp.quarter] + offset for stamp, offset in zip(
+            quarters, [0.4, -0.3, -7.5, 0.2, 0.5, -0.6, 0.3, 0.1, -0.4, 0.2, 0.9], strict=True
+        )]
+        values[-2] = 51.5
+        frame = pd.DataFrame({"Date": quarters, "Sound": values})
+
+        trend = brief_card(analyze_business(frame, roles_for(frame, "Sound", None, date="Date")), "trend")
+
+        self.assertIn("the move into Q1", trend.statement)
+        self.assertIn("the latest level is ordinary for the time of year", trend.statement)
+        self.assertTrue(trend.quiet)
+
+
 class LatestPeriodWordingTests(unittest.TestCase):
     def test_one_row_per_year_is_named_by_the_year_and_its_missing_months(self):
         months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]

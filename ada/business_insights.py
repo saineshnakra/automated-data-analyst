@@ -402,6 +402,12 @@ def _growth_evidence(
         calculation = "(Latest period − previous period) ÷ |previous period|"
     against = "compared with past period-to-period changes"
     seasonal = seasonal_context(history, relative=unit not in ("rate", "level"))
+    if seasonal is None and quiet is False:
+        # A move that looks unusual against every period-to-period change may
+        # still be the usual one for the time of year, so look before saying so.
+        seasonal = seasonal_context(history, relative=unit not in ("rate", "level"), tested=False)
+        if seasonal is not None and len(seasonal.usual_changes) < 2:
+            seasonal = None
     if seasonal is not None:
         context, quiet = _seasonal_note(seasonal, history, change, current, roles, unit, measure_values)
         against = "compared with the same move in earlier years and the same period a year earlier"
@@ -566,6 +572,20 @@ def _seasonal_note(
         if size is not None:
             verb = "up" if current > before else "down" if current < before else "level"
             note += f" Against {then} ({shown}), it is {verb}" + (f" {size}." if verb != "level" else ".")
+        yearly = np.abs(np.asarray(seasonal.year_over_year, dtype=float))
+        gap = (current - before) / abs(before) * 100 if relative and before else current - before
+        if quiet is False and yearly.size >= 2 and abs(gap) <= float(np.median(yearly)):
+            # The latest level is ordinary for the time of year; the period before it was the odd one.
+            quiet = True
+            typical = float(np.median(yearly))
+            typical_text = format_percentage(typical) if relative else (
+                format_change(0, typical, roles.measure, unit, measure_values) or f"{typical:.3g}"
+            )
+            note += (
+                f" That is within the usual gap between a {GRAIN_NAMES.get(series.frequency, 'period')} and "
+                f"the same one a year earlier ({typical_text} in the median), so the latest level is "
+                "ordinary for the time of year and the period before it was the unusual one."
+            )
     return note, quiet
 
 
