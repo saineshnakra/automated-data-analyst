@@ -208,7 +208,8 @@ def over_time_table(study: Study, processed: Processed) -> Table | None:
     notes = ["Cells show mean (SD), n."]
     return Table(
         id="outcomes-over-time",
-        title=f"Outcomes at each {study.label(time).lower()}" + (f" by {study.label(by)}" if by else ""),
+        title=f"Outcomes at each {(study.variable(time).label or time).lower()}"
+        + (f" by {study.label(by)}" if by else ""),
         display=display,
         data=pd.DataFrame(long_rows),
         notes=notes,
