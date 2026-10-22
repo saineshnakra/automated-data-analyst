@@ -621,6 +621,7 @@ class OtherTestsTests(unittest.TestCase):
         self.assertAlmostEqual(row["statistic"], expected.statistic)
         self.assertAlmostEqual(row["p"], expected.pvalue)
         self.assertEqual(row["measure"], "median difference")
+        self.assertIsNone(results["a"].residuals)
 
     def test_paired_with_covariates_is_a_mixed_model(self):
         frame = paired_scores()

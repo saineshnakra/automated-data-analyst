@@ -1272,6 +1272,7 @@ class _Analysis:
             )
             self._interval_note(low, high)
             self.references += [REFERENCES["wilcoxon"], REFERENCES["hodges_lehmann"], REFERENCES["bauer"]]
+            found.fitted = found.residuals = None
         found.estimates = _estimates([row])
         self._shapiro(differences, f"paired differences ({label})")
         found.summary = self._test_summary(levels, [reference, other], note=f"{len(complete):,} pairs.")
