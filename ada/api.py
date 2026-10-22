@@ -274,7 +274,9 @@ class Analysis:
 
     @cached_property
     def _brief(self) -> BusinessBrief:
-        return analyze_business(self.frame, self.roles, frequency=self.frequency)
+        return analyze_business(
+            self.frame, self.roles, frequency=self.frequency, blanked=self.cleaning.blanked_codes
+        )
 
     @property
     def headline(self) -> str:

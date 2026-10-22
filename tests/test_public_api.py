@@ -568,6 +568,13 @@ class DataCheckTests(unittest.TestCase):
         self.assertIn("set those cells to missing", codes["Detail"].iloc[0])
         self.assertEqual(int(codes["Rows"].iloc[0]), 4)
 
+    def test_the_brief_counts_the_codes_set_aside_with_the_other_checks(self):
+        report = ada.analyze(gauges(), measure="Humidity")
+
+        card = next(item for item in report.evidence if item.title == "Data checks")
+
+        self.assertEqual(card.value, f"{len(report.quality())} issues")
+
     def test_missing_counts_include_the_codes_set_aside(self):
         report = ada.analyze(gauges(), measure="Humidity")
 

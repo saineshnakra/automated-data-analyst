@@ -2861,16 +2861,19 @@ def analyze_business(
     dataframe: pd.DataFrame,
     roles: ColumnRoles | None = None,
     frequency: str | None = None,
+    blanked: tuple[QualityIssue, ...] = (),
 ) -> BusinessBrief:
     """Create an executive brief from explainable calculations and rule-based interpretation.
 
     ``frequency`` fixes the period grain (``s min h D W M Q Y``) for the trend, driver and
     anomaly findings, so they match a trend or forecast built at that grain.
     Without it the grain follows how often the data was recorded.
+    ``blanked`` holds the missing-value codes cleaning set to missing
+    (``CleaningReport.blanked_codes``), so the data checks card lists them too.
     """
     roles = roles or detect_roles(dataframe)
     metric = metric_for(roles.measure, roles)
-    issues = scan_quality(dataframe, roles)
+    issues = scan_quality(dataframe, roles, blanked=blanked)
     # Cells the checks found can't be readings (codes, impossible values, fill
     # values, swapped or stuck readings) are blanked for the scans that compare
     # and relate columns, and each of those cards says how many were left out.

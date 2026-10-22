@@ -615,7 +615,7 @@ whole = (
     else None
 )
 dataframe, roles = apply_focus(dataframe, roles, focus_value)
-brief = analyze_business(dataframe, roles)
+brief = analyze_business(dataframe, roles, blanked=prepared.cleaning_report.blanked_codes)
 
 render_dataset_bar(source_name, dataframe, roles, focus=focus_label)
 render_brief(brief)
