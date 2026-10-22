@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 
 import numpy as np
 import pandas as pd
@@ -6,6 +7,7 @@ import pandas as pd
 from ada import ui
 from ada.autovis import MAX_SERIES, ChartSpec, fold_small_series, recommend_chart
 from ada.pipeline import prepare_analysis
+from ada.schema import detect_roles
 
 
 def frame(rows: int = 120) -> pd.DataFrame:
@@ -196,6 +198,60 @@ class ExploreFrameTests(unittest.TestCase):
         self.assertEqual(len(shown), 3)
 
 
+class ExploreDateAxisTests(unittest.TestCase):
+    def monthly(self, periods: int, **columns) -> pd.DataFrame:
+        frame = pd.DataFrame({
+            "Date": pd.date_range("1958-03-01", periods=periods, freq="MS"),
+            "pH": np.linspace(7.0, 8.0, periods),
+        })
+        return frame.assign(**columns)
+
+    def test_a_long_monthly_series_is_drawn_by_quarter_from_its_first_reading(self):
+        frame = self.monthly(750)
+        spec = recommend_chart(frame, ["Date", "pH"])
+
+        rows, caption = ui._fit_date_axis(frame, spec)
+        shown = ui._explore_frame(rows, spec)
+
+        self.assertLessEqual(len(shown), ui.EXPLORE_POINTS)
+        self.assertEqual(shown["Date"].min(), pd.Timestamp("1958-01-01"))
+        self.assertEqual(shown["Date"].max(), pd.Timestamp("2020-07-01"))
+        self.assertIn("each point is one quarter", caption)
+
+    def test_a_short_series_is_drawn_as_it_is(self):
+        frame = self.monthly(120)
+        spec = recommend_chart(frame, ["Date", "pH"])
+
+        rows, caption = ui._fit_date_axis(frame, spec)
+
+        self.assertIs(rows, frame)
+        self.assertIsNone(caption)
+
+    def test_a_range_too_long_even_for_years_says_how_much_is_shown(self):
+        frame = self.monthly(360)
+        spec = recommend_chart(frame, ["Date", "pH"])
+
+        rows, caption = ui._fit_date_axis(frame, spec, limit=10)
+        shown = ui._explore_frame(rows, spec, limit=10)
+
+        # March 1958 to February 1988 touches 31 calendar years.
+        self.assertEqual(caption, "Showing the latest 10 of 31 years; earlier ones are not drawn.")
+        self.assertEqual(shown["Date"].dt.year.tolist(), list(range(1979, 1989)))
+
+    def test_every_series_keeps_its_older_dates(self):
+        frame = pd.concat(
+            [self.monthly(300, Site=site) for site in ("North", "South", "East")], ignore_index=True
+        )
+        spec = recommend_chart(frame, ["Date", "pH", "Site"])
+
+        rows, caption = ui._fit_date_axis(frame, spec)
+        shown = ui._explore_frame(rows, spec)
+
+        self.assertIsNone(caption)
+        self.assertEqual(shown["Date"].nunique(), 300)
+        self.assertEqual(len(shown), 900)
+
+
 class AggregationDefaultTests(unittest.TestCase):
     def test_an_averaged_measure_over_time_is_a_line(self):
         frame = pd.DataFrame({
@@ -214,6 +270,18 @@ class AggregationDefaultTests(unittest.TestCase):
         spec = recommend_chart(frame, ["Date", "Revenue"])
         self.assertEqual(spec.form, "area")
         self.assertEqual(spec.aggregation, "sum")
+
+    def test_the_roles_override_reaches_the_chart_of_their_measure_only(self):
+        frame = pd.DataFrame({
+            "Date": pd.date_range("2024-01-01", periods=12, freq="MS"),
+            "Rainfall (mm)": np.linspace(20, 80, 12),
+            "pH": np.linspace(6.8, 7.4, 12),
+        })
+        roles = replace(detect_roles(frame), measure="Rainfall (mm)", aggregation="sum")
+
+        self.assertEqual(recommend_chart(frame, ["Date", "Rainfall (mm)"]).form, "line")
+        self.assertEqual(recommend_chart(frame, ["Date", "Rainfall (mm)"], roles=roles).form, "area")
+        self.assertEqual(recommend_chart(frame, ["Date", "pH"], roles=roles).aggregation, "mean")
 
 
 if __name__ == "__main__":

@@ -68,6 +68,21 @@ class ForecastTests(unittest.TestCase):
         self.assertGreaterEqual(min(forecast.values), 0.0)
         self.assertGreaterEqual(min(forecast.lower), 0.0)
 
+    def test_a_level_falling_towards_zero_is_forecast_past_it(self):
+        # A water temperature cooling by 1.5 °C a month, still above 0 °C at the last reading.
+        rng = np.random.default_rng(2)
+        temperatures = 14 - 1.5 * np.arange(10) + rng.normal(0, 0.2, 10)
+
+        floored = build_forecast(make_trend(temperatures))
+        unfloored = build_forecast(make_trend(temperatures), floor_at_zero=False)
+
+        assert floored is not None and unfloored is not None
+        self.assertGreaterEqual(min(floored.values), 0.0)
+        self.assertLess(unfloored.values[-1], 0.0)
+        self.assertLess(min(unfloored.lower), 0.0)
+        for lower, value in zip(unfloored.lower, unfloored.values, strict=True):
+            self.assertLess(lower, value)
+
     def test_the_band_widens_with_the_horizon(self):
         rng = np.random.default_rng(8)
         trend = make_trend(600 + 5 * np.arange(20) + rng.normal(0, 30, 20))

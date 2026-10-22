@@ -92,7 +92,8 @@ from ada.analysis import column_profile  # noqa: E402 - the refresh above must r
 from ada.business_insights import BusinessBrief, analyze_business, build_business_report  # noqa: E402
 from ada.demo_data import make_demo_data  # noqa: E402
 from ada.file_io import list_excel_sheets, list_sample_datasets, read_tabular_file, safe_csv  # noqa: E402
-from ada.nlq import QueryPlan, answer_question, suggested_questions  # noqa: E402
+from ada.metrics import resolve_metric  # noqa: E402
+from ada.nlq import QueryPlan, answer_question, rephrase_hint, suggested_questions  # noqa: E402
 from ada.pipeline import (  # noqa: E402
     apply_focus,
     apply_role_selection,
@@ -363,7 +364,7 @@ def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str, api_key: st
         plan = pending["plan"]
         st.info(
             "I prepared this calculation from the table schema. Review it before ADA runs anything:\n\n"
-            f"**{describe_query_plan(plan)}**"
+            f"**{describe_query_plan(plan, roles)}**"
         )
         approve, reject = st.columns(2)
         plan_key = hashlib.sha256(pending["question"].encode()).hexdigest()[:12]
@@ -401,7 +402,7 @@ def render_ask_ada(dataframe: pd.DataFrame, roles, source_name: str, api_key: st
             elif entry["result"] is not None:
                 render_chat_answer(entry["result"], key=str(position))
             else:
-                render_chat_fallback(suggestions)
+                render_chat_fallback(suggestions, rephrase_hint(entry["question"], dataframe, roles))
 
 
 inject_styles()
@@ -535,12 +536,30 @@ with st.expander("Tune ADA's schema detection", expanded=False):
         dimension_options,
         index=dimension_options.index(detected.dimension) if detected.dimension in dimension_options else 0,
     )
+    selected_aggregation = None
+    if selected_measure != "None":
+        # Keyed by metric, so each metric starts from its own detected default
+        # and a choice made for one never carries over to another.
+        combine_options = {"Total": "sum", "Average": "mean"}
+        detected_combine = resolve_metric(selected_measure).combines_as.capitalize()
+        combine_labels = list(combine_options)
+        selected_combine = selectors[1].selectbox(
+            "Combine rows by",
+            combine_labels,
+            index=combine_labels.index(detected_combine),
+            key=f"combine_rows_{selected_measure}",
+            help="Total adds the metric's rows up (money, counts). Average takes their mean "
+            "(readings such as a temperature, a concentration or a price).",
+        )
+        if selected_combine != detected_combine:
+            selected_aggregation = combine_options[selected_combine]
 
 roles = apply_role_selection(
     detected,
     date=selected_date,
     measure=selected_measure,
     dimension=selected_dimension,
+    aggregation=selected_aggregation,
 )
 
 focus_value = None

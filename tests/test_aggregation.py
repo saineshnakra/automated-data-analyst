@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 
 import numpy as np
 import pandas as pd
@@ -6,11 +7,11 @@ import pandas as pd
 from ada.aggregation import (
     build_trend,
     heatmap_frame,
-    measure_aggregation,
     preferred_frequency,
     segment_frame,
     trend_frame,
 )
+from ada.anomalies import detect_anomalies
 from ada.schema import ColumnRoles, detect_roles
 
 MONTHS = pd.date_range("2024-01-01", periods=12, freq="MS")
@@ -66,11 +67,6 @@ class RateMeasureTests(unittest.TestCase):
             rows.extend((month, 0.2) for _ in range(4))
         self.frame = pd.DataFrame(rows, columns=["Date", "Conversion Rate"])
         self.frame["Date"] = pd.to_datetime(self.frame["Date"])
-
-    def test_measure_aggregation_averages_rates_and_sums_amounts(self):
-        self.assertEqual(measure_aggregation("Conversion Rate"), "mean")
-        self.assertEqual(measure_aggregation("Revenue"), "sum")
-        self.assertEqual(measure_aggregation("Margin Amount"), "sum")
 
     def test_a_rate_is_the_period_average_not_the_period_total(self):
         series = build_trend(self.frame, detect_roles(self.frame))
@@ -178,6 +174,57 @@ class EmptyPeriodTests(unittest.TestCase):
         series = build_trend(frame, detect_roles(frame))
         self.assertEqual(len(series.frame), 2)
         self.assertEqual(series.filled_periods, 0)
+
+    def test_missing_months_of_an_averaged_reading_are_gaps_not_zeros(self):
+        months = pd.date_range("2023-01-01", periods=24, freq="MS")
+        kept = months.delete([5, 6, 15])
+        steps = np.arange(len(kept))
+        readings = 400 + 0.2 * steps + 0.3 * (-1.0) ** steps
+        frame = pd.DataFrame({"Date": kept, "CO2": readings})
+
+        series = build_trend(frame, detect_roles(frame), frequency="M")
+
+        self.assertEqual(series.filled_periods, 3)
+        self.assertFalse(series.filled_as_zero)
+        gaps = series.frame.loc[series.frame["Value"].isna(), "Period"]
+        self.assertEqual(list(gaps), [months[5], months[6], months[15]])
+        self.assertEqual((series.frame["Value"] == 0).sum(), 0)
+        # A zero would sit far below the trendline; a gap is simply not checked.
+        self.assertEqual(detect_anomalies(series.frame), ())
+
+
+class AggregationOverrideTests(unittest.TestCase):
+    def setUp(self):
+        # Two gauges a month, reading 10 and 20 mm: a mean of 15, a total of 30.
+        months = pd.date_range("2024-01-01", periods=6, freq="MS").delete(3)
+        self.frame = pd.DataFrame(
+            {
+                "Date": np.repeat(months, 2),
+                "Rainfall (mm)": [10.0, 20.0] * len(months),
+                "Gauge": ["North", "South"] * len(months),
+            }
+        )
+        self.detected = detect_roles(self.frame)
+
+    def test_the_name_alone_averages_the_reading(self):
+        series = build_trend(self.frame, self.detected, frequency="M")
+        np.testing.assert_allclose(series.frame["Value"].dropna(), [15.0] * 5)
+        self.assertTrue(np.isnan(series.frame["Value"].iloc[3]))
+
+    def test_a_sum_override_totals_each_period_and_counts_empty_ones_as_zero(self):
+        roles = replace(self.detected, aggregation="sum")
+
+        series = build_trend(self.frame, roles, frequency="M")
+
+        np.testing.assert_allclose(series.frame["Value"], [30.0, 30.0, 30.0, 0.0, 30.0, 30.0])
+        self.assertTrue(series.filled_as_zero)
+
+    def test_segments_follow_the_override(self):
+        summed = segment_frame(self.frame, replace(self.detected, aggregation="sum"))
+        averaged = segment_frame(self.frame, self.detected)
+
+        self.assertEqual(summed.set_index("Segment")["Value"].to_dict(), {"South": 100.0, "North": 50.0})
+        self.assertEqual(averaged.set_index("Segment")["Value"].to_dict(), {"South": 20.0, "North": 10.0})
 
 
 class PartialPeriodTests(unittest.TestCase):

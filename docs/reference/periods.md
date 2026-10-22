@@ -38,12 +38,16 @@ rules each suggest a grain, and the coarser one wins.
 Five monthly readings over four months would be seventeen weeks by span alone,
 twelve of them empty. Taking the coarser grain keeps them monthly. Annual
 readings stay yearly rather than becoming quarters with three empty periods
-each year.
+each year. That includes a table with a `Year` column and no date, which
+cleaning dates to 1 January of each year (see
+[Cleaning](cleaning.md#dates-from-years)).
 
 Callers can fix the grain instead: `build_trend(..., frequency="W")`,
 `ada.analyze(..., frequency="W")`, or a grain word in an Ask ADA question
 ("daily", "monthly"). A fixed grain is useful for scheduled jobs, so it does not
-change between runs.
+change between runs. With `ada.analyze`, the fixed grain applies everywhere:
+the headline, the trend, driver and anomaly findings, `anomalies` and
+`forecast()` all use the same periods.
 
 ## How each period's value is computed
 
@@ -54,7 +58,7 @@ change between runs.
 | None | Row count, or distinct values of a `count_column` |
 
 See [Concepts](../concepts.md#amounts-rates-and-levels) for which measures are
-averaged.
+averaged, and for the `aggregation` override that sets it by hand.
 
 ## Timeline adjustments
 

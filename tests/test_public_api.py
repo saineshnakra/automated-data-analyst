@@ -9,6 +9,16 @@ import pandas as pd
 import ada
 
 
+def rainfall(periods: int = 24) -> pd.DataFrame:
+    """Two gauges a month reading 10 and 20 mm, three months of the record missing."""
+    months = pd.date_range("2023-01-01", periods=periods, freq="MS").delete([7, 8, 15])
+    return pd.DataFrame({
+        "Date": months.repeat(2),
+        "Gauge": ["North", "South"] * len(months),
+        "Rainfall (mm)": [10.0, 20.0] * len(months),
+    })
+
+
 def steady(periods: int = 24) -> pd.DataFrame:
     return pd.DataFrame({
         "Date": pd.date_range("2024-01-01", periods=periods, freq="MS"),
@@ -93,6 +103,18 @@ class RefusalTests(unittest.TestCase):
         self.assertEqual(
             report.ask("revenue divided by the moon phase").code, "unrepresentable_question"
         )
+
+    def test_a_refusal_names_the_column_a_partial_name_may_mean(self):
+        report = ada.analyze(pd.DataFrame({
+            "island": ["Biscoe", "Dream"] * 10,
+            "bill_depth_mm": [18.0 + index / 10 for index in range(20)],
+            "body_mass_g": [3_500.0 + index * 40 for index in range(20)],
+        }))
+
+        refusal = report.ask("average body by island")
+
+        self.assertEqual(refusal.code, "unrepresentable_question")
+        self.assertIn("Did you mean body_mass_g?", refusal.message)
 
     def test_ask_answers_a_supported_question_with_its_calculation(self):
         answer = ada.analyze(ada.sample()).ask("total revenue")
@@ -244,6 +266,19 @@ class CommandLineTests(unittest.TestCase):
     def test_samples_lists_the_bundled_files(self):
         self.assertIn("Lab Measurements", self.run_ada("samples").stdout)
 
+    def test_the_aggregation_flag_changes_how_the_measure_combines(self):
+        path = self.write("rain.csv", rainfall())
+
+        default = self.run_ada("schema", path)
+        summed = self.run_ada("schema", path, "--aggregation", "sum")
+        analyzed = self.run_ada("analyze", path, "--aggregation", "sum", "--json")
+        refused = self.run_ada("analyze", path, "--aggregation", "median")
+
+        self.assertIn("Rainfall (mm) (mean)", default.stdout)
+        self.assertIn("Rainfall (mm) (sum)", summed.stdout)
+        self.assertEqual(json.loads(analyzed.stdout)["roles"]["aggregation"], "sum")
+        self.assertEqual(refused.returncode, 2)
+
 
 class OverrideTests(unittest.TestCase):
     def test_an_unknown_override_column_raises(self):
@@ -261,6 +296,47 @@ class OverrideTests(unittest.TestCase):
         self.assertEqual(profile["Column"].tolist(), ["Date", "Team", "Revenue"])
 
 
+class AggregationTests(unittest.TestCase):
+    def test_a_reading_is_averaged_unless_told_otherwise(self):
+        averaged = ada.analyze(rainfall())
+        summed = ada.analyze(rainfall(), aggregation="sum")
+
+        self.assertEqual(averaged.to_dict()["roles"]["aggregation"], "mean")
+        self.assertEqual(summed.to_dict()["roles"]["aggregation"], "sum")
+        self.assertEqual(averaged.segments()["Value"].tolist(), [20.0, 10.0])
+        self.assertEqual(summed.segments()["Value"].tolist(), [420.0, 210.0])
+        self.assertIn("measure=Rainfall (mm) (mean)", str(averaged))
+
+    def test_the_override_survives_a_focus(self):
+        focused = ada.analyze(rainfall(), aggregation="sum").focus("North")
+        self.assertEqual(focused.roles.aggregation, "sum")
+
+    def test_an_unknown_aggregation_is_refused_plainly(self):
+        with self.assertRaisesRegex(ValueError, "'sum' \\(a total\\) or 'mean' \\(an average\\)"):
+            ada.analyze(rainfall(), aggregation="median")
+
+    def test_months_without_rows_are_not_anomalies_of_an_averaged_reading(self):
+        report = ada.analyze(rainfall(), frequency="M")
+
+        self.assertEqual(report.trend().filled_periods, 3)
+        self.assertEqual(report.anomalies, ())
+
+    def test_a_summed_override_counts_months_without_rows_as_zero(self):
+        trend = ada.analyze(rainfall(), frequency="M", aggregation="sum").trend()
+        self.assertEqual((trend.frame["Value"] == 0).sum(), 3)
+
+    def test_a_falling_temperature_may_be_forecast_below_zero(self):
+        frame = pd.DataFrame({
+            "Date": pd.date_range("2024-01-01", periods=12, freq="MS"),
+            "Water Temp (°C)": [16.0 - 1.4 * month + (0.3 if month % 2 else -0.3) for month in range(12)],
+        })
+
+        forecast = ada.analyze(frame).forecast()
+
+        self.assertLess(forecast.values[-1], 0.0)
+        self.assertLess(min(forecast.lower), forecast.values[-1])
+
+
 class OverrideTypeTests(unittest.TestCase):
     def test_a_date_override_must_hold_dates(self):
         with self.assertRaisesRegex(ada.AdaError, "could not be read as dates"):
@@ -269,6 +345,58 @@ class OverrideTypeTests(unittest.TestCase):
     def test_a_measure_override_must_be_numeric(self):
         with self.assertRaisesRegex(ada.AdaError, "is not numeric"):
             ada.analyze(steady(), measure="Team")
+
+    def test_a_date_override_accepts_a_column_of_years(self):
+        frame = pd.DataFrame({"Season": range(1950, 1970), "Catch": [float(n) for n in range(20)]})
+
+        report = ada.analyze(frame, date="Season")
+
+        self.assertEqual(report.roles.date, "Season")
+        self.assertEqual(report.period, (pd.Timestamp("1950-01-01"), pd.Timestamp("1969-01-01")))
+
+    def test_a_date_override_still_refuses_numbers_that_are_not_years(self):
+        frame = pd.DataFrame({"model_year": [70, 71, 82] * 4, "mpg": [18.0, 15.0, 31.0] * 4})
+
+        with self.assertRaisesRegex(ada.AdaError, "could not be read as dates"):
+            ada.analyze(frame, date="model_year")
+
+
+class FrequencyTests(unittest.TestCase):
+    def setUp(self):
+        days = pd.date_range("2022-01-01", "2024-12-31", freq="D")
+        self.frame = pd.DataFrame({"date": days, "precipitation": [float(day.day % 7) for day in days]})
+
+    def test_the_headline_uses_the_requested_grain(self):
+        self.assertIn("(Q4 2024)", ada.analyze(self.frame).headline)
+        monthly = ada.analyze(self.frame, frequency="M")
+        self.assertIn("(Dec 2024)", monthly.headline)
+        trend = next(item for item in monthly.evidence if item.kind == "trend")
+        self.assertIn("(Dec 2024)", trend.statement)
+
+    def test_the_headline_and_the_trend_agree_on_the_periods(self):
+        monthly = ada.analyze(self.frame, frequency="M")
+        self.assertEqual(monthly.trend().frequency, "M")
+        self.assertEqual(len(monthly.trend().frame), 36)
+
+
+class YearTimelineTests(unittest.TestCase):
+    def setUp(self):
+        years = range(1880, 2024)
+        self.report = ada.analyze(pd.DataFrame({
+            "year": years,
+            "temp": [round(0.008 * (year - 1880) + 0.1 * ((year * 7) % 5 - 2), 2) for year in years],
+        }))
+
+    def test_a_year_column_is_the_timeline_at_a_yearly_grain(self):
+        self.assertEqual(self.report.roles.date, "year")
+        trend = self.report.trend()
+        self.assertEqual(trend.frequency, "Y")
+        self.assertEqual(len(trend.frame), 144)
+        self.assertIn("(2023)", self.report.headline)
+
+    def test_anomalies_and_the_forecast_run_on_a_yearly_series(self):
+        self.assertNotIsInstance(self.report.anomalies, ada.Refusal)
+        self.assertNotIsInstance(self.report.forecast(), ada.Refusal)
 
 
 if __name__ == "__main__":

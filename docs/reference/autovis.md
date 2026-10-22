@@ -13,7 +13,8 @@ choice, so the decision can be tested without a browser.
 
 Columns are classified as date, numeric (measure) or category, and the first
 matching row below applies. Values are aggregated the way the measure is
-(a mean for a rate or level, a sum otherwise; see
+(a sum for money and counts, a mean otherwise, or the `aggregation` override
+when the charted column is the active measure; see
 [Concepts](../concepts.md#amounts-rates-and-levels)).
 
 | Selection | Form | Reason |
@@ -41,6 +42,15 @@ colour-blind reader.
 **One hue for magnitude, several only for identity.** Bars and columns that
 compare sizes use a single hue. Distinct hues are used only when the series
 themselves are being compared.
+
+**The whole date range.** A date axis carries at most 400 points
+(`EXPLORE_POINTS` in `ada/ui.py`). When there are more dates than that, they
+are grouped by the finest period that fits, stepping up from days to weeks,
+months, quarters and years (`_fit_date_axis`), and a caption says what each
+point is. A monthly series from 1958 to 2020 is drawn by quarter from its first
+reading, rather than as its latest 400 months. If even years don't fit, the
+latest 400 are drawn and the caption says how many periods are shown out of how
+many. A line per category keeps every series at each date it draws.
 
 ## Colours
 

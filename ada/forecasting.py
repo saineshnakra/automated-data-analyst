@@ -119,8 +119,15 @@ def build_forecast(
     *,
     horizon: int = 6,
     min_periods: int = MIN_PERIODS,
+    floor_at_zero: bool = True,
 ) -> Forecast | None:
-    """Forecast the next periods, or return None when history is too thin."""
+    """Forecast the next periods, or return None when history is too thin.
+
+    With ``floor_at_zero`` and a history that never goes below zero, the
+    forecast and its band stop at zero, as a count or an amount must. Pass
+    False for a level (``MetricSpec.floors_at_zero``): a temperature can keep
+    falling past 0 °C.
+    """
     if trend.empty or not {"Period", "Value"}.issubset(trend.columns):
         return None
     # Drop unobserved (NaN) periods before the length check so only measured
@@ -156,12 +163,12 @@ def build_forecast(
     )
     band = BAND_DEVIATIONS * _prediction_spread(positions, future_positions, scale)
 
-    non_negative = float(values.min()) >= 0
-    if non_negative:
+    floored = floor_at_zero and float(values.min()) >= 0
+    if floored:
         predictions = np.maximum(predictions, 0.0)
     lower = predictions - band
     upper = predictions + band
-    if non_negative:
+    if floored:
         lower = np.maximum(lower, 0.0)
 
     method = "Theil–Sen trendline"
@@ -179,12 +186,14 @@ def build_forecast(
         values=tuple(float(value) for value in predictions),
         lower=tuple(float(value) for value in lower),
         upper=tuple(float(value) for value in upper),
-        backtest=_backtest(periods, values, monthly=monthly),
+        backtest=_backtest(periods, values, monthly=monthly, floor_at_zero=floor_at_zero),
         method=method,
     )
 
 
-def _backtest(periods: pd.DatetimeIndex, values: np.ndarray, *, monthly: bool) -> Backtest:
+def _backtest(
+    periods: pd.DatetimeIndex, values: np.ndarray, *, monthly: bool, floor_at_zero: bool = True
+) -> Backtest:
     """Refit on a training split and score the held-out tail."""
     count = len(values)
     holdout = min(max(3, count // 5), count - MIN_PERIODS + 3)
@@ -208,7 +217,7 @@ def _backtest(periods: pd.DatetimeIndex, values: np.ndarray, *, monthly: bool) -
     predicted = line.at(horizon_positions) + _seasonal_adjustment(
         holdout_periods.month.to_numpy(), seasonal
     )
-    if float(train_values.min()) >= 0:
+    if floor_at_zero and float(train_values.min()) >= 0:
         # Clip at zero like build_forecast, so the score matches what is shown.
         predicted = np.maximum(predicted, 0.0)
     actual = values[-holdout:]

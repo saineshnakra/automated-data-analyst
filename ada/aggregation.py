@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 
 from .formatting import format_period
-from .metrics import resolve_metric
+from .metrics import metric_for
 from .schema import ColumnRoles
 
 GRAIN_ORDER = ("W", "M", "Q", "Y")
@@ -42,11 +42,6 @@ def _grain_for_cadence(dates: pd.Series) -> str:
         return "Q"
     # Annual readings stay yearly; quarters would add three zero-filled periods per year.
     return "Y"
-
-
-def measure_aggregation(measure: str | None) -> str:
-    """How a measure combines across rows: rates average, amounts add."""
-    return resolve_metric(measure).aggregation
 
 
 def _period_frequency(date_series: pd.Series) -> str:
@@ -87,7 +82,7 @@ class TrendSeries:
     frequency: str
     filled_periods: int = 0
     #: True when empty periods were filled with zero (an additive measure),
-    #: False when they were left as NaN (a rate has no observation to average).
+    #: False when they were left as NaN (an averaged measure has no observation to average).
     filled_as_zero: bool = True
     partial_period: pd.Timestamp | None = None
     partial_coverage: str = ""
@@ -114,7 +109,8 @@ class TrendSeries:
             )
         if self.filled_periods:
             plural = "periods" if self.filled_periods > 1 else "period"
-            # A rate's gaps are NaN, not zero, so the caption must match the break in the line.
+            # An averaged measure's gaps are NaN, not zero, so the caption must
+            # match the break in the line.
             settled = (
                 "counted as zero" if self.filled_as_zero else "left empty, since an average "
                 "needs an observation"
@@ -200,7 +196,7 @@ def build_trend(
         else:
             partial_period, partial_coverage = None, ""
 
-    metric = resolve_metric(roles.measure)
+    metric = metric_for(roles.measure, roles)
     if counted:
         result = working.groupby("Period")["__count"].nunique().rename("Value").reset_index()
     elif roles.measure:
@@ -212,7 +208,7 @@ def build_trend(
         result = working.groupby("Period", as_index=False).size().rename(columns={"size": "Value"})
     result = result.sort_values("Period").reset_index(drop=True)
 
-    # Empty periods are zero for additive measures and NaN for rates (no observation).
+    # Empty periods are zero for additive measures and NaN for averaged ones (no observation).
     # Fewer than three distinct dates give no cadence to fill against, so skip filling.
     fill_value = 0.0 if metric.additive else float("nan")
     if working["__date"].nunique() >= 3:
@@ -283,7 +279,7 @@ def segment_frame(dataframe: pd.DataFrame, roles: ColumnRoles, limit: int | None
 
     if roles.measure:
         result = working.groupby("__segment", as_index=False)["__measure"].agg(
-            measure_aggregation(roles.measure)
+            metric_for(roles.measure, roles).aggregation
         )
         result = result.rename(columns={"__segment": "Segment", "__measure": "Value"})
     else:
@@ -315,13 +311,16 @@ def unlabelled_label(existing) -> str:
 
 
 def segment_period_change(
-    dataframe: pd.DataFrame, roles: ColumnRoles
+    dataframe: pd.DataFrame, roles: ColumnRoles, frequency: str | None = None
 ) -> tuple[pd.DataFrame, pd.Timestamp, pd.Timestamp] | None:
-    """Per-segment totals for the latest two periods, or None when unavailable."""
+    """Per-segment totals for the latest two periods, or None when unavailable.
+
+    ``frequency`` fixes the grain; without it the trend's own grain is used.
+    """
     if not roles.date or not roles.measure or not roles.dimension:
         return None
 
-    series = build_trend(dataframe, roles)
+    series = build_trend(dataframe, roles, frequency)
     trend = series.frame
     if len(trend) < 2:
         return None
@@ -339,7 +338,7 @@ def segment_period_change(
     )
     working["Period"] = working["__date"].dt.to_period(frequency).dt.to_timestamp()
     comparison = working[working["Period"].isin([previous_period, current_period])]
-    metric = resolve_metric(roles.measure)
+    metric = metric_for(roles.measure, roles)
     grouped = (
         comparison.groupby(["__segment", "Period"])["__measure"]
         .agg(metric.aggregation)
@@ -352,8 +351,9 @@ def segment_period_change(
         # No rows in a period means zero for an additive measure.
         grouped = grouped.fillna(0.0)
     else:
-        # A rate has no value in a period without rows, so keep only segments in
-        # both; zero-filling would show a new region rising "from 0.0% to 31.0%".
+        # An averaged measure has no value in a period without rows, so keep only
+        # segments in both; zero-filling would show a new region rising "from
+        # 0.0% to 31.0%".
         grouped = grouped.dropna(subset=[previous_period, current_period])
         if grouped.empty:
             return None
@@ -372,8 +372,8 @@ def driver_frame(dataframe: pd.DataFrame, roles: ColumnRoles, limit: int = 9) ->
     top = changes.head(limit)
     frame = pd.DataFrame({"Segment": top.index.astype(str), "Change": top.to_numpy(dtype=float)})
     remainder = float(changes.iloc[limit:].sum())
-    # Changes in segment averages don't sum, so a rate gets no "Other segments" bar.
-    if len(changes) > limit and remainder and resolve_metric(roles.measure).additive:
+    # Changes in segment averages don't sum, so an averaged measure gets no "Other segments" bar.
+    if len(changes) > limit and remainder and metric_for(roles.measure, roles).additive:
         other = pd.DataFrame({"Segment": ["Other segments"], "Change": [remainder]})
         frame = pd.concat([frame, other], ignore_index=True)
     return frame
@@ -407,7 +407,7 @@ def heatmap_frame(
     frequency = frequency or _period_frequency(working["__date"])
     working["Period"] = working["__date"].dt.to_period(frequency).dt.to_timestamp()
     if roles.measure:
-        metric = resolve_metric(roles.measure)
+        metric = metric_for(roles.measure, roles)
         grouped = working.groupby(["__segment", "Period"])["__measure"].agg(metric.aggregation)
         # An averaged measure has no value in an empty cell, so it stays blank.
         pivot = grouped.unstack(fill_value=0) if metric.additive else grouped.unstack()

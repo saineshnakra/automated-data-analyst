@@ -22,20 +22,42 @@ See [Schema detection](reference/schema-detection.md).
 ## Amounts, rates and levels
 
 A measure is either summed or averaged, decided from its column name by
-`resolve_metric` in `ada/metrics.py`:
+`resolve_metric` in `ada/metrics.py`. The first rule that matches applies:
 
 - A rate (a name with a `%` sign, or ending in `rate`, `margin` or `ratio`) is
   averaged.
 - A measured level (a temperature, pH, concentration, score and similar, or a
   unit annotation such as `(mg/L)` or `(°C)`) is averaged. `LEVEL_WORDS` in
   `ada/metrics.py` holds the word list.
-- Everything else is an amount and is summed.
+- An amount of money or a count of things is summed: a currency name
+  (`Revenue`, `Cost`, `MRR`), or a name with a word such as `amount`, `total`,
+  `units`, `orders`, `visits`, `cases`, `cells` or `individuals`
+  (`ADDITIVE_WORDS`). Words match whole, so `Discount` is not a count. A
+  per-unit figure is not an amount even when it is money: `Price`, `Unit
+  Price`, `Revenue per User` and `Spending per Capita` are averaged.
+- Anything else is averaged as a level: `CO2`, `mpg`, `signal`, `Resolution
+  Hours`. The mean of an amount still reads sensibly, but the sum of a reading
+  does not, so a name ADA does not recognise is averaged.
 - With no measure, ADA counts rows.
+
+The name can mislead either way: rainfall is often reported as a monthly
+total, and a column called `income` may hold income per person. To choose how
+the measure combines, pass `aggregation="sum"` or `aggregation="mean"` to
+`ada.analyze`, `--aggregation sum|mean` on the command line, or pick Total or
+Average under **Combine rows by** in the app's "Tune ADA's schema detection"
+panel. Every chart, card and answer then combines the measure that way; other
+columns keep their own rule. A measure told to sum is treated as an amount,
+and one told to average as a level.
 
 An averaged measure has no total, so ADA quotes no shares, concentration card
 or "Other segments" bar for it. A change is reported as a percentage for an
 amount or count, in percentage points for a rate, and as a plain difference for
 a level.
+
+A rise is good news for an amount or a rate unless the name says otherwise
+(`Cost`, `Churn Rate`, `Defects`). A level whose name says nothing about which
+way is good, such as CO2, rainfall or a temperature, is reported in neutral
+colours and words.
 
 ## Period and grain
 

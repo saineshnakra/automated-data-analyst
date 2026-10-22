@@ -27,7 +27,8 @@ from .business_insights import BusinessBrief, analyze_business, build_business_r
 from .file_io import list_sample_datasets as _list_sample_datasets
 from .file_io import read_tabular_file
 from .forecasting import Forecast, build_forecast
-from .nlq import QueryAnswer, answer_question, suggested_questions, unsupported_phrasing
+from .metrics import AGGREGATION_CHOICES, metric_for
+from .nlq import QueryAnswer, answer_question, rephrase_hint, suggested_questions, unsupported_phrasing
 from .pipeline import apply_focus, focus_options, prepare_analysis
 from .schema import ColumnRoles
 
@@ -121,6 +122,7 @@ def analyze(
     measure: str | None = None,
     dimension: str | None = None,
     frequency: str | None = None,
+    aggregation: str | None = None,
     row_limit: int = DEFAULT_ROW_LIMIT,
     sheet: str | None = None,
     source_name: str | None = None,
@@ -131,17 +133,26 @@ def analyze(
 
     ADA picks a date column, a measure, a grouping column and an identifier
     on its own; ``date``, ``measure`` and ``dimension`` override that choice
-    (``ada schema FILE`` prints what was picked). ``frequency`` fixes the
+    (``ada schema FILE`` prints what was picked). A ``date`` column of whole
+    years is read as 1 January of each year. ``frequency`` fixes the
     period grain to one of ``D W M Q Y``; without it the grain follows how
     often the data was recorded. Fix it for scheduled jobs so the grain
     doesn't change between runs.
 
+    ``aggregation`` says how the measure combines across rows: ``"sum"`` for a
+    total, ``"mean"`` for an average. Without it, money and counts are summed
+    and anything else is averaged, judged from the column name.
+
     Raises :class:`AdaError` if the input can't be used, including an override
     that names a column the table doesn't have.
     """
+    if aggregation is not None and aggregation not in AGGREGATION_CHOICES:
+        raise AdaError(
+            f"aggregation must be 'sum' (a total) or 'mean' (an average), not {aggregation!r}."
+        )
     frame, detected_name = _frame_from(data, sheet)
     try:
-        prepared = prepare_analysis(frame, row_limit=row_limit)
+        prepared = prepare_analysis(frame, row_limit=row_limit, date=date)
     except ValueError as error:
         raise NothingToAnalyze(str(error)) from error
 
@@ -159,7 +170,7 @@ def analyze(
         raise AdaError(f"{date!r} could not be read as dates, so it can't be the date column.")
     if measure is not None and not pd.api.types.is_numeric_dtype(cleaned[measure]):
         raise AdaError(f"{measure!r} is not numeric, so it can't be the measure.")
-    roles = replace(prepared.detected_roles, **overrides)
+    roles = replace(prepared.detected_roles, **overrides, aggregation=aggregation)
     return Analysis(
         frame=prepared.dataframe,
         roles=roles,
@@ -221,7 +232,7 @@ class Analysis:
 
     @cached_property
     def _brief(self) -> BusinessBrief:
-        return analyze_business(self.frame, self.roles)
+        return analyze_business(self.frame, self.roles, frequency=self.frequency)
 
     @property
     def headline(self) -> str:
@@ -299,7 +310,11 @@ class Analysis:
         series = self.trend()
         if isinstance(series, Refusal):
             return series
-        result = build_forecast(series.frame, horizon=horizon)
+        result = build_forecast(
+            series.frame,
+            horizon=horizon,
+            floor_at_zero=metric_for(self.roles.measure, self.roles).floors_at_zero,
+        )
         if result is None:
             periods = len(series.frame)
             return Refusal(
@@ -322,6 +337,7 @@ class Analysis:
         Returns a :class:`Refusal` with code ``unsupported_phrasing`` when the
         question uses a form the parser doesn't support (e.g. "revenue > 200"),
         or ``unrepresentable_question`` when it can't be mapped onto this table.
+        The second names the column the question may have meant, when there is one.
         """
         if unsupported_phrasing(question):
             return Refusal(
@@ -330,10 +346,9 @@ class Analysis:
             )
         answer = answer_question(question, self.frame, self.roles)
         if answer is None:
-            return Refusal(
-                "unrepresentable_question",
-                "ADA could not build a plan for that question against this table.",
-            )
+            message = "ADA could not build a plan for that question against this table."
+            hint = rephrase_hint(question, self.frame, self.roles)
+            return Refusal("unrepresentable_question", f"{message} {hint}" if hint else message)
         return answer
 
     def focus(self, value: str) -> Analysis | Refusal:
@@ -378,6 +393,8 @@ class Analysis:
                 "measure": self.roles.measure,
                 "dimension": self.roles.dimension,
                 "identifier": self.roles.identifier,
+                # How the measure was combined: sum, mean, or count when there is none.
+                "aggregation": metric_for(self.roles.measure, self.roles).aggregation,
             },
             "headline": self.headline,
             "summary": self.summary,
@@ -411,9 +428,11 @@ class Analysis:
         start, end = self.period
         dated = start is not None and end is not None
         span = f"{start:%d %b %Y} to {end:%d %b %Y}" if dated else "no date range"
+        roles = self.roles
+        combined = f" ({metric_for(roles.measure, roles).aggregation})" if roles.measure else ""
         lines = [
             f"{self.source_name} — {self.rows_analyzed:,} rows, {span}",
-            f"  date={self.roles.date}  measure={self.roles.measure}  segment={self.roles.dimension}",
+            f"  date={roles.date}  measure={roles.measure}{combined}  segment={roles.dimension}",
             "",
             self.headline,
         ]

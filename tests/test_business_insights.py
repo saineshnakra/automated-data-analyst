@@ -3,16 +3,16 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from ada.aggregation import driver_frame, heatmap_frame, segment_frame, trend_frame
+from ada.aggregation import driver_frame, heatmap_frame, segment_frame, segment_period_change, trend_frame
 from ada.business_insights import (
     Evidence,
     _shown_evidence,
     analyze_business,
     build_business_report,
-    increase_is_welcome,
 )
 from ada.demo_data import make_demo_data
 from ada.formatting import format_number
+from ada.metrics import increase_is_welcome
 from ada.pipeline import prepare_analysis
 from ada.schema import ColumnRoles, detect_roles
 
@@ -511,6 +511,53 @@ class DirectionOfGoodTests(unittest.TestCase):
         for item in brief.recommendations:
             self.assertNotIn("Alpha decline", item.action)
 
+    def test_a_rise_in_a_reading_is_neither_good_nor_bad_news(self):
+        frame = pd.DataFrame({"Month": MONTHS, "CO2": np.linspace(410, 416, 12)})
+
+        brief = analyze_business(frame)
+
+        trend = next(item for item in brief.evidence if item.kind == "trend")
+        movement = next(item for item in brief.kpis if item.label == "Latest movement")
+        self.assertEqual(trend.tone, "neutral")
+        self.assertEqual(movement.tone, "neutral")
+        self.assertEqual(brief.recommendations[0].title, "Check whether the change holds")
+
+    def test_a_reading_named_as_adverse_keeps_its_direction(self):
+        frame = pd.DataFrame({"Month": MONTHS, "Resolution Hours": np.linspace(10, 16, 12)})
+
+        trend = next(item for item in analyze_business(frame).evidence if item.kind == "trend")
+
+        self.assertEqual(trend.tone, "negative")
+
+    def test_a_site_moving_against_a_neutral_average_is_not_named(self):
+        # North rises 6 degrees, but South's four readings fall 2, so the average falls.
+        frame = pd.DataFrame(
+            {
+                "Month": [MONTHS[0]] * 5 + [MONTHS[1]] * 5,
+                "Site": ["North", "South", "South", "South", "South"] * 2,
+                "Water Temp (°C)": [10.0, 20.0, 20.0, 20.0, 20.0, 16.0, 18.0, 18.0, 18.0, 18.0],
+            }
+        )
+
+        brief = analyze_business(frame)
+
+        kinds = {item.kind: item for item in brief.evidence}
+        self.assertEqual(kinds["trend"].tone, "neutral")
+        self.assertEqual(kinds["driver"].subject, "North")
+        self.assertNotIn("North", brief.recommendations[0].title)
+
+
+class ChangeWordingTests(unittest.TestCase):
+    def test_a_small_change_never_reads_from_x_to_x(self):
+        frame = pd.DataFrame(
+            {"Month": MONTHS, "Units": [1_150.0, 1_160.0, 1_175.0, 1_180.0, 1_190.0, 1_195.0,
+                                        1_200.0, 1_204.0, 1_206.0, 1_208.0, 1_211.0, 1_214.0]}
+        )
+
+        trend = next(item for item in analyze_business(frame).evidence if item.kind == "trend")
+
+        self.assertIn("from 1,211 to 1,214", trend.statement)
+
 
 class EvidenceBudgetTests(unittest.TestCase):
     def test_a_quality_card_is_never_squeezed_out_by_the_six_card_cap(self):
@@ -633,6 +680,111 @@ class NegativeLevelTests(unittest.TestCase):
         self.assertIn("North is the largest by size", brief.headline)
         top = next(kpi for kpi in brief.kpis if kpi.label == "Top Region")
         self.assertEqual(top.context, "Largest in size of any segment")
+
+
+class FixedFrequencyTests(unittest.TestCase):
+    def setUp(self):
+        days = pd.date_range("2022-01-01", "2024-12-31", freq="D")
+        values = 100 + np.random.default_rng(0).normal(0, 5, len(days))
+        values[(days >= "2023-06-01") & (days < "2023-07-01")] = 300
+        self.frame = pd.DataFrame({
+            "Date": days,
+            "Site": ["A", "B"] * (len(days) // 2) + ["A"] * (len(days) % 2),
+            "Rainfall": values,
+        })
+        self.roles = detect_roles(self.frame)
+
+    def evidence(self, frequency=None) -> dict[str, Evidence]:
+        brief = analyze_business(self.frame, self.roles, frequency=frequency)
+        return {item.kind: item for item in brief.evidence}
+
+    def test_three_years_of_days_default_to_quarters(self):
+        evidence = self.evidence()
+        self.assertIn("(Q4 2024)", evidence["trend"].statement)
+        self.assertTrue(evidence["anomaly"].statement.startswith("Q2 2023"))
+
+    def test_a_fixed_frequency_sets_the_grain_of_every_period_finding(self):
+        evidence = self.evidence("M")
+        self.assertIn("(Dec 2024)", evidence["trend"].statement)
+        self.assertTrue(evidence["anomaly"].statement.startswith("Jun 2023"))
+        # The driver compares the same two months as the trend, not two quarters.
+        grouped, previous, current = segment_period_change(self.frame, self.roles, "M")
+        self.assertEqual((previous, current), (pd.Timestamp("2024-11-01"), pd.Timestamp("2024-12-01")))
+        self.assertEqual(evidence["driver"].subject, str(grouped["Change"].abs().idxmax()))
+        self.assertNotEqual(evidence["driver"].subject, self.evidence()["driver"].subject)
+
+
+def relationship_of(frame: pd.DataFrame) -> Evidence | None:
+    brief = analyze_business(frame, detect_roles(frame))
+    return next((item for item in brief.evidence if item.kind == "relationship"), None)
+
+
+class RelationshipCandidateTests(unittest.TestCase):
+    def test_a_numbered_participant_is_not_correlated_with_their_score(self):
+        rng = np.random.default_rng(7)
+        subjects = np.repeat(np.arange(1, 21), 3)
+        frame = pd.DataFrame({
+            "subject": subjects,
+            "attention": ["divided", "focused"] * 30,
+            "score": subjects * 0.3 + rng.normal(0, 1, 60),
+            "solutions": rng.integers(1, 4, 60),
+        })
+
+        relationship = relationship_of(frame)
+
+        self.assertTrue(relationship is None or "subject" not in relationship.statement)
+
+    def test_a_plate_column_is_not_correlated_with_the_dilution_laid_out_across_it(self):
+        rng = np.random.default_rng(11)
+        columns = np.tile(np.arange(1, 13), 8)
+        dose = 100 / 2.0 ** (columns - 1)
+        frame = pd.DataFrame({
+            "Column": columns,
+            "Dose (µM)": dose,
+            "Abs 450nm": 0.2 + dose / 100 + rng.normal(0, 0.05, 96),
+        })
+
+        relationship = relationship_of(frame)
+
+        assert relationship is not None
+        self.assertNotIn("Column", relationship.statement)
+        self.assertTrue(relationship.statement.startswith("Dose (µM) and Abs 450nm"))
+
+    def test_a_derived_copy_is_named_but_not_reported_as_the_relationship(self):
+        rng = np.random.default_rng(5)
+        co2 = np.linspace(315, 410, 120) + rng.normal(0, 0.5, 120)
+        frame = pd.DataFrame({
+            "CO2": co2,
+            "adjusted CO2": co2 - 0.3,
+            "Temperature anomaly": (co2 - 315) / 100 + rng.normal(0, 0.15, 120),
+        })
+
+        relationship = relationship_of(frame)
+
+        assert relationship is not None
+        self.assertNotIn("CO2 and adjusted CO2 move together:", relationship.statement)
+        self.assertIn(
+            "CO2 and adjusted CO2 (r = 1.00) were left out: they move together almost exactly",
+            relationship.statement,
+        )
+        self.assertIn("treat it as a lead to check", relationship.statement)
+        self.assertIn("near-duplicates", relationship.calculation)
+
+    def test_no_card_when_the_only_strong_pair_is_a_near_duplicate(self):
+        values = np.linspace(1.0, 50.0, 40)
+        frame = pd.DataFrame({"x": values, "y": values * 1.001 + 0.01})
+
+        self.assertIsNone(relationship_of(frame))
+
+    def test_an_ordinary_relationship_gets_no_near_duplicate_sentence(self):
+        rng = np.random.default_rng(3)
+        units = rng.normal(50, 10, 200)
+        frame = pd.DataFrame({"Units": units, "Revenue": units * 20 + rng.normal(0, 150, 200)})
+
+        relationship = relationship_of(frame)
+
+        assert relationship is not None
+        self.assertNotIn("left out", relationship.statement)
 
 
 if __name__ == "__main__":

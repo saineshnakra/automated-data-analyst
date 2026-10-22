@@ -18,10 +18,10 @@ from .autovis import fold_small_series, recommend_chart
 from .business_insights import BusinessBrief
 from .forecasting import build_forecast, describe_backtest
 from .formatting import format_number, format_period
-from .metrics import resolve_metric
+from .metrics import metric_for
 from .nlq import QueryAnswer
 from .pipeline import analyze_selection
-from .schema import ColumnRoles, is_design_name
+from .schema import ColumnRoles, is_design_name, is_entity_name
 from .selection import comparison_frame, selection_from_event, selection_modes
 
 if TYPE_CHECKING:  # The AI layer is optional; ui must import without it.
@@ -248,9 +248,9 @@ def _hover_format(values) -> str:
     return ",.0f" if not finite.empty and finite.median() >= 100 else ",.2f"
 
 
-def _trend_figure(frame: pd.DataFrame, measure: str | None, **options) -> go.Figure:
+def _trend_figure(frame: pd.DataFrame, averaged: bool, **options) -> go.Figure:
     """Period values as a filled area for totals, or a plain line for averages."""
-    if measure and not resolve_metric(measure).additive:
+    if averaged:
         figure = px.line(frame, x="Period", y="Value", markers=True, color_discrete_sequence=[ACCENT], **options)
         figure.update_traces(line={"width": 3})
         return figure
@@ -260,6 +260,7 @@ def _trend_figure(frame: pd.DataFrame, measure: str | None, **options) -> go.Fig
 
 
 def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
+    metric = metric_for(roles.measure, roles)
     series = build_trend(dataframe, roles)
     trend = series.frame
     segments = segment_frame(dataframe, roles)
@@ -268,7 +269,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
         if not trend.empty:
             figure = _trend_figure(
                 trend,
-                roles.measure,
+                not metric.additive,
                 title=f"{roles.measure or 'Records'} over time",
                 labels=axis_names(roles, series.frequency),
             )
@@ -289,7 +290,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                         hovertemplate=f"%{{x|%b %Y}}: %{{y:{_hover_format(trend['Value'])}}}, outside the expected band<extra>Anomaly</extra>",
                     )
                 )
-            forecast = build_forecast(trend)
+            forecast = build_forecast(trend, floor_at_zero=metric.floors_at_zero)
             if forecast:
                 figure.add_trace(
                     go.Scatter(
@@ -342,7 +343,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
     movement_columns = st.columns(2, gap="medium")
     with movement_columns[0]:
         drivers = driver_frame(dataframe, roles)
-        if not drivers.empty and roles.measure and not resolve_metric(roles.measure).additive:
+        if not drivers.empty and not metric.additive:
             # Changes in group averages don't add up to the overall change, so
             # they are shown side by side rather than stacked into a total.
             changes = go.Figure(
@@ -415,7 +416,9 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
     numeric = [
         column
         for column in roles.numeric
-        if dataframe[column].nunique(dropna=True) > 2 and not is_design_name(column)
+        if dataframe[column].nunique(dropna=True) > 2
+        and not is_design_name(column)
+        and not is_entity_name(column)
     ]
     lower_columns = st.columns(2, gap="medium")
     with lower_columns[0]:
@@ -455,8 +458,23 @@ def _chat_answer_figure(result: QueryAnswer) -> go.Figure | None:
     table = result.table
     if table is None or table.empty or result.chart is None:
         return None
+    if result.chart == "scatter" and len(table.columns) >= 2:
+        x, y = table.columns[:2]
+        figure = px.scatter(table, x=x, y=y, opacity=0.62, title=f"{y} vs {x}", color_discrete_sequence=[ACCENT])
+        return style_chart(figure, height=320)
     if result.chart == "line" and {"Period", "Value"}.issubset(table.columns):
-        figure = _trend_figure(table, result.plan.measure, title=result.plan.measure or "Records")
+        # The plan carries the aggregation the trend was built with.
+        averaged = bool(result.plan.measure) and result.plan.aggregation == "mean"
+        figure = _trend_figure(table, averaged, title=result.plan.measure or "Records")
+        return style_chart(figure, height=320)
+    if result.chart == "line":
+        # Groups of a numbered column (timepoint 0, 1, 2...), in the table's order.
+        category, value = table.columns[:2]
+        figure = px.line(
+            table, x=category, y=value, markers=True, title=f"{value} by {category}",
+            color_discrete_sequence=[ACCENT],
+        )
+        figure.update_traces(line={"width": 3})
         return style_chart(figure, height=320)
     category = table.columns[0]
     value = next((name for name in ("Change %", "Change") if name in table.columns), table.columns[1])
@@ -501,30 +519,71 @@ def render_chat_answer(result: QueryAnswer, *, key: str) -> None:
     )
 
 
-def render_chat_fallback(suggestions: list[str]) -> None:
-    """Render the reply for a question that maps to no local calculation."""
+def render_chat_fallback(suggestions: list[str], hint: str | None = None) -> None:
+    """Render the reply for a question that maps to no local calculation.
+
+    ``hint`` names the column the question may have meant, from ``rephrase_hint``.
+    """
     st.markdown(
         "I map questions to transparent calculations, and I could not map that one. "
-        "Try naming a metric, a segment, or a time scope, for example:"
+        + (f"{hint} " if hint else "")
+        + "Try naming a metric, a segment, or a time scope, for example:"
     )
     st.markdown("\n".join(f"- {suggestion}" for suggestion in suggestions))
 
 
-def _cap(frame: pd.DataFrame, spec, value: str, limit: int) -> pd.DataFrame:
-    """Trim to ``limit`` rows for drawing.
+# Points the Explore chart draws along one axis.
+EXPLORE_POINTS = 400
+# A long date axis steps up through these until the whole range fits.
+EXPLORE_GRAINS = ("D", "W", "M", "Q", "Y")
 
-    A datetime x axis keeps its most recent rows; any other chart keeps its
-    largest values.
+
+def _fit_date_axis(
+    dataframe: pd.DataFrame, spec, *, limit: int = EXPLORE_POINTS
+) -> tuple[pd.DataFrame, str | None]:
+    """Group a date axis by the finest period that fits ``limit`` points.
+
+    Drawing only the latest dates would drop the start of a long series without
+    a word, so dates step up through days, weeks, months, quarters and years
+    until the whole range fits. Returns the rows with each date moved to its
+    period's start, and a caption saying what a point is, or, when even years
+    don't fit, how many are shown.
+    """
+    if not (spec.x and spec.x in dataframe.columns and is_datetime64_any_dtype(dataframe[spec.x])):
+        return dataframe, None
+    dates = dataframe[spec.x]
+    distinct = int(dates.nunique())
+    if distinct <= limit:
+        return dataframe, None
+    for grain in EXPLORE_GRAINS:
+        periods = dates.dt.to_period(grain).dt.to_timestamp()
+        count = int(periods.nunique())
+        if count <= limit:
+            break
+    name = GRAIN_NAMES[grain].lower()
+    if count > limit:
+        caption = f"Showing the latest {limit:,} of {count:,} {name}s; earlier ones are not drawn."
+    else:
+        caption = f"{spec.x} has {distinct:,} dates, so each point is one {name} and the whole range fits."
+    return dataframe.assign(**{spec.x: periods}), caption
+
+
+def _cap(frame: pd.DataFrame, spec, value: str, limit: int) -> pd.DataFrame:
+    """Trim to ``limit`` points for drawing.
+
+    A datetime x axis keeps its most recent ``limit`` dates, each with all its
+    series; any other chart keeps its largest values.
     """
     if len(frame) <= limit:
         return frame
     if spec.x and spec.x in frame.columns and is_datetime64_any_dtype(frame[spec.x]):
-        return frame.nlargest(limit, spec.x).sort_values(spec.x).reset_index(drop=True)
+        latest = frame[spec.x].drop_duplicates().nlargest(limit)
+        return frame[frame[spec.x].isin(latest)].sort_values(spec.x).reset_index(drop=True)
     return frame.nlargest(limit, value).reset_index(drop=True)
 
 
 def _explore_frame(
-    dataframe: pd.DataFrame, spec, *, limit: int = 400
+    dataframe: pd.DataFrame, spec, *, limit: int = EXPLORE_POINTS
 ) -> pd.DataFrame:
     """Aggregate the raw rows into what the recommended chart plots."""
     if spec.form in ("scatter", "histogram"):
@@ -640,12 +699,13 @@ def render_explore(dataframe: pd.DataFrame, roles: ColumnRoles, brief: BusinessB
         )
         return
 
-    spec = recommend_chart(dataframe, chosen)
+    spec = recommend_chart(dataframe, chosen, roles=roles)
     if spec.form == "none":
         st.info(spec.rationale)
         return
 
-    frame = _explore_frame(dataframe, spec)
+    rows, axis_note = _fit_date_axis(dataframe, spec)
+    frame = _explore_frame(rows, spec)
     event = None
     if spec.form == "stat":
         present = dataframe[spec.y].dropna() if spec.y else pd.Series(dtype="float64")
@@ -668,7 +728,7 @@ def render_explore(dataframe: pd.DataFrame, roles: ColumnRoles, brief: BusinessB
         f'<p class="calculation">WHY THIS CHART · {escape(spec.rationale)}</p>',
         unsafe_allow_html=True,
     )
-    for note in spec.notes:
+    for note in (*spec.notes, *([axis_note] if axis_note else [])):
         st.caption(note)
     if event:
         render_selection(dataframe, roles, selection_from_event(event, spec, dataframe), chosen, brief)

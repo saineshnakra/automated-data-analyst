@@ -64,12 +64,12 @@ class CleanDataframeTests(unittest.TestCase):
         self.assertTrue(is_datetime64_any_dtype(cleaned["Month"]))
         self.assertEqual(report.datetime_columns_inferred, 1)
 
-    def test_bare_years_stay_numbers(self):
-        frame = pd.DataFrame({"Year": ["1949", "1950", "1951"], "Passengers": [1, 2, 3]})
+    def test_numbers_in_the_range_of_years_stay_numbers(self):
+        frame = pd.DataFrame({"Count": ["1949", "1950", "1951"], "Passengers": [1, 2, 3]})
 
         cleaned, _ = clean_dataframe(frame)
 
-        self.assertFalse(is_datetime64_any_dtype(cleaned["Year"]))
+        self.assertFalse(is_datetime64_any_dtype(cleaned["Count"]))
 
     def test_text_categories_are_not_mistaken_for_dates(self):
         frame = pd.DataFrame(
@@ -79,6 +79,79 @@ class CleanDataframeTests(unittest.TestCase):
         cleaned, _ = clean_dataframe(frame)
 
         self.assertFalse(is_datetime64_any_dtype(cleaned["Container"]))
+
+
+class YearColumnTests(unittest.TestCase):
+    def test_a_year_column_becomes_the_first_of_each_year(self):
+        frame = pd.DataFrame({"Year": ["1949", "1950", "1951"], "Passengers": [1, 2, 3]})
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertTrue(is_datetime64_any_dtype(cleaned["Year"]))
+        self.assertEqual(cleaned["Year"].tolist(), list(pd.to_datetime(["1949", "1950", "1951"])))
+        self.assertEqual(report.datetime_columns_inferred, 1)
+        self.assertTrue(any("Year holds whole years" in note for note in report.notes))
+
+    def test_a_month_column_makes_the_dates_monthly(self):
+        for months in (["January", "February"] * 2, ["Jan", "feb"] * 2, [1, 2] * 2):
+            with self.subTest(months=months):
+                frame = pd.DataFrame(
+                    {"year": [1949, 1949, 1950, 1950], "month": months, "passengers": [1, 2, 3, 4]}
+                )
+
+                cleaned, report = clean_dataframe(frame)
+
+                self.assertEqual(cleaned.columns.tolist(), ["year-month", "passengers"])
+                self.assertEqual(cleaned["year-month"].iloc[3], pd.Timestamp("1950-02-01"))
+                self.assertTrue(any("year and month were combined" in note for note in report.notes))
+
+    def test_a_month_column_with_other_values_is_left_alone(self):
+        frame = pd.DataFrame({"Year": [2020, 2021], "Month": ["Spring", "Autumn"], "Yield": [1.0, 2.0]})
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertIn("Month", cleaned.columns)
+        self.assertEqual(cleaned["Year"].iloc[1], pd.Timestamp("2021-01-01"))
+
+    def test_years_outside_the_plausible_range_stay_numbers(self):
+        frame = pd.DataFrame({"model_year": [70, 71, 82], "mpg": [18.0, 15.0, 31.0]})
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertFalse(is_datetime64_any_dtype(cleaned["model_year"]))
+        self.assertEqual(report.notes, ())
+
+    def test_a_single_year_is_not_a_timeline(self):
+        frame = pd.DataFrame({"Year": [2024, 2024, 2024], "Score": [1.0, 2.0, 3.0]})
+
+        self.assertFalse(is_datetime64_any_dtype(clean_dataframe(frame)[0]["Year"]))
+
+    def test_an_existing_date_column_takes_precedence(self):
+        frame = pd.DataFrame(
+            {"Date": ["2024-01-01", "2024-02-01"], "Year": [2024, 2024], "Sales": [1.0, 2.0]}
+        )
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertTrue(is_datetime64_any_dtype(cleaned["Date"]))
+        self.assertFalse(is_datetime64_any_dtype(cleaned["Year"]))
+
+    def test_a_requested_date_column_of_years_is_converted_whatever_its_name(self):
+        frame = pd.DataFrame({"Season": [1890, 1950, 2010], "Catch": [1.0, 2.0, 3.0]})
+
+        self.assertFalse(is_datetime64_any_dtype(clean_dataframe(frame)[0]["Season"]))
+        cleaned, report = clean_dataframe(frame, date="Season")
+        self.assertEqual(cleaned["Season"].iloc[0], pd.Timestamp("1890-01-01"))
+        self.assertTrue(any("Season holds whole years" in note for note in report.notes))
+
+    def test_years_no_timestamp_can_hold_are_reported_as_unreadable(self):
+        frame = pd.DataFrame({"Era": [1200, 1900, 2000], "Count": [1.0, 2.0, 3.0]})
+
+        cleaned, report = clean_dataframe(frame, date="Era")
+
+        self.assertTrue(pd.isna(cleaned["Era"].iloc[0]))
+        self.assertEqual(report.unparsed_date_cells, 1)
+        self.assertTrue(any("1 Era values could not be read" in note for note in report.notes))
 
 
 class RepeatRowTests(unittest.TestCase):

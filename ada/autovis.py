@@ -12,7 +12,8 @@ from dataclasses import dataclass, field
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 
-from .metrics import resolve_metric
+from .metrics import metric_for
+from .schema import ColumnRoles
 
 # Series past MAX_SERIES fold into "Other" (extra hues are hard to tell apart);
 # categories past MAX_BARS render as a table.
@@ -89,11 +90,13 @@ def recommend_chart(
     columns: list[str],
     *,
     aggregation: str | None = None,
+    roles: ColumnRoles | None = None,
 ) -> ChartSpec:
     """Pick the form that suits these columns, and say why.
 
-    ``aggregation`` defaults to the measure's own (``metrics.resolve_metric``):
-    a mean for rates and levels, a sum otherwise.
+    ``aggregation`` defaults to the measure's own (``metrics.metric_for``): a
+    sum for money and counts, a mean otherwise, or whatever ``roles`` were told
+    when the charted measure is theirs.
     """
     columns = [column for column in columns if column in dataframe.columns]
     if not columns:
@@ -102,7 +105,7 @@ def recommend_chart(
     groups = _classify(dataframe, columns)
     dates, numbers, categories = groups["datetime"], groups["numeric"], groups["category"]
     if aggregation is None:
-        aggregation = resolve_metric(numbers[0]).aggregation if numbers else "sum"
+        aggregation = metric_for(numbers[0], roles).aggregation if numbers else "sum"
     notes: list[str] = []
 
     if len(numbers) > 1:

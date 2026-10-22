@@ -12,11 +12,8 @@ import pandas as pd
 
 from .aggregation import (
     build_trend,
-    measure_aggregation,
-    preferred_frequency,
     segment_frame,
     segment_period_change,
-    trend_frame,
 )
 from .anomalies import detect_anomalies
 from .formatting import (
@@ -24,11 +21,19 @@ from .formatting import (
     format_number,
     format_percentage,
     format_period,
+    format_values_apart,
     normalized_name,
     sentence_case,
 )
-from .metrics import increase_is_welcome, resolve_metric
-from .schema import TIME_PART_TOKENS, ColumnRoles, detect_roles, is_design_name, looks_like_identifier
+from .metrics import MetricSpec, metric_for
+from .schema import (
+    TIME_PART_TOKENS,
+    ColumnRoles,
+    detect_roles,
+    is_design_name,
+    is_entity_name,
+    looks_like_identifier,
+)
 from .timeseries import robust_scale
 
 
@@ -70,6 +75,17 @@ class BusinessBrief:
 
 
 MIN_PERIODS_FOR_VOLATILITY = 5
+
+
+def _tone(rose: bool, metric: MetricSpec) -> str:
+    """Positive or negative by what the measure means: a rising cost is negative.
+
+    Neutral for a level whose name doesn't say which way is good, so a rise in
+    CO2 or rainfall is reported without being called good or bad news.
+    """
+    if not metric.direction_known:
+        return "neutral"
+    return "positive" if rose == metric.increase_is_welcome else "negative"
 
 
 def _period_changes(values: np.ndarray, *, relative: bool = True) -> np.ndarray:
@@ -115,8 +131,10 @@ def _movement_in_context(values: np.ndarray, change: float, describe=format_perc
     return f" {verdict}; this series typically moves about {describe(typical)} per period."
 
 
-def _growth_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
-    series = build_trend(dataframe, roles)
+def _growth_evidence(
+    dataframe: pd.DataFrame, roles: ColumnRoles, frequency: str | None = None
+) -> Evidence | None:
+    series = build_trend(dataframe, roles, frequency)
     trend = series.frame
     if len(trend) < 2:
         return None
@@ -124,7 +142,8 @@ def _growth_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | 
     values = trend["Value"].to_numpy(dtype=float)
     previous = float(values[-2])
     current = float(values[-1])
-    unit = resolve_metric(roles.measure).unit
+    metric = metric_for(roles.measure, roles)
+    unit = metric.unit
     measure_values = dataframe[roles.measure].dropna() if roles.measure else None
     moved = format_change(previous, current, roles.measure, unit, measure_values)
     if moved is None:
@@ -153,8 +172,9 @@ def _growth_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | 
     completeness = "complete period" if series.completeness_checked else "period so far"
     measure = roles.measure or "Records"
     direction = "increased" if delta >= 0 else "decreased"
-    # Tone follows meaning (a rising cost is negative); recommendations follow tone.
-    welcome = increase_is_welcome(roles.measure)
+    start, end = format_values_apart(
+        previous, current, column=roles.measure, column_values=measure_values
+    )
     if series.short_coverage:
         context += (
             f" The last period only reaches {series.short_coverage}, so part of this may be "
@@ -166,17 +186,19 @@ def _growth_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | 
         value=value,
         statement=(
             f"{measure} {direction} {moved} in the latest {completeness} "
-            f"({period}), from {format_number(previous, roles.measure, column_values=measure_values)} to "
-            f"{format_number(current, roles.measure, column_values=measure_values)}.{context}"
+            f"({period}), from {start} to {end}.{context}"
         ),
         calculation=f"{calculation}, compared with past period-to-period changes",
-        tone="positive" if (delta >= 0) == welcome else "negative",
+        # Recommendations follow this tone.
+        tone=_tone(delta >= 0, metric),
     )
 
 
-def _change_driver_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
+def _change_driver_evidence(
+    dataframe: pd.DataFrame, roles: ColumnRoles, frequency: str | None = None
+) -> Evidence | None:
     """Identify the segment contributing most to the latest net movement."""
-    result = segment_period_change(dataframe, roles)
+    result = segment_period_change(dataframe, roles, frequency)
     if result is None:
         return None
     grouped, previous_period, current_period = result
@@ -195,21 +217,23 @@ def _change_driver_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evid
     driver_change = float(grouped.loc[driver_key, "Change"])
     direction = "increased" if driver_change > 0 else "decreased"
     sign = "+" if driver_change > 0 else "-"
-    unit = resolve_metric(roles.measure).unit
+    metric = metric_for(roles.measure, roles)
+    unit = metric.unit
     if unit in ("rate", "level"):
         size = format_change(previous_value, current_value, roles.measure, unit, measure_values)
         short = f"{size.split()[0]} pts" if unit == "rate" else size
     else:
         size = short = format_number(abs(driver_change), roles.measure, column_values=measure_values)
 
+    start, end = format_values_apart(
+        previous_value, current_value, column=roles.measure, column_values=measure_values
+    )
     movement = (
         f"{driver_name} moved the most of any {sentence_case(roles.dimension)}: "
-        f"{roles.measure} {direction} by {size}, "
-        f"from {format_number(previous_value, roles.measure, column_values=measure_values)} to "
-        f"{format_number(current_value, roles.measure, column_values=measure_values)}."
+        f"{roles.measure} {direction} by {size}, from {start} to {end}."
     )
 
-    if not resolve_metric(roles.measure).additive:
+    if not metric.additive:
         # Changes in segment averages don't add up to the change in the overall average.
         statement = movement
         calculation = (
@@ -244,33 +268,39 @@ def _change_driver_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evid
         value=f"{sign}{short}",
         statement=statement,
         calculation=calculation,
-        tone="positive" if (driver_change > 0) == increase_is_welcome(roles.measure) else "negative",
+        tone=_tone(driver_change > 0, metric),
         subject=driver_name,
     )
 
 
-def _anomaly_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
+def _anomaly_evidence(
+    dataframe: pd.DataFrame, roles: ColumnRoles, frequency: str | None = None
+) -> Evidence | None:
     if not roles.date:
         return None
-    anomalies = detect_anomalies(trend_frame(dataframe, roles))
+    series = build_trend(dataframe, roles, frequency)
+    anomalies = detect_anomalies(series.frame)
     if not anomalies:
         return None
-    grain = preferred_frequency(dataframe[roles.date])
+    # Label at the series' own grain, which a fixed frequency may have set.
+    grain = series.frequency
     worst = anomalies[0]
     measure = roles.measure or "Records"
     measure_values = dataframe[roles.measure].dropna() if roles.measure else None
     label = format_period(worst.period, grain)
     plural = "periods sit" if len(anomalies) > 1 else "period sits"
+    # The value sits just outside one end of the range, so all three are kept apart.
+    reached, low, high = format_values_apart(
+        worst.value, worst.expected_low, worst.expected_high,
+        column=roles.measure, column_values=measure_values,
+    )
     return Evidence(
         kind="anomaly",
         title="Anomalous periods",
         value=f"{len(anomalies)}",
         statement=(
-            f"{label} is the sharpest anomaly: {sentence_case(measure)} reached "
-            f"{format_number(worst.value, roles.measure, column_values=measure_values)}, "
-            f"{worst.direction} the expected "
-            f"{format_number(worst.expected_low, roles.measure, column_values=measure_values)}–"
-            f"{format_number(worst.expected_high, roles.measure, column_values=measure_values)} range. "
+            f"{label} is the sharpest anomaly: {sentence_case(measure)} reached {reached}, "
+            f"{worst.direction} the expected {low}–{high} range. "
             f"{len(anomalies)} {plural} outside the trendline band."
         ),
         calculation=(
@@ -317,7 +347,7 @@ def _segment_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[Evid
 
     # Shares also need an additive measure: segment churn rates of 10% and 20%
     # don't make one segment two thirds of churn.
-    additive = resolve_metric(roles.measure).additive if roles.measure else True
+    additive = metric_for(roles.measure, roles).additive
     if not additive:
         segments = segments.dropna(subset=["Value"])
         if segments.empty:
@@ -435,6 +465,10 @@ def _concentration_evidence(
 OFFSETTING_NET_RATIO = 0.25
 MIN_CORRELATION_PAIRS = 12
 MATERIAL_CORRELATION = 0.45
+# Pairs this close are one quantity twice (a reading and its adjusted copy, a size
+# in two units), so reporting them as a relationship tells the reader nothing.
+NEAR_DUPLICATE_CORRELATION = 0.99
+NEAR_DUPLICATES_NAMED = 3
 RANK_DIVERGENCE = 0.25
 NORMAL_95 = 1.959963985
 
@@ -448,72 +482,172 @@ def _correlation_interval(value: float, pairs: int) -> tuple[float, float]:
     return float(np.tanh(centre - margin)), float(np.tanh(centre + margin))
 
 
+def _rank_correlation(dataframe: pd.DataFrame, first: str, second: str) -> float:
+    return float(dataframe[[first, second]].dropna().corr(method="spearman").iloc[0, 1])
+
+
+def _is_near_duplicate(dataframe: pd.DataFrame, first: str, second: str, value: float) -> bool:
+    """True when two columns are one quantity twice: r near ±1, with ranks that agree.
+
+    Two extreme records can push r this high on their own; then the ranks
+    disagree and the pair stays in, to be reported with that caveat.
+    """
+    if abs(value) < NEAR_DUPLICATE_CORRELATION:
+        return False
+    return abs(value) - abs(_rank_correlation(dataframe, first, second)) <= RANK_DIVERGENCE
+
+
+def _near_duplicate_note(duplicates: pd.Series) -> str:
+    """One sentence naming the pairs left out for moving together almost exactly."""
+    ordered = duplicates.reindex(duplicates.abs().sort_values(ascending=False, kind="stable").index)
+    named = [
+        f"{first} and {second} (r = {value:.2f})"
+        for (first, second), value in ordered.head(NEAR_DUPLICATES_NAMED).items()
+    ]
+    if len(ordered) > NEAR_DUPLICATES_NAMED:
+        named.append(f"and {len(ordered) - NEAR_DUPLICATES_NAMED} more pairs")
+    if (ordered > 0).all():
+        motion = "together"
+    elif (ordered < 0).all():
+        motion = "in opposite directions"
+    else:
+        motion = "together or in opposite directions"
+    return (
+        f" {', '.join(named)} were left out: they move {motion} almost exactly, so they "
+        "probably measure the same thing or one is derived from another."
+    )
+
+
+@dataclass(frozen=True)
+class Correlation:
+    """Pearson r over the complete pairs of two columns, with its interval and Spearman's r."""
+
+    first: str
+    second: str
+    pearson: float
+    low: float
+    high: float
+    pairs: int
+    spearman: float
+
+    @property
+    def rank_divergence(self) -> float:
+        """How far the rank correlation is from the linear one, in absolute strength."""
+        return abs(self.spearman) - abs(self.pearson)
+
+
+def measure_correlation(paired: pd.DataFrame) -> Correlation | None:
+    """Correlate the two columns of ``paired``, which holds only complete rows.
+
+    Returns None when r is undefined, as it is when either column does not vary.
+    """
+    value = float(paired.corr().iloc[0, 1])
+    if not np.isfinite(value):
+        return None
+    low, high = _correlation_interval(value, len(paired))
+    ranked = float(paired.corr(method="spearman").iloc[0, 1])
+    first, second = (str(column) for column in paired.columns[:2])
+    return Correlation(first, second, value, low, high, len(paired), ranked)
+
+
+def describe_correlation(correlation: Correlation, scope: str = "") -> str:
+    """State r with its interval, adding why the sample or the rank correlation may undercut it.
+
+    The brief and Ask both use this, so a pair reads the same in either. ``scope``
+    follows the column names, as in " for Site in (North)".
+    """
+    value, pairs = correlation.pearson, correlation.pairs
+    if round(value, 2) == 0:
+        relationship = "show no linear relationship"
+    else:
+        relationship = "move together" if value > 0 else "move in opposite directions"
+        if abs(value) < MATERIAL_CORRELATION:
+            relationship += " only weakly"
+    statement = (
+        f"{correlation.first} and {correlation.second} {relationship}{scope}: "
+        f"Pearson r = {value:.2f} (95% CI {correlation.low:.2f} to {correlation.high:.2f}, "
+        f"n = {pairs:,})."
+    )
+
+    # An interval spanning zero means the sample cannot rule out no relationship.
+    # A strong r that still spans zero is a thin sample; a weak one is just weak.
+    if correlation.low <= 0.0 <= correlation.high:
+        if abs(value) >= MATERIAL_CORRELATION:
+            statement += (
+                f" With only {pairs:,} paired values this cannot be told apart from no "
+                "relationship at all."
+            )
+        else:
+            statement += (
+                " The interval includes zero, so this cannot be told apart from no "
+                "relationship at all."
+            )
+
+    # Spearman well above Pearson: monotonic but curved. Well below: a few
+    # extreme records are producing the linear figure.
+    if correlation.rank_divergence > RANK_DIVERGENCE:
+        statement += (
+            f" The rank correlation is stronger ({correlation.spearman:.2f}), so the relationship is "
+            "consistent but not a straight line."
+        )
+    elif correlation.rank_divergence < -RANK_DIVERGENCE:
+        statement += (
+            f" The rank correlation is only {correlation.spearman:.2f}, so a few extreme records are "
+            "driving the linear figure."
+        )
+    return statement
+
+
 def _relationship_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
     usable = [
         column
         for column in roles.numeric
         if not looks_like_identifier(column, dataframe[column])
         and not is_design_name(column)
+        and not is_entity_name(column)
         and not any(token == normalized_name(column) for token in TIME_PART_TOKENS)
     ]
     if len(usable) < 2:
         return None
-    correlations = dataframe[usable].corr()
+    # A pair with too few complete values gets no coefficient, so it can neither
+    # win nor be called a near-duplicate on a handful of rows.
+    correlations = dataframe[usable].corr(min_periods=MIN_CORRELATION_PAIRS)
     upper = correlations.where(np.triu(np.ones(correlations.shape), k=1).astype(bool))
     stacked = upper.stack().dropna()
-    if stacked.empty:
+    near_duplicate = pd.Series(
+        [_is_near_duplicate(dataframe, first, second, r) for (first, second), r in stacked.items()],
+        index=stacked.index,
+        dtype=bool,
+    )
+    candidates = stacked[~near_duplicate]
+    if candidates.empty:
         return None
-    pair = stacked.abs().idxmax()
+    pair = candidates.abs().idxmax()
     value = float(correlations.loc[pair[0], pair[1]])
     if abs(value) < MATERIAL_CORRELATION:
         return None
 
     paired = dataframe[[pair[0], pair[1]]].dropna()
-    pairs = len(paired)
-    if pairs < MIN_CORRELATION_PAIRS:
+    correlation = measure_correlation(paired)
+    if correlation is None:
         return None
 
-    low, high = _correlation_interval(value, pairs)
-    relationship = "move together" if value > 0 else "move in opposite directions"
-    statement = (
-        f"{pair[0]} and {pair[1]} {relationship}: Pearson r = {value:.2f} "
-        f"(95% CI {low:.2f} to {high:.2f}, n = {pairs:,})."
-    )
-
-    # An interval spanning zero means the sample cannot rule out no relationship.
-    if low <= 0.0 <= high:
-        statement += (
-            f" With only {pairs:,} paired values this cannot be told apart from no "
-            "relationship at all."
-        )
-
-    # Spearman well above Pearson: monotonic but curved. Well below: a few
-    # extreme records are producing the linear figure.
-    ranked = float(paired.corr(method="spearman").iloc[0, 1])
-    if abs(ranked) - abs(value) > RANK_DIVERGENCE:
-        statement += (
-            f" The rank correlation is stronger ({ranked:.2f}), so the relationship is "
-            "consistent but not a straight line."
-        )
-    elif abs(value) - abs(ranked) > RANK_DIVERGENCE:
-        statement += (
-            f" The rank correlation is only {ranked:.2f}, so a few extreme records are "
-            "driving the linear figure."
-        )
-
-    statement += (
+    statement = describe_correlation(correlation) + (
         " It is the strongest of several pairs tested, so treat it as a lead to check, "
         "not as evidence of cause."
     )
+    if near_duplicate.any():
+        statement += _near_duplicate_note(stacked[near_duplicate])
     return Evidence(
         kind="relationship",
         title="Strongest measurable relationship",
-        value=f"r = {value:.2f}",
+        value=f"r = {correlation.pearson:.2f}",
         statement=statement,
         calculation=(
             "Pearson r over paired non-missing values, 95% CI by Fisher transform, checked "
-            "against Spearman. Strongest of all numeric pairs; the interval is not adjusted "
-            "for that selection"
+            f"against Spearman. Strongest of all numeric pairs with {MIN_CORRELATION_PAIRS} or "
+            f"more paired values, leaving out near-duplicates (|r| ≥ {NEAR_DUPLICATE_CORRELATION}); "
+            "the interval is not adjusted for that selection"
         ),
     )
 
@@ -584,13 +718,14 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
     by_kind = {item.kind: item for item in evidence}
     group = sentence_case(roles.dimension) if roles.dimension else "group"
 
+    metric = metric_for(roles.measure, roles)
     trend = by_kind.get("trend")
     driver = by_kind.get("driver")
     # Name the driver only when it moved with the total; a segment that grew
-    # while the total fell didn't cause the fall.
-    if driver and trend and driver.tone != trend.tone:
+    # while the total fell didn't cause the fall. Both cards lead with the sign.
+    if driver and trend and driver.value.startswith("-") != trend.value.startswith("-"):
         driver = None
-    adverse = "decline" if increase_is_welcome(roles.measure) else "increase"
+    adverse = "decline" if metric.increase_is_welcome else "increase"
     if trend and trend.tone == "negative":
         recommendations.append(
             Recommendation(
@@ -639,7 +774,7 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
                 concentration.statement,
             )
         )
-    elif leader and not resolve_metric(roles.measure).additive:
+    elif leader and not metric.additive:
         recommendations.append(
             Recommendation(
                 "Next",
@@ -729,20 +864,30 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
     return tuple(recommendations[:4])
 
 
-def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) -> BusinessBrief:
-    """Create an executive brief from explainable calculations and rule-based interpretation."""
+def analyze_business(
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles | None = None,
+    frequency: str | None = None,
+) -> BusinessBrief:
+    """Create an executive brief from explainable calculations and rule-based interpretation.
+
+    ``frequency`` fixes the period grain (``D W M Q Y``) for the trend, driver and
+    anomaly findings, so they match a trend or forecast built at that grain.
+    Without it the grain follows how often the data was recorded.
+    """
     roles = roles or detect_roles(dataframe)
+    metric = metric_for(roles.measure, roles)
     evidence: list[Evidence] = []
 
-    growth = _growth_evidence(dataframe, roles)
+    growth = _growth_evidence(dataframe, roles, frequency)
     if growth:
         evidence.append(growth)
-    change_driver = _change_driver_evidence(dataframe, roles)
+    change_driver = _change_driver_evidence(dataframe, roles, frequency)
     if change_driver:
         evidence.append(change_driver)
     evidence.extend(_segment_evidence(dataframe, roles))
     for optional_evidence in (
-        _anomaly_evidence(dataframe, roles),
+        _anomaly_evidence(dataframe, roles, frequency),
         _relationship_evidence(dataframe, roles),
         _outlier_evidence(dataframe, roles),
         _quality_evidence(dataframe),
@@ -756,7 +901,7 @@ def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) 
         total = float(measure_values.sum())
         average = float(measure_values.mean())
         # Only additive measures get a total; summing monthly margin % is meaningless.
-        if resolve_metric(roles.measure).additive:
+        if metric.additive:
             kpis.append(
                 KPI(
                     f"Total {roles.measure}",
@@ -828,7 +973,7 @@ def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) 
             else (
                 f"{growth.value} latest movement; {leader.subject} has the highest average, "
                 f"at {leader.value}."
-                if not resolve_metric(roles.measure).additive
+                if not metric.additive
                 else f"{growth.value} latest movement; {leader.subject} is the largest by size, "
                 f"at {leader.value}."
             )
@@ -840,15 +985,13 @@ def analyze_business(dataframe: pd.DataFrame, roles: ColumnRoles | None = None) 
         headline = leader.statement
     elif roles.measure:
         measure_values = dataframe[roles.measure].dropna()
-        combined = (
-            measure_values.mean() if measure_aggregation(roles.measure) == "mean" else measure_values.sum()
-        )
+        combined = measure_values.mean() if metric.aggregation == "mean" else measure_values.sum()
         total_measure = format_number(
             float(combined),
             roles.measure,
             column_values=measure_values,
         )
-        verb = "averages" if measure_aggregation(roles.measure) == "mean" else "totals"
+        verb = "averages" if metric.aggregation == "mean" else "totals"
         headline = f"{roles.measure} {verb} {total_measure} across the analyzed data."
     else:
         headline = f"{len(dataframe):,} records are ready for operational review."

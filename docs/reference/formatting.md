@@ -12,7 +12,7 @@ state, and every surface that displays a number (the dashboard, evidence
 cards, Ask ADA answers, the Markdown report) calls the same functions, so a
 figure reads the same everywhere.
 
-## `format_number(value, column=None, *, compact=True, column_values=None)`
+## `format_number(value, column=None, *, compact=True, column_values=None, extra_decimals=0)`
 
 `column_values` is the whole column the figure came from. It settles questions
 that one value cannot: whether a percentage column stores `0.25` or `25`, and
@@ -44,6 +44,20 @@ In order:
 6. Values below 1 print with three significant figures, so `0.0012` does not
    become `0.00`.
 7. Everything else prints with two decimals and thousands separators.
+
+`extra_decimals` adds decimal places to the steps that print decimals. It is
+used by `format_values_apart`.
+
+## `format_values_apart(*values, column=None, column_values=None)`
+
+Formats figures quoted together, such as the two ends of "from X to Y" or a
+value and the range it fell outside. At the usual precision 1,211 and 1,214
+both print as `1.2K`, which would hide the change the sentence reports.
+
+When any two different values print alike, all of them are written out in
+full with the same precision (`1,211.30` and `1,214.80`), adding up to four
+decimals (`MAX_EXTRA_DECIMALS`) until they differ. Equal values keep the usual
+rendering, and so do values that differ only past the fourth extra decimal.
 
 ## Currency detection
 

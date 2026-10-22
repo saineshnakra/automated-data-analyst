@@ -22,7 +22,11 @@ Theil-Sen trendline plus optional month-of-year seasonality.
    an approximation for a median fit, so the backtest is the better guide to
    accuracy.
 5. If the history has no negative values, clamp the forecast and the lower
-   band at zero.
+   band at zero, unless the measure is a reading whose scale goes below zero
+   (`SIGNED_LEVEL_WORDS`: a temperature, an elevation, or a name with °). A
+   temperature falling past 0 °C keeps falling, band included; rainfall or a
+   concentration stops at zero. Callers pass
+   `floor_at_zero=MetricSpec.floors_at_zero`.
 
 The `method` string on the result names what was used and is shown next to the
 chart. When the history has no variation, the method says that no band could
@@ -36,7 +40,7 @@ be estimated.
 | Maximum horizon | Half the history | 12 periods of history allow at most 6 forecast periods |
 | Default horizon | 6 periods | Capped by the rule above |
 | Seasonality | 18 or more monthly periods | A yearly pattern needs more than one year |
-| Non-negative clamp | History has no negatives | A count or amount cannot go below zero |
+| Non-negative clamp | A measure whose history has no negatives, other than a temperature or elevation | It cannot go below zero; a temperature can |
 
 ## The backtest
 
@@ -66,7 +70,7 @@ undefined.
 | 10 periods, horizon 6 requested | Horizon capped at 5 |
 | Weekly, quarterly or yearly grain | No seasonal component |
 | Monthly, under 18 periods | No seasonal component |
-| History never negative | Forecast and lower band clamped at 0 |
+| History never negative | Forecast and lower band clamped at 0, unless the measure is a level |
 | Held-out values of zero | Excluded from MAPE, counted separately |
 | No variation in history | Zero-width band, stated in `method` |
 

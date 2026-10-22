@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 
 import numpy as np
 import pandas as pd
@@ -354,11 +355,12 @@ class SelectionFrameUnchangedTests(unittest.TestCase):
 
 
 class AveragedMeasureComparisonTests(unittest.TestCase):
-    def comparison(self, measure):
+    def comparison(self, measure, aggregation=None):
         frame = pd.DataFrame({"Region": list("ABCD") * 10, measure: [10.0, 20.0, 30.0, 40.0] * 10})
         spec = ChartSpec(form="column", rationale="", x="Region", y=measure)
         selection = selection_from_event(event(points=[{"x": "D"}]), spec, frame)
-        _, comparison = compare_slice(frame, selection, detect_roles(frame))
+        roles = replace(detect_roles(frame), aggregation=aggregation)
+        _, comparison = compare_slice(frame, selection, roles)
         return {stat.label: stat for stat in comparison.stats}
 
     def test_a_rate_differs_from_the_whole_in_points(self):
@@ -368,6 +370,12 @@ class AveragedMeasureComparisonTests(unittest.TestCase):
     def test_a_level_differs_from_the_whole_by_a_plain_difference(self):
         stats = self.comparison("pH")
         self.assertEqual(stats["Average pH"].difference, "+15 vs the whole")
+
+    def test_a_reading_told_to_sum_gets_a_total(self):
+        self.assertNotIn("Total Rainfall", self.comparison("Rainfall"))
+        stats = self.comparison("Rainfall", aggregation="sum")
+        self.assertEqual(stats["Total Rainfall"].difference, "40.0% of the whole")
+        self.assertEqual(stats["Average Rainfall"].difference, "+60.0% vs the whole")
 
     def test_no_segment_mix_when_the_selection_filters_that_column(self):
         stats = self.comparison("Conversion Rate")

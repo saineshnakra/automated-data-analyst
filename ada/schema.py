@@ -24,6 +24,9 @@ class ColumnRoles:
     identifier: str | None
     numeric: tuple[str, ...]
     dimensions: tuple[str, ...]
+    #: "sum" or "mean" when the user has said how the measure combines; None
+    #: follows its name. Read it through ``metrics.metric_for``.
+    aggregation: str | None = None
 
 
 MEASURE_KEYWORDS = {
@@ -50,6 +53,10 @@ MEASURE_KEYWORDS = {
     "orders": 6,
     "volume": 6,
     "balance": 6,
+    "count": 6,
+    "abundance": 6,
+    "yield": 6,
+    "concentration": 5,
     "score": 4,
 }
 
@@ -75,8 +82,17 @@ MODIFIER_WEIGHT = 2 / 3
 
 IDENTIFIER_TOKENS = ("id", "uuid", "key", "code", "number", "invoice", "order")
 TIME_PART_TOKENS = ("year", "month", "week", "day", "hour", "minute", "quarter")
-# Experimental-design columns are numbered but hold labels, not quantities.
-DESIGN_TOKENS = frozenset({"replicate", "rep", "batch", "plate", "well", "run", "trial", "block", "lane"})
+# Experimental-design columns are numbered but hold labels, not quantities. Plate
+# rows and columns lay out where a sample sat, not what was measured.
+DESIGN_TOKENS = frozenset({
+    "replicate", "rep", "batch", "plate", "well", "run", "trial", "block", "lane",
+    "row", "column", "col",
+})
+# Conditions recorded beside an outcome, and rarely the outcome itself. Any word
+# of the name counts, so "air_temp_c" matches.
+COVARIATE_TOKENS = frozenset({"temp", "temperature", "humidity", "wind", "air"})
+# Coordinates are continuous numbers, but never a quantity to total or trend.
+COORDINATE_TOKENS = frozenset({"latitude", "longitude", "lat", "lon", "lng"})
 
 # Head words that mark a column as a key rather than a quantity. Such columns stay
 # text through reading and cleaning, so an account number 00042 keeps its zeros.
@@ -85,6 +101,20 @@ IDENTIFIER_NAME_WORDS = frozenset({
     "id", "ids", "code", "codes", "zip", "zipcode", "postal", "postcode", "phone", "telephone",
     "mobile", "tel", "fax", "sku", "number", "no", "#", "key", "uuid",
 })
+
+# Head words that name the unit a row belongs to rather than a quantity: subject 12
+# is not more of anything than subject 3. These columns repeat (three readings per
+# participant), so they fail the uniqueness test that identifiers must pass.
+ENTITY_NAME_WORDS = frozenset({
+    "subject", "participant", "patient", "animal", "mouse", "rat", "donor", "individual",
+    "specimen",
+}) | IDENTIFIER_NAME_WORDS
+
+# Head words of columns holding calendar years and months. A table with no date
+# column but a year (and perhaps a month) is still a timeline; cleaning builds
+# its dates from these.
+YEAR_NAME_WORDS = frozenset({"year", "years", "yr"})
+MONTH_NAME_WORDS = frozenset({"month", "months", "mon"})
 
 
 # A trailing unit or annotation is not the head noun: "Revenue (USD)" is scored on "Revenue".
@@ -118,9 +148,33 @@ def is_identifier_name(name: str) -> bool:
 
 
 def is_design_name(name: str) -> bool:
-    """Whether the name marks an experimental-design label such as "Replicate" or "Plate"."""
+    """Whether the name marks an experimental-design label such as "Replicate" or "Plate".
+
+    "Position" counts only after a design word ("Well Position"), since on its
+    own it is as likely a player's or an employee's role.
+    """
     words = _head_words(name)
+    if words[-2:-1] and words[-1] == "position":
+        return words[-2] in DESIGN_TOKENS
     return bool(words) and words[-1] in DESIGN_TOKENS
+
+
+def is_entity_name(name: str) -> bool:
+    """Whether the name labels the unit a row belongs to, such as "Subject" or "Patient ID"."""
+    words = _head_words(name)
+    return bool(words) and words[-1] in ENTITY_NAME_WORDS
+
+
+def is_year_name(name: str) -> bool:
+    """Whether the name marks a column of calendar years, such as "Year" or "survey_yr"."""
+    words = _head_words(name)
+    return bool(words) and words[-1] in YEAR_NAME_WORDS
+
+
+def is_month_name(name: str) -> bool:
+    """Whether the name marks a column of calendar months, such as "Month"."""
+    words = _head_words(name)
+    return bool(words) and words[-1] in MONTH_NAME_WORDS
 
 
 def _named_like_a_date(name: str) -> bool:
@@ -192,6 +246,12 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
             score -= 15
         if is_design_name(column):
             score -= 15
+        words = set(_head_words(column))
+        if words & COORDINATE_TOKENS:
+            score -= 15
+        if words & COVARIATE_TOKENS:
+            # Light, so a covariate still wins when nothing else is measured.
+            score -= 3
         non_null_ratio = float(series.notna().mean())
         # Amounts carry fractions; postal codes and counters do not. A weak
         # signal, so it only breaks ties.
@@ -223,6 +283,10 @@ def detect_roles(dataframe: pd.DataFrame) -> ColumnRoles:
             continue
         dimensions.append(column)
         score = _keyword_score(column, DIMENSION_KEYWORDS)
+        if is_design_name(column):
+            # A plate row or run label groups by layout, not by anything compared,
+            # so it is picked only when no other column qualifies.
+            score -= 15
         preferred_size = -abs(unique - 10)
         dimension_candidates.append((score, preferred_size, column))
 

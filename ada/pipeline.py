@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pandas as pd
 
 from .aggregation import preferred_frequency
 from .analysis import CleaningReport, clean_dataframe
 from .business_insights import BusinessBrief, Evidence, analyze_business
+from .metrics import metric_for
 from .schema import ColumnRoles, detect_roles
 from .selection import Selection, SliceComparison, compare_slice
 
@@ -54,9 +55,15 @@ def _most_recent(dataframe: pd.DataFrame, date_column: str | None, row_limit: in
     return dataframe.tail(row_limit)
 
 
-def prepare_analysis(raw_dataframe: pd.DataFrame, *, row_limit: int) -> PreparedAnalysis:
-    """Clean the data, keep the most recent slice of it, and detect its schema."""
-    dataframe, cleaning_report = clean_dataframe(raw_dataframe)
+def prepare_analysis(
+    raw_dataframe: pd.DataFrame, *, row_limit: int, date: str | None = None
+) -> PreparedAnalysis:
+    """Clean the data, keep the most recent slice of it, and detect its schema.
+
+    ``date`` names a column the caller wants as the date, so cleaning can turn
+    a column of years into dates before the schema is detected.
+    """
+    dataframe, cleaning_report = clean_dataframe(raw_dataframe, date=date)
     roles = detect_roles(dataframe)
 
     available = len(dataframe)
@@ -83,6 +90,7 @@ def apply_role_selection(
     date: str,
     measure: str,
     dimension: str,
+    aggregation: str | None = None,
 ) -> ColumnRoles:
     return ColumnRoles(
         date=None if date == "None" else date,
@@ -91,6 +99,7 @@ def apply_role_selection(
         identifier=detected.identifier,
         numeric=detected.numeric,
         dimensions=detected.dimensions,
+        aggregation=aggregation,
     )
 
 
@@ -123,15 +132,7 @@ def apply_focus(
         ),
         None,
     )
-    focused_roles = ColumnRoles(
-        date=roles.date,
-        measure=roles.measure,
-        dimension=replacement,
-        identifier=roles.identifier,
-        numeric=roles.numeric,
-        dimensions=roles.dimensions,
-    )
-    return filtered.reset_index(drop=True), focused_roles
+    return filtered.reset_index(drop=True), replace(roles, dimension=replacement)
 
 
 @dataclass(frozen=True)
@@ -188,6 +189,8 @@ def schema_frame(roles: ColumnRoles) -> pd.DataFrame:
     return pd.DataFrame(
         [
             ["Primary metric", roles.measure or "Not detected"],
+            # Total, Average, or Count when there is no metric and rows are counted.
+            ["Combine rows by", metric_for(roles.measure, roles).combines_as.capitalize()],
             ["Grouping column", roles.dimension or "Not detected"],
             ["Date", roles.date or "Not detected"],
             ["Identifier", roles.identifier or "Not detected"],
