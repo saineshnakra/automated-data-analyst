@@ -7,6 +7,7 @@ paths agree on what a period is.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 import numpy as np
@@ -14,7 +15,7 @@ import pandas as pd
 
 from .formatting import format_period
 from .metrics import metric_for
-from .schema import ColumnRoles
+from .schema import ColumnRoles, is_entity_name
 from .timeseries import (
     PERIODS_PER_YEAR,
     fit_trendline,
@@ -498,6 +499,45 @@ class MatchedChange:
     kept: tuple = ()
 
 
+# Places and outlets that keep reporting over time, beside the entities the
+# schema names (station, site, plot, subject): their presence in a period is
+# reporting, while a per-row condition (a weather code, a status, the pollutant
+# that peaked) appears when it happens, so its mix is part of the outcome.
+REPORTING_UNIT_WORDS = frozenset({
+    "region", "city", "town", "country", "state", "county", "district", "province", "municipality",
+    "store", "shop", "branch", "outlet", "location", "area", "zone", "sensor", "gauge", "device",
+    "facility", "plant", "hospital", "clinic", "school", "farm", "field", "lake", "river", "basin",
+    "catchment", "beach", "reef", "transect", "quadrat", "well", "borehole", "buoy", "monitor",
+})
+# Share of a date's rows a unit may repeat on and still read as one report each,
+# and share of dates that must hold several units for them to read as side by side.
+SIDE_BY_SIDE_DATES = 0.5
+ONE_REPORT_SHARE = 0.95
+
+
+def reporting_unit(dataframe: pd.DataFrame, roles: ColumnRoles, column: str) -> bool:
+    """Whether a grouping names units that report over time (stations, stores), not a per-row condition.
+
+    Only for such units may a change be measured on the ones present in both
+    periods. A unit is named like one, or reports side by side with the
+    others: on most dates several of them have a row, each at most one.
+    Category codes and yes/no flags are conditions.
+    """
+    if column in roles.factors or column in roles.flags or not roles.date:
+        return False
+    words = set(re.findall(r"[a-z]+", str(column).casefold()))
+    if is_entity_name(column) or words & REPORTING_UNIT_WORDS:
+        return True
+    working = dataframe[[roles.date, column]].dropna()
+    if working.empty:
+        return False
+    per_date = working.groupby(roles.date)[column].agg(["size", "nunique"])
+    shared = per_date[per_date["size"] > 1]
+    if len(shared) < SIDE_BY_SIDE_DATES * len(per_date):
+        return False
+    return bool((shared["nunique"] == shared["size"]).mean() >= ONE_REPORT_SHARE)
+
+
 def _period_groups(
     working: pd.DataFrame, previous_period: pd.Timestamp, current_period: pd.Timestamp
 ) -> tuple[set, set]:
@@ -611,3 +651,91 @@ def seasonal_context(series: TrendSeries, *, relative: bool) -> SeasonalContext 
         year_ago_value=float(by_period[year_ago]) if has_year_ago else float("nan"),
         usual_changes=tuple(float(change) for change in changes),
     )
+
+
+# Periods in a year at each grain, for judging whether a year is complete.
+PERIODS_IN_YEAR = {"D": 365, "W": 52, "M": 12, "Q": 4, "Y": 1}
+# Share of its periods with a value a year needs to count as complete: a year
+# missing its summer would read as a cold year.
+COMPLETE_YEAR_SHARE = 0.9
+
+
+def yearly_values(series: TrendSeries, *, additive: bool) -> pd.Series:
+    """The measure per complete year, indexed by year, from the trend's periods.
+
+    A year counts when COMPLETE_YEAR_SHARE of its periods hold a value. Its
+    value is the total of its periods for an additive measure and their mean
+    otherwise, so each season weighs the same however many rows it holds.
+    Grains finer than a day give an empty series.
+    """
+    per_year = PERIODS_IN_YEAR.get(series.frequency)
+    trend = observed_periods(series.frame)
+    if per_year is None or trend.empty:
+        return pd.Series(dtype=float)
+    years = pd.DatetimeIndex(pd.to_datetime(trend["Period"])).year
+    values = pd.Series(trend["Value"].to_numpy(dtype=float), index=years)
+    counts = values.groupby(level=0).count()
+    complete = counts.index[counts >= COMPLETE_YEAR_SHARE * per_year]
+    grouped = values[values.index.isin(complete)].groupby(level=0)
+    return (grouped.sum() if additive else grouped.mean()).sort_index()
+
+
+# Month names a column may carry in a table with one column per month.
+MONTH_HEADERS = tuple(
+    (name[:3], name) for name in (
+        "january", "february", "march", "april", "may", "june",
+        "july", "august", "september", "october", "november", "december",
+    )
+)
+
+
+def month_columns(dataframe: pd.DataFrame) -> tuple[str, ...]:
+    """The twelve numeric columns named after the months, in calendar order, or ().
+
+    A table with one row per year and one column per month (JAN to DEC, or
+    January to December) holds one monthly series laid out wide.
+    """
+    found: dict[int, str] = {}
+    for column in dataframe.columns:
+        name = str(column).strip().casefold().rstrip(".")
+        for month, (short, full) in enumerate(MONTH_HEADERS):
+            if name in (short, full) or (month == 8 and name == "sept"):
+                if month not in found and pd.api.types.is_numeric_dtype(dataframe[column]):
+                    found[month] = column
+                break
+    return tuple(found[month] for month in range(12)) if len(found) == 12 else ()
+
+
+def months_recorded(
+    dataframe: pd.DataFrame, roles: ColumnRoles, period: pd.Timestamp
+) -> tuple[int, int] | None:
+    """How many of a year's month columns hold a value in its row: (recorded, 12), or None.
+
+    None unless the table has a column per month and one row for that year.
+    """
+    months = month_columns(dataframe)
+    if not months or not roles.date:
+        return None
+    rows = dataframe.loc[dataframe[roles.date].dt.year == pd.Timestamp(period).year, list(months)]
+    if len(rows) != 1:
+        return None
+    return int(rows.iloc[0].notna().sum()), len(months)
+
+
+def months_long(dataframe: pd.DataFrame, date: str) -> pd.DataFrame:
+    """A table with a column per month as one row per month: Date (the 1st) and Value.
+
+    Empty when the table has no column per month. Rows without a year, and
+    months with no value, are left out.
+    """
+    months = month_columns(dataframe)
+    if not months:
+        return pd.DataFrame({"Date": pd.Series(dtype="datetime64[ns]"), "Value": pd.Series(dtype=float)})
+    working = dataframe[[date, *months]].dropna(subset=[date])
+    years = working[date].dt.year.to_numpy()
+    values = working[list(months)].to_numpy(dtype=float)
+    stamps = pd.to_datetime(
+        {"year": np.repeat(years, 12), "month": np.tile(np.arange(1, 13), len(years)), "day": 1}
+    )
+    long = pd.DataFrame({"Date": stamps, "Value": values.ravel()})
+    return long.dropna(subset=["Value"]).sort_values("Date").reset_index(drop=True)

@@ -38,6 +38,7 @@ assembled in this order:
 
 | Kind | Reports | Skipped when |
 |---|---|---|
+| `longtrend` | The trend across a record of 20 or more complete years: Theil-Sen slope per year and per decade with its 95% interval and a Mann-Kendall test, the months it runs highest and lowest in, and the slopes either side of a change in level (see [Long records](#long-records)) | No date, or fewer than 20 complete years |
 | `trend` | Latest period-over-period change on the groups present in both periods, compared with the series' usual movement or with the time of year | No date, fewer than 2 periods, or a percentage change from a previous period of zero |
 | `driver` | The segment that moved the measure most between the last two periods | No date, measure or segment |
 | `leader` | For money or a count of things, the group with the largest share of the total ("Largest share by ..."), or with the most rows when there is no measure ("Most rows by ..."). For any other measure, a comparison of the groups with its test and effect size (see below). For mixed-sign values, the largest by size with no share | No segment, or a total of zero |
@@ -104,7 +105,12 @@ headline over a finding nor gets a "check whether the change holds"
 recommendation. When the last period ends short of typical
 coverage but was not excluded, the card calls it the "latest period" rather
 than the "latest complete period" and says part of the change may be missing
-data.
+data. When each period is a single row, the card names the period by its
+grain ("in the latest year (2019)") and gives no row-count caveat, since the
+period is that row; in a table with a column per month, a year whose row
+leaves months blank is not called complete: "in the latest year (2019, which
+has 10 of its 12 months recorded)". A change judged outside its usual range
+sets the card's `lead`, so it can still lead a long record's brief.
 
 **Time of year.** At a monthly or quarterly grain, a series with a clear yearly
 pattern (`yearly_pattern` in `ada/timeseries.py`; see
@@ -122,7 +128,14 @@ column naming the unit each row belongs to (a station; `entity_column`), the
 change is measured on the groups that reported in both of the last two periods
 (`matched_period_change` in `ada/aggregation.py`). Weather stations that start
 reporting halfway through a record, or a site that stops, would otherwise
-move a pooled average on their own. The card names the groups left out and
+move a pooled average on their own. This applies only to units that report
+over time (`reporting_unit`): a column named like one (station, site, plot,
+city, region, store, sensor and similar), or one whose values report side by
+side, several on most dates and each at most once a date. A per-row condition,
+such as a weather code, a status or the pollutant that peaked, is never
+matched: a snow code missing from one quarter did not stop reporting, it did
+not snow, and its mix is part of the outcome. Category codes and yes/no flags
+count as conditions. The card names the groups left out and
 gives the pooled figures too: *"This compares the 88 station values that
 reported in both periods; ... With every station included it went from 29.96
 to 24.82."* The usual movement and the time-of-year comparison then use the
@@ -133,6 +146,30 @@ The card's tone follows the measure's meaning: a rising cost or ticket count is
 negative (`increase_is_welcome` in `ada/metrics.py`). A level whose name has no
 word for which way is good, such as CO2 or a temperature, gets a neutral tone
 (`MetricSpec.direction_known`), and so does its driver card.
+
+### Long records
+
+Over a record of 20 or more complete years (`LONG_RECORD_YEARS`), the change
+between the last two periods is mostly noise, so the `longtrend` card comes
+first. It fits the Theil-Sen slope to the yearly values of the complete years
+(`aggregation.yearly_values`: a year counts when 90% of its periods hold a
+value, and its value is the mean of its periods, or their total for an
+additive measure) and tests it with `timeseries.trend_test` (see
+[Periods](periods.md#trend-test)): *"Across the 99 complete years from 1910 to
+2019, M-A-M rose by 0.0154 per year (+0.154 per decade; 95% CI +0.0103 to
++0.0203 per year). The Mann-Kendall test finds a clear rise (Kendall's τ =
+0.50, p < 0.001)."* When the interval spans zero it says "no clear trend".
+For an averaged measure recorded within the year it names the months it runs
+highest and lowest in, when the month of the year explains the monthly values
+by the shared F test. When the series also has a change in level, it gives the
+slope within each stretch either side of it and says whether the trend runs on
+both sides or the long-run slope is mostly the step.
+
+A clear trend whose stretch slopes agree leads the headline ("M-A-M rose by
+0.154 per decade from 1910 to 2019 (95% CI +0.103 to +0.203; Mann-Kendall
+p < 0.001)") and opens the summary. A latest change judged outside its usual
+range still leads instead. Without a clear trend, a change in level, a group
+finding or a rate leads, and otherwise the card's "no clear trend" sentence.
 
 ### Drivers on the same groups
 
@@ -225,9 +262,14 @@ is shaped:
 - With a date, each reading's flagged values are put in time order within each
   group, the measure first. When one unbroken run holds at least half of them
   and at least five (`SHIFT_RUN_SHARE`, `MIN_SHIFT_RUN`), the card is titled
-  **Level shift**: that reading left its usual range at the run's first time and
-  stayed out, to the end of the record or until its last time. A fire that
-  raises every reading for ten minutes is an event, not a run of entry errors.
+  **Run of unusual values** (distinct from the **Change in level** card):
+  that reading left its usual range at the run's first time and stayed out,
+  to the end of the record or until its last time. A fire that raises every
+  reading for ten minutes is an event, not a run of entry errors. When the
+  reading has a clear trend in time, the run is judged again on the residuals
+  from its Theil-Sen line, so the last years of a steadily warming record,
+  beyond the whole record's range only because of the trend, are not called
+  a run.
 
 ### Data checks
 
@@ -404,9 +446,25 @@ it best, each at least 15% of the series. The split is reported when:
 The card gives the first period at the new level, the average before and
 after, and the shift in standard deviations: "PM10 rose to a new level from
 Jul 2024: it averaged 54.47 per month from May 2024 to Jun 2024 and 852.66 from
-Jul 2024 to Dec 2024". When the groups reporting changed at the same time, it
-says so, since that alone can move the level. Series whose noise wanders
-slowly show a shift more often than stable ones.
+Jul 2024 to Dec 2024". It then says what else changed at the same time,
+since any of it can move the level on its own:
+
+- the trend within each stretch, per year, and when one trend across the whole
+  record would mostly measure the step ("Within the two stretches the trend is
+  +0.0888 per year (Q2 1989–Q1 1999) and +0.0324 per year (Q3 1999–Q3 2019),
+  while one trend across the whole record gives -0.144 per year: that slope
+  mostly measures the step");
+- rows per period or per date changing by half or more (`SAMPLING_CHANGE`),
+  which points to more sites or a different sampling plan;
+- columns first or last recorded within a period of the shift ("At the same
+  time pm25 starts being recorded");
+- for units that report over time (`reporting_unit`), the ones that started or
+  stopped reporting; for any other grouping, the largest changes in each
+  group's share of rows ("PM25 went from 1.2% of rows to 89.6% and O3 went
+  from 73.8% of rows to 4.2%"), and for the column naming each row's unit, any
+  change in which units report.
+
+Series whose noise wanders slowly show a shift more often than stable ones.
 
 ### A joint model
 

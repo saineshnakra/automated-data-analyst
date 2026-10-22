@@ -9,11 +9,15 @@ from ada.aggregation import (
     group_coverage,
     heatmap_frame,
     matched_period_change,
+    month_columns,
+    months_long,
     preferred_frequency,
+    reporting_unit,
     seasonal_context,
     segment_frame,
     segment_period_change,
     trend_frame,
+    yearly_values,
 )
 from ada.anomalies import detect_anomalies
 from ada.schema import ColumnRoles, detect_roles
@@ -508,6 +512,76 @@ class SeasonalContextTests(unittest.TestCase):
         frame["Temperature"] = 15 + np.random.default_rng(2).normal(0, 0.5, len(frame))
 
         self.assertIsNone(seasonal_context(build_trend(frame, detect_roles(frame)), relative=False))
+
+
+
+class YearlyValueTests(unittest.TestCase):
+    def test_only_complete_years_count(self):
+        days = pd.date_range("2019-06-01", "2023-03-31", freq="D")
+        frame = pd.DataFrame({"Date": days, "Temperature": 10.0 + days.year - 2019})
+        roles = ColumnRoles(date="Date", measure="Temperature", dimension=None, identifier=None,
+                            numeric=("Temperature",), dimensions=())
+
+        yearly = yearly_values(build_trend(frame, roles), additive=False)
+
+        self.assertEqual(yearly.index.tolist(), [2020, 2021, 2022])
+        self.assertEqual(yearly.tolist(), [11.0, 12.0, 13.0])
+
+
+class MonthColumnTests(unittest.TestCase):
+    def wide(self):
+        months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+        frame = pd.DataFrame({"YEAR": pd.to_datetime(["2018-01-01", "2019-01-01"])})
+        for number, month in enumerate(months, start=1):
+            frame[month] = [float(number), float(number) + 0.5]
+        frame.loc[1, "DEC"] = np.nan
+        return frame
+
+    def test_twelve_month_columns_are_found_in_calendar_order(self):
+        frame = self.wide()[["YEAR", "DEC", *[c for c in self.wide().columns if c not in ("YEAR", "DEC")]]]
+
+        self.assertEqual(month_columns(frame)[0], "JAN")
+        self.assertEqual(month_columns(frame)[-1], "DEC")
+        self.assertEqual(month_columns(frame.drop(columns="MAR")), ())
+
+    def test_the_long_form_has_one_row_per_recorded_month(self):
+        long = months_long(self.wide(), "YEAR")
+
+        self.assertEqual(len(long), 23)
+        self.assertEqual(long["Date"].iloc[12], pd.Timestamp("2019-01-01"))
+        self.assertEqual(long["Value"].iloc[-1], 11.5)
+
+
+class ReportingUnitTests(unittest.TestCase):
+    def roles(self, frame, column, **extra):
+        return ColumnRoles(date="Date", measure="Value", dimension=column, identifier=None,
+                           numeric=("Value",), dimensions=(column,), **extra)
+
+    def test_stations_reporting_side_by_side_are_units(self):
+        days = pd.date_range("2024-01-01", periods=30, freq="D")
+        frame = pd.DataFrame({"Date": np.repeat(days, 3), "stasiun": ["a", "b", "c"] * 30, "Value": 1.0})
+
+        self.assertTrue(reporting_unit(frame, self.roles(frame, "stasiun"), "stasiun"))
+
+    def test_a_code_on_a_single_daily_series_is_a_condition(self):
+        days = pd.date_range("2024-01-01", periods=60, freq="D")
+        frame = pd.DataFrame({"Date": days, "RSKF": [0, 6, 7] * 20, "Value": 1.0})
+
+        self.assertFalse(reporting_unit(frame, self.roles(frame, "RSKF"), "RSKF"))
+        self.assertFalse(reporting_unit(frame, self.roles(frame, "RSKF", factors=("RSKF",)), "RSKF"))
+
+    def test_a_label_shared_by_several_rows_a_date_is_a_condition(self):
+        days = pd.date_range("2024-01-01", periods=30, freq="D")
+        labels = ["O3", "O3", "PM25", "CO"] * 30
+        frame = pd.DataFrame({"Date": np.repeat(days, 4), "critical": labels, "Value": 1.0})
+
+        self.assertFalse(reporting_unit(frame, self.roles(frame, "critical"), "critical"))
+
+    def test_a_place_named_like_one_is_a_unit(self):
+        days = pd.date_range("2024-01-01", periods=4)
+        frame = pd.DataFrame({"Date": days, "Region": list("abab"), "Value": 1.0})
+
+        self.assertTrue(reporting_unit(frame, self.roles(frame, "Region"), "Region"))
 
 
 if __name__ == "__main__":

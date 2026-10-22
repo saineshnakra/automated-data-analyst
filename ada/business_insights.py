@@ -5,6 +5,7 @@ Every figure comes from a deterministic pandas calculation that is shown beside 
 
 from __future__ import annotations
 
+import calendar
 import re
 from dataclasses import dataclass, field, replace
 
@@ -13,17 +14,22 @@ import pandas as pd
 from scipy import stats
 
 from .aggregation import (
+    COMPLETE_YEAR_SHARE,
+    PERIODS_IN_YEAR,
     MatchedChange,
     SeasonalContext,
     TrendSeries,
     build_trend,
     group_coverage,
     matched_period_change,
+    months_recorded,
     preferred_frequency,
+    reporting_unit,
     seasonal_context,
     segment_frame,
     segment_period_change,
     unlabelled_label,
+    yearly_values,
 )
 from .anomalies import detect_anomalies, finer_trend
 from .compare import (
@@ -124,7 +130,18 @@ from .schema import (
     looks_like_identifier,
     row_summary_columns,
 )
-from .timeseries import MIN_SHIFT_EFFECT, level_shift, observed_periods, robust_scale
+from .timeseries import (
+    MIN_SHIFT_EFFECT,
+    TREND_CONFIDENCE,
+    TrendTest,
+    fit_trendline,
+    level_shift,
+    observed_periods,
+    period_positions,
+    robust_scale,
+    trend_test,
+    yearly_pattern,
+)
 
 
 @dataclass(frozen=True)
@@ -321,7 +338,13 @@ def _growth_evidence(
     grouped = roles
     if not roles.dimension and (unit := entity_column(dataframe, roles)):
         grouped = replace(roles, dimension=unit)
-    matched = matched_period_change(dataframe, grouped, series)
+    # Only units that report over time are matched: a per-row condition that is
+    # missing from one period did not stop reporting, it did not happen.
+    matched = (
+        matched_period_change(dataframe, grouped, series)
+        if grouped.dimension and reporting_unit(dataframe, grouped, grouped.dimension)
+        else None
+    )
     pooled = (previous, current)
     history = series
     compared = dataframe
@@ -381,10 +404,22 @@ def _growth_evidence(
     start, end = format_values_apart(
         previous, current, column=roles.measure, column_values=measure_values
     )
-    if roles.measure and not metric.additive:
-        # A total is everything recorded, but an average of a few rows is noisy.
-        periods = (trend.iloc[-2]["Period"], trend.iloc[-1]["Period"])
-        context = _thin_sides_note(*_rows_per_period(dataframe, roles, series.frequency, periods)) + context
+    latest_two = (trend.iloc[-2]["Period"], trend.iloc[-1]["Period"])
+    sides = _rows_per_period(dataframe, roles, series.frequency, latest_two)
+    if max(sides) <= 1:
+        # One row per period: the period is that row, so it is named by its
+        # grain, and a row that leaves months blank is not called complete.
+        completeness = GRAIN_NAMES.get(series.frequency, "period")
+        recorded = months_recorded(dataframe, roles, trend.iloc[-1]["Period"])
+        if recorded is not None and recorded[0] < recorded[1]:
+            period_note = f", which has {recorded[0]} of its {recorded[1]} months recorded"
+        else:
+            period_note = ""
+    else:
+        period_note = ""
+        if roles.measure and not metric.additive:
+            # A total is everything recorded, but an average of a few rows is noisy.
+            context = _thin_sides_note(*sides) + context
     if series.short_coverage:
         context += (
             f" The last period only reaches {series.short_coverage}, so part of this may be "
@@ -400,12 +435,16 @@ def _growth_evidence(
         value=value,
         statement=(
             f"{measure} {direction} {moved} in the latest {completeness} "
-            f"({period}), from {start} to {end}.{context}"
+            f"({period}{period_note}), from {start} to {end}.{context}"
         ),
         calculation=f"{calculation}, {against}",
         # Recommendations follow this tone.
         tone=_tone(delta >= 0, metric),
         subject=period,
+        # A move judged outside its usual range can lead a brief that a long-run trend would.
+        lead=(
+            f"{measure} {direction} {moved} in {period}, outside its usual range." if quiet is False else ""
+        ),
         quiet=bool(quiet),
     )
 
@@ -667,6 +706,226 @@ GRAIN_NAMES = {
     "s": "second", "min": "minute", "h": "hour", "D": "day", "W": "week", "M": "month", "Q": "quarter",
     "Y": "year",
 }
+
+#: Complete years a record needs before its long-run trend leads the brief:
+#: over a long record, the change between the last two periods is mostly noise.
+LONG_RECORD_YEARS = 20
+#: Periods each side of a change in level needs for a slope of its own.
+MIN_STRETCH_PERIODS = 6
+
+
+@dataclass(frozen=True)
+class _Stretches:
+    """The trend on each side of a change in level, per year where the grain allows."""
+
+    start: pd.Timestamp
+    tests: tuple[TrendTest, TrendTest]
+    spans: tuple[str, str]
+    unit: str
+
+    def slopes(self) -> str:
+        return " and ".join(
+            f"{_signed_figure(test.slope)} per {self.unit} ({span})"
+            for test, span in zip(self.tests, self.spans, strict=True)
+        )
+
+
+def _stretches(trend: pd.DataFrame, grain: str, position: int) -> _Stretches | None:
+    """Fit the trend within each stretch either side of a shift at ``position``, or None when one is short."""
+    periods = pd.DatetimeIndex(pd.to_datetime(trend["Period"]))
+    values = trend["Value"].to_numpy(dtype=float)
+    if min(position, len(values) - position) < MIN_STRETCH_PERIODS:
+        return None
+    per_year = PERIODS_IN_YEAR.get(grain)
+    positions = period_positions(periods, grain) / (per_year or 1)
+    parts = (slice(0, position), slice(position, None))
+    tests = tuple(trend_test(positions[part], values[part]) for part in parts)
+    if None in tests:
+        return None
+    spans = tuple(
+        f"{format_period(periods[part][0], grain)}–{format_period(periods[part][-1], grain)}"
+        for part in parts
+    )
+    unit = "year" if per_year else GRAIN_NAMES.get(grain, "period")
+    return _Stretches(pd.Timestamp(periods[position]), tests, spans, unit)
+
+
+def _signed_figure(value: float) -> str:
+    """A slope with its sign, to three significant digits: "+0.0144", "-1.27", "+1,204"."""
+    size = abs(value)
+    if size == 0:
+        return "0"
+    if size >= 1_000:
+        shown = f"{size:,.0f}"
+    elif size >= 100:
+        shown = f"{size:,.1f}"
+    else:
+        shown = f"{size:.3g}"
+        if "e" in shown:
+            shown = f"{size:.{2 - int(np.floor(np.log10(size)))}f}"
+    return f"{'-' if value < 0 else '+'}{shown}"
+
+
+def _yearly_cycle_note(dataframe: pd.DataFrame, roles: ColumnRoles) -> str:
+    """Name the months an averaged measure runs highest and lowest in, when it has a clear yearly cycle.
+
+    The cycle is judged on the monthly series with the shared F test of the
+    month of the year (``timeseries.yearly_pattern``); the profile is the mean
+    of each calendar month's values across the years. Returns a sentence with
+    a leading space, or "".
+    """
+    monthly = observed_periods(build_trend(dataframe, roles, "M").frame)
+    if len(monthly) < 2 * PERIODS_IN_YEAR["M"]:
+        return ""
+    periods = pd.DatetimeIndex(pd.to_datetime(monthly["Period"]))
+    values = monthly["Value"].to_numpy(dtype=float)
+    if yearly_pattern(periods, fit_trendline(periods, values, "M").residuals(values), grain="M") is None:
+        return ""
+    profile = pd.Series(values, index=periods.month).groupby(level=0).mean()
+    measure_values = dataframe[roles.measure].dropna()
+    high, low = format_values_apart(
+        float(profile.max()), float(profile.min()), column=roles.measure, column_values=measure_values
+    )
+    return (
+        f" Within the year it runs highest in {calendar.month_name[int(profile.idxmax())]} ({high} on "
+        f"average) and lowest in {calendar.month_name[int(profile.idxmin())]} ({low})."
+    )
+
+
+def _stretch_note(series: TrendSeries, overall: TrendTest) -> tuple[str, bool | None]:
+    """Set the long-run slope beside the slopes on either side of a change in level, when there is one.
+
+    A step in the middle of a record gives the whole record a slope that
+    neither stretch has. Returns a sentence with a leading space and whether
+    the trend runs the same way on both sides of the step (None when there is
+    no step, or a stretch is too short for a slope of its own).
+    """
+    trend = observed_periods(series.frame)
+    found = level_shift(trend["Value"].to_numpy(dtype=float))
+    if found is None:
+        return "", None
+    stretches = _stretches(trend, series.frequency, found.position)
+    label = format_period(pd.Timestamp(trend["Period"].iloc[found.position]), series.frequency)
+    if stretches is None:
+        return (
+            f" The record also changes level from {label} (see Change in level), so part of this slope "
+            "may be that step.",
+            None,
+        )
+    same_way = all(np.sign(test.slope) == np.sign(overall.slope) for test in stretches.tests)
+    verdict = (
+        "so the trend runs on both sides of it" if same_way
+        else "so most of the long-run change is that step rather than a steady trend"
+    )
+    return (
+        f" The record also changes level from {label} (see Change in level): within the stretches either "
+        f"side of it the trend is {stretches.slopes()}, {verdict}.",
+        same_way,
+    )
+
+
+def _long_run_evidence(
+    dataframe: pd.DataFrame, roles: ColumnRoles, frequency: str | None = None
+) -> Evidence | None:
+    """The trend across a record of LONG_RECORD_YEARS or more complete years, sized and tested.
+
+    The slope is Theil-Sen on the yearly values (``aggregation.yearly_values``),
+    with its interval and a Mann-Kendall test that allow for autocorrelation
+    (``timeseries.trend_test``), so a long record leads with its trend rather
+    than with its last move. Returns None for a shorter record.
+    """
+    if not roles.date:
+        return None
+    series = build_trend(dataframe, roles, frequency)
+    metric = metric_for(roles.measure, roles)
+    yearly = yearly_values(series, additive=metric.additive)
+    if len(yearly) < LONG_RECORD_YEARS:
+        return None
+    test = trend_test(yearly.index.to_numpy(dtype=float), yearly.to_numpy(dtype=float))
+    if test is None:
+        return None
+    measure = roles.measure or "Records"
+    one_per_year = series.frequency == "Y" and max(
+        _rows_per_period(dataframe, roles, "Y", tuple(pd.to_datetime(series.frame["Period"])))
+    ) <= 1
+    if one_per_year:
+        what = measure
+    elif not roles.measure:
+        what = "the number of records per year"
+    else:
+        what = f"the yearly {'total' if metric.additive else 'average'} of {measure}"
+    first, last = int(yearly.index[0]), int(yearly.index[-1])
+    every = len(yearly) == last - first + 1
+    span = f"the {len(yearly)} complete years from {first} to {last}"
+    if every:
+        span = f"every year from {first} to {last}"
+    low, high = _signed_figure(test.low), _signed_figure(test.high)
+    interval = f"{TREND_CONFIDENCE:.0%} CI {low} to {high} per year"
+    decade = f"{_signed_figure(test.slope * 10)} per decade"
+    if test.clear:
+        verb, noun = ("rose", "rise") if test.slope > 0 else ("fell", "fall")
+        statement = (
+            f"Across {span}, {what} {verb} by {_signed_figure(test.slope)[1:]} per year ({decade}; "
+            f"{interval}). The Mann-Kendall test finds a clear {noun} (Kendall's τ = {test.tau:.2f}, "
+            f"{format_p(test.p_value)})."
+        )
+        value = decade
+    else:
+        statement = (
+            f"Across {span}, {what} shows no clear trend: the Theil-Sen slope is "
+            f"{_signed_figure(test.slope)} per year, but its {interval} spans zero (Mann-Kendall "
+            f"{format_p(test.p_value)})."
+        )
+        value = "No clear trend"
+    if test.autocorrelation >= 0.2:
+        statement += (
+            " The interval and the test allow for the way each year carries over into the next "
+            f"(lag-1 autocorrelation {test.autocorrelation:.2f}), which can make a wandering series look "
+            "trending."
+        )
+    if roles.measure and not metric.additive and series.frequency != "Y":
+        statement += _yearly_cycle_note(dataframe, roles)
+    stretches, same_way = _stretch_note(series, test)
+    statement += stretches
+    lead = ""
+    if test.clear and same_way is not False:
+        per_decade = (
+            f"{TREND_CONFIDENCE:.0%} CI {_signed_figure(test.low * 10)} to {_signed_figure(test.high * 10)}"
+        )
+        lead = (
+            f"{what[0].upper()}{what[1:]} {verb} by {decade[1:]} from {first} to {last} ({per_decade}; "
+            f"Mann-Kendall {format_p(test.p_value)})."
+        )
+    grain = GRAIN_NAMES.get(series.frequency, "period")
+    complete = ""
+    if series.frequency != "Y":
+        complete = f" (at least {COMPLETE_YEAR_SHARE:.0%} of their {grain}s with a value)"
+    combined = "totals" if metric.additive else "averages"
+    return Evidence(
+        kind="longtrend",
+        title="Long-run trend",
+        value=value,
+        statement=statement,
+        calculation=(
+            f"Theil-Sen slope of the yearly {combined} of complete years{complete}; {interval} by "
+            "scipy.stats.theilslopes and Mann-Kendall test by scipy.stats.kendalltau, both widened for "
+            "lag-1 autocorrelation (Yue and Wang's effective sample size)"
+        ),
+        tone="neutral",
+        lead=lead,
+        quiet=not test.clear,
+    )
+
+
+def _long_run_headline(long_run: Evidence, evidence: list[Evidence]) -> str:
+    """The headline of a long record: its trend, or without a clear one, the brief's other findings."""
+    if long_run.lead:
+        return long_run.lead
+    for kind in ("shift", "leader", "rates", "differences"):
+        item = next((card for card in evidence if card.kind == kind), None)
+        if item is not None and item.lead:
+            return item.lead
+    return _first_sentence(long_run.statement)
 
 
 CONCENTRATED_EFFECTIVE_SEGMENTS = 3.0
@@ -2492,7 +2751,7 @@ def _level_shift_evidence(
         "spread within the two stretches. A lasting shift like this usually follows a change in method, "
         "instrument or conditions."
     )
-    statement += _shift_groups_note(dataframe, roles, grain, periods[found.position])
+    statement += _shift_context(dataframe, roles, grain, trend, found.position)
     return Evidence(
         kind="shift",
         title="Change in level",
@@ -2512,24 +2771,181 @@ def _level_shift_evidence(
     )
 
 
-def _shift_groups_note(dataframe: pd.DataFrame, roles: ColumnRoles, grain: str, start: pd.Timestamp) -> str:
-    """Say when the groups reporting before and after a shift differ, since that alone can move the level."""
-    if not roles.dimension:
-        return ""
+#: Rows per period or per date changing by this factor at a shift is a change in sampling.
+SAMPLING_CHANGE = 1.5
+#: Columns named as starting or stopping at a shift, and groups named for a change in share.
+SHIFT_COLUMNS_NAMED = 3
+SHARES_NAMED = 2
+#: Percentage points a group's share of rows must move by to be named at a shift.
+SHARE_CHANGE_POINTS = 10.0
+
+
+def _shift_context(
+    dataframe: pd.DataFrame, roles: ColumnRoles, grain: str, trend: pd.DataFrame, position: int
+) -> str:
+    """What else changed when the level did: the slopes either side, the sampling, columns and groups.
+
+    A step that coincides with more rows per date, a column that starts being
+    recorded, or a new mix of groups may be that change rather than a change
+    in what was measured. Returns sentences with a leading space, or "".
+    """
+    start = pd.Timestamp(trend["Period"].iloc[position])
     stamps = dataframe[roles.date].dt.to_period(grain).dt.to_timestamp()
-    recorded = dataframe[roles.measure].notna()
-    before = set(dataframe.loc[recorded & (stamps < start), roles.dimension].dropna())
-    after = set(dataframe.loc[recorded & (stamps >= start), roles.dimension].dropna())
-    stopped, started = before - after, after - before
-    if not stopped and not started:
-        return ""
-    changes = []
-    if stopped:
-        changes.append(f"{_listed(tuple(sorted(stopped, key=str)), roles.dimension)} stopped reporting")
-    if started:
-        changes.append(f"{_listed(tuple(sorted(started, key=str)), roles.dimension)} started")
+    recorded = stamps.notna() & dataframe[roles.measure].notna()
+    before, after = recorded & (stamps < start), recorded & (stamps >= start)
     return (
-        f" The {sentence_case(roles.dimension)} groups changed at the same time ({'; '.join(changes)}), "
+        _stretch_slopes_note(trend, grain, position)
+        + _sampling_note(dataframe, roles, grain, stamps, before, after)
+        + _starting_columns_note(dataframe, roles, stamps, start)
+        + _shift_groups_note(dataframe, roles, before, after)
+    )
+
+
+def _stretch_slopes_note(trend: pd.DataFrame, grain: str, position: int) -> str:
+    """The trend within each stretch of a shift, and whether one trend across both would measure the step."""
+    stretches = _stretches(trend, grain, position)
+    if stretches is None:
+        return ""
+    per_year = PERIODS_IN_YEAR.get(grain)
+    positions = period_positions(pd.DatetimeIndex(pd.to_datetime(trend["Period"])), grain) / (per_year or 1)
+    overall = trend_test(positions, trend["Value"].to_numpy(dtype=float))
+    note = f" Within the two stretches the trend is {stretches.slopes()}"
+    largest = max(abs(test.slope) for test in stretches.tests)
+    if overall is not None and (
+        any(np.sign(test.slope) != np.sign(overall.slope) for test in stretches.tests)
+        or abs(overall.slope) > 2 * largest
+    ):
+        note += (
+            f", while one trend across the whole record gives {_signed_figure(overall.slope)} per "
+            f"{stretches.unit}: that slope mostly measures the step"
+        )
+    return note + "."
+
+
+def _sampling_note(
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles,
+    grain: str,
+    stamps: pd.Series,
+    before: pd.Series,
+    after: pd.Series,
+) -> str:
+    """Say when rows per period or per date change sharply at a shift, since that alone moves an average."""
+    sides = (before, after)
+    per_period = [float(stamps[side].value_counts().mean()) for side in sides]
+    per_date = [float(side.sum() / max(dataframe.loc[side, roles.date].nunique(), 1)) for side in sides]
+    changes = []
+    named = ((per_period, f"rows per {GRAIN_NAMES.get(grain, 'period')}"), (per_date, "rows per date"))
+    for (first, second), what in named:
+        if min(first, second) > 0 and max(first, second) / min(first, second) >= SAMPLING_CHANGE:
+            changes.append(f"{what} went from {first:,.1f} to {second:,.1f}")
+    if not changes:
+        return ""
+    return (
+        f" The sampling changed at the same time: {' and '.join(changes)}, so the shift may reflect which "
+        "samples were taken (more sites, or a different plan) rather than a change in what they measure."
+    )
+
+
+def _starting_columns_note(
+    dataframe: pd.DataFrame, roles: ColumnRoles, stamps: pd.Series, start: pd.Timestamp
+) -> str:
+    """Name the columns first recorded, or last recorded, within a period of a shift.
+
+    A column that starts being recorded when the level changes points to a
+    new instrument or method, or to rows of a new kind joining the table.
+    """
+    dated = stamps.notna()
+    columns = [column for column in dataframe.columns if column not in (roles.date, roles.measure)]
+    if not columns or not dated.any():
+        return ""
+    present = dataframe.loc[dated, columns].notna().groupby(stamps[dated]).any().sort_index()
+    seen = present.to_numpy()
+    if seen.shape[0] < 4:
+        return ""
+    at = int(present.index.searchsorted(start))
+    has_any = seen.any(axis=0)
+    first = seen.argmax(axis=0)
+    last = seen.shape[0] - 1 - seen[::-1].argmax(axis=0)
+    begins = [
+        column for column, found, index in zip(columns, has_any, first, strict=True)
+        if found and abs(int(index) - at) <= 1 and index >= 2
+    ]
+    ends = [
+        column for column, found, index in zip(columns, has_any, last, strict=True)
+        if found and abs(int(index) - (at - 1)) <= 1 and seen.shape[0] - 1 - index >= 2
+    ]
+    notes = []
+    if begins:
+        verb = "starts" if len(begins) == 1 else "start"
+        notes.append(f"{list_names(begins, SHIFT_COLUMNS_NAMED)} {verb} being recorded")
+    if ends:
+        verb = "stops" if len(ends) == 1 else "stop"
+        notes.append(f"{list_names(ends, SHIFT_COLUMNS_NAMED)} {verb} being recorded")
+    if not notes:
+        return ""
+    return f" At the same time {' and '.join(notes)}, which can change the rows behind the level."
+
+
+def _shift_groups_note(
+    dataframe: pd.DataFrame, roles: ColumnRoles, before: pd.Series, after: pd.Series
+) -> str:
+    """Say how the groups behind a shift changed, since a new mix alone can move the level.
+
+    Units that report over time (stations, sites) are named as starting or
+    stopping. For any other grouping the largest changes in each group's
+    share of rows are given: a condition that stops appearing did not stop
+    reporting. The unit column the rows belong to is checked too.
+    """
+    notes = []
+    if roles.dimension:
+        notes.append(_group_change(dataframe, roles, roles.dimension, before, after))
+    unit = entity_column(dataframe, roles)
+    if unit and unit != roles.dimension:
+        notes.append(_group_change(dataframe, roles, unit, before, after, units_only=True))
+    return "".join(notes)
+
+
+def _group_change(
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles,
+    column: str,
+    before: pd.Series,
+    after: pd.Series,
+    *,
+    units_only: bool = False,
+) -> str:
+    """One grouping's change across a shift: units that start or stop, or the largest moves in share."""
+    labels = _segment_labels(dataframe, column)
+    if units_only or reporting_unit(dataframe, roles, column):
+        earlier, later = set(labels[before]), set(labels[after])
+        stopped, started = earlier - later, later - earlier
+        if not stopped and not started:
+            return ""
+        changes = []
+        if stopped:
+            changes.append(f"{_listed(tuple(sorted(stopped, key=str)), column)} stopped reporting")
+        if started:
+            changes.append(f"{_listed(tuple(sorted(started, key=str)), column)} started")
+        return (
+            f" The {sentence_case(column)} values reporting changed at the same time ({'; '.join(changes)}), "
+            "which may explain part of it."
+        )
+    shares = pd.DataFrame({
+        "before": labels[before].value_counts(normalize=True),
+        "after": labels[after].value_counts(normalize=True),
+    }).fillna(0.0) * 100
+    moves = (shares["after"] - shares["before"]).abs()
+    moves = moves[moves >= SHARE_CHANGE_POINTS].sort_values(ascending=False).head(SHARES_NAMED)
+    if moves.empty:
+        return ""
+    described = [
+        f"{group_label(column, group)} went from {format_percentage(shares.loc[group, 'before'])} of rows to "
+        f"{format_percentage(shares.loc[group, 'after'])}"
+        for group in moves.index
+    ]
+    return (
+        f" The mix of {sentence_case(column)} changed at the same time: {' and '.join(described)}, "
         "which may explain part of it."
     )
 
@@ -2936,6 +3352,8 @@ def _shift(
     if length < max(MIN_SHIFT_RUN, SHIFT_RUN_SHARE * total):
         return None
     run = np.flatnonzero(runs == longest)
+    if _follows_trend(dataframe, roles, column, sequence[keys == keys[run[0]]], sequence[run]):
+        return None
     times = dataframe[roles.date]
     first, last = times.iloc[sequence[run[0]]], times.iloc[sequence[run[-1]]]
     group_end = run[-1] == len(sequence) - 1 or keys[run[-1] + 1] != keys[run[-1]]
@@ -2948,7 +3366,7 @@ def _shift(
     until = "to the end of the record" if group_end else f"until {ended}"
     return Evidence(
         kind="outliers",
-        title="Level shift",
+        title="Run of unusual values",
         value=begun,
         statement=(
             f"{column} left its usual range{where} at {begun} and stayed out for {length:,} "
@@ -2957,10 +3375,34 @@ def _shift(
         ),
         calculation=(
             "Values below Q1 − 1.5×IQR or above Q3 + 1.5×IQR, put in time order; the longest unbroken "
-            f"run holds at least {format_percentage(SHIFT_RUN_SHARE * 100)} of them"
+            f"run holds at least {format_percentage(SHIFT_RUN_SHARE * 100)} of them, and is not explained "
+            "by a clear trend in time (fences on the residuals from the Theil-Sen line)"
         ),
         tone="warning",
     )
+
+
+def _follows_trend(
+    dataframe: pd.DataFrame, roles: ColumnRoles, column: str, rows: np.ndarray, run_rows: np.ndarray
+) -> bool:
+    """Whether a run beyond a reading's usual range sits on a clear trend in time.
+
+    The last years of a steadily warming record lie beyond the whole record's
+    range without any break, so the run is judged again against the
+    residuals from the Theil-Sen line when the reading has a clear trend.
+    ``rows`` are the run's group in time order.
+    """
+    times = dataframe[roles.date].iloc[rows]
+    years = ((times - times.iloc[0]).dt.total_seconds() / (365.25 * 86_400)).to_numpy(dtype=float)
+    values = dataframe[column].iloc[rows].to_numpy(dtype=float)
+    test = trend_test(years, values)
+    if test is None or not test.clear:
+        return False
+    residuals = values - (test.intercept + test.slope * years)
+    low_quartile, high_quartile = np.percentile(residuals, [25, 75])
+    spread = 1.5 * (high_quartile - low_quartile)
+    inside = (residuals >= low_quartile - spread) & (residuals <= high_quartile + spread)
+    return bool(inside[np.isin(rows, run_rows)].mean() > 0.5)
 
 
 def _moment(value: pd.Timestamp) -> str:
@@ -3308,7 +3750,7 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
         )
 
     outliers = by_kind.get("outliers")
-    if outliers and outliers.title == "Level shift":
+    if outliers and outliers.title == "Run of unusual values":
         recommendations.append(
             Recommendation(
                 "Now",
@@ -3591,6 +4033,9 @@ def analyze_business(
     tested_statistics = statistics.loc[tested.index] if repeats else statistics
     evidence: list[Evidence] = []
 
+    long_run = _long_run_evidence(dataframe, roles, frequency)
+    if long_run:
+        evidence.append(long_run)
     growth = _growth_evidence(dataframe, roles, frequency)
     if growth:
         evidence.append(growth)
@@ -3704,6 +4149,9 @@ def analyze_business(
 
     recommendations = _recommendations(evidence, roles)
     headline = _headline(evidence, growth, dataframe, roles)
+    if long_run and not (growth and growth.lead):
+        # A long record leads with its trend unless the latest move is outside its usual range.
+        headline = _long_run_headline(long_run, evidence)
 
     # Without a trend the headline already gives the one finding there is, so
     # the summary says what the table seems to be instead of repeating it.
@@ -3711,6 +4159,8 @@ def analyze_business(
         summary_parts = [growth.statement] + ([leader.statement] if leader else [])
     else:
         summary_parts = [_table_description(dataframe, roles)]
+    if long_run:
+        summary_parts.insert(0, long_run.statement)
     if repeats:
         share = format_percentage(repeats / len(dataframe) * 100)
         summary_parts.append(

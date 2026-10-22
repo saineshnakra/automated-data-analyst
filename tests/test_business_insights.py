@@ -7,6 +7,7 @@ import pandas as pd
 from ada.aggregation import driver_frame, heatmap_frame, segment_frame, segment_period_change, trend_frame
 from ada.business_insights import (
     Evidence,
+    _follows_trend,
     _shown_evidence,
     analyze_business,
     build_business_report,
@@ -1590,10 +1591,21 @@ class OutlierShapeTests(unittest.TestCase):
         outliers = brief_card(brief, "outliers")
 
         assert outliers is not None
-        self.assertEqual(outliers.title, "Level shift")
+        self.assertEqual(outliers.title, "Run of unusual values")
         self.assertIn("01 Jan 2024 15:08:20", outliers.statement)
         self.assertIn("to the end of the record", outliers.statement)
         self.assertNotIn("Review the extreme records", [item.title for item in brief.recommendations])
+
+    def test_the_tail_of_a_steady_trend_is_not_a_run(self):
+        rng = np.random.default_rng(96)
+        years = pd.to_datetime([f"{year}-01-01" for year in range(1910, 2020)])
+        steady = pd.DataFrame({"YEAR": years, "JJA": 27 + 0.02 * np.arange(110) + rng.normal(0, 0.2, 110)})
+        step = steady.assign(JJA=np.r_[np.full(100, 27.0), np.full(10, 30.0)] + rng.normal(0, 0.2, 110))
+        roles = lab_roles(steady, "JJA", date="YEAR")
+        tail = np.arange(105, 110)
+
+        self.assertTrue(_follows_trend(steady, roles, "JJA", np.arange(110), tail))
+        self.assertFalse(_follows_trend(step, roles, "JJA", np.arange(110), tail))
 
     def test_scattered_outliers_keep_the_review_recommendation(self):
         rng = np.random.default_rng(35)
@@ -1881,7 +1893,138 @@ class LevelShiftCardTests(unittest.TestCase):
         self.assertIsNone(brief_card(brief, "shift"))
 
 
+    def test_a_shift_names_a_change_in_sampling_and_the_slopes_either_side(self):
+        rng = np.random.default_rng(90)
+        rows = []
+        for year in range(1990, 2020):
+            for month in range(1, 13):
+                stamp = pd.Timestamp(year=year, month=month, day=10)
+                visits = 1 if year < 2000 else 4
+                for _ in range(visits):
+                    level = 9.5 if year < 2000 else 6.0
+                    rows.append((stamp, level + 0.03 * (year - 1990) + rng.normal(0, 0.6)))
+        frame = pd.DataFrame(rows, columns=["Date", "Oxygen"])
+
+        brief = analyze_business(frame, roles_for(frame, "Oxygen", None, date="Date"))
+
+        shift = brief_card(brief, "shift")
+        assert shift is not None
+        self.assertIn("The sampling changed at the same time", shift.statement)
+        self.assertIn("rows per date went from 1.0 to 4.0", shift.statement)
+        self.assertIn("Within the two stretches the trend is +", shift.statement)
+        self.assertIn("that slope mostly measures the step", shift.statement)
+
+    def test_a_shift_names_a_column_that_starts_and_the_largest_change_in_shares(self):
+        rng = np.random.default_rng(91)
+        days = pd.date_range("2010-01-01", "2024-12-31", freq="7D")
+        late = days >= pd.Timestamp("2021-01-01")
+        frame = pd.DataFrame({
+            "Date": days,
+            "o3": np.where(late, 35.0, 93.0) + rng.normal(0, 10, len(days)),
+            "pm25": np.where(late, rng.normal(80, 10, len(days)), np.nan),
+            "co": rng.normal(20, 3, len(days)),
+            "critical": np.where(late, "PM25", np.where(np.arange(len(days)) % 10 == 0, "CO", "O3")),
+        })
+
+        shift = brief_card(analyze_business(frame, roles_for(frame, "o3", "critical", date="Date")), "shift")
+
+        assert shift is not None
+        self.assertIn("At the same time pm25 starts being recorded", shift.statement)
+        self.assertIn("PM25 went from 0.0% of rows to 100.0%", shift.statement)
+        self.assertNotIn("stopped reporting", shift.statement)
+
+
+class LongRunTrendTests(unittest.TestCase):
+    def test_a_long_yearly_record_leads_with_its_tested_trend(self):
+        rng = np.random.default_rng(92)
+        years = pd.to_datetime([f"{year}-01-01" for year in range(1910, 2020)])
+        frame = pd.DataFrame({"YEAR": years, "Temp": 26 + 0.0144 * np.arange(110) + rng.normal(0, 0.3, 110)})
+
+        brief = analyze_business(frame, roles_for(frame, "Temp", None, date="YEAR"))
+
+        long_run = brief_card(brief, "longtrend")
+        assert long_run is not None
+        self.assertEqual(brief.evidence[0].kind, "longtrend")
+        self.assertIn("95% CI", long_run.statement)
+        self.assertIn("Mann-Kendall", long_run.statement)
+        self.assertTrue(brief.headline.startswith("Temp rose by"), brief.headline)
+        self.assertIn("per decade", brief.headline)
+        self.assertTrue(brief.summary.startswith("Across every year from 1910 to 2019"))
+
+    def test_a_long_record_without_a_trend_says_so(self):
+        rng = np.random.default_rng(93)
+        years = pd.to_datetime([f"{year}-01-01" for year in range(1980, 2010)])
+        frame = pd.DataFrame({"YEAR": years, "Temp": 26 + rng.normal(0, 0.3, 30)})
+
+        roles = roles_for(frame, "Temp", None, date="YEAR")
+        long_run = brief_card(analyze_business(frame, roles), "longtrend")
+
+        assert long_run is not None
+        self.assertEqual(long_run.value, "No clear trend")
+        self.assertIn("spans zero", long_run.statement)
+
+    def test_an_unusual_latest_move_still_leads_a_long_record(self):
+        rng = np.random.default_rng(97)
+        years = pd.to_datetime([f"{year}-01-01" for year in range(1980, 2020)])
+        values = 26 + 0.02 * np.arange(40) + rng.normal(0, 0.2, 40)
+        values[-1] = 40.0
+        frame = pd.DataFrame({"YEAR": years, "Temp": values})
+
+        brief = analyze_business(frame, roles_for(frame, "Temp", None, date="YEAR"))
+
+        self.assertTrue(brief_card(brief, "trend").lead)
+        self.assertTrue(brief.headline.startswith("Temp increased by"), brief.headline)
+
+    def test_a_short_record_has_no_long_run_card(self):
+        years = pd.to_datetime([f"{year}-01-01" for year in range(2005, 2020)])
+        frame = pd.DataFrame({"YEAR": years, "Temp": np.linspace(26, 27, 15)})
+
+        roles = roles_for(frame, "Temp", None, date="YEAR")
+        self.assertIsNone(brief_card(analyze_business(frame, roles), "longtrend"))
+
+    def test_a_seasonal_record_names_its_yearly_cycle(self):
+        rng = np.random.default_rng(94)
+        months = pd.date_range("1990-01-01", periods=360, freq="MS")
+        cycle = 2.0 * np.cos(2 * np.pi * (months.month.to_numpy() - 1) / 12)
+        frame = pd.DataFrame({"Date": months, "Oxygen": 7 + cycle + rng.normal(0, 0.3, 360)})
+
+        roles = roles_for(frame, "Oxygen", None, date="Date")
+        long_run = brief_card(analyze_business(frame, roles), "longtrend")
+
+        assert long_run is not None
+        self.assertIn("Within the year it runs highest in January", long_run.statement)
+        self.assertIn("lowest in July", long_run.statement)
+
+
+class LatestPeriodWordingTests(unittest.TestCase):
+    def test_one_row_per_year_is_named_by_the_year_and_its_missing_months(self):
+        months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+        years = pd.to_datetime([f"{year}-01-01" for year in range(2010, 2020)])
+        frame = pd.DataFrame({"YEAR": years, **{month: np.linspace(27, 28, 10) for month in months}})
+        frame["ANN"] = frame[months].mean(axis=1)
+        frame.loc[9, ["NOV", "DEC"]] = np.nan
+
+        trend = brief_card(analyze_business(frame, roles_for(frame, "ANN", None, date="YEAR")), "trend")
+
+        self.assertIn("in the latest year (2019, which has 10 of its 12 months recorded)", trend.statement)
+        self.assertNotIn("complete period", trend.statement)
+        self.assertNotIn("average of 1 row", trend.statement)
+
+
 class MatchedUnitTests(unittest.TestCase):
+    def test_a_per_row_condition_is_not_matched_across_periods(self):
+        rng = np.random.default_rng(95)
+        days = pd.date_range("2020-01-01", "2022-12-31", freq="D")
+        winter = days.month.isin([12, 1, 2])
+        code = np.where(winter, rng.choice([0, 7], len(days)), rng.choice([0, 6], len(days)))
+        frame = pd.DataFrame({"Date": days, "TXK": 15 + rng.normal(0, 3, len(days)), "RSKF": code})
+        roles = roles_for(frame, "TXK", "RSKF", date="Date", factors=("RSKF",))
+
+        trend = brief_card(analyze_business(frame, roles), "trend")
+
+        self.assertNotIn("reported in both periods", trend.statement)
+        self.assertFalse(trend.calculation.startswith("On the RSKF values"))
+
     def test_a_change_without_a_grouping_is_measured_on_the_units_in_both_periods(self):
         rows = []
         for station in range(10):
