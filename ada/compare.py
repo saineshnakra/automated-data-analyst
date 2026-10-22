@@ -2618,7 +2618,8 @@ def find_derivation(
     Candidates should come strongest-correlated first. They are added one at a
     time, each the one closest to what the others leave unexplained, until the
     combination reproduces the column on DERIVED_SHARE of its rows. A fit
-    needs three rows per term, so a few rows can't be matched by chance.
+    needs three distinct rows per term, so a few rows can't be matched by
+    chance, however often they repeat.
     ``steps`` caches the step each column was recorded at, when many columns
     are searched over the same rows.
     """
@@ -2635,7 +2636,9 @@ def find_derivation(
             admitted.append(candidate)
             complete = joint
     candidates = admitted
-    data = frame[[column, *candidates]].iloc[np.flatnonzero(complete)]
+    # A reading repeated on every row of its visit is one row of evidence,
+    # however many rows carry it, so only distinct rows count towards a fit.
+    data = frame[[column, *candidates]].iloc[np.flatnonzero(complete)].drop_duplicates()
     if len(data) > DERIVATION_ROWS:
         data = data.iloc[np.linspace(0, len(data) - 1, DERIVATION_ROWS).astype(int)]
     rows = len(data)
@@ -3588,6 +3591,9 @@ ROWS_PER_TERM = 10
 MAX_VIF = 5.0
 # Rows a model is fitted on; longer tables use a fixed random sample.
 MODEL_ROWS = 50_000
+# R² from which a fit is an identity in how the columns were computed (an
+# annual mean and its seasons), not a relationship between readings.
+EXACT_FIT = 0.995
 
 
 @dataclass(frozen=True)
@@ -3633,6 +3639,20 @@ class JointModel:
     residual_sd: float
     #: Rows with the measure and every predictor recorded; above MODEL_ROWS the fit used a sample.
     rows: int = 0
+    #: Distinct rows among the ``n`` fitted: a reading repeated on every row of its visit counts once.
+    distinct: int = 0
+
+    @property
+    def exact(self) -> bool:
+        """Whether the fit is an identity: R² of EXACT_FIT or more, or a coefficient known to no width."""
+        return self.r2 >= EXACT_FIT or any(
+            term.high - term.low <= 1e-9 * abs(term.coefficient) for term in self.terms
+        )
+
+    @property
+    def clear(self) -> tuple[ModelTerm, ...]:
+        """The predictors whose coefficients stay clear of zero with the others held fixed."""
+        return tuple(term for term in self.terms if term.p_value < ALPHA)
 
     @property
     def best_single(self) -> ModelTerm:
@@ -3653,11 +3673,15 @@ class JointModel:
         return tuple(term.name for term in self.terms)
 
 
-def fit_joint_model(frame: pd.DataFrame, measure: str, predictors: list[str]) -> JointModel | None:
-    """Fit ``measure`` on up to MAX_MODEL_TERMS of ``predictors`` together, by ordinary least squares.
+def fit_joint_model(
+    frame: pd.DataFrame, measure: str, predictors: list[str], *, limit: int = MAX_MODEL_TERMS
+) -> JointModel | None:
+    """Fit ``measure`` on up to ``limit`` of ``predictors`` together, by ordinary least squares.
 
     The fit uses the rows where the measure and every predictor are recorded
-    and needs ROWS_PER_TERM of them per predictor. Predictors are taken in the
+    and needs ROWS_PER_TERM distinct ones per predictor: rows that repeat one
+    visit's readings add no evidence, and a model with as many terms as
+    distinct rows fits them exactly whatever they hold. Predictors are taken in the
     order given; one that does not vary, or that the earlier ones reproduce
     exactly, is dropped. Coefficients with 95% intervals, R² and adjusted R²
     come from ``statsmodels`` OLS, and each predictor's variance inflation
@@ -3666,7 +3690,7 @@ def fit_joint_model(frame: pd.DataFrame, measure: str, predictors: list[str]) ->
     """
     chosen = [
         column for column in dict.fromkeys(predictors) if column != measure and column in frame.columns
-    ][:MAX_MODEL_TERMS]
+    ][:limit]
     if measure not in frame.columns or len(chosen) < 2:
         return None
     data = frame[[measure, *chosen]].apply(pd.to_numeric, errors="coerce").dropna()
@@ -3680,7 +3704,8 @@ def fit_joint_model(frame: pd.DataFrame, measure: str, predictors: list[str]) ->
         design = np.column_stack([np.ones(len(data)), data[[*kept, column]].to_numpy(dtype=float)])
         if np.linalg.matrix_rank(design) == design.shape[1]:
             kept.append(column)
-    if len(kept) < 2 or len(data) < ROWS_PER_TERM * len(kept) or data[measure].nunique() < 2:
+    distinct = len(data[[measure, *kept]].drop_duplicates())
+    if len(kept) < 2 or distinct < ROWS_PER_TERM * len(kept) or data[measure].nunique() < 2:
         return None
     target = data[measure].to_numpy(dtype=float)
     design = np.column_stack([np.ones(len(data)), data[kept].to_numpy(dtype=float)])
@@ -3709,4 +3734,5 @@ def fit_joint_model(frame: pd.DataFrame, measure: str, predictors: list[str]) ->
         adjusted_r2=float(fit.rsquared_adj),
         residual_sd=float(np.sqrt(fit.mse_resid)),
         rows=rows,
+        distinct=distinct,
     )

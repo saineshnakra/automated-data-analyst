@@ -1703,6 +1703,26 @@ class DataCheckTests(unittest.TestCase):
         expected = pooled["Wind Speed"].corr(pooled["Maximum Wind Speed"])
         self.assertIn(f"r = {expected:.2f}", relationship.statement)
 
+    def test_the_correlates_listed_leave_out_the_flagged_cells_too(self):
+        rng = np.random.default_rng(65)
+        load = rng.normal(50, 10, 500).round(1)
+        frame = pd.DataFrame({
+            "Station": rng.choice(["North", "South"], 500),
+            "Load": load,
+            "Current": (load * 0.9 + rng.normal(0, 3, 500)).round(1),
+            "Heat": (load * 0.5 + rng.normal(0, 8, 500)).round(1),
+        })
+        frame.loc[:3, "Heat"] = 999.9
+        roles = lab_roles(frame, "Load", "Station")
+
+        relationship = brief_card(analyze_business(frame, roles), "relationship")
+
+        assert relationship is not None
+        pooled = frame.drop(index=range(4))
+        expected = pooled["Load"].corr(pooled["Heat"])
+        listed = rf"Next: Heat \(r = {expected:.2f}, Spearman [0-9.]+, n = 496\)"
+        self.assertRegex(relationship.statement, listed)
+
 
 class RateCardTests(unittest.TestCase):
     def test_a_yes_no_outcome_gets_its_rate_in_each_group(self):
@@ -1758,6 +1778,92 @@ class JointModelCardTests(unittest.TestCase):
         frame["w"] = frame["x"] * 0.5 + rng.normal(0, 1, 300)
 
         self.assertIsNone(brief_card(analyze_business(frame, roles_for(frame, "y", None)), "model"))
+
+    def test_an_exact_combination_is_named_instead_of_modelled(self):
+        rng = np.random.default_rng(56)
+        # More parts than the construction screen traces, so only the model meets the identity.
+        items = pd.DataFrame(rng.normal(25, 2, (200, 9)), columns=[f"item{index}" for index in range(9)])
+        frame = items.assign(Total=items.sum(axis=1))
+        roles = roles_for(frame, "Total", None)
+
+        brief = analyze_business(frame, roles)
+
+        model = brief_card(brief, "model")
+        assert model is not None
+        self.assertEqual(model.title, "Total is a combination of other columns")
+        self.assertIn("Total is almost exactly a fixed combination of", model.statement)
+        self.assertEqual(model.lead, "")
+        self.assertNotIn("Together", brief.headline)
+
+    def test_only_predictors_that_stay_clear_are_named_in_the_lead(self):
+        rng = np.random.default_rng(57)
+        frame = pd.DataFrame(rng.normal(size=(300, 3)), columns=["carbon", "nickel", "vanadium"])
+        frame["vanadium"] = frame["carbon"] * 0.6 + rng.normal(0, 0.8, 300)
+        frame["strength"] = 2 * frame["carbon"] + 1.5 * frame["nickel"] + rng.normal(0, 1, 300)
+
+        model = brief_card(analyze_business(frame, roles_for(frame, "strength", None)), "model")
+
+        assert model is not None
+        self.assertIn("vanadium adds little once the others are known", model.statement)
+        self.assertIn("carbon and nickel stay clear", model.lead)
+        self.assertTrue(model.lead.startswith("Together, 3 readings explain"))
+
+    def test_a_case_number_and_another_candidate_outcome_are_not_predictors(self):
+        rng = np.random.default_rng(58)
+        case = np.repeat(np.arange(1, 21), 15)
+        time = np.tile(np.arange(15.0), 20)
+        frame = pd.DataFrame({"case": case, "time": time, "load": rng.normal(5, 1, 300)})
+        frame["wear"] = 0.1 * frame["time"] + 0.05 * frame["case"] + 0.3 * frame["load"]
+        frame["wear"] += rng.normal(0, 0.3, 300)
+        frame["yield"] = frame["wear"] * 2 + rng.normal(0, 0.5, 300)
+        roles = RolesWithAlternatives(
+            date=None, measure="wear", dimension=None, identifier=None, dimensions=(),
+            numeric=("case", "time", "load", "wear", "yield"), measure_alternatives=("yield",),
+        )
+
+        model = brief_card(analyze_business(frame, roles), "model")
+
+        assert model is not None
+        self.assertNotIn("case", model.statement)
+        self.assertIn("case (a case number)", model.calculation)
+        self.assertIn("yield (another candidate outcome)", model.calculation)
+
+    def test_a_model_on_sibling_readings_never_leads(self):
+        rng = np.random.default_rng(59)
+        base = rng.normal(size=(200, 3))
+        frame = pd.DataFrame(base, columns=["Propanoic_acid", "Butanoic_acid", "Valeric_acid"])
+        frame["Acetic_acid"] = frame.sum(axis=1) + rng.normal(0, 1, 200)
+
+        brief = analyze_business(frame, roles_for(frame, "Acetic_acid", None))
+
+        model = brief_card(brief, "model")
+        assert model is not None
+        self.assertIn("Every predictor is a reading of the same kind as Acetic_acid", model.statement)
+        self.assertEqual(model.lead, "")
+
+    def test_a_reversal_among_overlapping_predictors_is_not_a_finding(self):
+        rng = np.random.default_rng(61)
+        family = rng.normal(0, 1, 400)
+        frame = pd.DataFrame({
+            "Site": rng.choice(["a", "b"], 400),
+            "turbidity": family + rng.normal(0, 0.2, 400),
+            "color": family + rng.normal(0, 0.2, 400),
+        })
+        frame["secchi"] = -3 * frame["turbidity"] + 0.8 * frame["color"] + rng.normal(0, 0.5, 400)
+
+        self.assertIsNone(brief_card(analyze_business(frame, roles_for(frame, "secchi", "Site")), "model"))
+
+    def test_inputs_that_explain_little_still_get_their_model(self):
+        rng = np.random.default_rng(60)
+        frame = pd.DataFrame(rng.uniform(100, 500, (400, 4)), columns=["Cement", "Water", "Sand", "Ash"])
+        frame["Strength"] = 0.02 * frame["Cement"] - 0.01 * frame["Water"] + rng.normal(0, 4, 400)
+
+        model = brief_card(analyze_business(frame, roles_for(frame, "Strength", None)), "model")
+
+        assert model is not None
+        self.assertIn("Together, ", model.statement)
+        self.assertEqual(model.lead, "")
+        self.assertIn("every reading recorded beside it", model.calculation)
 
 
 class TwoFactorTests(unittest.TestCase):

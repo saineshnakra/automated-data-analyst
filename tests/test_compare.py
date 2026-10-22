@@ -507,6 +507,13 @@ class DerivationTests(unittest.TestCase):
     def test_a_related_column_is_not_derived(self):
         self.assertIsNone(find_derivation(self.frame, "Unrelated", self.items))
 
+    def test_a_few_distinct_rows_repeated_many_times_are_not_matched(self):
+        rng = np.random.default_rng(16)
+        visits = pd.DataFrame(rng.normal(size=(4, 4)), columns=["na", "fe", "mn", "temp"])
+        frame = pd.concat([visits] * 15, ignore_index=True)
+
+        self.assertIsNone(find_derivation(frame, "na", ["fe", "mn", "temp"]))
+
     def test_a_column_rounded_after_it_was_computed_is_still_derived(self):
         rng = np.random.default_rng(18)
         high = np.round(rng.uniform(40, 90, 300))
@@ -1213,6 +1220,26 @@ class JointModelTests(unittest.TestCase):
 
         self.assertIsNone(fit_joint_model(frame, "y", ["a", "b", "c"]))
         self.assertIsNotNone(fit_joint_model(frame, "y", ["a", "b"]))
+
+    def test_repeated_rows_count_once_towards_the_rows_needed(self):
+        rng = np.random.default_rng(43)
+        visits = pd.DataFrame(rng.normal(size=(6, 4)), columns=["y", "a", "b", "c"])
+        frame = pd.concat([visits] * 20, ignore_index=True)
+
+        self.assertIsNone(fit_joint_model(frame, "y", ["a", "b", "c"]))
+
+    def test_an_identity_is_an_exact_fit(self):
+        rng = np.random.default_rng(44)
+        frame = pd.DataFrame(rng.normal(size=(80, 3)), columns=["a", "b", "noise"])
+        frame["total"] = frame["a"] + frame["b"]
+
+        model = fit_joint_model(frame, "total", ["a", "b", "noise"])
+
+        assert model is not None
+        self.assertTrue(model.exact)
+        self.assertEqual([term.name for term in model.clear], ["a", "b"])
+        noisy = frame.assign(total=frame["total"] + frame["noise"])
+        self.assertFalse(fit_joint_model(noisy, "total", ["a", "b"]).exact)
 
 
 if __name__ == "__main__":

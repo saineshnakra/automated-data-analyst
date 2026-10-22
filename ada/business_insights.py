@@ -32,6 +32,7 @@ from .compare import (
     CAP_MIN_DISTINCT,
     CAP_MIN_ROWS,
     CAP_SHARE,
+    EXACT_FIT,
     FALSE_DISCOVERY,
     INFLUENCE_CHANGE,
     MAX_MODEL_TERMS,
@@ -2378,10 +2379,100 @@ def _rate_evidence(
 
 # A joint model is reported when it explains this much more of the measure than its best reading alone.
 MODEL_GAIN = 0.1
+# A table with no grouping is one outcome against the columns recorded beside it,
+# so its model may take this many of them, not only the clear correlates.
+MAX_INPUT_TERMS = 10
+# A reading that alone explains this share of the outcome already says what goes
+# with it, so a model that adds little to it gets no card.
+SINGLE_ANSWER = 0.5
+# Last words of a column that numbers the cases, runs or samples of a study:
+# case 7 is not more of anything than case 3, so it is never a model term.
+NUMBERING_WORDS = frozenset({
+    "case", "experiment", "exp", "trial", "run", "sample", "serial", "index", "idx", "record",
+    "entry", "obs", "observation",
+})
 
 
 def _coefficient(value: float) -> str:
     return f"{value:+.3g}"
+
+
+def _numbers_cases(name: str, values: pd.Series) -> bool:
+    """Whether a column numbers cases: a numbering word, and whole numbers each in one run of rows."""
+    if _last_word(name) not in NUMBERING_WORDS:
+        return False
+    numbers = pd.to_numeric(values, errors="coerce").dropna()
+    if numbers.nunique() < 3 or bool((numbers % 1 != 0).any()):
+        return False
+    codes = pd.factorize(numbers)[0]
+    return 1 + int(np.count_nonzero(codes[1:] != codes[:-1])) == int(numbers.nunique())
+
+
+def _unit(name: str) -> str:
+    """The unit written in a column name, "mg/l" for "Nitrate (mg/L)", or ""."""
+    bracketed = re.findall(r"[(\[]([^)\]]+)[)\]]", str(name))
+    slashed = [chunk for chunk in str(name).split() if "/" in chunk]
+    found = bracketed[-1] if bracketed else (slashed[-1] if slashed else "")
+    return found.strip().lower()
+
+
+def _sibling_reading(measure: str, column: str) -> bool:
+    """Whether a column is a reading of the same kind as the measure: a shared name stem or unit."""
+    unit = _unit(measure)
+    return same_stem(measure, column) or bool(unit and unit == _unit(column))
+
+
+def _model_predictors(
+    dataframe: pd.DataFrame, roles: ColumnRoles, scan: RelationshipScan, inputs: bool
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """The columns a joint model of the measure may use, and those left out with the reason.
+
+    A model of one outcome on another (yield strength on tensile strength),
+    on the same quantity in another form (a daily mean for a daily maximum),
+    or on a case number says nothing about what goes with the outcome. The
+    others are the measure's correlates with p below 0.05, at most
+    MAX_MODEL_TERMS, or, in a table of ``inputs`` beside one outcome, every
+    correlate up to MAX_INPUT_TERMS.
+    """
+    alternatives = set(_measure_alternatives(roles))
+    chosen, left_out = [], []
+    for pair in scan.correlates:
+        column = pair.second
+        if column in alternatives:
+            left_out.append((column, "another candidate outcome"))
+        elif abs(pair.pearson) >= SHARED_STEM_CORRELATION and _sibling_reading(roles.measure, column):
+            same = f"the same quantity as {roles.measure} (|r| ≥ {SHARED_STEM_CORRELATION})"
+            left_out.append((column, same))
+        elif column in dataframe.columns and _numbers_cases(column, dataframe[column]):
+            left_out.append((column, "a case number"))
+        elif inputs or pair.p_value < ALPHA:
+            chosen.append(column)
+    return chosen[: MAX_INPUT_TERMS if inputs else MAX_MODEL_TERMS], left_out
+
+
+def _exact_model_evidence(roles: ColumnRoles, model, note: str) -> Evidence:
+    """A fit with no residual: the measure is a fixed combination of its predictors, named as one."""
+    terms = model.clear or model.terms
+    names = list_names([term.name for term in terms], limit=len(terms))
+    equation = f"{roles.measure} = {model.intercept:.3g}" + "".join(
+        f" {'+' if term.coefficient >= 0 else '−'} {abs(term.coefficient):.3g} × {term.name}"
+        for term in terms
+    )
+    return Evidence(
+        kind="model",
+        title=f"{roles.measure} is a combination of other columns",
+        value=f"R² = {model.r2:.3f}",
+        statement=(
+            f"{roles.measure} is almost exactly a fixed combination of {names}: {equation} reproduces it "
+            f"with R² = {model.r2:.3f} over {model.n:,} rows. A fit this close comes from how the columns "
+            "were computed, not from how readings relate, so no model of it is reported."
+        ),
+        calculation=(
+            f"ordinary least squares of {roles.measure} on its correlates (statsmodels OLS); a fit with "
+            f"R² of {EXACT_FIT} or more, or a coefficient whose 95% CI has no width, is read as an "
+            "identity and only its clear terms are named"
+        ) + note,
+    )
 
 
 def _joint_model_evidence(
@@ -2389,20 +2480,33 @@ def _joint_model_evidence(
 ) -> Evidence | None:
     """The measure fitted on the readings that relate to it, when the fit says more than any one of them.
 
-    The predictors are the measure's correlates with p below 0.05, at most
-    MAX_MODEL_TERMS. The card appears when the readings together explain
-    clearly more than the best one alone, or when a reading's coefficient
-    points the other way from its own correlation.
+    The predictors come from ``_model_predictors``. The card appears when the
+    readings together explain clearly more than the best one alone, when a
+    reading's coefficient points the other way from its own correlation, or
+    when the table has no grouping and no one reading explains SINGLE_ANSWER
+    of the outcome, so the model of the outcome on what was recorded beside
+    it is the result whatever it explains; the gain then decides only
+    whether it leads. A fit with no residual is an identity and
+    is named as one. Only predictors that stay clear with the others held
+    fixed are named in the lead, and a model of a reading on its sibling
+    readings (other acids of the same sample) never leads.
     """
     if scan is None or not scan.measure:
         return None
-    predictors = [pair.second for pair in scan.correlates if pair.p_value < ALPHA][:MAX_MODEL_TERMS]
-    model = fit_joint_model(dataframe, roles.measure, predictors)
+    inputs = not roles.dimension and not roles.dimensions and not roles.factors
+    predictors, left_out = _model_predictors(dataframe, roles, scan, inputs)
+    model = fit_joint_model(
+        dataframe, roles.measure, predictors, limit=MAX_INPUT_TERMS if inputs else MAX_MODEL_TERMS
+    )
     if model is None:
         return None
+    if model.exact:
+        return _exact_model_evidence(roles, model, note)
     best = model.best_single
     gain = model.r2 - best.pairwise**2
-    if gain < MODEL_GAIN and not model.reversed:
+    # A reversal among predictors that largely mix the others is arithmetic, not a finding.
+    reversed_terms = tuple(term for term in model.reversed if term.vif <= MAX_VIF)
+    if gain < MODEL_GAIN and not reversed_terms and not (inputs and best.pairwise**2 < SINGLE_ANSWER):
         return None
     names = list_names(list(model.predictors), limit=len(model.predictors))
     equation = f"{roles.measure} = {model.intercept:.3g}" + "".join(
@@ -2433,26 +2537,58 @@ def _joint_model_evidence(
             f" {list_names(list(model.collinear))} {verb} largely a mix of the other predictors (variance "
             f"inflation factor above {MAX_VIF:.0f}), so the separate coefficients are unstable."
         )
+    clear = model.clear
+    if len(clear) < len(model.terms):
+        faint = [term.name for term in model.terms if term not in clear]
+        verb = "adds" if len(faint) == 1 else "add"
+        statement += f" {list_names(faint, limit=len(faint))} {verb} little once the others are known."
+    siblings = all(_sibling_reading(roles.measure, name) for name in model.predictors)
+    if siblings:
+        statement += (
+            f" Every predictor is a reading of the same kind as {roles.measure}, recorded on the same "
+            "samples, so the model shows how they vary together rather than what sets "
+            f"{roles.measure}."
+        )
     statement += " A coefficient is an association with the others held fixed, not evidence of cause."
-    calculation = (
-        f"ordinary least squares of {roles.measure} on the readings that relate to it with p < 0.05 (at "
-        f"most {MAX_MODEL_TERMS}), over the {model.n:,} rows with all of them recorded (statsmodels OLS); "
-        "95% CIs from the t distribution; variance inflation factors from statsmodels "
-        "variance_inflation_factor"
+    picked = (
+        f"every reading recorded beside it (at most {MAX_INPUT_TERMS})"
+        if inputs
+        else f"the readings that relate to it with p < 0.05 (at most {MAX_MODEL_TERMS})"
     )
+    calculation = (
+        f"ordinary least squares of {roles.measure} on {picked}, over the {model.n:,} rows with all of them "
+        "recorded (statsmodels OLS); 95% CIs from the t distribution; variance inflation factors from "
+        "statsmodels variance_inflation_factor"
+    )
+    if model.distinct < model.n:
+        calculation += f"; {model.distinct:,} of the rows are distinct"
     if model.rows > model.n:
         calculation += f"; on a fixed random sample of {model.n:,} of the {model.rows:,} rows"
+    if left_out:
+        calculation += "; left out: " + "; ".join(f"{column} ({reason})" for column, reason in left_out)
+    together = names if len(clear) == len(model.terms) else f"{len(model.terms)} readings"
     lead = (
-        f"Together, {names} explain {model.r2:.0%} of the variance in {roles.measure} (n = {model.n:,}), "
+        f"Together, {together} explain {model.r2:.0%} of the variance in {roles.measure} (n = {model.n:,}), "
         f"against {best.pairwise**2:.0%} for {best.name} alone."
     )
-    if model.reversed and gain < MODEL_GAIN:
-        term = model.reversed[0]
+    if len(clear) < len(model.terms):
+        lead += (
+            f" With the others held fixed, {list_names([term.name for term in clear], limit=len(clear))} "
+            f"{'stays' if len(clear) == 1 else 'stay'} clear."
+            if clear
+            else " With the others held fixed, none of them stays clear on its own."
+        )
+    if reversed_terms and gain < MODEL_GAIN:
+        term = reversed_terms[0]
         lead = (
             f"With the other readings held fixed, {term.name}'s link to {roles.measure} reverses: "
             f"r = {term.pairwise:.2f} on its own, coefficient {_coefficient(term.coefficient)} in a joint "
             "model."
         )
+    elif gain < MODEL_GAIN:
+        lead = ""
+    if siblings:
+        lead = ""
     return Evidence(
         kind="model",
         title=f"Joint model of {roles.measure}",
@@ -3598,9 +3734,11 @@ def analyze_business(
     if change_driver:
         evidence.append(change_driver)
     # Both scans work on the same numeric readings, which are slow to pick out of a
-    # wide table, and on one screen of how they are built from one another.
+    # wide table, and on one screen of how they are built from one another. The
+    # screen's correlations serve the relationship card, so it leaves out the
+    # cells that card says were left out.
     readings = numeric_readings(dataframe, roles)
-    built = _construction(tested, roles, readings)
+    built = _construction(tested_statistics, roles, readings)
     masked = built.masked(tested) if built is not None else tested
     found = _find_groupings(tested, roles)
     rules = grouping_rules(masked, readings, _rule_groupings(roles, found), date=roles.date)
