@@ -355,7 +355,7 @@ def render_ask_ada(
         if chip.button(suggestion, key=f"chip_{suggestion}", width="stretch"):
             question = suggestion
 
-    typed = st.chat_input("Ask about this data, e.g. “top 5 by revenue” or “which segment grew fastest?”")
+    typed = st.chat_input("Ask about this data, e.g. “top 5 by revenue”, “what drives revenue?” or “outliers in price”")
     question = typed or question
     pending = st.session_state.get("pending_ai_plan")
     if pending is not None and question and question != pending["question"]:

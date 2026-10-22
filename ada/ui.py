@@ -10,7 +10,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-from pandas.api.types import is_datetime64_any_dtype
+from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 
 from .aggregation import build_trend, driver_frame, heatmap_frame, segment_frame
 from .anomalies import detect_anomalies
@@ -524,8 +524,9 @@ def _chat_answer_figure(result: QueryAnswer) -> go.Figure | None:
         figure = _trend_figure(table, averaged, title=result.plan.measure or "Records")
         return style_chart(figure, height=320)
     if result.chart == "line":
-        # Groups of a numbered column (timepoint 0, 1, 2...), in the table's order.
+        # Groups of a numbered column (timepoint 0, 1, 2...) or its quantile bins, in the table's order.
         category, value = table.columns[:2]
+        table = table.assign(**{category: table[category].astype(str)})
         figure = px.line(
             table, x=category, y=value, markers=True, title=f"{value} by {category}",
             color_discrete_sequence=[ACCENT],
@@ -534,6 +535,10 @@ def _chat_answer_figure(result: QueryAnswer) -> go.Figure | None:
         return style_chart(figure, height=320)
     category = table.columns[0]
     value = next((name for name in ("Change %", "Change") if name in table.columns), table.columns[1])
+    if not is_numeric_dtype(table[value]):
+        return None
+    # Bins and other ordered groups are labels on the axis, not a scale.
+    table = table.assign(**{category: table[category].astype(str)})
     figure = px.bar(
         table.sort_values(value),
         x=value,
