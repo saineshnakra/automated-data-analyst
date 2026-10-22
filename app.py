@@ -92,7 +92,7 @@ from ada.analysis import column_profile  # noqa: E402 - the refresh above must r
 from ada.business_insights import BusinessBrief, analyze_business, build_business_report  # noqa: E402
 from ada.demo_data import make_demo_data  # noqa: E402
 from ada.file_io import list_excel_sheets, list_sample_datasets, read_tabular_file, safe_csv  # noqa: E402
-from ada.metrics import resolve_metric  # noqa: E402
+from ada.metrics import metric_for  # noqa: E402
 from ada.nlq import QueryPlan, answer_question, rephrase_hint, suggested_questions  # noqa: E402
 from ada.pipeline import (  # noqa: E402
     apply_focus,
@@ -553,7 +553,7 @@ with st.expander("Tune ADA's schema detection", expanded=bool(close_measures)):
         # Keyed by metric, so each metric starts from its own detected default
         # and a choice made for one never carries over to another.
         combine_options = {"Total": "sum", "Average": "mean"}
-        detected_combine = resolve_metric(selected_measure).combines_as.capitalize()
+        detected_combine = metric_for(selected_measure, detected).combines_as.capitalize()
         combine_labels = list(combine_options)
         selected_combine = selectors[1].selectbox(
             "Combine rows by",

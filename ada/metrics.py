@@ -64,6 +64,19 @@ SIGNED_LEVEL_WORDS = frozenset({
 })
 # Head words of a per-unit price, which is averaged although it is money.
 PRICE_WORDS = frozenset({"price", "prices"})
+# Money beyond the currency words, which adds up even across subjects.
+MONEY_WORDS = frozenset({
+    "fee", "fees", "payment", "payments", "fare", "fares", "tip", "tips", "tax", "taxes",
+    "donation", "donations", "earnings", "expenditure", "expenditures", "spending", "costs",
+    "expenses", "profits",
+})
+# Words of a row key naming one subject or sample per row. A participant's total
+# score is compared between participants, never added up across them; an order
+# number names a sale, whose amounts do add up.
+SUBJECT_WORDS = frozenset({
+    "subject", "participant", "patient", "animal", "mouse", "rat", "donor", "individual",
+    "specimen", "sample", "respondent", "infant", "child", "person",
+})
 # How a measure may be told to combine, overriding what its name implies.
 AGGREGATION_CHOICES = ("sum", "mean")
 # Unit annotations that mark a level: a concentration or density (mg/L, cells/mL,
@@ -223,6 +236,17 @@ def resolve_metric(name: str | None, aggregation: str | None = None) -> MetricSp
     )
 
 
+def rows_are_subjects(roles: ColumnRoles | None) -> bool:
+    """Whether each row is one subject or sample: the row key is named for one ("ParticipantId")."""
+    if roles is None or not roles.identifier:
+        return False
+    return bool(set(normalized_name(roles.identifier).split()) & SUBJECT_WORDS)
+
+
+def _names_money(name: str) -> bool:
+    return is_currency(name) or bool(set(_name_words(name)) & MONEY_WORDS)
+
+
 def metric_for(column: str | None, roles: ColumnRoles | None = None) -> MetricSpec:
     """How ``column`` combines, with the roles' override applied when it is their measure.
 
@@ -230,7 +254,10 @@ def metric_for(column: str | None, roles: ColumnRoles | None = None) -> MetricSp
     override set in the app, the CLI or ``ada.analyze`` reaches the trend, the
     breakdown, the brief, the charts and the answers alike. A 0/1 flag (see
     ``ColumnRoles.flags``) averages to the share of rows that are 1, so it is a
-    rate whatever its name, unless the override says to count the 1s.
+    rate whatever its name, unless the override says to count the 1s. When
+    each row is one subject or sample (see ``rows_are_subjects``), a count or
+    a total that is not money is averaged too: summing each infant's looking
+    time across infants, or splitting it into shares, mostly counts infants.
     """
     override = roles.aggregation if roles is not None and column and column == roles.measure else None
     if roles is not None and column in roles.flags and override != "sum":
@@ -242,4 +269,8 @@ def metric_for(column: str | None, roles: ColumnRoles | None = None) -> MetricSp
             increase_is_welcome=named is not False,
             direction_known=named is not None,
         )
-    return resolve_metric(column, override)
+    spec = resolve_metric(column, override)
+    per_subject = override is None and rows_are_subjects(roles) and not _names_money(column)
+    if spec.aggregation == "sum" and per_subject:
+        return resolve_metric(column, "mean")
+    return spec

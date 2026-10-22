@@ -163,5 +163,29 @@ class FlagMeasureTests(unittest.TestCase):
         self.assertEqual(metric_for("Reopened Count", self.roles("sum")).aggregation, "sum")
 
 
+class PerSubjectTests(unittest.TestCase):
+    def roles(self, identifier, aggregation=None):
+        return ColumnRoles(
+            date=None, measure="CorrectTotal", dimension="Condition", identifier=identifier,
+            numeric=("CorrectTotal", "Spend"), dimensions=("Condition",), aggregation=aggregation,
+        )
+
+    def test_a_total_per_participant_is_averaged_not_summed(self):
+        spec = metric_for("CorrectTotal", self.roles("ParticipantId"))
+
+        self.assertEqual(spec.aggregation, "mean")
+        self.assertFalse(spec.additive)
+
+    def test_money_per_subject_still_adds_up(self):
+        self.assertEqual(metric_for("Spend", self.roles("Patient ID")).aggregation, "sum")
+
+    def test_amounts_on_order_rows_still_add_up(self):
+        self.assertEqual(metric_for("CorrectTotal", self.roles("Order ID")).aggregation, "sum")
+        self.assertEqual(metric_for("CorrectTotal", self.roles(None)).aggregation, "sum")
+
+    def test_an_override_to_sum_is_kept(self):
+        self.assertEqual(metric_for("CorrectTotal", self.roles("ParticipantId", "sum")).aggregation, "sum")
+
+
 if __name__ == "__main__":
     unittest.main()
