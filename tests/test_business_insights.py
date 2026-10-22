@@ -2040,6 +2040,23 @@ class MonthlySeriesTests(unittest.TestCase):
         self.assertIn("Analysis.long_form()", monthly.statement)
 
 
+class TwoModeCardTests(unittest.TestCase):
+    def test_a_reading_with_two_modes_gives_the_share_in_the_upper_one_by_month(self):
+        rng = np.random.default_rng(101)
+        stamps = pd.date_range("2022-06-01", "2025-05-31", freq="6h")
+        winter = stamps.month.isin([12, 1, 2])
+        running = rng.random(len(stamps)) < np.where(winter, 0.8, 0.1)
+        sound = np.where(running, rng.normal(81, 1.5, len(stamps)), rng.normal(42, 1.5, len(stamps)))
+        frame = pd.DataFrame({"Time": stamps, "Sound": sound})
+
+        modes = brief_card(analyze_business(frame, roles_for(frame, "Sound", None, date="Time")), "modes")
+
+        assert modes is not None
+        self.assertRegex(modes.statement, r"two separate ranges, around 42(\.\d+)? or around 81")
+        self.assertIn("by month of the year that share runs from", modes.statement)
+        self.assertRegex(modes.statement, r"to 8\d\.\d% in (December|January|February)")
+
+
 class SnapshotAndUndatedTests(unittest.TestCase):
     def test_one_timestamp_on_every_row_is_called_a_snapshot(self):
         frame = pd.DataFrame({

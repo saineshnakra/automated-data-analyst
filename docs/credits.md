@@ -74,6 +74,8 @@ The methods ADA applies, with the papers that introduced them:
 | Variance inflation factor | The joint model | Marquardt, D. W. (1970), *Technometrics* 12, 591–612 |
 | Fences at 1.5 × IQR | Exceptional records | Tukey, J. W. (1977), *Exploratory Data Analysis*, Addison-Wesley |
 | Kolmogorov-Smirnov distance | Data checks: columns that look simulated | Kolmogorov, A. N. (1933), *Giornale dell'Istituto Italiano degli Attuari* 4, 83–91; Smirnov, N. (1948), *Annals of Mathematical Statistics* 19, 279–281 |
+| Otsu's threshold | Splitting a reading with two modes | Otsu, N. (1979), *IEEE Transactions on Systems, Man, and Cybernetics* 9, 62–66 |
+| Ashman's D | How far apart two modes are | Ashman, K. M., Bird, C. M. and Zepf, S. E. (1994), *Astronomical Journal* 108, 2348–2361 |
 | Kaplan-Meier estimator | Survival from censored follow-up times | Kaplan, E. L. and Meier, P. (1958), *JASA* 53, 457–481 |
 | Log-rank test | Survival compared across groups | Mantel, N. (1966), *Cancer Chemotherapy Reports* 50, 163–170; Peto, R. and Peto, J. (1972), *JRSS A* 135, 185–207 |
 | Cox proportional-hazards model | Hazard ratios for survival | Cox, D. R. (1972), *JRSS B* 34, 187–220 |

@@ -360,6 +360,77 @@ def observed_periods(trend: pd.DataFrame) -> pd.DataFrame:
     return trend.loc[~missing]
 
 
+# Two modes count as clear when Ashman's D between them reaches this (2 is the
+# usual bar for a clean separation) and each holds this share of the values.
+MIN_MODE_SEPARATION = 2.5
+MIN_MODE_SHARE = 0.1
+# Histogram bins: the square root of the number of readings, within these bounds,
+# so a few hundred readings are not split into bins too thin to show a valley.
+MODE_BINS = (10, 64)
+MIN_MODE_READINGS = 200
+# The deepest point of the histogram between the two peaks, as a share of the
+# smaller peak, at or below which the dip counts as a gap between two modes.
+MAX_VALLEY_SHARE = 0.25
+
+
+@dataclass(frozen=True)
+class TwoModes:
+    """A reading that sits in one of two separate ranges, such as a fan off and on."""
+
+    threshold: float
+    low: float
+    high: float
+    #: Ashman's D: the distance between the modes in units of their pooled spread.
+    separation: float
+    high_share: float
+
+
+def two_modes(values: np.ndarray) -> TwoModes | None:
+    """Split a reading at the threshold that best separates two modes (Otsu's method), when they are clear.
+
+    The threshold maximises the variance between the two sides of a
+    histogram of the readings. The split counts when the histogram dips
+    between the two peaks to MAX_VALLEY_SHARE of the smaller one, Ashman's D
+    reaches MIN_MODE_SEPARATION and each side holds MIN_MODE_SHARE of the
+    values. Needs MIN_MODE_READINGS readings; returns None otherwise.
+    """
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if values.size < MIN_MODE_READINGS or np.ptp(values) == 0:
+        return None
+    bins = int(np.clip(np.sqrt(values.size), *MODE_BINS))
+    counts, edges = np.histogram(values, bins=bins)
+    centres = (edges[:-1] + edges[1:]) / 2
+    weight = np.cumsum(counts)[:-1]
+    total = weight[-1] + counts[-1]
+    below = np.cumsum(counts * centres)[:-1]
+    above = (counts * centres).sum() - below
+    with np.errstate(divide="ignore", invalid="ignore"):
+        between = weight * (total - weight) * (below / weight - above / (total - weight)) ** 2
+    if not np.isfinite(between).any():
+        return None
+    cut = int(np.nanargmax(between)) + 1
+    threshold = float(edges[cut])
+    # A split of one hump also has a large D, so the histogram must dip between
+    # the two peaks to well under the smaller one.
+    smooth = np.convolve(counts, np.ones(3) / 3, mode="same")
+    left, right = int(np.argmax(smooth[:cut])), cut + int(np.argmax(smooth[cut:]))
+    valley = float(smooth[left : right + 1].min())
+    if valley > MAX_VALLEY_SHARE * min(smooth[left], smooth[right]):
+        return None
+    low, high = values[values < threshold], values[values >= threshold]
+    share = high.size / values.size
+    if min(share, 1 - share) < MIN_MODE_SHARE:
+        return None
+    pooled = low.var() + high.var()
+    if pooled == 0:
+        return None
+    separation = float(np.sqrt(2) * abs(high.mean() - low.mean()) / np.sqrt(pooled))
+    if separation < MIN_MODE_SEPARATION:
+        return None
+    return TwoModes(threshold, float(np.median(low)), float(np.median(high)), separation, float(share))
+
+
 # A level shift is looked for in a series of at least this many periods, and
 # each of its two stretches holds at least MIN_STRETCH periods and STRETCH_SHARE
 # of the series: a couple of odd periods at either end are anomalies, not a new level.

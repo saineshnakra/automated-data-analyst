@@ -155,6 +155,7 @@ from .timepoints import (
     timepoint_column,
 )
 from .timeseries import (
+    MIN_MODE_SEPARATION,
     MIN_SHIFT_EFFECT,
     TREND_CONFIDENCE,
     TrendTest,
@@ -164,6 +165,7 @@ from .timeseries import (
     period_positions,
     robust_scale,
     trend_test,
+    two_modes,
     yearly_pattern,
 )
 
@@ -1322,6 +1324,59 @@ def _months_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | 
             "(scipy.stats.theilslopes) and a Mann-Kendall test, both allowing for lag-1 autocorrelation"
         ),
         lead=lead,
+    )
+
+
+def _modes_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
+    """For an averaged reading with two clear modes, the share of readings in the upper one over time.
+
+    A fan that is either off or on averages to a level it never has; how often
+    it runs, by month of the year (or by period, for under a year of data),
+    says what changed. The modes come from ``timeseries.two_modes``.
+    """
+    if not roles.date or not roles.measure or metric_for(roles.measure, roles).additive:
+        return None
+    working = dataframe[[roles.date, roles.measure]].dropna()
+    found = two_modes(working[roles.measure].to_numpy(dtype=float))
+    if found is None:
+        return None
+    measure_values = working[roles.measure]
+    upper = (measure_values >= found.threshold).astype(float)
+    dates = working[roles.date]
+    if (dates.max() - dates.min()).days >= 365:
+        shares = upper.groupby(dates.dt.month).mean() * 100
+        name = {month: f"in {calendar.month_name[int(month)]}" for month in shares.index}
+        over = "by month of the year"
+    else:
+        grain = preferred_frequency(dates)
+        stamps = dates.dt.to_period(grain).dt.to_timestamp()
+        shares = upper.groupby(stamps).mean() * 100
+        # "at 15:49" for a clock time, "in the week of 20 Jan 2025", "in Mar 2024".
+        when = {"s": "at", "min": "at", "h": "at", "W": "in the week of"}.get(grain, "in")
+        name = {period: f"{when} {format_period(period, grain)}" for period in shares.index}
+        over = f"by {GRAIN_NAMES.get(grain, 'period')}"
+    low, high, cut = format_values_apart(
+        found.low, found.high, found.threshold, column=roles.measure, column_values=measure_values
+    )
+    statement = (
+        f"{roles.measure} sits in one of two separate ranges, around {low} or around {high} (Ashman's D = "
+        f"{found.separation:.1f}), so its average falls between them. "
+        f"{format_percentage(found.high_share * 100)} of readings are at {cut} or above; {over} that share "
+        "runs from "
+        f"{format_percentage(float(shares.min()))} {name[shares.idxmin()]} to "
+        f"{format_percentage(float(shares.max()))} {name[shares.idxmax()]}."
+    )
+    return Evidence(
+        kind="modes",
+        title="Two modes",
+        value=f"{format_percentage(found.high_share * 100)} upper",
+        statement=statement,
+        calculation=(
+            "threshold that best separates two modes in a histogram (Otsu's method), kept when the histogram "
+            "dips between the peaks to a quarter of the smaller one, Ashman's D is at least "
+            f"{MIN_MODE_SEPARATION:g} and each side holds 10% of the readings; share of readings at or above "
+            f"it {over}"
+        ),
     )
 
 
@@ -4488,6 +4543,9 @@ def analyze_business(
     monthly = _months_evidence(dataframe, roles)
     if monthly:
         evidence.append(monthly)
+    modes = _modes_evidence(dataframe, roles) if timeline else None
+    if modes:
+        evidence.append(modes)
     growth = _growth_evidence(dataframe, roles, frequency) if timeline else None
     if growth:
         evidence.append(growth)

@@ -18,6 +18,7 @@ from ada.timeseries import (
     shift_critical_value,
     theil_sen,
     trend_test,
+    two_modes,
     yearly_pattern,
 )
 
@@ -309,6 +310,28 @@ class TrendTestTests(unittest.TestCase):
         flat = trend_test(np.arange(6.0), np.full(6, 4.0))
         assert flat is not None
         self.assertFalse(flat.clear)
+
+
+class TwoModeTests(unittest.TestCase):
+    def test_a_fan_that_is_off_or_on_has_two_modes(self):
+        rng = np.random.default_rng(80)
+        values = np.r_[rng.normal(42, 1.5, 700), rng.normal(81, 1.5, 300)]
+
+        found = two_modes(values)
+
+        assert found is not None
+        self.assertAlmostEqual(found.high_share, 0.3, places=2)
+        self.assertAlmostEqual(found.low, 42, delta=0.5)
+        self.assertGreater(found.separation, 10)
+
+    def test_one_hump_is_not_split_into_two(self):
+        rng = np.random.default_rng(81)
+
+        self.assertIsNone(two_modes(rng.normal(10, 3, 5_000)))
+        self.assertIsNone(two_modes(rng.uniform(0, 10, 5_000)))
+
+    def test_a_few_values_are_not_judged(self):
+        self.assertIsNone(two_modes(np.r_[np.zeros(50), np.ones(50)]))
 
 
 class LevelShiftTests(unittest.TestCase):

@@ -44,6 +44,7 @@ assembled in this order:
 | `series` | Numbered columns in an arithmetic progression (40, 50, ... 260) read as one series: the mean profile, the rows that vary most, and the period of a repeating pattern | Fewer than 5 evenly numbered columns |
 | `longtrend` | The trend across a record of 20 or more complete years: Theil-Sen slope per year and per decade with its 95% interval and a Mann-Kendall test, the months it runs highest and lowest in, and the slopes either side of a change in level (see [Long records](#long-records)) | No date, or fewer than 20 complete years |
 | `months` | For a table with one row per year and a column per month (JAN to DEC), the monthly series it holds: the mean of each calendar month and the trend of the years with all twelve months (see [Long records](#long-records)) | No year column, or not all twelve month columns |
+| `modes` | For an averaged reading over time that sits in one of two separate ranges (a fan off or on), the share of readings in the upper range by month of the year, or by period under a year (see [Two modes](#two-modes)) | No date, a total, under 200 readings, or no clear gap between two modes |
 | `trend` | Latest period-over-period change on the groups present in both periods, compared with the series' usual movement or with the time of year | No date, fewer than 2 periods, a percentage change from a previous period of zero, or rows counted where the design fixes how many each period holds (see [Fixed designs](#fixed-designs)) |
 | `driver` | The segment that moved the measure most between the last two periods | No date, measure or segment |
 | `leader` | For money or a count of things, the group with the largest share of the total ("Largest share by ..."), or with the most rows when there is no measure ("Most rows by ..."). For any other measure, a comparison of the groups with its test and effect size (see below). For mixed-sign values, the largest by size with no share | No segment, or a total of zero |
@@ -61,6 +62,19 @@ A `differences` card that found nothing comes after `outliers` rather than
 after the segment cards, so a null result never pushes out a finding. If
 more than eight cards qualify, the first eight are shown. A `quality` card that
 falls past the eighth replaces the eighth, since it qualifies every other figure.
+
+### Two modes
+
+A reading that is either low or high, such as a sound level with a fan off
+(about 42 dBA) or on (about 81), averages to a level it never has.
+`timeseries.two_modes` splits it at the threshold that best separates the two
+sides of its histogram (Otsu's method) and keeps the split only when the
+histogram dips between the two peaks to a quarter of the smaller one, Ashman's
+D between the sides is at least 2.5, and each side holds a tenth of the
+readings; a single hump split in two would pass Ashman's D alone. The card
+then gives the share of readings in the upper range over time: *"34.5% of
+readings are at 61.25 or above; by month of the year that share runs from
+7.7% in April to 80.0% in January."*
 
 ### Snapshots and undated rows
 
