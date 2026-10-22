@@ -10,6 +10,7 @@ import importlib
 import os
 import secrets
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
@@ -94,7 +95,7 @@ from ada.demo_data import make_demo_data  # noqa: E402
 from ada.file_io import list_excel_sheets, list_sample_datasets, read_tabular_file, safe_csv  # noqa: E402
 from ada.formatting import show_undated  # noqa: E402
 from ada.metrics import metric_for  # noqa: E402
-from ada.nlq import QueryPlan, answer_question, rephrase_hint, suggested_questions  # noqa: E402
+from ada.nlq import QueryPlan, WholeTable, answer_question, rephrase_hint, suggested_questions  # noqa: E402
 from ada.pipeline import (  # noqa: E402
     apply_focus,
     apply_role_selection,
@@ -328,11 +329,18 @@ def dataset_fingerprint(dataframe: pd.DataFrame, roles, source_name: str) -> str
 
 
 def render_ask_ada(
-    dataframe: pd.DataFrame, roles, source_name: str, api_key: str, rows_not_analyzed: int = 0
+    dataframe: pd.DataFrame,
+    roles,
+    source_name: str,
+    api_key: str,
+    rows_not_analyzed: int = 0,
+    whole: WholeTable | None = None,
 ) -> None:
     """Chat over the analyzed dataset; every answer is a local calculation.
 
     ``rows_not_analyzed`` is how many rows the row limit left out; answers say so.
+    ``whole`` holds every row of a long table whose brief follows one parameter,
+    so a question about another parameter is answered from its rows.
     """
     fingerprint = dataset_fingerprint(dataframe, roles, source_name)
     if st.session_state.get("chat_fingerprint") != fingerprint:
@@ -354,7 +362,7 @@ def render_ask_ada(
         st.session_state.pending_ai_plan = None
         pending = None
     if question:
-        result = answer_question(question, dataframe, roles, rows_not_analyzed=rows_not_analyzed)
+        result = answer_question(question, dataframe, roles, rows_not_analyzed=rows_not_analyzed, whole=whole)
         if result is not None:
             st.session_state.chat_history.append({"question": question, "result": result})
         elif api_key and pending is None:
@@ -414,7 +422,9 @@ def render_ask_ada(
             elif entry["result"] is not None:
                 render_chat_answer(entry["result"], key=str(position))
             else:
-                hint = rephrase_hint(entry["question"], dataframe, roles, rows_not_analyzed=rows_not_analyzed)
+                hint = rephrase_hint(
+                    entry["question"], dataframe, roles, rows_not_analyzed=rows_not_analyzed, whole=whole
+                )
                 render_chat_fallback(suggestions, hint)
 
 
@@ -598,6 +608,12 @@ if focus_values:
         focus_value = choice
         focus_label = focus_labels[choice]
 
+# A long table's other parameters stay askable: Ask answers about them from every row.
+whole = (
+    WholeTable(dataframe, replace(roles, focus=None), roles.dimension, focus_value)
+    if roles.table_shape == "long" and focus_value and roles.dimension
+    else None
+)
 dataframe, roles = apply_focus(dataframe, roles, focus_value)
 brief = analyze_business(dataframe, roles)
 
@@ -662,7 +678,9 @@ with ask_tab:
         "supplied a key, is the question itself sent to the planner, which returns a plan "
         "for you to approve, never an answer.",
     )
-    render_ask_ada(dataframe, roles, source_name, api_key, rows_not_analyzed=prepared.truncated_rows)
+    render_ask_ada(
+        dataframe, roles, source_name, api_key, rows_not_analyzed=prepared.truncated_rows, whole=whole
+    )
 
 with dashboard_tab:
     render_section_heading(

@@ -29,7 +29,14 @@ from .file_io import read_tabular_file
 from .forecasting import Forecast, build_forecast
 from .formatting import format_moment, is_undated, show_undated
 from .metrics import AGGREGATION_CHOICES, metric_for
-from .nlq import QueryAnswer, answer_question, rephrase_hint, suggested_questions, unsupported_phrasing
+from .nlq import (
+    QueryAnswer,
+    WholeTable,
+    answer_question,
+    rephrase_hint,
+    suggested_questions,
+    unsupported_phrasing,
+)
 from .pipeline import apply_focus, focus_options, prepare_analysis
 from .quality import quality_frame
 from .quality import scan as scan_quality
@@ -192,8 +199,11 @@ def analyze(
     # in every numeric column, with a note for each.
     cleaning = prepared.cleaning_report
     frame = prepared.dataframe
+    whole = None
     if roles.focus and dimension is None:
         # A long table's rows measure different things; the brief covers one of them.
+        # Questions about another one are answered from every row (see nlq.WholeTable).
+        whole = WholeTable(frame, replace(roles, focus=None), roles.dimension, roles.focus)
         name = f"{name} · {roles.focus}"
         frame, roles = apply_focus(frame, roles, roles.focus)
     return Analysis(
@@ -205,6 +215,7 @@ def analyze(
         frequency=frequency,
         source_name=name,
         rows_note=prepared.rows_note,
+        whole=whole,
     )
 
 
@@ -253,6 +264,8 @@ class Analysis:
     #: Which rows were analyzed when some were left out ("a random sample of
     #: 1,000,000 of 3,108,545 rows"), or "" when every row was.
     rows_note: str = ""
+    #: Every row of a long table, before the brief's focus on one parameter; Ask uses it.
+    whole: WholeTable | None = field(default=None, repr=False, compare=False)
     _trends: dict = field(default_factory=dict, repr=False, compare=False)
 
     @property
@@ -396,10 +409,14 @@ class Analysis:
                 "unsupported_phrasing",
                 "ADA has no way to represent that question, so it will not guess at a near one.",
             )
-        answer = answer_question(question, self.frame, self.roles, rows_not_analyzed=self.rows_not_analyzed)
+        answer = answer_question(
+            question, self.frame, self.roles, rows_not_analyzed=self.rows_not_analyzed, whole=self.whole
+        )
         if answer is None:
             message = "ADA could not build a plan for that question against this table."
-            hint = rephrase_hint(question, self.frame, self.roles, rows_not_analyzed=self.rows_not_analyzed)
+            hint = rephrase_hint(
+                question, self.frame, self.roles, rows_not_analyzed=self.rows_not_analyzed, whole=self.whole
+            )
             return Refusal("unrepresentable_question", f"{message} {hint}" if hint else message)
         return answer
 

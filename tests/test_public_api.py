@@ -341,6 +341,17 @@ class LongTableTests(unittest.TestCase):
         self.assertEqual(len(report.frame), len(long_readings()))
         self.assertIsNone(report.roles.focus)
 
+    def test_ask_answers_another_parameter_from_every_row(self):
+        report = ada.analyze(long_readings())
+        other = next(value for value in long_readings()["Parameter"].unique() if value != "Ammonia")
+
+        answer = report.ask(f"average Result for {other}")
+        own = report.ask("average Result by Site")
+
+        self.assertIn(f"Parameter = {other}", answer.answer)
+        self.assertIn("This covers the", own.answer)
+        self.assertIn("Parameter = Ammonia, which the brief follows", own.answer)
+
 
 class AggregationTests(unittest.TestCase):
     def test_a_reading_is_averaged_unless_told_otherwise(self):
