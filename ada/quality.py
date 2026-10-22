@@ -88,11 +88,13 @@ SHARED_CLIP_SHARE = 0.1
 EDGE_CODE_VALUES = 10
 #: Above this many columns with extreme values of their own, they are listed as one issue.
 EXTREME_COLUMNS_LISTED = 10
-#: A narrow pile: PILE_SHARE of a column within PILE_WIDTH of its range, and
-#: PILE_RATIO times as many values as the slivers of that width on either side.
+#: A narrow pile: PILE_SHARE of a column within PILE_WIDTH of its range,
+#: PILE_RATIO times as many values as the slivers of that width on either
+#: side, and a quarter of the other values within PILE_REACH such slivers of it.
 PILE_WIDTH = 0.02
 PILE_SHARE = 0.25
 PILE_RATIO = 3
+PILE_REACH = 10
 #: A round value inside a column's range holding this share of it, with this
 #: share of its rows in one group, is a limit that group's measurements stop at.
 GROUP_CAP_SHARE = 0.05
@@ -1237,8 +1239,11 @@ def _narrow_pile(column: _Column, log: bool) -> QualityIssue | None:
     PILE_WIDTH of the range between the 0.5th and 99.5th percentiles (on a log
     scale for a right-skewed column), it must hold PILE_SHARE of the values,
     and it must stand out from the slivers just beside it (PILE_RATIO), so the
-    narrow peak of an ordinary cluster is not a pile. No single value may hold
-    most of it, since one repeated value is a floor, a cap or a fill instead.
+    narrow peak of an ordinary cluster is not a pile. A quarter of the other
+    values must lie within PILE_REACH slivers of it: values only far from a
+    pile (wind speeds of 140 among speeds under 1) are outliers whatever the
+    IQR. No single value may hold most of it, since one repeated value is a
+    floor, a cap or a fill instead.
     """
     if column.size < 100 or column.uniques.size < FLAT_MIN_LEVELS:
         return None
@@ -1255,9 +1260,12 @@ def _narrow_pile(column: _Column, log: bool) -> QualityIssue | None:
     if held < PILE_SHARE * column.size or int(column.counts.max()) >= 0.6 * held:
         return None
     inside = values[start : start + held]
-    beside = np.searchsorted(values, inside[0], side="left") - np.searchsorted(values, inside[0] - width)
-    beside += np.searchsorted(values, inside[-1] + width, side="right") - (start + held)
-    if held < PILE_RATIO * beside:
+    def around(distance: float) -> int:
+        """The values within ``distance`` of the pile, outside it."""
+        within = np.searchsorted(values, inside[-1] + distance, side="right")
+        return int(within - np.searchsorted(values, inside[0] - distance)) - held
+
+    if held < PILE_RATIO * around(width) or around(PILE_REACH * width) < 0.25 * (values.size - held):
         return None
     first, last = (10**value if log else value for value in (float(inside[0]), float(inside[-1])))
     centre = 10 ** float(np.median(inside)) if log else float(np.median(inside))
@@ -1271,8 +1279,8 @@ def _narrow_pile(column: _Column, log: bool) -> QualityIssue | None:
     summary = f"{column.name}: {share} of values piled near {_rounded(centre)}"
     rule = (
         f"{PILE_SHARE:.0%} or more of a column within {PILE_WIDTH:.0%} of its range (0.5th to 99.5th "
-        f"percentile), {PILE_RATIO} times as many as the slivers of that width either side hold, with no "
-        "single value holding most of them"
+        f"percentile), {PILE_RATIO} times as many as the slivers of that width either side hold, a quarter "
+        f"of the other values within {PILE_REACH} such slivers, and no single value holding most of them"
     )
     return QualityIssue("pile", (column.name,), held, held / column.size * 100, detail, summary, rule,
                         group=(first, last))
@@ -3075,6 +3083,9 @@ def _labels(
             column in named or series.dtype == object or is_bool_dtype(series)
             or isinstance(series.dtype, pd.CategoricalDtype)
         ):
+            # A key or free text shows more levels than that in a sample already.
+            if series.iloc[:: max(1, len(series) // SAMPLE_ROWS)].nunique() > most:
+                continue
             codes, levels = pd.factorize(series)
             if 2 <= len(levels) <= most:
                 found[column] = (codes, levels)
@@ -3245,6 +3256,10 @@ def _placeholder_mask(series: pd.Series) -> np.ndarray | None:
         return series.to_numpy(dtype="float64", na_value=np.nan) == 0
     if series.dtype != object:
         return None
+    # A block covers 5% of the rows or more, so a sample of them shows it.
+    sampled = series.iloc[:: max(1, len(series) // SAMPLE_ROWS)].dropna().unique()
+    if not any(str(value).strip() in PLACEHOLDER_TOKENS for value in sampled):
+        return np.zeros(len(series), dtype=bool)
     codes, uniques = pd.factorize(series)
     held = [position for position, value in enumerate(uniques) if str(value).strip() in PLACEHOLDER_TOKENS]
     return np.isin(codes, held) if held else np.zeros(len(series), dtype=bool)
@@ -3335,6 +3350,9 @@ def _constant_columns(frame: pd.DataFrame, roles: ColumnRoles | None) -> Quality
         text = not is_numeric_dtype(series)
         if column == measure or is_datetime64_any_dtype(series) or (text and not flat):
             continue
+        # Most columns vary within a sample already, which is cheaper to see than a count of blanks.
+        if series.iloc[:: max(1, rows // SAMPLE_ROWS)].nunique() > 1:
+            continue
         if int(series.notna().sum()) < max(2, 0.9 * rows):
             continue
         if is_numeric_dtype(series) and not is_bool_dtype(series):
@@ -3342,7 +3360,7 @@ def _constant_columns(frame: pd.DataFrame, roles: ColumnRoles | None) -> Quality
             low = float(np.nanmin(values))
             if low == float(np.nanmax(values)):
                 found[column] = low
-        elif series.nunique(dropna=True) == 1:
+        elif series.nunique() == 1:
             found[column] = series.dropna().iloc[0]
     if not found:
         return None

@@ -368,8 +368,11 @@ and is not reported.
 **Narrow pile.** A quarter or more of a column (`PILE_SHARE`) within 2% of its
 range (`PILE_WIDTH`, the range between the 0.5th and 99.5th percentiles, on a
 log scale for a right-skewed column), three times as many as the slivers of
-that width on either side hold (`PILE_RATIO`), with no single value holding
-most of them: soil pH entered near 7.0 unless measured otherwise. The
+that width on either side hold (`PILE_RATIO`), with a quarter of the other
+values within ten such slivers of it (`PILE_REACH`) and no single value
+holding most of them: soil pH entered near 7.0 unless measured otherwise.
+Values only far from a pile, such as wind speeds of 140 among speeds under 1,
+are outliers whatever the IQR, so a bulk with nothing near it is no pile. The
 interquartile range then measures the pile, so the outlier card leaves the
 column out and says so. A floor or cap inside the pile already explains it,
 and no pile is reported then.

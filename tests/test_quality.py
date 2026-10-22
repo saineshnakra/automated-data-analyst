@@ -985,6 +985,14 @@ class LimitShapeTests(unittest.TestCase):
         self.assertGreater(piles[0].share, 55)
         self.assertIn("pile", INFO_CHECKS)
 
+    def test_a_bulk_with_only_far_values_beside_it_is_not_a_pile(self):
+        rng = np.random.default_rng(83)
+        speed = np.r_[rng.uniform(0.1, 0.99, 920), rng.uniform(140, 270, 80)].round(2)
+
+        issues = scan(pd.DataFrame({"Gust": speed}))
+
+        self.assertFalse(checks(issues, "pile"))
+
 
 class RecordTests(unittest.TestCase):
     def test_the_rest_of_a_failed_record_is_flagged_with_its_code(self):
