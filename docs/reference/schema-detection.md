@@ -118,6 +118,18 @@ Short codes, design levels and swept settings are weaker evidence, so they
 are dropped when every numeric column would otherwise be a factor: a table of
 marks out of 10 and nothing else measures the marks.
 
+**Experimental units.** A numeric column that numbers blocks of consecutive
+rows, each value on one unbroken run, is the unit those rows belong to (an
+experiment `case` 1 to 16, a subject `indiv` 2.41) when another column stays
+fixed within every run while varying between them (the material of each
+case, the group of each animal). It must hold at least five values on runs of
+three rows on average, have no missing cells, and not be named as a quantity,
+a level, a label word or a part of a date, so a reading sorted down the file
+is not mistaken for one (`_block_units`). It becomes a factor, is grouped by
+only as a last resort, like one subject each, and a note names it. Numeric
+columns fixed within each run with two to four values (`feed`, depth of cut)
+are settings of the unit, so they become factors too, never the measure.
+
 A part of a date (`Month`, `MO`, `YR`, `DA`) beside a date column is neither a
 factor nor a grouping, since it only repeats the timeline. A name counts as a
 part of a date only when the values fit it (`is_time_part`): months 1 to 12 or
@@ -218,16 +230,61 @@ candidates are scored:
 | A check that a study worked (`realism`, `attention`, `manipulation`, or last word `check`) | −6 |
 | The one column whose unit differs from a unit at least three others share (a strength in MPa among ingredients in kg/m³) | +4 |
 | Records the amounts of a running total that was set aside (`Interval Rain` for `Total Rain`) | +10 |
+| Named in the file or sheet name (`secchi` in `georgian_bay_secchi.csv`), when no more than two candidates are | +4 |
+| The one column outside a family of names the others belong to: columns sharing a first or a last word are kin, and kin of kin are one family (`Hardness` beside `density_Total`, `density_Average`, `val_e_Average` ...) | +4 |
+| The mean of the other candidates row by row, as an annual mean is of its months (`metANN` beside `JAN` … `DEC` and the seasons), or the average of a reading beside its extremes (`pollutant_avg` beside `pollutant_min` and `pollutant_max`) | +3 |
+| Measured in a bracketed unit fewer than three candidates share (`Sound Level (dBA)` beside `RSSI` and `SNR`); seven ingredients all in kg/m³ are a recipe, not readings | +2 |
+| In a table of experimental units (see [Category codes](#category-codes)), the first reading after the columns that lay out the design, unless it is a time point or a dose | +1 |
 | One value in more than 80% of rows (nearly constant or mostly zero) | −6 |
 | Any word is a condition usually recorded beside the outcome (`temp`, `temperature`, `humidity`, `wind`, `air`) or the size of a subject or plot (`weight`, `size`, `area`, `acres`, `height`, `age`) | −3, but only when another column is a plausible outcome |
 
+`total` counts as a keyword only when another candidate names money or a
+count of things, or for the total of numbered items beside it (`CorrectTotal`
+beside `Correct1` … `Correct4`): among lab readings, `nitrates_total` is all
+forms of nitrate, not a sum.
+
 When the grouping its name ranks first names an outcome class (its last word,
 before `label` or `name`, is `result`, `outcome`, `diagnosis`, `class`,
-`label`, `disease`, `case`, `condition` or `status`, with 2 to 20 values), ties
-go first to the reading that best separates its groups: the most variance in
-the reading's ranks that the classes explain, adjusted for their number. A
-heart study's troponin beats CK-MB across positive and negative results, and a
-blood count's haemoglobin beats MCV across anaemia diagnoses.
+`classification`, `label`, `target`, `disease`, `case`, `condition` or
+`status`, with 2 to 20 values), ties go first to the reading that best
+separates its groups: the most variance in the reading's ranks that the
+classes explain, adjusted for their number. A heart study's troponin beats
+CK-MB across positive and negative results, and a blood count's haemoglobin
+beats MCV across anaemia diagnoses.
+
+### An outcome to explain
+
+Many research tables exist to explain one two-level column: a diagnosis, a
+label to predict, whether a landslide happened. ADA treats such a column as
+the outcome (`_outcome_flag`), recognised in this order:
+
+1. Its last word names a label: `target`, `label`, `class`,
+   `classification`, `outcome`, `result` or `diagnosis`.
+2. The file or sheet is named for it (`Landslide` in `landslide_dataset.csv`).
+3. It is a 0/1 event recorded beside the time each row was followed
+   (`eventdeath` beside `survival`; words such as `event`, `death`, `dead`,
+   `relapse` or `recurrence`, run together or not).
+4. With no column named as a label, it is a 0/1 column filed straight after
+   the identifiers, where a label to predict usually sits (`fasting_ability`
+   after `id`).
+
+Sex, gender, race, ethnicity, treatment arms, cohorts, groups, conditions,
+blocks, batches, phases, sites and visits describe who was studied or how,
+so they never qualify. The outcome becomes the grouping, and a note says
+why. The measure is then the reading that best tells its two groups apart:
+every candidate within 5 points of the best score (`OUTCOME_WINDOW`) is
+ranked by the variance in its ranks that the two groups explain, so a weak
+keyword (`body_mass_index`'s `index`) no longer decides, while money and
+amounts, which score far higher, still do. Covariates stay out of that
+ranking.
+
+Two kinds of reading only restate the outcome and are left out first, each
+with a note. A reading the outcome was cut from by a threshold, where one cut
+point puts 99.5% of rows in their own group (`SET_BY_SHARE`), as
+`Landslide` is set by `Earthquake_Activity` from 4.00 (`_sets_outcome`). And
+follow-up time beside its event (`survival`, `os_time`, `followup_months`):
+how long a row was followed depends on whether the event happened, so it is
+neither averaged nor compared across the event.
 
 Other ties are broken by how much information the column holds: the entropy
 of its values, counting missing cells as one more value, so many distinct,
@@ -337,6 +394,9 @@ Keyword weights (`DIMENSION_KEYWORDS`): `product` 12, `category` 12,
 `cohort` 9, `customer` 8, `client` 8, `team` 7, `department` 7, `station` 7,
 `site` 7, `status` 6, `stage` 6, `phase` 6, `type` 5, `sex` 5, `gender` 5,
 `race` 4, `ethnicity` 4.
+
+An [outcome to explain](#an-outcome-to-explain) is the grouping whenever it
+shares rows with the measure, whatever the scores.
 
 About ten groups reads well on a chart; two is thin, and sixty is too many
 bars. A design label such as a plate's `Row` (A to H) groups wells by where

@@ -163,7 +163,9 @@ def analyze(
         )
     frame, detected_name = _frame_from(data, sheet)
     try:
-        prepared = prepare_analysis(frame, row_limit=row_limit, date=date)
+        prepared = prepare_analysis(
+            frame, row_limit=row_limit, date=date, source_name=source_name or detected_name
+        )
     except ValueError as error:
         raise NothingToAnalyze(str(error)) from error
 

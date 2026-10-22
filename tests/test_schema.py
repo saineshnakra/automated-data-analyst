@@ -562,6 +562,172 @@ class MeasureChoiceTests(unittest.TestCase):
         self.assertEqual(detect_roles(frame).measure, "Troponin")
 
 
+class OutcomeTests(unittest.TestCase):
+    def setUp(self):
+        rng = np.random.default_rng(21)
+        self.label = np.array([0, 1] * 60)
+        self.separating = np.round(rng.normal(100 + 25 * self.label, 10), 1)
+        self.noise = np.round(rng.normal(25, 4, 120), 2)
+
+    def test_a_column_named_as_the_label_is_the_grouping_and_the_measure_tells_it_apart(self):
+        frame = pd.DataFrame({
+            "body_mass_index": self.noise,
+            "glucose": self.separating,
+            "sex": [0, 0, 1] * 40,
+            "target": self.label,
+        })
+
+        roles = detect_roles(frame)
+
+        self.assertEqual(roles.dimension, "target")
+        self.assertEqual(roles.measure, "glucose")
+        self.assertTrue(any("target names the label" in note for note in roles.notes))
+
+    def test_the_column_a_file_is_named_for_is_the_outcome(self):
+        frame = pd.DataFrame({"Rainfall": self.noise, "Slope": self.separating, "Landslide": self.label})
+
+        named = detect_roles(frame, "landslide_dataset.csv")
+
+        self.assertEqual(named.dimension, "Landslide")
+        self.assertEqual(named.measure, "Slope")
+        self.assertTrue(any("what the file is named for" in note for note in named.notes))
+        self.assertFalse(any("what the file is named for" in note for note in detect_roles(frame).notes))
+
+    def test_a_flag_filed_first_after_the_identifier_is_the_outcome(self):
+        frame = pd.DataFrame({
+            "id": [f"P{index}" for index in range(120)],
+            "fasting_ability": self.label,
+            "weight": self.noise,
+            "glucose": self.separating,
+        })
+
+        self.assertEqual(detect_roles(frame).dimension, "fasting_ability")
+
+    def test_a_reading_the_outcome_was_cut_from_is_not_the_measure(self):
+        frame = pd.DataFrame({
+            "Quake": np.where(self.label == 1, 4 + self.noise / 10, 3.9 - self.noise / 10),
+            "Slope": self.separating,
+            "Rainfall": self.noise,
+            "Landslide": self.label,
+        })
+
+        roles = detect_roles(frame, "landslide.csv")
+
+        self.assertEqual(roles.measure, "Slope")
+        self.assertTrue(any("Landslide is set by Quake" in note for note in roles.notes))
+
+    def test_follow_up_time_is_not_compared_across_its_own_event(self):
+        frame = pd.DataFrame({
+            "eventdeath": self.label,
+            "survival": np.round(10 - 5 * self.label + self.noise / 10, 2),
+            "esr1": self.separating,
+            "diam": self.noise,
+        })
+
+        roles = detect_roles(frame)
+
+        self.assertEqual(roles.dimension, "eventdeath")
+        self.assertNotEqual(roles.measure, "survival")
+        self.assertTrue(any("survival is follow-up time" in note for note in roles.notes))
+
+    def test_a_sex_code_filed_first_is_not_an_outcome(self):
+        frame = pd.DataFrame({"sex": self.label, "weight": self.noise, "glucose": self.separating})
+
+        self.assertNotIn("names the label", " ".join(detect_roles(frame).notes))
+        self.assertFalse(any("reads as the label" in note for note in detect_roles(frame).notes))
+
+
+class ExperimentUnitTests(unittest.TestCase):
+    def test_a_numbered_run_of_rows_under_fixed_settings_is_a_unit_not_a_reading(self):
+        rng = np.random.default_rng(4)
+        cases = np.repeat(np.arange(1, 9), 10)
+        frame = pd.DataFrame({
+            "case": cases,
+            "run": np.tile(np.arange(1, 11), 8),
+            "VB": np.round(np.tile(np.linspace(0, 1, 10), 8) + rng.normal(0, 0.02, 80), 3),
+            "feed": np.where(cases % 2 == 0, 0.5, 0.25),
+            "material": np.where(cases <= 4, 1, 2),
+            "vibration": np.round(rng.normal(0.3, 0.05, 80), 4),
+            "current": np.round(rng.normal(0.6, 0.2, 80), 4),
+        })
+
+        roles = detect_roles(frame)
+
+        self.assertIn("case", roles.factors)
+        self.assertIn("feed", roles.factors)
+        self.assertEqual(roles.measure, "VB")
+        self.assertTrue(any("case numbers blocks of consecutive rows" in note for note in roles.notes))
+
+    def test_a_reading_sorted_down_the_file_is_still_a_reading(self):
+        frame = pd.DataFrame({
+            "Revenue": np.repeat([100.0, 250.0, 400.0, 900.0, 1200.0, 1500.0], 5),
+            "Region": np.repeat(["N", "S", "E", "W", "C", "X"], 5),
+        })
+
+        self.assertEqual(detect_roles(frame).measure, "Revenue")
+
+
+class MeasureFamilyTests(unittest.TestCase):
+    def test_total_among_lab_readings_is_not_a_money_word(self):
+        rng = np.random.default_rng(8)
+        frame = pd.DataFrame({
+            "secchi": np.round(rng.normal(6, 2, 60), 1),
+            "calcium": np.round(rng.normal(20, 3, 60), 2),
+            "nitrates_total": np.round(rng.normal(0.2, 0.05, 60), 3),
+            "phosphorus_total": np.round(rng.normal(4, 1, 60), 2),
+        })
+
+        self.assertNotIn(detect_roles(frame).measure, ("nitrates_total", "phosphorus_total"))
+        self.assertEqual(detect_roles(frame, "georgian_bay_secchi.csv").measure, "secchi")
+
+    def test_total_beside_money_still_scores(self):
+        frame = pd.DataFrame({
+            "Unit Price": readings(40, centre=20),
+            "Order Total": readings(40, seed=5, centre=90),
+        })
+
+        self.assertEqual(detect_roles(frame).measure, "Order Total")
+
+    def test_the_lone_column_outside_a_family_of_descriptors_is_the_measure(self):
+        rng = np.random.default_rng(12)
+        columns = {"Hardness": np.round(rng.uniform(1, 10, 80), 1)}
+        for stem in ("allelectrons", "density", "val_e", "ionenergy", "zaratio"):
+            columns[f"{stem}_Average"] = np.round(rng.normal(10, 2, 80), 4)
+        columns["density_Total"] = np.round(rng.normal(40, 9, 80), 4)
+
+        self.assertEqual(detect_roles(pd.DataFrame(columns)).measure, "Hardness")
+
+    def test_the_mean_of_the_other_columns_is_the_measure(self):
+        rng = np.random.default_rng(13)
+        frame = pd.DataFrame({
+            name: np.round(rng.normal(27, 0.7, 60), 2) for name in ("D-J-F", "M-A-M", "J-J-A", "S-O-N")
+        })
+        frame["metANN"] = frame.mean(axis=1).round(2)
+
+        self.assertEqual(detect_roles(frame).measure, "metANN")
+
+    def test_the_average_of_a_reading_beats_its_extremes(self):
+        rng = np.random.default_rng(14)
+        average = rng.uniform(5, 100, 90)
+        frame = pd.DataFrame({
+            "pollutant_min": np.round(average * 0.5, 0),
+            "pollutant_max": np.round(average * 1.8, 0),
+            "pollutant_avg": np.round(average, 0),
+        })
+
+        self.assertEqual(detect_roles(frame).measure, "pollutant_avg")
+
+    def test_a_reading_in_a_unit_of_its_own_beats_unlabelled_link_figures(self):
+        rng = np.random.default_rng(15)
+        frame = pd.DataFrame({
+            "RSSI": rng.integers(-90, -50, 200),
+            "SNR": np.round(rng.normal(8, 2, 200), 2),
+            "Sound Level (dBA) (40 - 100)": rng.integers(40, 90, 200),
+        })
+
+        self.assertEqual(detect_roles(frame).measure, "Sound Level (dBA) (40 - 100)")
+
+
 class GroupingRuleTests(unittest.TestCase):
     def test_many_districts_with_several_samples_each_are_a_grouping(self):
         frame = pd.DataFrame({

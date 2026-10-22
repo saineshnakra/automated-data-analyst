@@ -115,7 +115,8 @@ ada ask orders.csv "which category made the most revenue"
   (`Viability %`, `Churn Rate`), measured levels (`Water Temp (°C)`, `pH`,
   `Concentration (mg/L)`), per-unit prices and anything it doesn't recognise as
   money or a count (`CO2`, `mpg`) are averaged, and so is a score or count per
-  subject when each row is one participant or sample. Averages get no totals
+  subject when each row is one participant or sample, or a lab reading named
+  "total" (`nitrates_total`, all forms of nitrate). Averages get no totals
   and no "share of total", and a change in a rate is reported in percentage
   points.
   When the name misleads, `aggregation="sum"` or `"mean"` (or **Combine rows
