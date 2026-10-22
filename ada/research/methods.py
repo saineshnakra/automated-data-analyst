@@ -921,6 +921,7 @@ def _figures_section(draft: Draft, result, references: References) -> None:
 def _figure_caption(asset: Asset) -> str:
     head = f"{asset.number}. {asset.title}" if asset.number else asset.title
     body = asset.caption[len(head) :].strip() if asset.caption.startswith(head) else asset.caption
+    body = body.removeprefix(".").strip()
     return f"**{asset.number or asset.id}.** {_sentence(asset.title)}" + (f" {body}" if body else "")
 
 

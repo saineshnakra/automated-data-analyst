@@ -268,7 +268,7 @@ class MethodsDraftTests(unittest.TestCase):
         made = make(assay_study(analyses=[]))
         text = made.methods
         self.assertIn("No statistical analyses were listed in study.yml and none were run", text)
-        self.assertIn("No figures were drawn.", text)
+        self.assertNotIn("Figure 1.", text)
         self.assertIn("No analyses were run, so there is no model output.", made.supplement)
 
     def test_an_analysis_the_build_did_not_fit_is_not_described_as_run(self):

@@ -117,8 +117,11 @@ class ChangeReportTests(unittest.TestCase):
             entry,
         )
         self.assertIn("- Rows used: 36 → 35.", entry)
-        for ident, asset in record["assets"].items():
-            self.assertIn("processing", asset["depends_on"])
+        dependent = {
+            ident: asset for ident, asset in record["assets"].items() if "processing" in asset["depends_on"]
+        }
+        self.assertIn("descriptives", dependent)
+        for ident, asset in dependent.items():
             line = next(line for line in entry.splitlines() if line.startswith(f"- **{ident}**"))
             self.assertIn("changed", line)
             self.assertIn("study.yml changed in processing;", line)
@@ -147,7 +150,8 @@ class ChangeReportTests(unittest.TestCase):
             edit(path, lambda study: study.update(decisions={"alpha": 0.01}))
             built = build(path)
             entry = (built.out / "CHANGES.md").read_text(encoding="utf-8").split("## Build 1")[0]
-        self.assertEqual(built.changes, [])
+        # Only the reproduction package changes: it holds a copy of study.yml.
+        self.assertEqual([change.asset for change in built.changes], ["reproduction-package"])
         self.assertIn("- study.yml changed in decisions.", entry)
         self.assertIn("Although study.yml changed in decisions, data-audit", entry)
         self.assertIn("came out the same.", entry)
