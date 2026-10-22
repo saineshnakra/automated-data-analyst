@@ -16,9 +16,10 @@ fired.
 The checks change nothing in the table, with one exception: cleaning sets
 clear missing-value codes to missing in every numeric column (see
 [Codes set to missing](#codes-set-to-missing)), and the checks list them as
-such. Everything else is reported for the reader to decide on.
-`statistics_frame` gives a copy with the cells that can't be readings blanked
-(see [Cells left out of statistics](#cells-left-out-of-statistics)).
+such. Everything else is reported for the reader to decide on. The brief does
+compute relationships and group comparisons on a copy with the cells that
+can't be readings blanked (see
+[Cells left out of statistics](#cells-left-out-of-statistics)).
 
 ## Where the results appear
 
@@ -26,9 +27,10 @@ such. Everything else is reported for the reader to decide on.
 |---|---|
 | `Analysis.quality()` | Every issue as a DataFrame: `Check`, `Columns`, `Rows`, `Share %`, `Detail`, `Rule`, `Examples`. Empty when nothing was flagged |
 | `Analysis.to_dict()["data_checks"]` | The same rows, JSON-safe |
-| The brief's **Data checks** card | The three leading issues about values and the two leading ones about gaps, with counts, and how complete the table is |
-| The brief's summary | A "Check these first" line when an issue touches the measure or the group the headline names |
+| The brief's **Data checks** card | The three issues about values and the two about gaps that cover the most rows, with counts, and how complete the table is |
+| The brief's summary | A "Check these first" line when an issue touches the measure or the group the headline names, covers 10% or more of the table (copied rows, simulated-looking data), or covers a quarter or more of a column |
 | The leading-group card | When the leading group's average rests on flagged values, a sentence saying so, with the group's median |
+| The relationship, comparison and outlier cards | How many flagged cells were left out of their calculation |
 | The app's Data room | A **Data checks** table |
 | Ask ADA | "outliers in X" and "are there impossible values" list the flagged values; any answer that uses flagged values, or names a flagged group, adds a caution |
 
@@ -164,9 +166,8 @@ has a texture instead (a counter that plateaus, readings rounded to quarters),
 and none is flagged. A value rounder than its neighbours (5.8 among 5.79 and
 5.81) is not counted.
 
-The same code in several columns is one issue. The checks for missing-value
-codes (`SENTINEL_VALUES`, `mask_sentinels`) are importable, so cleaning can use
-the same rules.
+The same code in several columns is one issue. Cleaning uses the same rules
+(`SENTINEL_VALUES`, `blank_codes`) to set clear codes to missing.
 
 ### Extreme values and second clusters
 
@@ -354,6 +355,11 @@ fill values, survey codes, values in swapped columns and stuck readings
 not marked. `statistics_frame(frame, issues)` returns a copy with those cells
 blank and a note such as "781 cells the data checks flagged (fill values) left
 out", or the frame itself and an empty note when nothing is marked.
+
+`analyze_business` builds that frame once and runs the relationship scan, the
+group comparisons and the outlier count on it; each of those cards adds the
+note to its calculation. With a wind-speed column stuck at one value for
+18,000 rows, the wind pair's r is computed without the stuck rows.
 
 ## Codes set to missing
 

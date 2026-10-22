@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
+from scipy import stats
 
 from .aggregation import (
     MatchedChange,
@@ -70,7 +71,16 @@ from .formatting import (
     with_aggregate,
 )
 from .metrics import MetricSpec, metric_for
-from .quality import QualityIssue, flagged_index, prefers_log_scale, show_value
+from .quality import (
+    TABLE_CHECKS,
+    QualityIssue,
+    counts_units,
+    flagged_index,
+    is_location_name,
+    prefers_log_scale,
+    show_value,
+    statistics_frame,
+)
 from .quality import scan as scan_quality
 from .schema import (
     TIME_PART_TOKENS,
@@ -1512,56 +1522,301 @@ MIN_GROUP_FOR_FENCES = 12
 #: Share of the flagged values that one unbroken run in time must hold to read as a shift.
 SHIFT_RUN_SHARE = 0.5
 MIN_SHIFT_RUN = 5
+#: Share of values a normal distribution puts outside Q1 − 1.5×IQR and Q3 + 1.5×IQR
+#: (each fence lies 4 × 0.6745 standard deviations out, so about 0.70%).
+NORMAL_OUTLIER_SHARE = float(2 * stats.norm.sf(4 * stats.norm.ppf(0.75)))
+#: A reading's count is reported when a normal sample of its size would reach
+#: it less often than this (binomial upper tail).
+OUTLIER_CHANCE = 0.01
+#: Readings counted at most, the measure first, and named beside the leading one.
+OUTLIER_READINGS = 40
+OUTLIERS_NAMED = 3
+#: Rows the quartiles and the choice of grouping come from in a large table;
+#: values are counted on every row.
+FENCE_SAMPLE_ROWS = 50_000
+#: Share of a reading's variance (epsilon squared) a grouping must explain to
+#: be judged within, and the most levels it may have.
+FENCE_GROUPING_SHARE = 0.01
+FENCE_GROUPING_LEVELS = 500
+#: Most levels a numeric setting (a swept frequency, a dose series) may have.
+FENCE_SETTING_LEVELS = 60
+#: Share of a reading one value may hold before its IQR measures that pile
+#: rather than the spread, and outlier fences say nothing.
+FENCE_PILE_SHARE = 0.25
 
 
-def _outlier_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
-    """Count measure values outside 1.5×IQR, judged the way the measure is shaped.
+@dataclass(frozen=True, eq=False)
+class _Outliers:
+    """One reading's values outside 1.5×IQR and how that compares with chance.
 
-    A right-skewed positive measure is judged on a log scale, and each group
-    against its own quartiles, so a long tail or one group's level is not
-    called exceptional. A measure that is mostly zeros gets no list at all. When
-    the flagged values form one run in time, the card reports a shift starting
-    then rather than scattered records.
+    ``flagged`` and ``present`` are over every row of the table, by position.
     """
-    if not roles.measure:
+
+    column: str
+    flagged: np.ndarray
+    present: np.ndarray
+    log: bool
+    grouping: str | None
+
+    @property
+    def count(self) -> int:
+        return int(self.flagged.sum())
+
+    @property
+    def values(self) -> int:
+        return int(self.present.sum())
+
+    @property
+    def expected(self) -> float:
+        return NORMAL_OUTLIER_SHARE * self.values
+
+    @property
+    def beyond_chance(self) -> bool:
+        return bool(stats.binom.sf(self.count - 1, self.values, NORMAL_OUTLIER_SHARE) < OUTLIER_CHANCE)
+
+
+def _is_setting(values: np.ndarray) -> bool:
+    """Whether a numeric column is a swept setting: a few evenly spaced levels, each about equally common.
+
+    A frequency stepped from 100 to 590 GHz in 50 equal steps, every step
+    measured as often, is a design setting a reading can be judged within; a
+    reading with few distinct values (temperatures in whole degrees) is not
+    balanced like that.
+    """
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return False
+    levels, counts = np.unique(values, return_counts=True)
+    if not 2 <= levels.size <= FENCE_SETTING_LEVELS or counts.max() > 2 * counts.min():
+        return False
+    steps = np.diff(levels)
+    return bool(np.allclose(steps, steps[0], rtol=1e-6))
+
+
+def _fence_candidates(
+    dataframe: pd.DataFrame, roles: ColumnRoles, sample: np.ndarray
+) -> dict[str, np.ndarray]:
+    """Columns a reading may be judged within, coded on every row.
+
+    The groupings, the codes, the subject column, and swept numeric settings
+    (``_is_setting``); each must leave its typical group in the ``sample`` rows
+    MIN_GROUP_FOR_FENCES values for quartiles of its own.
+    """
+    entity = entity_column(dataframe, roles)
+    named = [roles.dimension, *roles.dimensions, *roles.factors, entity]
+    # A matrix table's columns are its readings, never settings.
+    numeric = roles.numeric if roles.table_shape != "matrix" else ()
+    settings = [
+        column for column in numeric
+        if column not in named and column != roles.measure and column in dataframe.columns
+        and pd.api.types.is_numeric_dtype(dataframe[column])
+        and _is_setting(dataframe[column].to_numpy(dtype="float64", na_value=np.nan)[sample])
+    ]
+    candidates = {}
+    for column in dict.fromkeys(column for column in [*named, *settings] if column):
+        if column not in dataframe.columns or column == roles.date:
+            continue
+        codes, levels = pd.factorize(dataframe[column])
+        if not 2 <= len(levels) <= FENCE_GROUPING_LEVELS:
+            continue
+        sampled = codes[sample]
+        sizes = np.bincount(sampled[sampled >= 0])
+        if sizes.size == 0 or np.median(sizes[sizes > 0]) < MIN_GROUP_FOR_FENCES:
+            continue
+        candidates[column] = codes
+    return candidates
+
+
+def _explaining_grouping(
+    values: np.ndarray, column: str, candidates: dict[str, np.ndarray], sample: np.ndarray
+) -> str | None:
+    """The candidate that explains most of a reading's variance (epsilon squared), if any explains enough.
+
+    ``values`` are the reading's (scaled) values on the ``sample`` rows.
+    """
+    present = np.isfinite(values)
+    best, best_share = None, FENCE_GROUPING_SHARE
+    for grouping, all_codes in candidates.items():
+        if grouping == column:
+            continue
+        codes = all_codes[sample]
+        kept = present & (codes >= 0)
+        if kept.sum() < 2 * MIN_GROUP_FOR_FENCES:
+            continue
+        x, group = values[kept], codes[kept]
+        counts = np.bincount(group)
+        used = counts > 0
+        means = np.bincount(group, weights=x)[used] / counts[used]
+        total = float(((x - x.mean()) ** 2).sum())
+        between = float((counts[used] * (means - x.mean()) ** 2).sum())
+        levels, n = int(used.sum()), x.size
+        if total <= 0 or n <= levels:
+            continue
+        share = (between - (levels - 1) * (total - between) / (n - levels)) / total
+        if share > best_share:
+            best, best_share = grouping, share
+    return best
+
+
+def _reading_outliers(
+    dataframe: pd.DataFrame, column: str, candidates: dict[str, np.ndarray]
+) -> _Outliers | None:
+    """Values of one reading outside 1.5×IQR, judged on its shape and within the grouping that explains it.
+
+    The scale, the grouping and the quartiles come from at most
+    FENCE_SAMPLE_ROWS of the rows that hold the reading, chosen at random;
+    every row is counted.
+    """
+    if counts_units(column) or is_location_name(column):
         return None
-    series = dataframe[roles.measure].dropna()
-    if len(series) < 12 or series.nunique() < 4:
+    if not pd.api.types.is_numeric_dtype(dataframe[column]):
         return None
-    values = series.to_numpy(dtype=float)
-    zeros = float((values == 0).mean())
-    if zeros >= HEAVY_TAIL_ZEROS:
-        return _heavy_tail_evidence(roles.measure, values, zeros)
-    log = prefers_log_scale(np.sort(values))
-    scaled = pd.Series(np.log10(np.where(values > 0, values, np.nan)) if log else values, index=series.index)
-    groups = _fence_groups(dataframe, roles, series.index)
-    low, high = _fences(scaled, groups)
-    flagged = (scaled < low) | (scaled > high)
-    count = int(flagged.sum())
-    if count == 0:
+    values = dataframe[column].to_numpy(dtype="float64", na_value=np.nan)
+    present = np.isfinite(values)
+    if present.sum() < 12:
         return None
-    shift = _shift(dataframe, roles, flagged, groups)
-    if shift is not None:
-        return shift
-    rate = count / len(series) * 100
-    within = f" of their own {sentence_case(roles.dimension)}" if groups is not None else ""
-    on_log = f" on a log scale, since {roles.measure} is right-skewed" if log else ""
-    calculation = "Values below Q1 − 1.5×IQR or above Q3 + 1.5×IQR"
-    if groups is not None:
-        calculation += f", with quartiles taken within each {roles.dimension}"
+    if float((values[present] == 0).mean()) >= HEAVY_TAIL_ZEROS:
+        return None
+    sample = np.flatnonzero(present)
+    if sample.size > FENCE_SAMPLE_ROWS:
+        sample = np.sort(np.random.default_rng(0).choice(sample, FENCE_SAMPLE_ROWS, replace=False))
+    sampled = values[sample]
+    levels, counts = np.unique(sampled, return_counts=True)
+    if levels.size < 4 or counts.max() >= FENCE_PILE_SHARE * sampled.size:
+        return None
+    log = prefers_log_scale(np.sort(sampled), column)
     if log:
-        calculation += ", on log10 of the values"
+        with np.errstate(divide="ignore", invalid="ignore"):
+            scaled = np.where(values > 0, np.log10(values), np.nan)
+    else:
+        scaled = values
+    grouping = _explaining_grouping(scaled[sample], column, candidates, sample)
+    low, high = _fences(scaled, candidates.get(grouping) if grouping else None, sample)
+    with np.errstate(invalid="ignore"):
+        flagged = present & ((scaled < low) | (scaled > high))
+    return _Outliers(column, flagged, present, log, grouping)
+
+
+def _outlier_evidence(
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles,
+    readings: list[str] | None = None,
+    issues: tuple[QualityIssue, ...] = (),
+) -> Evidence | None:
+    """Count values outside 1.5×IQR in every reading, and report those beyond chance.
+
+    Each reading is judged the way it is shaped: a right-skewed positive
+    reading on a log scale, and against the quartiles of the grouping that
+    explains most of its variance (a station, a frequency, a sample), so a
+    long tail or one group's level is not called exceptional. A count of
+    subjects, a coordinate, or a reading a quarter of whose values are one
+    value (a floor, whose IQR measures the pile) is skipped. A normal sample
+    puts about 0.70% of its values outside the fences, so a count is
+    reported only when chance would rarely reach it. A measure that is
+    mostly zeros gets no list at all. When one reading's flagged values form
+    one run in time, the card reports a shift starting then rather than
+    scattered records. ``readings`` are the other columns to count; a matrix
+    table's columns are not counted one by one.
+    """
+    if roles.measure and roles.measure in dataframe.columns:
+        measure_values = dataframe[roles.measure].dropna().to_numpy(dtype=float)
+        zeros = float((measure_values == 0).mean()) if len(measure_values) else 0.0
+        if len(measure_values) >= 12 and zeros >= HEAVY_TAIL_ZEROS:
+            return _heavy_tail_evidence(roles.measure, measure_values, zeros)
+    if roles.table_shape == "matrix" or readings is None:
+        readings = []
+    columns = list(dict.fromkeys(column for column in [roles.measure, *readings] if column))
+    columns = [column for column in columns if column in dataframe.columns][:OUTLIER_READINGS]
+    if not columns:
+        return None
+    sample = np.arange(len(dataframe))
+    if len(dataframe) > FENCE_SAMPLE_ROWS:
+        sample = np.sort(np.random.default_rng(0).choice(len(dataframe), FENCE_SAMPLE_ROWS, replace=False))
+    candidates = _fence_candidates(dataframe, roles, sample)
+    found = [
+        result for column in columns if (result := _reading_outliers(dataframe, column, candidates))
+    ]
+    orders: dict = {}
+    for result in found:
+        shift = _shift(dataframe, roles, result, orders)
+        if shift is not None:
+            return shift
+    beyond = [result for result in found if result.count and result.beyond_chance]
+    if not beyond:
+        return None
+    measure = next((result for result in found if result.column == roles.measure), None)
+    lead = measure if measure in beyond else max(beyond, key=lambda result: result.count - result.expected)
+    others = sorted(
+        (result for result in beyond if result is not lead), key=lambda result: result.expected - result.count
+    )
+    parts = [_outlier_sentence(lead)]
+    if note := _pile_note(lead.column, issues):
+        parts.append(note)
+    if others:
+        named = [
+            f"{result.column} {result.count:,} ({_share_of(result)})"
+            for result in others[:OUTLIERS_NAMED]
+        ]
+        more = len(others) - OUTLIERS_NAMED
+        parts.append(f"Also beyond chance: {list_names(named + ([f'{more} more'] if more > 0 else []))}.")
+    if measure is not None and measure not in beyond:
+        held = _values_of(measure.count) if measure.count else "none"
+        parts.append(f"{measure.column}, the measure, has {held}, about what chance gives.")
+    calculation = (
+        "Values below Q1 − 1.5×IQR or above Q3 + 1.5×IQR in each numeric reading, with quartiles taken "
+        "within the grouping that explains most of its variance (epsilon squared of 1% or more), on log10 "
+        "for right-skewed readings; a count is reported when a normal sample of the same size would reach "
+        f"it with under {OUTLIER_CHANCE:.0%} chance (binomial, {NORMAL_OUTLIER_SHARE:.2%} expected outside)"
+    )
+    if any(result.values > FENCE_SAMPLE_ROWS for result in found):
+        calculation += (
+            f"; quartiles and groupings from a random sample of {FENCE_SAMPLE_ROWS:,} values of each "
+            "reading, counts on every row"
+        )
     return Evidence(
         kind="outliers",
         title="Exceptional records",
-        value=f"{count:,}",
-        statement=(
-            f"{count:,} {roles.measure} values ({format_percentage(rate)} of non-missing records) "
-            f"sit outside 1.5×IQR{within}{on_log}."
-        ),
+        value=f"{lead.count:,}",
+        statement=" ".join(parts),
         calculation=calculation,
         tone="warning",
     )
+
+
+def _values_of(count: int) -> str:
+    return f"{count:,} {'value' if count == 1 else 'values'}"
+
+
+def _share_of(result: _Outliers) -> str:
+    """The flagged share of a reading's values, "under 0.1%" rather than "0.0%"."""
+    share = result.count / result.values * 100
+    return "under 0.1%" if 0 < share < 0.1 else format_percentage(share)
+
+
+def _outlier_sentence(result: _Outliers) -> str:
+    """How many of a reading's values sit outside 1.5×IQR, against how many chance gives."""
+    within = f" of their own {sentence_case(result.grouping)}" if result.grouping else ""
+    on_log = f" on a log scale, since {result.column} is right-skewed" if result.log else ""
+    verb = "sits" if result.count == 1 else "sit"
+    chance = f"about {result.expected:,.0f}" if result.expected >= 1 else "fewer than 1"
+    return (
+        f"{_values_of(result.count)} of {result.column} ({_share_of(result)} of its non-missing values) "
+        f"{verb} outside 1.5×IQR{within}{on_log}, against {chance} that chance gives in normal data of "
+        "this size."
+    )
+
+
+def _pile_note(column: str, issues: tuple[QualityIssue, ...]) -> str:
+    """A sentence when a cap or floor in the column narrows its IQR, so the count partly reflects the pile."""
+    for issue in issues:
+        if issue.check == "cap" and column in issue.columns and issue.share >= 10:
+            side, value = issue.group
+            kind = "cap" if side == "maximum" else "floor"
+            return (
+                f"Its {kind} at {show_value(value)} holds {format_percentage(issue.share)} of its values and "
+                "narrows the IQR, so part of this count reflects the pile-up rather than the tails."
+            )
+    return ""
 
 
 def _heavy_tail_evidence(measure: str, values: np.ndarray, zeros: float) -> Evidence:
@@ -1582,51 +1837,76 @@ def _heavy_tail_evidence(measure: str, values: np.ndarray, zeros: float) -> Evid
     )
 
 
-def _fence_groups(dataframe: pd.DataFrame, roles: ColumnRoles, index: pd.Index) -> pd.Series | None:
-    """The grouping column's values for ``index``, when there is a grouping to judge within."""
-    if not roles.dimension or roles.dimension not in dataframe.columns:
-        return None
-    groups = dataframe.loc[index, roles.dimension]
-    return groups if groups.nunique() >= 2 else None
+def _fences(
+    scaled: np.ndarray, codes: np.ndarray | None, sample: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Q1 − 1.5×IQR and Q3 + 1.5×IQR for each row, from its group's quartiles where it has enough.
 
-
-def _fences(scaled: pd.Series, groups: pd.Series | None) -> tuple[pd.Series, pd.Series]:
-    """Q1 − 1.5×IQR and Q3 + 1.5×IQR for each value, from its group's quartiles where it has enough."""
-    present = scaled.dropna()
-    first, third = present.quantile([0.25, 0.75])
-    low = pd.Series(first - 1.5 * (third - first), index=scaled.index)
-    high = pd.Series(third + 1.5 * (third - first), index=scaled.index)
-    if groups is None:
+    Quartiles come from the ``sample`` rows; a group with fewer than
+    MIN_GROUP_FOR_FENCES values there, or no spread, uses the pooled ones.
+    """
+    values = scaled[sample]
+    finite = np.isfinite(values)
+    first, third = np.percentile(values[finite], [25, 75]) if finite.any() else (np.nan, np.nan)
+    low = np.full(scaled.shape, first - 1.5 * (third - first))
+    high = np.full(scaled.shape, third + 1.5 * (third - first))
+    if codes is None or codes.max() < 0:
         return low, high
-    quartiles = present.groupby(groups.loc[present.index]).quantile([0.25, 0.75]).unstack()
-    sizes = present.groupby(groups.loc[present.index]).size()
+    sampled = codes[sample]
+    kept = finite & (sampled >= 0)
+    table = pd.Series(values[kept]).groupby(sampled[kept])
+    quartiles = table.quantile([0.25, 0.75]).unstack()
+    sizes = table.size()
     spread = quartiles[0.75] - quartiles[0.25]
     usable = (sizes >= MIN_GROUP_FOR_FENCES) & (spread > 0)
-    own_low = groups.map((quartiles[0.25] - 1.5 * spread)[usable])
-    own_high = groups.map((quartiles[0.75] + 1.5 * spread)[usable])
-    return own_low.fillna(low), own_high.fillna(high)
+    own_low = np.full(int(codes.max()) + 1, np.nan)
+    own_high = np.full(int(codes.max()) + 1, np.nan)
+    groups = usable.index[usable.to_numpy()].to_numpy(dtype=int)
+    own_low[groups] = (quartiles[0.25] - 1.5 * spread)[usable].to_numpy()
+    own_high[groups] = (quartiles[0.75] + 1.5 * spread)[usable].to_numpy()
+    labelled = codes >= 0
+    row_low = np.where(labelled, own_low[np.where(labelled, codes, 0)], np.nan)
+    row_high = np.where(labelled, own_high[np.where(labelled, codes, 0)], np.nan)
+    return np.where(np.isnan(row_low), low, row_low), np.where(np.isnan(row_high), high, row_high)
+
+
+def _time_order(
+    dataframe: pd.DataFrame, roles: ColumnRoles, grouping: str | None
+) -> tuple[np.ndarray, np.ndarray]:
+    """Row positions with a time, in time order within each group, and each one's group code."""
+    times = dataframe[roles.date]
+    keys = pd.factorize(dataframe[grouping])[0] if grouping else np.zeros(len(dataframe), dtype=int)
+    order = np.lexsort((times.to_numpy(), keys))
+    order = order[times.notna().to_numpy()[order]]
+    return order, keys[order]
 
 
 def _shift(
-    dataframe: pd.DataFrame, roles: ColumnRoles, flagged: pd.Series, groups: pd.Series | None
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles,
+    result: _Outliers,
+    orders: dict | None = None,
 ) -> Evidence | None:
-    """Report flagged values that form one unbroken run in time as a shift starting at its first time.
+    """Report a reading's flagged values that form one unbroken run in time as a shift starting then.
 
-    Rows are put in time order within each group. A run counts when it holds
-    SHIFT_RUN_SHARE of the flagged values and at least MIN_SHIFT_RUN of them.
+    Rows are put in time order within each group of the grouping the reading
+    was judged within. A run counts when it holds SHIFT_RUN_SHARE of the
+    flagged values and at least MIN_SHIFT_RUN of them. ``orders`` caches the
+    time order by grouping across readings.
     """
-    if not roles.date or roles.date not in dataframe.columns:
+    if not roles.date or roles.date not in dataframe.columns or result.count < MIN_SHIFT_RUN:
         return None
-    ordered = pd.DataFrame({
-        "time": dataframe.loc[flagged.index, roles.date],
-        "group": groups if groups is not None else 0,
-        "flag": flagged,
-    }).dropna(subset=["time"])
-    ordered = ordered.sort_values(["group", "time"], kind="stable")
-    flags = ordered["flag"].to_numpy(dtype=bool)
+    column, grouping = result.column, result.grouping
+    orders = {} if orders is None else orders
+    if grouping not in orders:
+        orders[grouping] = _time_order(dataframe, roles, grouping)
+    order, keys = orders[grouping]
+    marked = result.flagged
+    kept = result.present[order]
+    sequence, keys = order[kept], keys[kept]
+    flags = marked[sequence]
     if not flags.any():
         return None
-    keys = pd.factorize(ordered["group"])[0]
     same_group = np.r_[False, keys[1:] == keys[:-1]]
     starts = flags & ~(np.r_[False, flags[:-1]] & same_group)
     runs = np.cumsum(starts) * flags
@@ -1636,21 +1916,23 @@ def _shift(
     total = int(flags.sum())
     if length < max(MIN_SHIFT_RUN, SHIFT_RUN_SHARE * total):
         return None
-    positions = np.flatnonzero(runs == longest)
-    first, last = ordered.iloc[positions[0]], ordered.iloc[positions[-1]]
-    group_end = positions[-1] == len(ordered) - 1 or keys[positions[-1] + 1] != keys[positions[-1]]
-    begun, ended = _moment(first["time"]), _moment(last["time"])
+    run = np.flatnonzero(runs == longest)
+    times = dataframe[roles.date]
+    first, last = times.iloc[sequence[run[0]]], times.iloc[sequence[run[-1]]]
+    group_end = run[-1] == len(sequence) - 1 or keys[run[-1] + 1] != keys[run[-1]]
+    begun, ended = _moment(first), _moment(last)
     where = ""
-    if groups is not None:
-        label = group_label(roles.dimension, first["group"])
-        where = f" for {label if label != str(first['group']) else f'{roles.dimension} {label}'}"
+    if grouping:
+        value = dataframe[grouping].iloc[sequence[run[0]]]
+        label = group_label(grouping, value)
+        where = f" for {label if label != str(value) else f'{grouping} {label}'}"
     until = "to the end of the record" if group_end else f"until {ended}"
     return Evidence(
         kind="outliers",
         title="Level shift",
         value=begun,
         statement=(
-            f"{roles.measure} left its usual range{where} at {begun} and stayed out for {length:,} "
+            f"{column} left its usual range{where} at {begun} and stayed out for {length:,} "
             f"readings in a row, {until}: {length:,} of the {total:,} values outside 1.5×IQR form this "
             "one run, so this is a shift starting then rather than scattered entry errors."
         ),
@@ -1676,14 +1958,16 @@ QUALITY_ISSUES_SHOWN = 3
 GAP_ISSUES_SHOWN = 2
 #: Issues named in the brief's summary as the ones to check first.
 CHECK_FIRST_SHOWN = 2
+#: Share of the table, in percent, at which an issue about the whole table
+#: (copied rows, simulated-looking data) is named first whatever the headline,
+#: and the share of a column at which any other issue about values is.
+CHECK_FIRST_SHARE = 10.0
+CHECK_FIRST_BROAD = 25.0
 
 
-def _leading_issues(issues: tuple[QualityIssue, ...], measure: str | None, limit: int) -> list[QualityIssue]:
-    """The issues to name first: those on the measure, then the rest, in scan order."""
-    ranked = [issue for issue in issues if measure in issue.columns] + [
-        issue for issue in issues if measure not in issue.columns
-    ]
-    return ranked[:limit]
+def _leading_issues(issues: tuple[QualityIssue, ...], limit: int) -> list[QualityIssue]:
+    """The issues to name first: those covering the most rows or cells."""
+    return sorted(issues, key=lambda issue: -issue.rows)[:limit]
 
 
 def _quality_evidence(
@@ -1710,8 +1994,8 @@ def _quality_evidence(
         )
     values = tuple(issue for issue in issues if not issue.check.startswith("missing"))
     gaps = tuple(issue for issue in issues if issue.check.startswith("missing"))
-    shown = _leading_issues(values, measure, QUALITY_ISSUES_SHOWN)
-    shown_gaps = _leading_issues(gaps, measure, GAP_ISSUES_SHOWN)
+    shown = _leading_issues(values, QUALITY_ISSUES_SHOWN)
+    shown_gaps = _leading_issues(gaps, GAP_ISSUES_SHOWN)
     parts = []
     if shown:
         parts.append("; ".join(issue.summary for issue in shown) + ".")
@@ -1729,10 +2013,12 @@ def _quality_evidence(
         statement=f"The data checks found {len(issues)} {noun} to look at before trusting these figures. "
         + " ".join(parts),
         calculation=(
-            "Every numeric column checked for values outside what its name allows, missing-value "
-            "codes, caps, repeated fill values, values more than 10 robust standard deviations out, "
-            "copied columns, max below min, and gaps that follow a group or another column; "
-            "Analysis.quality() lists every issue with its rule"
+            "Every numeric column checked for values outside what its name or a physical limit allows, "
+            "missing-value codes, caps, repeated fill values, values more than 10 robust standard "
+            "deviations out, second clusters, swapped and copied columns, max below min, stuck readings, "
+            "a group off by a unit factor, and gaps that follow a group or another column; the table for "
+            "copied rows and for flat, unrelated columns that suggest simulated data; issues ranked by the "
+            "rows they cover; Analysis.quality() lists every issue with its rule"
         ),
         tone="warning",
     )
@@ -1758,8 +2044,21 @@ def _issues_on_headline(
 
 
 def _check_first(issues: tuple[QualityIssue, ...], roles: ColumnRoles, leader: Evidence | None) -> str:
-    """One line naming the issues behind the headline, or "" when none touch it."""
-    relevant = _issues_on_headline(issues, roles, leader)[:CHECK_FIRST_SHOWN]
+    """One line naming the issues behind the headline, or "" when none touch it.
+
+    Issues about the whole table (copied rows, data that look simulated)
+    count when they cover CHECK_FIRST_SHARE of it, and any other issue about
+    values when it covers CHECK_FIRST_BROAD of its column (fill values in 61% of
+    rows), since they qualify figures well beyond the headline. The issues
+    covering most rows come first.
+    """
+    broad = [
+        issue for issue in issues
+        if not issue.check.startswith("missing")
+        and issue.share >= (CHECK_FIRST_SHARE if issue.check in TABLE_CHECKS else CHECK_FIRST_BROAD)
+    ]
+    behind = [issue for issue in _issues_on_headline(issues, roles, leader) if issue not in broad]
+    relevant = _leading_issues(tuple(broad + behind), CHECK_FIRST_SHOWN)
     if not relevant:
         return ""
     return "Check these first: " + "; ".join(issue.summary for issue in relevant) + "."
@@ -1983,8 +2282,8 @@ def _recommendations(evidence: list[Evidence], roles: ColumnRoles) -> tuple[Reco
                 "Watch",
                 "Review the extreme records",
                 (
-                    "Check whether the most extreme values are real or entry and measurement "
-                    "errors; either way they pull averages."
+                    "Look at what sets the most extreme records apart before averaging over them: "
+                    "values beyond 1.5×IQR are often real but rare, and either way they pull averages."
                 ),
                 outliers.statement,
             )
@@ -2098,6 +2397,13 @@ def _averaged_leader_phrase(leader: Evidence, roles: ColumnRoles) -> str:
     return f"{leader.subject} has the highest {centre}, at {leader.value}."
 
 
+def _noting(evidence: Evidence | None, left_out: str) -> Evidence | None:
+    """The card with the cells the data checks left out added to its calculation."""
+    if evidence is None or not left_out or evidence.title == "Heavy-tailed measure":
+        return evidence
+    return replace(evidence, calculation=f"{evidence.calculation}; {left_out}")
+
+
 def analyze_business(
     dataframe: pd.DataFrame,
     roles: ColumnRoles | None = None,
@@ -2112,6 +2418,10 @@ def analyze_business(
     roles = roles or detect_roles(dataframe)
     metric = metric_for(roles.measure, roles)
     issues = scan_quality(dataframe, roles)
+    # Cells the checks found can't be readings (codes, impossible values, fill
+    # values, swapped or stuck readings) are blanked for the scans that compare
+    # and relate columns, and each of those cards says how many were left out.
+    statistics, left_out = statistics_frame(dataframe, issues)
     evidence: list[Evidence] = []
 
     growth = _growth_evidence(dataframe, roles, frequency)
@@ -2124,14 +2434,14 @@ def analyze_business(
     evidence = _flag_driven_leader(evidence, dataframe, roles, issues)
     # Both scans work on the same numeric readings, which are slow to pick out of a wide table.
     readings = numeric_readings(dataframe, roles)
-    differences = _differences_evidence(dataframe, roles, readings)
+    differences = _noting(_differences_evidence(statistics, roles, readings), left_out)
     found_difference = differences is not None and differences.subject is not None
     if found_difference:
         evidence.append(differences)
     for optional_evidence in (
         _anomaly_evidence(dataframe, roles, frequency),
-        _relationship_evidence(dataframe, roles, readings),
-        _outlier_evidence(dataframe, roles),
+        _noting(_relationship_evidence(statistics, roles, readings), left_out),
+        _noting(_outlier_evidence(statistics, roles, readings, issues), left_out),
         # A scan that found nothing ranks below the findings.
         None if found_difference else differences,
         _quality_evidence(dataframe, issues, roles.measure),

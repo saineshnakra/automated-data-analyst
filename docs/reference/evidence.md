@@ -45,7 +45,7 @@ assembled in this order:
 | `differences` | Which numeric readings differ between groups, largest first, after adjusting for the number of tests | No grouping, no reading, or a scan of fewer than 3 comparisons that found nothing |
 | `anomaly` | The most severe flagged period and how many were flagged, against the band for its time of year when the series has a yearly pattern | Under 8 periods, or nothing flagged |
 | `relationship` | What relates to the measure, then the strongest other pair, or a null result | Fewer than two numeric readings, or no pair with 12 complete rows |
-| `outliers` | Measure values outside 1.5 × IQR, judged on the measure's shape and within groups; a shift when they form one run in time; for a mostly-zero measure, its tail instead | No measure, fewer than 12 values or 4 distinct values, or no outliers |
+| `outliers` | Values outside 1.5 × IQR in every reading, judged on each one's shape and within the grouping that explains it; a shift when one reading's form one run in time; for a mostly-zero measure, its tail instead | No reading with more flagged values than chance gives, and no shift |
 | `quality` | The data checks' leading issues with counts, and the share of populated cells | No issue and no missing cells |
 
 A `differences` card that found nothing comes after `outliers` rather than
@@ -161,43 +161,72 @@ question, and how concentrated rainfall is across weather stations is not.
 
 ### Outliers
 
-The card counts measure values below Q1 − 1.5 × IQR or above Q3 + 1.5 × IQR,
-measured the way the measure is shaped:
+The card counts values below Q1 − 1.5 × IQR or above Q3 + 1.5 × IQR in the
+measure and every other numeric reading (up to 40, `OUTLIER_READINGS`; a
+matrix table's columns are not counted one by one), each measured the way it
+is shaped:
 
-- A non-negative, right-skewed measure (concentrations, latencies, counts) is
+- A non-negative, right-skewed reading (concentrations, latencies, counts) is
   judged on log10 of its values, when that makes its bulk more symmetric
   (`prefers_log_scale` in `ada/quality.py`). On the raw scale its long tail
   would be called exceptional.
-- With a grouping column, each group's values are judged against that group's
-  own quartiles, so a group's level is not mistaken for outliers (arctic and
-  tropical stations). A group with fewer than 12 values (`MIN_GROUP_FOR_FENCES`)
-  or no spread uses the pooled quartiles.
-- When half or more of the values are 0 (`HEAVY_TAIL_ZEROS`), no outliers are
-  listed. The card is titled **Heavy-tailed measure** and gives the share of
-  zeros and the 99th percentile instead.
-- With a date, the flagged values are put in time order within each group.
-  When one unbroken run holds at least half of them and at least five
-  (`SHIFT_RUN_SHARE`, `MIN_SHIFT_RUN`), the card is titled **Level shift**: the
-  measure left its usual range at the run's first time and stayed out, to the
-  end of the record or until its last time. A fire that raises every reading
-  for ten minutes is an event, not a run of entry errors.
+- Each reading is judged within the grouping that explains most of its
+  variance (epsilon squared of 1% or more): the grouping column, another
+  grouping or code, the subject column (a station), or a swept numeric setting
+  (a frequency stepped evenly over up to 60 levels, each about equally common).
+  Each group's values are judged against that group's own quartiles, so a
+  group's level is not mistaken for outliers (arctic and tropical stations,
+  resonant frequencies). A group with fewer than 12 values
+  (`MIN_GROUP_FOR_FENCES`) or no spread uses the pooled quartiles.
+- A count of subjects or samples is skipped, and so is a reading a quarter of
+  whose values are one value: its IQR measures that pile, not the spread.
+- A normal sample puts about 0.70% of its values outside the fences, so a
+  reading's count is reported only when a normal sample of its size would reach
+  it with under 1% chance (binomial, `OUTLIER_CHANCE`). One value in 104 is what
+  chance gives and raises no card. The card leads with the measure when its
+  count is beyond chance, and otherwise with the reading furthest beyond it;
+  it names up to three more (`OUTLIERS_NAMED`), says when the measure's count is
+  about what chance gives, and notes when a cap or floor holding 10% or more of
+  the lead reading narrows its IQR.
+- Cells the data checks flagged as impossible, codes, fill values, swapped or
+  stuck are left out, and the calculation says how many.
+- For a reading with more than 50,000 values, the scale, the quartiles and the
+  choice of grouping come from a random sample of 50,000 of them
+  (`FENCE_SAMPLE_ROWS`); the values are counted on every row.
+- When half or more of the measure's values are 0 (`HEAVY_TAIL_ZEROS`), no
+  outliers are listed. The card is titled **Heavy-tailed measure** and gives the
+  share of zeros and the 99th percentile instead.
+- With a date, each reading's flagged values are put in time order within each
+  group, the measure first. When one unbroken run holds at least half of them
+  and at least five (`SHIFT_RUN_SHARE`, `MIN_SHIFT_RUN`), the card is titled
+  **Level shift**: that reading left its usual range at the run's first time and
+  stayed out, to the end of the record or until its last time. A fire that
+  raises every reading for ten minutes is an event, not a run of entry errors.
 
 ### Data checks
 
 Before the cards are built, `ada/quality.py` scans every numeric column; see
 [Data checks](quality.md). When it finds anything, the `quality` card is
 titled **Data checks**, its value is the number of issues, and it names the
-three leading issues about values (`QUALITY_ISSUES_SHOWN`) and the two leading
-ones about gaps (`GAP_ISSUES_SHOWN`), the measure's first, each with its
-counts, followed by how complete the table is. `Analysis.quality()` lists them
+three issues about values (`QUALITY_ISSUES_SHOWN`) and the two about gaps
+(`GAP_ISSUES_SHOWN`) that cover the most rows, each with its counts, followed by
+how complete the table is. `Analysis.quality()` lists them
 all. With no issue, the card is the earlier **Data completeness** card,
 skipped when nothing is missing.
 
-Two more sentences come from the same checks:
+More comes from the same checks:
 
 - **Check these first.** When an issue touches the measure, or the group the
-  headline names, the summary ends with up to two of them
-  (`CHECK_FIRST_SHOWN`).
+  headline names, or covers 10% or more of the table as copied rows or
+  simulated-looking data do (`CHECK_FIRST_SHARE`), or is any other issue about
+  values covering a quarter of its column or more (`CHECK_FIRST_BROAD`, such as
+  fill values in 61% of rows), the summary ends with up to two of them
+  (`CHECK_FIRST_SHOWN`), those covering the most rows first.
+- **Cells left out.** The relationship scan, the group comparisons and the
+  outlier count run on a copy of the table with the cells the checks found
+  can't be readings blanked (`statistics_frame` in `ada/quality.py`): impossible
+  values, codes, fill values, swapped and stuck readings. Each of those cards
+  ends its calculation with how many cells were left out.
 - **A leader carried by flagged values.** For an averaged measure, the leading
   group's average is recomputed without the values the checks flagged
   (impossible values, codes, extreme values, survey codes). When that moves it
@@ -355,7 +384,8 @@ recommendation explains which columns would enable the analysis.
 
 Recommendations are suggestions of what to look at next, worded for any
 table: they name only the splits the table has (no "time window" without a
-date), and an extreme value is something to check, not presumed an error.
+date), and an extreme value is something to check, not presumed an error: the
+outlier recommendation says values beyond 1.5 × IQR are often real but rare.
 
 ## The Markdown report
 

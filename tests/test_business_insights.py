@@ -1325,13 +1325,50 @@ class OutlierShapeTests(unittest.TestCase):
             "Station": np.repeat(["Tropic", "Arctic"], 300),
             "MaxTemp": np.r_[rng.normal(30, 2, 300), rng.normal(-20, 2, 300)],
         })
-        frame.loc[0, "MaxTemp"] = 45.0
+        frame.loc[0:11, "MaxTemp"] = 45.0
 
         outliers = brief_card(analyze_business(frame, lab_roles(frame, "MaxTemp", "Station")), "outliers")
 
         assert outliers is not None
-        self.assertLessEqual(int(outliers.value.replace(",", "")), 10)
+        self.assertLessEqual(int(outliers.value.replace(",", "")), 20)
         self.assertIn("of their own station", outliers.statement)
+
+    def test_outliers_are_judged_within_the_grouping_that_explains_them(self):
+        rng = np.random.default_rng(37)
+        frequency = np.tile(np.arange(100.0, 600.0, 10.0), 40)
+        resonance = np.where(frequency % 100 == 0, 400.0, 100.0)
+        frame = pd.DataFrame({
+            "Sample": np.repeat(["A", "B", "C", "D"], 500),
+            "Frequency": frequency,
+            "Signal": resonance + rng.normal(0, 5, 2000),
+        })
+
+        outliers = brief_card(analyze_business(frame, lab_roles(frame, "Signal", "Sample")), "outliers")
+
+        # Pooled, every resonant reading would sit outside 1.5×IQR; within frequency none do.
+        self.assertTrue(outliers is None or "of their own frequency" in outliers.statement)
+
+    def test_a_count_within_chance_raises_no_card(self):
+        rng = np.random.default_rng(38)
+        frame = pd.DataFrame({"Potassium": rng.normal(60, 8, 104), "Nitrogen": rng.normal(22, 2, 104)})
+        frame.loc[0, "Potassium"] = 120.0
+
+        outliers = brief_card(analyze_business(frame, lab_roles(frame, "Potassium")), "outliers")
+
+        self.assertIsNone(outliers)
+
+    def test_every_reading_is_counted_and_the_measure_named_when_within_chance(self):
+        rng = np.random.default_rng(39)
+        nitrogen = rng.normal(22, 2, 400)
+        nitrogen[:40] = rng.uniform(40, 60, 40)
+        frame = pd.DataFrame({"Potassium": rng.normal(60, 8, 400), "Nitrogen": nitrogen})
+
+        outliers = brief_card(analyze_business(frame, lab_roles(frame, "Potassium")), "outliers")
+
+        assert outliers is not None
+        self.assertIn("of Nitrogen", outliers.statement)
+        self.assertIn("Potassium, the measure, has", outliers.statement)
+        self.assertIn("chance", outliers.statement)
 
     def test_a_mostly_zero_measure_is_described_as_heavy_tailed(self):
         rng = np.random.default_rng(33)
@@ -1363,7 +1400,8 @@ class OutlierShapeTests(unittest.TestCase):
         rng = np.random.default_rng(35)
         times = pd.date_range("2024-01-01", periods=300, freq="D")
         values = rng.normal(100, 5, 300)
-        values[[20, 140, 260]] = [160.0, 40.0, 170.0]
+        far = [160.0, 40.0, 170.0, 150.0, 45.0, 155.0, 165.0, 35.0, 158.0, 42.0]
+        values[[20, 50, 80, 110, 140, 170, 200, 230, 260, 290]] = far
         frame = pd.DataFrame({"Day": times, "Reading": values})
 
         brief = analyze_business(frame, lab_roles(frame, "Reading", date="Day"))
@@ -1416,6 +1454,55 @@ class DataCheckTests(unittest.TestCase):
 
         assert checks is not None
         self.assertEqual(checks.title, "Data completeness")
+
+    def test_copied_rows_over_a_tenth_of_the_table_are_checked_first(self):
+        rng = np.random.default_rng(63)
+        base = pd.DataFrame({
+            "Result": rng.choice(["0", "1"], 300),
+            "Hemoglobin": rng.normal(13, 2, 300).round(1),
+            "MCV": rng.normal(85, 9, 300).round(1),
+        })
+        frame = pd.concat([base, base.iloc[:150]], ignore_index=True)
+
+        brief = analyze_business(frame, lab_roles(frame, "MCV", "Result"))
+
+        copies = r"Check these first: 15\d rows \(3\d%\) are exact copies of other rows"
+        self.assertRegex(brief.summary, copies)
+
+    def test_fill_values_in_most_rows_are_checked_before_a_single_bad_value(self):
+        rng = np.random.default_rng(65)
+        filled = rng.random(600) < 0.6
+        frame = pd.DataFrame({
+            "Diagnosis": rng.choice(["Healthy", "Anaemia", "Leukaemia"], 600),
+            "MCV": np.r_[rng.normal(86, 6, 599).round(3), [-79.3]],
+            "HCT": np.where(filled, 46.1526, rng.normal(40, 4, 600).round(1)),
+        })
+
+        brief = analyze_business(frame, lab_roles(frame, "MCV", "Diagnosis"))
+
+        self.assertIn("Check these first: HCT: 46.1526 in", brief.summary)
+        self.assertIn("MCV: 1 negative value (-79.3)", brief.summary)
+
+    def test_flagged_codes_are_left_out_of_the_relationship_scan(self):
+        rng = np.random.default_rng(64)
+        speed = rng.gamma(3, 1.2, 500).round(1)
+        frame = pd.DataFrame({
+            "Station": rng.choice(["North", "South"], 500),
+            "Wind Speed": speed,
+            "Maximum Wind Speed": (speed * 1.4 + rng.gamma(2, 2, 500)).round(1),
+            "Air Temperature": rng.normal(15, 5, 500).round(1),
+        })
+        frame.loc[:3, ["Wind Speed", "Maximum Wind Speed"]] = 999.9
+        roles = lab_roles(frame, "Air Temperature", "Station")
+
+        relationship = brief_card(analyze_business(frame, roles), "relationship")
+
+        assert relationship is not None
+        left_out = "8 cells the data checks flagged (missing-value codes) left out"
+        self.assertIn(left_out, relationship.calculation)
+        pooled = frame.drop(index=range(4))
+        expected = pooled["Wind Speed"].corr(pooled["Maximum Wind Speed"])
+        self.assertIn(f"r = {expected:.2f}", relationship.statement)
 
 
 if __name__ == "__main__":

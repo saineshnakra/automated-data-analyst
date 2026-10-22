@@ -308,7 +308,8 @@ class Analysis:
         return column_profile(self.frame)
 
     def quality(self) -> pd.DataFrame:
-        """Every issue the data checks found, one row each, the most consequential first.
+        """Every issue the data checks found, one row each: issues about values
+        before issues about gaps, each ranked by the rows they cover.
 
         Columns: ``Check``, ``Columns``, ``Rows`` (cells or rows affected),
         ``Share %``, ``Detail`` (a plain sentence), ``Rule`` (what fired) and

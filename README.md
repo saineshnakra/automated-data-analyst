@@ -86,13 +86,16 @@ ada ask orders.csv "which category made the most revenue"
   (`Con riego`, `CON RIEGO`). Identical rows are counted, not dropped;
   repeated headers and dropped empty columns are named.
 - **Checks the data before trusting it**: every numeric column is scanned for
-  values its name rules out (a percentage over 100, a negative yield, pH past
-  14), codes such as `-999` or `999.9`, values piled up at a limit, filled-in
-  gaps, values far from the rest, copied columns, max below min, and gaps that
-  follow a group or another column. The brief lists the leading issues and
-  says which to check first; `report.quality()` returns them all. Only clear
-  missing-value codes are changed: they are set to missing in every column,
-  with a note per column, before anything is computed.
+  values its name or a physical limit rules out (a percentage over 100, a
+  negative yield, pH past 14, potassium of 19 mmol/L, a wind speed of 280 m/s),
+  codes such as `-999` or `999.9`, values piled up at a limit, filled-in gaps,
+  values far from the rest, second clusters, swapped and copied columns, max
+  below min, stuck sensors, and gaps that follow a group or another column;
+  the table as a whole for copied rows and for flat, unrelated columns that
+  suggest simulated data. The brief lists the issues covering the most rows
+  and says which to check first; `report.quality()` returns them all. Only a
+  clear code in the measure is set aside, with a note, but relationships and
+  group comparisons are computed without the cells the checks flagged.
 - **Detects column roles**: the date, the measure, the grouping column and an
   ID column, from names, values and cardinality. Numeric category codes (a 0/1
   flag, a status, a set dose, a swept frequency) group rows instead of being
