@@ -2794,14 +2794,16 @@ def _indicators(
     rules: tuple[GroupingRule, ...],
     built: Construction | None,
     room: int,
+    readings: tuple[str, ...] = (),
 ) -> _Indicators:
     """Groupings of 2 to MAX_FACTOR_LEVELS levels across which the measure clearly differs, as indicators.
 
     A cutting speed, a material or a dose set by the design moves a reading
     beside the readings recorded with it, so the model holds it fixed too.
     The subject, a case number, the identifier and a grouping that holds the
-    measure by definition are never factors; at most ``room`` indicator
-    columns are made, from the clearest factors first.
+    measure or one of the ``readings`` modelled beside it by definition are
+    never factors; at most ``room`` indicator columns are made, from the
+    clearest factors first.
     """
     frame = dataframe
     skip = {roles.identifier, roles.date, roles.measure, entity_column(dataframe, roles)}
@@ -2815,7 +2817,12 @@ def _indicators(
         sizes = data["group"].value_counts()
         if not 2 <= len(sizes) <= MAX_FACTOR_LEVELS or sizes.min() < MIN_NAMED_GROUP:
             continue
-        if _derived_grouping(dataframe, roles, rules, built, roles.measure, factor):
+        # A grouping cut from the measure or from a reading beside it (an AQI level
+        # from PM) says again what those readings say.
+        if any(
+            _derived_grouping(dataframe, roles, rules, built, reading, factor)
+            for reading in (roles.measure, *readings)
+        ):
             continue
         groups = [part["value"].to_numpy(dtype=float) for _, part in data.groupby("group", observed=True)]
         with np.errstate(all="ignore"):
@@ -2911,7 +2918,7 @@ def _joint_model_evidence(
     inputs = not roles.dimension and not roles.dimensions and not roles.factors
     predictors, left_out = _model_predictors(dataframe, roles, scan, inputs)
     limit = MAX_INPUT_TERMS if inputs else MAX_MODEL_TERMS
-    coded = _indicators(dataframe, roles, rules, built, room=limit - 1)
+    coded = _indicators(dataframe, roles, rules, built, room=limit - 1, readings=tuple(predictors[:limit]))
     model = fit_joint_model(coded.frame, roles.measure, [*coded.against, *predictors], limit=limit)
     if model is None:
         return None

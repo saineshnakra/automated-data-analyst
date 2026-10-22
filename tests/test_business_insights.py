@@ -1867,6 +1867,24 @@ class JointModelCardTests(unittest.TestCase):
         self.assertIn("against material iron", model.statement)
         self.assertIn("each level a 0/1 indicator against the most common one", model.calculation)
 
+    def test_a_grade_cut_from_a_reading_in_the_model_is_not_a_factor(self):
+        rng = np.random.default_rng(63)
+        pm = rng.gamma(2, 40, 600)
+        frame = pd.DataFrame({
+            "Site": rng.choice(["a", "b"], 600),
+            "pm": pm,
+            "AQI_Level": np.select([pm < 50, pm < 100], ["Good", "Moderate"], "Unhealthy"),
+            "humidity": rng.normal(70, 8, 600),
+        })
+        frame.loc[frame.sample(30, random_state=2).index, "AQI_Level"] = "Moderate"
+        frame["gas"] = frame["pm"] + 3 * frame["humidity"] + rng.normal(0, 20, 600)
+        roles = replace(roles_for(frame, "gas", "Site"), dimensions=("Site", "AQI_Level"))
+
+        model = brief_card(analyze_business(frame, roles), "model")
+
+        assert model is not None
+        self.assertNotIn("AQI_Level", model.statement)
+
     def test_inputs_that_explain_little_still_get_their_model(self):
         rng = np.random.default_rng(60)
         frame = pd.DataFrame(rng.uniform(100, 500, (400, 4)), columns=["Cement", "Water", "Sand", "Ash"])
