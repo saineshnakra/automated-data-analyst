@@ -15,7 +15,7 @@ ADA is MIT-licensed and depends only on permissively licensed libraries.
 |---|---|---|
 | [pandas](https://pandas.pydata.org) | BSD-3-Clause | Reading CSV and Excel files, cleaning, grouping and every aggregation |
 | [NumPy](https://numpy.org) | BSD-3-Clause | The array arithmetic behind the vectorised group tests, correlations and trendlines |
-| [SciPy](https://scipy.org) | BSD-3-Clause | The t, F, chi-squared and normal distributions behind every p-value; `scipy.stats.chi2_contingency` and `fisher_exact` for rate comparisons; `tukey_hsd` for the pairs of groups that differ; ranks; `kstwo`, `kurtosis` and `binom` for the data checks and the outlier counts |
+| [SciPy](https://scipy.org) | BSD-3-Clause | The t, F, chi-squared and normal distributions behind every p-value; `scipy.stats.chi2_contingency` and `fisher_exact` for rate comparisons; `studentized_range` for Tukey's HSD on the pairs of groups that differ; ranks; `kstwo`, `kurtosis` and `binom` for the data checks and the outlier counts |
 | [statsmodels](https://www.statsmodels.org) | BSD-3-Clause | The Benjamini-Hochberg false-discovery-rate adjustment (`multipletests`); Newcombe's interval for a difference in rates (`confint_proportions_2indep`); ordinary least squares for the joint model, with `variance_inflation_factor` for collinearity |
 | [ruptures](https://centre-borelli.github.io/ruptures-docs/) | BSD-2-Clause | Binary segmentation (`Binseg`) to find a lasting change in the level of the measure's period series |
 | [openpyxl](https://openpyxl.readthedocs.io) | MIT | Reading `.xlsx` files through pandas |

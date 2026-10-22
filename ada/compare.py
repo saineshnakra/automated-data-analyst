@@ -245,7 +245,8 @@ class GroupComparison:
     #: Share of the table's rows with both the reading and the grouping recorded.
     coverage: float = 1.0
     #: After a clear difference in means across three or more groups, the pairs of
-    #: groups Tukey's HSD tells apart (higher, lower, adjusted p), and how many pairs it tried.
+    #: groups Tukey's HSD tells apart (higher, lower, Tukey-Kramer q), largest q first, and how many
+    #: pairs it tried.
     pairs_apart: tuple[tuple[str, str, float], ...] = ()
     pairs_tried: int = 0
 
@@ -992,9 +993,13 @@ PAIRS_NAMED = 3
 def _post_hoc(comparison: GroupComparison, values: pd.Series, groups: pd.Series) -> GroupComparison:
     """Which pairs of groups differ, by Tukey's HSD, after a clear difference in means across three or more.
 
-    The omnibus test says only that some group differs. ``scipy.stats.tukey_hsd``
-    compares every pair with the family-wise error held at 5%. Groups too
-    small to name are left out of it.
+    The omnibus test says only that some group differs. Tukey's HSD compares
+    every pair with the family-wise error held at 5%: a pair differs when its
+    Tukey-Kramer q exceeds the 95th percentile of the studentized range
+    (``scipy.stats.studentized_range``), which decides exactly as
+    ``scipy.stats.tukey_hsd`` does. That percentile is found once, where a
+    p-value for every pair would integrate the distribution once per pair.
+    Groups too small to name are left out of it.
     """
     c = comparison
     named = [group for group in c.groups if group.n >= MIN_NAMED_GROUP]
@@ -1002,14 +1007,18 @@ def _post_hoc(comparison: GroupComparison, values: pd.Series, groups: pd.Series)
         return c
     data = pd.DataFrame({"value": values.to_numpy(), "group": groups.to_numpy()}).dropna()
     samples = [data.loc[data["group"] == group.value, "value"].to_numpy(dtype=float) for group in named]
-    result = stats.tukey_hsd(*samples)
-    apart = [
-        (named[first].label, named[second].label, float(result.pvalue[first, second]))
-        for first, second in itertools.combinations(range(len(named)), 2)
-        if result.pvalue[first, second] < ALPHA
-    ]
+    sizes = np.array([sample.size for sample in samples], dtype=float)
+    means = np.array([sample.mean() for sample in samples])
+    freedom = sizes.sum() - len(samples)
+    pooled = sum(float(((sample - sample.mean()) ** 2).sum()) for sample in samples) / freedom
+    critical = float(stats.studentized_range.ppf(1 - ALPHA, len(samples), freedom))
+    apart = []
+    for first, second in itertools.combinations(range(len(named)), 2):
+        q = abs(means[first] - means[second]) / np.sqrt(pooled / 2 * (1 / sizes[first] + 1 / sizes[second]))
+        if q > critical:
+            apart.append((named[first].label, named[second].label, float(q)))
     tried = len(named) * (len(named) - 1) // 2
-    return replace(c, pairs_apart=tuple(sorted(apart, key=lambda pair: pair[2])), pairs_tried=tried)
+    return replace(c, pairs_apart=tuple(sorted(apart, key=lambda pair: -pair[2])), pairs_tried=tried)
 
 
 def post_hoc_sentence(comparison: GroupComparison) -> str:
@@ -2247,7 +2256,7 @@ def comparison_calculation(comparison: GroupComparison) -> str:
     if c.zero_heavy:
         steps.append("share of values that are not 0 per group, chi-squared test")
     if c.pairs_tried:
-        steps.append("pairs by Tukey's HSD (scipy.stats.tukey_hsd)")
+        steps.append("pairs by Tukey's HSD (Tukey-Kramer q against scipy.stats.studentized_range at 95%)")
     if c.trend is not None:
         steps.append(f"trend: Spearman's ρ between the {c.grouping} level and {c.measure}")
     if c.entity:

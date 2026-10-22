@@ -211,7 +211,30 @@ class ManyGroupTests(unittest.TestCase):
         self.assertEqual(comparison.pairs_tried, 6)
         self.assertEqual(len(comparison.pairs_apart), int((expected[np.triu_indices(4, 1)] < 0.05).sum()))
         self.assertIn("Tukey's HSD tells", describe_comparison(comparison))
-        self.assertIn("scipy.stats.tukey_hsd", comparison_calculation(comparison))
+        self.assertIn("scipy.stats.studentized_range", comparison_calculation(comparison))
+
+    def test_tukeys_hsd_tells_apart_the_same_pairs_as_scipy(self):
+        rng = np.random.default_rng(31)
+        sizes = [12, 30, 18, 25, 40, 9, 22, 15]
+        frame = pd.DataFrame({
+            "Dose": np.repeat([f"D{index}" for index in range(len(sizes))], sizes),
+            "Response": np.concatenate([rng.normal(step * 0.35, 1, size) for step, size in enumerate(sizes)]),
+        })
+
+        comparison = compare_groups(frame, "Response", "Dose")
+
+        assert comparison is not None
+        labels = {group.value: group.label for group in comparison.groups}
+        order = sorted(labels)
+        samples = [frame.loc[frame["Dose"] == value, "Response"].to_numpy() for value in order]
+        expected = stats.tukey_hsd(*samples).pvalue
+        apart = {
+            frozenset((labels[order[first]], labels[order[second]]))
+            for first in range(len(order))
+            for second in range(first + 1, len(order))
+            if expected[first, second] < 0.05
+        }
+        self.assertEqual({frozenset(pair[:2]) for pair in comparison.pairs_apart}, apart)
 
     def test_no_clear_difference_gets_no_pairs(self):
         rng = np.random.default_rng(45)

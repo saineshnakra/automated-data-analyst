@@ -59,11 +59,15 @@ the check. The statement says why ranks were used.
 
 The test across three or more groups says only that some group differs. After
 a clear difference in means across 3 to 12 groups of 5 or more values, every
-pair is compared by Tukey's HSD (`scipy.stats.tukey_hsd`), which holds the
-chance of any false pair at 5%, and the statement names the pairs it tells
-apart, or the few it does not: "Tukey's HSD tells 5 of the 6 pairs apart; only
-30-60 with 60-90 is not." The pairs are kept on the comparison as
-`pairs_apart`, with `pairs_tried`.
+pair is compared by Tukey's HSD, which holds the chance of any false pair at
+5%, and the statement names the pairs it tells apart, or the few it does not:
+"Tukey's HSD tells 5 of the 6 pairs apart; only 30-60 with 60-90 is not." A
+pair differs when its Tukey-Kramer q is above the 95th percentile of the
+studentized range (`scipy.stats.studentized_range`), the same decision
+`scipy.stats.tukey_hsd` makes; the percentile is found once rather than a
+p-value integrated for every pair, which took over a second for 12 groups.
+The pairs are kept on the comparison as `pairs_apart`, largest q first, with
+`pairs_tried`.
 
 ### Readings that are mostly zero
 
