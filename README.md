@@ -38,7 +38,8 @@ print(report)
 lab-measurements.csv — 936 rows, 02 Sep 2024 to 23 Feb 2026
   date=Run Date  measure=Viability % (mean)  segment=Treatment
 
-+0.1 pts latest movement; Control has the highest median, at 91.9%.
+Viability % differs across Treatment: Control has the highest median, 91.9% (n = 232), and
+Compound B the lowest, 85.1% (n = 233); ε² = 0.64.
 ...
   91.9%  Highest median by treatment
       Viability % differs across Treatment: Control has the highest median, 91.9%, and Compound B
@@ -46,11 +47,12 @@ lab-measurements.csv — 936 rows, 02 Sep 2024 to 23 Feb 2026
       (ε² = 0.64, Kruskal-Wallis, p < 0.001); a value from Control is the larger in 98% of pairs
       against Compound B. Medians and ranks are used because it is strongly skewed.
       calc: median Viability % per Treatment; Kruskal-Wallis with ε² = H ÷ (n − 1); checked with
-      Welch's ANOVA; highest vs lowest median; ranks because it is strongly skewed
+      Welch ANOVA; highest vs lowest median; p-values from scipy.stats distributions; ranks
+      because it is strongly skewed
   1 of 3  What differs between groups
-      Live Cells differs across Treatment: medians from 1.1M (Compound B) to 1.2M (Compound C),
-      ε² = 0.08. It is the only clear difference among 3 comparisons across Treatment and
-      Replicate, after a Holm adjustment for all 3.
+      Live Cells differs across Treatment: Compound C has the highest median, 1.2M (n = 234), and
+      Compound B the lowest, 1.1M (n = 234); ε² = 0.08. It is the only clear finding among 3
+      comparisons across Treatment and Replicate, after a Holm adjustment for all 3 tests.
       calc: each numeric reading compared across Treatment and Replicate: ...
   1  Anomalous periods
       Jul 2025 is the sharpest anomaly: viability % reached 81.5%, below the expected 88.1%–90.1% range.
@@ -135,10 +137,13 @@ ada ask orders.csv "which category made the most revenue"
   the same time of year, and a group's figure says when it covers only part
   of the dates. Logs stacked one after another in a file, and daily summaries
   appended below hourly readings, are found and kept apart.
-- **Flags anomalies**: periods outside a band around a Theil-Sen trendline, or
-  around the usual level for the time of year when the series has a yearly
-  cycle. The band is calibrated by simulation so a stable series raises a false
-  alarm in about one analysis in twenty.
+- **Flags anomalies and changes in level**: periods outside a band around a
+  Theil-Sen trendline, or around the usual level for the time of year when the
+  series has a yearly cycle, checked at a finer grain when the chosen one has
+  too few periods. A lasting change in level (an instrument swap, a method
+  change, a fire) is found by binary segmentation and reported with its start
+  and the levels before and after. Both are calibrated by simulation so a
+  stable series raises a false alarm in about one analysis in twenty.
 - **Forecasts with a backtest**: a trendline plus month-of-year seasonality,
   scored on held-out periods against a no-change forecast. It refuses to run on
   too little history, and says plainly when the forecast did worse than
@@ -162,12 +167,23 @@ ada ask orders.csv "which category made the most revenue"
 - **Tests group differences**: a measure compared across groups gets the n per
   group, Welch's test with a Mann-Whitney check (or Welch's ANOVA and
   Kruskal-Wallis for more groups) and an effect size, by medians and ranks when
-  the data are skewed or capped. A gap within the noise reads as "no clear
-  difference", never as a ranking. A scan of every reading across a handful
-  of design groupings names the largest differences, with p-values adjusted
-  for the number of tests, and repeated rows of one subject count once. A
-  grouping cut from a reading (a size band from acres, an anaemia flag from
-  haemoglobin) is stated as a rule rather than reported as a difference.
+  the data are skewed or capped, and Tukey's HSD names the pairs that differ.
+  A gap within the noise, one whose two tests disagree, or one resting on a
+  group of fewer than five reads as "no clear difference", never as a ranking.
+  Ordered numeric levels (a dose, a depth) also get a trend test, a mostly-zero
+  reading is compared on its means and the share above zero, and a grouping
+  that combines two factors gets each factor's own test. A scan of every
+  reading across every grouping names the largest differences, with p-values
+  adjusted for the number of tests (a false-discovery rate for a screen of
+  hundreds of readings), repeated rows of one subject count once, and exact
+  copies of rows are set aside. A grouping cut from a reading (a size band
+  from acres, an anaemia flag from haemoglobin) is stated as a rule rather
+  than reported as a difference.
+- **Compares rates and fits joint models**: a yes/no outcome gets its rate in
+  each group with a chi-squared or Fisher test and the risk difference with
+  its interval, and the readings that relate to the measure are fitted
+  together by least squares, with coefficients, intervals, R² and a
+  collinearity warning, when that says more than any one of them alone.
 - **Reports what relates to the measure**: every numeric column's Pearson and
   Spearman r with the measure, with a 95% interval and the sample size, then
   the strongest other pair, or a plain "none of N pairs reaches |r| = 0.3".

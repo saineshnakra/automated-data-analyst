@@ -110,13 +110,17 @@ a no-change forecast. With too little history it returns nothing.
 
 `analyze_business` in `ada/business_insights.py` · [details](reference/evidence.md)
 
-Builds the `BusinessBrief`: a headline, up to four KPIs, up to six evidence
-cards and up to four prioritized recommendations.
+Builds the `BusinessBrief`: a headline from the most informative finding, up
+to four KPIs, up to eight evidence cards and up to four prioritized
+recommendations.
 
-Evidence kinds: `trend`, `driver`, `leader`, `concentration`, `differences`,
-`anomaly`, `relationship`, `outliers`, `quality`. Each card carries its
-calculation. Group comparisons and the relationship scan come from
-`ada/compare.py` ([details](reference/compare.md)).
+Evidence kinds: `trend`, `driver`, `leader`, `concentration`, `shift`,
+`differences`, `rates`, `anomaly`, `relationship`, `model`, `outliers`,
+`quality`. Each card carries its calculation, naming the method and the
+library function behind it ([credits](credits.md)). Group comparisons, rate
+comparisons, the joint model and the relationship scan come from
+`ada/compare.py` ([details](reference/compare.md)); the change-in-level check
+from `ada/timeseries.py` ([details](reference/periods.md#level-shifts)).
 
 Before the cards are built, the data checks in `ada/quality.py` scan every
 numeric column for impossible values, missing-value codes, caps, fill values,
