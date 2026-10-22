@@ -2027,6 +2027,17 @@ class GroupedAnswerTests(unittest.TestCase):
 
         self.assertEqual(plan.conditions[0].column, "Condition")
 
+    def test_a_numbered_row_label_names_the_row(self):
+        frame = pd.DataFrame({
+            "Unnamed: 0": range(100, 160), "Reads": [float(index % 17) + index / 100 for index in range(60)],
+        })
+        roles = detect_roles(frame)
+
+        answer = answer_question("which OTU has the highest Reads", frame, roles)
+
+        self.assertIsNone(answer.plan.bins)
+        self.assertTrue(answer.answer.startswith("Unnamed: 0 150 has the highest Reads"))
+
     def test_an_unnamed_row_label_is_read_by_what_it_labels(self):
         frame, roles = summary_frame()
 

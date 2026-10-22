@@ -2046,7 +2046,8 @@ def _plan_from_reading(reading: _Reading, dataframe: pd.DataFrame, roles: Column
     # A continuous grouping is split at its quartiles: "average growth by temperature".
     bins = (
         4 if dimension and not time_part and _is_measurement(dataframe[dimension])
-        and dimension not in roles.dimensions and not _can_group_numeric(dataframe[dimension]) else None
+        and dimension not in (*roles.dimensions, roles.identifier)
+        and not _can_group_numeric(dataframe[dimension]) else None
     )
     # A grouped answer groups by the matched dimension, so its values are not
     # filters. Ungrouped answers keep them: "revenue for Region West" filters
