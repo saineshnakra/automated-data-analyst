@@ -103,6 +103,7 @@ variables:
   Week:
     role: time
     type: numeric
+    unit: weeks
     description: Weeks since the diet started
   Body weight (g):
     role: outcome
