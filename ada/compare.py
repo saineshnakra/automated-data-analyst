@@ -663,7 +663,7 @@ def _comparison(
         hedges_g=hedges,
         superiority=superiority,
         pooled=judged.pooled,
-        named=(judged.named[0], judged.named[1] % len(order)),
+        named=judged.named,
         zero_share=judged.zero_share,
         presence_p=presence,
         **extra,
