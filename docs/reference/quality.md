@@ -25,6 +25,7 @@ such. Everything else is reported for the reader to decide on.
 | The brief's summary | A "Check these first" line when an issue touches the measure or the group the headline names |
 | The leading-group card | When the leading group's average rests on flagged values, a sentence saying so, with the group's median |
 | The app's Data room | A **Data checks** table |
+| Ask ADA | "outliers in X" and "are there impossible values" list the flagged values; any answer that uses flagged values, or names a flagged group, adds a caution |
 
 The card, the summary line and the leading-group sentence are described in
 [Evidence and recommendations](evidence.md#data-checks).

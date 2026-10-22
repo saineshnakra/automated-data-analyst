@@ -141,15 +141,21 @@ ada ask orders.csv "which category made the most revenue"
   too little history, and says plainly when the forecast did worse than
   assuming no change.
 - **Answers plain-English questions** ("average pH by site", "mean signal by
-  timepoint", "which month had the highest wind", "is pH correlated with
-  temperature", "does pH differ by site", "what correlates with strength",
-  "how many samples have pH below 5.5", "what share have diabetes", "average
-  PM2.5 by hour") by turning them into a fixed query plan that pandas runs. Every column, value, grouping and condition the question
-  names must reach the plan; otherwise the question is refused with the part
-  ADA couldn't use, rather than answered approximately. A short name that fits
-  one column ("strength" for `Concrete compressive strength (MPa)`) is used
-  and the answer says so. Each answer states its filters, how many rows it
-  used and whether the row limit left rows out.
+  timepoint", "which month of the year has the highest wind", "is pH
+  correlated with temperature", "does pH differ by site", "what predicts
+  strength", "does antibiotic use affect risk", "distribution of pH",
+  "outliers in HGB", "90th percentile of lead", "how many distinct species
+  per reef", "count by crop and year", "share of Result 1 by Gender", "which
+  column has the highest average", "average growth by temperature") by
+  turning them into a fixed query plan that pandas runs. Every column, value,
+  grouping and condition the question names must reach the plan; otherwise
+  the question is refused with the part ADA couldn't use, rather than
+  answered approximately. A short name that fits one column ("strength" for
+  `Concrete compressive strength (MPa)`) is used and the answer says so. Each
+  answer states its filters, how many rows it used and whether the row limit
+  left rows out; a ranking gives each group's n and says whether the groups
+  really differ, a trend gives its Theil-Sen slope and peak, and an answer
+  that uses values the data checks flag says so.
 - **Tests group differences**: a measure compared across groups gets the n per
   group, Welch's test with a Mann-Whitney check (or Welch's ANOVA and
   Kruskal-Wallis for more groups) and an effect size, by medians and ranks when

@@ -274,6 +274,8 @@ Rainfall that falls back to zero after each shower rises and falls as often,
 so it does not qualify, and neither does a day-of-month column. A sibling
 column recording each reading's own amount (`Interval Rain`, `Hourly ...`,
 `... Delta`) is preferred as the measure, and a note explains both.
+`running_total_columns` reads the set-aside columns back from the notes, so
+Ask ADA refuses to sum, average or correlate them.
 
 ## Picking the segment
 
