@@ -1665,6 +1665,9 @@ def _claim_unit_conditions(reading: _Reading, dataframe: pd.DataFrame, roles: Co
     for match in list(re.finditer(pattern, reading.remaining)):
         if reading.original[match.end("number"):match.start("unit")].strip():
             continue
+        if match.group("unit") in COLUMN_WORDS:
+            # "Row mean (146 columns)" counts the columns a summary is over, so "149 columns" sets nothing.
+            continue
         variants = _word_variants(match.group("unit"))
         columns = [column for column, words in units.items() if words & variants]
         if len(columns) != 1:

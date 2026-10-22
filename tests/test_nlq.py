@@ -2097,6 +2097,14 @@ class BriefAgreementTests(unittest.TestCase):
         self.assertIn("n = 30", answer.answer)
         self.assertIn("10 values the data checks flag are left out (WS swapped on 10 rows)", answer.answer)
 
+    def test_a_count_of_columns_in_a_name_is_not_a_unit_to_set_a_condition_on(self):
+        values = np.random.default_rng(9).normal(50, 10, 30)
+        frame = pd.DataFrame({"Name": [f"m{n}" for n in range(30)], "Row mean (3 columns)": values})
+        roles = detect_roles(frame)
+
+        self.assertIsNone(answer_question("which Name has the highest Row mean (4 columns)", frame, roles))
+        self.assertIsNotNone(answer_question("which Name has the highest Row mean (3 columns)", frame, roles))
+
     def test_one_cell_left_out_is_said_in_the_singular(self):
         frame = pd.DataFrame({"hemo": np.linspace(10, 17, 40), "pcv": np.linspace(30, 52, 40)})
         frame.loc[0, "pcv"] = 9.0
