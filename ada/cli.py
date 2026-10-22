@@ -139,7 +139,7 @@ def _build(args: argparse.Namespace) -> int:
 def _verify(args: argparse.Namespace) -> int:
     from .research.verify import verify  # noqa: PLC0415
 
-    report = verify(args.study)
+    report = verify(args.study, rtol=args.rtol, atol=args.atol, out=args.out)
     print(report.text())
     return EXIT_QUIET if report.ok else EXIT_FLAGGED
 
@@ -223,6 +223,9 @@ def build_parser() -> argparse.ArgumentParser:
         built.add_argument("--out", help="the output folder (default: output.dir in the study file)")
         check = group.add_parser("verify", help="rebuild in a scratch folder and check every asset matches")
         check.add_argument("--study", default="study.yml", help="the study file")
+        check.add_argument("--out", help="the output folder to check (default: output.dir in the study file)")
+        check.add_argument("--rtol", type=float, default=1e-9, help="relative tolerance for numbers (1e-9)")
+        check.add_argument("--atol", type=float, default=1e-12, help="absolute tolerance for numbers (1e-12)")
         shown = group.add_parser("preview", help="list what would be shared, and anything that should not be")
         shown.add_argument("--study", default="study.yml", help="the study file")
 

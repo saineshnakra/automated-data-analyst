@@ -75,3 +75,11 @@ The methods ADA applies, with the papers that introduced them:
 | Fences at 1.5 × IQR | Exceptional records | Tukey, J. W. (1977), *Exploratory Data Analysis*, Addison-Wesley |
 | Kolmogorov-Smirnov distance | Data checks: columns that look simulated | Kolmogorov, A. N. (1933), *Giornale dell'Istituto Italiano degli Attuari* 4, 83–91; Smirnov, N. (1948), *Annals of Mathematical Statistics* 19, 279–281 |
 | Theil-Sen slope | Trendlines, anomalies, forecasts | Theil, H. (1950), *Indagationes Mathematicae* 12; Sen, P. K. (1968), *JASA* 63, 1379–1389 |
+
+## Checking a rebuild
+
+`ada verify` compares each number in a rebuilt CSV file with the one on disk
+with NumPy's `isclose`: they match when |rebuilt − disk| ≤ atol + rtol × |disk|
+(by default rtol is 1e-9 and atol 1e-12). It finds the lines of text that
+differ with Python's `difflib`, and reads the text of Word files with
+[python-docx](https://python-docx.readthedocs.io) (MIT).

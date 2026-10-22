@@ -235,8 +235,37 @@ unchanged study gives the same bytes and `git diff` stays quiet.
 
 ## Verifying
 
-`ada verify` copies the study and data into a scratch folder, builds there,
-and compares the result with `paper-assets/`: every table and source-data
-file number by number within a tolerance, figures by their source data, and
-the input checksums. It reports missing inputs, assets that are out of date
-with `study.yml`, and files edited by hand since the build.
+`ada verify` checks four things and reports each under its own heading:
+
+- **Inputs.** The data file is there and has the checksum in `study.yml` and
+  in `provenance.json`.
+- **Out of date.** Each asset was built from the current `study.yml` (naming
+  the parts that changed), custom scripts and ADA version, and nothing
+  `study.yml` now asks for is missing.
+- **Edited since the build.** No file has changed since the build recorded
+  its checksum.
+- **Rebuild in a scratch folder.** `study.yml`, the data file and the custom
+  scripts, copied alone into a scratch folder as a fresh `git clone` would
+  hold them, rebuild to the same assets. CSV files are compared cell by
+  cell: numbers within a tolerance (`--rtol`, default 1e-9, and `--atol`,
+  default 1e-12), text exactly. Figures match when their source data match,
+  Word files are compared by their text, and other text files exactly.
+  Each difference is shown with its file, line, column and both values.
+
+```
+$ ada verify
+Inputs
+  ok    data/assay.csv matches study.yml and the build (sha256 3f2a9c81d0e4…).
+Out of date
+  ok    All 14 assets were built from the current study.yml by this version of ADA (0.3.0).
+Edited since the build
+  ok    None of the 41 files recorded in provenance.json has changed.
+Rebuild in a scratch folder
+  ok    Rebuilt from study.yml and data/assay.csv alone in a scratch folder, and every file
+        matches: …
+
+Everything matches: 14 assets and their 41 files.
+```
+
+It exits with 0 when everything matches and 1 otherwise, so it can run in
+continuous integration. `--out` checks a folder other than `output.dir`.
