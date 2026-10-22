@@ -355,7 +355,7 @@ labels, then two-level codes, then other codes by how few levels they have, so
 a rating item read as a code comes last. Up to twelve are scanned
 (`MAX_SCAN_GROUPINGS`), so a table with a handful has every one scanned; a
 long, wide table, whose rows scanned times readings times groupings would
-pass 3 million values (`SCAN_GROUPING_CELLS`), keeps fewer, but never fewer
+pass 2.5 million values (`SCAN_GROUPING_CELLS`), keeps fewer, but never fewer
 than six. With more candidates than that, the codes that explain most of the
 measure come first, and the calculation names the ones past the cap. Also
 left out, and named:

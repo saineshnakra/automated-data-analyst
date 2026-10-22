@@ -1098,7 +1098,7 @@ def _group_difference_evidence(
         calculation += (
             f"; compared again within each {stratified.stratum} (tied to {roles.dimension} with Cramér's V = "
             f"{stratified.association:.2f}, scipy.stats.contingency.association)"
-        )
+        ) + _sample_note(stratified.sampled)
         if stratified.overturns(comparison):
             lead = stratified_lead(stratified, comparison, values)
     factors = _factor_comparisons(dataframe, roles, found)
@@ -1139,6 +1139,11 @@ def _group_difference_evidence(
         subject=_subject(_leading_groups(comparison)) if clear else None,
         lead=lead,
     )
+
+
+def _sample_note(rows: int) -> str:
+    """Words for a figure computed on the scans' fixed sample of a long table, or ""."""
+    return f", on a fixed random sample of {SCAN_ROWS:,} of the {rows:,} rows" if rows else ""
 
 
 def _stratum_candidates(dataframe: pd.DataFrame, roles: ColumnRoles, found: _Groupings) -> list[str]:
@@ -1214,7 +1219,7 @@ MIN_NULL_COMPARISONS = 3
 # fewer, but never fewer than MIN_SCAN_GROUPINGS, so a long, wide table stays fast.
 MAX_SCAN_GROUPINGS = 12
 MIN_SCAN_GROUPINGS = 6
-SCAN_GROUPING_CELLS = 3_000_000
+SCAN_GROUPING_CELLS = 2_500_000
 
 
 def _same_partition(dataframe: pd.DataFrame, first: str, second: str) -> bool:
@@ -2546,7 +2551,7 @@ def _rate_evidence(
     )
     if stratified is not None:
         statement += describe_stratified(stratified, first)
-        calculation += f"; compared again within each {stratified.stratum}"
+        calculation += f"; compared again within each {stratified.stratum}" + _sample_note(stratified.sampled)
         if stratified.overturns(first):
             lead = stratified_lead(stratified, first)
     if len(tested) > 1:

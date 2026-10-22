@@ -1254,6 +1254,7 @@ def compare_groups(
     *,
     entity: str | None = None,
     axis: str | None = None,
+    pairs: bool = True,
 ) -> GroupComparison | None:
     """Compare ``measure`` across the groups of ``grouping``, or None when there is nothing to compare.
 
@@ -1269,7 +1270,8 @@ def compare_groups(
     counts once per group, and when the groups hold the same entities (each
     subject walked in every condition) they are compared within entities
     (``paired``). With ``axis`` (each entity's time point), groups followed
-    for different stretches are compared over the stretch they share.
+    for different stretches are compared over the stretch they share. Without
+    ``pairs``, the pairs that differ are not looked for.
     """
     if measure == grouping or measure not in dataframe.columns or grouping not in dataframe.columns:
         return None
@@ -1277,7 +1279,7 @@ def compare_groups(
     comparison = _single(readings[measure], groups, measure, grouping, fields, units)
     if comparison is not None and not comparison.paired and ordered_levels(dataframe[grouping], grouping):
         comparison = replace(comparison, trend=_ordered_trend(readings[measure], groups, measure, grouping))
-    if comparison is not None:
+    if comparison is not None and pairs:
         comparison = _post_hoc(comparison, readings[measure], groups, units)
     return comparison
 
@@ -1830,6 +1832,8 @@ class Stratified:
     single: tuple[tuple[str, str], ...] = ()
     #: The stratum explains the reading as eta squared (False: Cramér's V with a yes/no outcome).
     explains: bool = True
+    #: Rows in the table when the levels were compared on a fixed random sample of SCAN_ROWS, else 0.
+    sampled: int = 0
 
     @property
     def confounded(self) -> bool:
@@ -2001,7 +2005,7 @@ def stratified_comparison(
     stratum, association, level = found
     return _within_levels(
         dataframe, stratum, grouping, association, level, True,
-        lambda part: compare_groups(part, measure, grouping, entity=entity, axis=axis),
+        lambda part: compare_groups(part, measure, grouping, entity=entity, axis=axis, pairs=False),
         [measure, entity, axis],
     )
 
@@ -2046,8 +2050,12 @@ def _within_levels(
     columns: list[str],
 ) -> Stratified | None:
     within, single = [], []
-    # Only the columns the comparisons use are split, which matters on a long, wide table.
+    # Only the columns the comparisons use are split, and a long table on the
+    # scans' fixed sample, which still shows any gap large enough to report.
     needed = list(dict.fromkeys([stratum, grouping, *(column for column in columns if column)]))
+    rows = len(dataframe)
+    if rows > SCAN_ROWS:
+        dataframe = dataframe.sample(SCAN_ROWS, random_state=0)
     data = dataframe[needed].dropna(subset=[stratum, grouping])
     for value, part in data.groupby(stratum, observed=True, sort=True):
         label = _level_label(data[stratum], stratum, value)
@@ -2069,6 +2077,7 @@ def _within_levels(
         within=tuple(within),
         single=tuple(single),
         explains=explains,
+        sampled=rows if rows > SCAN_ROWS else 0,
     )
 
 
@@ -2709,10 +2718,7 @@ def _broken_runs(head: pd.DataFrame) -> set[str]:
     sorting every column together counts the values, so a wide matrix is
     screened without a pass per column.
     """
-    numeric = [
-        column for column in head.columns
-        if is_numeric_dtype(head[column]) and not is_bool_dtype(head[column])
-    ]
+    numeric = list(head.select_dtypes("number").columns)
     if not numeric or len(head) < 2:
         return set()
     values = head[numeric].to_numpy(dtype=float)
@@ -2739,10 +2745,10 @@ def within_axis(dataframe: pd.DataFrame, entity: str, *, exclude: tuple[str, ...
         return None
     units = pd.factorize(dataframe[entity])[0]
     found = []
-    for column in dataframe.columns:
-        values = dataframe[column]
-        if column == entity or column in exclude or is_bool_dtype(values) or not is_numeric_dtype(values):
+    for column in dataframe.select_dtypes("number").columns:
+        if column == entity or column in exclude:
             continue
+        values = dataframe[column]
         kept = (units >= 0) & values.notna().to_numpy()
         clock = values.to_numpy(dtype=float)[kept]
         if clock.size < BLOCK_MIN_ROWS or np.unique(clock).size > AXIS_DISTINCT_SHARE * clock.size:
@@ -2789,8 +2795,14 @@ def reading_key(dataframe: pd.DataFrame, measure: str, *, exclude: tuple[str, ..
     if len(screen) > KEY_SCREEN_ROWS:
         screen = screen.sample(KEY_SCREEN_ROWS, random_state=0)
     best, finest = None, 0
+    # Numeric columns can be keys only when named as units, so most of a wide matrix is passed over unread.
+    numeric = set(dataframe.select_dtypes("number").columns)
     for column in dataframe.columns:
-        if column == measure or column in exclude or not _can_key(column, dataframe[column]):
+        if column == measure or column in exclude:
+            continue
+        if column in numeric and not (is_entity_name(column) or is_design_name(column)):
+            continue
+        if not _can_key(column, dataframe[column]):
             continue
         sampled = pd.factorize(screen[column])[0]
         if not _constant_within(sampled[sampled >= 0], screen[measure].to_numpy(dtype=float)[sampled >= 0]):
