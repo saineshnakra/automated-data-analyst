@@ -177,6 +177,14 @@ by the shared F test. When the series also has a change in level, it gives the
 slope within each stretch either side of it and says whether the trend runs on
 both sides or the long-run slope is mostly the step.
 
+When most units (the column naming each row's site or station) appear in
+only one year, a yearly average follows which sites were visited as much as
+any change in the reading (`aggregation.unit_turnover`, for an averaged
+measure). The card says so, gives the trend measured from each recurring
+site's own level instead (`within_unit_yearly`), and does not lead the
+headline; `Analysis.forecast()` returns a `Refusal` with code
+`changing_units`.
+
 A table with one row per year and a column per month holds one monthly
 series laid out wide. The `months` card reads it in long form
 (`aggregation.months_long`): the calendar months it runs highest and lowest

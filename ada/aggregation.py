@@ -747,6 +747,59 @@ def fixed_design(
     )
 
 
+# Units seen in a single year, as a share of all, beyond which period averages
+# follow which units were visited; and the units and years the check needs.
+TURNOVER_SHARE = 0.5
+MIN_TURNOVER_UNITS = 20
+MIN_TURNOVER_YEARS = 3
+
+
+@dataclass(frozen=True)
+class UnitTurnover:
+    """Most units (sites, stations) seen in one year only, so an average per period mixes different ones."""
+
+    unit: str
+    units: int
+    once: int
+
+
+def unit_turnover(dataframe: pd.DataFrame, roles: ColumnRoles) -> UnitTurnover | None:
+    """The unit column when most of its units appear in a single year, for an averaged measure.
+
+    An average over whichever sites happened to be visited each year tracks
+    the sampling plan as much as the reading. A total is everything
+    recorded, and customers coming and going are part of it, so a summed
+    measure is not checked. Returns None otherwise.
+    """
+    if not roles.date or not roles.measure or metric_for(roles.measure, roles).additive:
+        return None
+    unit = entity_column(dataframe, roles)
+    if unit is None:
+        return None
+    working = dataframe[[roles.date, unit, roles.measure]].dropna()
+    years = working.groupby(unit)[roles.date].agg(lambda dates: dates.dt.year.nunique())
+    if len(years) < MIN_TURNOVER_UNITS or working[roles.date].dt.year.nunique() < MIN_TURNOVER_YEARS:
+        return None
+    once = int((years == 1).sum())
+    if once <= TURNOVER_SHARE * len(years):
+        return None
+    return UnitTurnover(unit=unit, units=int(len(years)), once=once)
+
+
+def within_unit_yearly(dataframe: pd.DataFrame, roles: ColumnRoles, unit: str) -> pd.Series:
+    """The measure per year after each unit's own mean is taken out, over units seen in several years.
+
+    A year's value is then how far its readings sit from their own units'
+    usual level, so a year that visited higher sites does not look higher.
+    """
+    working = dataframe[[roles.date, unit, roles.measure]].dropna()
+    year = working[roles.date].dt.year
+    repeated = year.groupby(working[unit]).transform("nunique") > 1
+    working, year = working[repeated], year[repeated]
+    departures = working[roles.measure] - working.groupby(unit)[roles.measure].transform("mean")
+    return departures.groupby(year).mean().sort_index()
+
+
 # A gap between sampling dates of at least this many days, and this many times
 # the usual gap, ends a sampling trip; a few trips with most periods between
 # them empty are campaigns, not a timeline.

@@ -101,7 +101,10 @@ undefined.
 table has no measure and its rows per period are fixed by its design (each
 plot once a year; see [Fixed designs](evidence.md#fixed-designs)), or
 `not_enough_periods` when the dates cluster into a few sampling trips with
-most periods between them empty ([Sampling trips](evidence.md#sampling-trips)).
+most periods between them empty ([Sampling trips](evidence.md#sampling-trips)),
+or `changing_units` when most sites or stations behind an averaged measure
+appear in only one year, so the average per period follows which were
+visited.
 
 ## Changing this
 

@@ -28,6 +28,7 @@ from .aggregation import (
     months_long,
     sampling_campaigns,
     segment_frame,
+    unit_turnover,
 )
 from .analysis import column_profile
 from .anomalies import MIN_PERIODS as ANOMALY_MIN_PERIODS
@@ -71,6 +72,7 @@ REFUSAL_CODES = (
     "no_measure_column",
     "not_enough_periods",
     "thin_history",
+    "changing_units",
     "unsupported_phrasing",
     "unrepresentable_question",
     "unknown_segment_value",
@@ -410,6 +412,15 @@ class Analysis:
             return series
         if (refusal := self._timeline_refusal(series)) is not None:
             return refusal
+        if (turnover := unit_turnover(self.frame, self.roles)) is not None:
+            return Refusal(
+                "changing_units",
+                f"{turnover.once:,} of the {turnover.units:,} {turnover.unit} values appear in only one "
+                "year, so each period's average follows which of them were visited; a forecast of it would "
+                "project the sampling plan.",
+                needed=f"{turnover.unit} values that recur",
+                had=f"{turnover.once:,} of {turnover.units:,} seen in one year",
+            )
         result = build_forecast(
             series.frame,
             horizon=horizon,

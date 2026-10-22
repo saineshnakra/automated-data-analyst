@@ -35,7 +35,9 @@ from .aggregation import (
     seasonal_context,
     segment_frame,
     segment_period_change,
+    unit_turnover,
     unlabelled_label,
+    within_unit_yearly,
     yearly_values,
 )
 from .anomalies import detect_anomalies, finer_trend
@@ -866,6 +868,33 @@ def _stretch_note(series: TrendSeries, overall: TrendTest) -> tuple[str, bool | 
     )
 
 
+def _turnover_note(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[str, bool]:
+    """Warn when most units appear in one year only, and give the trend within the units that recur.
+
+    Returns a sentence with a leading space, or "", and whether the yearly
+    averages can be read as a trend in the reading (False when the units
+    turn over).
+    """
+    turnover = unit_turnover(dataframe, roles)
+    if turnover is None:
+        return "", True
+    note = (
+        f" {turnover.once:,} of the {turnover.units:,} {turnover.unit} values appear in only one year, so "
+        "the yearly averages follow which of them were visited as much as any change in the reading."
+    )
+    within = within_unit_yearly(dataframe, roles, turnover.unit)
+    test = trend_test(within.index.to_numpy(dtype=float), within.to_numpy(dtype=float))
+    if test is not None:
+        recur = turnover.units - turnover.once
+        verdict = "" if test.clear else ", which is no clear trend"
+        note += (
+            f" Measured from each {turnover.unit}'s own level, over the {recur:,} that recur, the trend is "
+            f"{_signed_figure(test.slope)} per year ({TREND_CONFIDENCE:.0%} CI {_signed_figure(test.low)} to "
+            f"{_signed_figure(test.high)}){verdict}."
+        )
+    return note, False
+
+
 def _long_run_evidence(
     dataframe: pd.DataFrame, roles: ColumnRoles, frequency: str | None = None
 ) -> Evidence | None:
@@ -929,8 +958,10 @@ def _long_run_evidence(
         statement += _yearly_cycle_note(dataframe, roles)
     stretches, same_way = _stretch_note(series, test)
     statement += stretches
+    turnover_note, steady_units = _turnover_note(dataframe, roles)
+    statement += turnover_note
     lead = ""
-    if test.clear and same_way is not False:
+    if test.clear and same_way is not False and steady_units:
         per_decade = (
             f"{TREND_CONFIDENCE:.0%} CI {_signed_figure(test.low * 10)} to {_signed_figure(test.high * 10)}"
         )

@@ -125,6 +125,20 @@ class RefusalTests(unittest.TestCase):
         self.assertEqual(long["Date"].iloc[13], pd.Timestamp("1991-02-01"))
         self.assertIsInstance(ada.analyze(steady()).long_form(), ada.Refusal)
 
+    def test_an_average_over_sites_that_change_every_year_is_not_forecast(self):
+        rows = [
+            {"Date": f"{1990 + year}-06-01", "SITE_ID": f"S{year}-{site}" if site < 20 else f"K{site}",
+             "COND": 100.0 + 3 * year + site}
+            for year in range(25) for site in range(25)
+        ]
+        frame = pd.DataFrame(rows).assign(Date=lambda table: pd.to_datetime(table["Date"]))
+
+        refusal = ada.analyze(frame, measure="COND", aggregation="mean").forecast()
+
+        self.assertIsInstance(refusal, ada.Refusal)
+        self.assertEqual(refusal.code, "changing_units")
+        self.assertIn("appear in only one year", refusal.message)
+
     def test_nothing_found_is_not_the_same_as_could_not_look(self):
         """An empty tuple and a Refusal are both falsy; only the type differs."""
         found = ada.analyze(steady()).anomalies

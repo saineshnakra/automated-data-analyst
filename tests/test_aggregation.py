@@ -19,6 +19,8 @@ from ada.aggregation import (
     segment_frame,
     segment_period_change,
     trend_frame,
+    unit_turnover,
+    within_unit_yearly,
     yearly_values,
 )
 from ada.anomalies import detect_anomalies
@@ -622,6 +624,41 @@ class SamplingCampaignTests(unittest.TestCase):
         frame = pd.DataFrame({"date": days.delete(range(100, 110)), "secchi": 5.0})
 
         self.assertIsNone(sampling_campaigns(frame, self.roles()))
+
+
+def visited_sites(years: int = 25, seed: int = 8) -> pd.DataFrame:
+    """Twenty new sites a year, each higher than the last year's, plus five sites revisited every year."""
+    rng = np.random.default_rng(seed)
+    rows, levels = [], {}
+    for year in range(years):
+        for site in [f"new{year}-{index}" for index in range(20)] + [f"kept{index}" for index in range(5)]:
+            drift = 3 * year if site.startswith("new") else 0
+            level = levels.setdefault(site, 100 + drift + 20 * rng.random())
+            rows.append((pd.Timestamp(year=1990 + year, month=6, day=1), site, level + rng.normal(0, 2)))
+    return pd.DataFrame(rows, columns=["Date", "SITE_ID", "COND"])
+
+
+class UnitTurnoverTests(unittest.TestCase):
+    def roles(self, **extra):
+        return ColumnRoles(date="Date", measure="COND", dimension=None, identifier=None,
+                           numeric=("COND",), dimensions=(), **extra)
+
+    def test_sites_mostly_visited_once_turn_over(self):
+        turnover = unit_turnover(visited_sites(), self.roles())
+
+        assert turnover is not None
+        self.assertEqual((turnover.unit, turnover.units, turnover.once), ("SITE_ID", 505, 500))
+
+    def test_a_total_is_not_checked(self):
+        self.assertIsNone(unit_turnover(visited_sites(), self.roles(aggregation="sum")))
+
+    def test_the_within_site_series_takes_out_each_sites_level(self):
+        within = within_unit_yearly(visited_sites(), self.roles(), "SITE_ID")
+
+        self.assertEqual(len(within), 25)
+        pooled = visited_sites().groupby(visited_sites()["Date"].dt.year)["COND"].mean()
+        self.assertGreater(np.ptp(pooled), 40)
+        self.assertLess(np.ptp(within), 5)
 
 
 class ReportingUnitTests(unittest.TestCase):

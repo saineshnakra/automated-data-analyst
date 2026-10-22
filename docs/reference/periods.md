@@ -138,6 +138,7 @@ keeping the timeline evenly spaced."*
 | `reporting_unit` | Whether a grouping names units that report over time (named like a station, site, city or store, or reporting side by side, each at most once a date) rather than a per-row condition | – |
 | `yearly_values` | The measure per complete year (90% of its periods with a value): the mean of its periods, or their total for an additive measure | – |
 | `fixed_design` | With no measure, the unit column when each unit appears at most once a period, recurs and keeps the count steady, so rows per period are set by the design | – |
+| `unit_turnover` / `within_unit_yearly` | For an averaged measure, the unit column when most units appear in one year only, and the measure per year taken from each recurring unit's own level | – |
 | `sampling_campaigns` | The sampling trips behind dates that cluster into a few campaigns with most periods between them empty | – |
 | `month_columns` / `months_recorded` / `months_long` | A table with one column per month (JAN to DEC): the twelve columns in calendar order, how many a year's row fills, and the table as one row per month | – |
 | `group_coverage` | Each segment's first and last date with a value | – |

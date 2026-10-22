@@ -1975,6 +1975,25 @@ class LongRunTrendTests(unittest.TestCase):
         self.assertTrue(brief_card(brief, "trend").lead)
         self.assertTrue(brief.headline.startswith("Temp increased by"), brief.headline)
 
+    def test_a_trend_over_sites_that_change_every_year_is_measured_within_the_sites(self):
+        rng = np.random.default_rng(100)
+        rows = []
+        for year in range(25):
+            for site in range(25):
+                name = f"S{year}-{site}" if site < 20 else f"K{site}"
+                drift = 3 * year if site < 20 else 0
+                stamp = pd.Timestamp(year=1990 + year, month=6, day=1)
+                rows.append((stamp, name, 100 + drift + rng.normal(0, 2)))
+        frame = pd.DataFrame(rows, columns=["Date", "SITE_ID", "COND"])
+
+        brief = analyze_business(frame, roles_for(frame, "COND", None, date="Date", aggregation="mean"))
+
+        long_run = brief_card(brief, "longtrend")
+        assert long_run is not None
+        self.assertIn("500 of the 505 SITE_ID values appear in only one year", long_run.statement)
+        self.assertIn("which is no clear trend", long_run.statement)
+        self.assertFalse(long_run.lead)
+
     def test_a_short_record_has_no_long_run_card(self):
         years = pd.to_datetime([f"{year}-01-01" for year in range(2005, 2020)])
         frame = pd.DataFrame({"YEAR": years, "Temp": np.linspace(26, 27, 15)})
