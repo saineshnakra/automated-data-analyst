@@ -7,6 +7,7 @@ import re
 import unicodedata
 import warnings
 from dataclasses import asdict, dataclass
+from functools import cached_property
 from typing import Any
 
 import numpy as np
@@ -53,70 +54,168 @@ class Insight:
 # Text that stands for a missing reading in a numeric column: R's NA, "not
 # detected", spreadsheet errors, and values below or above a detection limit.
 MISSING_MARKERS = frozenset({
-    "na", "n/a", "n.a.", "nan", "nd", "n.d.", "none", "null", "missing", "-", "--", "—",
+    "na", "n/a", "n.a.", "nan", "nd", "n.d.", "none", "null", "missing", "unknown", "-", "--", "—",
     "?", ".", "#n/a", "#value!", "#div/0!", "not detected", "bdl", "bql", "lod", "loq",
     "<lod", "<loq", "<dl", "below detection limit",
 })
-# Phrases for "not stated" in the languages exports most often arrive in, and a
-# spreadsheet's lookup error. They are missing values in a text column as much
-# as in a numeric one, and left as labels they become a group of their own.
+# Phrases for "not stated" or "no data" in the languages exports most often
+# arrive in, and a spreadsheet's lookup error. They are missing values in a text
+# column as much as in a numeric one, and left as labels they become a group of
+# their own.
 NOT_STATED_MARKERS = frozenset({
-    "n/a", "#n/a", "error: #n/a", "nd", "n.d.", "not stated", "not specified",
-    "not indicated", "not available", "no indica", "no indicado", "no indicada",
-    "sin dato", "sin datos", "nicht angegeben", "non renseigné", "non renseigne",
+    "n/a", "#n/a", "error: #n/a", "not stated", "not specified", "not indicated", "not available",
+    "no data", "no indica", "no indicado", "no indicada", "sin dato", "sin datos", "sin información",
+    "sin informacion", "nicht angegeben", "keine angabe", "keine angaben", "keine daten",
+    "non renseigné", "non renseigne", "pas de données", "pas de donnees", "aucune donnée",
+    "aucune donnee", "nessun dato", "dato mancante", "dati mancanti", "sem dados", "sem informação",
+    "sem informacao", "não informado", "nao informado", "tidak ada data", "data tidak tersedia",
+    "geen gegevens", "brak danych", "ingen data",
 })
+# Labels a coder writes when no value could be given. Left as labels, they
+# become a group that mixes every kind of row.
+PLACEHOLDER_LABELS = frozenset({
+    "unknown", "unclassified", "not classified", "unable to classify", "unclassifiable",
+})
+# "Not detected": a reading below what the method sees, written without a number.
+NOT_DETECTED_MARKERS = frozenset({"nd", "n.d."})
 # Censoring markers without a number: the reading was below what the method sees.
 BELOW_LIMIT_MARKERS = frozenset({
     "<lod", "<loq", "<dl", "bdl", "bql", "below detection limit", "not detected",
-})
+}) | NOT_DETECTED_MARKERS
 # "<0.5" or "<3,87": a reading below, or above, a detection limit.
 _CENSORED_VALUE = re.compile(r"^[<>]\s*[\d.,]")
 # A lone token that means a trace amount when it is the column's only text.
 TRACE_TOKENS = frozenset({"t", "tr", "trace"})
+# Cells drawn at random from a text column to rule out a type before parsing all
+# of it. A column needs 95% of its cells to convert, so one where under half the
+# drawn cells read as numbers (or times) cannot, and is not parsed in full.
+PROBE_SIZE = 200
+PROBE_RATIO = 0.5
 
 
 def _normalized_text(series: pd.Series) -> pd.Series:
     return series.astype("string").str.strip().str.lower().str.replace(r"\s+", " ", regex=True)
 
 
-def _cells_matching(series: pd.Series, matches) -> pd.Series:
-    """True for cells whose normalised text ``matches`` marks; judged once per distinct value."""
-    distinct = pd.Series(series.dropna().unique(), dtype=object)
-    if distinct.empty:
-        return pd.Series(False, index=series.index)
-    hits = distinct[matches(_normalized_text(distinct)).fillna(False).astype(bool).to_numpy()]
-    return series.isin(hits.tolist())
+def _flags(matches: pd.Series) -> np.ndarray:
+    """A True/False array from a match that may hold missing values."""
+    return matches.fillna(False).to_numpy(dtype=bool)
+
+
+class _Distinct:
+    """A column's distinct values, and which of them each row holds.
+
+    Text columns repeat a few values many times (a site, a status, a date), so
+    every check on one (markers, numbers, dates, labels) runs once per distinct
+    value, on text normalised once, and is spread back over the rows by
+    position. That keeps cleaning a large file fast.
+    """
+
+    def __init__(self, index: pd.Index, codes: np.ndarray, values: pd.Series):
+        self.index = index
+        #: Position in ``values`` of each row's value; -1 where the row is missing.
+        self.codes = codes
+        self.values = values
+
+    @classmethod
+    def of(cls, series: pd.Series) -> _Distinct:
+        codes, uniques = pd.factorize(series, use_na_sentinel=True)
+        return cls(series.index, codes, pd.Series(np.asarray(uniques, dtype=object), dtype=object))
+
+    @cached_property
+    def text(self) -> pd.Series:
+        """Each value stripped, lower-cased and with runs of spaces closed up."""
+        return _normalized_text(self.values)
+
+    @cached_property
+    def counts(self) -> np.ndarray:
+        """How many rows hold each value."""
+        return np.bincount(self.codes[self.codes >= 0], minlength=len(self.values))
+
+    @property
+    def present(self) -> int:
+        return int(self.counts.sum())
+
+    @cached_property
+    def cells(self) -> pd.Series:
+        """The distinct values, then one missing value for the missing rows to map to, if any are.
+
+        Without missing rows nothing is added, so whole numbers parse as whole numbers.
+        """
+        if not (self.codes < 0).any():
+            return self.values
+        return pd.concat([self.values, pd.Series([None], dtype=object)], ignore_index=True)
+
+    def on_cells(self, flags: np.ndarray) -> np.ndarray:
+        """One flag per distinct value, lined up with ``cells``."""
+        return np.append(flags, False) if len(self.cells) > len(self.values) else flags
+
+    def expand(self, result: pd.Series) -> pd.Series:
+        """Spread a result worked out on ``cells`` over the rows."""
+        return result.iloc[self.codes].set_axis(self.index)
+
+    def spread(self, transform) -> pd.Series:
+        """Run ``transform`` (a Series in, a Series out) on ``cells`` and spread it over the rows."""
+        return self.expand(transform(self.cells))
+
+    def rows(self, hits: np.ndarray) -> pd.Series:
+        """True for the rows whose value ``hits`` marks (one flag per distinct value)."""
+        flags = np.append(np.asarray(hits, dtype=bool), False)
+        return pd.Series(flags[self.codes], index=self.index)
+
+    def column(self) -> pd.Series:
+        return self.spread(lambda cells: cells)
+
+    def relabel(self, values: pd.Series) -> _Distinct:
+        """The same rows holding ``values`` in place of the distinct values.
+
+        Values that become equal merge, those that become missing leave their
+        rows missing, and values no row holds are dropped.
+        """
+        inner, uniques = pd.factorize(values.where(self.counts > 0), use_na_sentinel=True)
+        codes = np.append(inner, -1)[self.codes]
+        return _Distinct(self.index, codes, pd.Series(np.asarray(uniques, dtype=object), dtype=object))
+
+    def take(self, keep: np.ndarray) -> _Distinct:
+        """The rows where ``keep`` is True."""
+        return _Distinct(self.index[keep], self.codes[keep], self.values)
+
+    def _at(self, positions: np.ndarray) -> pd.Series:
+        return pd.Series(
+            self.values.to_numpy()[self.codes[positions]], index=self.index[positions], dtype=object
+        )
+
+    def head(self, size: int) -> pd.Series:
+        """The first ``size`` values present, in row order."""
+        return self._at(np.flatnonzero(self.codes >= 0)[:size])
+
+    def sample(self, size: int = PROBE_SIZE) -> pd.Series:
+        """``size`` values present, drawn at random with a fixed seed, or all of them when fewer."""
+        positions = np.flatnonzero(self.codes >= 0)
+        if len(positions) > size:
+            positions = positions[np.random.RandomState(0).choice(len(positions), size, replace=False)]
+        return self._at(positions)
 
 
 def _per_value(series: pd.Series, transform) -> pd.Series:
     """Run ``transform`` once per distinct value and spread the result back over the rows.
 
-    Text columns repeat a few values many times (a site, a status, a date), so
-    working on the distinct values keeps cleaning a large file fast. ``transform``
-    takes and returns a Series; missing cells reach it as one missing value.
+    ``transform`` takes and returns a Series; missing cells reach it as one missing value.
     """
-    codes, uniques = pd.factorize(series, use_na_sentinel=True)
-    distinct = np.asarray(uniques, dtype=object)
-    missing = codes < 0
-    if missing.any():
-        distinct = np.append(distinct, None)
-        codes = np.where(missing, len(distinct) - 1, codes)
-    result = transform(pd.Series(distinct, dtype=object))
-    return result.iloc[codes].set_axis(series.index)
+    return _Distinct.of(series).spread(transform)
 
 
-def _missing_markers(series: pd.Series) -> pd.Series:
-    """True for cells holding a missing-value marker such as "NA", "nd", "no indica" or "<0.1"."""
-    markers = MISSING_MARKERS | NOT_STATED_MARKERS
-    return _cells_matching(series, lambda text: text.isin(markers) | text.str.match(_CENSORED_VALUE.pattern))
+def _missing_markers(distinct: _Distinct) -> np.ndarray:
+    """True for distinct values that are missing-value markers such as "NA", "nd", "no indica" or "<0.1"."""
+    text = distinct.text
+    return _flags(text.isin(MISSING_MARKERS | NOT_STATED_MARKERS) | text.str.match(_CENSORED_VALUE.pattern))
 
 
-def _censored(series: pd.Series) -> tuple[pd.Series, pd.Series]:
-    """Cells below a detection limit, and cells above one ("<0.1", "BDL"; ">12,88")."""
-    below = _cells_matching(
-        series, lambda text: text.str.match(r"^<\s*[\d.,]") | text.isin(BELOW_LIMIT_MARKERS)
-    )
-    return below, _cells_matching(series, lambda text: text.str.match(r"^>\s*[\d.,]"))
+def _censored(distinct: _Distinct) -> tuple[np.ndarray, np.ndarray]:
+    """Distinct values below a detection limit, and those above one ("<0.1", "BDL", "ND"; ">12,88")."""
+    text = distinct.text
+    below = text.str.match(r"^<\s*[\d.,]") | text.isin(BELOW_LIMIT_MARKERS)
+    return _flags(below), _flags(text.str.match(r"^>\s*[\d.,]"))
 
 
 def _limits(values: pd.Series) -> list[float]:
@@ -126,12 +225,13 @@ def _limits(values: pd.Series) -> list[float]:
     return sorted(value for value in parsed if value is not None)
 
 
-def _censored_note(column: str, values: pd.Series, below: pd.Series, above: pd.Series, total: int) -> str:
-    """Say how many cells were past a detection limit, and which way that biases the mean."""
-    censored = below | above
-    count = int(censored.sum())
-    limits = _limits(values[censored])
-    side = "below" if below.sum() >= above.sum() else "above"
+def _censored_note(column: str, distinct: _Distinct, censored: np.ndarray, side: str, total: int) -> str:
+    """Say how many cells were past a detection limit on one ``side``, and which way that biases the mean.
+
+    ``censored`` marks distinct values; ``side`` is "below" or "above".
+    """
+    count = int(distinct.counts[censored].sum())
+    limits = _limits(distinct.values[censored])
     shown = ""
     if limits:
         mark = "<" if side == "below" else ">"
@@ -151,16 +251,17 @@ def _censored_note(column: str, values: pd.Series, below: pd.Series, above: pd.S
 CENSORED_SHARE = 0.10
 
 
-def _lone_token(values: pd.Series, unread: pd.Series) -> str | None:
+def _lone_token(distinct: _Distinct, unread: np.ndarray) -> str | None:
     """The single text token left in an otherwise numeric column, when it reads as a marker.
 
     Weather records write "T" for a trace of rain and instrument logs write "M"
     or "*": one short token, repeated, with numbers everywhere else. A longer
-    word ("Control" among doses) is a real level and is not returned.
+    word ("Control" among doses) is a real level and is not returned. ``unread``
+    marks the distinct values that did not read as numbers.
     """
     if not unread.any():
         return None
-    tokens = _normalized_text(pd.Series(values[unread].unique(), dtype=object)).dropna().unique()
+    tokens = distinct.text[unread].dropna().unique()
     if len(tokens) != 1:
         return None
     token = str(tokens[0])
@@ -169,16 +270,67 @@ def _lone_token(values: pd.Series, unread: pd.Series) -> str | None:
     return None
 
 
-def _not_stated(series: pd.Series) -> pd.Series:
-    """True for text cells holding a NOT_STATED_MARKERS phrase.
+def _not_detected(distinct: _Distinct) -> np.ndarray:
+    """True for distinct values that read "ND" or "n.d.".
 
     "ND" is left alone in a column of two-letter codes, where it is North Dakota.
     """
-    markers = NOT_STATED_MARKERS
-    distinct = _normalized_text(pd.Series(series.dropna().unique(), dtype=object))
-    if len(distinct) and distinct.str.fullmatch(r"[a-z]{2}").mean() >= 0.5:
-        markers = markers - {"nd"}
-    return _cells_matching(series, lambda text: text.isin(markers))
+    text = distinct.text
+    hits = _flags(text.isin(NOT_DETECTED_MARKERS))
+    if hits.any() and text.str.fullmatch(r"[a-z]{2}").mean() >= 0.5:
+        return np.zeros(len(text), dtype=bool)
+    return hits
+
+
+# A cell that starts with a number, as a reading written with its unit does ("5.66 ± 1.69 items/g").
+_READING = re.compile(r"^[<>~≈±]?\s*\d")
+
+
+def _holds_readings(distinct: _Distinct, markers: np.ndarray) -> bool:
+    """Whether most cells other than ``markers`` start with a number: readings written as text."""
+    counts = distinct.counts
+    readable = int(counts[~markers].sum())
+    readings = _flags(distinct.text.str.match(_READING.pattern)) & ~markers
+    return readable > 0 and int(counts[readings].sum()) >= 0.5 * readable
+
+
+def _marked(distinct: _Distinct, hits: np.ndarray) -> tuple[list[str], int]:
+    """The marked values as written, in the order they first appear, and how many cells hold them."""
+    shown = list(dict.fromkeys(str(value).strip() for value in distinct.values[hits]))
+    return shown, int(distinct.counts[hits].sum())
+
+
+def _unstated(column: str, distinct: _Distinct) -> tuple[np.ndarray, list[str]]:
+    """Distinct values of a text column that stand for no value, with a note for each kind.
+
+    "Not stated" phrases, "ND" (not detected) and placeholder labels such as
+    "Unknown" or "UNABLE TO CLASSIFY" are missing values, not groups of their own.
+    """
+    text = distinct.text
+    stated = _flags(text.isin(NOT_STATED_MARKERS))
+    detected = _not_detected(distinct)
+    placeholders = _flags(text.isin(PLACEHOLDER_LABELS))
+    notes = []
+    if stated.any():
+        shown, count = _marked(distinct, stated)
+        phrases = "This phrase means" if len(shown) == 1 else "These phrases mean"
+        notes.append(f"{_missing_marker_note(column, shown, count)} {phrases} the value was not stated.")
+    if detected.any():
+        shown, count = _marked(distinct, detected)
+        if _holds_readings(distinct, stated | detected | placeholders):
+            meaning = "among readings it means not detected, below what the method can measure"
+        else:
+            meaning = "it usually means not detected or not determined"
+        noun, verb = ("cells", "were") if count > 1 else ("cell", "was")
+        notes.append(f'{count:,} {noun} in {column} held "{shown[0]}" and {verb} read as missing: {meaning}.')
+    if placeholders.any():
+        shown, count = _marked(distinct, placeholders)
+        labels = "This label stands" if len(shown) == 1 else "These labels stand"
+        notes.append(
+            f"{_missing_marker_note(column, shown, count)} {labels} for a value nobody could give, "
+            "not a group of its own."
+        )
+    return stated | detected | placeholders, notes
 
 
 _MANGLED_DUPLICATE = re.compile(r"^(.+)\.(\d+)$")
@@ -234,14 +386,14 @@ def _speculative_dates(values: pd.Series) -> pd.Series:
         return pd.to_datetime(values, errors="coerce")
 
 
-def _is_blank(series: pd.Series) -> pd.Series:
-    """True for missing cells and for text that is only whitespace."""
-    if series.dtype == object or str(series.dtype) == "string":
-        return _per_value(
-            series,
-            lambda values: values.isna() | values.astype("string").str.strip().eq("").fillna(False),
-        ).astype(bool)
-    return series.isna()
+def _text_columns(frame: pd.DataFrame) -> list[str]:
+    return [column for column, kind in frame.dtypes.items() if str(kind) in ("object", "string")]
+
+
+def _blank_text(distinct: _Distinct) -> np.ndarray:
+    """True for the rows of a text column that are missing or only whitespace."""
+    empty = _flags(distinct.values.astype("string").str.strip().eq(""))
+    return ~distinct.rows(~empty).to_numpy()
 
 
 def _drop_timezone(series: pd.Series) -> pd.Series:
@@ -568,27 +720,24 @@ def _parse_dates(values: pd.Series, *, dayfirst: bool) -> pd.Series:
         return parsed.mask(_time_only(today).reindex(parsed.index, fill_value=False))
 
 
-def _dated(values: pd.Series, *, dayfirst: bool) -> pd.Series:
-    return _per_value(values, lambda distinct: _parse_dates(distinct, dayfirst=dayfirst))
+def _dated(distinct: _Distinct, *, dayfirst: bool) -> pd.Series:
+    return distinct.spread(lambda cells: _parse_dates(cells, dayfirst=dayfirst))
 
 
-def _read_dates(values: pd.Series) -> tuple[pd.Series, str]:
+def _read_dates(distinct: _Distinct) -> tuple[pd.Series, str]:
     """Parse a date column, reporting the day/month order when it had to be decided.
 
     Returns the series and "day-first", "ambiguous" or "". The order that parses more
     values wins ("25/12/2024" only parses day-first). On a tie where the readings
     differ, month-first is used and "ambiguous" is returned so the caller can warn.
     """
-    month_first = _dated(values, dayfirst=False)
+    month_first = _dated(distinct, dayfirst=False)
     # Only day-or-month-first values (01/03/2024, not 2024-03-01) can be read two ways.
-    two_ways = _per_value(
-        values,
-        lambda distinct: distinct.astype("string").str.match(_DAY_OR_MONTH_FIRST, na=False).astype(bool),
-    )
+    two_ways = distinct.rows(_flags(distinct.values.astype("string").str.match(_DAY_OR_MONTH_FIRST)))
     if not bool(two_ways.any()):
         return month_first, ""
 
-    day_first = _dated(values, dayfirst=True)
+    day_first = _dated(distinct, dayfirst=True)
     if day_first.notna().sum() > month_first.notna().sum():
         return day_first, "day-first"
     if month_first.notna().sum() > day_first.notna().sum():
@@ -746,14 +895,17 @@ def _first_days(years: pd.Series, months: pd.Series | None = None) -> pd.Series:
     return pd.to_datetime(parts, errors="coerce")
 
 
-def _holds_decimals(values: pd.Series) -> bool:
+def _holds_decimals(distinct: _Distinct) -> bool:
     """True when the text reads as numbers, nearly all of them, and some have a fractional part.
 
     Missing-value markers ("NA", "<LOD") are left out of the count.
     """
-    present = values[~_missing_markers(values)].dropna()
-    numbers = pd.to_numeric(present, errors="coerce").dropna()
-    return len(numbers) >= 0.95 * max(len(present), 1) and bool((numbers % 1 != 0).any())
+    markers = _missing_markers(distinct)
+    numbers = pd.to_numeric(distinct.values.mask(markers), errors="coerce")
+    read = numbers.notna().to_numpy()
+    counts = distinct.counts
+    fractional = bool((numbers[read] % 1 != 0).any())
+    return int(counts[read].sum()) >= 0.95 * max(int(counts[~markers].sum()), 1) and fractional
 
 
 # Text columns with more distinct values than this are free text, not labels to merge.
@@ -767,26 +919,29 @@ def _label_key(value: str) -> str:
     return " ".join(plain.casefold().split())
 
 
-def _merge_label_variants(series: pd.Series, column: str) -> tuple[pd.Series, str | None]:
+def _merge_label_variants(distinct: _Distinct, column: str) -> tuple[dict, str | None]:
     """Write labels that differ only in case, accents or spacing one way, the most common one.
 
     "NO INDICA", "No indica" and "no Indica" are one answer; left apart, they
-    split one group into three in every breakdown. Returns the series and a
-    note, or the series unchanged and None.
+    split one group into three in every breakdown. Returns the mapping from
+    each variant to the spelling kept and a note, or an empty mapping and None.
     """
-    counts = series.dropna().value_counts()
-    labels = [label for label in counts.index if isinstance(label, str)]
+    # Most common first, and in order of first appearance among equals.
+    counts = pd.Series(distinct.counts, index=distinct.values.to_numpy()).sort_values(
+        ascending=False, kind="stable"
+    )
+    labels = [label for label, count in counts.items() if isinstance(label, str) and count]
     if not 2 <= len(labels) <= MAX_LABELS_TO_MERGE:
-        return series, None
+        return {}, None
     spellings: dict[str, list[str]] = {}
     for label in labels:
         # Most common first, so each group's first spelling is the one kept.
         spellings.setdefault(_label_key(label), []).append(label)
     merged = [group for group in spellings.values() if len(group) > 1]
     if not merged:
-        return series, None
+        return {}, None
     mapping = {variant: group[0] for group in merged for variant in group[1:]}
-    changed = int(series.isin(list(mapping)).sum())
+    changed = int(counts[list(mapping)].sum())
     largest = max(merged, key=lambda group: int(counts[group].sum()))
     shown = " and ".join(f'"{variant}"' for variant in largest[1:3])
     others = ""
@@ -796,57 +951,51 @@ def _merge_label_variants(series: pd.Series, column: str) -> tuple[pd.Series, st
         f"{changed:,} {column} values spelled differently only in case, accents or spacing were "
         f'merged: {shown} became "{largest[0]}"{others}.'
     )
-    return series.replace(mapping), note
+    return mapping, note
 
 
-def _read_numbers(values: pd.Series) -> tuple[pd.Series, pd.Series]:
-    """Parse text cells as numbers; return the numbers and which cells were missing markers."""
-    markers = _missing_markers(values)
-    parsed = _per_value(values.mask(markers), lambda cells: pd.to_numeric(cells, errors="coerce"))
+def _read_numbers(distinct: _Distinct) -> tuple[pd.Series, np.ndarray]:
+    """Parse the distinct values as numbers.
+
+    Returns the numbers, worked out on ``distinct.cells`` for ``expand``, and
+    which distinct values were missing-value markers.
+    """
+    markers = _missing_markers(distinct)
+    cells = distinct.cells
+    marked = distinct.on_cells(markers)
+    numbers = pd.to_numeric(cells.mask(marked), errors="coerce")
     # Retry cells plain parsing missed as formatted numbers ("$1,203.55",
     # "(48.10)"). Large values are the ones with separators, so skipping
     # them biases totals down. Values already read ("1e3") are kept.
-    gaps = parsed.isna() & values.notna() & ~markers
+    gaps = numbers.isna().to_numpy() & cells.notna().to_numpy() & ~marked
     if gaps.any():
-        parsed = parsed.astype("float64").fillna(_numeric_from_text(values.where(gaps)))
-    return parsed, markers
+        formatted = cells.where(gaps).map(
+            lambda value: _read_formatted_number(value) if isinstance(value, str) else None
+        )
+        numbers = numbers.astype("float64").fillna(formatted.astype("float64"))
+    return numbers, markers
 
 
 def _numeric_share(values: pd.Series) -> float:
     """Share of the non-marker cells that read as numbers."""
-    parsed, markers = _read_numbers(values)
-    readable = int(values.notna().sum() - markers.sum())
-    return float(parsed.notna().sum() / readable) if readable else 0.0
+    distinct = _Distinct.of(values)
+    numbers, markers = _read_numbers(distinct)
+    counts = distinct.counts
+    readable = int(counts[~markers].sum())
+    read = numbers.notna().to_numpy()[: len(distinct.values)]
+    return float(counts[read].sum() / readable) if readable else 0.0
 
 
-# Cells drawn at random from a text column to rule out a type before parsing all
-# of it. A column needs 95% of its cells to convert, so one where under half the
-# drawn cells read as numbers (or times) cannot, and is not parsed in full.
-PROBE_SIZE = 200
-PROBE_RATIO = 0.5
-
-
-def _probe(values: pd.Series) -> pd.Series:
-    present = values.dropna()
-    return present if len(present) <= PROBE_SIZE else present.sample(PROBE_SIZE, random_state=0)
-
-
-def _missing_marker_note(column: str, marked: pd.Series) -> str:
-    examples = list(dict.fromkeys(marked.astype(str).str.strip()))
+def _missing_marker_note(column: str, examples: list[str], count: int) -> str:
     shown = ", ".join(f'"{value}"' for value in examples[:4]) + (", ..." if len(examples) > 4 else "")
-    noun = "cells" if len(marked) > 1 else "cell"
-    return f"{len(marked):,} {noun} in {column} read as missing: {shown}."
-
-
-def _not_stated_note(column: str, stated: pd.Series) -> str:
-    phrases = "This phrase means" if stated.astype(str).str.strip().nunique() == 1 else "These phrases mean"
-    return f"{_missing_marker_note(column, stated)} {phrases} the value was not stated."
+    noun = "cells" if count > 1 else "cell"
+    return f"{count:,} {noun} in {column} read as missing: {shown}."
 
 
 def _marker_notes(
     column: str,
-    values: pd.Series,
-    markers: pd.Series,
+    distinct: _Distinct,
+    markers: np.ndarray,
     token_cells: pd.Series,
     token: str | None,
     total: int,
@@ -855,18 +1004,34 @@ def _marker_notes(
 
     Values past a detection limit get their own note, since leaving them out
     biases the mean; other markers and a lone token are listed as read.
+    ``markers`` marks the distinct values read as markers. "ND" counts as below
+    a limit, unless the column writes values below its limit as "<0.4": an
+    "ND" beside those more likely means the value was not determined.
     """
     notes = []
-    below, above = _censored(values)
-    censored = (below | above) & markers
-    plain = markers & ~censored
+    below, above = _censored(distinct)
+    undetected = _flags(distinct.text.isin(NOT_DETECTED_MARKERS)) & markers
+    limited = _flags(distinct.text.str.match(_CENSORED_VALUE.pattern)) & markers
+    undetermined = undetected if limited.any() else np.zeros(len(undetected), dtype=bool)
+    below = below & markers & ~undetermined
+    above = above & markers
+    plain = markers & ~below & ~above & ~undetermined
     if plain.any():
-        notes.append(_missing_marker_note(column, values[plain]))
-    if censored.any():
-        notes.append(_censored_note(column, values, below & markers, above & markers, total))
+        notes.append(_missing_marker_note(column, *_marked(distinct, plain)))
+    if undetermined.any():
+        shown, count = _marked(distinct, undetermined)
+        example = str(distinct.values[limited].iloc[0]).strip()
+        notes.append(
+            f'{_missing_marker_note(column, shown, count)} The column writes values past its limit as '
+            f'"{example}", so "{shown[0]}" more likely means the value was not determined.'
+        )
+    for side, censored in (("below", below), ("above", above)):
+        if censored.any():
+            notes.append(_censored_note(column, distinct, censored, side, total))
     if token_cells.any():
         count = int(token_cells.sum())
-        shown = str(values[token_cells].astype(str).str.strip().iloc[0])
+        first = distinct.codes[np.flatnonzero(token_cells.to_numpy())[0]]
+        shown = str(distinct.values.iloc[first]).strip()
         noun, verb = ("cells", "were") if count > 1 else ("cell", "was")
         if token in TRACE_TOKENS - {"t"}:
             notes.append(
@@ -918,7 +1083,13 @@ def clean_dataframe(
     cleaned.columns = _make_unique_columns(cleaned.columns)
     notes: list[str] = _duplicate_header_notes(dataframe.columns, cleaned)
 
-    blanks = {column: _is_blank(cleaned[column]).to_numpy() for column in cleaned.columns}
+    # Each text column is factorised once here, and every later check on it
+    # works from its distinct values.
+    distincts = {column: _Distinct.of(cleaned[column]) for column in _text_columns(cleaned)}
+    blanks = {
+        column: _blank_text(distincts[column]) if column in distincts else cleaned[column].isna().to_numpy()
+        for column in cleaned.columns
+    }
     empty_columns = [column for column, blank in blanks.items() if blank.all()]
     # Each drop copies the whole frame, so only drop what is there.
     if empty_columns:
@@ -930,6 +1101,7 @@ def clean_dataframe(
     empty_rows_removed = int(empty_row_mask.sum())
     if empty_rows_removed:
         cleaned = cleaned.loc[~empty_row_mask].copy()
+        distincts = {column: distinct.take(~empty_row_mask) for column, distinct in distincts.items()}
 
     index_columns = [
         column for column in cleaned.columns if _looks_like_exported_index(cleaned[column], column)
@@ -952,30 +1124,29 @@ def clean_dataframe(
     date_sample_size = 50
 
     clock_columns: list[str] = []
-    for column in cleaned.select_dtypes(include=["object", "string"]).columns:
-        series = cleaned[column]
-        non_null_before = int(series.notna().sum())
-        distinct = pd.Series(series.dropna().unique(), dtype=object)
-        if distinct.map(lambda value: isinstance(value, str) and value != value.strip()).any():
+    # The text columns that stay text, for the checks after inference.
+    still_text: dict[str, _Distinct] = {}
+    for column in _text_columns(cleaned):
+        distinct = distincts.get(column) or _Distinct.of(cleaned[column])
+        non_null_before = distinct.present
+        values = distinct.values
+        padded = values.map(lambda value: isinstance(value, str) and value != value.strip())
+        if padded.any():
             trimmed_text_columns += 1
-        cleaned[column] = _per_value(
-            series,
-            lambda values: values.map(
-                lambda value: (value.strip() or pd.NA) if isinstance(value, str) else value
-            ),
-        )
+        if padded.any() or values.eq("").any():
+            distinct = distinct.relabel(
+                values.map(lambda value: (value.strip() or pd.NA) if isinstance(value, str) else value)
+            )
+            cleaned[column] = distinct.column()
+        still_text[column] = distinct
 
         if non_null_before == 0:
             continue
 
-        normalized_name = column.lower()
-        named_like_a_date = any(token in normalized_name for token in date_tokens)
+        named_like_a_date = any(token in column.lower() for token in date_tokens)
         clock_ratio = named_date_ratio if named_like_a_date else unnamed_date_ratio
-        clock = (
-            _per_value(cleaned[column], _time_only)
-            if _time_only(_probe(cleaned[column])).mean() >= PROBE_RATIO
-            else None
-        )
+        probe = distinct.sample()
+        clock = distinct.spread(_time_only) if _time_only(probe).mean() >= PROBE_RATIO else None
         if clock is not None and clock.sum() / non_null_before >= clock_ratio:
             times, midnights = _clock_times(cleaned[column].where(clock))
             unreadable = int(non_null_before - times.notna().sum())
@@ -986,10 +1157,11 @@ def clean_dataframe(
             cleaned[column] = times
             clock_columns.append(column)
             datetime_columns_inferred += 1
+            del still_text[column]
             continue
 
         if named_like_a_date:
-            parsed_dates, ordering = _read_dates(cleaned[column])
+            parsed_dates, ordering = _read_dates(distinct)
             if parsed_dates.notna().sum() / non_null_before >= named_date_ratio:
                 unreadable = int(non_null_before - parsed_dates.notna().sum())
                 if unreadable:
@@ -999,32 +1171,35 @@ def clean_dataframe(
                     notes.append(_ordering_note(column, ordering))
                 cleaned[column] = _drop_timezone(parsed_dates)
                 datetime_columns_inferred += 1
+                del still_text[column]
                 continue
 
-        values = cleaned[column]
         # "02134" or "007" is a code: converting it would drop the leading zero.
-        distinct = pd.Series(values.dropna().unique(), dtype=object)
-        leading_zero = distinct.astype("string").str.match(r"^0\d").fillna(False).astype(bool).any()
+        leading_zero = _flags(distinct.values.astype("string").str.match(r"^0\d")).any()
         # Whole numbers under a key name ("Order No") are keys; decimals under one
         # are measurements whatever the name says.
-        keys = is_identifier_name(column) and not _holds_decimals(values)
-        if not keys and not leading_zero and _numeric_share(_probe(values)) >= PROBE_RATIO:
-            parsed_numeric, markers = _read_numbers(values)
-            unread = parsed_numeric.isna() & values.notna() & ~markers
+        keys = is_identifier_name(column) and not _holds_decimals(distinct)
+        if not keys and not leading_zero and _numeric_share(probe) >= PROBE_RATIO:
+            numbers, markers = _read_numbers(distinct)
+            parsed_numeric = distinct.expand(numbers)
+            unread_values = numbers.isna().to_numpy()[: len(distinct.values)] & ~markers
+            unread = distinct.rows(unread_values)
             # One short token repeated among numbers ("T" for a trace) is a marker,
             # as long as it is not most of the column.
-            token = _lone_token(values, unread)
+            token = _lone_token(distinct, unread_values)
             token_cells = unread if token and unread.sum() <= 0.5 * non_null_before else unread & False
-            readable = non_null_before - int(markers.sum()) - int(token_cells.sum())
+            marked = int(distinct.counts[markers].sum())
+            readable = non_null_before - marked - int(token_cells.sum())
             if readable and parsed_numeric.notna().sum() / readable >= numeric_ratio:
                 if token_cells.any() and token in TRACE_TOKENS - {"t"}:
                     parsed_numeric = parsed_numeric.mask(token_cells, 0.0)
                 cleaned[column] = parsed_numeric
                 numeric_columns_inferred += 1
-                notes.extend(_marker_notes(column, values, markers, token_cells, token, non_null_before))
+                notes.extend(_marker_notes(column, distinct, markers, token_cells, token, non_null_before))
                 skipped = unread & ~token_cells
                 if skipped.any():
-                    notes.append(_unread_note(column, values[skipped]))
+                    notes.append(_unread_note(column, distinct.column()[skipped]))
+                del still_text[column]
                 continue
 
         if not named_like_a_date:
@@ -1032,14 +1207,15 @@ def clean_dataframe(
             # Numbers are tried first, so bare years stay numbers here; only a
             # year-named column is turned into dates, after this loop.
             # A sample is checked first because most text columns are not dates.
-            sample = cleaned[column].dropna().head(date_sample_size)
+            sample = distinct.head(date_sample_size)
             if len(sample) and _speculative_dates(sample).notna().mean() >= unnamed_date_ratio:
-                parsed_dates, ordering = _read_dates(cleaned[column])
+                parsed_dates, ordering = _read_dates(distinct)
                 if parsed_dates.notna().sum() / non_null_before >= unnamed_date_ratio:
                     if ordering:
                         notes.append(_ordering_note(column, ordering))
                     cleaned[column] = _drop_timezone(parsed_dates)
                     datetime_columns_inferred += 1
+                    del still_text[column]
 
     # Codes typed in place of a reading (-999, 999.9) would drive every figure
     # on their columns, so they are set to missing before anything is computed.
@@ -1067,12 +1243,23 @@ def clean_dataframe(
             "starting at 00:00:00; no calendar date is attached to it."
         )
 
-    # Text columns that stayed text: "not stated" phrases are missing values, not a group.
-    for column in cleaned.select_dtypes(include=["object", "string"]).columns:
-        stated = _not_stated(cleaned[column])
-        if stated.any():
-            notes.append(_not_stated_note(column, cleaned[column][stated]))
-            cleaned[column] = cleaned[column].mask(stated)
+    # Text columns that stayed text: "not stated" phrases and placeholders are
+    # missing values, not a group, and labels spelled several ways are written
+    # one way. Keys keep their case: "ab12" and "AB12" may be two accounts.
+    for column, distinct in still_text.items():
+        unstated, unstated_notes = _unstated(column, distinct)
+        changed = bool(unstated.any())
+        if changed:
+            notes.extend(unstated_notes)
+            distinct = distinct.relabel(distinct.values.mask(unstated))
+        if not is_identifier_name(column):
+            mapping, merge_note = _merge_label_variants(distinct, column)
+            if mapping:
+                notes.append(merge_note)
+                distinct = distinct.relabel(distinct.values.replace(mapping))
+                changed = True
+        if changed:
+            cleaned[column] = distinct.column()
 
     # Runs after inference, so year columns held as text have become numbers.
     year_columns = _year_columns(cleaned, None if elapsed else date)
@@ -1096,14 +1283,6 @@ def clean_dataframe(
             if unreadable:
                 unparsed_date_cells += unreadable
                 notes.append(f"{unreadable} {year} values could not be read as dates.")
-
-    # Runs after inference, so only columns that stayed text are merged. Keys
-    # keep their case: "ab12" and "AB12" may be two accounts.
-    for column in cleaned.select_dtypes(include=["object", "string"]).columns:
-        if not is_identifier_name(column):
-            cleaned[column], merge_note = _merge_label_variants(cleaned[column], column)
-            if merge_note:
-                notes.append(merge_note)
 
     # Runs after inference, which can create new int64 columns.
     if _widen_columns_that_would_overflow(cleaned):

@@ -1,3 +1,4 @@
+import time
 import unittest
 
 import numpy as np
@@ -853,6 +854,22 @@ class PerValueCleaningTests(unittest.TestCase):
         self.assertTrue(pd.isna(cleaned["Amount"].iloc[2]))
         self.assertEqual(cleaned["Amount"].iloc[3], -30.0)
 
+    def test_a_large_table_of_text_columns_is_cleaned_quickly(self):
+        rng = np.random.default_rng(31)
+        rows = 250_000
+        data = {f"label_{i}": rng.choice([f"L{j}" for j in range(300)], rows) for i in range(10)}
+        for i in range(3):
+            data[f"reading_{i}"] = rng.normal(50, 10, rows).round(2).astype(str)
+        frame = pd.DataFrame(data)
+
+        started = time.perf_counter()
+        cleaned, _ = clean_dataframe(frame)
+        elapsed = time.perf_counter() - started
+
+        self.assertEqual(cleaned["reading_0"].dtype.kind, "f")
+        # About half a second on a laptop; the margin absorbs slow CI machines.
+        self.assertLess(elapsed, 4.0)
+
 
 class MissingValueCodeTests(unittest.TestCase):
     def test_a_code_is_set_to_missing_in_every_numeric_column_with_a_note_each(self):
@@ -878,6 +895,67 @@ class MissingValueCodeTests(unittest.TestCase):
 
         self.assertEqual(int(cleaned["Price"].isna().sum()), 0)
         self.assertEqual(report.blanked_codes, ())
+
+
+class NotDetectedTests(unittest.TestCase):
+    def test_nd_in_a_numeric_column_is_below_a_detection_limit(self):
+        frame = pd.DataFrame({"Lead": ["0.81", "ND", "0.77", "0.92", "ND", "1.10"]})
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(int(cleaned["Lead"].isna().sum()), 2)
+        note = next(note for note in report.notes if "Lead" in note)
+        self.assertIn("2 cells in Lead (33.3%) were below a detection limit", note)
+
+    def test_nd_beside_values_written_with_a_limit_is_not_determined(self):
+        frame = pd.DataFrame({"Zinc": ["<0.4", "ND", "1.2", "0.9", "ND", "2.2"] * 3})
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(int(cleaned["Zinc"].isna().sum()), 9)
+        notes = " ".join(note for note in report.notes if "Zinc" in note)
+        self.assertIn('6 cells in Zinc read as missing: "ND".', notes)
+        self.assertIn("not determined", notes)
+        self.assertIn("3 cells in Zinc (16.7%) were below a detection limit (<0.4)", notes)
+
+    def test_nd_among_readings_written_as_text_is_not_detected(self):
+        frame = pd.DataFrame({
+            "Particles": ["5.66 ± 1.69 items/g", "ND", "14 items/L", "0.179 items/g", "ND"],
+            "Food": ["Fish", "Salt", "Water", "Fish", "Salt"],
+        })
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(int(cleaned["Particles"].isna().sum()), 2)
+        note = next(note for note in report.notes if "Particles" in note)
+        self.assertIn("not detected", note)
+        self.assertNotIn("not stated", note)
+
+
+class PlaceholderTests(unittest.TestCase):
+    def test_no_data_phrases_in_other_languages_become_missing(self):
+        frame = pd.DataFrame({
+            "Category": ["BAIK", "TIDAK ADA DATA", "SEDANG", "keine Daten", "sem dados", "BAIK"],
+            "Index": [40.0, 0.0, 70.0, 0.0, 0.0, 45.0],
+        })
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["Category"].dropna().tolist(), ["BAIK", "SEDANG", "BAIK"])
+        self.assertTrue(any("not stated" in note and "Category" in note for note in report.notes))
+
+    def test_placeholder_labels_become_missing_with_a_note(self):
+        frame = pd.DataFrame({
+            "Cancer Type": ["BRCA", "UNABLE TO CLASSIFY", "LUAD", "Unknown", "unclassified", "BRCA"],
+            "Z": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+        })
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["Cancer Type"].dropna().tolist(), ["BRCA", "LUAD", "BRCA"])
+        note = next(note for note in report.notes if "Cancer Type" in note)
+        self.assertIn("3 cells in Cancer Type read as missing", note)
+        self.assertIn("not a group of its own", note)
 
 
 def hourly_log(start, hours, value=1.0, seed=0):

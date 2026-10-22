@@ -24,7 +24,7 @@ table or as a note.
 | 11 | Set missing-value codes to missing | See [Missing-value codes](#missing-value-codes) |
 | 12 | Join a date column and a time column | See [Times with no date](#times-with-no-date) |
 | 13 | Read elapsed time | See [Elapsed time](#elapsed-time) |
-| 14 | Read "not stated" as missing in text columns | See below |
+| 14 | Read "not stated", `ND` and placeholder labels as missing in text columns | See below |
 | 15 | Build dates from years | See below |
 | 16 | Merge label spellings | See below |
 | 17 | Widen overflowing integers | An integer column whose total would overflow int64 becomes float64 |
@@ -34,13 +34,14 @@ table or as a note.
 If nothing is left, `clean_dataframe` raises `ValueError` rather than
 returning an empty frame.
 
-Steps 6 to 10 work on each distinct value of a text column once and spread
-the result back over its rows, since a site, a status or a date repeats many
-times. Before a column is parsed in full as numbers or as times of day, 200 of
-its cells drawn at random are tried. A column needs 95% of its cells to
-convert, so one where fewer than half of the drawn cells read as numbers (or
-times) is not parsed in full. On a file of 700,000 rows this takes cleaning
-from about 8 seconds to under 3.
+Each text column is factorised once, when empty rows are found, and every
+later step on it (trimming, markers, numbers, dates, labels) works on its
+distinct values, with their text normalised once, and spreads the result back
+over the rows. A site, a status or a date repeats many times, so a table of
+242,000 rows with 13 text columns cleans in under a second. Before a column is
+parsed in full as numbers or as times of day, 200 of its cells drawn at random
+are tried. A column needs 95% of its cells to convert, so one where fewer than
+half of the drawn cells read as numbers (or times) is not parsed in full.
 
 ## Identical rows are kept
 
@@ -170,18 +171,23 @@ any other character, such as a slash, is not read this way, so a date cannot
 become a large integer.
 
 Cells holding a missing-value marker (`MISSING_MARKERS`: `NA`, `n/a`, `nd`,
-`null`, `-`, `#DIV/0!`, `<LOD`, `below detection limit` and similar; a
-"not stated" phrase from `NOT_STATED_MARKERS`, below; or a censored value such
-as `<0.1` or `<3,87`) do not count against the 95%. If the column converts,
-they become missing and a note lists them.
+`null`, `unknown`, `-`, `#DIV/0!`, `<LOD`, `below detection limit` and
+similar; a "not stated" phrase from `NOT_STATED_MARKERS`, below; or a censored
+value such as `<0.1` or `<3,87`) do not count against the 95%. If the column
+converts, they become missing and a note lists them.
 
-Values past a detection limit get a note of their own. The limit is parsed
-like any number, so `<3,87` is read as below 3.87, and the note gives the
-limits and the share of the column: "7,239 cells in Phosphorus (15.5%) were
-below a detection limit (<3.87) and read as missing". When 10% or more of a
-column is censored (`CENSORED_SHARE`), the note adds that the mean of the rest
-is biased upward (downward for values above a limit), since the values left
-out are the smallest (or largest) ones.
+Values past a detection limit get a note of their own, one for each side. The
+limit is parsed like any number, so `<3,87` is read as below 3.87, and the
+note gives the limits and the share of the column: "7,239 cells in Phosphorus
+(15.5%) were below a detection limit (<3.87) and read as missing". When 10% or
+more of a column is censored (`CENSORED_SHARE`), the note adds that the mean
+of the rest is biased upward (downward for values above a limit), since the
+values left out are the smallest (or largest) ones.
+
+In a column of readings, `ND` (or `n.d.`) means not detected, so it counts as
+below a detection limit, like `<LOD`. The exception is a column that writes
+values below its limit with a number (`<0.4`): beside those, `ND` more likely
+means the value was not determined, so its cells get a plain note saying so.
 
 **A lone token.** Weather records write `T` for a trace of rain, and instrument
 logs write `M` or `*`. When the only text left in a column after markers is one
@@ -209,11 +215,22 @@ that has a leading zero (`02134`, `007`) is never converted.
 value, not a group: left as a label, `NO INDICA` and `No indica` would become
 two groups of their own and could lead the brief. After inference, cells in
 text columns matching `NOT_STATED_MARKERS` (`no indica`, `no indicado`,
-`sin dato`, `nicht angegeben`, `non renseigné`, `not stated`, `not specified`,
-`N/A`, `ND`, `ERROR: #N/A` and similar, ignoring case and spacing) become
-missing, and a note lists them. `ND` is left alone in a column of two-letter
-codes, where it is North Dakota. The same list counts as markers in numeric
-columns.
+`sin dato`, `sin datos`, `nicht angegeben`, `keine Daten`, `non renseigné`,
+`pas de données`, `nessun dato`, `sem dados`, `tidak ada data`,
+`geen gegevens`, `no data`, `not stated`, `not specified`, `N/A`,
+`ERROR: #N/A` and similar, ignoring case and spacing) become missing, and a
+note lists them. The same list counts as markers in numeric columns.
+
+Placeholder labels (`PLACEHOLDER_LABELS`: `Unknown`, `unclassified`,
+`not classified`, `UNABLE TO CLASSIFY`) stand for a value nobody could give.
+Kept as labels, they become a group that mixes every kind of row, so they
+become missing too, with a note saying what they stand for.
+
+`ND` in a text column becomes missing with a note: when most of the column's
+other cells start with a number (readings written with their units, such as
+`5.66 ± 1.69 items/g`), the note says it means not detected; otherwise that it
+usually means not detected or not determined. `ND` is left alone in a column
+of two-letter codes, where it is North Dakota.
 
 **Dates in other columns.** Dates also arrive in columns called `Month`,
 `Period` or `FY`. For a column with any other name, the first 50 values must
@@ -299,8 +316,8 @@ infinite values. Its `notes` hold the sentences shown above the dashboard
 (repeated headers, dropped empty columns, date-order assumptions, timezones,
 unreadable dates, missing-value codes set to missing, dates built from years,
 missing-value markers, values past a detection limit, lone tokens, unreadable
-numbers, "not stated" phrases, merged label spellings, widened columns,
-infinities, identical rows). Its `blanked_codes` hold the data-check issues
+numbers, "not stated" phrases, `ND` and placeholder labels, merged label
+spellings, widened columns, infinities, identical rows). Its `blanked_codes` hold the data-check issues
 for the codes set to missing, which `Analysis.quality()` and the app's data
 checks list beside the rest. `pipeline.prepare_analysis` adds what schema
 detection concluded about the columns (see
@@ -330,6 +347,8 @@ app.
 | `Precip` holding numbers and 14% `T` | Converted; the `T` cells become missing, with a note |
 | `P mg/kg` holding `<3,87` in 15% of rows | Converted; those cells become missing, with a note on the limit and the biased mean |
 | `Drainage` holding `No indica` and `ERROR: #N/A` | Those cells become missing, with a note |
+| `categori` holding `TIDAK ADA DATA`, or `Cancer Type` holding `UNABLE TO CLASSIFY` | Those cells become missing, with a note |
+| `Lead` holding numbers and `ND` | Converted; `ND` counts as below a detection limit, with a note |
 | `PM` and nine other columns holding `-999` | Those cells become missing, with a note per column, and the data checks list the code |
 | `pm10`, `pm1_0` and `pm2_5` all `-1` on the same 4 rows, never otherwise negative | Those cells become missing, with a note per column |
 | A CSV header repeated, read as `diabetes` and `diabetes.1` | Both kept, with a note saying on how many rows they differ |
