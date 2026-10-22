@@ -90,6 +90,58 @@ class RefusalTests(unittest.TestCase):
             with self.subTest(code=refusal.code):
                 self.assertIn(refusal.code, ada.REFUSAL_CODES)
 
+    def test_rows_per_year_fixed_by_the_design_are_not_forecast(self):
+        frame = pd.DataFrame([
+            {"Year": f"{year}-01-01", "Plot Code": f"P{plot}", "Crop": "maize" if plot % 2 else "wheat"}
+            for year in range(2005, 2016) for plot in range(10)
+        ])
+        report = ada.analyze(frame.assign(Year=pd.to_datetime(frame["Year"])))
+
+        for refusal in (report.forecast(), report.anomalies):
+            with self.subTest(refusal=refusal):
+                self.assertIsInstance(refusal, ada.Refusal)
+                self.assertEqual(refusal.code, "no_measure_column")
+                self.assertIn("at most once a year", refusal.message)
+
+    def test_sampling_trips_are_not_forecast(self):
+        starts = pd.to_datetime(["2003-06-16", "2003-09-09", "2003-11-03", "2004-04-26", "2004-08-09",
+                                 "2004-10-25", "2005-04-25", "2005-07-25", "2005-10-24"])
+        dates = [start + pd.Timedelta(days=day % 4) for start in starts for day in range(20)]
+        report = ada.analyze(pd.DataFrame({"date": dates, "secchi": [5.0 + day % 3 for day in range(180)]}))
+
+        refusal = report.forecast()
+
+        self.assertIsInstance(refusal, ada.Refusal)
+        self.assertEqual(refusal.code, "not_enough_periods")
+        self.assertIn("9 sampling trips", refusal.message)
+
+    def test_a_column_per_month_is_offered_in_long_form(self):
+        months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+        values = {name: [float(index) for index in range(10)] for name in months}
+        frame = pd.DataFrame({"YEAR": range(1990, 2000), **values})
+        report = ada.analyze(frame, date="YEAR")
+
+        long = report.long_form()
+
+        self.assertEqual(long.columns.tolist(), ["Date", "Value"])
+        self.assertEqual(len(long), 120)
+        self.assertEqual(long["Date"].iloc[13], pd.Timestamp("1991-02-01"))
+        self.assertIsInstance(ada.analyze(steady()).long_form(), ada.Refusal)
+
+    def test_an_average_over_sites_that_change_every_year_is_not_forecast(self):
+        rows = [
+            {"Date": f"{1990 + year}-06-01", "SITE_ID": f"S{year}-{site}" if site < 20 else f"K{site}",
+             "COND": 100.0 + 3 * year + site}
+            for year in range(25) for site in range(25)
+        ]
+        frame = pd.DataFrame(rows).assign(Date=lambda table: pd.to_datetime(table["Date"]))
+
+        refusal = ada.analyze(frame, measure="COND", aggregation="mean").forecast()
+
+        self.assertIsInstance(refusal, ada.Refusal)
+        self.assertEqual(refusal.code, "changing_units")
+        self.assertIn("appear in only one year", refusal.message)
+
     def test_nothing_found_is_not_the_same_as_could_not_look(self):
         """An empty tuple and a Refusal are both falsy; only the type differs."""
         found = ada.analyze(steady()).anomalies

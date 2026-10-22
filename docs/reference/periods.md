@@ -134,7 +134,13 @@ keeping the timeline evenly spaced."*
 | `build_trend` / `trend_frame` | The measure per period (`TrendSeries` / its frame) | – |
 | `segment_frame` | The measure per segment value; a segment with no values has no figure (NaN), not zero | Top 12 |
 | `segment_period_change` | Latest period-over-period change per segment, for segments with figures in both periods; the others are in `attrs["left_out"]` | – |
-| `matched_period_change` | The trend's latest change recomputed on the segments in both periods, when the segments differ | – |
+| `matched_period_change` | The trend's latest change recomputed on the segments in both periods, when the segments differ; the brief uses it only for units that report over time (`reporting_unit`) | – |
+| `reporting_unit` | Whether a grouping names units that report over time (named like a station, site, city or store, or reporting side by side, each at most once a date) rather than a per-row condition | – |
+| `yearly_values` | The measure per complete year (90% of its periods with a value): the mean of its periods, or their total for an additive measure | – |
+| `fixed_design` | With no measure, the unit column when each unit appears at most once a period, recurs and keeps the count steady, so rows per period are set by the design | – |
+| `unit_turnover` / `within_unit_yearly` | For an averaged measure, the unit column when most units appear in one year only, and the measure per year taken from each recurring unit's own level | – |
+| `sampling_campaigns` | The sampling trips behind dates that cluster into a few campaigns with most periods between them empty | – |
+| `month_columns` / `months_recorded` / `months_long` | A table with one column per month (JAN to DEC): the twelve columns in calendar order, how many a year's row fills, and the table as one row per month | – |
 | `group_coverage` | Each segment's first and last date with a value | – |
 | `seasonal_context` | The latest period against the same move in earlier years and the same period a year earlier, when the trend has a yearly pattern | – |
 | `driver_frame` | Movement waterfall inputs, with an "Other segments" bar for summed measures | Top 9 |
@@ -169,7 +175,24 @@ elapsed days would drift, because months and quarters differ in length.
 `period_grain` classifies the median spacing between periods as `s`, `min` or
 `h` (up to 1.5 of each), `D` (up to 1.5 days), `W` (up to 10), `M` (up to 45),
 `Q` (up to 130) or `Y`. Using the median means one gap in a regular series
-does not change the result.
+does not change the result. Callers that know the grain the periods were built
+at pass it (`period_positions(periods, grain)`, `fit_trendline(..., grain)`):
+read from the periods that hold values, months with gaps between them can look
+like quarters, and a slope per quarter would then be labelled per month. The
+anomaly check and the forecast read the grain from the evenly spaced trend
+frame before they drop its empty periods.
+
+### Trend test
+
+`trend_test` sizes a series' trend and tests it: the Theil-Sen slope with its
+95% confidence interval (`scipy.stats.theilslopes`) and the Mann-Kendall test
+(the asymptotic form of `scipy.stats.kendalltau` against position). A slowly
+wandering series looks trending to both, so both allow for lag-1
+autocorrelation in the detrended values (Yue and Wang's effective sample size,
+`autocorrelation_inflation`): the test's z is divided by the square root of the
+variance factor and the interval is taken at the matching higher confidence.
+`TrendTest.clear` is False when the interval spans zero, which the brief and
+Ask call "no clear trend".
 
 ### Yearly patterns
 

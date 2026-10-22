@@ -19,7 +19,17 @@ from typing import Any
 
 import pandas as pd
 
-from .aggregation import TrendSeries, build_trend, group_coverage, segment_frame
+from .aggregation import (
+    TrendSeries,
+    build_trend,
+    fixed_design,
+    group_coverage,
+    month_columns,
+    months_long,
+    sampling_campaigns,
+    segment_frame,
+    unit_turnover,
+)
 from .analysis import column_profile
 from .anomalies import MIN_PERIODS as ANOMALY_MIN_PERIODS
 from .anomalies import Anomaly, detect_anomalies, finer_trend
@@ -41,6 +51,7 @@ from .pipeline import apply_focus, focus_options, prepare_analysis
 from .quality import QualityIssue, quality_frame
 from .quality import scan as scan_quality
 from .schema import ColumnRoles
+from .timepoints import is_timepoint_name
 
 #: Rows analyzed by default. Over it, a table with a date keeps its newest
 #: rows and one without a date is sampled at random; see
@@ -61,6 +72,7 @@ REFUSAL_CODES = (
     "no_measure_column",
     "not_enough_periods",
     "thin_history",
+    "changing_units",
     "unsupported_phrasing",
     "unrepresentable_question",
     "unknown_segment_value",
@@ -145,7 +157,10 @@ def analyze(
     ADA picks a date column, a measure, a grouping column and an identifier
     on its own; ``date``, ``measure`` and ``dimension`` override that choice
     (``ada schema FILE`` prints what was picked). A ``date`` column of whole
-    years is read as 1 January of each year. ``frequency`` fixes the
+    years is read as 1 January of each year. A ``date`` column of other
+    numbers named like elapsed time ("timept", "Day", "hours") is a time
+    axis: the brief shows the measure at each of its values, in order, and
+    there is no calendar timeline to forecast. ``frequency`` fixes the
     period grain to one of ``s min h D W M Q Y``; without it the grain follows how
     often the data was recorded. Fix it for scheduled jobs so the grain
     doesn't change between runs.
@@ -179,8 +194,15 @@ def analyze(
     if missing:
         available = ", ".join(map(str, cleaned.columns))
         raise AdaError(f"No column named {missing[0]!r}. Columns: {available}")
+    axis = None
     if date is not None and not pd.api.types.is_datetime64_any_dtype(cleaned[date]):
-        raise AdaError(f"{date!r} could not be read as dates, so it can't be the date column.")
+        named = cleaned[date]
+        numbers = pd.api.types.is_numeric_dtype(named) and not pd.api.types.is_bool_dtype(named)
+        if not numbers or not is_timepoint_name(date):
+            raise AdaError(f"{date!r} could not be read as dates, so it can't be the date column.")
+        # Elapsed time as a number (days since infection, a cycle in percent) orders
+        # the rows without a calendar, so it is the axis of the brief's profile.
+        axis, overrides["date"] = date, None
     if measure is not None and not pd.api.types.is_numeric_dtype(cleaned[measure]):
         raise AdaError(f"{measure!r} is not numeric, so it can't be the measure.")
     roles = replace(prepared.detected_roles, **overrides, aggregation=aggregation)
@@ -218,6 +240,7 @@ def analyze(
         source_name=name,
         rows_note=prepared.rows_note,
         whole=whole,
+        axis=axis,
     )
 
 
@@ -268,6 +291,8 @@ class Analysis:
     rows_note: str = ""
     #: Every row of a long table, before the brief's focus on one parameter; Ask uses it.
     whole: WholeTable | None = field(default=None, repr=False, compare=False)
+    #: A numeric column of time points named as ``date``, which the brief shows the measure over.
+    axis: str | None = None
     _trends: dict = field(default_factory=dict, repr=False, compare=False)
 
     @property
@@ -282,7 +307,11 @@ class Analysis:
     @cached_property
     def _brief(self) -> BusinessBrief:
         return analyze_business(
-            self.frame, self.roles, frequency=self.frequency, blanked=self.cleaning.blanked_codes,
+            self.frame,
+            self.roles,
+            frequency=self.frequency,
+            blanked=self.cleaning.blanked_codes,
+            axis=self.axis,
             issues=self._issues,
         )
 
@@ -333,6 +362,12 @@ class Analysis:
     def trend(self, frequency: str | None = None) -> TrendSeries | Refusal:
         """The measure per period. ``.notes`` lists any adjustments made to the periods."""
         if not self.roles.date:
+            if self.axis:
+                return Refusal(
+                    "no_date_column",
+                    f"{self.axis} is elapsed time, not dates, so there is no calendar timeline; the brief "
+                    f"shows the measure at each {self.axis} instead.",
+                )
             return Refusal("no_date_column", "This table has no date column, so there is no timeline.")
         grain = frequency or self.frequency
         if grain not in self._trends:
@@ -359,6 +394,8 @@ class Analysis:
         series = self.trend()
         if isinstance(series, Refusal):
             return series
+        if (refusal := self._timeline_refusal(series)) is not None:
+            return refusal
         # Too few periods at this grain may still be enough at a finer one.
         series = finer_trend(self.frame, self.roles, series) or series
         periods = len(series.frame)
@@ -371,7 +408,9 @@ class Analysis:
                 had=f"{periods} periods",
             )
         return detect_anomalies(
-            series.frame, floor_at_zero=metric_for(self.roles.measure, self.roles).floors_at_zero
+            series.frame,
+            floor_at_zero=metric_for(self.roles.measure, self.roles).floors_at_zero,
+            grain=series.frequency,
         )
 
     def forecast(self, horizon: int = 6) -> Forecast | Refusal:
@@ -379,10 +418,22 @@ class Analysis:
         series = self.trend()
         if isinstance(series, Refusal):
             return series
+        if (refusal := self._timeline_refusal(series)) is not None:
+            return refusal
+        if (turnover := unit_turnover(self.frame, self.roles)) is not None:
+            return Refusal(
+                "changing_units",
+                f"{turnover.once:,} of the {turnover.units:,} {turnover.unit} values appear in only one "
+                "year, so each period's average follows which of them were visited; a forecast of it would "
+                "project the sampling plan.",
+                needed=f"{turnover.unit} values that recur",
+                had=f"{turnover.once:,} of {turnover.units:,} seen in one year",
+            )
         result = build_forecast(
             series.frame,
             horizon=horizon,
             floor_at_zero=metric_for(self.roles.measure, self.roles).floors_at_zero,
+            grain=series.frequency,
         )
         if result is None:
             periods = len(series.frame)
@@ -393,6 +444,42 @@ class Analysis:
                 had=f"{periods} periods",
             )
         return result
+
+    def long_form(self) -> pd.DataFrame | Refusal:
+        """A table with one row per year and a column per month (JAN to DEC) as one row per month.
+
+        The result has a ``Date`` (the first of each month) and a ``Value``
+        column, so ``ada.analyze(report.long_form())`` analyses the monthly
+        series itself: its seasonal cycle, trend and anomalies by month.
+        """
+        if not self.roles.date or not month_columns(self.frame):
+            return Refusal(
+                "no_date_column",
+                "This table has no year column beside a column per month to lay out as one monthly series.",
+            )
+        return months_long(self.frame, self.roles.date)
+
+    def _timeline_refusal(self, series: TrendSeries) -> Refusal | None:
+        """A refusal when the periods are not a timeline to project or check.
+
+        With rows counted and a design that fixes how many each period holds
+        there is nothing to follow, and dates that cluster into a few sampling
+        trips leave most periods empty.
+        """
+        design = fixed_design(self.frame, self.roles, series.frequency)
+        if design is not None:
+            return Refusal("no_measure_column", f"This table has no measure to follow. {design.sentence}")
+        trips = sampling_campaigns(self.frame, self.roles, series.frequency)
+        if trips is not None:
+            return Refusal(
+                "not_enough_periods",
+                f"The rows come from {len(trips.starts)} sampling trips, and {trips.empty_periods} of the "
+                f"{trips.periods} periods in between are empty, so there is no regular timeline; the brief "
+                "compares the trips instead.",
+                needed="a regular timeline",
+                had=f"{len(trips.starts)} sampling trips",
+            )
+        return None
 
     def segments(self, limit: int = 12) -> pd.DataFrame | Refusal:
         """The measure broken down by the grouping column, as a DataFrame.
@@ -450,6 +537,7 @@ class Analysis:
             frequency=self.frequency,
             source_name=f"{self.source_name} · {value}",
             rows_note=self.rows_note,
+            axis=self.axis,
         )
 
     def to_markdown(self) -> str:

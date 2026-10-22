@@ -7,14 +7,16 @@ paths agree on what a period is.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 
-from .formatting import format_period
+from .compare import entity_column
+from .formatting import format_period, sentence_case
 from .metrics import metric_for
-from .schema import ColumnRoles
+from .schema import ColumnRoles, is_entity_name
 from .timeseries import (
     PERIODS_PER_YEAR,
     fit_trendline,
@@ -498,6 +500,47 @@ class MatchedChange:
     kept: tuple = ()
 
 
+# Places and outlets that keep reporting over time, beside the entities the
+# schema names (station, site, plot, subject): their presence in a period is
+# reporting, while a per-row condition (a weather code, a status, the pollutant
+# that peaked) appears when it happens, so its mix is part of the outcome.
+REPORTING_UNIT_WORDS = frozenset({
+    "region", "city", "town", "country", "state", "county", "district", "province", "municipality",
+    "store", "shop", "branch", "outlet", "location", "area", "zone", "sensor", "gauge", "device",
+    "facility", "plant", "hospital", "clinic", "school", "farm", "field", "lake", "river", "basin",
+    "catchment", "beach", "reef", "transect", "quadrat", "well", "borehole", "buoy", "monitor",
+})
+# Share of a date's rows a unit may repeat on and still read as one report each,
+# and share of dates that must hold several units for them to read as side by side.
+SIDE_BY_SIDE_DATES = 0.5
+ONE_REPORT_SHARE = 0.95
+
+
+def reporting_unit(dataframe: pd.DataFrame, roles: ColumnRoles, column: str) -> bool:
+    """Whether a grouping names units that report over time (stations, stores), not a per-row condition.
+
+    Only for such units may a change be measured on the ones present in both
+    periods. A unit is named like one, or reports side by side with the
+    others: on most dates several of them have a row, each at most one.
+    Other category codes and yes/no flags are conditions.
+    """
+    if not roles.date:
+        return False
+    words = set(re.findall(r"[a-z]+", str(column).casefold()))
+    if is_entity_name(column) or words & REPORTING_UNIT_WORDS:
+        return True
+    if column in roles.factors or column in roles.flags:
+        return False
+    working = dataframe[[roles.date, column]].dropna()
+    if working.empty:
+        return False
+    per_date = working.groupby(roles.date)[column].agg(["size", "nunique"])
+    shared = per_date[per_date["size"] > 1]
+    if len(shared) < SIDE_BY_SIDE_DATES * len(per_date):
+        return False
+    return bool((shared["nunique"] == shared["size"]).mean() >= ONE_REPORT_SHARE)
+
+
 def _period_groups(
     working: pd.DataFrame, previous_period: pd.Timestamp, current_period: pd.Timestamp
 ) -> tuple[set, set]:
@@ -568,23 +611,31 @@ class SeasonalContext:
     #: Changes into the latest period's month or quarter in earlier years,
     #: from the period before each.
     usual_changes: tuple[float, ...]
+    #: Each earlier period's change from the same period a year before it, in
+    #: the same terms, so the latest level can be judged against last year's.
+    year_over_year: tuple[float, ...] = ()
 
 
-def seasonal_context(series: TrendSeries, *, relative: bool) -> SeasonalContext | None:
+def seasonal_context(
+    series: TrendSeries, *, relative: bool, tested: bool = True
+) -> SeasonalContext | None:
     """Compare the latest period with the same time of year, when the trend has a yearly pattern.
 
     A winter-to-spring rise is not news in a series that rises every spring, so
     the latest change is set beside the same change in earlier years, and the
     latest value beside the same period a year earlier. ``relative`` gives the
     changes as percentages (for a total) rather than differences. Returns None
-    for a grain with no yearly cycle or a series without a clear yearly pattern.
+    for a grain with no yearly cycle or, while ``tested``, a series without a
+    clear yearly pattern; pass False to look at the same time of year anyway
+    before calling a move unusual.
     """
     trend = observed_periods(series.frame)
     if series.frequency not in PERIODS_PER_YEAR or len(trend) < 3:
         return None
     periods = pd.DatetimeIndex(pd.to_datetime(trend["Period"]))
     values = trend["Value"].to_numpy(dtype=float)
-    if yearly_pattern(periods, fit_trendline(periods, values).residuals(values)) is None:
+    line = fit_trendline(periods, values, series.frequency)
+    if tested and yearly_pattern(periods, line.residuals(values), grain=series.frequency) is None:
         return None
     by_period = pd.Series(values, index=periods)
     latest = periods[-1]
@@ -605,8 +656,315 @@ def seasonal_context(series: TrendSeries, *, relative: bool) -> SeasonalContext 
         else:
             changes.append(end - start)
     has_year_ago = year_ago in by_period.index
+    earlier = by_period.reindex(periods[:-1] - pd.DateOffset(years=1)).to_numpy(dtype=float)
+    later = values[:-1]
+    paired = np.isfinite(earlier) & ((earlier != 0) if relative else np.ones(len(earlier), dtype=bool))
+    yearly = (later - earlier)[paired]
+    if relative:
+        yearly = yearly / np.abs(earlier[paired]) * 100
     return SeasonalContext(
         year_ago=year_ago if has_year_ago else None,
         year_ago_value=float(by_period[year_ago]) if has_year_ago else float("nan"),
         usual_changes=tuple(float(change) for change in changes),
+        year_over_year=tuple(float(change) for change in yearly),
     )
+
+
+# Share of rows that may repeat a unit within a period, or lack a unit, in a
+# fixed design: a stray double entry does not undo the design.
+DESIGN_SLACK = 0.02
+# Periods a design needs before its row counts read as fixed rather than chance.
+MIN_DESIGN_PERIODS = 3
+# The fewest units in a period, as a share of the most, for the count to be steady by design.
+STEADY_DESIGN_SHARE = 0.8
+
+
+@dataclass(frozen=True)
+class FixedDesign:
+    """Rows per period set by a design: each unit observed at most once a period, period after period."""
+
+    unit: str
+    frequency: str
+    periods: int
+    units: int
+    fewest: int
+    most: int
+
+    @property
+    def sentence(self) -> str:
+        grain = DESIGN_GRAINS.get(self.frequency, "period")
+        observed = f"{self.most:,}" if self.fewest == self.most else f"{self.fewest:,} to {self.most:,}"
+        return (
+            f"Each {sentence_case(self.unit)} appears at most once a {grain}: {observed} of the "
+            f"{self.units:,} in each of the {self.periods:,} {grain}s. Rows per {grain} follow that design, "
+            "so they are not trended or forecast."
+        )
+
+
+DESIGN_GRAINS = {"D": "day", "W": "week", "M": "month", "Q": "quarter", "Y": "year"}
+
+
+def fixed_design(
+    dataframe: pd.DataFrame, roles: ColumnRoles, frequency: str | None = None
+) -> FixedDesign | None:
+    """The design behind a row count, when each unit appears at most once a period and keeps recurring.
+
+    With no measure, the brief would trend the number of rows per period; when
+    the same plots or subjects are observed once every year, that number is
+    set in advance and says nothing. Returns None with a measure, without a
+    unit column (``compare.entity_column``), when units repeat within a period
+    or do not recur across most periods, or when their number moves from
+    period to period, as active customers do.
+    """
+    if roles.measure or not roles.date:
+        return None
+    unit = entity_column(dataframe, roles)
+    if unit is None:
+        return None
+    working = dataframe[[roles.date, unit]].dropna(subset=[roles.date])
+    if working.empty or working[unit].isna().mean() > DESIGN_SLACK:
+        return None
+    frequency = frequency or _period_frequency(working[roles.date])
+    periods = working[roles.date].dt.to_period(frequency)
+    pairs = pd.DataFrame({"period": periods, "unit": working[unit]}).dropna()
+    if pairs.duplicated().mean() > DESIGN_SLACK:
+        return None
+    count = periods.nunique()
+    seen = pairs.drop_duplicates().groupby("unit")["period"].nunique()
+    if count < MIN_DESIGN_PERIODS or float(seen.median()) < max(MIN_DESIGN_PERIODS, 0.5 * count):
+        return None
+    per_period = pairs.drop_duplicates().groupby("period")["unit"].nunique()
+    if per_period.min() < STEADY_DESIGN_SHARE * per_period.max():
+        # A count that moves (customers lost and won each month) is worth following.
+        return None
+    return FixedDesign(
+        unit=unit,
+        frequency=frequency,
+        periods=int(count),
+        units=int(seen.size),
+        fewest=int(per_period.min()),
+        most=int(per_period.max()),
+    )
+
+
+# Units seen in a single year, as a share of all, beyond which period averages
+# follow which units were visited; and the units and years the check needs.
+TURNOVER_SHARE = 0.5
+MIN_TURNOVER_UNITS = 20
+MIN_TURNOVER_YEARS = 3
+
+
+@dataclass(frozen=True)
+class UnitTurnover:
+    """Most units (sites, stations) seen in one year only, so an average per period mixes different ones."""
+
+    unit: str
+    units: int
+    once: int
+
+
+def unit_turnover(dataframe: pd.DataFrame, roles: ColumnRoles) -> UnitTurnover | None:
+    """The unit column when most of its units appear in a single year, for an averaged measure.
+
+    An average over whichever sites happened to be visited each year tracks
+    the sampling plan as much as the reading. A total is everything
+    recorded, and customers coming and going are part of it, so a summed
+    measure is not checked. A key that names one visit (a station and its
+    date) is not a site: each of its values is on a single date by
+    construction, so the next column named like a unit is tried. Returns None
+    otherwise.
+    """
+    if not roles.date or not roles.measure or metric_for(roles.measure, roles).additive:
+        return None
+    named = (column for column in dataframe.columns if is_entity_name(column))
+    candidates = [entity_column(dataframe, roles), *named]
+    for unit in dict.fromkeys(column for column in candidates if column and column != roles.measure):
+        working = dataframe[[roles.date, unit, roles.measure]].dropna()
+        if working.empty or not working[unit].duplicated().any():
+            continue
+        if (working[[unit, roles.date]].drop_duplicates()[unit].value_counts() == 1).all():
+            continue
+        pairs = pd.DataFrame({"unit": working[unit], "year": working[roles.date].dt.year}).drop_duplicates()
+        years = pairs["unit"].value_counts()
+        if len(years) < MIN_TURNOVER_UNITS or pairs["year"].nunique() < MIN_TURNOVER_YEARS:
+            return None
+        once = int((years == 1).sum())
+        if once <= TURNOVER_SHARE * len(years):
+            return None
+        return UnitTurnover(unit=unit, units=int(len(years)), once=once)
+    return None
+
+
+def within_unit_yearly(dataframe: pd.DataFrame, roles: ColumnRoles, unit: str) -> pd.Series:
+    """The measure per year after each unit's own mean is taken out, over units seen in several years.
+
+    A year's value is then how far its readings sit from their own units'
+    usual level, so a year that visited higher sites does not look higher.
+    """
+    working = dataframe[[roles.date, unit, roles.measure]].dropna()
+    year = working[roles.date].dt.year
+    repeated = year.groupby(working[unit]).transform("nunique") > 1
+    working, year = working[repeated], year[repeated]
+    departures = working[roles.measure] - working.groupby(unit)[roles.measure].transform("mean")
+    return departures.groupby(year).mean().sort_index()
+
+
+# A gap between sampling dates of at least this many days, and this many times
+# the usual gap, ends a sampling trip; a few trips with most periods between
+# them empty are campaigns, not a timeline.
+CAMPAIGN_GAP_DAYS = 14
+CAMPAIGN_GAP_RATIO = 5
+MIN_CAMPAIGNS = 3
+CAMPAIGN_EMPTY_SHARE = 0.5
+
+
+@dataclass(frozen=True)
+class SamplingCampaigns:
+    """Dates that cluster into a few sampling trips with long empty stretches between them."""
+
+    #: The trip each row belongs to, numbered from 0 in time order (NaN for a row with no date).
+    labels: pd.Series
+    starts: tuple[pd.Timestamp, ...]
+    ends: tuple[pd.Timestamp, ...]
+    sizes: tuple[int, ...]
+    frequency: str
+    periods: int
+    empty_periods: int
+
+    def label(self, trip: int) -> str:
+        """A trip's dates for a sentence: "16–19 Jun 2003", "26 Apr – 03 May 2004", "09 Sep 2003"."""
+        start, end = self.starts[trip], self.ends[trip]
+        if start.normalize() == end.normalize():
+            return f"{start:%d %b %Y}"
+        if (start.year, start.month) == (end.year, end.month):
+            return f"{start:%d}–{end:%d %b %Y}"
+        return f"{start:%d %b} – {end:%d %b %Y}"
+
+
+def sampling_campaigns(
+    dataframe: pd.DataFrame, roles: ColumnRoles, frequency: str | None = None
+) -> SamplingCampaigns | None:
+    """The sampling trips behind a table's dates, when a calendar grid would be mostly empty.
+
+    Distinct dates are split into trips at gaps of at least CAMPAIGN_GAP_DAYS
+    and CAMPAIGN_GAP_RATIO times the median gap. Ten field trips of a few
+    days each over three years, at a monthly grain, leave two months in three
+    empty, so a trend or forecast over months would run over gaps. Returns
+    None with fewer than MIN_CAMPAIGNS trips or when most periods hold data.
+    """
+    if not roles.date:
+        return None
+    dates = dataframe[roles.date]
+    distinct = dates.dropna().drop_duplicates().sort_values()
+    if len(distinct) < 2 * MIN_CAMPAIGNS:
+        return None
+    gaps = distinct.diff().dt.total_seconds() / DAY_SECONDS
+    breaks = (gaps > CAMPAIGN_GAP_DAYS) & (gaps > CAMPAIGN_GAP_RATIO * float(gaps.median()))
+    numbers = breaks.cumsum().to_numpy()
+    if numbers[-1] + 1 < MIN_CAMPAIGNS:
+        return None
+    frequency = frequency or _period_frequency(distinct)
+    stamps = distinct.dt.to_period(frequency)
+    periods = len(pd.period_range(stamps.min(), stamps.max(), freq=frequency))
+    empty = periods - stamps.nunique()
+    if empty < CAMPAIGN_EMPTY_SHARE * periods:
+        return None
+    labels = dates.map(pd.Series(numbers, index=distinct.to_numpy()))
+    trips = pd.DataFrame({"date": distinct.to_numpy(), "trip": numbers}).groupby("trip")["date"]
+    return SamplingCampaigns(
+        labels=labels,
+        starts=tuple(pd.Timestamp(stamp) for stamp in trips.min()),
+        ends=tuple(pd.Timestamp(stamp) for stamp in trips.max()),
+        sizes=tuple(int(size) for size in labels.value_counts().sort_index()),
+        frequency=frequency,
+        periods=periods,
+        empty_periods=int(empty),
+    )
+
+
+# Periods in a year at each grain, for judging whether a year is complete.
+PERIODS_IN_YEAR = {"D": 365, "W": 52, "M": 12, "Q": 4, "Y": 1}
+# Share of its periods with a value a year needs to count as complete: a year
+# missing its summer would read as a cold year.
+COMPLETE_YEAR_SHARE = 0.9
+
+
+def yearly_values(series: TrendSeries, *, additive: bool) -> pd.Series:
+    """The measure per complete year, indexed by year, from the trend's periods.
+
+    A year counts when COMPLETE_YEAR_SHARE of its periods hold a value. Its
+    value is the total of its periods for an additive measure and their mean
+    otherwise, so each season weighs the same however many rows it holds.
+    Grains finer than a day give an empty series.
+    """
+    per_year = PERIODS_IN_YEAR.get(series.frequency)
+    trend = observed_periods(series.frame)
+    if per_year is None or trend.empty:
+        return pd.Series(dtype=float)
+    years = pd.DatetimeIndex(pd.to_datetime(trend["Period"])).year
+    values = pd.Series(trend["Value"].to_numpy(dtype=float), index=years)
+    counts = values.groupby(level=0).count()
+    complete = counts.index[counts >= COMPLETE_YEAR_SHARE * per_year]
+    grouped = values[values.index.isin(complete)].groupby(level=0)
+    return (grouped.sum() if additive else grouped.mean()).sort_index()
+
+
+# Month names a column may carry in a table with one column per month.
+MONTH_HEADERS = tuple(
+    (name[:3], name) for name in (
+        "january", "february", "march", "april", "may", "june",
+        "july", "august", "september", "october", "november", "december",
+    )
+)
+
+
+def month_columns(dataframe: pd.DataFrame) -> tuple[str, ...]:
+    """The twelve numeric columns named after the months, in calendar order, or ().
+
+    A table with one row per year and one column per month (JAN to DEC, or
+    January to December) holds one monthly series laid out wide.
+    """
+    found: dict[int, str] = {}
+    for column in dataframe.columns:
+        name = str(column).strip().casefold().rstrip(".")
+        for month, (short, full) in enumerate(MONTH_HEADERS):
+            if name in (short, full) or (month == 8 and name == "sept"):
+                if month not in found and pd.api.types.is_numeric_dtype(dataframe[column]):
+                    found[month] = column
+                break
+    return tuple(found[month] for month in range(12)) if len(found) == 12 else ()
+
+
+def months_recorded(
+    dataframe: pd.DataFrame, roles: ColumnRoles, period: pd.Timestamp
+) -> tuple[int, int] | None:
+    """How many of a year's month columns hold a value in its row: (recorded, 12), or None.
+
+    None unless the table has a column per month and one row for that year.
+    """
+    months = month_columns(dataframe)
+    if not months or not roles.date:
+        return None
+    rows = dataframe.loc[dataframe[roles.date].dt.year == pd.Timestamp(period).year, list(months)]
+    if len(rows) != 1:
+        return None
+    return int(rows.iloc[0].notna().sum()), len(months)
+
+
+def months_long(dataframe: pd.DataFrame, date: str) -> pd.DataFrame:
+    """A table with a column per month as one row per month: Date (the 1st) and Value.
+
+    Empty when the table has no column per month. Rows without a year, and
+    months with no value, are left out.
+    """
+    months = month_columns(dataframe)
+    if not months:
+        return pd.DataFrame({"Date": pd.Series(dtype="datetime64[ns]"), "Value": pd.Series(dtype=float)})
+    working = dataframe[[date, *months]].dropna(subset=[date])
+    years = working[date].dt.year.to_numpy()
+    values = working[list(months)].to_numpy(dtype=float)
+    stamps = pd.to_datetime(
+        {"year": np.repeat(years, 12), "month": np.tile(np.arange(1, 13), len(years)), "day": 1}
+    )
+    long = pd.DataFrame({"Date": stamps, "Value": values.ravel()})
+    return long.dropna(subset=["Value"]).sort_values("Date").reset_index(drop=True)

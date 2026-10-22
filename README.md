@@ -152,10 +152,20 @@ ada ask orders.csv "which category made the most revenue"
   change, a fire) is found by binary segmentation and reported with its start
   and the levels before and after. Both are calibrated by simulation so a
   stable series raises a false alarm in about one analysis in twenty.
-- **Forecasts with a backtest**: a trendline plus month-of-year seasonality,
-  scored on held-out periods against a no-change forecast. It refuses to run on
-  too little history, and says plainly when the forecast did worse than
-  assuming no change.
+- **Follows elapsed time and time courses**: a numeric time-point column
+  (days since infection, a gait cycle) is shown in order, with groups
+  followed for different lengths compared over the time they share, and
+  numbered columns such as 40 to 260 minutes are read as one series with its
+  profile, most variable rows and repeating period.
+- **Reads survival data**: a follow-up time beside its event flag is treated
+  as censored, never averaged or compared across its own event. ADA gives
+  Kaplan-Meier survival, log-rank tests across the groupings and a Cox model's
+  hazard ratios.
+- **Forecasts with a backtest**: a trendline plus the usual offset of each
+  month, quarter or week of the year, scored on held-out periods against a
+  no-change forecast and, for a seasonal series, against repeating the same
+  period a year earlier. It refuses to run on too little history, and says
+  plainly when the forecast did worse than either.
 - **Answers plain-English questions** ("average pH by site", "mean signal by
   timepoint", "which month of the year has the highest wind", "is pH
   correlated with temperature", "does pH differ by site", "what predicts
@@ -263,6 +273,7 @@ start from.
 ```python
 report = ada.analyze(df, date="Survey Date", measure="Water Temp (°C)", dimension="Site")
 ada.analyze(df, measure="Rainfall (mm)", aggregation="sum")   # monthly totals, not averages
+ada.analyze(df, date="timept")   # days since infection as the time axis: a profile, no calendar
 
 report.profile()          # one row per column: type, missing, distinct values
 report.quality()          # every data-check issue, with its rows and the rule that fired
@@ -271,6 +282,7 @@ report.trend()            # the measure per period, with notes on adjustments
 report.segments()         # the measure by group, as a DataFrame
 report.anomalies          # flagged periods
 report.forecast()         # forecast with .backtest
+report.long_form()        # a year-by-month table as one row per month
 report.ask("average pH by site")
 report.focus("North Marsh")   # the same analysis for one group
 report.to_dict()          # JSON-safe, versioned by schema_version

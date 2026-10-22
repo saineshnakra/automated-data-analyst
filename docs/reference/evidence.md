@@ -38,7 +38,14 @@ assembled in this order:
 
 | Kind | Reports | Skipped when |
 |---|---|---|
-| `trend` | Latest period-over-period change on the groups present in both periods, compared with the series' usual movement or with the time of year | No date, fewer than 2 periods, or a percentage change from a previous period of zero |
+| `campaigns` | When the dates cluster into a few sampling trips with most periods between them empty, the trips instead of periods: how many, their sizes, the latest trip against the one before, and the trend across trips (see [Sampling trips](#sampling-trips)) | Fewer than 3 trips, or most periods hold data |
+| `survival` | For a follow-up time beside its 0/1 event flag, Kaplan-Meier survival, log-rank tests across the groupings and a Cox model (see [Survival](#survival)) | No such pair, fewer than 20 subjects or fewer than 5 events |
+| `profile` | For a numeric time-point column (days since infection, minutes, a gait cycle), the measure at each time point in order, its peak and trough, and groups followed for different lengths compared over the time they share (see [Time points](#time-points)) | A date column, or no column named like elapsed time with repeated values |
+| `series` | Numbered columns in an arithmetic progression (40, 50, ... 260) read as one series: the mean profile, the rows that vary most, and the period of a repeating pattern | Fewer than 5 evenly numbered columns |
+| `longtrend` | The trend across a record of 20 or more complete years: Theil-Sen slope per year and per decade with its 95% interval and a Mann-Kendall test, the months it runs highest and lowest in, and the slopes either side of a change in level (see [Long records](#long-records)) | No date, or fewer than 20 complete years |
+| `months` | For a table with one row per year and a column per month (JAN to DEC), the monthly series it holds: the mean of each calendar month and the trend of the years with all twelve months (see [Long records](#long-records)) | No year column, or not all twelve month columns |
+| `modes` | For an averaged reading over time that sits in one of two separate ranges (a fan off or on), the share of readings in the upper range by month of the year, or by period under a year (see [Two modes](#two-modes)) | No date, a total, under 200 readings, or no clear gap between two modes |
+| `trend` | Latest period-over-period change on the groups present in both periods, compared with the series' usual movement or with the time of year | No date, fewer than 2 periods, a percentage change from a previous period of zero, or rows counted where the design fixes how many each period holds (see [Fixed designs](#fixed-designs)) |
 | `driver` | The segment that moved the measure most between the last two periods | No date, measure or segment |
 | `leader` | For money or a count of things, the group with the largest share of the total ("Largest share by ..."), or with the most rows when there is no measure ("Most rows by ..."). For any other measure, a comparison of the groups with its test and effect size (see below). For mixed-sign values, the largest by size with no share | No segment, or a total of zero |
 | `concentration` | Effective number of segments, and the top-three share | Shares are not meaningful (averaged measure or mixed signs), or the measure is neither money nor a count of things |
@@ -57,6 +64,30 @@ A `differences` card that found nothing comes after `outliers` rather than
 after the segment cards, so a null result never pushes out a finding. If
 more than eight cards qualify, the first eight are shown. A `quality` card that
 falls past the eighth replaces the eighth, since it qualifies every other figure.
+
+### Two modes
+
+A reading that is either low or high, such as a sound level with a fan off
+(about 42 dBA) or on (about 81), averages to a level it never has.
+`timeseries.two_modes` splits it at the threshold that best separates the two
+sides of its histogram (Otsu's method) and keeps the split only when the
+histogram dips between the two peaks to a quarter of the smaller one, Ashman's
+D between the sides is at least 2.5, and each side holds a tenth of the
+readings; a single hump split in two would pass Ashman's D alone. The card
+then gives the share of readings in the upper range over time: *"34.5% of
+readings are at 61.25 or above; by month of the year that share runs from
+7.7% in April to 80.0% in January."* The histogram never has more bins than
+the reading has distinct values, so whole numbers leave no false gaps. When
+the latest movement is no clear change, this leads the headline ahead of
+rates and the scan of differences.
+
+### Snapshots and undated rows
+
+A table whose only date column holds one value has no timeline; the summary
+says so ("Every row is stamped 14 Feb 2025 17:00:00: the table is a snapshot,
+so there is no timeline") instead of saying no date column was found. Rows
+with no date are left out of every figure over time, and the summary counts
+them ("5 rows have no Date, so the figures over time leave them out").
 
 ### Exact repeats
 
@@ -106,7 +137,12 @@ headline over a finding nor gets a "check whether the change holds"
 recommendation. When the last period ends short of typical
 coverage but was not excluded, the card calls it the "latest period" rather
 than the "latest complete period" and says part of the change may be missing
-data.
+data. When each period is a single row, the card names the period by its
+grain ("in the latest year (2019)") and gives no row-count caveat, since the
+period is that row; in a table with a column per month, a year whose row
+leaves months blank is not called complete: "in the latest year (2019, which
+has 10 of its 12 months recorded)". A change judged outside its usual range
+sets the card's `lead`, so it can still lead a long record's brief.
 
 **Time of year.** At a monthly or quarterly grain, a series with a clear yearly
 pattern (`yearly_pattern` in `ada/timeseries.py`; see
@@ -117,14 +153,28 @@ previous month or quarter into the latest one), says whether the latest move
 is within that range, and sets the latest value beside the same period a year
 earlier: *"In the 6 earlier years on record, the move into Q2 ranged from
 +8.63 to +16.40 (median +13.86), so this one is within the range usual for the
-time of year. Against Q2 2022 (15.52), it is down 2.39."*
+time of year. Against Q2 2022 (15.52), it is down 2.39."* A move that looks
+unusual against all past changes is set beside the same time of year even
+when the yearly pattern is too short to pass the test, as long as two earlier
+years show the same move. When the move is outside their range but the
+latest value is within the usual gap between a period and the same one a year
+earlier (the median of those gaps), the card says the latest level is
+ordinary for the time of year and the period before it was the unusual one,
+and marks the change as no clear change.
 
 **Groups that come and go.** With a grouping column, or without one but with a
 column naming the unit each row belongs to (a station; `entity_column`), the
 change is measured on the groups that reported in both of the last two periods
 (`matched_period_change` in `ada/aggregation.py`). Weather stations that start
 reporting halfway through a record, or a site that stops, would otherwise
-move a pooled average on their own. The card names the groups left out and
+move a pooled average on their own. This applies only to units that report
+over time (`reporting_unit`): a column named like one (station, site, plot,
+city, region, store, sensor and similar), or one whose values report side by
+side, several on most dates and each at most once a date. A per-row condition,
+such as a weather code, a status or the pollutant that peaked, is never
+matched: a snow code missing from one quarter did not stop reporting, it did
+not snow, and its mix is part of the outcome. Category codes and yes/no flags
+count as conditions. The card names the groups left out and
 gives the pooled figures too: *"This compares the 88 station values that
 reported in both periods; ... With every station included it went from 29.96
 to 24.82."* The usual movement and the time-of-year comparison then use the
@@ -135,6 +185,147 @@ The card's tone follows the measure's meaning: a rising cost or ticket count is
 negative (`increase_is_welcome` in `ada/metrics.py`). A level whose name has no
 word for which way is good, such as CO2 or a temperature, gets a neutral tone
 (`MetricSpec.direction_known`), and so does its driver card.
+
+### Long records
+
+Over a record of 20 or more complete years (`LONG_RECORD_YEARS`), the change
+between the last two periods is mostly noise, so the `longtrend` card comes
+first. It fits the Theil-Sen slope to the yearly values of the complete years
+(`aggregation.yearly_values`: a year counts when 90% of its periods hold a
+value, and its value is the mean of its periods, or their total for an
+additive measure) and tests it with `timeseries.trend_test` (see
+[Periods](periods.md#trend-test)): *"Across the 99 complete years from 1910 to
+2019, M-A-M rose by 0.0154 per year (+0.154 per decade; 95% CI +0.0103 to
++0.0203 per year). The Mann-Kendall test finds a clear rise (Kendall's τ =
+0.50, p < 0.001)."* When the interval spans zero it says "no clear trend".
+For an averaged measure recorded within the year it names the months it runs
+highest and lowest in, when the month of the year explains the monthly values
+by the shared F test. When the series also has a change in level, it gives the
+slope within each stretch either side of it and says whether the trend runs on
+both sides or the long-run slope is mostly the step.
+
+When most units (the column naming each row's site or station; a key that
+names one visit, each value on a single date, is passed over for the next
+column named like a unit) appear in only one year, a yearly average follows which sites were visited as much as
+any change in the reading (`aggregation.unit_turnover`, for an averaged
+measure). The card says so, gives the trend measured from each recurring
+site's own level instead (`within_unit_yearly`), and does not lead the
+headline; `Analysis.forecast()` returns a `Refusal` with code
+`changing_units`.
+
+A table with one row per year and a column per month holds one monthly
+series laid out wide. The `months` card reads it in long form
+(`aggregation.months_long`): the calendar months it runs highest and lowest
+in, and the Theil-Sen trend of the yearly mean over the years with all twelve
+months, tested the same way. `Analysis.long_form()` returns that long form
+(`Date`, `Value`), so `ada.analyze(report.long_form())` analyses the monthly
+series itself.
+
+A clear trend whose stretch slopes agree leads the headline ("M-A-M rose by
+0.154 per decade from 1910 to 2019 (95% CI +0.103 to +0.203; Mann-Kendall
+p < 0.001)") and opens the summary. A latest change judged outside its usual
+range still leads instead. Without a clear trend, a change in level, a group
+finding or a rate leads, and otherwise the card's "no clear trend" sentence.
+
+### Fixed designs
+
+With no measure, the brief counts rows per period. When each unit (the
+column naming what each row belongs to, `compare.entity_column`) appears at
+most once a period, recurs in most periods, and the count barely moves (the
+fewest at least 80% of the most), that count is set by the design: ten plots
+observed every year give ten rows a year. `aggregation.fixed_design` finds
+this, and the brief then has no `longtrend`, `trend` or `anomaly` card and
+says so in the summary instead: *"Each plot code appears at most once a year:
+9 to 10 of the 10 in each of the 11 years. Rows per year follow that design,
+so they are not trended or forecast."* `Analysis.forecast()` and
+`Analysis.anomalies` return a `Refusal` with code `no_measure_column` and the
+same sentence. A count that moves, such as active customers per month, is
+still followed.
+
+### Sampling trips
+
+Field data often comes from a few trips of a few days each. On a calendar
+grid most periods are then empty, and a trend, anomaly check or forecast over
+those periods runs over gaps (or over zeros, for a total).
+`aggregation.sampling_campaigns` splits the distinct dates into trips at gaps
+of more than 14 days and five times the median gap (`CAMPAIGN_GAP_DAYS`,
+`CAMPAIGN_GAP_RATIO`), and treats them as campaigns when there are at least
+three and over half the periods at the chosen grain are empty. The brief then
+has a `campaigns` card in place of the `longtrend`, `trend`, `driver`,
+`shift` and `anomaly` cards: *"The rows come from 9 sampling trips between Jun
+2003 and Oct 2005, 44 to 46 rows each; 19 of the 29 months in that span have
+none, so trips are compared rather than months."* It compares the latest trip
+with the one before and fits the Theil-Sen slope across trips on each trip's
+middle date, per year, with its interval and Mann-Kendall test.
+`Analysis.forecast()` and `Analysis.anomalies` return a `Refusal` with code
+`not_enough_periods` that names the trips.
+
+### Survival
+
+A follow-up time (a non-negative column named like `survival`, `OS_months`,
+`futime` or `days_to_death`) beside a two-valued event column (`eventdeath`,
+`vital_status`, `relapse`, or a `censored` flag read the other way) is
+censored: subjects without the event were still event-free when last seen.
+`ada/survival.py` pairs them by name (a shared stem such as `os_time` and
+`os_status`, or both about death), codes the event (1, True, the larger of
+1 and 2, or a text value such as "Dead"; a text pair without one is left
+alone), and summarises survival with statsmodels:
+
+- Kaplan-Meier (`SurvfuncRight`): the median survival, or that it was not
+  reached, and the share still event-free at a round landmark within the
+  follow-up (the largest of 1, 2, 2.5 or 5 times a power of ten below the
+  75th percentile of follow-up);
+- the log-rank test (`survdiff`) across every grouping of 2 to 8 levels with
+  at least 5 subjects each, Holm-adjusted, with each level's survival at the
+  landmark;
+- a Cox proportional-hazards model (`PHReg`) of up to three clear groupings,
+  giving hazard ratios of the clearest one's levels against its first level,
+  adjusted for the others; left out when the fit does not converge to finite
+  estimates.
+
+*"survival is follow-up time, censored where eventdeath = 0: 77 of 272
+subjects had the event ... Survival differs by grade (log-rank χ² = 35.4,
+df = 2, Holm-adjusted p < 0.001): at survival = 10, 96.9% for grade 1, 72.9%
+for grade 2 and 50.5% for grade 3."* The card leads the headline. The time is
+never compared across its own event flag: the leading-group card that would
+do so is dropped, follow-up times are left out of the differences scan across
+the event and of the measure's variance shares, and the average-measure tile
+becomes the share event-free at the landmark.
+
+### Time points
+
+Many experiments record time as a number: days since infection, minutes after
+a stimulus, the percentage of a gait cycle, a visit number.
+`timepoints.timepoint_column` takes a numeric column named like elapsed time
+(`time`, `timept`, `day`, `hours`, `visit`, `cycle`, `phase` and similar)
+with 4 to 400 non-negative values, each on several rows, as the axis of a
+table with no date; `ada.analyze(..., date="timept")` names one directly.
+The `profile` card gives the measure at each time point in order: where it
+starts, peaks, bottoms out and ends, and whether it rises or falls along the
+axis (Kendall's tau of the time-point means). A profile that ends about where
+it started is called a cycle and is not tested for a steady rise.
+
+When the groups were followed for different lengths (the animals that died
+are measured to day 10, the survivors to day 15), a comparison of all rows
+mixes in time points only some groups reached. The card then gives each
+group's reach, compares the groups' averages over the stretch they share,
+and leads the headline; the leading-group card on pooled means is dropped,
+and the time column is never compared between groups as an outcome.
+
+### Series across columns
+
+Columns named by evenly spaced numbers (40, 50, ... 260 minutes) are a series
+laid out wide, not unrelated readings. `timepoints.series_columns` finds at
+least five of them, and the `series` card gives the mean of each column in
+order with its highest and lowest point, the rows whose standard deviation
+across the series is largest (named by the identifier or a text column that
+names each row once), and, when one fits, the period of a repeating pattern:
+sine and cosine least-squares fits at 40 periods from two steps to the whole
+span, each row's fit tested by its F test at a 5% false discovery rate
+(Benjamini-Hochberg), keeping the period with the most clear rows. *"A
+repeating pattern fits best with a period of about 112: at that period 562 of
+the 4,381 complete rows have a clear sine-wave fit."* For a matrix table,
+whose measure is the row mean, the card leads the headline.
 
 ### Drivers on the same groups
 
@@ -242,9 +433,14 @@ is shaped:
   and at least five (`SHIFT_RUN_SHARE`, `MIN_SHIFT_RUN`), at five distinct
   times or more (rows sharing one time are one record repeated, such as a
   visit's chemistry on each species row), the card is titled
-  **Level shift**: that reading left its usual range at the run's first time and
-  stayed out, to the end of the record or until its last time. A fire that
-  raises every reading for ten minutes is an event, not a run of entry errors.
+  **Run of unusual values** (distinct from the **Change in level** card):
+  that reading left its usual range at the run's first time and stayed out,
+  to the end of the record or until its last time. A fire that raises every
+  reading for ten minutes is an event, not a run of entry errors. When the
+  reading has a clear trend in time, the run is judged again on the residuals
+  from its Theil-Sen line, so the last years of a steadily warming record,
+  beyond the whole record's range only because of the trend, are not called
+  a run.
 
 ### Data checks
 
@@ -492,9 +688,25 @@ it best, each at least 15% of the series. The split is reported when:
 The card gives the first period at the new level, the average before and
 after, and the shift in standard deviations: "PM10 rose to a new level from
 Jul 2024: it averaged 54.47 per month from May 2024 to Jun 2024 and 852.66 from
-Jul 2024 to Dec 2024". When the groups reporting changed at the same time, it
-says so, since that alone can move the level. Series whose noise wanders
-slowly show a shift more often than stable ones.
+Jul 2024 to Dec 2024". It then says what else changed at the same time,
+since any of it can move the level on its own:
+
+- the trend within each stretch, per year, and when one trend across the whole
+  record would mostly measure the step ("Within the two stretches the trend is
+  +0.0888 per year (Q2 1989–Q1 1999) and +0.0324 per year (Q3 1999–Q3 2019),
+  while one trend across the whole record gives -0.144 per year: that slope
+  mostly measures the step");
+- rows per period or per date changing by half or more (`SAMPLING_CHANGE`),
+  which points to more sites or a different sampling plan;
+- columns first or last recorded within a period of the shift ("At the same
+  time pm25 starts being recorded");
+- for units that report over time (`reporting_unit`), the ones that started or
+  stopped reporting; for any other grouping, the largest changes in each
+  group's share of rows ("PM25 went from 1.2% of rows to 89.6% and O3 went
+  from 73.8% of rows to 4.2%"), and for the column naming each row's unit, any
+  change in which units report.
+
+Series whose noise wanders slowly show a shift more often than stable ones.
 
 ### A joint model
 

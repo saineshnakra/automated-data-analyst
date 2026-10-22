@@ -317,7 +317,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 title=f"{roles.measure or 'Records'} over time",
                 labels=axis_names(roles, series.frequency),
             )
-            anomalies = detect_anomalies(trend, floor_at_zero=metric.floors_at_zero)
+            anomalies = detect_anomalies(trend, floor_at_zero=metric.floors_at_zero, grain=series.frequency)
             when = _hover_date(trend["Period"], series.frequency)
             if anomalies:
                 figure.add_trace(
@@ -335,7 +335,7 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                         hovertemplate=f"%{{x|{when}}}: %{{y:{_hover_format(trend['Value'])}}}, outside the expected band<extra>Anomaly</extra>",
                     )
                 )
-            forecast = build_forecast(trend, floor_at_zero=metric.floors_at_zero)
+            forecast = build_forecast(trend, floor_at_zero=metric.floors_at_zero, grain=series.frequency)
             chart = st.empty()
             drawn = bool(forecast) and forecast.reliable
             if forecast and not forecast.reliable:
@@ -343,8 +343,8 @@ def render_dashboard(dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
                 # look like a prediction, so it is shown only when asked for.
                 st.caption(
                     "The forecast is not drawn: on the last "
-                    f"{forecast.backtest.holdout_periods} periods it did worse than simply "
-                    f"assuming no change (MASE {forecast.backtest.mase:.2f})."
+                    f"{forecast.backtest.holdout_periods} periods it did worse than "
+                    f"{forecast.backtest.shortfall}."
                 )
                 drawn = st.toggle("Draw it anyway", key="draw_unreliable_forecast")
             if drawn:

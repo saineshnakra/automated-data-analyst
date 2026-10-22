@@ -653,11 +653,25 @@ Other behaviour:
   differ (Welch ANOVA, p = 0.19; η² = 0.00), so this ranking may be chance."
   When the leading group's mean is more than twice its median, the answer says
   a few large values carry it and suggests the medians.
+- A breakdown by a numeric column named like elapsed time (a gait cycle in 99
+  steps, days since infection) is a profile: every value in order, however
+  many there are, with the highest and the lowest named, instead of the ten
+  highest and ten lowest.
 - A trend says where the measure started and ended and between which periods,
   counting every period between them, and how many had values when some were
   empty ("across 121 quarters, 120 of them with values"), its Theil-Sen slope (per year, fitted on yearly averages of complete years
   once three or more are covered, so seasons can't tilt it; per decade too
-  over 20 years), and its peak and low. A first period the data starts
+  over 20 years) with its 95% interval and Mann-Kendall p-value
+  (`timeseries.trend_test`), and its peak and low. An interval that spans
+  zero is "no clear trend". Once three or more complete years are covered,
+  the start and end it quotes are the first and last complete years'
+  averages, so a seasonal series does not compare a summer with an autumn.
+  It counts only the periods from the first to the last with a value, and
+  says when the reading's own record starts after the table's ("pm25 is
+  recorded only from 2021"). The slope is per period of the answer's own grain,
+  so sparse months are not re-read as quarters. A series with one value
+  throughout is stated once ("is 100.0% in every year") with no slope, peak or
+  low. A first period the data starts
   part-way through is left out, as the last one is when it is still in
   progress, and the calculation says so. Period rankings leave it out too.
 - `describe` gives n, mean, SD, median, quartiles, IQR, range and skewness,

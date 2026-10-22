@@ -184,6 +184,53 @@ class BlankPeriodTests(unittest.TestCase):
         self.assertIsNone(build_forecast(make_trend(values, freq="ME", start="2022-01-31"), min_periods=8))
 
 
+class SeasonalForecastTests(unittest.TestCase):
+    def test_quarters_follow_their_yearly_cycle(self):
+        rng = np.random.default_rng(40)
+        values = np.tile([5.9, 18.2, 22.3, 8.8], 12) + rng.normal(0, 0.8, 48)
+
+        forecast = build_forecast(make_trend(values, freq="QS", start="2010-01-01"))
+
+        assert forecast is not None
+        self.assertIn("quarter-of-year seasonality", forecast.method)
+        pairs = zip(forecast.periods, forecast.values, strict=True)
+        by_quarter = {period.quarter: value for period, value in pairs}
+        self.assertLess(by_quarter[1], 9)
+        self.assertGreater(by_quarter[3], 19)
+
+    def test_a_seasonal_forecast_is_benchmarked_against_last_year(self):
+        rng = np.random.default_rng(41)
+        values = np.tile([5.9, 18.2, 22.3, 8.8], 12) + rng.normal(0, 0.8, 48)
+
+        forecast = build_forecast(make_trend(values, freq="QS", start="2010-01-01"))
+
+        assert forecast is not None
+        self.assertIsNotNone(forecast.backtest.seasonal_mase)
+        self.assertEqual(forecast.backtest.season, "quarter")
+        self.assertIn("than repeating the same quarter a year earlier", describe_backtest(forecast.backtest))
+
+    def test_losing_to_last_year_makes_the_forecast_unreliable(self):
+        backtest = Backtest(
+            mape=12.0, mase=0.4, holdout_periods=8, periods_without_mape=0,
+            seasonal_mase=1.6, season="quarter",
+        )
+
+        self.assertTrue(backtest.worse_than_last_year)
+        self.assertIn("repeating the same quarter a year earlier", backtest.shortfall)
+        self.assertIn("do not rely on this forecast", describe_backtest(backtest))
+
+    def test_sparse_months_keep_their_grain(self):
+        observed = [0, 1, 3, 6, 7, 9, 12, 13, 15, 18, 19, 21]
+        trend = make_trend([10.0 + index for index in range(22)])
+        trend.loc[~trend.index.isin(observed), "Value"] = np.nan
+
+        forecast = build_forecast(trend)
+
+        assert forecast is not None
+        self.assertEqual(forecast.periods[0], pd.Timestamp("2025-11-01"))
+        self.assertAlmostEqual(forecast.values[0], 32.0, delta=0.5)
+
+
 class ReliabilityTests(unittest.TestCase):
     def test_a_forecast_worse_than_no_change_says_so_plainly(self):
         backtest = Backtest(mape=40.0, mase=2.11, holdout_periods=3, periods_without_mape=0)

@@ -6,14 +6,22 @@ import pandas as pd
 
 from ada.aggregation import (
     build_trend,
+    fixed_design,
     group_coverage,
     heatmap_frame,
     matched_period_change,
+    month_columns,
+    months_long,
     preferred_frequency,
+    reporting_unit,
+    sampling_campaigns,
     seasonal_context,
     segment_frame,
     segment_period_change,
     trend_frame,
+    unit_turnover,
+    within_unit_yearly,
+    yearly_values,
 )
 from ada.anomalies import detect_anomalies
 from ada.schema import ColumnRoles, detect_roles
@@ -508,6 +516,191 @@ class SeasonalContextTests(unittest.TestCase):
         frame["Temperature"] = 15 + np.random.default_rng(2).normal(0, 0.5, len(frame))
 
         self.assertIsNone(seasonal_context(build_trend(frame, detect_roles(frame)), relative=False))
+
+
+
+class YearlyValueTests(unittest.TestCase):
+    def test_only_complete_years_count(self):
+        days = pd.date_range("2019-06-01", "2023-03-31", freq="D")
+        frame = pd.DataFrame({"Date": days, "Temperature": 10.0 + days.year - 2019})
+        roles = ColumnRoles(date="Date", measure="Temperature", dimension=None, identifier=None,
+                            numeric=("Temperature",), dimensions=())
+
+        yearly = yearly_values(build_trend(frame, roles), additive=False)
+
+        self.assertEqual(yearly.index.tolist(), [2020, 2021, 2022])
+        self.assertEqual(yearly.tolist(), [11.0, 12.0, 13.0])
+
+
+class MonthColumnTests(unittest.TestCase):
+    def wide(self):
+        months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+        frame = pd.DataFrame({"YEAR": pd.to_datetime(["2018-01-01", "2019-01-01"])})
+        for number, month in enumerate(months, start=1):
+            frame[month] = [float(number), float(number) + 0.5]
+        frame.loc[1, "DEC"] = np.nan
+        return frame
+
+    def test_twelve_month_columns_are_found_in_calendar_order(self):
+        frame = self.wide()[["YEAR", "DEC", *[c for c in self.wide().columns if c not in ("YEAR", "DEC")]]]
+
+        self.assertEqual(month_columns(frame)[0], "JAN")
+        self.assertEqual(month_columns(frame)[-1], "DEC")
+        self.assertEqual(month_columns(frame.drop(columns="MAR")), ())
+
+    def test_the_long_form_has_one_row_per_recorded_month(self):
+        long = months_long(self.wide(), "YEAR")
+
+        self.assertEqual(len(long), 23)
+        self.assertEqual(long["Date"].iloc[12], pd.Timestamp("2019-01-01"))
+        self.assertEqual(long["Value"].iloc[-1], 11.5)
+
+
+def plots_by_year(missing=()):
+    rows = [
+        (pd.Timestamp(year=year, month=1, day=1), f"P{plot}", "maize" if (plot + year) % 2 else "wheat")
+        for year in range(2005, 2016) for plot in range(10) if (year, plot) not in missing
+    ]
+    return pd.DataFrame(rows, columns=["Year", "Plot Code", "Crop"])
+
+
+class FixedDesignTests(unittest.TestCase):
+    def roles(self, frame):
+        return ColumnRoles(date="Year", measure=None, dimension="Crop", identifier=None, numeric=(),
+                           dimensions=("Crop",))
+
+    def test_each_plot_once_a_year_is_a_design(self):
+        frame = plots_by_year(missing=((2005, 9),))
+
+        design = fixed_design(frame, self.roles(frame))
+
+        assert design is not None
+        self.assertEqual(design.unit, "Plot Code")
+        self.assertEqual((design.fewest, design.most, design.periods), (9, 10, 11))
+        self.assertIn("appears at most once a year", design.sentence)
+
+    def test_a_count_that_moves_is_not_a_design(self):
+        missing = tuple(
+            (year, plot) for year in range(2005, 2016) for plot in range(10) if plot >= 2 + year - 2005
+        )
+        frame = plots_by_year(missing=missing)
+
+        self.assertIsNone(fixed_design(frame, self.roles(frame)))
+
+    def test_a_measure_is_followed_whatever_the_design(self):
+        frame = plots_by_year().assign(Yield=1.0)
+        roles = replace(self.roles(frame), measure="Yield", numeric=("Yield",))
+
+        self.assertIsNone(fixed_design(frame, roles))
+
+
+def field_trips(seed=7):
+    """Nine trips of four days each over two and a half years, 40 samples a trip."""
+    rng = np.random.default_rng(seed)
+    starts = pd.to_datetime([
+        "2003-06-16", "2003-09-09", "2003-11-03", "2004-04-26", "2004-08-09",
+        "2004-10-25", "2005-04-25", "2005-07-25", "2005-10-24",
+    ])
+    dates = [start + pd.Timedelta(days=int(day)) for start in starts for day in rng.integers(0, 4, 40)]
+    return pd.DataFrame({"date": dates, "secchi": rng.normal(5, 1, len(dates))})
+
+
+class SamplingCampaignTests(unittest.TestCase):
+    def roles(self):
+        return ColumnRoles(date="date", measure="secchi", dimension=None, identifier=None,
+                           numeric=("secchi",), dimensions=())
+
+    def test_trips_with_empty_months_between_them_are_campaigns(self):
+        trips = sampling_campaigns(field_trips(), self.roles())
+
+        assert trips is not None
+        self.assertEqual(len(trips.starts), 9)
+        self.assertEqual(sum(trips.sizes), 360)
+        self.assertGreater(trips.empty_periods, trips.periods / 2)
+        self.assertEqual(trips.label(0), "16–19 Jun 2003")
+
+    def test_a_regular_series_with_gaps_is_not_campaigns(self):
+        days = pd.date_range("2020-01-01", periods=400, freq="14D")
+        frame = pd.DataFrame({"date": days.delete(range(100, 110)), "secchi": 5.0})
+
+        self.assertIsNone(sampling_campaigns(frame, self.roles()))
+
+
+def visited_sites(years: int = 25, seed: int = 8) -> pd.DataFrame:
+    """Twenty new sites a year, each higher than the last year's, plus five sites revisited every year."""
+    rng = np.random.default_rng(seed)
+    rows, levels = [], {}
+    for year in range(years):
+        for site in [f"new{year}-{index}" for index in range(20)] + [f"kept{index}" for index in range(5)]:
+            drift = 3 * year if site.startswith("new") else 0
+            level = levels.setdefault(site, 100 + drift + 20 * rng.random())
+            rows.append((pd.Timestamp(year=1990 + year, month=6, day=1), site, level + rng.normal(0, 2)))
+    return pd.DataFrame(rows, columns=["Date", "SITE_ID", "COND"])
+
+
+class UnitTurnoverTests(unittest.TestCase):
+    def roles(self, **extra):
+        return ColumnRoles(date="Date", measure="COND", dimension=None, identifier=None,
+                           numeric=("COND",), dimensions=(), **extra)
+
+    def test_sites_mostly_visited_once_turn_over(self):
+        turnover = unit_turnover(visited_sites(), self.roles())
+
+        assert turnover is not None
+        self.assertEqual((turnover.unit, turnover.units, turnover.once), ("SITE_ID", 505, 500))
+
+    def test_a_key_for_one_visit_is_not_taken_for_the_site(self):
+        frame = visited_sites()
+        frame.insert(0, "Station_Date", frame["SITE_ID"] + "_" + frame["Date"].dt.strftime("%Y%m%d"))
+        frame = pd.concat([frame, frame.assign(COND=frame["COND"] + 1)], ignore_index=True)
+
+        turnover = unit_turnover(frame, self.roles())
+
+        assert turnover is not None
+        self.assertEqual(turnover.unit, "SITE_ID")
+
+    def test_a_total_is_not_checked(self):
+        self.assertIsNone(unit_turnover(visited_sites(), self.roles(aggregation="sum")))
+
+    def test_the_within_site_series_takes_out_each_sites_level(self):
+        within = within_unit_yearly(visited_sites(), self.roles(), "SITE_ID")
+
+        self.assertEqual(len(within), 25)
+        pooled = visited_sites().groupby(visited_sites()["Date"].dt.year)["COND"].mean()
+        self.assertGreater(np.ptp(pooled), 40)
+        self.assertLess(np.ptp(within), 5)
+
+
+class ReportingUnitTests(unittest.TestCase):
+    def roles(self, frame, column, **extra):
+        return ColumnRoles(date="Date", measure="Value", dimension=column, identifier=None,
+                           numeric=("Value",), dimensions=(column,), **extra)
+
+    def test_stations_reporting_side_by_side_are_units(self):
+        days = pd.date_range("2024-01-01", periods=30, freq="D")
+        frame = pd.DataFrame({"Date": np.repeat(days, 3), "stasiun": ["a", "b", "c"] * 30, "Value": 1.0})
+
+        self.assertTrue(reporting_unit(frame, self.roles(frame, "stasiun"), "stasiun"))
+
+    def test_a_code_on_a_single_daily_series_is_a_condition(self):
+        days = pd.date_range("2024-01-01", periods=60, freq="D")
+        frame = pd.DataFrame({"Date": days, "RSKF": [0, 6, 7] * 20, "Value": 1.0})
+
+        self.assertFalse(reporting_unit(frame, self.roles(frame, "RSKF"), "RSKF"))
+        self.assertFalse(reporting_unit(frame, self.roles(frame, "RSKF", factors=("RSKF",)), "RSKF"))
+
+    def test_a_label_shared_by_several_rows_a_date_is_a_condition(self):
+        days = pd.date_range("2024-01-01", periods=30, freq="D")
+        labels = ["O3", "O3", "PM25", "CO"] * 30
+        frame = pd.DataFrame({"Date": np.repeat(days, 4), "critical": labels, "Value": 1.0})
+
+        self.assertFalse(reporting_unit(frame, self.roles(frame, "critical"), "critical"))
+
+    def test_a_place_named_like_one_is_a_unit(self):
+        days = pd.date_range("2024-01-01", periods=4)
+        frame = pd.DataFrame({"Date": days, "Region": list("abab"), "Value": 1.0})
+
+        self.assertTrue(reporting_unit(frame, self.roles(frame, "Region"), "Region"))
 
 
 if __name__ == "__main__":
