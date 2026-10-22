@@ -33,15 +33,16 @@ classifiers = [
     "Topic :: Office/Business :: Financial :: Spreadsheet",
 ]
 
-# openpyxl is a core dependency so .xlsx files work out of the box. scipy
-# supplies the distributions behind the group comparisons and correlation tests,
+# python-calamine is a core dependency so .xlsx files work out of the box, and
+# fast on large sheets. scipy supplies the distributions behind the group
+# comparisons and correlation tests,
 # and the rate tests; statsmodels the false-discovery-rate adjustment, the rate
 # interval and the joint model; ruptures the change-point search.
 # docs/credits.md says what each is used for.
 dependencies = [
     "pandas>=2.2,<3",
     "numpy>=1.26,<3",
-    "openpyxl>=3.1,<4",
+    "python-calamine>=0.4,<1",
     "scipy>=1.11,<2",
     "statsmodels>=0.14.2,<1",
     "ruptures>=1.1.10,<2",
@@ -52,7 +53,8 @@ dependencies = [
 app = ["streamlit==1.59.2", "plotly>=5.24,<7"]
 # Optional AI layer (ada/ai_insights.py). It proposes query plans; pandas runs them.
 ai = ["openai>=2.46,<3", "pydantic>=2.11,<3"]
-dev = ["ruff>=0.8,<1"]
+# openpyxl writes the workbooks the tests read.
+dev = ["ruff>=0.8,<1", "openpyxl>=3.1,<4"]
 
 [project.scripts]
 ada = "ada.cli:main"
