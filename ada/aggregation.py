@@ -522,13 +522,15 @@ def reporting_unit(dataframe: pd.DataFrame, roles: ColumnRoles, column: str) -> 
     Only for such units may a change be measured on the ones present in both
     periods. A unit is named like one, or reports side by side with the
     others: on most dates several of them have a row, each at most one.
-    Category codes and yes/no flags are conditions.
+    Other category codes and yes/no flags are conditions.
     """
-    if column in roles.factors or column in roles.flags or not roles.date:
+    if not roles.date:
         return False
     words = set(re.findall(r"[a-z]+", str(column).casefold()))
     if is_entity_name(column) or words & REPORTING_UNIT_WORDS:
         return True
+    if column in roles.factors or column in roles.flags:
+        return False
     working = dataframe[[roles.date, column]].dropna()
     if working.empty:
         return False
@@ -728,6 +730,79 @@ def fixed_design(
         units=int(seen.size),
         fewest=int(per_period.min()),
         most=int(per_period.max()),
+    )
+
+
+# A gap between sampling dates of at least this many days, and this many times
+# the usual gap, ends a sampling trip; a few trips with most periods between
+# them empty are campaigns, not a timeline.
+CAMPAIGN_GAP_DAYS = 14
+CAMPAIGN_GAP_RATIO = 5
+MIN_CAMPAIGNS = 3
+CAMPAIGN_EMPTY_SHARE = 0.5
+
+
+@dataclass(frozen=True)
+class SamplingCampaigns:
+    """Dates that cluster into a few sampling trips with long empty stretches between them."""
+
+    #: The trip each row belongs to, numbered from 0 in time order (NaN for a row with no date).
+    labels: pd.Series
+    starts: tuple[pd.Timestamp, ...]
+    ends: tuple[pd.Timestamp, ...]
+    sizes: tuple[int, ...]
+    frequency: str
+    periods: int
+    empty_periods: int
+
+    def label(self, trip: int) -> str:
+        """A trip's dates for a sentence: "16–19 Jun 2003", "26 Apr – 03 May 2004", "09 Sep 2003"."""
+        start, end = self.starts[trip], self.ends[trip]
+        if start.normalize() == end.normalize():
+            return f"{start:%d %b %Y}"
+        if (start.year, start.month) == (end.year, end.month):
+            return f"{start:%d}–{end:%d %b %Y}"
+        return f"{start:%d %b} – {end:%d %b %Y}"
+
+
+def sampling_campaigns(
+    dataframe: pd.DataFrame, roles: ColumnRoles, frequency: str | None = None
+) -> SamplingCampaigns | None:
+    """The sampling trips behind a table's dates, when a calendar grid would be mostly empty.
+
+    Distinct dates are split into trips at gaps of at least CAMPAIGN_GAP_DAYS
+    and CAMPAIGN_GAP_RATIO times the median gap. Ten field trips of a few
+    days each over three years, at a monthly grain, leave two months in three
+    empty, so a trend or forecast over months would run over gaps. Returns
+    None with fewer than MIN_CAMPAIGNS trips or when most periods hold data.
+    """
+    if not roles.date:
+        return None
+    dates = dataframe[roles.date]
+    distinct = dates.dropna().drop_duplicates().sort_values()
+    if len(distinct) < 2 * MIN_CAMPAIGNS:
+        return None
+    gaps = distinct.diff().dt.total_seconds() / DAY_SECONDS
+    breaks = (gaps > CAMPAIGN_GAP_DAYS) & (gaps > CAMPAIGN_GAP_RATIO * float(gaps.median()))
+    numbers = breaks.cumsum().to_numpy()
+    if numbers[-1] + 1 < MIN_CAMPAIGNS:
+        return None
+    frequency = frequency or _period_frequency(distinct)
+    stamps = distinct.dt.to_period(frequency)
+    periods = len(pd.period_range(stamps.min(), stamps.max(), freq=frequency))
+    empty = periods - stamps.nunique()
+    if empty < CAMPAIGN_EMPTY_SHARE * periods:
+        return None
+    labels = dates.map(pd.Series(numbers, index=distinct.to_numpy()))
+    trips = pd.DataFrame({"date": distinct.to_numpy(), "trip": numbers}).groupby("trip")["date"]
+    return SamplingCampaigns(
+        labels=labels,
+        starts=tuple(pd.Timestamp(stamp) for stamp in trips.min()),
+        ends=tuple(pd.Timestamp(stamp) for stamp in trips.max()),
+        sizes=tuple(int(size) for size in labels.value_counts().sort_index()),
+        frequency=frequency,
+        periods=periods,
+        empty_periods=int(empty),
     )
 
 

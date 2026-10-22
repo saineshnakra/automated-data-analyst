@@ -14,6 +14,7 @@ from ada.aggregation import (
     months_long,
     preferred_frequency,
     reporting_unit,
+    sampling_campaigns,
     seasonal_context,
     segment_frame,
     segment_period_change,
@@ -589,6 +590,38 @@ class FixedDesignTests(unittest.TestCase):
         roles = replace(self.roles(frame), measure="Yield", numeric=("Yield",))
 
         self.assertIsNone(fixed_design(frame, roles))
+
+
+def field_trips(seed=7):
+    """Nine trips of four days each over two and a half years, 40 samples a trip."""
+    rng = np.random.default_rng(seed)
+    starts = pd.to_datetime([
+        "2003-06-16", "2003-09-09", "2003-11-03", "2004-04-26", "2004-08-09",
+        "2004-10-25", "2005-04-25", "2005-07-25", "2005-10-24",
+    ])
+    dates = [start + pd.Timedelta(days=int(day)) for start in starts for day in rng.integers(0, 4, 40)]
+    return pd.DataFrame({"date": dates, "secchi": rng.normal(5, 1, len(dates))})
+
+
+class SamplingCampaignTests(unittest.TestCase):
+    def roles(self):
+        return ColumnRoles(date="date", measure="secchi", dimension=None, identifier=None,
+                           numeric=("secchi",), dimensions=())
+
+    def test_trips_with_empty_months_between_them_are_campaigns(self):
+        trips = sampling_campaigns(field_trips(), self.roles())
+
+        assert trips is not None
+        self.assertEqual(len(trips.starts), 9)
+        self.assertEqual(sum(trips.sizes), 360)
+        self.assertGreater(trips.empty_periods, trips.periods / 2)
+        self.assertEqual(trips.label(0), "16–19 Jun 2003")
+
+    def test_a_regular_series_with_gaps_is_not_campaigns(self):
+        days = pd.date_range("2020-01-01", periods=400, freq="14D")
+        frame = pd.DataFrame({"date": days.delete(range(100, 110)), "secchi": 5.0})
+
+        self.assertIsNone(sampling_campaigns(frame, self.roles()))
 
 
 class ReportingUnitTests(unittest.TestCase):

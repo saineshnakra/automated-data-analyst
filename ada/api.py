@@ -19,7 +19,14 @@ from typing import Any
 
 import pandas as pd
 
-from .aggregation import TrendSeries, build_trend, fixed_design, group_coverage, segment_frame
+from .aggregation import (
+    TrendSeries,
+    build_trend,
+    fixed_design,
+    group_coverage,
+    sampling_campaigns,
+    segment_frame,
+)
 from .analysis import column_profile
 from .anomalies import MIN_PERIODS as ANOMALY_MIN_PERIODS
 from .anomalies import Anomaly, detect_anomalies, finer_trend
@@ -351,7 +358,7 @@ class Analysis:
         series = self.trend()
         if isinstance(series, Refusal):
             return series
-        if (refusal := self._design_refusal(series)) is not None:
+        if (refusal := self._timeline_refusal(series)) is not None:
             return refusal
         # Too few periods at this grain may still be enough at a finer one.
         series = finer_trend(self.frame, self.roles, series) or series
@@ -375,7 +382,7 @@ class Analysis:
         series = self.trend()
         if isinstance(series, Refusal):
             return series
-        if (refusal := self._design_refusal(series)) is not None:
+        if (refusal := self._timeline_refusal(series)) is not None:
             return refusal
         result = build_forecast(
             series.frame,
@@ -393,12 +400,27 @@ class Analysis:
             )
         return result
 
-    def _design_refusal(self, series: TrendSeries) -> Refusal | None:
-        """A refusal when rows are counted and the design fixes how many each period holds."""
+    def _timeline_refusal(self, series: TrendSeries) -> Refusal | None:
+        """A refusal when the periods are not a timeline to project or check.
+
+        With rows counted and a design that fixes how many each period holds
+        there is nothing to follow, and dates that cluster into a few sampling
+        trips leave most periods empty.
+        """
         design = fixed_design(self.frame, self.roles, series.frequency)
-        if design is None:
-            return None
-        return Refusal("no_measure_column", f"This table has no measure to follow. {design.sentence}")
+        if design is not None:
+            return Refusal("no_measure_column", f"This table has no measure to follow. {design.sentence}")
+        trips = sampling_campaigns(self.frame, self.roles, series.frequency)
+        if trips is not None:
+            return Refusal(
+                "not_enough_periods",
+                f"The rows come from {len(trips.starts)} sampling trips, and {trips.empty_periods} of the "
+                f"{trips.periods} periods in between are empty, so there is no regular timeline; the brief "
+                "compares the trips instead.",
+                needed="a regular timeline",
+                had=f"{len(trips.starts)} sampling trips",
+            )
+        return None
 
     def segments(self, limit: int = 12) -> pd.DataFrame | Refusal:
         """The measure broken down by the grouping column, as a DataFrame.

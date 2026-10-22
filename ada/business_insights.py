@@ -14,9 +14,12 @@ import pandas as pd
 from scipy import stats
 
 from .aggregation import (
+    CAMPAIGN_GAP_DAYS,
+    CAMPAIGN_GAP_RATIO,
     COMPLETE_YEAR_SHARE,
     PERIODS_IN_YEAR,
     MatchedChange,
+    SamplingCampaigns,
     SeasonalContext,
     TrendSeries,
     build_trend,
@@ -26,6 +29,7 @@ from .aggregation import (
     months_recorded,
     preferred_frequency,
     reporting_unit,
+    sampling_campaigns,
     seasonal_context,
     segment_frame,
     segment_period_change,
@@ -915,6 +919,83 @@ def _long_run_evidence(
         tone="neutral",
         lead=lead,
         quiet=not test.clear,
+    )
+
+
+def _campaign_evidence(dataframe: pd.DataFrame, roles: ColumnRoles, trips: SamplingCampaigns) -> Evidence:
+    """Compare sampling trips, the natural periods of a table whose dates cluster into a few campaigns.
+
+    Each trip's value is the measure combined over its rows (a total, an
+    average, or the row count with no measure). The trend across trips is
+    Theil-Sen on each trip's middle date in years, tested with
+    ``timeseries.trend_test``.
+    """
+    metric = metric_for(roles.measure, roles)
+    trip = trips.labels
+    if roles.measure:
+        grouped = dataframe[roles.measure].groupby(trip)
+        values = grouped.sum(min_count=1) if metric.aggregation == "sum" else grouped.mean()
+    else:
+        values = trip.value_counts().astype(float)
+    values = values.sort_index().dropna()
+    measure = roles.measure or "Records"
+    measure_values = dataframe[roles.measure].dropna() if roles.measure else None
+    grain = GRAIN_NAMES.get(trips.frequency, "period")
+    count = len(trips.starts)
+    sizes = f"{min(trips.sizes):,}" if min(trips.sizes) == max(trips.sizes) else (
+        f"{min(trips.sizes):,} to {max(trips.sizes):,}"
+    )
+    statement = (
+        f"The rows come from {count} sampling trips between {trips.starts[0]:%b %Y} and "
+        f"{trips.ends[-1]:%b %Y}, {sizes} rows each; {trips.empty_periods} of the {trips.periods} {grain}s "
+        f"in that span have none, so trips are compared rather than {grain}s."
+    )
+    lead = ""
+    if len(values) >= 2:
+        latest, previous = int(values.index[-1]), int(values.index[-2])
+        then, now = format_values_apart(
+            float(values.iloc[-2]), float(values.iloc[-1]), column=roles.measure, column_values=measure_values
+        )
+        combined = "totalled" if metric.aggregation == "sum" or not roles.measure else "averaged"
+        statement += (
+            f" {measure} {combined} {now} on the latest trip ({trips.label(latest)}) against {then} on the "
+            f"one before ({trips.label(previous)})."
+        )
+        middles = [
+            trips.starts[index] + (trips.ends[index] - trips.starts[index]) / 2
+            for index in values.index.astype(int)
+        ]
+        years = np.array([stamp.year + (stamp.dayofyear - 1) / 365.25 for stamp in middles])
+        test = trend_test(years, values.to_numpy(dtype=float))
+        if test is not None:
+            low, high = _signed_figure(test.low), _signed_figure(test.high)
+            interval = f"{TREND_CONFIDENCE:.0%} CI {low} to {high}"
+            if test.clear:
+                verb = "rose" if test.slope > 0 else "fell"
+                statement += (
+                    f" Across the trips it {verb} by {_signed_figure(test.slope)[1:]} per year ({interval}; "
+                    f"Mann-Kendall {format_p(test.p_value)})."
+                )
+                lead = (
+                    f"{measure} {verb} by {_signed_figure(test.slope)[1:]} per year across {count} sampling "
+                    f"trips ({interval})."
+                )
+            else:
+                statement += (
+                    f" Across the trips there is no clear trend: the Theil-Sen slope is "
+                    f"{_signed_figure(test.slope)} per year, but its {interval} spans zero."
+                )
+    return Evidence(
+        kind="campaigns",
+        title="Sampling trips",
+        value=f"{count} trips",
+        statement=statement,
+        calculation=(
+            f"Dates split into trips at gaps of more than {CAMPAIGN_GAP_DAYS} days and {CAMPAIGN_GAP_RATIO} "
+            f"times the median gap; {metric.aggregation if roles.measure else 'count'} per trip; Theil-Sen "
+            "slope on each trip's middle date with a 95% CI (scipy.stats.theilslopes) and a Mann-Kendall test"
+        ),
+        lead=lead,
     )
 
 
@@ -4034,15 +4115,20 @@ def analyze_business(
     tested_statistics = statistics.loc[tested.index] if repeats else statistics
     evidence: list[Evidence] = []
 
-    # Rows per period set by the design (each plot once a year) are not a series to follow.
+    # Rows per period set by the design (each plot once a year) are not a series to
+    # follow, and a few sampling trips leave a calendar grid mostly empty.
     design = fixed_design(dataframe, roles, frequency)
-    long_run = None if design else _long_run_evidence(dataframe, roles, frequency)
+    trips = None if design else sampling_campaigns(dataframe, roles, frequency)
+    timeline = not design and not trips
+    if trips:
+        evidence.append(_campaign_evidence(dataframe, roles, trips))
+    long_run = _long_run_evidence(dataframe, roles, frequency) if timeline else None
     if long_run:
         evidence.append(long_run)
-    growth = None if design else _growth_evidence(dataframe, roles, frequency)
+    growth = _growth_evidence(dataframe, roles, frequency) if timeline else None
     if growth:
         evidence.append(growth)
-    change_driver = _change_driver_evidence(dataframe, roles, frequency)
+    change_driver = _change_driver_evidence(dataframe, roles, frequency) if not trips else None
     if change_driver:
         evidence.append(change_driver)
     # Both scans work on the same numeric readings, which are slow to pick out of a
@@ -4054,7 +4140,7 @@ def analyze_business(
     rules = grouping_rules(masked, readings, _rule_groupings(roles, found), date=roles.date)
     evidence.extend(_segment_evidence(dataframe, roles, tested, note, found, rules=rules, built=built))
     evidence = _flag_driven_leader(evidence, dataframe, roles, issues)
-    shift = _level_shift_evidence(dataframe, roles, frequency)
+    shift = _level_shift_evidence(dataframe, roles, frequency) if timeline else None
     if shift:
         evidence.append(shift)
     differences = _noting(
@@ -4067,7 +4153,7 @@ def analyze_business(
     relationships = _relationship_scan(tested_statistics, roles, readings, built)
     for optional_evidence in (
         _rate_evidence(tested, roles, note, found),
-        None if design else _anomaly_evidence(dataframe, roles, frequency),
+        _anomaly_evidence(dataframe, roles, frequency) if timeline else None,
         _noting(
             _relationship_evidence(
                 tested_statistics, roles, readings, relationships, note, built=built, rules=rules

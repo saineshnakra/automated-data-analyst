@@ -100,6 +100,18 @@ class RefusalTests(unittest.TestCase):
                 self.assertEqual(refusal.code, "no_measure_column")
                 self.assertIn("at most once a year", refusal.message)
 
+    def test_sampling_trips_are_not_forecast(self):
+        starts = pd.to_datetime(["2003-06-16", "2003-09-09", "2003-11-03", "2004-04-26", "2004-08-09",
+                                 "2004-10-25", "2005-04-25", "2005-07-25", "2005-10-24"])
+        dates = [start + pd.Timedelta(days=day % 4) for start in starts for day in range(20)]
+        report = ada.analyze(pd.DataFrame({"date": dates, "secchi": [5.0 + day % 3 for day in range(180)]}))
+
+        refusal = report.forecast()
+
+        self.assertIsInstance(refusal, ada.Refusal)
+        self.assertEqual(refusal.code, "not_enough_periods")
+        self.assertIn("9 sampling trips", refusal.message)
+
     def test_nothing_found_is_not_the_same_as_could_not_look(self):
         """An empty tuple and a Refusal are both falsy; only the type differs."""
         found = ada.analyze(steady()).anomalies

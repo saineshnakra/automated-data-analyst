@@ -38,6 +38,7 @@ assembled in this order:
 
 | Kind | Reports | Skipped when |
 |---|---|---|
+| `campaigns` | When the dates cluster into a few sampling trips with most periods between them empty, the trips instead of periods: how many, their sizes, the latest trip against the one before, and the trend across trips (see [Sampling trips](#sampling-trips)) | Fewer than 3 trips, or most periods hold data |
 | `longtrend` | The trend across a record of 20 or more complete years: Theil-Sen slope per year and per decade with its 95% interval and a Mann-Kendall test, the months it runs highest and lowest in, and the slopes either side of a change in level (see [Long records](#long-records)) | No date, or fewer than 20 complete years |
 | `trend` | Latest period-over-period change on the groups present in both periods, compared with the series' usual movement or with the time of year | No date, fewer than 2 periods, a percentage change from a previous period of zero, or rows counted where the design fixes how many each period holds (see [Fixed designs](#fixed-designs)) |
 | `driver` | The segment that moved the measure most between the last two periods | No date, measure or segment |
@@ -185,6 +186,24 @@ so they are not trended or forecast."* `Analysis.forecast()` and
 `Analysis.anomalies` return a `Refusal` with code `no_measure_column` and the
 same sentence. A count that moves, such as active customers per month, is
 still followed.
+
+### Sampling trips
+
+Field data often comes from a few trips of a few days each. On a calendar
+grid most periods are then empty, and a trend, anomaly check or forecast over
+those periods runs over gaps (or over zeros, for a total).
+`aggregation.sampling_campaigns` splits the distinct dates into trips at gaps
+of more than 14 days and five times the median gap (`CAMPAIGN_GAP_DAYS`,
+`CAMPAIGN_GAP_RATIO`), and treats them as campaigns when there are at least
+three and over half the periods at the chosen grain are empty. The brief then
+has a `campaigns` card in place of the `longtrend`, `trend`, `driver`,
+`shift` and `anomaly` cards: *"The rows come from 9 sampling trips between Jun
+2003 and Oct 2005, 44 to 46 rows each; 19 of the 29 months in that span have
+none, so trips are compared rather than months."* It compares the latest trip
+with the one before and fits the Theil-Sen slope across trips on each trip's
+middle date, per year, with its interval and Mann-Kendall test.
+`Analysis.forecast()` and `Analysis.anomalies` return a `Refusal` with code
+`not_enough_periods` that names the trips.
 
 ### Drivers on the same groups
 

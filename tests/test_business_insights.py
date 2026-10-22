@@ -2028,6 +2028,25 @@ class FixedDesignBriefTests(unittest.TestCase):
         self.assertIn("Each plot code appears at most once a year", brief.summary)
 
 
+class SamplingTripTests(unittest.TestCase):
+    def test_sampling_trips_are_compared_instead_of_months(self):
+        rng = np.random.default_rng(98)
+        starts = pd.to_datetime(["2003-06-16", "2003-09-09", "2003-11-03", "2004-04-26", "2004-08-09",
+                                 "2004-10-25", "2005-04-25", "2005-07-25", "2005-10-24"])
+        dates = [start + pd.Timedelta(days=int(day)) for start in starts for day in rng.integers(0, 4, 30)]
+        frame = pd.DataFrame({"date": dates, "secchi": rng.normal(5, 1, len(dates))})
+
+        brief = analyze_business(frame, roles_for(frame, "secchi", None, date="date"))
+
+        trips = brief_card(brief, "campaigns")
+        assert trips is not None
+        self.assertEqual(trips.value, "9 trips")
+        self.assertIn("so trips are compared rather than months", trips.statement)
+        self.assertIn("on the latest trip (24–27 Oct 2005)", trips.statement)
+        for kind in ("trend", "anomaly", "shift", "longtrend"):
+            self.assertIsNone(brief_card(brief, kind), kind)
+
+
 class MatchedUnitTests(unittest.TestCase):
     def test_a_per_row_condition_is_not_matched_across_periods(self):
         rng = np.random.default_rng(95)
