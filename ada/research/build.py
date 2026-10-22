@@ -114,7 +114,7 @@ class Build:
             kind="table",
             title=table.title,
             files=files,
-            depends=depends,
+            depends=(*depends, "output") if "output" not in depends else depends,
             calculation=calculation,
             code=code,
             rows=rows or self.rows(),

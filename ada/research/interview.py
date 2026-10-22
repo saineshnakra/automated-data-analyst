@@ -9,6 +9,7 @@ the result is a plain, commented YAML file meant to be read and edited.
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -163,10 +164,9 @@ def guess(data_path: Path, root: Path, sheet: str | None = None) -> Guess:
     frame, _ = clean_dataframe(raw)
     roles = detect_roles(frame)
     columns = [str(column) for column in frame.columns]
-    try:
-        relative = data_path.resolve().relative_to(root.resolve()).as_posix()
-    except ValueError:
-        relative = str(data_path.resolve())
+    # Relative even when the data sits outside the study folder ("../data/x.csv"), so the
+    # study rebuilds the same on another researcher's computer.
+    relative = Path(os.path.relpath(data_path.resolve(), root.resolve())).as_posix()
     result = Guess(
         data_path=relative,
         sheet=sheet,

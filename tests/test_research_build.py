@@ -98,6 +98,17 @@ class InitTests(unittest.TestCase):
         self.assertEqual(study.output.journal, "plos")
         self.assertEqual([analysis.planned for analysis in study.analyses], [True])
 
+    def test_init_writes_a_relative_path_to_data_outside_the_study_folder(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "data").mkdir()
+            (root / "analysis").mkdir()
+            assay().to_csv(root / "data" / "assay.csv", index=False)
+            path = init(
+                root / "data" / "assay.csv", study_path=root / "analysis" / "study.yml", interactive=False
+            )
+            self.assertEqual(load(path).data_path, "../data/assay.csv")
+
     def test_init_will_not_overwrite_a_study(self):
         with study_folder(assay(), assay_study()) as path, self.assertRaises(FileExistsError):
             init(path.parent / "assay.csv", study_path=path, interactive=False)
