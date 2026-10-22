@@ -526,6 +526,7 @@ question is refused when the plan would leave out:
 | A text column in the measure's place | "Precip holds text, not numbers, so it can't be averaged or totalled." |
 | A second measure | "The answer can use one measure, and the question names B and Concentration." |
 | A value of the grouping column | "Open is a value of Condition, which the answer groups by, so it can't also filter the rows." |
+| A value where a grouping goes ("by Soil_Type_Gravel" once one-hot columns are read as one `Soil_Type`) | "Gravel is a value of Soil_Type, so the answer would keep only those rows rather than group them; ask "by Soil_Type" to compare every Soil_Type." |
 | "top N" with nothing to rank | `"top 5" needs a column to rank, as in "top 5 <group> by <measure>".` |
 | A grain the plan doesn't use | "This table has no date column, so there is no month view." |
 | A spread, a percentile, "distinct" or "which column" the plan doesn't use | "The answer would leave out the standard deviation the question asks for." |
