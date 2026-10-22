@@ -1630,6 +1630,19 @@ class CorrelatesQuestionTests(unittest.TestCase):
         answer = answer_question("what correlates with Even1", frame, detect_roles(frame))
 
         self.assertIn("Left out of the ranking for Even1: Even2 (the same measurement", answer.answer)
+        self.assertEqual(answer.answer.count("Left out"), 1)
+        self.assertIn("Depth is the only other numeric column tested against Even1", answer.answer)
+        self.assertNotIn("picked from several columns", answer.answer)
+
+    def test_a_measure_with_only_copies_is_not_called_unpaired(self):
+        rng = np.random.default_rng(13)
+        base = rng.normal(size=200)
+        frame = pd.DataFrame({"Even1": base, "Even2": base + rng.normal(0, 0.05, 200)})
+
+        answer = answer_question("what correlates with Even1", frame, detect_roles(frame))
+
+        self.assertIn("nothing is left to rank", answer.answer)
+        self.assertIn("Left out of the ranking for Even1: Even2", answer.answer)
 
 
 def survey_frame() -> tuple[pd.DataFrame, ColumnRoles]:

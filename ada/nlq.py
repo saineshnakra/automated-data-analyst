@@ -4525,22 +4525,43 @@ def _execute_correlates(
     columns = [column for column in working.columns if column in readings]
     scan = scan_relationships(working, columns, plan.measure, limit=BREAKDOWN_LIMIT, others=False)
     if scan is None or not scan.correlates:
+        if scan is not None and scan.set_aside:
+            answer = (
+                f"Every other numeric column that shares rows with {plan.measure}{_phrase(applied)} "
+                f"repeats it or is built from it, so nothing is left to rank.{set_aside_note(scan)}"
+            )
+        else:
+            answer = (
+                f"No other numeric column shares {MIN_CORRELATION_PAIRS} or more rows with "
+                f"{plan.measure}{_phrase(applied)}, so nothing can be correlated with it."
+            )
         return QueryAnswer(
             question="",
             plan=plan,
-            answer=(
-                f"No other numeric column shares {MIN_CORRELATION_PAIRS} or more rows with "
-                f"{plan.measure}{_phrase(applied)}, so nothing can be correlated with it."
-            ),
+            answer=answer,
             calculation=f"correlations need {MIN_CORRELATION_PAIRS} complete pairs{scope}",
         )
     top = scan.correlates[0]
-    tested = scan.measure_tests
+    # Columns set aside as copies of the measure, or built from it, were never candidates.
+    tested = scan.measure_tests - len(scan.set_aside)
     if top.strength < NOTABLE_CORRELATION:
+        figures = f"r = {top.pearson:.2f}, Spearman {top.spearman:.2f}, n = {top.pairs:,}"
+        if tested == 1:
+            answer = (
+                f"Nothing relates to {plan.measure}{_phrase(applied)}: {top.second}, the only other "
+                f"numeric column tested, falls short of |r| = {NOTABLE_CORRELATION} ({figures})."
+            )
+        else:
+            answer = (
+                f"Nothing relates to {plan.measure}{_phrase(applied)}: none of the {tested} numeric columns "
+                f"tested reaches |r| = {NOTABLE_CORRELATION}. The closest is {top.second} ({figures})."
+            )
+    elif tested == 1:
+        detail = measure_correlation(working[[plan.measure, top.second]].dropna())
+        assert detail is not None
         answer = (
-            f"Nothing relates to {plan.measure}{_phrase(applied)}: none of the {tested} numeric columns "
-            f"tested reaches |r| = {NOTABLE_CORRELATION}. The closest is {top.second} (r = "
-            f"{top.pearson:.2f}, Spearman {top.spearman:.2f}, n = {top.pairs:,})."
+            f"{top.second} is the only other numeric column tested against {plan.measure}. "
+            f"{describe_correlation(detail, _phrase(applied))}"
         )
     else:
         detail = measure_correlation(working[[plan.measure, top.second]].dropna())
@@ -4588,10 +4609,6 @@ def _execute_correlates(
     ]
     if left_out:
         calculation += "; left out: " + "; ".join(left_out)
-        answer += (
-            f" Left out as built from {plan.measure} or near-copies of it: "
-            f"{_set_aside_columns(plan.measure, scan)}."
-        )
     return QueryAnswer(
         question="",
         plan=plan,
@@ -4600,25 +4617,6 @@ def _execute_correlates(
         table=table,
         chart="bar",
     )
-
-
-def _set_aside_columns(measure: str, scan) -> str:
-    """The columns a correlates answer left out because they repeat or are built from the measure."""
-    named: dict[str, str] = {}
-    for first, second, value in (*scan.near_duplicates, *scan.shared_stems):
-        if measure in (first, second):
-            other = second if first == measure else first
-            named.setdefault(other, f"{other} (r = {value:.2f})")
-    for item in scan.derived:
-        if measure in (item.column, *item.parts):
-            for column in (item.column, *item.parts):
-                if column != measure:
-                    named.setdefault(column, f"{column} (derived)")
-    for flag in scan.flags:
-        if measure in (flag.flag, flag.column):
-            other = flag.column if flag.flag == measure else flag.flag
-            named.setdefault(other, f"{other} (marks its cap)")
-    return _leaders(list(named.values()), limit=5)
 
 
 def _rank_periods(
