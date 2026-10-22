@@ -5,27 +5,61 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-20a779.svg)](https://github.com/saineshnakra/automated-data-analyst/blob/main/LICENSE)
 [![Stars](https://img.shields.io/github/stars/saineshnakra/automated-data-analyst?style=flat&logo=github&color=f5b731)](https://github.com/saineshnakra/automated-data-analyst/stargazers)
 
-ADA is a first pass at a CSV or Excel file you haven't looked at yet. It
-detects the date, the measure and the grouping column, cleans what it can,
-and builds the trend, a breakdown by group, anomaly flags and a baseline
-forecast. Every number comes from pandas and is shown with the calculation
-that produced it.
+**See what is in a table of measurements, in seconds.** Drop in a CSV or
+Excel file from a lab assay, an instrument, a field survey or a clinical
+study, and ADA tells you what is wrong with the data, which groups differ,
+what relates to what, and what changed over time. Each finding names the test
+that produced it and prints the arithmetic, so you can check it before you
+trust it.
 
-It works on sales exports, but it was also built for research data: lab
-assays, field surveys, instrument logs. It sums only money and counts, averages
-measurements such as temperature, pH or concentration instead of adding them
-up, reads `NA`, `nd` or `<LOD` in a numeric column as missing, and checks every
-column for values that should not drive a result before it reports one.
+[**Try it in your browser**](https://automated-data-analyst.streamlit.app/): it opens on a lab dataset, with no sign-up or install. Or `pip install automated-data-analyst`.
 
-[**Try the web app**](https://automated-data-analyst.streamlit.app/) (no sign-up, no API key) or `pip install` it.
+![ADA's report on a cell-culture assay: the headline says viability differs across treatments, with the medians, group sizes and effect size, above the key numbers](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/brief.png)
 
-![Asking ADA a plain-English question and getting a pandas-backed answer with its calculation](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/ask-ada.gif)
+## What it is for
 
-## Quick start
+You have just been sent a file, or exported one from an instrument, and you
+want to know what is in it before you spend an afternoon in Excel, R or
+pandas. ADA answers the questions you would ask first:
 
-```bash
-pip install automated-data-analyst
-```
+| You want to know | ADA gives you |
+|---|---|
+| **Can I trust this data?** | Missing-value codes such as `-999`, values that can't be right (pH above 14, a percentage over 100, potassium of 19 mmol/L), stuck sensors, swapped or copied columns and repeated rows, found before anything is reported |
+| **Do my groups differ?** | Each grouping compared with the right test (Welch's or Kruskal-Wallis), the n per group, an effect size and the pairs that differ. A gap within the noise is called no clear difference, never a ranking |
+| **What relates to my outcome?** | Every reading correlated with it, with a 95% interval, leaving out columns built from one another, and the readings that matter fitted together |
+| **Did anything change over time?** | The trend, periods outside the usual range, lasting changes in level, and a forecast scored against assuming no change |
+| **Something specific?** | Ask in plain English: "does viability differ by treatment?", "outliers in glucose", "average pH by site" |
+
+It was built for research data and works on any table, sales exports included.
+You don't write code in the web app, and you write one line in Python.
+
+## An example
+
+The lab sample that ships with ADA is a weekly cell-culture assay: 936
+samples, four treatments, viability and live-cell counts. ADA's report, in
+short:
+
+- **Headline:** viability differs across treatments. Control has the highest
+  median, 91.9% (n = 232), and Compound B the lowest, 85.1% (n = 233).
+  Treatment explains 64% of the variation in its ranks (Kruskal-Wallis,
+  p < 0.001).
+- **Other findings:** live-cell counts also differ by treatment, the only
+  clear difference among 3 comparisons after a Holm adjustment. July 2025 is an
+  anomaly: viability fell to 81.5% against an expected 88.1% to 90.1%.
+- **Data checks:** 12 viability readings between 50.95 and 62.64 sit far below
+  the rest. ADA flags them first, and the relationship card says they drive
+  much of the correlation between viability and live cells (r = 0.67 with
+  them, 0.37 without).
+- **What it chose:** viability as the measure, averaged rather than summed
+  because it is a percentage, and treatment as the grouping. Live cells was a
+  close second, and one click switches to it.
+
+Under every finding is the calculation that produced it:
+
+![ADA's summary tab: suggested next steps beside the findings, each finding with its calculation underneath](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/findings.png)
+
+<details>
+<summary>The same report from Python</summary>
 
 ```python
 import ada
@@ -63,194 +97,22 @@ Compound B the lowest, 85.1% (n = 233); ε² = 0.64.
       extreme values (50.95 to 62.64). ...
 ```
 
-That file ships with the package: `ada.sample("Lab Measurements")` loads it,
-and `ada.samples()` lists all four bundled datasets.
+</details>
 
-From the command line:
+## Why you can check it
 
-```bash
-ada analyze measurements.csv          # the same report
-ada analyze measurements.csv --json   # as JSON
-ada schema measurements.csv           # which column ADA used for what, and how it combines
-ada analyze results.xlsx --sheet Data # one worksheet of a workbook
-ada ask orders.csv "which category made the most revenue"
-```
-
-## What it does
-
-- **Cleans conservatively and says what it changed**: encodings (UTF-8,
-  UTF-16, Latin-1), `;` and tab delimiters, a title line above the header, a
-  second header row under group labels, `$1,203.55` and `(48.10)` style
-  numbers, day/month order in dates, dates written as `19540601`, missing-value
-  markers (including a lone `T` for a trace, `<3,87` or `ND` below a detection
-  limit, "not stated" phrases such as `no indica` or `tidak ada data`, and
-  placeholders such as `Unknown`), ranges a spreadsheet turned into dates
-  (`Oct-30` for `10-30`), labels spelled differently only in case or accents
-  (`Con riego`, `CON RIEGO`). Identical rows are counted, not dropped;
-  repeated headers and dropped empty columns are named.
-- **Checks the data before trusting it**: every numeric column is scanned for
-  values its name or a physical limit rules out (a percentage over 100, a
-  negative yield, pH past 14, potassium of 19 mmol/L, a wind speed of 280 m/s),
-  codes such as `-999` or `999.9`, values piled up at a limit, filled-in gaps,
-  values far from the rest, second clusters, swapped and copied columns, max
-  below min, stuck sensors, and gaps that follow a group or another column;
-  the table as a whole for copied rows and for flat, unrelated columns that
-  suggest simulated data. The brief lists the issues covering the most rows
-  and says which to check first; `report.quality()` returns them all. Only a
-  clear code in the measure is set aside, with a note, but relationships and
-  group comparisons are computed without the cells the checks flagged.
-- **Detects column roles**: the date, the measure, the grouping column and an
-  ID column, from names, values and cardinality. A two-level outcome the table
-  is built to explain (a `target`, a diagnosis, the label a file is named for)
-  becomes the grouping, and the measure is the reading that best tells its two
-  groups apart, never one the outcome was cut from. Numeric category codes (a
-  0/1 flag, a status, a set dose, a swept frequency, an experiment number with
-  its fixed settings) group rows instead of being added up, while rating items
-  (`RDB1` to `RDB3` on 0 to 10) and readings in a unit (`O content (wppm)`)
-  stay quantities; a column of unique row numbers is an ID; a running total
-  such as a rain gauge's, a packet counter, a constant, a p-value or a date
-  stored as a number is never the measure.
-  Coordinates, compass directions and quality flags are never compared as
-  readings. A long table (one column naming the parameter, one holding the
-  result) is analyzed one parameter at a time, a file stacking several tables
-  is read as its largest one, and a matrix of sample or channel columns is
-  measured by its row mean (or each row's spread, when the rows are centred).
-  Override any role with
-  `ada.analyze(df, measure="OD600")` or in the app.
-- **Knows what can be added up**: money and counts are summed; rates
-  (`Viability %`, `Churn Rate`), measured levels (`Water Temp (°C)`, `pH`,
-  `Concentration (mg/L)`), per-unit prices and anything it doesn't recognise as
-  money or a count (`CO2`, `mpg`) are averaged, and so is a score or count per
-  subject when each row is one participant or sample, or a lab reading named
-  "total" (`nitrates_total`, all forms of nitrate). Averages get no totals
-  and no "share of total", and a change in a rate is reported in percentage
-  points.
-  When the name misleads, `aggregation="sum"` or `"mean"` (or **Combine rows
-  by** in the app) says how the measure combines.
-- **Prints readings in full**: `K` and `M` are kept for money and large
-  counts, so a heart rate of 1,111 is not shown as `1.1K`; very small or very
-  large readings use scientific notation (`3.624e+11`). A `$` needs both a
-  money name and values that look like money, so an income band coded 1 to 15
-  is not printed as dollars. Figures compared in one sentence never print
-  alike, numeric groups are named with their column ("Status 2"), and an
-  average resting on fewer than 30 rows says so.
-- **Builds a timeline**: picks a period grain the data can fill, down to the
-  hour, minute or second for a sensor log, drops a final period the data only
-  partly covers, and notes both under the chart. A `Year` column (with a
-  `Month` column, if there is one) counts as a date. Clock times with no date
-  are read as times of day, never given today's date, and a column of elapsed
-  seconds or minutes can be the time axis.
-- **Compares like with like**: the latest change is measured on the groups
-  that reported in both periods, a series with a yearly cycle is set against
-  the same time of year, and a group's figure says when it covers only part
-  of the dates. Logs stacked one after another in a file, and daily summaries
-  appended below hourly readings, are found and kept apart.
-- **Flags anomalies and changes in level**: periods outside a band around a
-  Theil-Sen trendline, or around the usual level for the time of year when the
-  series has a yearly cycle, checked at a finer grain when the chosen one has
-  too few periods. A lasting change in level (an instrument swap, a method
-  change, a fire) is found by binary segmentation and reported with its start
-  and the levels before and after. Both are calibrated by simulation so a
-  stable series raises a false alarm in about one analysis in twenty.
-- **Follows elapsed time and time courses**: a numeric time-point column
-  (days since infection, a gait cycle) is shown in order, with groups
-  followed for different lengths compared over the time they share, and
-  numbered columns such as 40 to 260 minutes are read as one series with its
-  profile, most variable rows and repeating period.
-- **Reads survival data**: a follow-up time beside its event flag is treated
-  as censored, never averaged or compared across its own event. ADA gives
-  Kaplan-Meier survival, log-rank tests across the groupings and a Cox model's
-  hazard ratios.
-- **Forecasts with a backtest**: a trendline plus the usual offset of each
-  month, quarter or week of the year, scored on held-out periods against a
-  no-change forecast and, for a seasonal series, against repeating the same
-  period a year earlier. It refuses to run on too little history, and says
-  plainly when the forecast did worse than either.
-- **Answers plain-English questions** ("average pH by site", "mean signal by
-  timepoint", "which month of the year has the highest wind", "is pH
-  correlated with temperature", "does pH differ by site", "what predicts
-  strength", "does antibiotic use affect risk", "distribution of pH",
-  "outliers in HGB", "90th percentile of lead", "how many distinct species
-  per reef", "count by crop and year", "share of Result 1 by Gender", "which
-  column has the highest average", "average growth by temperature", "average
-  pH since 2000", "average pH before and after 2000", "average pH by
-  season", "does VB differ by feed after accounting for time") by
-  turning them into a fixed query plan that pandas runs. Every column, value,
-  grouping and condition the question names must reach the plan; otherwise
-  the question is refused with the part ADA couldn't use, rather than
-  answered approximately. A short name that fits one column ("strength" for
-  `Concrete compressive strength (MPa)`) is used and the answer says so. Each
-  answer states its filters, how many rows it used and whether the row limit
-  left rows out; a ranking gives each group's n and says whether the groups
-  really differ, a trend gives its Theil-Sen slope and peak, and an answer
-  that uses values the data checks flag says so. Answers use the same rows
-  and leave out the same flagged values as the brief, and a yes/no outcome
-  is compared as a rate per group, so a figure in an answer matches the one
-  in the brief.
-- **Tests group differences**: a measure compared across groups gets the n per
-  group, Welch's test with a Mann-Whitney check (or Welch's ANOVA and
-  Kruskal-Wallis for more groups) and an effect size, by medians and ranks when
-  the data are skewed or capped, and Tukey's HSD names the pairs that differ.
-  A gap within the noise, one whose two tests disagree, or one resting on a
-  group of fewer than five reads as "no clear difference", never as a ranking.
-  Ordered numeric levels (a dose, a depth) also get a trend test, a mostly-zero
-  reading is compared on its means and the share above zero, and a grouping
-  that combines two factors gets each factor's own test. A scan of every
-  reading across every grouping names the largest differences, with p-values
-  adjusted for the number of tests (a false-discovery rate for a screen of
-  hundreds of readings), repeated rows of one subject count once, and exact
-  copies of rows are set aside. A grouping cut from a reading (a size band
-  from acres, an anaemia flag from haemoglobin) is stated as a rule rather
-  than reported as a difference, and so is one that holds a reading by
-  definition: a code whose "none" group holds an amount of 0, a grade of an
-  index cut from the reading, a grouping named after it. A reading fixed for
-  each species or product is described as the item's, not compared record by
-  record.
-- **Counts what was observed, not rows**: a reading copied onto every row of
-  a sample (a site visit's chemistry on each species row) counts once per
-  sample in the tests and correlations. When every subject appears in every
-  group (each person walked in every condition), the groups are compared
-  within subjects, by a repeated-measures ANOVA or Friedman test (paired t or
-  Wilcoxon for two groups). Groups followed for different lengths of time
-  (animals that died early) are compared over the stretch they share, and a
-  test case's settings group the cases. When another grouping tied to the
-  compared one sets the reading (landslide sites behind a soil difference),
-  the comparison is repeated within its levels, and the brief leads with that
-  when the gap does not hold there.
-- **Compares rates and fits joint models**: a yes/no outcome gets its rate in
-  each group with a chi-squared or Fisher test and the risk difference with
-  its interval, and the readings that relate to the measure are fitted
-  together by least squares, with coefficients, intervals, R² and a
-  collinearity warning, when that says more than any one of them alone. Other
-  candidate outcomes, case numbers and copies of the measure are left out,
-  a fit with no residual is named as the identity it is, and a yes/no measure
-  gets a logistic model with odds ratios instead.
-- **Reports what relates to the measure**: every numeric column's Pearson and
-  Spearman r with the measure, with a 95% interval and the sample size, then
-  the strongest other pair, or a plain "none of N pairs reaches |r| = 0.3".
-  A correlation that all but vanishes within the groups of a label the
-  readings differ by is said to come from the difference between the groups.
-  A total and its items, a mean or row maximum of other columns (including a
-  season that takes last December), a product or ratio such as BMI, a log or
-  square root of another column, a rate computed as the change from the row
-  before, a time cut off at another, the minimum, mean and maximum of one
-  reading, a score standardised within groups, shares that add up to 100, a
-  censoring flag and its capped reading, near-duplicates, participant numbers
-  and plate positions are left out and listed. It leads with the figure one
-  record doesn't decide, says when one record makes or hides a correlation,
-  and when it is stronger, weaker or reversed within groups.
-  Ask about a pair and it reports the same figures for that pair.
-- **Analyzes a slice you select**: draw a box or lasso on the Explore chart, or
-  click some bars, and get the same analysis for those rows beside the whole.
-
-The web app accepts files up to 25 MB. By default up to 1,000,000 rows are
-analyzed (`row_limit=` changes that): the newest rows of a table with a date,
-or a random sample of one without, and every answer says which.
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/anomaly-forecast.png" width="49%" alt="ADA dashboard for the lab sample: viability over time with an anomaly and a forecast, change per treatment, heatmap, distribution and scatter">
-  <img src="https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/evidence-ledger.png" width="49%" alt="ADA evidence ledger listing each finding with its calculation">
-</p>
+- **The numbers come from pandas, SciPy and statsmodels**, never from a
+  language model, and each one prints its method, for example "median
+  Viability % per Treatment; Kruskal-Wallis with ε² = H ÷ (n − 1); checked with
+  Welch ANOVA".
+- **It refuses rather than guesses.** A forecast needs enough history, a
+  question ADA can't turn into a calculation is declined with the part it
+  couldn't read, and a finding that holds by construction (a total and its
+  parts, a label cut from a reading) is named instead of reported.
+- **It checks the data before it reports.** Cells the data checks rule out are
+  left out of the comparisons and correlations, and each card says how many.
+- **No setup, no account, no API key.** The optional AI layer only plans
+  questions and writes a summary; it never computes a number.
 
 ## What it doesn't do
 
@@ -267,6 +129,73 @@ So treat what it finds as a first pass and its recommendations as what to
 look at next, not as causal claims. For a confirmatory analysis, ADA
 is the step before that, and its calculation lines tell you which test to
 start from.
+
+## Get started
+
+**In the browser:** [open the web app](https://automated-data-analyst.streamlit.app/).
+It starts on the lab sample; choose **Upload your file** for your own CSV, TSV
+or Excel file (up to 25 MB).
+
+**In Python:**
+
+```bash
+pip install automated-data-analyst
+```
+
+```python
+import ada
+
+report = ada.analyze("measurements.csv")   # a path, a DataFrame or raw bytes
+print(report)                              # the report above
+report.ask("does pH differ by site?")
+```
+
+**From the command line:**
+
+```bash
+ada analyze measurements.csv          # the same report
+ada analyze measurements.csv --json   # as JSON
+ada schema measurements.csv           # which column ADA used for what, and how it combines
+ada analyze results.xlsx --sheet Data # one worksheet of a workbook
+ada ask measurements.csv "average pH by site"
+```
+
+The bundled samples load with `ada.sample("Lab Measurements")`, and
+`ada.samples()` lists all four.
+
+## Ask in plain English
+
+![Asking ADA "does viability differ by treatment?" and getting the answer, a chart and its calculation](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/ask-ada.gif)
+
+Questions such as "average pH by site", "is pH correlated with temperature",
+"what predicts strength", "outliers in HGB", "90th percentile of lead" or
+"share of Result 1 by Gender" become a fixed query plan that pandas runs.
+Every column, value and condition the question names must reach the plan;
+otherwise ADA says which part it couldn't use instead of answering something
+close.
+
+## What it does
+
+- **Reads messy files** and says what it changed: encodings, delimiters, a
+  title line or a second header row, dates written as `19540601`, missing-value
+  markers such as `NA`, `ND`, `<LOD` or `-999`.
+- **Picks the columns**: the date, the measure, the grouping and an ID, from
+  names and values. A numeric code such as a dose or a 0/1 flag groups rows
+  instead of being added up. Override any choice in the app or with
+  `ada.analyze(df, measure="OD600")`.
+- **Knows what adds up**: money and counts are summed; readings such as
+  temperature, pH or concentration are averaged.
+- **Checks the data**, then **compares groups** and **rates**, reports **what
+  relates to the measure**, fits a **joint model** when it says more than one
+  reading alone, and adjusts p-values for the number of tests.
+- **Builds a timeline** with anomaly flags, changes in level and a backtested
+  forecast.
+
+[Everything it does, in detail](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/features.md)
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/charts.png" width="80%" alt="ADA's charts for the lab sample: viability over time with an anomaly and a forecast, viability by treatment, change per treatment and more">
+</p>
 
 ## Using it from Python
 
@@ -348,7 +277,7 @@ pip install -e ".[app]"
 streamlit run app.py
 ```
 
-No API key is needed; the app opens with a demo dataset. `pip install -e
+No API key is needed; the app opens on the lab sample. `pip install -e
 ".[app,ai,dev]"` adds the optional AI layer and the linter. Tested on Python
 3.11, 3.12 and 3.13.
 

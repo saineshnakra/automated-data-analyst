@@ -716,6 +716,20 @@ class PluralAndWordMatchTests(unittest.TestCase):
 
 
 class SuggestionWordingTests(unittest.TestCase):
+    def test_a_reading_is_compared_and_related_rather_than_ranked(self):
+        frame = pd.DataFrame({
+            "Run Date": pd.date_range("2024-01-01", periods=60, freq="W").repeat(2),
+            "Treatment": ["Control", "Dosed"] * 60,
+            "Viability %": np.linspace(80, 95, 120),
+            "Live Cells": np.linspace(1e6, 2e6, 120),
+        })
+
+        suggestions = suggested_questions(frame, detect_roles(frame))
+
+        self.assertIn("Does Viability % differ by Treatment?", suggestions)
+        self.assertIn("What relates to Viability %?", suggestions)
+        self.assertNotIn("Which Treatment grew fastest?", suggestions)
+
     def test_a_measure_named_average_is_not_prefixed_again(self):
         frame = pd.DataFrame({"Average Order Value": [1.0, 2.0, 3.0, 4.0], "Region": list("abab")})
         suggestions = suggested_questions(frame, detect_roles(frame))

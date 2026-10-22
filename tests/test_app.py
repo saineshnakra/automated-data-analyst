@@ -248,45 +248,50 @@ class AppSmokeTests(unittest.TestCase):
         self.assertFalse(app.exception)
         self.assertEqual(
             [tab.label for tab in app.tabs],
-            ["Executive brief", "Ask ADA", "Live dashboard", "Explore", "Evidence ledger", "Data room"],
+            ["Summary", "Ask ADA", "Charts", "Explore", "Findings", "Data"],
         )
         # Six dashboard charts, plus the one Explore draws for its default columns.
         self.assertEqual(len(app.get("plotly_chart")), 7)
         # Detected columns, cleaning audit, data checks, cleaned data and data dictionary.
         self.assertEqual(len(app.dataframe), 5)
 
+    def test_the_demo_is_the_lab_sample(self):
+        app = AppTest.from_file("app.py", default_timeout=45).run()
+
+        rendered = " ".join(str(block.value) for block in app.markdown)
+        self.assertIn("Lab Measurements · demo", rendered)
+        self.assertIn("Metric · Viability %", rendered)
+
     def test_drill_down_focuses_the_whole_analysis(self):
         app = AppTest.from_file("app.py", default_timeout=45).run()
         focus_box = next(box for box in app.selectbox if box.label.startswith("Drill into"))
-        focus_box.set_value("Enterprise").run()
+        focus_box.set_value("Compound B").run()
 
         self.assertFalse(app.exception)
         rendered = " ".join(str(block.value) for block in app.markdown)
-        self.assertIn("Focus · Enterprise", rendered)
-        self.assertIn("Segment · Region", rendered)
+        self.assertIn("Focus · Compound B", rendered)
+        self.assertIn("Segment · Replicate", rendered)
 
     def test_combining_rows_follows_the_metric_and_can_be_switched(self):
         app = AppTest.from_file("app.py", default_timeout=45).run()
         combine = next(box for box in app.selectbox if box.label == "Combine rows by")
-        self.assertEqual(combine.value, "Total")
-        self.assertIn("Total Revenue", " ".join(str(block.value) for block in app.markdown))
+        self.assertEqual(combine.value, "Average")
+        self.assertNotIn("Total Viability %", " ".join(str(block.value) for block in app.markdown))
 
-        combine.set_value("Average").run()
+        combine.set_value("Total").run()
 
         self.assertFalse(app.exception)
-        rendered = " ".join(str(block.value) for block in app.markdown)
-        self.assertNotIn("Total Revenue", rendered)
-        self.assertIn("Average Revenue", rendered)
+        self.assertIn("Total Viability %", " ".join(str(block.value) for block in app.markdown))
 
     def test_ask_ada_answers_a_question(self):
         app = AppTest.from_file("app.py", default_timeout=45).run()
-        app.chat_input[0].set_value("top 3 products by revenue").run()
+        app.chat_input[0].set_value("average viability by treatment").run()
 
         self.assertFalse(app.exception)
         history = app.session_state["chat_history"]
         self.assertEqual(len(history), 1)
         self.assertIsNotNone(history[0]["result"])
-        self.assertIn("Product", history[0]["result"].answer)
+        self.assertIn("Treatment", history[0]["result"].answer)
 
     def test_ask_ada_explains_unreadable_questions(self):
         app = AppTest.from_file("app.py", default_timeout=45).run()
@@ -308,8 +313,8 @@ class AppSmokeTests(unittest.TestCase):
     def test_repeating_a_question_does_not_break_the_transcript(self):
         """Two answers that render the same chart need distinct element ids."""
         app = AppTest.from_file("app.py", default_timeout=45).run()
-        app.chat_input[0].set_value("top 3 products by revenue").run()
-        app.chat_input[0].set_value("top 3 products by revenue").run()
+        app.chat_input[0].set_value("average viability by treatment").run()
+        app.chat_input[0].set_value("average viability by treatment").run()
 
         self.assertFalse(app.exception)
         self.assertEqual(len(app.session_state["chat_history"]), 2)
@@ -332,7 +337,7 @@ class AppSmokeTests(unittest.TestCase):
         app = AppTest.from_file("app.py", default_timeout=45).run()
         picker = next(box for box in app.multiselect if box.label == "Columns to chart")
 
-        picker.set_value(["Product", "Revenue"]).run()
+        picker.set_value(["Treatment", "Viability %"]).run()
 
         self.assertFalse(app.exception)
         rendered = " ".join(str(block.value) for block in app.markdown)
@@ -341,11 +346,11 @@ class AppSmokeTests(unittest.TestCase):
     def test_explore_handles_every_recommended_form(self):
         app = AppTest.from_file("app.py", default_timeout=45).run()
         for columns in (
-            ["Order Date", "Revenue"],
-            ["Order Date", "Revenue", "Product"],
-            ["Product", "Region", "Revenue"],
-            ["Revenue", "Units"],
-            ["Product"],
+            ["Run Date", "Viability %"],
+            ["Run Date", "Viability %", "Treatment"],
+            ["Treatment", "Replicate", "Viability %"],
+            ["Viability %", "Live Cells"],
+            ["Treatment"],
         ):
             with self.subTest(columns=columns):
                 picker = next(box for box in app.multiselect if box.label == "Columns to chart")
@@ -354,6 +359,9 @@ class AppSmokeTests(unittest.TestCase):
 
     def test_explore_says_how_it_fitted_a_long_date_range(self):
         app = AppTest.from_file("app.py", default_timeout=45).run()
+        app.segmented_control[0].set_value("Try a sample dataset").run()
+        samples = next(box for box in app.selectbox if box.label == "Sample dataset")
+        samples.set_value("Ecommerce Orders").run()
         picker = next(box for box in app.multiselect if box.label == "Columns to chart")
 
         picker.set_value(["Order Date", "Revenue"]).run()

@@ -66,6 +66,21 @@ On Python 3.11, 3.12 and 3.13 it runs `ruff check .`, the unit suite,
 `compileall` and an import of `app.py`. A second job builds the wheel, installs
 it without the app extras and runs the `ada` command.
 
+## Releasing
+
+`.github/workflows/release.yml` publishes to PyPI when a GitHub release is
+published. To release version 0.3.0:
+
+1. Set `version = "0.3.0"` in `pyproject.toml` and merge that to `main`.
+2. Create a release on GitHub with the tag `v0.3.0`.
+
+The workflow checks that the tag matches the version, runs the tests, builds
+the sdist and the wheel, and uploads them. PyPI accepts the upload through
+trusted publishing, so no token is stored anywhere: the PyPI project lists this
+repository's `release.yml` and its `pypi` environment as its publisher. A
+version number can be uploaded once, so a fix after a release needs a new
+version.
+
 ## Conventions
 
 **Where code goes.** See [Architecture](architecture.md). In short:

@@ -249,7 +249,7 @@ div[data-testid="stFileUploaderDropzone"] button { color: white; border: 0; back
 
 .how-grid {
   display: grid;
-  grid-template-columns: 1.1fr .9fr .9fr;
+  grid-template-columns: repeat(4, 1fr);
   gap: .9rem;
   margin-top: 2rem;
 }
