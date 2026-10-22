@@ -35,6 +35,7 @@ from .compare import (
     CAP_MIN_ROWS,
     CAP_SHARE,
     CENTRE_WORDS,
+    EVENTS_PER_TERM,
     EXACT_FIT,
     FALSE_DISCOVERY,
     INFLUENCE_CHANGE,
@@ -63,6 +64,7 @@ from .compare import (
     comparison_calculation,
     construction,
     correlation_interval,
+    correlation_p,
     date_part,
     describe_comparison,
     describe_rates,
@@ -71,6 +73,7 @@ from .compare import (
     entity_column,
     far_out,
     fit_joint_model,
+    fit_logistic_model,
     format_p,
     grouping_rules,
     holm_adjust,
@@ -81,6 +84,7 @@ from .compare import (
     most_influential,
     nested_within,
     outcome_event,
+    pairwise_correlations,
     rate_calculation,
     same_stem,
     scan_differences,
@@ -1319,12 +1323,16 @@ def within_one_level(dataframe: pd.DataFrame, finer: str, coarser: str) -> bool:
     Sites inside regions, or no-take and partly protected zones inside one
     region: the finer grouping holds the coarser one's differences and more.
     """
-    data = dataframe[[finer, coarser]].dropna()
-    if data.empty or data[finer].nunique() <= data[coarser].nunique() or data[coarser].nunique() < 2:
+    rows, columns = _partition_codes(dataframe[finer]), _partition_codes(dataframe[coarser])
+    kept = (rows >= 0) & (columns >= 0)
+    rows, columns = rows[kept], columns[kept]
+    if not rows.size:
         return False
-    counts = data.groupby([finer, coarser], observed=True).size()
-    held = counts.groupby(level=0, observed=True).max().sum()
-    return bool(held >= WITHIN_ONE_LEVEL * len(data))
+    height, width = int(rows.max()) + 1, int(columns.max()) + 1
+    if width < 2 or height <= width:
+        return False
+    table = np.bincount(rows * width + columns, minlength=height * width).reshape(height, width)
+    return bool(table.max(axis=1).sum() >= WITHIN_ONE_LEVEL * rows.size)
 
 
 def _find_groupings(dataframe: pd.DataFrame, roles: ColumnRoles) -> _Groupings:
@@ -2880,6 +2888,107 @@ def _joint_model_evidence(
     )
 
 
+def _logistic_outcome(dataframe: pd.DataFrame, roles: ColumnRoles) -> str | None:
+    """The measure when it is a yes/no outcome, which a logistic model is fitted for, or None.
+
+    A grouping that happens to hold two values (a one-hot soil type, a sex)
+    is no outcome, so only the measure the roles chose is modelled.
+    """
+    if roles.measure in dataframe.columns and outcome_event(dataframe[roles.measure]) is not None:
+        return roles.measure
+    return None
+
+
+def _logistic_evidence(
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles,
+    readings: list[str],
+    note: str = "",
+    *,
+    rules: tuple[GroupingRule, ...] = (),
+    built: Construction | None = None,
+) -> Evidence | None:
+    """A yes/no outcome fitted on the readings that relate to it, by logistic regression.
+
+    A least-squares model of a 0/1 outcome can predict shares below 0 or above
+    1, so a yes/no outcome gets odds ratios instead: per standard deviation
+    of each reading, with the others held fixed. The predictors are the
+    readings whose correlation with the outcome has p below 0.05, at most
+    MAX_MODEL_TERMS, leaving out any reading the outcome is cut from and,
+    with ``built``, any reading related by construction to one already taken.
+    """
+    outcome = _logistic_outcome(dataframe, roles)
+    if outcome is None:
+        return None
+    event = outcome_event(dataframe[outcome])
+    flag = (dataframe[outcome] == event).where(dataframe[outcome].notna())
+    # An outcome cut from a reading (a landslide wherever activity reaches 4) is
+    # separated by it completely, which is the rule itself, not an odds ratio.
+    if not any(rule.grouping == outcome for rule in rules):
+        rules = grouping_rules(dataframe, [reading for reading in readings if reading != outcome], [outcome])
+    cut = [rule for rule in rules if rule.grouping == outcome]
+    candidates = [
+        reading for reading in readings
+        if reading != outcome and reading in dataframe.columns and not _rule_for(cut, None, reading, outcome)
+    ]
+    # Every candidate's correlation with the outcome at once, on the scans' fixed sample of a long table.
+    rows = flag.sample(SCAN_ROWS, random_state=0).index if len(flag) > SCAN_ROWS else flag.index
+    block = dataframe.loc[rows, candidates].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+    correlation, pairs = pairwise_correlations(np.column_stack([flag[rows].to_numpy(dtype=float), block]))
+    ranked = []
+    for place, reading in enumerate(candidates, start=1):
+        value, count = float(correlation[0, place]), int(pairs[0, place])
+        if count >= MIN_CORRELATION_PAIRS and np.isfinite(value) and correlation_p(value, count) < ALPHA:
+            ranked.append((abs(value), reading))
+    # One statistic of a reading, and not a column together with what it is built from.
+    predictors: list[str] = []
+    for _, reading in sorted(ranked, reverse=True):
+        if built is None or not any(built.relation(reading, other) for other in predictors):
+            predictors.append(reading)
+    predictors = predictors[:MAX_MODEL_TERMS]
+    model = fit_logistic_model(dataframe, outcome, predictors)
+    if model is None:
+        return None
+    label = group_label(outcome, event)
+    clear = model.clear
+    statement = (
+        f"Fitted together by logistic regression (n = {model.n:,}, {model.events:,} with {label}), the odds "
+        f"of {label} change with each reading, per standard deviation and with the others held fixed: "
+        + "; ".join(
+            f"{term.name} ×{term.odds_ratio:.2f} (95% CI {term.low:.2f} to {term.high:.2f}, "
+            f"{format_p(term.p_value)})"
+            for term in model.terms
+        )
+        + f". McFadden's pseudo R² is {model.pseudo_r2:.2f}."
+    )
+    if len(clear) < len(model.terms):
+        faint = [term.name for term in model.terms if term not in clear]
+        verb = "adds" if len(faint) == 1 else "add"
+        statement += f" {list_names(faint, limit=len(faint))} {verb} little once the others are known."
+    statement += " An odds ratio is an association with the others held fixed, not evidence of cause."
+    steps = ", ".join(
+        f"{term.name} {format_number(term.step, term.name, compact=False)}" for term in model.terms
+    )
+    calculation = (
+        f"logistic regression of {label} on the readings whose correlation with it has p < 0.05 (at most "
+        f"{MAX_MODEL_TERMS}), over the {model.n:,} rows with all of them recorded (statsmodels Logit); "
+        f"odds ratios per standard deviation ({steps}) with 95% CIs from the normal approximation; at "
+        f"least {EVENTS_PER_TERM} of the rarer outcome per predictor; a fit that does not converge or that "
+        "a reading separates completely is not reported"
+    )
+    if cut:
+        calculation += "; left out as the rules the outcome is cut by: " + "; ".join(
+            rule.describe() for rule in cut
+        )
+    return Evidence(
+        kind="logistic",
+        title=f"What goes with {label}",
+        value=f"pseudo R² = {model.pseudo_r2:.2f}",
+        statement=statement,
+        calculation=calculation + note,
+    )
+
+
 def _level_shift_evidence(
     dataframe: pd.DataFrame, roles: ColumnRoles, frequency: str | None = None
 ) -> Evidence | None:
@@ -4069,6 +4178,9 @@ def analyze_business(
         ),
         _noting(_joint_model_evidence(tested_statistics, roles, relationships, note), left_out),
         _summary_rows_evidence(dataframe, roles, built),
+        _noting(
+            _logistic_evidence(tested_statistics, roles, readings, note, rules=rules, built=built), left_out
+        ),
         _noting(
             _outlier_evidence(
                 statistics, roles, [column for column in readings if column not in fixed], issues, rules=rules

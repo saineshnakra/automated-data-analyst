@@ -2001,6 +2001,31 @@ class DefinedGroupingTests(unittest.TestCase):
         self.assertEqual(grouping_set_by(frame, roles, "humidity", "categori"), "")
 
 
+class LogisticCardTests(unittest.TestCase):
+    def test_a_yes_no_measure_gets_odds_ratios_from_its_readings(self):
+        rng = np.random.default_rng(73)
+        frame = pd.DataFrame({
+            "glucose": rng.normal(120, 30, 800),
+            "weight": rng.normal(80, 12, 800),
+            "noise": rng.normal(size=800),
+        })
+        odds = np.exp(-0.04 * (frame["glucose"] - 120) - 0.03 * (frame["weight"] - 80))
+        frame["fasting_ability"] = (rng.random(800) < odds / (1 + odds)).astype(int)
+
+        logistic = brief_card(analyze_business(frame, roles_for(frame, "fasting_ability", None)), "logistic")
+
+        assert logistic is not None
+        self.assertEqual(logistic.title, "What goes with fasting_ability 1")
+        self.assertIn("glucose ×0.", logistic.statement)
+        self.assertIn("statsmodels Logit", logistic.calculation)
+
+    def test_a_measure_that_is_not_yes_no_gets_none(self):
+        rng = np.random.default_rng(74)
+        frame = pd.DataFrame({"x": rng.normal(size=300), "y": rng.normal(size=300)})
+
+        self.assertIsNone(brief_card(analyze_business(frame, roles_for(frame, "y", None)), "logistic"))
+
+
 class TwoFactorTests(unittest.TestCase):
     def test_each_factor_of_a_combined_grouping_is_tested_on_its_own(self):
         rng = np.random.default_rng(53)

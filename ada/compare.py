@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_bool_dtype, is_numeric_dtype
 from scipy import stats
+from statsmodels.discrete.discrete_model import Logit
 from statsmodels.regression.linear_model import OLS
 from statsmodels.stats.multitest import multipletests
 from statsmodels.stats.outliers_influence import variance_inflation_factor
@@ -3628,18 +3629,20 @@ def _products(
     if len(indices) < 3 or not wanted or len(wanted) > PRODUCT_TARGETS:
         return {}
     rows = np.linspace(0, len(values) - 1, min(len(values), DERIVATION_ROWS)).astype(int)
-    logs, _ = pairwise_correlations(np.log(values[np.ix_(rows, indices)]))
+    # Logs of the positive columns, taken once: on them a product is a sum.
+    logs = pd.DataFrame(np.log(values[np.ix_(rows, indices)]), columns=[columns[index] for index in indices])
+    strengths, _ = pairwise_correlations(logs.to_numpy())
     local = {index: place for place, index in enumerate(indices)}
     found = {}
     for index in wanted:
-        strength = np.nan_to_num(np.abs(logs[local[index]]), nan=-1.0)
+        strength = np.nan_to_num(np.abs(strengths[local[index]]), nan=-1.0)
         candidates = [
             columns[indices[place]]
             for place in np.argsort(-strength)
             if indices[place] < index and family[indices[place]] != family[index] and strength[place] > 0
         ][:PRODUCT_CANDIDATES]
         if len(candidates) >= 2:
-            derivation = find_product(frame, columns[index], candidates)
+            derivation = find_derivation(logs, columns[index], candidates, exponents=True)
             if derivation is not None:
                 found[columns[index]] = derivation
     return found
@@ -4445,4 +4448,110 @@ def fit_joint_model(
         residual_sd=float(np.sqrt(fit.mse_resid)),
         rows=rows,
         distinct=distinct,
+    )
+
+
+# --- Logistic model -----------------------------------------------------------
+
+# Cases of the rarer outcome a logistic model needs per predictor for its odds ratios to settle.
+EVENTS_PER_TERM = 10
+# A log odds ratio per standard deviation beyond this (an odds ratio of about 150)
+# means the readings all but separate the outcomes, so the estimate is not finite in effect.
+SEPARATED_LOG_ODDS = 5.0
+
+
+@dataclass(frozen=True)
+class OddsTerm:
+    """One predictor's odds ratio in a logistic model, per standard deviation of the predictor."""
+
+    name: str
+    odds_ratio: float
+    low: float
+    high: float
+    p_value: float
+    #: The predictor's standard deviation on the model's rows: the step each odds ratio is per.
+    step: float
+
+
+@dataclass(frozen=True)
+class LogisticModel:
+    """A logistic regression of a yes/no outcome on several readings at once."""
+
+    outcome: str
+    event: object
+    terms: tuple[OddsTerm, ...]
+    n: int
+    events: int
+    #: McFadden's pseudo R²: the share of the null log-likelihood the readings remove.
+    pseudo_r2: float
+
+    @property
+    def clear(self) -> tuple[OddsTerm, ...]:
+        return tuple(term for term in self.terms if term.p_value < ALPHA)
+
+
+def fit_logistic_model(
+    frame: pd.DataFrame, outcome: str, predictors: list[str], *, limit: int = MAX_MODEL_TERMS
+) -> LogisticModel | None:
+    """Fit a yes/no ``outcome`` on up to ``limit`` of ``predictors`` together, by logistic regression.
+
+    Each odds ratio is per standard deviation of its predictor, with the
+    others held fixed, with a 95% interval, from ``statsmodels`` Logit. The
+    fit needs EVENTS_PER_TERM cases of the rarer outcome per predictor.
+    Returns None when the outcome is not yes/no, when the predictors separate
+    the outcomes completely or all but completely (an odds ratio beyond
+    SEPARATED_LOG_ODDS on the log scale), or when the fit does not converge:
+    then there is no estimate to report.
+    """
+    event = outcome_event(frame[outcome]) if outcome in frame.columns else None
+    if event is None:
+        return None
+    chosen = [column for column in dict.fromkeys(predictors) if column != outcome and column in frame.columns]
+    data = frame[[outcome, *chosen[:limit]]].copy()
+    data[chosen[:limit]] = data[chosen[:limit]].apply(pd.to_numeric, errors="coerce")
+    data = data.dropna()
+    if len(data) > MODEL_ROWS:
+        data = data.sample(MODEL_ROWS, random_state=0)
+    target = (data[outcome] == event).to_numpy(dtype=float)
+    kept: list[str] = []
+    for column in chosen[:limit]:
+        if data[column].nunique() < 2:
+            continue
+        design = np.column_stack([np.ones(len(data)), data[[*kept, column]].to_numpy(dtype=float)])
+        if np.linalg.matrix_rank(design) == design.shape[1]:
+            kept.append(column)
+    rarer = int(min(target.sum(), len(target) - target.sum()))
+    if not kept or rarer < EVENTS_PER_TERM * len(kept):
+        return None
+    spread = data[kept].std().to_numpy(dtype=float)
+    design = np.column_stack([np.ones(len(data)), data[kept].to_numpy(dtype=float) / spread])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        try:
+            fit = Logit(target, design).fit(disp=0, maxiter=100)
+        except Exception:  # noqa: BLE001 - separation, singular fits and non-convergence all mean no estimate
+            return None
+    if not fit.mle_retvals.get("converged", False) or not np.all(np.isfinite(fit.bse)):
+        return None
+    if np.abs(fit.params[1:]).max() > SEPARATED_LOG_ODDS:
+        return None
+    intervals = fit.conf_int(ALPHA)
+    terms = tuple(
+        OddsTerm(
+            name=column,
+            odds_ratio=float(np.exp(fit.params[index])),
+            low=float(np.exp(intervals[index][0])),
+            high=float(np.exp(intervals[index][1])),
+            p_value=float(fit.pvalues[index]),
+            step=float(spread[index - 1]),
+        )
+        for index, column in enumerate(kept, start=1)
+    )
+    return LogisticModel(
+        outcome=outcome,
+        event=event,
+        terms=terms,
+        n=len(data),
+        events=int(target.sum()),
+        pseudo_r2=float(fit.prsquared),
     )

@@ -4,6 +4,7 @@ from dataclasses import replace
 import numpy as np
 import pandas as pd
 from scipy import stats
+from statsmodels.discrete.discrete_model import Logit
 from statsmodels.stats.multitest import multipletests
 from statsmodels.stats.proportion import confint_proportions_2indep
 
@@ -28,6 +29,7 @@ from ada.compare import (
     find_product,
     find_standardised,
     fit_joint_model,
+    fit_logistic_model,
     grouping_rules,
     holm_adjust,
     is_angle,
@@ -1445,6 +1447,33 @@ class JointModelTests(unittest.TestCase):
         self.assertEqual([term.name for term in model.clear], ["a", "b"])
         noisy = frame.assign(total=frame["total"] + frame["noise"])
         self.assertFalse(fit_joint_model(noisy, "total", ["a", "b"]).exact)
+
+
+class LogisticModelTests(unittest.TestCase):
+    def test_odds_ratios_per_standard_deviation_match_statsmodels(self):
+        rng = np.random.default_rng(45)
+        frame = pd.DataFrame({"glucose": rng.normal(120, 30, 600), "age": rng.normal(50, 12, 600)})
+        odds = np.exp(-0.03 * (frame["glucose"] - 120) + 0.02 * (frame["age"] - 50))
+        frame["able"] = (rng.random(600) < odds / (1 + odds)).astype(int)
+
+        model = fit_logistic_model(frame, "able", ["glucose", "age"])
+
+        assert model is not None
+        scaled = frame[["glucose", "age"]] / frame[["glucose", "age"]].std()
+        reference = Logit(frame["able"], np.column_stack([np.ones(600), scaled])).fit(disp=0)
+        np.testing.assert_allclose(
+            [term.odds_ratio for term in model.terms], np.exp(reference.params[1:]), rtol=1e-6
+        )
+        self.assertEqual(model.events, int(frame["able"].sum()))
+        self.assertLess(model.terms[0].odds_ratio, 1)
+
+    def test_a_reading_that_separates_the_outcome_gives_no_model(self):
+        rng = np.random.default_rng(46)
+        frame = pd.DataFrame({"activity": rng.uniform(0, 8, 400), "rain": rng.normal(size=400)})
+        frame["slide"] = (frame["activity"] >= 4).astype(int)
+
+        self.assertIsNone(fit_logistic_model(frame, "slide", ["activity", "rain"]))
+        self.assertIsNone(fit_logistic_model(frame, "rain", ["activity"]))
 
 
 if __name__ == "__main__":
