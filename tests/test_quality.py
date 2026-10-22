@@ -1129,6 +1129,58 @@ class RelatedColumnTests(unittest.TestCase):
         self.assertTrue(checks(scan(frame), "imputed"))
 
 
+class TimeGapTests(unittest.TestCase):
+    def test_a_reading_that_starts_late_is_not_blamed_on_a_group(self):
+        rng = np.random.default_rng(92)
+        days = pd.date_range("2010-01-01", periods=2000, freq="D")
+        pm25 = rng.gamma(4, 20, 2000).round()
+        pm25[:1300] = np.nan
+        frame = pd.DataFrame({
+            "Date": days, "o3": rng.gamma(4, 20, 2000).round(), "pm25": pm25,
+            "critical": np.where(np.arange(2000) < 1300, rng.choice(["O3", "PM10"], 2000), "PM25"),
+        })
+        roles = replace(roles_for(frame, "o3", "critical"), date="Date")
+
+        issues = scan(frame, roles)
+
+        gap = checks(issues, "missing")[0]
+        self.assertIn("every row before 24 Jul 2013: not recorded until then", gap.detail)
+        self.assertFalse(checks(issues, "missing_by_group"))
+
+    def test_missing_years_are_gaps_in_the_record(self):
+        rng = np.random.default_rng(93)
+        frame = pd.DataFrame({
+            "YEAR": pd.to_datetime([f"{year}-01-01" for year in range(1910, 2020)]),
+            **{month: rng.normal(27, 1, 110) for month in ("JAN", "FEB", "MAR", "APR")},
+        })
+        gone = frame["YEAR"].dt.year.isin([1957, 1958, 1979, 1980, 1981, 2010, 2011])
+        frame.loc[gone, ["FEB", "MAR", "APR"]] = np.nan
+        roles = replace(roles_for(frame), date="YEAR")
+
+        block = checks(scan(frame, roles), "missing_block")[0]
+
+        self.assertIn("1957 to 1958, 1979 to 1981 and 2010 to 2011", block.detail)
+        self.assertIn("gaps in the record", block.detail)
+
+    def test_a_log_missing_much_of_its_readings_says_so(self):
+        rng = np.random.default_rng(94)
+        stamps = pd.date_range("2023-01-01", periods=20000, freq="5min")
+        kept = np.ones(20000, dtype=bool)
+        kept[3000:9000] = False
+        kept[12000:14500] = False
+        frame = pd.DataFrame({"Time": stamps[kept], "Sound": rng.normal(60, 10, int(kept.sum()))})
+        roles = replace(roles_for(frame, "Sound"), date="Time")
+
+        issue = checks(scan(frame, roles), "missing_time")[0]
+
+        self.assertIn("every 5 minutes", issue.detail)
+        self.assertIn("11,500 of the 20,000 expected", issue.detail)
+        weekdays = pd.bdate_range("2023-01-02", periods=600)
+        sales = pd.DataFrame({"Day": weekdays, "Revenue": rng.gamma(3, 100, 600)})
+        daily = replace(roles_for(sales, "Revenue"), date="Day")
+        self.assertFalse(checks(scan(sales, daily), "missing_time"))
+
+
 class SpeedTests(unittest.TestCase):
     def test_a_large_table_is_scanned_quickly(self):
         rng = np.random.default_rng(23)

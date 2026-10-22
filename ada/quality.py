@@ -107,6 +107,12 @@ PLACEHOLDER_OVERLAP = 0.98
 ZERO_HEAVY_SHARE = 1 / 3
 #: Share of rows on which a part must stay at or below its whole for the rows past it to stand out.
 PART_WHOLE_SHARE = 0.95
+#: A gap follows time when one unbroken stretch holds this share of its rows,
+#: or it falls in at most GAP_STRETCHES stretches.
+GAP_RUN_SHARE = 0.95
+GAP_STRETCHES = 6
+#: A regular log holding under this share of the readings its interval implies is gappy.
+LOG_COVERAGE = 0.9
 #: Share of rows on which one column must stay at or below another for the two
 #: to read as one bounded by the other (a time censored at follow-up).
 BOUNDED_SHARE = 0.99
@@ -227,6 +233,7 @@ CHECKS = {
     "missing_dependency": "Missing by value",
     "missing_block": "Missing together",
     "missing": "Mostly missing",
+    "missing_time": "Gaps in the log",
 }
 #: Checks that flag individual cells, whose rows ``flagged_index`` returns.
 VALUE_CHECKS = frozenset({
@@ -2449,32 +2456,50 @@ def _missing_issues(
     numeric: list[str],
     dimension: str | None,
     grouping: tuple[np.ndarray, pd.Index] | None,
+    date: str | None = None,
 ) -> list[QualityIssue]:
-    """Columns mostly missing, columns missing together, and gaps that follow a value or a group."""
+    """Columns mostly missing, columns missing together, and gaps that follow time, a value or a group.
+
+    With a date, a gap is first tested against time: rows missing in one
+    unbroken stretch (a reading not recorded before 1985) or in a few
+    stretches of whole periods (years missing from a station's record) are
+    described as such, and not blamed on a group or another column.
+    """
     rows = len(frame)
     if rows == 0:
         return []
     missing = frame.isna()
     shares = missing.mean()
-    gappy = [column for column in frame.columns if 0.05 <= shares[column] < 1.0]
+    gappy = [column for column in frame.columns if 0.05 <= shares[column] < 1.0 and column != date]
     blocks = _blocks(missing, gappy)
     in_block = {column for block in blocks for column in block}
+    timed = _TimeOrder.of(frame, date)
+    in_time: dict[str, str] = {}
     issues: list[QualityIssue] = []
     for block in blocks:
-        count = int(missing[block].all(axis=1).sum())
+        gap = missing[block].all(axis=1).to_numpy()
+        count = int(gap.sum())
         share = count / rows * 100
-        detail = (
-            f"{_listed(block)} are missing on the same {_plural(count, 'row')} ({_percent(share)}), "
-            "which points to a subsample, a separate test or an instrument some rows lack."
-        )
+        when = timed.gaps(gap) if timed else None
+        reason = "which points to a subsample, a separate test or an instrument some rows lack"
+        if when:
+            in_time[block[0]] = when
+            reason = when
+        on_rows = f"{_plural(count, 'row')} ({_percent(share)})"
+        detail = f"{_listed(block)} are missing on the same {on_rows}, {reason}."
         summary = f"{len(block)} columns missing on the same {_plural(count, 'row')} ({_listed(block, 3)})"
         rule = f"columns whose missing rows overlap by {BLOCK_OVERLAP:.0%} or more"
         issues.append(QualityIssue("missing_block", tuple(block), count, share, detail, summary, rule))
+    for column in gappy:
+        if column not in in_block and timed and (when := timed.gaps(missing[column].to_numpy())):
+            in_time[column] = when
     for column in frame.columns:
         if shares[column] > MISSING_SHARE and column not in in_block:
             count = int(missing[column].sum())
             share = _percent(shares[column] * 100)
             detail = f"{column} is missing in {_plural(count, 'row')} ({share})."
+            if column in in_time:
+                detail = f"{column} is missing in {_plural(count, 'row')} ({share}), {in_time[column]}."
             issues.append(QualityIssue("missing", (column,), count, shares[column] * 100, detail,
                                        f"{column} {share} missing", f"more than {MISSING_SHARE:.0%} missing"))
     members = {block[0]: block for block in blocks}
@@ -2483,10 +2508,11 @@ def _missing_issues(
         targets = [block[0] for block in blocks] + [
             column for column in gappy if column not in in_block and column != dimension
         ]
-        by_group = _missing_by_group(missing, targets, members, dimension, grouping)
-    # Gaps a group explains (a station without the sensor) need no second explanation:
+        by_group = _missing_by_group(missing, [target for target in targets if target not in in_time],
+                                     members, dimension, grouping)
+    # Gaps time or a group explains (a station without the sensor) need no second explanation:
     # not by another column, and not as a block when the group holds all its rows.
-    explained = {issue.columns[0] for issue in by_group}
+    explained = {issue.columns[0] for issue in by_group} | set(in_time)
     whole = {issue.columns for issue in by_group if issue.rows >= 0.95 * missing[issue.columns[0]].sum()}
     issues = [issue for issue in issues if not (issue.check == "missing_block" and issue.columns in whole)]
     targets = [block[0] for block in blocks] + [
@@ -2497,6 +2523,136 @@ def _missing_issues(
         frame, [target for target in targets if target not in explained], members, numeric
     ))
     return issues
+
+
+@dataclass(frozen=True)
+class _TimeOrder:
+    """The dated rows in time order, for telling a gap in time from one that follows a group."""
+
+    #: Row positions with a date, in time order.
+    order: np.ndarray
+    stamps: pd.DatetimeIndex
+    column: str
+    #: How a date is written at the grain the column was recorded at: "%Y", "%b %Y", "%d %b %Y".
+    shown: str
+
+    @classmethod
+    def of(cls, frame: pd.DataFrame, date: str | None) -> _TimeOrder | None:
+        if not date or date not in frame.columns or not is_datetime64_any_dtype(frame[date]):
+            return None
+        values = frame[date].to_numpy()
+        dated = np.flatnonzero(~pd.isna(values))
+        if dated.size < 20:
+            return None
+        order = dated[np.argsort(values[dated], kind="stable")]
+        stamps = pd.DatetimeIndex(values[order])
+        if not (stamps == stamps.normalize()).all():
+            shown = "%d %b %Y %H:%M"
+        elif (stamps.day == 1).all():
+            shown = "%Y" if (stamps.month == 1).all() else "%b %Y"
+        else:
+            shown = "%d %b %Y"
+        return cls(order, stamps, date, shown)
+
+    def _at(self, position: int) -> str:
+        return self.stamps[position].strftime(self.shown)
+
+    def _span(self, start: int, end: int) -> str:
+        first, last = self._at(start), self._at(end)
+        return first if first == last else f"{first} to {last}"
+
+    def gaps(self, missing: np.ndarray) -> str | None:
+        """How rows missing a column follow time, as a phrase, or None when they don't.
+
+        One unbroken stretch holding GAP_RUN_SHARE of them is a reading not
+        recorded before or after a date, or a gap in the record; up to
+        GAP_STRETCHES stretches averaging two rows or more are gaps in the
+        record. ``missing`` is True for missing rows, in table order.
+        """
+        flags = missing[self.order]
+        positions = np.flatnonzero(flags)
+        if positions.size < 2 or positions.size == flags.size:
+            return None
+        breaks = np.flatnonzero(np.diff(positions) != 1)
+        starts = np.r_[positions[0], positions[breaks + 1]]
+        ends = np.r_[positions[breaks], positions[-1]]
+        lengths = ends - starts + 1
+        longest = int(np.argmax(lengths))
+        if lengths[longest] >= max(2, GAP_RUN_SHARE * positions.size):
+            start, end = int(starts[longest]), int(ends[longest])
+            if start == 0:
+                when = f"every row before {self._at(end + 1)}: not recorded until then"
+            elif end == flags.size - 1:
+                when = f"every row after {self._at(start - 1)}: not recorded after then"
+            else:
+                when = f"every row from {self._at(start)} to {self._at(end)}: a gap in the record"
+            rest = positions.size - int(lengths[longest])
+            return when + (f" (and {_plural(rest, 'other row')})" if rest else "")
+        if starts.size <= GAP_STRETCHES and lengths.mean() >= 2:
+            spans = [self._span(int(start), int(end)) for start, end in zip(starts, ends, strict=True)]
+            return (
+                f"in {starts.size} unbroken stretches of {self.column} ({_listed(spans, GAP_STRETCHES)}): "
+                "gaps in the record rather than a subsample"
+            )
+        return None
+
+
+def _duration(seconds: float) -> str:
+    """A length of time in the largest whole unit that fits: "5 minutes", "1 hour", "10 days"."""
+    for unit, size in (("day", 86_400), ("hour", 3_600), ("minute", 60), ("second", 1)):
+        if seconds >= size or unit == "second":
+            amount = seconds / size
+            shown = f"{amount:.0f}" if amount >= 10 or abs(amount - round(amount)) < 0.05 else f"{amount:.1f}"
+            return f"{shown} {unit}{'' if shown == '1' else 's'}"
+    return f"{seconds:g} seconds"
+
+
+def _log_coverage(frame: pd.DataFrame, date: str | None) -> QualityIssue | None:
+    """A regular log that holds far fewer readings than its interval and span imply.
+
+    Readings every five minutes for three years should number about 309,600;
+    when only 58% are there, totals and counts per period follow which stretches
+    were logged. The log must be regular (half its steps within a tenth of the
+    typical interval), hold under LOG_COVERAGE of the expected readings, and
+    have a gap of at least a week and ten intervals, which no weekend or night
+    off explains.
+    """
+    if not date or date not in frame.columns or not is_datetime64_any_dtype(frame[date]):
+        return None
+    times = np.unique(frame[date].dropna().to_numpy())
+    if times.size < 100:
+        return None
+    steps = np.diff(times).astype("timedelta64[ns]").astype("float64") / 1e9
+    typical = float(np.median(steps))
+    if typical <= 0 or float((np.abs(steps - typical) <= 0.1 * typical).mean()) < 0.5:
+        return None
+    span = float((times[-1] - times[0]).astype("timedelta64[ns]").astype("float64")) / 1e9
+    expected = int(round(span / typical)) + 1
+    share = times.size / expected
+    longest = int(np.argmax(steps))
+    if share >= LOG_COVERAGE or steps[longest] < max(7 * 86_400, 10 * typical):
+        return None
+    stamps = pd.DatetimeIndex(times)
+    shown = "%d %b %Y" if (stamps == stamps.normalize()).all() else "%d %b %Y %H:%M"
+    first, last, gap_from, gap_to = (
+        stamps[position].strftime(shown) for position in (0, -1, longest, longest + 1)
+    )
+    widest = _duration(steps[longest])
+    long_gaps = int((steps > 3 * typical).sum())
+    missing = expected - times.size
+    detail = (
+        f"Readings come every {_duration(typical)} (the typical interval), but only {times.size:,} of the "
+        f"{expected:,} expected from {first} to {last} are there ({_percent(share * 100)}): "
+        f"{_plural(long_gaps, 'gap')} run longer than {_duration(3 * typical)}, the longest {widest} (from "
+        f"{gap_from} to {gap_to}). Totals and counts per period follow which stretches were logged."
+    )
+    summary = f"{date}: {_percent(share * 100)} of the expected readings logged (gaps up to {widest})"
+    rule = (
+        f"a regular log holding under {LOG_COVERAGE:.0%} of the readings its interval and span imply, with a "
+        "gap of a week or more"
+    )
+    return QualityIssue("missing_time", (date,), missing, (1 - share) * 100, detail, summary, rule,
+                        (_duration(typical),))
 
 
 def _blocks(missing: pd.DataFrame, columns: list[str]) -> list[list[str]]:
@@ -3590,7 +3746,10 @@ def scan(
     for found in (_zero_heavy(profiles, singles), _constant_columns(frame, roles)):
         if found:
             issues.append(found)
-    issues.extend(_missing_issues(frame, quantities, dimension, grouping))
+    issues.extend(_missing_issues(frame, quantities, dimension, grouping, date))
+    coverage = _log_coverage(frame, date)
+    if coverage:
+        issues.append(coverage)
     order = {check: position for position, check in enumerate(CHECKS)}
     return tuple(sorted(
         issues,
