@@ -202,6 +202,27 @@ class ManyGroupTests(unittest.TestCase):
         self.assertEqual(table.iloc[0]["Depth"], "0-10")
         self.assertEqual(int(table["n"].sum()), 48)
 
+    def test_tukeys_hsd_names_the_pairs_it_tells_apart(self):
+        comparison = compare_groups(self.frame, "Ca", "Depth")
+
+        assert comparison is not None
+        samples = [part["Ca"].to_numpy() for _, part in self.frame.groupby("Depth")]
+        expected = stats.tukey_hsd(*samples).pvalue
+        self.assertEqual(comparison.pairs_tried, 6)
+        self.assertEqual(len(comparison.pairs_apart), int((expected[np.triu_indices(4, 1)] < 0.05).sum()))
+        self.assertIn("Tukey's HSD tells", describe_comparison(comparison))
+        self.assertIn("scipy.stats.tukey_hsd", comparison_calculation(comparison))
+
+    def test_no_clear_difference_gets_no_pairs(self):
+        rng = np.random.default_rng(45)
+        frame = pd.DataFrame({"Team": np.repeat(list("ABCD"), 30), "Hours": rng.normal(14, 3, 120)})
+
+        comparison = compare_groups(frame, "Hours", "Team")
+
+        assert comparison is not None
+        self.assertEqual(comparison.pairs_tried, 0)
+        self.assertNotIn("Tukey", describe_comparison(comparison))
+
     def test_no_clear_difference_across_many_groups_gives_the_range(self):
         rng = np.random.default_rng(5)
         frame = pd.DataFrame({"Team": np.repeat(list("ABCD"), 30), "Hours": rng.normal(14, 3, 120)})

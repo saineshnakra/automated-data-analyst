@@ -244,6 +244,10 @@ class GroupComparison:
     trend: OrderedTrend | None = None
     #: Share of the table's rows with both the reading and the grouping recorded.
     coverage: float = 1.0
+    #: After a clear difference in means across three or more groups, the pairs of
+    #: groups Tukey's HSD tells apart (higher, lower, adjusted p), and how many pairs it tried.
+    pairs_apart: tuple[tuple[str, str, float], ...] = ()
+    pairs_tried: int = 0
 
     @property
     def higher(self) -> GroupStats:
@@ -969,7 +973,65 @@ def compare_groups(
     comparison = _single(readings[measure], groups, measure, grouping, fields)
     if comparison is not None and ordered_levels(dataframe[grouping], grouping):
         comparison = replace(comparison, trend=_ordered_trend(readings[measure], groups, measure, grouping))
+    if comparison is not None:
+        comparison = _post_hoc(comparison, readings[measure], groups)
     return comparison
+
+
+# Tukey's HSD is run for up to this many groups; beyond it the pairs are too many to name.
+MAX_POST_HOC_GROUPS = MAX_SCAN_LEVELS
+PAIRS_NAMED = 3
+
+
+def _post_hoc(comparison: GroupComparison, values: pd.Series, groups: pd.Series) -> GroupComparison:
+    """Which pairs of groups differ, by Tukey's HSD, after a clear difference in means across three or more.
+
+    The omnibus test says only that some group differs. ``scipy.stats.tukey_hsd``
+    compares every pair with the family-wise error held at 5%. Groups too
+    small to name are left out of it.
+    """
+    c = comparison
+    named = [group for group in c.groups if group.n >= MIN_NAMED_GROUP]
+    if c.verdict != "clear" or c.uses_ranks or not 3 <= len(named) <= MAX_POST_HOC_GROUPS:
+        return c
+    data = pd.DataFrame({"value": values.to_numpy(), "group": groups.to_numpy()}).dropna()
+    samples = [data.loc[data["group"] == group.value, "value"].to_numpy(dtype=float) for group in named]
+    result = stats.tukey_hsd(*samples)
+    apart = [
+        (named[first].label, named[second].label, float(result.pvalue[first, second]))
+        for first, second in itertools.combinations(range(len(named)), 2)
+        if result.pvalue[first, second] < ALPHA
+    ]
+    tried = len(named) * (len(named) - 1) // 2
+    return replace(c, pairs_apart=tuple(sorted(apart, key=lambda pair: pair[2])), pairs_tried=tried)
+
+
+def post_hoc_sentence(comparison: GroupComparison) -> str:
+    """Which pairs Tukey's HSD tells apart, as a sentence, or "" when it was not run."""
+    c = comparison
+    if not c.pairs_tried:
+        return ""
+    if not c.pairs_apart:
+        return f"Tukey's HSD tells none of the {c.pairs_tried} pairs apart on its own."
+    count = f"Tukey's HSD tells {len(c.pairs_apart)} of the {c.pairs_tried} pairs apart"
+    apart = {frozenset((higher, lower)) for higher, lower, _ in c.pairs_apart}
+    labels = [group.label for group in c.groups if group.n >= MIN_NAMED_GROUP]
+    together = [
+        f"{first} with {second}"
+        for first, second in itertools.combinations(labels, 2)
+        if frozenset((first, second)) not in apart
+    ]
+    # Name whichever list is shorter: the pairs apart, or the few that are not.
+    if together and len(together) < len(c.pairs_apart) and len(together) <= PAIRS_NAMED:
+        verb = "is" if len(together) == 1 else "are"
+        return f"{count}; only {list_names(together, limit=len(together))} {verb} not."
+    if not together:
+        return f"Tukey's HSD tells every one of the {c.pairs_tried} pairs apart."
+    named = [f"{higher} with {lower}" for higher, lower, _ in c.pairs_apart[:PAIRS_NAMED]]
+    more = len(c.pairs_apart) - PAIRS_NAMED
+    if more > 0:
+        named.append(f"{more} more")
+    return f"{count}: {list_names(named, limit=len(named))}."
 
 
 # A trend test needs this many values before its p-value means much.
@@ -2071,6 +2133,8 @@ def describe_comparison(comparison: GroupComparison, column_values: pd.Series | 
                 f"({_test_text(c)}; {effect_text(c)}): {span}."
             )
     text += _unranked(c, column_values)
+    if c.pairs_tried:
+        text += " " + post_hoc_sentence(c)
     if c.trend is not None:
         text += " " + trend_sentence(c.trend)
     if c.zero_heavy:
@@ -2176,6 +2240,8 @@ def comparison_calculation(comparison: GroupComparison) -> str:
         steps.append(f"ranks because {c.shape}")
     if c.zero_heavy:
         steps.append("share of values that are not 0 per group, chi-squared test")
+    if c.pairs_tried:
+        steps.append("pairs by Tukey's HSD (scipy.stats.tukey_hsd)")
     if c.trend is not None:
         steps.append(f"trend: Spearman's ρ between the {c.grouping} level and {c.measure}")
     if c.entity:
