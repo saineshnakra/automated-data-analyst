@@ -2097,6 +2097,21 @@ class BriefAgreementTests(unittest.TestCase):
         self.assertIn("n = 30", answer.answer)
         self.assertIn("10 values the data checks flag are left out (WS swapped on 10 rows)", answer.answer)
 
+    def test_a_value_named_after_by_is_refused_rather_than_read_as_a_filter(self):
+        rng = np.random.default_rng(10)
+        frame = pd.DataFrame({
+            "Soil_Type": rng.choice(["Gravel", "Silt", "Sand"], 90), "Activity": rng.normal(3, 1, 90),
+        })
+        roles = detect_roles(frame)
+
+        grouped = "average Activity by Soil_Type_Gravel"
+        for question in (grouped, "which Soil_Type_Gravel has the highest Activity"):
+            with self.subTest(question=question):
+                self.assertIsNone(answer_question(question, frame, roles))
+                hint = rephrase_hint(question, frame, roles)
+                self.assertIn("Gravel is a value of Soil_Type, so the answer would keep only those", hint)
+        self.assertIsNotNone(answer_question("average Activity for Soil_Type Gravel", frame, roles))
+
     def test_a_count_of_columns_in_a_name_is_not_a_unit_to_set_a_condition_on(self):
         values = np.random.default_rng(9).normal(50, 10, 30)
         frame = pd.DataFrame({"Name": [f"m{n}" for n in range(30)], "Row mean (3 columns)": values})

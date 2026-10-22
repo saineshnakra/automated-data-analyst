@@ -3207,6 +3207,15 @@ def _unused_part(
                 f"{_listed(list(item.values))} is a value of {item.column}, which the answer "
                 "groups by, so it can't also filter the rows."
             )
+    grouped = {plan.dimension, plan.second_dimension, *plan.per}
+    for item in plan.filters:
+        span = reading.spans.get(item.column)
+        if span and item.column not in grouped and _follows(reading.original, span[0]):
+            # "by Soil_Type_Gravel", once one-hot columns are read as one Soil_Type, names a value.
+            return (
+                f"{_listed(list(item.values))} is a value of {item.column}, so the answer would keep only "
+                f'those rows rather than group them; ask "by {item.column}" to compare every {item.column}.'
+            )
     if set(reading.conditions) - set(plan.conditions) - set(plan.counted):
         return "The answer would leave out a condition the question sets."
     if reading.top_n and plan.intent not in ("rank", "growth"):
