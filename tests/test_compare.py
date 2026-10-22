@@ -4,6 +4,7 @@ from dataclasses import replace
 import numpy as np
 import pandas as pd
 from scipy import stats
+from statsmodels.discrete.discrete_model import Logit
 from statsmodels.stats.anova import AnovaRM
 from statsmodels.stats.multitest import multipletests
 from statsmodels.stats.proportion import confint_proportions_2indep
@@ -12,6 +13,7 @@ from ada.compare import (
     MAX_SCAN_COLUMNS,
     SCAN_ROWS,
     benjamini_hochberg,
+    built_in_grouping,
     cap_flag,
     centre_word,
     combined_groupings,
@@ -29,12 +31,15 @@ from ada.compare import (
     entity_column,
     explained_share,
     find_derivation,
+    find_product,
     find_standardised,
     fit_joint_model,
+    fit_logistic_model,
     gain_within,
     grouping_rules,
     holm_adjust,
     is_angle,
+    item_attributes,
     lead_sentence,
     most_influential,
     nested_within,
@@ -50,6 +55,7 @@ from ada.compare import (
     stratified_comparison,
     stratified_lead,
     stratified_rates,
+    summary_families,
     variance_explained,
     within_axis,
     within_group_correlation,
@@ -522,6 +528,13 @@ class DerivationTests(unittest.TestCase):
     def test_a_related_column_is_not_derived(self):
         self.assertIsNone(find_derivation(self.frame, "Unrelated", self.items))
 
+    def test_a_few_distinct_rows_repeated_many_times_are_not_matched(self):
+        rng = np.random.default_rng(16)
+        visits = pd.DataFrame(rng.normal(size=(4, 4)), columns=["na", "fe", "mn", "temp"])
+        frame = pd.concat([visits] * 15, ignore_index=True)
+
+        self.assertIsNone(find_derivation(frame, "na", ["fe", "mn", "temp"]))
+
     def test_a_column_rounded_after_it_was_computed_is_still_derived(self):
         rng = np.random.default_rng(18)
         high = np.round(rng.uniform(40, 90, 300))
@@ -656,6 +669,18 @@ class RelationshipScanTests(unittest.TestCase):
         assert scan is not None
         self.assertEqual([pair[:2] for pair in scan.near_duplicates], [("TempC", "TempF")])
 
+    def test_two_replicates_that_agree_closely_are_not_one_quantity(self):
+        rng = np.random.default_rng(32)
+        base = rng.lognormal(6, 1.5, 400)
+        frame = pd.DataFrame({"SampleA": base, "SampleB": base * rng.lognormal(0, 0.05, 400)})
+        frame["Batch"] = rng.normal(size=400)
+
+        built = construction(frame, list(frame.columns))
+
+        assert built is not None
+        self.assertFalse(built.same_quantity("SampleA", "SampleB"))
+        self.assertEqual(built.relation("SampleA", "SampleB"), "near")
+
     def test_shares_that_add_up_to_a_total_are_not_paired(self):
         rng = np.random.default_rng(27)
         shares = rng.dirichlet([4, 3, 2, 1], 500) * 100
@@ -728,6 +753,211 @@ class RelationshipScanTests(unittest.TestCase):
         assert scan is not None
         self.assertTrue(scan.sampled)
         self.assertEqual(scan.correlates[0].pairs, SCAN_ROWS)
+
+
+class TransformTests(unittest.TestCase):
+    def test_a_log_of_a_reading_is_that_reading_on_another_scale(self):
+        rng = np.random.default_rng(48)
+        conductivity = rng.lognormal(5, 1, 400).round(1)
+        frame = pd.DataFrame({
+            "COND": conductivity,
+            "lcond": np.log10(conductivity),
+            "pH": rng.normal(7, 0.5, 400),
+        })
+
+        built = construction(frame, list(frame.columns), "COND")
+
+        assert built is not None
+        self.assertEqual(built.derivation("lcond").describe(), "lcond = log10(COND)")
+        self.assertEqual(built.relation("COND", "lcond"), "copy")
+        scan = scan_relationships(frame, list(frame.columns), "COND", built=built)
+        self.assertNotIn("lcond", [pair.second for pair in scan.correlates])
+        self.assertFalse(any("lcond" in (pair.first, pair.second) for pair in scan.others))
+
+    def test_a_ratio_of_powers_is_found_and_named(self):
+        rng = np.random.default_rng(49)
+        weight = rng.normal(80, 15, 500).round(1)
+        height = rng.normal(170, 10, 500).round(1)
+        frame = pd.DataFrame({"weight_kg": weight, "height_cm": height, "age": rng.integers(20, 80, 500)})
+        frame["bmi"] = (weight / (height / 100) ** 2).round(2)
+        frame.loc[:9, "bmi"] = 40.0
+
+        found = find_product(frame, "bmi", ["weight_kg", "height_cm", "age"])
+
+        assert found is not None
+        self.assertEqual(found.describe(), "bmi = weight_kg ÷ height_cm² × 10,000")
+        self.assertIsNone(find_product(frame, "age", ["weight_kg", "height_cm"]))
+
+
+class NeighbourRowTests(unittest.TestCase):
+    def test_a_rate_is_the_row_to_row_change_of_its_reading(self):
+        rng = np.random.default_rng(50)
+        curves = []
+        for _ in range(12):
+            time = np.arange(0.01, 1.0, 0.01)
+            angle = np.sin(2 * np.pi * time + rng.uniform(0, 1)) * rng.uniform(0.5, 1.5)
+            velocity = np.r_[0.0, np.diff(angle) / 0.01]
+            acceleration = np.r_[0.0, np.diff(velocity) / 0.01]
+            curves.append(pd.DataFrame({"angle": angle, "velocity": velocity, "acceleration": acceleration}))
+        frame = pd.concat(curves, ignore_index=True)
+
+        built = construction(frame, list(frame.columns), "angle")
+
+        assert built is not None
+        rate = built.derivation("velocity").describe()
+        self.assertEqual(rate, "velocity = 100 × the row-to-row change in angle")
+        self.assertEqual(built.derivation("acceleration").parts, ("velocity",))
+        self.assertEqual(built.relation("angle", "acceleration"), "built")
+
+    def test_a_season_using_the_year_before_and_an_annual_mean_of_seasons_are_built(self):
+        rng = np.random.default_rng(51)
+        months = pd.DataFrame(
+            rng.normal(27, 1, (80, 12)).round(2),
+            columns=["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"],
+        )
+        months += np.linspace(0, 2, 80)[:, None]
+        frame = months.assign(
+            DJF=((months["DEC"].shift(1) + months["JAN"] + months["FEB"]) / 3).round(2),
+            MAM=months[["MAR", "APR", "MAY"]].mean(axis=1).round(2),
+            JJA=months[["JUN", "JUL", "AUG"]].mean(axis=1).round(2),
+            SON=months[["SEP", "OCT", "NOV"]].mean(axis=1).round(2),
+        )
+        frame["ANN"] = frame[["DJF", "MAM", "JJA", "SON"]].mean(axis=1).round(2)
+
+        built = construction(frame, list(frame.columns), "MAM")
+
+        assert built is not None
+        self.assertEqual(built.derivation("DJF").describe(), "DJF = mean of JAN, FEB and DEC (row before)")
+        self.assertEqual(built.derivation("ANN").describe(), "ANN = mean of DJF, MAM, JJA and SON")
+
+    def test_a_column_filled_in_from_its_neighbours_is_the_one_named_as_derived(self):
+        rng = np.random.default_rng(52)
+        frame = pd.DataFrame(rng.normal(0, 0.4, (300, 4)).round(2), columns=["40", "50", "70", "80"])
+        frame.insert(2, "60", ((frame["50"] + frame["70"]) / 2).round(3))
+
+        built = construction(frame, list(frame.columns))
+
+        assert built is not None
+        self.assertEqual([item.describe() for item in built.derived], ["60 = mean of 50 and 70"])
+
+
+class BuiltInGroupingTests(unittest.TestCase):
+    def test_a_code_marking_where_the_amount_is_zero_holds_it_by_definition(self):
+        rng = np.random.default_rng(54)
+        code = rng.choice([0, 6, 7, 8], 600, p=[0.4, 0.3, 0.2, 0.1])
+        frame = pd.DataFrame({"RSKF": code, "RSK": np.where(code == 0, 0.0, rng.gamma(1.5, 3, 600).round(1))})
+
+        self.assertEqual(built_in_grouping(frame, "RSK", "RSKF"), "constant")
+        scan = scan_differences(frame, ["RSK"], ["RSKF"])
+        self.assertTrue(scan is None or ("RSK", "RSKF", "constant") in scan.defined)
+
+    def test_a_grouping_named_after_its_reading_or_grading_an_index_holds_it(self):
+        rng = np.random.default_rng(55)
+        level = rng.uniform(2, 4.5, 500)
+        pm = rng.gamma(2, 40, 500)
+        frame = pd.DataFrame({
+            "trophic_level": level,
+            "trophic_group": np.select([level < 2.8, level < 3.6], ["Herbivore", "Omnivore"], "Piscivore"),
+            "pm2_5": pm,
+            "AQI_Level": np.select([pm < 50, pm < 100], ["Good", "Moderate"], "Unhealthy"),
+            "Site": rng.choice(["a", "b", "c"], 500),
+        })
+        frame.loc[frame.sample(40, random_state=1).index, "AQI_Level"] = "Moderate"
+
+        self.assertEqual(built_in_grouping(frame, "trophic_level", "trophic_group"), "named")
+        self.assertEqual(built_in_grouping(frame, "pm2_5", "AQI_Level"), "index")
+        self.assertIsNone(built_in_grouping(frame, "pm2_5", "Site"))
+
+    def test_a_parameter_column_sharing_a_word_with_the_reading_still_gets_compared(self):
+        rng = np.random.default_rng(57)
+        pollutant = rng.choice(["PM10", "NO2", "SO2"], 600)
+        level = np.select([pollutant == "PM10", pollutant == "NO2"], [100.0, 40.0], 15.0)
+        frame = pd.DataFrame({"pollutant_id": pollutant, "pollutant_max": rng.gamma(3, level / 3)})
+
+        self.assertIsNone(built_in_grouping(frame, "pollutant_max", "pollutant_id"))
+
+    def test_a_grouping_too_fine_for_the_scan_is_not_checked(self):
+        rng = np.random.default_rng(59)
+        code = rng.integers(0, 40, 2000)
+        frame = pd.DataFrame({"level": code + rng.normal(0, 0.01, 2000), "level_band": code.astype(str)})
+
+        self.assertIsNone(built_in_grouping(frame, "level", "level_band"))
+        self.assertEqual(built_in_grouping(frame[code < 4], "level", "level_band"), "complete")
+
+    def test_a_reading_fixed_for_each_species_is_an_attribute_of_the_species(self):
+        rng = np.random.default_rng(56)
+        species = rng.choice([f"sp{index}" for index in range(40)], 800)
+        level = dict(zip([f"sp{index}" for index in range(40)], rng.uniform(2, 4.5, 40), strict=True))
+        frame = pd.DataFrame({
+            "species": species,
+            "trophic_level": [level[name] for name in species],
+            "size": rng.gamma(3, 5, 800),
+        })
+
+        fixed = item_attributes(frame, ["trophic_level", "size"], ["species"])
+        self.assertEqual(fixed, {"trophic_level": "species"})
+
+
+class CappedTests(unittest.TestCase):
+    def test_a_time_cut_off_at_follow_up_is_built_from_it(self):
+        rng = np.random.default_rng(53)
+        follow_up = rng.uniform(1, 15, 300).round(2)
+        recurred = rng.random(300) < 0.4
+        earlier = (follow_up * rng.uniform(0.1, 0.9, 300)).round(2)
+        frame = pd.DataFrame({
+            "survival": follow_up,
+            "timerecurrence": np.where(recurred, earlier, follow_up),
+            "age": rng.normal(50, 10, 300),
+        })
+
+        built = construction(frame, list(frame.columns), "survival")
+
+        assert built is not None
+        found = built.derivation("timerecurrence")
+        self.assertEqual(found.kind, "capped")
+        self.assertTrue(found.describe().startswith("timerecurrence never exceeds survival and equals it on"))
+        self.assertEqual(built.relation("survival", "timerecurrence"), "built")
+
+
+class SummaryFamilyTests(unittest.TestCase):
+    def test_the_statistics_of_one_reading_are_one_family(self):
+        rng = np.random.default_rng(45)
+        low = rng.uniform(5, 50, 300)
+        frame = pd.DataFrame({
+            "pollutant_min": low,
+            "pollutant_avg": low + rng.uniform(5, 30, 300),
+            "max_speed": rng.uniform(0, 100, 300),
+            "min_price": rng.uniform(0, 100, 300),
+        })
+        frame["pollutant_max"] = frame["pollutant_avg"] + rng.uniform(5, 60, 300)
+
+        families = summary_families(frame, list(frame.columns))
+
+        self.assertEqual(families, (("pollutant_min", "pollutant_avg", "pollutant_max"),))
+
+    def test_a_summary_of_two_windows_of_one_test_is_one_family_but_numbered_items_are_not(self):
+        rng = np.random.default_rng(46)
+        frame = pd.DataFrame(
+            rng.uniform(0, 10, (100, 6)),
+            columns=["OBS1_bilirubin_max", "OBS2_bilirubin_min", "Q1_mean", "Q2_mean", "Q3_mean", "age"],
+        )
+
+        families = summary_families(frame, list(frame.columns))
+
+        self.assertEqual(families, (("OBS1_bilirubin_max", "OBS2_bilirubin_min"),))
+
+    def test_two_statistics_of_one_reading_are_not_paired(self):
+        rng = np.random.default_rng(47)
+        low = rng.uniform(5, 50, 300)
+        frame = pd.DataFrame({"temp_min": low, "temp_max": low + rng.uniform(5, 40, 300)})
+        frame["rain"] = frame["temp_max"] * 0.5 + rng.normal(0, 5, 300)
+
+        scan = scan_relationships(frame, list(frame.columns), "temp_max")
+
+        assert scan is not None
+        self.assertEqual(scan.set_aside, (("temp_min", "summary"),))
+        self.assertEqual(scan.summaries, (("temp_min", "temp_max"),))
+        self.assertEqual([pair.second for pair in scan.correlates], ["rain"])
 
 
 class SummaryDerivationTests(unittest.TestCase):
@@ -1228,6 +1458,53 @@ class JointModelTests(unittest.TestCase):
 
         self.assertIsNone(fit_joint_model(frame, "y", ["a", "b", "c"]))
         self.assertIsNotNone(fit_joint_model(frame, "y", ["a", "b"]))
+
+    def test_repeated_rows_count_once_towards_the_rows_needed(self):
+        rng = np.random.default_rng(43)
+        visits = pd.DataFrame(rng.normal(size=(6, 4)), columns=["y", "a", "b", "c"])
+        frame = pd.concat([visits] * 20, ignore_index=True)
+
+        self.assertIsNone(fit_joint_model(frame, "y", ["a", "b", "c"]))
+
+    def test_an_identity_is_an_exact_fit(self):
+        rng = np.random.default_rng(44)
+        frame = pd.DataFrame(rng.normal(size=(80, 3)), columns=["a", "b", "noise"])
+        frame["total"] = frame["a"] + frame["b"]
+
+        model = fit_joint_model(frame, "total", ["a", "b", "noise"])
+
+        assert model is not None
+        self.assertTrue(model.exact)
+        self.assertEqual([term.name for term in model.clear], ["a", "b"])
+        noisy = frame.assign(total=frame["total"] + frame["noise"])
+        self.assertFalse(fit_joint_model(noisy, "total", ["a", "b"]).exact)
+
+
+class LogisticModelTests(unittest.TestCase):
+    def test_odds_ratios_per_standard_deviation_match_statsmodels(self):
+        rng = np.random.default_rng(45)
+        frame = pd.DataFrame({"glucose": rng.normal(120, 30, 600), "age": rng.normal(50, 12, 600)})
+        odds = np.exp(-0.03 * (frame["glucose"] - 120) + 0.02 * (frame["age"] - 50))
+        frame["able"] = (rng.random(600) < odds / (1 + odds)).astype(int)
+
+        model = fit_logistic_model(frame, "able", ["glucose", "age"])
+
+        assert model is not None
+        scaled = frame[["glucose", "age"]] / frame[["glucose", "age"]].std()
+        reference = Logit(frame["able"], np.column_stack([np.ones(600), scaled])).fit(disp=0)
+        np.testing.assert_allclose(
+            [term.odds_ratio for term in model.terms], np.exp(reference.params[1:]), rtol=1e-6
+        )
+        self.assertEqual(model.events, int(frame["able"].sum()))
+        self.assertLess(model.terms[0].odds_ratio, 1)
+
+    def test_a_reading_that_separates_the_outcome_gives_no_model(self):
+        rng = np.random.default_rng(46)
+        frame = pd.DataFrame({"activity": rng.uniform(0, 8, 400), "rain": rng.normal(size=400)})
+        frame["slide"] = (frame["activity"] >= 4).astype(int)
+
+        self.assertIsNone(fit_logistic_model(frame, "slide", ["activity", "rain"]))
+        self.assertIsNone(fit_logistic_model(frame, "rain", ["activity"]))
 
 
 def visits(seed: int = 50, count: int = 60) -> pd.DataFrame:

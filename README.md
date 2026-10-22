@@ -186,7 +186,11 @@ ada ask orders.csv "which category made the most revenue"
   hundreds of readings), repeated rows of one subject count once, and exact
   copies of rows are set aside. A grouping cut from a reading (a size band
   from acres, an anaemia flag from haemoglobin) is stated as a rule rather
-  than reported as a difference.
+  than reported as a difference, and so is one that holds a reading by
+  definition: a code whose "none" group holds an amount of 0, a grade of an
+  index cut from the reading, a grouping named after it. A reading fixed for
+  each species or product is described as the item's, not compared record by
+  record.
 - **Counts what was observed, not rows**: a reading copied onto every row of
   a sample (a site visit's chemistry on each species row) counts once per
   sample in the tests and correlations. When every subject appears in every
@@ -202,18 +206,24 @@ ada ask orders.csv "which category made the most revenue"
   each group with a chi-squared or Fisher test and the risk difference with
   its interval, and the readings that relate to the measure are fitted
   together by least squares, with coefficients, intervals, R² and a
-  collinearity warning, when that says more than any one of them alone.
+  collinearity warning, when that says more than any one of them alone. Other
+  candidate outcomes, case numbers and copies of the measure are left out,
+  a fit with no residual is named as the identity it is, and a yes/no measure
+  gets a logistic model with odds ratios instead.
 - **Reports what relates to the measure**: every numeric column's Pearson and
   Spearman r with the measure, with a 95% interval and the sample size, then
   the strongest other pair, or a plain "none of N pairs reaches |r| = 0.3".
   A correlation that all but vanishes within the groups of a label the
   readings differ by is said to come from the difference between the groups.
-  A total and its items, a mean or row maximum of other columns, a score
-  standardised within groups, shares that add up to 100, a censoring flag and
-  its capped reading, near-duplicates, participant numbers and plate positions
-  are left out and listed. It leads with the figure one record doesn't
-  decide, says when one record makes or hides a correlation, and when it is
-  stronger, weaker or reversed within groups.
+  A total and its items, a mean or row maximum of other columns (including a
+  season that takes last December), a product or ratio such as BMI, a log or
+  square root of another column, a rate computed as the change from the row
+  before, a time cut off at another, the minimum, mean and maximum of one
+  reading, a score standardised within groups, shares that add up to 100, a
+  censoring flag and its capped reading, near-duplicates, participant numbers
+  and plate positions are left out and listed. It leads with the figure one
+  record doesn't decide, says when one record makes or hides a correlation,
+  and when it is stronger, weaker or reversed within groups.
   Ask about a pair and it reports the same figures for that pair.
 - **Analyzes a slice you select**: draw a box or lasso on the Explore chart, or
   click some bars, and get the same analysis for those rows beside the whole.

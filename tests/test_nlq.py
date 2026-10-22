@@ -1629,7 +1629,7 @@ class CorrelatesQuestionTests(unittest.TestCase):
 
         answer = answer_question("what correlates with Even1", frame, detect_roles(frame))
 
-        self.assertIn("Left out of the ranking for Even1: Even2 (the same measurement", answer.answer)
+        self.assertIn("Left out of the ranking for Even1: Even2 (moving with it almost", answer.answer)
         self.assertEqual(answer.answer.count("Left out"), 1)
         self.assertIn("Depth is the only other numeric column tested against Even1", answer.answer)
         self.assertNotIn("picked from several columns", answer.answer)

@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_dtype
 from scipy import stats
+from statsmodels.discrete.discrete_model import Logit
 from statsmodels.regression.linear_model import OLS
 from statsmodels.stats.multitest import multipletests
 from statsmodels.stats.outliers_influence import variance_inflation_factor
@@ -83,6 +84,8 @@ ADJUSTED_BY = {
 
 MIN_CORRELATION_PAIRS = 12
 NEAR_DUPLICATE_CORRELATION = 0.99
+# Two columns are one quantity recorded twice when this share of their values are identical.
+IDENTICAL_SHARE = 0.9
 RANK_DIVERGENCE = 0.25
 # Columns sharing a name stem ("MaxTemp" and "MeanTemp") and correlating above
 # this are one measurement in two forms.
@@ -112,6 +115,47 @@ DERIVATION_ROWS = 2_000
 # Rows that must hold a column and all its candidate parts: this many, and this share of the column.
 DERIVATION_MIN_ROWS = 12
 DERIVATION_MIN_SHARE = 0.1
+# Powers a product or ratio of columns may take (BMI divides weight by height
+# squared), the parts it may have, and the candidates tried for it.
+EXPONENTS = (-3.0, -2.0, -1.0, -0.5, 0.5, 1.0, 2.0, 3.0)
+MAX_PRODUCT_PARTS = 3
+PRODUCT_CANDIDATES = 6
+# Above this many positive readings a table is a matrix of one kind of value,
+# whose columns are not products of one another, and the search is skipped.
+PRODUCT_TARGETS = 100
+# One-to-one functions a column may be of another (lcond = log10 of COND), and
+# how closely their ranks must agree for the pair to be checked.
+TRANSFORMS = {
+    "log10": np.log10,
+    "ln": np.log,
+    "log2": np.log2,
+    "log10p": lambda values: np.log10(values + 1),
+    "ln1p": np.log1p,
+    "sqrt": np.sqrt,
+    "square": np.square,
+    "reciprocal": np.reciprocal,
+}
+TRANSFORM_NAMES = {
+    "log10": "log10({})", "ln": "ln({})", "log2": "log2({})", "log10p": "log10({} + 1)",
+    "ln1p": "ln({} + 1)", "sqrt": "√{}", "square": "{}²", "reciprocal": "1 ÷ {}",
+}
+TRANSFORM_RANKS = 0.995
+# Rows in table order that the searches over neighbouring rows use, and the most
+# readings they check: a rate needs consecutive rows of one curve, a lag the year before.
+ORDERED_ROWS = 2_000
+ORDERED_TARGETS = 60
+# A column whose ranks follow another's row-to-row change this closely is checked as its rate.
+STEP_RANKS = 0.95
+# Candidates whose value on the row before may be a part.
+LAGGED_PARTS = 5
+# A column that stays at or below another on CAPPED_BELOW of rows and equals it
+# on at least CAPPED_EQUAL of them is cut off at it, as a time to recurrence is
+# at the end of follow-up for patients without one. Pairs that correlate at
+# least CAPPED_CORRELATION are checked, CAPPED_PAIRS at most.
+CAPPED_BELOW = 0.99
+CAPPED_EQUAL = 0.2
+CAPPED_CORRELATION = 0.5
+CAPPED_PAIRS = 2_000
 # Words that qualify a name rather than say what was measured, so sharing one
 # ("CorrectTotal", "IncorrectTotal") does not make two columns one quantity.
 GENERIC_NAME_WORDS = frozenset({
@@ -134,6 +178,29 @@ NO_SPREAD = 1e-9
 # A reading whose groups explain this share of its variance barely varies within a
 # group: it describes the group (a site's coordinates, a station's battery), not its members.
 ATTRIBUTE_EXPLAINED = 0.99
+# A group holding this share of a reading's values, all at its floor or ceiling,
+# marks where the reading is absent rather than measured.
+CONSTANT_GROUP_SHARE = 0.1
+# A grouping named after a reading (RSKF beside RSK, trophic_group beside
+# trophic_level) that explains this share of its ranks is a code describing it.
+NAMED_GROUPING_SHARE = 0.5
+# A grouping named as a grade of an index (an AQI level, a risk band) that
+# explains this share of a reading's ranks was most likely cut from it.
+INDEX_GROUPING_SHARE = 0.8
+INDEX_GRADE_WORDS = frozenset({
+    "aqi", "index", "level", "category", "categori", "band", "grade", "tier", "rating",
+})
+# Why a grouping holds a reading by definition, for a sentence.
+BUILT_IN_REASONS = {
+    "constant": "one of its groups holds a single value of the reading",
+    "named": "it is named after the reading",
+    "index": "it grades an index and splits the reading almost completely",
+    "complete": "it splits the reading completely",
+}
+# A reading that never varies within each value of an item column (a species'
+# trophic level) on this share of the items describes the item, not the record.
+ITEM_FIXED_SHARE = 0.99
+ITEM_MIN_ITEMS = 10
 # A numeric column repeats a part of the date when it matches on this share of rows.
 DATE_PART_SHARE = 0.99
 # A grouping is nested in another when this share of the cells expected to hold
@@ -1474,12 +1541,124 @@ class DifferenceScan:
     trends: int = 0
     #: Reading and grouping pairs compared; ``tested`` adds the trend tests.
     compared: int = 0
+    #: (reading, grouping, reason) left out because the grouping holds the reading by
+    #: definition, with the reason a key of BUILT_IN_REASONS.
+    defined: tuple[tuple[str, str, str], ...] = ()
     #: Groupings whose groups hold the same entities, so their readings were compared within entities.
     paired: tuple[str, ...] = ()
 
     @property
     def sampled(self) -> bool:
         return self.rows > SCAN_ROWS
+
+
+def _built_in(omnibus: _Omnibus, columns: list[str], grouping: str) -> list[str | None]:
+    """Why ``grouping`` holds each of ``columns`` by definition, from the omnibus arrays, or None for each.
+
+    "constant": a group holding CONSTANT_GROUP_SHARE of the values sits at a
+    single value at the reading's floor or ceiling while others vary, as days
+    coded "no precipitation" hold an amount of 0.
+    "named": the grouping's name extends the reading's and it explains
+    NAMED_GROUPING_SHARE of its ranks, or the two share a name stem and it
+    explains INDEX_GROUPING_SHARE of them. "index": the grouping grades an index
+    and explains INDEX_GROUPING_SHARE of them. "complete": it explains all of
+    them, one cluster of values per group. The arrays are judged for every
+    column at once; names are compared only where the share explained could
+    make them count.
+    """
+    explained = np.maximum(omnibus.epsilon2, omnibus.eta2)
+    sizes, spread = omnibus.n, np.nan_to_num(omnibus.sd, nan=0.0)
+    # A large group pinned at the reading's floor or ceiling, as days coded "no
+    # precipitation" all hold an amount of 0; a few records that happen to agree are not.
+    with np.errstate(invalid="ignore"):
+        edge = np.isclose(omnibus.mean, omnibus.minimum[None, :]) | np.isclose(
+            omnibus.mean, omnibus.maximum[None, :]
+        )
+    large = sizes >= np.maximum(MIN_NAMED_GROUP, CONSTANT_GROUP_SHARE * sizes.sum(axis=0))
+    constant = (
+        (large & (spread == 0) & edge).any(axis=0)
+        & ((spread > 0).sum(axis=0) >= 2)
+        & (omnibus.distinct >= CAP_MIN_DISTINCT)
+    )
+    grade = bool(set(re.findall(r"[a-z]+", normalized_name(grouping))) & INDEX_GRADE_WORDS)
+    grouping_key = _match_key(grouping)
+    reasons: list[str | None] = []
+    for index, reading in enumerate(columns):
+        share = float(explained[index])
+        if share >= ATTRIBUTE_EXPLAINED:
+            reasons.append("complete")
+        elif constant[index]:
+            reasons.append("constant")
+        elif not share >= NAMED_GROUPING_SHARE:  # also a share that could not be measured
+            reasons.append(None)
+        else:
+            # A name that extends the reading's (RSKF beside RSK) is a strong sign; one
+            # word in common (pollutant_id beside pollutant_max) needs a near-complete split.
+            key = _match_key(reading)
+            extends = len(key) >= 3 and grouping_key.startswith(key)
+            near_complete = share >= INDEX_GROUPING_SHARE
+            if extends or (near_complete and same_stem(reading, grouping)):
+                reasons.append("named")
+            elif near_complete and grade:
+                reasons.append("index")
+            else:
+                reasons.append(None)
+    return reasons
+
+
+def built_in_grouping(dataframe: pd.DataFrame, reading: str, grouping: str) -> str | None:
+    """Why ``grouping`` holds ``reading`` by definition (a key of BUILT_IN_REASONS), or None.
+
+    The brief leaves such pairs out of its comparisons; Ask can use the same
+    check before it tests a reading across a grouping. As in the scan, a
+    grouping of more than MAX_SCAN_LEVELS levels is not checked, and a long
+    table is checked on its fixed sample of SCAN_ROWS rows.
+    """
+    if reading not in dataframe.columns or grouping not in dataframe.columns or reading == grouping:
+        return None
+    frame = dataframe.sample(SCAN_ROWS, random_state=0) if len(dataframe) > SCAN_ROWS else dataframe
+    data = pd.DataFrame({
+        "value": pd.to_numeric(frame[reading], errors="coerce"), "group": frame[grouping],
+    }).dropna()
+    sizes = data["group"].value_counts()
+    data = data[data["group"].isin(sizes[sizes >= MIN_GROUP_SIZE].index)]
+    levels = data["group"].nunique()
+    if not 2 <= levels <= MAX_SCAN_LEVELS or data["value"].nunique() < 2:
+        return None
+    return _built_in(_omnibus(data[["value"]], data["group"]), [reading], grouping)[0]
+
+
+def item_attributes(dataframe: pd.DataFrame, readings: list[str], items: list[str]) -> dict[str, str]:
+    """Readings fixed within each value of an item column, with that column: a species' trophic level.
+
+    An item column names what a row records (a species, a product) and
+    repeats across rows. A reading that never varies within an item on
+    ITEM_FIXED_SHARE of the items recorded twice or more describes the item,
+    so comparing or counting it record by record weights each item by how
+    often it was recorded. Long tables are checked on a fixed sample of
+    SCAN_ROWS rows.
+    """
+    frame = dataframe.sample(SCAN_ROWS, random_state=0) if len(dataframe) > SCAN_ROWS else dataframe
+    readings = [reading for reading in readings if reading in frame.columns][:MAX_SCAN_COLUMNS]
+    found: dict[str, str] = {}
+    for item in items:
+        if item not in frame.columns or not readings:
+            continue
+        sizes = frame[item].value_counts()
+        repeated = sizes[sizes >= 2].index
+        if len(repeated) < ITEM_MIN_ITEMS:
+            continue
+        rows = frame[frame[item].isin(repeated)]
+        grouped = rows.groupby(item, observed=True)[readings]
+        recorded = grouped.count() >= 2
+        fixed = ((grouped.nunique() <= 1) | ~recorded).mean()
+        varies = rows[readings].nunique() >= 2
+        for reading in readings:
+            enough = int(recorded[reading].sum()) >= ITEM_MIN_ITEMS
+            if varies[reading] and enough and float(fixed[reading]) >= ITEM_FIXED_SHARE:
+                found[reading] = item
+        readings = [reading for reading in readings if reading not in found]
+    return found
 
 
 def explained_share(values: pd.Series, groups: pd.Series) -> float:
@@ -1579,6 +1758,7 @@ def scan_differences(
     flagged: list[tuple[str, str]] = []
     recoded: list[tuple[str, str]] = []
     attributes: list[tuple[str, str]] = []
+    defined: list[tuple[str, str, str]] = []
     paired_groupings: list[str] = []
     used_entity = None
     for grouping in groupings:
@@ -1632,6 +1812,7 @@ def scan_differences(
                 if paired is not None
                 else _omnibus(block[regular], groups)
             )
+            reasons = _built_in(omnibus, regular, grouping) if paired is None else [None] * len(regular)
             for index, column in enumerate(regular):
                 # A reading with one value in each group is another code for the
                 # grouping (a 0/1 flag behind a condition label), not a finding.
@@ -1640,6 +1821,10 @@ def scan_differences(
                     continue
                 if paired is None and omnibus.eta2[index] >= ATTRIBUTE_EXPLAINED:
                     attributes.append((column, grouping))
+                    continue
+                reason = reasons[index]
+                if reason is not None:
+                    defined.append((column, grouping, reason))
                     continue
                 judged = _judge(omnibus, index, column)
                 entries.append(_Entry(
@@ -1752,6 +1937,7 @@ def scan_differences(
         attributes=tuple(attributes),
         placed=placed,
         correction=correction,
+        defined=tuple(defined),
         passing=int((raw < ALPHA).sum()),
         trends=len(trend_at),
         compared=len(entries),
@@ -3555,8 +3741,13 @@ class Derivation:
     intercept: float
     #: "sum", "mean", "difference", "combination", "complement" (the column and its
     #: parts add up to a fixed total), "maximum" or "minimum" (the largest or
-    #: smallest of the parts), or "standardised" (a z-score of its part, within
-    #: each group of ``within`` when that is set).
+    #: smallest of the parts), "standardised" (a z-score of its part, within
+    #: each group of ``within`` when that is set), "transform" (``function`` of
+    #: its one part, such as its log10), "product" (the parts raised to the
+    #: powers in ``coefficients`` and multiplied, times e to the ``intercept``),
+    #: "rate" (the row-to-row change in its one part, times its coefficient:
+    #: a velocity from an angle sampled at a fixed step), or "capped" (never
+    #: above its one part and equal to it on ``share`` of rows: cut off at it).
     kind: str
     #: Share of the rows holding the column and its parts on which the formula holds.
     share: float = 1.0
@@ -3567,29 +3758,55 @@ class Derivation:
     within: str | None = None
     #: Rows where the column reads 0 although every part is blank: a placeholder, not a value.
     blank_rows: int = 0
+    #: For a "transform", the function of the part: "log10", "ln", "sqrt" and so on.
+    function: str = ""
+    #: Positions in ``parts`` of the parts taken from the row before (last December
+    #: in a December-to-February mean), for a table whose rows run in order.
+    lagged: tuple[int, ...] = ()
+
+    @property
+    def shown_parts(self) -> tuple[str, ...]:
+        """The parts as a formula names them, with those taken from the row before marked."""
+        return tuple(
+            f"{part} (row before)" if index in self.lagged else part for index, part in enumerate(self.parts)
+        )
 
     def describe(self) -> str:
+        parts = self.shown_parts
+        if self.kind == "transform":
+            return f"{self.column} = {TRANSFORM_NAMES[self.function].format(parts[0])}"
+        if self.kind == "product":
+            return f"{self.column} = {_product_formula(parts, self.coefficients, self.intercept)}"
+        if self.kind == "rate":
+            scale = self.coefficients[0]
+            times = "" if np.isclose(scale, 1.0) else f"{format_number(scale, compact=False)} × "
+            return f"{self.column} = {times}the row-to-row change in {parts[0]}"
+        if self.kind == "capped":
+            return (
+                f"{self.column} never exceeds {parts[0]} and equals it on {_share_text(self.share)} of rows, "
+                f"so it is cut off at {parts[0]}"
+            )
         if self.kind == "sum":
-            return f"{self.column} = {' + '.join(self.parts)}"
+            return f"{self.column} = {' + '.join(parts)}"
         if self.kind == "mean":
-            return f"{self.column} = mean of {_listed_parts(self.parts)}"
+            return f"{self.column} = mean of {_listed_parts(parts)}"
         if self.kind in ("maximum", "minimum"):
             word = "largest" if self.kind == "maximum" else "smallest"
-            return f"{self.column} = the {word} of {_listed_parts(self.parts)}"
+            return f"{self.column} = the {word} of {_listed_parts(parts)}"
         if self.kind == "complement":
             total = format_number(self.intercept, self.column, compact=False)
-            return f"{_joined([*self.parts, self.column])} add up to {total}"
+            return f"{_joined([*parts, self.column])} add up to {total}"
         if self.kind == "standardised":
             scope = f" within each {self.within}" if self.within else ""
-            source = f"{self.parts[0]} standardised" if self.parts else "standardised"
+            source = f"{parts[0]} standardised" if parts else "standardised"
             return f"{self.column} is {source}{scope} (mean 0, SD 1)"
         if self.kind == "difference":
-            ordered = sorted(zip(self.coefficients, self.parts, strict=True), key=lambda item: -item[0])
+            ordered = sorted(zip(self.coefficients, parts, strict=True), key=lambda item: -item[0])
             formula = ordered[0][1] + "".join(
                 f" {'+' if weight > 0 else '−'} {part}" for weight, part in ordered[1:]
             )
             return f"{self.column} = {formula}"
-        return f"{self.column} is a fixed combination of {_joined(self.parts)}"
+        return f"{self.column} is a fixed combination of {_joined(parts)}"
 
     @property
     def block(self) -> tuple[str, ...]:
@@ -3634,6 +3851,12 @@ def _share_text(share: float) -> str:
 
 def _count_rows(count: int) -> str:
     return f"{count:,} row{'' if count == 1 else 's'}"
+
+
+def _nearest_exponent(weight: float) -> float:
+    """The power from EXPONENTS nearest ``weight``, when it is within 2% of it."""
+    nearest = min(EXPONENTS, key=lambda power: abs(power - weight))
+    return nearest if abs(weight - nearest) <= 0.02 * max(1.0, abs(weight)) else weight
 
 
 def _simple_fraction(weight: float) -> float:
@@ -3688,16 +3911,24 @@ def _tolerance(values: np.ndarray) -> tuple[float, float]:
 
 
 def find_derivation(
-    frame: pd.DataFrame, column: str, candidates: list[str], steps: dict[str, float] | None = None
+    frame: pd.DataFrame,
+    column: str,
+    candidates: list[str],
+    steps: dict[str, float] | None = None,
+    *,
+    exponents: bool = False,
 ) -> Derivation | None:
     """Whether ``column`` is a fixed combination of a few of ``candidates``: a sum, a mean, a difference.
 
     Candidates should come strongest-correlated first. They are added one at a
     time, each the one closest to what the others leave unexplained, until the
     combination reproduces the column on DERIVED_SHARE of its rows. A fit
-    needs three rows per term, so a few rows can't be matched by chance.
+    needs three distinct rows per term, so a few rows can't be matched by
+    chance, however often they repeat.
     ``steps`` caches the step each column was recorded at, when many columns
-    are searched over the same rows.
+    are searched over the same rows. With ``exponents`` the columns are logs
+    and the weights must be powers from EXPONENTS, so a match is a product
+    or a ratio of at most MAX_PRODUCT_PARTS columns (see ``find_product``).
     """
     # A part recorded on only some rows (acidity measured only on acid soils)
     # still shows the identity on the rows that have it, so candidates are
@@ -3715,6 +3946,11 @@ def find_derivation(
     data = frame[[column, *candidates]].iloc[np.flatnonzero(complete)]
     if len(data) > DERIVATION_ROWS:
         data = data.iloc[np.linspace(0, len(data) - 1, DERIVATION_ROWS).astype(int)]
+    # A reading repeated on every row of its visit is one row of evidence,
+    # however many rows carry it, so only distinct rows count towards a fit.
+    # Rows can only repeat where the column's own values do.
+    if pd.unique(data[column].to_numpy()).size < len(data):
+        data = data.drop_duplicates()
     rows = len(data)
     usable = min(len(candidates), rows // 3 - 1)
     if usable < 2:
@@ -3762,7 +3998,8 @@ def find_derivation(
             coefficients = np.linalg.lstsq(design[close], target[close], rcond=None)[0]
         residual = target - design @ coefficients
         limit = allowance(indices, coefficients[1:])
-        snapped = np.array([_simple_fraction(weight) for weight in coefficients[1:]])
+        snap = _nearest_exponent if exponents else _simple_fraction
+        snapped = np.array([snap(weight) for weight in coefficients[1:]])
         simple_limit = allowance(indices, snapped)
         offset = float(np.median(target - design[:, 1:] @ snapped))
         offset = 0.0 if abs(offset) <= simple_limit else offset
@@ -3798,7 +4035,14 @@ def find_derivation(
                 return None
             parts = tuple(candidates[index] for index, keep in zip(chosen, used, strict=True) if keep)
             weights = weights[used]
-            kind = _classify(weights, float(coefficients[0]), limit)
+            if exponents:
+                # Powers other than the few that formulas use (BMI divides by height
+                # squared) are a fit to the rows, not a formula.
+                if len(parts) > MAX_PRODUCT_PARTS or not np.isin(np.round(weights, 9), EXPONENTS).all():
+                    return None
+                kind = "product"
+            else:
+                kind = _classify(weights, float(coefficients[0]), limit)
             if kind == "combination" and not reproduces(residual, limit, simple=False):
                 return None
             return Derivation(
@@ -3944,6 +4188,71 @@ def find_standardised(
     return Derivation(column, (), (), 0.0, "standardised", share=share, within=within)
 
 
+def find_transform(frame: pd.DataFrame, column: str, source: str) -> Derivation | None:
+    """Whether ``column`` is a one-to-one function of ``source``: its log10, natural log, square root.
+
+    A log or a square root keeps the order of the values but bends their
+    spacing, so the pair's ranks agree exactly while Pearson r can be well
+    below 1; their correlation is built in all the same. The function must
+    reproduce the column on DERIVED_SHARE of its distinct rows.
+    """
+    pair = frame[[column, source]].apply(pd.to_numeric, errors="coerce").dropna().drop_duplicates()
+    if len(pair) < DERIVATION_MIN_ROWS or pair[column].nunique() < RULE_MIN_VALUES:
+        return None
+    target = pair[column].to_numpy(dtype=float)
+    values = pair[source].to_numpy(dtype=float)
+    tolerance, spread = _tolerance(target)
+    if not spread > 0:
+        return None
+    for name, function in TRANSFORMS.items():
+        with np.errstate(all="ignore"):
+            made = function(values)
+        valid = np.isfinite(made)
+        if valid.mean() < DERIVED_SHARE:
+            continue
+        residual = target[valid] - made[valid]
+        if _reproduces(target[valid], residual, tolerance, spread, DERIVED_SHARE):
+            share = float(np.mean(np.abs(residual) <= tolerance))
+            return Derivation(column, (source,), (1.0,), 0.0, "transform", share=share, function=name)
+    return None
+
+
+def find_product(frame: pd.DataFrame, column: str, candidates: list[str]) -> Derivation | None:
+    """Whether ``column`` is a product or ratio of powers of a few ``candidates``: BMI = weight ÷ height².
+
+    On logs a product is a sum, so the search for a sum of logs with powers
+    from EXPONENTS finds it; the constant factor (10,000 for a height in cm)
+    is the intercept. Only positive values have logs, so the others are left
+    out of the fit.
+    """
+    columns = [column, *candidates]
+    numbers = frame[columns].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+    with np.errstate(all="ignore"):
+        logs = np.where(numbers > 0, np.log(numbers), np.nan)
+    logs = pd.DataFrame(logs, columns=columns, index=frame.index)
+    return find_derivation(logs, column, candidates, exponents=True)
+
+
+def _product_formula(parts: tuple[str, ...], powers: tuple[float, ...], log_factor: float) -> str:
+    """ "weight_kg ÷ height_cm² × 10,000" for a product of powers of columns and a constant factor."""
+
+    def term(part: str, power: float) -> str:
+        size = abs(power)
+        if size == 0.5:
+            return f"√{part}"
+        return part + {1.0: "", 2.0: "²", 3.0: "³"}.get(size, f"^{size:g}")
+
+    above = [term(part, power) for part, power in zip(parts, powers, strict=True) if power > 0]
+    below = [term(part, power) for part, power in zip(parts, powers, strict=True) if power < 0]
+    formula = " × ".join(above) if above else "1"
+    if below:
+        formula += " ÷ " + (below[0] if len(below) == 1 else f"({' × '.join(below)})")
+    factor = float(f"{np.exp(log_factor):.3g}")
+    if abs(log_factor) > 1e-3:
+        formula += f" × {format_number(factor, compact=False)}"
+    return formula
+
+
 @dataclass(frozen=True)
 class CapFlag:
     """A two-valued column that only marks where another column sits at its maximum or minimum."""
@@ -4021,6 +4330,94 @@ def _stems(name: str) -> set[str]:
     return {word for word in words if len(word) >= 3 and word not in GENERIC_NAME_WORDS}
 
 
+# Words naming a statistic of one reading. pollutant_min, pollutant_avg and
+# pollutant_max summarise one reading three ways, so they move together by construction.
+LOW_WORDS = frozenset({"min", "minimum", "lowest"})
+HIGH_WORDS = frozenset({"max", "maximum", "highest"})
+CENTRE_WORDS = frozenset({"mean", "avg", "average", "median", "50%"})
+SPREAD_WORDS = frozenset({"std", "sd", "stdev", "var", "variance"})
+SUMMARY_WORDS = LOW_WORDS | HIGH_WORDS | CENTRE_WORDS | SPREAD_WORDS | frozenset({"25%", "75%", "q1", "q3"})
+# A minimum and a maximum of one reading keep that order on this share of rows.
+SUMMARY_ORDER_SHARE = 0.95
+
+
+def _summary_key(name: str) -> tuple[str, str] | None:
+    """The reading a column summarises and the statistic it takes, ("pollutant", "max"), or None.
+
+    Columns named only for a statistic ("mean", "25%") summarise each row's
+    own set of values, and their reading is "".
+    """
+    words = [word for word in re.split(r"[^a-z0-9%]+", normalized_name(name)) if word]
+    statistics = [word for word in words if word in SUMMARY_WORDS]
+    if len(statistics) != 1:
+        return None
+    return " ".join(word for word in words if word not in SUMMARY_WORDS), statistics[0]
+
+
+def summary_statistic(name: str) -> str | None:
+    """The statistic a summary column takes, "max" for "pollutant_max", or None."""
+    found = _summary_key(name)
+    return found[1] if found else None
+
+
+def summarises_rows(family: tuple[str, ...]) -> bool:
+    """Whether a summary family is named only for statistics, so each row summarises its own set of values."""
+    return bool(family) and all((_summary_key(column) or ("?", ""))[0] == "" for column in family)
+
+
+def _window_key(key: str) -> str:
+    """A summary key with the numbers of windows or positions blanked: "obs1 bilirubin" → "obs# bilirubin"."""
+    return re.sub(r"(?<=[a-z])\d+\b", "#", key)
+
+
+def summary_families(frame: pd.DataFrame, columns: list[str]) -> tuple[tuple[str, ...], ...]:
+    """Columns that summarise one reading: its minimum, mean and maximum, or a row's own statistics.
+
+    A family needs a centre (a mean or median) or both a minimum and a
+    maximum, and a minimum that stays below the maximum on SUMMARY_ORDER_SHARE
+    of rows, so "max_speed" and "min_price" are not one reading. Columns
+    named only for a statistic form a family when there are three or more,
+    including a centre, as in a table of each probe's count, mean, std and
+    quartiles. Summaries of one named test over numbered windows or
+    positions ("OBS1_bilirubin_max", "OBS2_bilirubin_min") are one reading
+    recorded twice and join one family; a bare numbered item ("Q1_mean",
+    "Q2_mean") names no test and does not.
+    """
+    keys = {column: _summary_key(column) for column in columns}
+    grouped: dict[str, list[str]] = {}
+    for column, found in keys.items():
+        if found is not None:
+            grouped.setdefault(found[0], []).append(column)
+
+    def holds(members: list[str]) -> bool:
+        statistics = {keys[member][1] for member in members}
+        if len(members) < (3 if not keys[members[0]][0] else 2):
+            return False
+        if not statistics & CENTRE_WORDS and not (statistics & LOW_WORDS and statistics & HIGH_WORDS):
+            return False
+        lows = [member for member in members if keys[member][1] in LOW_WORDS]
+        highs = [member for member in members if keys[member][1] in HIGH_WORDS]
+        for low, high in itertools.product(lows, highs):
+            both = frame[[low, high]].apply(pd.to_numeric, errors="coerce").dropna()
+            if len(both) and float((both[low] <= both[high]).mean()) < SUMMARY_ORDER_SHARE:
+                return False
+        return True
+
+    windows: dict[str, list[str]] = {}
+    for key, members in grouped.items():
+        blanked = _window_key(key)
+        if blanked != key and any("#" not in word for word in blanked.split()):
+            windows.setdefault(blanked, []).extend(members)
+    windowed = {member for members in windows.values() for member in members}
+    families = [members for members in grouped.values() if not set(members) & windowed and holds(members)]
+    families += [
+        members for members in windows.values()
+        if len({keys[member][0] for member in members}) > 1 or holds(members)
+    ]
+    order = {column: index for index, column in enumerate(columns)}
+    return tuple(tuple(sorted(members, key=order.__getitem__)) for members in families)
+
+
 @dataclass(frozen=True)
 class Pair:
     """Two columns' correlation over their complete rows."""
@@ -4058,14 +4455,39 @@ def is_coordinate(name: str) -> bool:
     return bool(set(re.findall(r"[a-z]+", normalized_name(name))) & COORDINATE_TOKENS)
 
 
+def _recorded_again(first: np.ndarray, second: np.ndarray) -> bool:
+    """Whether two columns hold one quantity: mostly identical values, or one a linear function of the other.
+
+    Two replicate samples or two counters that rise together correlate at
+    0.99 without being one quantity; a temperature in °C and in °F is one,
+    so the linear map must hold, to the columns' own rounding, on
+    COMBINATION_SHARE of rows.
+    """
+    if len(first) < MIN_CORRELATION_PAIRS:
+        return False
+    if float(np.mean(first == second)) >= IDENTICAL_SHARE:
+        return True
+    design = np.column_stack([np.ones(len(first)), first])
+    coefficients = np.linalg.lstsq(design, second, rcond=None)[0]
+    residual = np.abs(second - design @ coefficients)
+    close = residual <= np.quantile(residual, COMBINATION_SHARE)
+    coefficients = np.linalg.lstsq(design[close], second[close], rcond=None)[0]
+    tolerance, spread = _tolerance(second)
+    rounding = abs(coefficients[1]) * _step(first, _spread(first))
+    allowance = tolerance + min(rounding, DERIVED_STEP_LIMIT * spread)
+    return float(np.mean(np.abs(second - design @ coefficients) <= allowance)) >= COMBINATION_SHARE
+
+
 def _families(
     columns: list[str], pearson: np.ndarray, spearman: np.ndarray, values: np.ndarray
 ) -> tuple[list[int], list[tuple[str, str, float]]]:
-    """Group columns that are one quantity recorded twice: |r| ≥ 0.99 with ranks that agree.
+    """Group columns that are one quantity recorded twice, and list pairs that move together almost exactly.
 
-    One huge record (a taxon holding half of all reads) can make two columns
-    look identical, so the pair must also stay at 0.99 without its most
-    influential record.
+    A pair moves together almost exactly at |r| ≥ 0.99 with ranks that agree,
+    and stays at 0.99 without its most influential record, since one huge
+    record (a taxon holding half of all reads) can make two columns look
+    identical. Only a pair that ``_recorded_again`` finds to be one quantity
+    joins a family; replicate samples that agree closely stay two columns.
     """
     parent = list(range(len(columns)))
 
@@ -4084,8 +4506,11 @@ def _families(
         influence = most_influential(values[both, i], values[both, j])
         if influence is not None and abs(influence[1]) < NEAR_DUPLICATE_CORRELATION:
             continue
-        parent[root(i)] = root(j)
         duplicates.append((columns[i], columns[j], float(pearson[i, j])))
+        rows = np.flatnonzero(both)
+        rows = rows[np.linspace(0, len(rows) - 1, min(len(rows), 5 * DERIVATION_ROWS)).astype(int)]
+        if _recorded_again(values[rows, i], values[rows, j]):
+            parent[root(i)] = root(j)
     return [root(index) for index in range(len(columns))], duplicates
 
 
@@ -4139,11 +4564,14 @@ def _derivations(
         return found
 
     everything = set(range(len(columns)))
-    derived = {}
+    derived: dict[str, Derivation] = {}
     for index in sorted(targets):
         found = search(index, everything)
         if found is not None:
-            derived[columns[index]] = found
+            turned = _reoriented(found)
+            if turned.column in derived or columns.index(turned.column) not in targets:
+                turned = found
+            derived[turned.column] = turned
     leaves = {index for index, column in enumerate(columns) if column not in derived}
     for column in list(derived):
         refined = search(columns.index(column), leaves)
@@ -4160,6 +4588,75 @@ def _derivations(
             coefficients=tuple(weight for _, weight in ordered),
         )
     return derived
+
+
+def _built_from_built(
+    frame: pd.DataFrame,
+    columns: list[str],
+    targets: set[int],
+    derived: dict[str, Derivation],
+    family: list[int],
+) -> dict[str, Derivation]:
+    """Sums and means of columns that are built themselves: an annual mean of four seasonal means.
+
+    The built columns need not be among its strongest correlates, so they are
+    tried on their own once every other search is done.
+    """
+    found: dict[str, Derivation] = {}
+    position = {column: index for index, column in enumerate(columns)}
+    for index in sorted(targets):
+        column = columns[index]
+        built = [
+            other for other, made in derived.items()
+            if other != column and column not in made.parts and family[position[other]] != family[index]
+        ]
+        if column in derived or len(built) < 2:
+            continue
+        derivation = find_derivation(frame, column, built[:PART_CANDIDATES])
+        if derivation is not None and derivation.kind in ("sum", "mean"):
+            found[column] = derivation
+    return found
+
+
+def _in_table_order(derivation: Derivation, order: dict[str, int]) -> Derivation:
+    """The derivation with its parts in table order, as a reader would write the formula."""
+    if len(derivation.coefficients) != len(derivation.parts):
+        return derivation
+    places = sorted(
+        range(len(derivation.parts)), key=lambda place: (order.get(derivation.parts[place], 0), place)
+    )
+    return replace(
+        derivation,
+        parts=tuple(derivation.parts[place] for place in places),
+        coefficients=tuple(derivation.coefficients[place] for place in places),
+        lagged=tuple(new for new, place in enumerate(places) if place in derivation.lagged),
+    )
+
+
+def _reoriented(derivation: Derivation) -> Derivation:
+    """The same identity solved for the part it makes a plain sum or mean of the others, when there is one.
+
+    "70 = 2 × 60 − 50" and "60 = mean of 50 and 70" are one identity, and the
+    second names the column that was filled in from its neighbours. Only a
+    free combination is re-read; a sum, a mean or a difference already names
+    its derived column.
+    """
+    if derivation.kind != "combination" or derivation.intercept != 0.0:
+        return derivation
+    weights = np.array(derivation.coefficients)
+    for index, part in enumerate(derivation.parts):
+        others = [other for place, other in enumerate(derivation.parts) if place != index]
+        solved = np.r_[1.0 / weights[index], -np.delete(weights, index) / weights[index]]
+        kind = _classify(solved, 0.0, 0.0)
+        if kind in ("sum", "mean"):
+            return replace(
+                derivation,
+                column=part,
+                parts=(derivation.column, *others),
+                coefficients=tuple(float(weight) for weight in solved),
+                kind=kind,
+            )
+    return derivation
 
 
 def _summaries(
@@ -4217,6 +4714,190 @@ def _summaries(
     return found
 
 
+def _products(
+    frame: pd.DataFrame, columns: list[str], targets: set[int], family: list[int]
+) -> dict[str, Derivation]:
+    """Positive columns that are a product or ratio of powers of columns before them (``find_product``).
+
+    Candidates are the columns whose logs correlate most with the target's,
+    from at most DERIVATION_ROWS rows; a table of more than PRODUCT_TARGETS
+    positive readings is skipped.
+    """
+    values = frame.to_numpy(dtype=float)
+    with np.errstate(all="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        positive = np.nanmin(values, axis=0) > 0
+    indices = np.flatnonzero(positive)
+    wanted = [index for index in sorted(targets) if positive[index]]
+    if len(indices) < 3 or not wanted or len(wanted) > PRODUCT_TARGETS:
+        return {}
+    rows = np.linspace(0, len(values) - 1, min(len(values), DERIVATION_ROWS)).astype(int)
+    # Logs of the positive columns, taken once: on them a product is a sum.
+    logs = pd.DataFrame(np.log(values[np.ix_(rows, indices)]), columns=[columns[index] for index in indices])
+    strengths, _ = pairwise_correlations(logs.to_numpy())
+    local = {index: place for place, index in enumerate(indices)}
+    found = {}
+    for index in wanted:
+        strength = np.nan_to_num(np.abs(strengths[local[index]]), nan=-1.0)
+        candidates = [
+            columns[indices[place]]
+            for place in np.argsort(-strength)
+            if indices[place] < index and family[indices[place]] != family[index] and strength[place] > 0
+        ][:PRODUCT_CANDIDATES]
+        if len(candidates) >= 2:
+            derivation = find_derivation(logs, columns[index], candidates, exponents=True)
+            if derivation is not None:
+                found[columns[index]] = derivation
+    return found
+
+
+def _step_rate(target: np.ndarray, change: np.ndarray) -> tuple[float, float] | None:
+    """The scale and share of rows at which ``target`` is ``change`` times a constant, or None.
+
+    The rows where a new curve starts break the identity, so the scale is the
+    median ratio and the identity must hold on DERIVED_SHARE of rows.
+    """
+    rows = np.isfinite(target) & np.isfinite(change) & (change != 0)
+    if rows.sum() < 3 * DERIVATION_MIN_ROWS:
+        return None
+    target, change = target[rows], change[rows]
+    scale = float(f"{np.median(target / change):.6g}")
+    tolerance, spread = _tolerance(target)
+    residual = target - scale * change
+    if not spread > 0 or not _reproduces(target, residual, tolerance, spread, DERIVED_SHARE):
+        return None
+    return scale, float(np.mean(np.abs(residual) <= tolerance))
+
+
+def _neighbour_derivations(
+    ordered: pd.DataFrame, columns: list[str], targets: set[int], pearson: np.ndarray, family: list[int]
+) -> dict[str, Derivation]:
+    """Columns built from neighbouring rows: a velocity from an angle, a winter mean using last December.
+
+    ``ordered`` holds rows in table order, where curves and years run on. A
+    rate is the row-to-row change in another column times a fixed scale (one
+    over the time step), found from the rank correlation of each column with
+    every column's change. A combination may also take a part from the row
+    before, as a December-to-February mean takes the previous December. Only
+    tables of at most ORDERED_TARGETS readings are searched.
+    """
+    if not targets or len(targets) > ORDERED_TARGETS or len(ordered) < 3 * DERIVATION_MIN_ROWS:
+        return {}
+    values = ordered[columns].to_numpy(dtype=float)
+    before = np.vstack([np.full((1, len(columns)), np.nan), values[:-1]])
+    change = values - before
+    wanted = sorted(targets)
+    rho, _ = pairwise_correlations(_rank_columns(np.column_stack([values[:, wanted], change])).ranks)
+    # How each target follows every column's value on the row before.
+    follows, _ = pairwise_correlations(np.column_stack([values[:, wanted], before]))
+    found: dict[str, Derivation] = {}
+    for row, index in enumerate(wanted):
+        closeness = np.nan_to_num(np.abs(rho[row, len(wanted):]), nan=0.0)
+        for other in np.argsort(-closeness):
+            if closeness[other] < STEP_RANKS:
+                break
+            if other == index or family[other] == family[index]:
+                continue
+            rate = _step_rate(values[:, index], change[:, other])
+            if rate is not None:
+                found[columns[index]] = Derivation(
+                    columns[index], (columns[other],), (rate[0],), 0.0, "rate", share=rate[1]
+                )
+                break
+    for row, index in enumerate(wanted):
+        if columns[index] in found:
+            continue
+        strength = np.nan_to_num(np.abs(pearson[index]), nan=-1.0)
+        # As in the main search, a column is built from the columns before it.
+        near = [
+            other for other in np.argsort(-strength)
+            if other < index and family[other] != family[index] and strength[other] > 0
+        ][:PART_CANDIDATES]
+        lead = np.nan_to_num(np.abs(follows[row, len(wanted):]), nan=-1.0)
+        lagged = [other for other in np.argsort(-lead) if family[other] != family[index]][:LAGGED_PARTS]
+        # Rows that do not run in order (one gene or patient each) give no column a
+        # say in the next row, and need no search.
+        if len(near) < 2 or not lagged or lead[lagged[0]] < NOTABLE_CORRELATION:
+            continue
+        names = [f"part{place}" for place in range(len(near))]
+        names += [f"before{place}" for place in range(len(lagged))]
+        block = np.column_stack([values[:, index], values[:, near], before[:, lagged]])
+        frame = pd.DataFrame(block, columns=["target", *names])
+        derivation = find_derivation(frame, "target", list(frame.columns[1:]))
+        if derivation is None or not any(part.startswith("before") for part in derivation.parts):
+            continue
+        source = {f"part{place}": columns[other] for place, other in enumerate(near)}
+        source |= {f"before{place}": columns[other] for place, other in enumerate(lagged)}
+        found[columns[index]] = replace(
+            derivation,
+            column=columns[index],
+            parts=tuple(source[part] for part in derivation.parts),
+            lagged=tuple(place for place, part in enumerate(derivation.parts) if part.startswith("before")),
+        )
+    return found
+
+
+def _capped(
+    frame: pd.DataFrame, columns: list[str], targets: set[int], pearson: np.ndarray, family: list[int]
+) -> dict[str, Derivation]:
+    """Columns cut off at another column: never above it, and equal to it on a good share of rows.
+
+    A time to recurrence that equals the follow-up time wherever no
+    recurrence was seen moves with it by construction, and so do an amount
+    paid and the amount due when most bills are paid in full.
+    """
+    values = frame.to_numpy(dtype=float)
+    strength = np.triu(np.nan_to_num(pearson, nan=0.0), k=1)
+    first, second = np.where(strength >= CAPPED_CORRELATION)
+    order = np.argsort(-strength[first, second], kind="stable")[:CAPPED_PAIRS]
+    found: dict[str, Derivation] = {}
+    tolerances: dict[int, float] = {}
+    for i, j in zip(first[order], second[order], strict=True):
+        if family[i] == family[j]:
+            continue
+        both = ~np.isnan(values[:, i]) & ~np.isnan(values[:, j])
+        if both.sum() < DERIVATION_MIN_ROWS:
+            continue
+        for low, high in ((i, j), (j, i)):
+            if low not in targets or columns[low] in found:
+                continue
+            x, y = values[both, low], values[both, high]
+            if low not in tolerances:
+                column = values[:, low]
+                tolerances[low] = _tolerance(column[~np.isnan(column)])[0]
+            tolerance = tolerances[low]
+            equal = float(np.mean(np.abs(x - y) <= tolerance))
+            if CAPPED_EQUAL <= equal < IDENTICAL_SHARE and float(np.mean(x <= y + tolerance)) >= CAPPED_BELOW:
+                found[columns[low]] = Derivation(
+                    columns[low], (columns[high],), (1.0,), 0.0, "capped", share=equal
+                )
+                break
+    return found
+
+
+def _transforms(
+    frame: pd.DataFrame, columns: list[str], targets: set[int], spearman: np.ndarray, family: list[int]
+) -> dict[str, Derivation]:
+    """Columns that are a log, a square root or another one-to-one function of another (``find_transform``).
+
+    Only pairs whose ranks agree to TRANSFORM_RANKS are checked. The later
+    column is tried as the function of the earlier first, since computed
+    columns are usually appended.
+    """
+    found: dict[str, Derivation] = {}
+    first, second = np.where(np.triu(np.abs(np.nan_to_num(spearman)) >= TRANSFORM_RANKS, k=1))
+    for i, j in zip(first, second, strict=True):
+        if family[i] == family[j] or columns[i] in found or columns[j] in found:
+            continue
+        for derived, source in ((j, i), (i, j)):
+            if derived in targets:
+                transform = find_transform(frame, columns[derived], columns[source])
+                if transform is not None:
+                    found[columns[derived]] = transform
+                    break
+    return found
+
+
 def _checked(dataframe: pd.DataFrame, derivation: Derivation) -> tuple[Derivation, pd.Index]:
     """The derivation with its exceptions counted on every row, and the rows holding a placeholder 0.
 
@@ -4255,8 +4936,9 @@ class Construction:
 
     One quantity recorded twice (a temperature in °C and in °F), a column
     computed from others (a total, a mean, the largest of several readings, a
-    score standardised within each group, shares that add up to 100), and a
-    flag marking where another column hits its cap. A pair related this way
+    score standardised within each group, shares that add up to 100), the
+    statistics of one reading (its minimum, mean and maximum), and a flag
+    marking where another column hits its cap. A pair related this way
     says nothing new, so the comparison and relationship scans both set it
     aside. The correlations it is found from serve the relationship scan.
     """
@@ -4281,10 +4963,21 @@ class Construction:
     angles: tuple[str, ...] = ()
     #: For each summary that reads 0 where its parts are blank, the rows holding that 0.
     blanks: tuple[tuple[str, pd.Index], ...] = ()
+    #: Columns that summarise one reading (see ``summary_families``), each family in table order.
+    summaries: tuple[tuple[str, ...], ...] = ()
 
     @property
     def sampled(self) -> bool:
         return self.rows > SCAN_ROWS
+
+    @cached_property
+    def _summary_of(self) -> dict[str, int]:
+        return {column: index for index, members in enumerate(self.summaries) for column in members}
+
+    def summary_family(self, column: str) -> tuple[str, ...]:
+        """The columns that summarise the same reading as ``column``, itself included, or ()."""
+        index = self._summary_of.get(column)
+        return () if index is None else self.summaries[index]
 
     @cached_property
     def position(self) -> dict[str, int]:
@@ -4310,13 +5003,26 @@ class Construction:
 
     @cached_property
     def _parts(self) -> dict[str, frozenset]:
-        """Each derived column's parts, as the families they belong to (or their names, when not screened)."""
-        return {
-            item.column: frozenset(
-                self.family[self.position[part]] if part in self.position else part for part in item.parts
-            )
-            for item in self.derived
-        }
+        """Each derived column's parts, as the families they belong to (or their names, when not screened).
+
+        A part built itself brings its own parts along: an acceleration made
+        from a velocity made from an angle is built from the angle too.
+        """
+        direct = {item.column: item.parts for item in self.derived}
+
+        def key(part: str) -> object:
+            return self.family[self.position[part]] if part in self.position else part
+
+        found = {}
+        for column in direct:
+            reached, waiting = set(), list(direct[column])
+            while waiting:
+                part = waiting.pop()
+                if part not in reached and part != column:
+                    reached.add(part)
+                    waiting.extend(direct.get(part, ()))
+            found[column] = frozenset(key(part) for part in reached)
+        return found
 
     def _part_families(self, column: str) -> frozenset:
         return self._parts.get(column, frozenset())
@@ -4327,10 +5033,18 @@ class Construction:
         key = self.family[self.position[other]] if other in self.position else other
         return key in families
 
+    @cached_property
+    def _near(self) -> frozenset:
+        return frozenset(frozenset((first, second)) for first, second, _ in self.near_duplicates)
+
     def relation(self, first: str, second: str) -> str | None:
-        """Why two columns are related by construction: "copy", "flag", "built", "total", or None."""
+        """Why two columns relate by construction: "copy", "near", "summary", "flag", "built" or "total"."""
         if self.same_quantity(first, second):
             return "copy"
+        if frozenset((first, second)) in self._near:
+            return "near"
+        if first in self._summary_of and self._summary_of.get(first) == self._summary_of.get(second):
+            return "summary"
         if any({flag.flag, flag.column} == {first, second} for flag in self.flags):
             return "flag"
         if self.built_from(first, second) or self.built_from(second, first):
@@ -4418,8 +5132,31 @@ def construction(
     targets = {screened.index(column) for column in columns}
     derived = _derivations(thinned, screened, targets, pearson, counts, family)
     remaining = {index for index in targets if screened[index] not in derived}
+    derived.update(_products(thinned, screened, remaining, family))
+    remaining = {index for index in remaining if screened[index] not in derived}
+    # Rates and lags need consecutive rows, so they are searched on rows in table order.
+    ordered = dataframe[screened].iloc[:ORDERED_ROWS].astype(float)
+    derived.update(_neighbour_derivations(ordered, screened, remaining, pearson, family))
+    remaining = {index for index in remaining if screened[index] not in derived}
+    derived.update(_built_from_built(thinned, screened, remaining, derived, family))
+    remaining = {index for index in remaining if screened[index] not in derived}
+    transforms = _transforms(thinned, screened, remaining, spearman, family)
+    derived.update(transforms)
+    remaining = {index for index in remaining if screened[index] not in derived}
+    # A log or a square root of a column is that quantity on another scale, one family with it.
+    for column, found in transforms.items():
+        joined, into = family[screened.index(column)], family[screened.index(found.parts[0])]
+        family = [into if member == joined else member for member in family]
     for column, found in _summaries(dataframe, thinned, screened, remaining, pearson, family).items():
         derived[column] = replace(found, parts=tuple(sorted(found.parts, key=order.__getitem__)))
+    remaining = {index for index in remaining if screened[index] not in derived}
+    # A part of a row maximum never exceeds it either, so a cut-off is only sought
+    # between columns that no formula already ties together.
+    tied = {frozenset((column, part)) for column, found in derived.items() for part in found.parts}
+    for column, found in _capped(thinned, screened, remaining, pearson, family).items():
+        if frozenset((column, found.parts[0])) not in tied:
+            derived[column] = found
+    derived = {column: _in_table_order(found, order) for column, found in derived.items()}
     for item in known:
         derived[item.column] = item
     blanks = []
@@ -4450,6 +5187,7 @@ def construction(
         flags=tuple(_cap_flags(frame, ranked, counts)),
         angles=angles,
         blanks=tuple(blanks),
+        summaries=summary_families(frame, screened),
     )
 
 
@@ -4480,8 +5218,11 @@ class RelationshipScan:
     rows: int = 0
     #: The measure's columns set aside as related to it by construction, with the reason:
     #: "copy" (the same quantity, or the same name above SHARED_STEM_CORRELATION),
-    #: "built", "flag", "total" or "place" (two map coordinates).
+    #: "summary" (another statistic of the same reading), "built", "flag", "total"
+    #: or "place" (two map coordinates).
     set_aside: tuple[tuple[str, str], ...] = ()
+    #: Families of columns that summarise one reading, with two or more members scanned.
+    summaries: tuple[tuple[str, ...], ...] = ()
 
     @property
     def sampled(self) -> bool:
@@ -4530,9 +5271,9 @@ def scan_relationships(
     exactly. Tables longer than SCAN_ROWS are screened on a fixed random
     sample of that many rows. Pairs related by construction are left out and
     returned for the calculation: near-duplicates, a column built from the
-    other (or both built from the same items), shares that add up to a fixed
-    total, a flag marking the other's cap, and same-stem names above
-    SHARED_STEM_CORRELATION. ``built`` is a screen already made of the same
+    other (or both built from the same items), two statistics of one reading,
+    shares that add up to a fixed total, a flag marking the other's cap, and
+    same-stem names above SHARED_STEM_CORRELATION. ``built`` is a screen already made of the same
     columns. Returns None when no pair has MIN_CORRELATION_PAIRS complete rows.
     """
     built = built if built is not None else construction(dataframe, columns, measure)
@@ -4654,6 +5395,7 @@ def scan_relationships(
         angles=built.angles,
         rows=built.rows,
         set_aside=tuple(set_aside),
+        summaries=tuple(family for family in built.summaries if len(set(family) & scanned) > 1),
     )
 
 
@@ -4666,6 +5408,9 @@ ROWS_PER_TERM = 10
 MAX_VIF = 5.0
 # Rows a model is fitted on; longer tables use a fixed random sample.
 MODEL_ROWS = 50_000
+# R² from which a fit is an identity in how the columns were computed (an
+# annual mean and its seasons), not a relationship between readings.
+EXACT_FIT = 0.995
 
 
 @dataclass(frozen=True)
@@ -4711,6 +5456,20 @@ class JointModel:
     residual_sd: float
     #: Rows with the measure and every predictor recorded; above MODEL_ROWS the fit used a sample.
     rows: int = 0
+    #: Distinct rows among the ``n`` fitted: a reading repeated on every row of its visit counts once.
+    distinct: int = 0
+
+    @property
+    def exact(self) -> bool:
+        """Whether the fit is an identity: R² of EXACT_FIT or more, or a coefficient known to no width."""
+        return self.r2 >= EXACT_FIT or any(
+            term.high - term.low <= 1e-9 * abs(term.coefficient) for term in self.terms
+        )
+
+    @property
+    def clear(self) -> tuple[ModelTerm, ...]:
+        """The predictors whose coefficients stay clear of zero with the others held fixed."""
+        return tuple(term for term in self.terms if term.p_value < ALPHA)
 
     @property
     def best_single(self) -> ModelTerm:
@@ -4731,11 +5490,15 @@ class JointModel:
         return tuple(term.name for term in self.terms)
 
 
-def fit_joint_model(frame: pd.DataFrame, measure: str, predictors: list[str]) -> JointModel | None:
-    """Fit ``measure`` on up to MAX_MODEL_TERMS of ``predictors`` together, by ordinary least squares.
+def fit_joint_model(
+    frame: pd.DataFrame, measure: str, predictors: list[str], *, limit: int = MAX_MODEL_TERMS
+) -> JointModel | None:
+    """Fit ``measure`` on up to ``limit`` of ``predictors`` together, by ordinary least squares.
 
     The fit uses the rows where the measure and every predictor are recorded
-    and needs ROWS_PER_TERM of them per predictor. Predictors are taken in the
+    and needs ROWS_PER_TERM distinct ones per predictor: rows that repeat one
+    visit's readings add no evidence, and a model with as many terms as
+    distinct rows fits them exactly whatever they hold. Predictors are taken in the
     order given; one that does not vary, or that the earlier ones reproduce
     exactly, is dropped. Coefficients with 95% intervals, R² and adjusted R²
     come from ``statsmodels`` OLS, and each predictor's variance inflation
@@ -4744,7 +5507,7 @@ def fit_joint_model(frame: pd.DataFrame, measure: str, predictors: list[str]) ->
     """
     chosen = [
         column for column in dict.fromkeys(predictors) if column != measure and column in frame.columns
-    ][:MAX_MODEL_TERMS]
+    ][:limit]
     if measure not in frame.columns or len(chosen) < 2:
         return None
     data = frame[[measure, *chosen]].apply(pd.to_numeric, errors="coerce").dropna()
@@ -4758,7 +5521,8 @@ def fit_joint_model(frame: pd.DataFrame, measure: str, predictors: list[str]) ->
         design = np.column_stack([np.ones(len(data)), data[[*kept, column]].to_numpy(dtype=float)])
         if np.linalg.matrix_rank(design) == design.shape[1]:
             kept.append(column)
-    if len(kept) < 2 or len(data) < ROWS_PER_TERM * len(kept) or data[measure].nunique() < 2:
+    distinct = len(data[[measure, *kept]].drop_duplicates())
+    if len(kept) < 2 or distinct < ROWS_PER_TERM * len(kept) or data[measure].nunique() < 2:
         return None
     target = data[measure].to_numpy(dtype=float)
     design = np.column_stack([np.ones(len(data)), data[kept].to_numpy(dtype=float)])
@@ -4787,6 +5551,113 @@ def fit_joint_model(frame: pd.DataFrame, measure: str, predictors: list[str]) ->
         adjusted_r2=float(fit.rsquared_adj),
         residual_sd=float(np.sqrt(fit.mse_resid)),
         rows=rows,
+        distinct=distinct,
+    )
+
+
+# --- Logistic model -----------------------------------------------------------
+
+# Cases of the rarer outcome a logistic model needs per predictor for its odds ratios to settle.
+EVENTS_PER_TERM = 10
+# A log odds ratio per standard deviation beyond this (an odds ratio of about 150)
+# means the readings all but separate the outcomes, so the estimate is not finite in effect.
+SEPARATED_LOG_ODDS = 5.0
+
+
+@dataclass(frozen=True)
+class OddsTerm:
+    """One predictor's odds ratio in a logistic model, per standard deviation of the predictor."""
+
+    name: str
+    odds_ratio: float
+    low: float
+    high: float
+    p_value: float
+    #: The predictor's standard deviation on the model's rows: the step each odds ratio is per.
+    step: float
+
+
+@dataclass(frozen=True)
+class LogisticModel:
+    """A logistic regression of a yes/no outcome on several readings at once."""
+
+    outcome: str
+    event: object
+    terms: tuple[OddsTerm, ...]
+    n: int
+    events: int
+    #: McFadden's pseudo R²: the share of the null log-likelihood the readings remove.
+    pseudo_r2: float
+
+    @property
+    def clear(self) -> tuple[OddsTerm, ...]:
+        return tuple(term for term in self.terms if term.p_value < ALPHA)
+
+
+def fit_logistic_model(
+    frame: pd.DataFrame, outcome: str, predictors: list[str], *, limit: int = MAX_MODEL_TERMS
+) -> LogisticModel | None:
+    """Fit a yes/no ``outcome`` on up to ``limit`` of ``predictors`` together, by logistic regression.
+
+    Each odds ratio is per standard deviation of its predictor, with the
+    others held fixed, with a 95% interval, from ``statsmodels`` Logit. The
+    fit needs EVENTS_PER_TERM cases of the rarer outcome per predictor.
+    Returns None when the outcome is not yes/no, when the predictors separate
+    the outcomes completely or all but completely (an odds ratio beyond
+    SEPARATED_LOG_ODDS on the log scale), or when the fit does not converge:
+    then there is no estimate to report.
+    """
+    event = outcome_event(frame[outcome]) if outcome in frame.columns else None
+    if event is None:
+        return None
+    chosen = [column for column in dict.fromkeys(predictors) if column != outcome and column in frame.columns]
+    data = frame[[outcome, *chosen[:limit]]].copy()
+    data[chosen[:limit]] = data[chosen[:limit]].apply(pd.to_numeric, errors="coerce")
+    data = data.dropna()
+    if len(data) > MODEL_ROWS:
+        data = data.sample(MODEL_ROWS, random_state=0)
+    target = (data[outcome] == event).to_numpy(dtype=float)
+    kept: list[str] = []
+    for column in chosen[:limit]:
+        if data[column].nunique() < 2:
+            continue
+        design = np.column_stack([np.ones(len(data)), data[[*kept, column]].to_numpy(dtype=float)])
+        if np.linalg.matrix_rank(design) == design.shape[1]:
+            kept.append(column)
+    rarer = int(min(target.sum(), len(target) - target.sum()))
+    if not kept or rarer < EVENTS_PER_TERM * len(kept):
+        return None
+    spread = data[kept].std().to_numpy(dtype=float)
+    design = np.column_stack([np.ones(len(data)), data[kept].to_numpy(dtype=float) / spread])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        try:
+            fit = Logit(target, design).fit(disp=0, maxiter=100)
+        except Exception:  # noqa: BLE001 - separation, singular fits and non-convergence all mean no estimate
+            return None
+    if not fit.mle_retvals.get("converged", False) or not np.all(np.isfinite(fit.bse)):
+        return None
+    if np.abs(fit.params[1:]).max() > SEPARATED_LOG_ODDS:
+        return None
+    intervals = fit.conf_int(ALPHA)
+    terms = tuple(
+        OddsTerm(
+            name=column,
+            odds_ratio=float(np.exp(fit.params[index])),
+            low=float(np.exp(intervals[index][0])),
+            high=float(np.exp(intervals[index][1])),
+            p_value=float(fit.pvalues[index]),
+            step=float(spread[index - 1]),
+        )
+        for index, column in enumerate(kept, start=1)
+    )
+    return LogisticModel(
+        outcome=outcome,
+        event=event,
+        terms=terms,
+        n=len(data),
+        events=int(target.sum()),
+        pseudo_r2=float(fit.prsquared),
     )
 
 

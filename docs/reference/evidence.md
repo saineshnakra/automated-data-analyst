@@ -47,7 +47,9 @@ assembled in this order:
 | `rates` | How often a yes/no outcome occurs in each group of another column (see [Rates](#rates)) | No yes/no column, or no grouping across which its rate differs clearly |
 | `anomaly` | The most severe flagged period and how many were flagged, against the band for its time of year when the series has a yearly pattern | Under 8 periods even at a finer grain, or nothing flagged |
 | `relationship` | What relates to the measure, then the strongest other pair, or a null result | Fewer than two numeric readings, or no pair with 12 complete rows |
-| `model` | The measure fitted on the readings that relate to it, together (see [A joint model](#a-joint-model)) | Fewer than two such readings, too few rows, or a fit that adds nothing to the best single reading |
+| `model` | The measure fitted on the readings that relate to it, together (see [A joint model](#a-joint-model)), or the identity it is when the fit leaves no residual | Fewer than two such readings, too few distinct rows, or a fit that adds nothing to the best single reading |
+| `logistic` | A yes/no measure fitted on the readings that relate to it by logistic regression, with odds ratios | A measure that is not yes/no, too few cases per reading, or a fit that does not converge or that the readings separate |
+| `ranking` | The rows ranked by their mean and spread, when each row summarises a set of values (a table of each probe's count, mean, std and quartiles) | Any other table |
 | `outliers` | Values outside 1.5 × IQR in every reading, judged on each one's shape and within the grouping that explains it; a shift when one reading's form one run in time; for a mostly-zero measure, its tail instead | No reading with more flagged values than chance gives, and no shift |
 | `quality` | The data checks' leading issues with counts, and the share of populated cells | No issue and no missing cells |
 
@@ -387,7 +389,12 @@ left out, and named:
 |---|---|
 | A numeric column that repeats a part of the date column (`MO` is the month of `Date`) | It shows the season or the trend, not a factor |
 | A grouping nested within one already scanned (concentrations 3 to 12 used only with the blue dyes) | Its differences repeat the other grouping's |
+| A grouping whose levels each hold whole levels of a finer one (a region holding two kinds of protected zone; `within_one_level`) | The finer one is compared instead and holds its differences and more, unless the coarser one is the grouping column |
+| A grouping that splits the rows exactly as one already kept | It is compared as that one, and the calculation says so |
 | A copy of a reading in other units (`MaxTemp` in °C beside `MAX` in °F) | The reading is compared once, as the measure when it is one |
+| Other statistics of one reading (`pm_min` and `pm_max` beside `pm_avg`) | One of them stands for the rest: the measure, or the mean |
+| A score standardised within each group ("Z_SCORE is LN_IC50 standardised within each DRUG_ID") | Its source is compared instead |
+| A reading fixed for each value of an item column (a species' trophic level; `item_attributes`) | It describes the item, so record by record it would weigh each item by how often it was recorded |
 
 Pairs related by construction are not compared:
 
@@ -396,13 +403,19 @@ Pairs related by construction are not compared:
 | A grouping set by the reading | Farm size cut from acres; anaemia set by haemoglobin below 12 for women and 13.5 for men; a pollutant label naming the largest sub-index | The rule is stated in the card: "Result is set by Hemoglobin: Result 1 below 12.0 for Gender 0 and below 13.5 for Gender 1, on 100% of rows, so it is not compared with Hemoglobin or anything built from it" |
 | A score and the items it is built from | A scale that is the mean of its rated items, read as codes | Named in the calculation |
 | A reading fixed within each group | A station's battery voltage, a reef's coordinates | Named in the calculation as an attribute of the group |
+| A grouping that holds the reading by definition (`built_in_grouping`) | Precipitation amount across its form code, whose "none" group is all 0; PM across an AQI level cut from it; trophic level across trophic group | Named in the calculation with the reason |
 | Coordinates and compass directions | Latitude, wind direction | Never compared |
 
 The rules come from `grouping_rules` and the pairs built from one another from
 the brief's screen of the table (`construction`), which the `relationship`
 card uses too (see [Comparing groups](compare.md#pairs-related-by-construction)).
-A grouping set by the measure also gets no `leader` card, so it never makes
-the headline.
+A grouping set by the measure, or holding it by definition, also gets no
+`leader` card, so it never makes the headline, and the `trend` and `driver`
+cards then follow the measure without it as a segment. The `outliers` card
+never judges a reading within a grouping cut from it, and leaves out readings
+fixed for each item. `grouping_set_by(dataframe, roles, reading, grouping)`
+gives Ask the same check as a sentence ("categori is set by max: ..."), or ""
+when the grouping holds the reading by no definition.
 
 - P-values are Holm-adjusted for every test run, or, over more than 300
   readings, Benjamini-Hochberg adjusted, and the calculation says which and
@@ -421,7 +434,8 @@ the headline.
   explains: "Of the variance in Ca, Depth explains 76%, Contour 5%", with one
   value per subject in each group when subjects repeat, so the shares match
   the comparisons beside them. Groupings set by the measure, or that it is
-  built from, are left out of the shares.
+  built from, are left out of the shares, and so is a grouping that explains
+  99% or more, each of whose groups holds about one value of the measure.
 - The measure across the grouping column is left to the `leader` card when
   that card compares the groups.
 
@@ -452,7 +466,11 @@ and goes with the outcome too, the rate is compared within its levels, the
 table's main grouping first: "htn is tied to classification (Cramér's V =
 0.59), which goes with ane = yes too (Cramér's V = 0.32), so the comparison is
 repeated within each classification: within ckd, 31.3% in htn = yes vs 13.6%
-in htn = no (...); notckd holds only htn = no."
+in htn = no (...); notckd holds only htn = no." When the outcome is cut from
+a reading at a cut-off that moves with the grouping compared (anaemic below 12
+g/dL for women and 13.5 for men), the gap is built into the label: the card
+says so, says whether the reading itself differs across the grouping, ranks
+that grouping after the others and never leads the brief with it.
 
 ### Changes in level
 
@@ -482,16 +500,63 @@ slowly show a shift more often than stable ones.
 
 The `model` card fits the measure on the readings that relate to it with p
 below 0.05, at most six of them (`fit_joint_model`; see
-[Comparing groups](compare.md#a-joint-model)). It appears when the readings
-together explain clearly more than the best one alone (an R² at least 0.1
-above its r², `MODEL_GAIN`), or when a reading's coefficient points the other
-way from its own correlation. The card gives R² and adjusted R², the fitted
+[Comparing groups](compare.md#a-joint-model)). Left out, and named in the
+calculation: another candidate outcome (the alternatives the roles name),
+the same quantity in another form (a sibling reading at |r| ≥ 0.95), and a
+case number (a name such as case, run or trial over whole numbers each in one
+unbroken run of rows; `NUMBERING_WORDS`). Columns related by construction
+never reach it. A grouping of 2 to 4 levels across which the measure clearly
+differs (a one-way ANOVA with p below 0.05), such as a material or a cutting
+speed set by the design, enters too, each level a 0/1 indicator against the
+most common one ("material 2 +0.318 against material 1"); the subject, a case
+number and a grouping that holds the measure by definition never do, and the
+gain is then judged against the best grouping alone as well.
+
+It appears when the readings together explain clearly more than the best one
+alone (an R² at least 0.1 above its r², `MODEL_GAIN`), or when a reading's
+coefficient points the other way from its own correlation and its variance
+inflation factor is 5 or less, since a reversal among overlapping readings is
+arithmetic. A table with no grouping is one outcome against the columns
+recorded beside it, so it gets the model of the outcome on all of them (up to
+10, `MAX_INPUT_TERMS`) whenever no one reading explains half of it
+(`SINGLE_ANSWER`), however little they explain together; the gain then decides
+only whether it leads. The card gives R² and adjusted R², the fitted
 equation, each coefficient with its 95% interval, a sentence for each reversed
-reading, and a collinearity warning when a variance inflation factor is above
-5. It is left out when a grouping that explains at least 14% of the measure (a
-0/1 outcome the readings differ by) takes away what the readings explain:
-once its levels are in the fit, they add less than 0.1 to R² (`gain_within`),
-so the fit would only restate the gap between its groups.
+reading, the readings that add little once the others are known, and a
+collinearity warning when a variance inflation factor is above 5. It is left
+out when a grouping that explains at least 14% of the measure (a 0/1 outcome
+the readings differ by) takes away what the readings explain: once its
+levels are in the fit, they add less than 0.1 to R² (`gain_within`), so the
+fit would only restate the gap between its groups. Its lead
+names only the readings that stay clear. A model whose readings all share the
+measure's name stem or unit (other acids of the same sample) never leads.
+
+A fit with an R² of 0.995 or more is an identity in how the columns were
+computed, not a relationship: the card is titled "M-A-M is a combination of
+other columns", names the combination by its clear terms, and reports no
+model.
+
+### A logistic model
+
+When the measure is yes/no, the `logistic` card fits it on the readings
+whose correlation with it has p below 0.05, at most six, by logistic
+regression (`fit_logistic_model`; see
+[Comparing groups](compare.md#a-logistic-model)): "Fitted together by
+logistic regression (n = 50,000, 38,842 with fasting_ability 1), the odds of
+fasting_ability 1 change with each reading, per standard deviation and with
+the others held fixed: OBS1_glucose_max ×0.40 (95% CI 0.39 to 0.41,
+p < 0.001); ...". One statistic of a reading is used, a column is never used
+with what it is built from, and a reading the outcome is cut from is left out
+and its rule named. A fit that does not converge or that the readings
+separate gets no card.
+
+### Rows of a summary table
+
+When each row summarises a set of values (`mean`, `std`, `min`, quartiles and
+`max` of each probe), the statistics move together by construction and none
+of their correlations is reported. The `ranking` card lists the rows with the
+highest and lowest mean, the largest standard deviation and the largest
+coefficient of variation, named by the identifier.
 
 ### Relationships
 
@@ -520,8 +585,13 @@ and listed in the calculation: a column and the columns it is built from (a
 total and its items, a mean, a difference, the largest of several readings, a
 score standardised within each group), shares that add up to a fixed total, a
 flag that only marks another column's cap, same-stem names above |r| = 0.95,
-two map coordinates, and near-duplicates (|r| ≥ 0.99 with ranks that agree,
-such as a reading and its adjusted copy). Near-duplicates are also named in
+two map coordinates, the statistics of one reading (its minimum, mean and
+maximum), and near-duplicates (|r| ≥ 0.99 with ranks that agree, such as a
+reading and its adjusted copy). The correlations are computed with the cells
+the data checks flagged left out, the same cells the calculation says were
+left out. When the pair the card leads with is two totals over the same items
+(`density_Total` and `allelectrons_Total`), it says both grow with how many
+items a row sums over, and the pair never leads the brief. Near-duplicates are also named in
 the statement: up to three of them (`NEAR_DUPLICATES_NAMED`), saying they
 probably measure the same thing or one is derived from another. The columns
 left out of the measure's own ranking are named with the reason ("Left out of

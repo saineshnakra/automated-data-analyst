@@ -7,11 +7,15 @@ import pandas as pd
 from ada.aggregation import driver_frame, heatmap_frame, segment_frame, segment_period_change, trend_frame
 from ada.business_insights import (
     Evidence,
+    _Groupings,
+    _item_readings,
+    _numbers_cases,
     _outlier_evidence,
     _shown_evidence,
     analyze_business,
     build_business_report,
     describe_correlation,
+    grouping_set_by,
     measure_correlation,
     numeric_readings,
 )
@@ -1817,6 +1821,26 @@ class DataCheckTests(unittest.TestCase):
         expected = pooled["Wind Speed"].corr(pooled["Maximum Wind Speed"])
         self.assertIn(f"r = {expected:.2f}", relationship.statement)
 
+    def test_the_correlates_listed_leave_out_the_flagged_cells_too(self):
+        rng = np.random.default_rng(65)
+        load = rng.normal(50, 10, 500).round(1)
+        frame = pd.DataFrame({
+            "Station": rng.choice(["North", "South"], 500),
+            "Load": load,
+            "Current": (load * 0.9 + rng.normal(0, 3, 500)).round(1),
+            "Heat": (load * 0.5 + rng.normal(0, 8, 500)).round(1),
+        })
+        frame.loc[:3, "Heat"] = 999.9
+        roles = lab_roles(frame, "Load", "Station")
+
+        relationship = brief_card(analyze_business(frame, roles), "relationship")
+
+        assert relationship is not None
+        pooled = frame.drop(index=range(4))
+        expected = pooled["Load"].corr(pooled["Heat"])
+        listed = rf"Next: Heat \(r = {expected:.2f}, Spearman [0-9.]+, n = 496\)"
+        self.assertRegex(relationship.statement, listed)
+
 
 class RateCardTests(unittest.TestCase):
     def test_a_yes_no_outcome_gets_its_rate_in_each_group(self):
@@ -1872,6 +1896,320 @@ class JointModelCardTests(unittest.TestCase):
         frame["w"] = frame["x"] * 0.5 + rng.normal(0, 1, 300)
 
         self.assertIsNone(brief_card(analyze_business(frame, roles_for(frame, "y", None)), "model"))
+
+    def test_an_exact_combination_is_named_instead_of_modelled(self):
+        rng = np.random.default_rng(56)
+        # More parts than the construction screen traces, so only the model meets the identity.
+        items = pd.DataFrame(rng.normal(25, 2, (200, 9)), columns=[f"item{index}" for index in range(9)])
+        frame = items.assign(Total=items.sum(axis=1))
+        roles = roles_for(frame, "Total", None)
+
+        brief = analyze_business(frame, roles)
+
+        model = brief_card(brief, "model")
+        assert model is not None
+        self.assertEqual(model.title, "Total is a combination of other columns")
+        self.assertIn("Total is almost exactly a fixed combination of", model.statement)
+        self.assertEqual(model.lead, "")
+        self.assertNotIn("Together", brief.headline)
+
+    def test_only_predictors_that_stay_clear_are_named_in_the_lead(self):
+        rng = np.random.default_rng(57)
+        frame = pd.DataFrame(rng.normal(size=(300, 3)), columns=["carbon", "nickel", "vanadium"])
+        frame["vanadium"] = frame["carbon"] * 0.6 + rng.normal(0, 0.8, 300)
+        frame["strength"] = 2 * frame["carbon"] + 1.5 * frame["nickel"] + rng.normal(0, 1, 300)
+
+        model = brief_card(analyze_business(frame, roles_for(frame, "strength", None)), "model")
+
+        assert model is not None
+        self.assertIn("vanadium adds little once the others are known", model.statement)
+        self.assertIn("carbon and nickel stay clear", model.lead)
+        self.assertTrue(model.lead.startswith("Together, 3 readings explain"))
+
+    def test_a_case_number_and_another_candidate_outcome_are_not_predictors(self):
+        rng = np.random.default_rng(58)
+        case = np.repeat(np.arange(1, 21), 15)
+        time = np.tile(np.arange(15.0), 20)
+        frame = pd.DataFrame({"case": case, "time": time, "load": rng.normal(5, 1, 300)})
+        frame["wear"] = 0.1 * frame["time"] + 0.05 * frame["case"] + 0.3 * frame["load"]
+        frame["wear"] += rng.normal(0, 0.3, 300)
+        frame["yield"] = frame["wear"] * 2 + rng.normal(0, 0.5, 300)
+        roles = RolesWithAlternatives(
+            date=None, measure="wear", dimension=None, identifier=None, dimensions=(),
+            numeric=("case", "time", "load", "wear", "yield"), measure_alternatives=("yield",),
+        )
+
+        model = brief_card(analyze_business(frame, roles), "model")
+
+        assert model is not None
+        self.assertNotIn("case", model.statement)
+        self.assertIn("yield (another candidate outcome)", model.calculation)
+        self.assertTrue(_numbers_cases("case", frame["case"]))
+        self.assertFalse(_numbers_cases("time", frame["time"]))
+        self.assertFalse(_numbers_cases("case", frame["time"]))
+
+    def test_a_model_on_sibling_readings_never_leads(self):
+        rng = np.random.default_rng(59)
+        base = rng.normal(size=(200, 3))
+        frame = pd.DataFrame(base, columns=["Propanoic_acid", "Butanoic_acid", "Valeric_acid"])
+        frame["Acetic_acid"] = frame.sum(axis=1) + rng.normal(0, 1, 200)
+
+        brief = analyze_business(frame, roles_for(frame, "Acetic_acid", None))
+
+        model = brief_card(brief, "model")
+        assert model is not None
+        self.assertIn("Every predictor is a reading of the same kind as Acetic_acid", model.statement)
+        self.assertEqual(model.lead, "")
+
+    def test_a_reversal_among_overlapping_predictors_is_not_a_finding(self):
+        rng = np.random.default_rng(61)
+        family = rng.normal(0, 1, 400)
+        frame = pd.DataFrame({
+            "Site": rng.choice(["a", "b"], 400),
+            "turbidity": family + rng.normal(0, 0.2, 400),
+            "color": family + rng.normal(0, 0.2, 400),
+        })
+        frame["secchi"] = -3 * frame["turbidity"] + 0.8 * frame["color"] + rng.normal(0, 0.5, 400)
+
+        self.assertIsNone(brief_card(analyze_business(frame, roles_for(frame, "secchi", "Site")), "model"))
+
+    def test_a_design_factor_enters_the_model_as_an_indicator(self):
+        rng = np.random.default_rng(62)
+        material = rng.choice(["steel", "iron"], 300)
+        frame = pd.DataFrame({"material": material, "time": rng.uniform(0, 40, 300)})
+        frame["wear"] = 0.01 * frame["time"] + np.where(material == "steel", 0.3, 0.0)
+        frame["wear"] += rng.normal(0, 0.05, 300)
+
+        model = brief_card(analyze_business(frame, roles_for(frame, "wear", "material")), "model")
+
+        assert model is not None
+        self.assertIn("against material iron", model.statement)
+        self.assertIn("each level a 0/1 indicator against the most common one", model.calculation)
+
+    def test_a_grade_cut_from_a_reading_in_the_model_is_not_a_factor(self):
+        rng = np.random.default_rng(63)
+        pm = rng.gamma(2, 40, 600)
+        frame = pd.DataFrame({
+            "Site": rng.choice(["a", "b"], 600),
+            "pm": pm,
+            "AQI_Level": np.select([pm < 50, pm < 100], ["Good", "Moderate"], "Unhealthy"),
+            "humidity": rng.normal(70, 8, 600),
+        })
+        frame.loc[frame.sample(30, random_state=2).index, "AQI_Level"] = "Moderate"
+        frame["gas"] = frame["pm"] + 3 * frame["humidity"] + rng.normal(0, 20, 600)
+        roles = replace(roles_for(frame, "gas", "Site"), dimensions=("Site", "AQI_Level"))
+
+        model = brief_card(analyze_business(frame, roles), "model")
+
+        assert model is not None
+        self.assertNotIn("AQI_Level", model.statement)
+
+    def test_inputs_that_explain_little_still_get_their_model(self):
+        rng = np.random.default_rng(60)
+        frame = pd.DataFrame(rng.uniform(100, 500, (400, 4)), columns=["Cement", "Water", "Sand", "Ash"])
+        frame["Strength"] = 0.02 * frame["Cement"] - 0.01 * frame["Water"] + rng.normal(0, 4, 400)
+
+        model = brief_card(analyze_business(frame, roles_for(frame, "Strength", None)), "model")
+
+        assert model is not None
+        self.assertIn("Together, ", model.statement)
+        self.assertEqual(model.lead, "")
+        self.assertIn("every reading recorded beside it", model.calculation)
+
+
+class SummaryStatisticTests(unittest.TestCase):
+    def test_a_table_of_row_statistics_ranks_its_rows_instead_of_correlating_them(self):
+        rng = np.random.default_rng(66)
+        values = rng.normal(rng.uniform(3, 14, (300, 1)), rng.uniform(0.2, 2, (300, 1)), (300, 20))
+        frame = pd.DataFrame({
+            "probe": [f"p{index}" for index in range(300)],
+            "mean": values.mean(axis=1),
+            "std": values.std(axis=1),
+            "min": values.min(axis=1),
+            "max": values.max(axis=1),
+        })
+        roles = replace(roles_for(frame, "mean", None), identifier="probe")
+
+        brief = analyze_business(frame, roles)
+
+        self.assertIsNone(brief_card(brief, "relationship"))
+        ranking = brief_card(brief, "ranking")
+        assert ranking is not None
+        top = frame.loc[frame["mean"].idxmax(), "probe"]
+        self.assertTrue(ranking.statement.startswith(f"Highest mean: {top} ("))
+        self.assertIn("Largest std: ", ranking.statement)
+        self.assertTrue(brief.headline.startswith(f"{top} has the highest mean"))
+
+    def test_the_statistics_of_one_reading_are_compared_across_groups_once(self):
+        rng = np.random.default_rng(67)
+        group = np.repeat(["urban", "rural"], 150)
+        low = rng.uniform(5, 50, 300) + np.where(group == "urban", 20, 0)
+        frame = pd.DataFrame({
+            "area": group,
+            "pm_min": low,
+            "pm_avg": low + rng.uniform(5, 30, 300),
+            "rain": rng.normal(10, 2, 300),
+        })
+        frame["pm_max"] = frame["pm_avg"] + rng.uniform(5, 60, 300)
+        roles = replace(roles_for(frame, "rain", None), dimensions=("area",))
+
+        differences = brief_card(analyze_business(frame, roles), "differences")
+
+        assert differences is not None
+        self.assertIn("pm_min and pm_max summarise the same reading as pm_avg", differences.calculation)
+
+
+class DefinedGroupingTests(unittest.TestCase):
+    def test_a_finer_grouping_inside_one_region_is_kept_and_the_region_split_through_it(self):
+        rng = np.random.default_rng(68)
+        zone = rng.choice(["no-take", "partly protected", "open"], 600)
+        frame = pd.DataFrame({
+            "Diver": rng.choice(["Ana", "Ben"], 600),
+            "zone": zone,
+            "region": np.where(zone == "open", "South", "North"),
+            "fish": rng.poisson(np.select([zone == "no-take", zone == "open"], [30, 15], 8)).astype(float),
+            "depth": rng.normal(10, 2, 600),
+        })
+        roles = replace(roles_for(frame, "depth", "Diver"), dimensions=("Diver", "region", "zone"))
+
+        differences = brief_card(analyze_business(frame, roles), "differences")
+
+        assert differences is not None
+        self.assertIn("zone", differences.calculation.split(":")[0])
+        self.assertIn("compared through the finer one", differences.statement)
+        self.assertIn("region by zone", differences.statement)
+
+    def test_a_rate_set_by_a_cut_off_that_moves_with_the_grouping_says_so_and_does_not_lead(self):
+        rng = np.random.default_rng(69)
+        gender = np.repeat([0, 1], 300)
+        hemoglobin = rng.normal(13.3, 1.5, 600).round(1)
+        frame = pd.DataFrame({
+            "Gender": gender,
+            "Hemoglobin": hemoglobin,
+            "Result": (hemoglobin < np.where(gender == 1, 13.5, 12.0)).astype(int),
+        })
+        roles = roles_for(frame, "Hemoglobin", "Result", factors=("Gender",))
+
+        brief = analyze_business(frame, roles)
+
+        rates = brief_card(brief, "rates")
+        assert rates is not None
+        self.assertIn("at a cut-off that differs by Gender", rates.statement)
+        self.assertIn("Hemoglobin itself does not clearly differ by Gender", rates.statement)
+        self.assertEqual(rates.lead, "")
+        self.assertNotIn("share of rows with Result", brief.headline)
+
+    def test_a_standardised_copy_and_a_restating_grouping_are_left_out(self):
+        rng = np.random.default_rng(70)
+        drug = np.repeat([f"d{index}" for index in range(12)], 50)
+        frame = pd.DataFrame({
+            "Drug": drug,
+            "Tissue": rng.choice(["lung", "skin", "blood"], 600),
+            "IC50": rng.normal(0, 1, 600) + np.repeat(rng.normal(0, 3, 12), 50),
+        })
+        grouped = frame.groupby("Drug")["IC50"]
+        frame["Z"] = (frame["IC50"] - grouped.transform("mean")) / grouped.transform("std")
+        frame["Lot"] = frame["IC50"].round(6).astype(str)
+        roles = replace(roles_for(frame, "IC50", "Tissue"), dimensions=("Tissue", "Drug"))
+
+        differences = brief_card(analyze_business(frame, roles), "differences")
+
+        assert differences is not None
+        self.assertIn("Z is IC50 standardised within each Drug (mean 0, SD 1), so only IC50 is compared",
+                      differences.calculation)
+        self.assertNotIn("Z by", differences.statement)
+
+    def test_outlier_fences_never_come_from_a_band_of_the_reading(self):
+        rng = np.random.default_rng(71)
+        index = rng.gamma(3, 25, 4000).round()
+        frame = pd.DataFrame({
+            "station": rng.choice(["a", "b"], 4000),
+            "index": index,
+            "band": np.select([index <= 50, index <= 100], ["good", "moderate"], "unhealthy"),
+        })
+        # A run of days labelled good although the reading sits above the band.
+        frame.loc[:14, "index"] = 95.0
+        roles = replace(roles_for(frame, "index", "station"), dimensions=("station", "band"))
+
+        outliers = brief_card(analyze_business(frame, roles), "outliers")
+
+        assert outliers is not None
+        self.assertNotIn("of their own band", outliers.statement)
+
+    def test_a_visit_reading_already_counted_once_per_visit_is_kept(self):
+        rng = np.random.default_rng(76)
+        visit = np.repeat([f"v{index}" for index in range(60)], 6)
+        chemistry = dict(zip([f"v{index}" for index in range(60)], rng.normal(300, 50, 60), strict=True))
+        frame = pd.DataFrame({
+            "visit": visit,
+            "site_year": [f"s{name}" for name in visit],
+            "chemistry": [chemistry[name] for name in visit],
+            "length": rng.normal(20, 4, 360),
+        })
+        roles = roles_for(frame, "length", None)
+
+        alone = _item_readings(frame, ["chemistry", "length"], roles, _Groupings(chosen=()))
+        counted = _item_readings(frame, ["chemistry", "length"], roles, _Groupings(chosen=(), entity="visit"))
+
+        self.assertEqual(alone, {"chemistry": "visit"})
+        self.assertEqual(counted, {})
+
+    def test_ask_can_check_whether_a_grouping_is_built_from_a_reading(self):
+        rng = np.random.default_rng(72)
+        reading = rng.gamma(3, 25, 400).round()
+        frame = pd.DataFrame({
+            "max": reading,
+            "categori": np.select([reading <= 50, reading <= 100], ["BAIK", "SEDANG"], "TIDAK SEHAT"),
+            "station": rng.choice(["a", "b"], 400),
+            "humidity": rng.normal(70, 5, 400),
+        })
+        roles = replace(roles_for(frame, "humidity", "station"), dimensions=("station", "categori"))
+
+        self.assertTrue(grouping_set_by(frame, roles, "max", "categori").startswith("categori is set by max"))
+        self.assertEqual(grouping_set_by(frame, roles, "humidity", "categori"), "")
+
+
+class TotalsFamilyTests(unittest.TestCase):
+    def test_two_totals_over_the_same_items_get_a_caution_and_no_headline(self):
+        rng = np.random.default_rng(75)
+        atoms = rng.integers(1, 12, 400)
+        frame = pd.DataFrame({
+            "density_Total": atoms * rng.uniform(2, 8, 400),
+            "electrons_Total": atoms * rng.uniform(5, 30, 400),
+            "density_Average": rng.uniform(2, 8, 400),
+        })
+
+        brief = analyze_business(frame, roles_for(frame, "density_Total", None))
+
+        relationship = brief_card(brief, "relationship")
+        assert relationship is not None
+        self.assertIn("Both are totals over the items of each row", relationship.statement)
+        self.assertEqual(relationship.lead, "")
+
+
+class LogisticCardTests(unittest.TestCase):
+    def test_a_yes_no_measure_gets_odds_ratios_from_its_readings(self):
+        rng = np.random.default_rng(73)
+        frame = pd.DataFrame({
+            "glucose": rng.normal(120, 30, 800),
+            "weight": rng.normal(80, 12, 800),
+            "noise": rng.normal(size=800),
+        })
+        odds = np.exp(-0.04 * (frame["glucose"] - 120) - 0.03 * (frame["weight"] - 80))
+        frame["fasting_ability"] = (rng.random(800) < odds / (1 + odds)).astype(int)
+
+        logistic = brief_card(analyze_business(frame, roles_for(frame, "fasting_ability", None)), "logistic")
+
+        assert logistic is not None
+        self.assertEqual(logistic.title, "What goes with fasting_ability 1")
+        self.assertIn("glucose ×0.", logistic.statement)
+        self.assertIn("statsmodels Logit", logistic.calculation)
+
+    def test_a_measure_that_is_not_yes_no_gets_none(self):
+        rng = np.random.default_rng(74)
+        frame = pd.DataFrame({"x": rng.normal(size=300), "y": rng.normal(size=300)})
+
+        self.assertIsNone(brief_card(analyze_business(frame, roles_for(frame, "y", None)), "logistic"))
 
 
 class TwoFactorTests(unittest.TestCase):
