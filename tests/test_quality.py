@@ -1,5 +1,6 @@
 import time
 import unittest
+from dataclasses import replace
 
 import numpy as np
 import pandas as pd
@@ -8,9 +9,12 @@ from ada.quality import (
     blank_codes,
     flagged_index,
     name_bounds,
+    prefers_log_scale,
     quality_frame,
     scan,
     show_value,
+    statistics_frame,
+    statistics_mask,
 )
 from ada.schema import ColumnRoles
 
@@ -268,17 +272,38 @@ class PairTests(unittest.TestCase):
         self.assertEqual(len(issues), 1)
         self.assertEqual(issues[0].rows, 5)
 
-    def test_a_group_far_above_every_other_is_out_of_scale(self):
+    def test_a_group_off_by_a_unit_factor_is_out_of_scale(self):
         rng = np.random.default_rng(15)
-        frame = pd.DataFrame({
-            "City": np.repeat(["A", "B", "C", "D"], 50),
-            "CO": np.r_[rng.gamma(2, 5, 50), rng.gamma(2, 0.5, 150)],
-        })
+        base = rng.normal(2.0, 0.2, 200)
+        base[:50] *= 1000  # one city recorded in µg rather than mg
+        frame = pd.DataFrame({"City": np.repeat(["A", "B", "C", "D"], 50), "CO": base})
 
         issues = checks(scan(frame, roles_for(frame, "CO", "City")), "group_level")
 
         self.assertEqual(len(issues), 1)
         self.assertEqual(issues[0].group, "A")
+        self.assertIn("1,000", issues[0].detail)
+
+    def test_a_group_far_off_but_not_by_a_unit_factor_is_left_to_the_comparison(self):
+        rng = np.random.default_rng(26)
+        base = rng.normal(2.0, 0.1, 200)
+        base[:50] *= 45
+        frame = pd.DataFrame({"Status": np.repeat(["fire", "a", "b", "c"], 50), "TVOC": base})
+
+        self.assertFalse(checks(scan(frame, roles_for(frame, "TVOC", "Status")), "group_level"))
+
+    def test_a_phase_filling_one_stretch_of_time_is_not_a_unit_problem(self):
+        rng = np.random.default_rng(27)
+        base = rng.normal(2.0, 0.1, 200)
+        base[150:] *= 100
+        frame = pd.DataFrame({
+            "Time": pd.date_range("2024-01-01", periods=200, freq="s"),
+            "Status": np.repeat(["before", "warming", "cooling", "fire"], 50),
+            "TVOC": base,
+        })
+        roles = replace(roles_for(frame, "TVOC", "Status"), date="Time")
+
+        self.assertFalse(checks(scan(frame, roles), "group_level"))
 
     def test_two_groups_far_apart_are_left_to_the_comparison(self):
         rng = np.random.default_rng(16)
@@ -363,6 +388,308 @@ class HelperTests(unittest.TestCase):
         frame = pd.DataFrame({"Revenue": [np.inf, 1.0, 2.0, 3.0, -np.inf] * 5})
 
         self.assertEqual(scan(frame), ())
+
+
+class PhysicalLimitTests(unittest.TestCase):
+    def blood_panel(self, rows=400, seed=40):
+        rng = np.random.default_rng(seed)
+        return pd.DataFrame({
+            "Na": rng.normal(140, 4, rows).round(1),
+            "K": rng.normal(4.3, 0.4, rows).round(2),
+            "RBC": rng.normal(4.8, 0.5, rows).round(2),
+            "ALB": rng.normal(4.1, 0.4, rows).round(1),
+        })
+
+    def test_clinical_analytes_outside_survivable_ranges_are_impossible(self):
+        frame = self.blood_panel()
+        frame.loc[:59, "K"] = np.linspace(10.5, 19.6, 60)
+        frame.loc[:9, "Na"] = 278.8
+        frame.loc[100:139, "RBC"] = 33.9
+
+        issues = {issue.columns[0]: issue for issue in checks(scan(frame), "impossible")}
+
+        self.assertEqual(issues["K"].rows, 60)
+        self.assertIn("potassium level in mmol/L", issues["K"].rule)
+        self.assertIn("in a living patient", issues["K"].rule)
+        self.assertEqual(issues["Na"].rows, 10)
+        self.assertEqual(issues["RBC"].rows, 40)
+
+    def test_a_short_analyte_name_needs_a_second_analyte(self):
+        rng = np.random.default_rng(41)
+        potassium = np.r_[rng.normal(4.5, 0.5, 199), [15.0]]
+        frame = pd.DataFrame({"K": potassium, "Depth": rng.uniform(0, 30, 200)})
+
+        self.assertFalse(checks(scan(frame), "impossible"))
+
+    def test_the_unit_follows_the_median(self):
+        frame = self.blood_panel()
+        rng = np.random.default_rng(42)
+        frame["Haemoglobin"] = rng.normal(135, 12, len(frame)).round()  # g/L, not g/dL
+        frame.loc[0, "Haemoglobin"] = 240.0
+        frame.loc[1, "Haemoglobin"] = 310.0
+
+        issues = {issue.columns[0]: issue for issue in checks(scan(frame), "impossible")}
+
+        self.assertEqual(issues["Haemoglobin"].rows, 1)
+        self.assertIn("g/L", issues["Haemoglobin"].rule)
+
+    def test_a_unit_the_table_does_not_list_leaves_the_column_alone(self):
+        frame = self.blood_panel()
+        frame["Sodium (mg)"] = np.r_[[140.0] * 10, np.linspace(100, 900, len(frame) - 10)]
+
+        self.assertNotIn("Sodium (mg)", [issue.columns[0] for issue in checks(scan(frame), "impossible")])
+
+    def test_wind_speed_in_metres_a_second_is_bounded(self):
+        rng = np.random.default_rng(43)
+        frame = pd.DataFrame({"WS(m/s)": np.r_[rng.uniform(0.1, 1.0, 140), [136.4, 279.6]]})
+
+        issues = checks(scan(frame), "impossible")
+
+        self.assertEqual(issues[0].rows, 2)
+        self.assertIn("stays below 115", issues[0].rule)
+
+    def test_temperatures_are_never_judged_on_a_log_scale(self):
+        rng = np.random.default_rng(44)
+        values = np.sort(np.r_[rng.gamma(9, 0.8, 146) + 22, [80.6]])
+
+        self.assertFalse(prefers_log_scale(values, "TEMP(degreeC)"))
+        frame = pd.DataFrame({"TEMP(degreeC)": values})
+        self.assertEqual(checks(scan(frame), "extreme")[0].examples, ("80.6",))
+
+
+class FalseAlarmTests(unittest.TestCase):
+    def test_a_repeated_digit_that_reads_as_a_typo_is_an_entry_error(self):
+        rng = np.random.default_rng(45)
+        frame = pd.DataFrame({"Heart rate": np.r_[rng.normal(75, 12, 997).round(), [1111.0] * 3]})
+
+        issues = checks(scan(frame), "sentinel")
+
+        self.assertIn("likely entry error", issues[0].summary)
+        self.assertIn("111", issues[0].detail)
+
+    def test_a_shared_floor_is_not_a_copy(self):
+        rng = np.random.default_rng(46)
+        v = np.where(rng.random(300) < 0.65, 0.01, rng.uniform(0.02, 2.0, 300)).round(2)
+        nb = np.where(rng.random(300) < 0.7, 0.01, rng.uniform(0.02, 1.0, 300)).round(2)
+        nb[v == 0.01] = 0.01
+        frame = pd.DataFrame({"v": v, "nb": nb})
+
+        self.assertFalse(checks(scan(frame), "equal_columns"))
+
+    def test_a_row_maximum_is_not_a_copy(self):
+        rng = np.random.default_rng(47)
+        parts = pd.DataFrame(rng.gamma(4, 15, (400, 4)).round(), columns=["pm10", "so2", "co", "o3"])
+        parts["o3"] *= 2
+        frame = parts.assign(max=parts.max(axis=1))
+
+        self.assertFalse(checks(scan(frame), "equal_columns"))
+
+    def test_spreads_and_two_groups_are_not_max_below_min(self):
+        frame = pd.DataFrame({
+            "high_mp_mean": [101.05, 140.0, 150.0, 160.0] * 6,
+            "low_mp_mean": [104.56, 100.0, 110.0, 120.0] * 6,
+            "high_mp_sd": [0.55, 1.0, 2.0, 3.0] * 6,
+            "low_mp_sd": [0.68, 2.0, 3.0, 4.0] * 6,
+            "high_mp_n": [10, 12, 14, 16] * 6,
+            "low_mp_n": [11, 13, 15, 17] * 6,
+        })
+
+        self.assertFalse(checks(scan(frame), "min_max"))
+
+    def test_a_sample_size_is_not_capped(self):
+        frame = pd.DataFrame({"sample_size": [2000] * 4 + list(range(30, 58))})
+
+        self.assertFalse(checks(scan(frame), "cap"))
+
+    def test_a_value_shared_by_one_category_is_not_a_floor(self):
+        rng = np.random.default_rng(48)
+        group = np.repeat(["Herbivore", "Planktivore", "Carnivore", "Piscivore"], 200)
+        level = np.r_[
+            [2.0] * 200, rng.uniform(2.5, 3.2, 200), rng.uniform(3.3, 4.0, 200), rng.uniform(4.0, 4.5, 200)
+        ]
+        frame = pd.DataFrame({"trophic_group": group, "trophic_level": level.round(2)})
+
+        self.assertFalse(checks(scan(frame), "cap"))
+
+    def test_a_common_value_at_the_end_of_a_range_is_not_a_floor(self):
+        rng = np.random.default_rng(49)
+        recipe = np.r_[[594.0] * 30, [755.8] * 30, [670.0] * 23, rng.uniform(600, 900, 1000).round(1)]
+        self.assertFalse(checks(scan(pd.DataFrame({"Fine Aggregate (kg/m3)": recipe})), "cap"))
+
+    def test_a_simple_fraction_is_not_a_fill_value(self):
+        rng = np.random.default_rng(50)
+        means = np.r_[[1 / 60] * 120, rng.lognormal(0, 1.5, 880)]
+        self.assertFalse(checks(scan(pd.DataFrame({"Abundance": means})), "imputed"))
+
+
+class ClusterAndSwapTests(unittest.TestCase):
+    def test_a_detached_cluster_above_two_percent_is_reported(self):
+        rng = np.random.default_rng(51)
+        cluster = rng.uniform(6975, 83148, 140).round()
+        values = rng.permutation(np.r_[rng.normal(83, 10, 4400).round(), cluster])
+        frame = pd.DataFrame({"mq135": values})
+
+        issues = checks(scan(frame), "cluster")
+
+        self.assertEqual(issues[0].rows, 140)
+        self.assertIn("second cluster", issues[0].detail)
+        self.assertIn("mean", issues[0].detail)
+
+    def test_a_plausible_tail_value_needs_checking_rather_than_an_error_verdict(self):
+        rng = np.random.default_rng(52)
+        values = np.r_[rng.normal(1.0, 0.1, 300).round(3), [1.5, 2.1, 2.2]]
+
+        issue = checks(scan(pd.DataFrame({"v": values})), "extreme")[0]
+
+        self.assertIn("Check that they are real", issue.detail)
+        self.assertNotIn("entry or unit errors", issue.detail)
+
+    def test_two_columns_swapped_on_a_block_of_rows(self):
+        rng = np.random.default_rng(53)
+        days = pd.date_range("2023-01-01", periods=147, freq="D")
+        speed = rng.uniform(0.1, 0.99, 147).round(2)
+        direction = rng.uniform(103, 283, 147).round(1)
+        speed[135:], direction[135:] = direction[135:].copy(), speed[135:].copy()
+        frame = pd.DataFrame({
+            "Date": days,
+            "Wind speed": speed,
+            "Wind heading": direction,
+            "Temp": 20.0 + rng.normal(0, 3, 147),
+        })
+        roles = replace(roles_for(frame), date="Date")
+
+        issues = scan(frame, roles)
+
+        swapped = checks(issues, "swapped")
+        self.assertEqual(swapped[0].rows, 12)
+        self.assertIn("from 16 May 2023 to 27 May 2023", swapped[0].detail)
+        # The swap explains the far values, so they are not listed again.
+        self.assertFalse(checks(issues, "cluster") + checks(issues, "extreme"))
+
+
+class TableCheckTests(unittest.TestCase):
+    def test_copied_rows_are_counted_with_the_distinct_rows_left(self):
+        rng = np.random.default_rng(54)
+        base = pd.DataFrame({
+            "Hemoglobin": rng.normal(13, 2, 534).round(1), "MCV": rng.normal(85, 9, 534).round(1),
+        })
+        frame = pd.concat([base, base.iloc[:300], base.iloc[:200]], ignore_index=True)
+
+        issue = checks(scan(frame), "duplicates")[0]
+
+        self.assertGreaterEqual(issue.rows, 500)
+        self.assertIn(f"{len(frame) - issue.rows:,} distinct rows", issue.detail)
+
+    def test_repeats_in_a_table_of_codes_and_counts_are_not_listed(self):
+        rng = np.random.default_rng(55)
+        frame = pd.DataFrame({"Region": rng.choice(["N", "S"], 400), "Units": rng.integers(1, 40, 400)})
+
+        self.assertFalse(checks(scan(frame), "duplicates"))
+
+    def test_flat_unrelated_columns_look_simulated(self):
+        rng = np.random.default_rng(56)
+        frame = pd.DataFrame({f"Gene_{i}": rng.uniform(0, 5, 1000) for i in range(30)})
+
+        issues = checks(scan(frame), "generated")
+
+        self.assertEqual(len(issues), 1)
+        self.assertIn("may be simulated", issues[0].detail)
+
+    def test_related_readings_do_not_look_simulated(self):
+        rng = np.random.default_rng(57)
+        shared = rng.uniform(0, 5, 1000)
+        frame = pd.DataFrame({f"Gene_{i}": shared * 0.3 + rng.uniform(0, 5, 1000) for i in range(10)})
+
+        self.assertFalse(checks(scan(frame), "generated"))
+
+    def test_runs_of_zeros_and_a_stuck_value_are_reported(self):
+        rng = np.random.default_rng(58)
+        hours = pd.date_range("2020-01-01", periods=3000, freq="h")
+        benzene = rng.lognormal(0, 0.6, 3000).round(2)
+        benzene[1000:1400] = 0.0
+        speed = rng.gamma(3, 1.2, 3000).round(1)
+        speed[2000:2600] = 3.3
+        rain = np.where(rng.random(3000) < 0.9, 0.0, rng.gamma(1, 2, 3000)).round(1)
+        frame = pd.DataFrame({"Time": hours, "Benzene": benzene, "Wind Speed": speed, "Rain": rain,
+                              "Total Rain": np.cumsum(rain)})
+        roles = replace(roles_for(frame), date="Time")
+
+        stuck = {issue.columns[0]: issue for issue in checks(scan(frame, roles), "flatline")}
+
+        self.assertEqual(stuck["Benzene"].rows, 400)
+        self.assertIn("exactly 0", stuck["Benzene"].detail)
+        self.assertEqual(stuck["Wind Speed"].rows, 600)
+        self.assertNotIn("Rain", stuck)
+        self.assertNotIn("Total Rain", stuck)
+
+    def test_a_matrix_row_off_scale_is_named_as_a_row(self):
+        rng = np.random.default_rng(59)
+        spectra = pd.DataFrame(rng.lognormal(0, 0.3, (200, 150)), columns=[str(400 + i) for i in range(150)])
+        spectra.iloc[:, 40] *= 60  # a bright emission line in every spectrum
+        spectra.iloc[7] *= 1e5  # one spectrum on another scale
+        frame = pd.concat([pd.DataFrame({"file": [f"s{i}.txt" for i in range(200)]}), spectra], axis=1)
+        roles = replace(roles_for(frame), identifier="file", table_shape="matrix")
+
+        issues = scan(frame, roles)
+
+        self.assertEqual([issue.check for issue in issues if issue.check in ("extreme", "cluster")], [])
+        rows = checks(issues, "matrix_rows")
+        self.assertEqual(rows[0].examples, ("s7.txt",))
+
+
+class StatisticsFrameTests(unittest.TestCase):
+    def test_codes_impossible_values_and_fills_are_blanked(self):
+        rng = np.random.default_rng(60)
+        filled = rng.random(400) < 0.3
+        frame = pd.DataFrame({
+            "Wind Speed": np.r_[rng.gamma(2, 1.5, 396), [999.9] * 4],
+            "Coverage %": np.r_[rng.uniform(0, 100, 399), [250.0]],
+            "HCT": np.where(filled, 46.1526, rng.normal(40, 4, 400).round(1)),
+        })
+        issues = scan(frame)
+
+        mask = statistics_mask(frame, issues)
+        cleaned, note = statistics_frame(frame, issues)
+
+        self.assertEqual(int(mask["Wind Speed"].sum()), 4)
+        self.assertEqual(int(cleaned["Coverage %"].isna().sum()), 1)
+        self.assertEqual(int(cleaned["HCT"].isna().sum()), int(filled.sum()))
+        self.assertIn(f"{4 + 1 + int(filled.sum()):,} cells", note)
+        self.assertEqual(int(frame.isna().sum().sum()), 0)
+
+    def test_nothing_flagged_returns_the_frame_itself(self):
+        frame = pd.DataFrame({"Value": np.linspace(1, 100, 100)})
+
+        cleaned, note = statistics_frame(frame, scan(frame))
+
+        self.assertIs(cleaned, frame)
+        self.assertEqual(note, "")
+
+
+class RankingTests(unittest.TestCase):
+    def test_issues_covering_more_rows_come_first(self):
+        rng = np.random.default_rng(61)
+        filled = rng.random(1000) < 0.6
+        frame = pd.DataFrame({
+            "MCV": np.r_[rng.normal(86, 6, 999), [-79.3]],
+            "HCT": np.where(filled, 46.1526, rng.normal(40, 4, 1000).round(1)),
+        })
+
+        issues = scan(frame, roles_for(frame, "MCV"))
+
+        self.assertEqual(issues[0].check, "imputed")
+        self.assertEqual(issues[1].columns, ("MCV",))
+
+    def test_small_shares_read_under_a_tenth_of_a_percent(self):
+        rng = np.random.default_rng(62)
+        frame = pd.DataFrame({"City": np.repeat(["A", "B", "C"], 4000), "CO": rng.gamma(2, 0.5, 12000)})
+        frame["NO"] = rng.gamma(2, 10, 12000)
+        frame.loc[:3500, "NO"] = frame.loc[:3500, "CO"]
+        frame.loc[5000, "NO"] = frame.loc[5000, "CO"]
+
+        issue = checks(scan(frame, roles_for(frame, "CO", "City")), "equal_columns")[0]
+
+        self.assertIn("under 0.1% elsewhere", issue.detail)
 
 
 class BlankCodeTests(unittest.TestCase):

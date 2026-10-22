@@ -96,7 +96,8 @@ class CorrelationEvidenceTests(unittest.TestCase):
         units = rng.normal(50, 10, 60)
         revenue[0], units[0] = 40_000, 4_000  # two extreme records carry the linear correlation
         revenue[1], units[1] = 35_000, 3_600
-        frame = monthly_frame(revenue, Units=units)
+        # No region, so the data-check card about those two records leaves room for this one.
+        frame = monthly_frame(revenue, Units=units).drop(columns="Region")
 
         relationship = evidence_of(frame, "relationship")
 
