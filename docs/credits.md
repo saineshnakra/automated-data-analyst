@@ -19,6 +19,9 @@ ADA is MIT-licensed and depends only on permissively licensed libraries.
 | [statsmodels](https://www.statsmodels.org) | BSD-3-Clause | The Benjamini-Hochberg false-discovery-rate adjustment (`multipletests`); Newcombe's interval for a difference in rates (`confint_proportions_2indep`); ordinary least squares for the joint model, with `variance_inflation_factor` for collinearity |
 | [ruptures](https://centre-borelli.github.io/ruptures-docs/) | BSD-2-Clause | Binary segmentation (`Binseg`) to find a lasting change in the level of the measure's period series |
 | [openpyxl](https://openpyxl.readthedocs.io) | MIT | Reading `.xlsx` files through pandas |
+| [Matplotlib](https://matplotlib.org) | Matplotlib licence (PSF-based) | The paper figures from `ada build` |
+| [python-docx](https://python-docx.readthedocs.io) | MIT | The Word tables, methods draft and supplement from `ada build` |
+| [PyYAML](https://pyyaml.org) | MIT | Reading and writing `study.yml` |
 
 ## The app
 

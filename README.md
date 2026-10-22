@@ -420,6 +420,8 @@ by open-source scientific Python: [pandas](https://pandas.pydata.org),
 [NumPy](https://numpy.org), [SciPy](https://scipy.org),
 [statsmodels](https://www.statsmodels.org) and
 [ruptures](https://centre-borelli.github.io/ruptures-docs/), with
+[Matplotlib](https://matplotlib.org), [python-docx](https://python-docx.readthedocs.io)
+and [PyYAML](https://pyyaml.org) for the paper assets, and
 [Streamlit](https://streamlit.io) and [Plotly](https://plotly.com/python/) for
 the app. All are permissively licensed.
 [Credits](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/credits.md)
