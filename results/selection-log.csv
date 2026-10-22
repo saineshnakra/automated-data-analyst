@@ -1,0 +1,141 @@
+order,slug,title,decision
+0,gauravan/e-state-fingerprints,E_State Fingerprints,not lab/research measurement data (judged from title/subtitle)
+1,msjahid/native-plant-species-of-new-jersey,Native Plant Species of New Jersey,not lab/research measurement data (judged from title/subtitle)
+2,antaresnyc/human-gut-microbiome-with-asd,Human gut microbiome of the children with ASD ,pass
+3,haithemhermessi/drug-related-deaths-estimation,Drug Related Death Classification,not lab/research measurement data (judged from title/subtitle)
+4,yozeftjandra/food-dyes-rgb-data-for-digital-image-colorimetry,Food Dyes RGB data for Digital Image Colorimetry,pass
+5,sajansribalankeetha/global-bacteria-dataset,Global Bacteria Dataset,"failed table check (no CSV/TSV/XLSX with >=30 rows, >=3 cols, >=2 numeric measurement cols)"
+6,davidhguerrero/fi-optimun-frecuency,FI_Optimun_Frecuency,pass
+7,marcosrpaulino/drugsdataorg-public-data-on-ilicit-drugs-analysis,DrugsData.org public data on ilicit drugs analysis,"failed table check (no CSV/TSV/XLSX with >=30 rows, >=3 cols, >=2 numeric measurement cols)"
+8,rouzbeh/introds,IntroDS,not lab/research measurement data (judged from title/subtitle)
+9,rehoyt/adult-nhanes-2011-2012,Adult NHANES 2011-2012,pass
+10,erikkepes/supercam-calibration-dataset-20221218,SuperCam calibration dataset 20221218,pass
+11,smid80/weatherww2,Weather Conditions in World War Two,pass
+12,mpwolke/cusersmarildownloadslaboratoriescsv,TB Laboratory Diagnostic Services,not lab/research measurement data (judged from title/subtitle)
+13,smnazmulsumon/findings-from-a-survey-in-western-kenya,Findings from a survey in Western Kenya ,not lab/research measurement data (judged from title/subtitle)
+14,crisparada/brazilian-cities,Brazilian Cities,not lab/research measurement data (judged from title/subtitle)
+15,thedevastator/social-learning-in-house-sparrows,Social Learning in House Sparrows,pass
+16,pablorodrguezn/soil-analysis-data-at-colombia,Soil Analysis Data at Colombia,pass
+17,imtkaggleteam/compressive-strength-foamednormal-concrete,Compressive strength foamed/normal concrete,pass
+18,rabieelkharoua/diabetes-health-dataset-analysis,🩸Diabetes Health Dataset Analysis🩸,uploader's description says synthetic/simulated
+19,amandeepvasistha/air-quality-data,Air Quality Data - India,pass
+20,fatemehmohammadinia/heart-attack-dataset-tarik-a-rashid,Heart Attack Dataset,pass
+21,saurabhshahane/indoor-laboratory-fire-dataset,Indoor Laboratory Fire Dataset,pass
+22,junianlim/infant-numeracy-experiment,Infant Numeracy Experiment,pass
+23,tejal5kunjir/nepal-flood-and-weather-dataset-2023-2026,Nepal Flood & Weather Dataset 2023-2026 | ML Ready,not lab/research measurement data (judged after download)
+24,datasetengineer/crop-health-and-environmental-stress-dataset,Crop Health and Environmental Stress Dataset,pass
+25,ramakrishnanthiyagu/soil-compositions,Soil Compositions,pass
+26,nikitasfilosofof/workplace-risk-taking-a-22-behavioral-experiment,Workplace Risk-Taking: A 2×2 Behavioral Experiment,pass
+27,ehababoelnaga/anemia-types-classification,Anemia Types Classification,pass
+28,willianoliveiragibin/diet-cricket-eggs,Diet Cricket Eggs,near-duplicate (a higher-voted copy of the same data is in the pool)
+29,krishnanshverma/england-water-quality,England Water Quality Sampling Dataset (2025),pass
+30,haiderqassim/iaq-baquba-hospital-dataset-university-of-diyala,IAQ Baquba Hospital dataset – University of Diyala,pass
+31,devtayyabsajjad/glp-1-weight-loss-drugs-master-dataset-2017-2026,GLP-1 Weight Loss Drugs Master Dataset 2017-2026,not lab/research measurement data (judged from title/subtitle)
+32,souro12/meningococcal-meningitis-countrywise-data,Meningococcal Meningitis | Country-wise Data,not lab/research measurement data (judged from title/subtitle)
+33,sanjanchaudhari/beach-weather-stations,Beach Weather Stations 🏖️🌊👓,pass
+34,kirtandelwadia/corporate-credit-rating-with-financial-ratios,Corporate Credit Rating with Financial Ratios,not lab/research measurement data (judged from title/subtitle)
+35,desertman/retention-time-prediction-in-metabolomics-lcms,Retention Time Prediction in Metabolomics (LCMS),"failed table check (no CSV/TSV/XLSX with >=30 rows, >=3 cols, >=2 numeric measurement cols)"
+36,publishers/navigating-sora2-ai-tip-and-techniques-for-success,Navigating Sora2 AI Tip and Techniques for Success,not lab/research measurement data (judged from title/subtitle)
+37,anshumish/crop-yield-data-with-soil-and-weather-dataset,Crop yield Data with Soil And Weather Dataset,not lab/research measurement data (judged after download)
+38,mexwell/weather-data-munich-1954-2022,🌤️ Weather Data Munich 1954-2022,pass
+39,niloydebbarma/ruleshift-dataset,RuleShift: Zero-Feedback Set-Shifting Benchmark,not lab/research measurement data (judged from title/subtitle)
+40,aramelheni/crc-bacteria-reference,CRC Bacteria Reference List,not lab/research measurement data (judged from title/subtitle)
+41,nutanjain/data-for-weld-of-5052-aluminium-alloy,Data for weld of 5052 Aluminium Alloy,pass
+42,scriptseeker/gallstone-prediction-from-bioimpedance-and-lab-data,Gallstone Prediction from Bioimpedance & Lab Data,near-duplicate (a higher-voted copy of the same data is in the pool)
+43,patricklford/nhs-organ-donation,NHS Organ Donation and Transplantation.,not lab/research measurement data (judged from title/subtitle)
+44,harrywang/propensity-score-matching,Quasi-experimental Methods,not lab/research measurement data (judged from title/subtitle)
+45,oscaryezfeijo/coronavirus-2-isolate-wuhan-hu-1-complete-genome,coronavirus_2_isolate_Wuhan-Hu-1_complete_genome,not lab/research measurement data (judged from title/subtitle)
+46,dsfelix/jojo-stands-stats,JoJo Stands Stats,not lab/research measurement data (judged from title/subtitle)
+47,khushim10/gene-expression-in-brain-cancer,Gene Expression in Brain Cancer ,pass
+48,mohamedsayed12/eye-disease-dataset,Eye disease dataset,not lab/research measurement data (judged from title/subtitle)
+49,sergionefedov/berlin-real-estate-sales-and-rentals-2020-2026,Berlin Real Estate: Sales & Rentals 2020-2026,not lab/research measurement data (judged from title/subtitle)
+50,tanisha1416/aqi-bangalore-2023,Smog City Diaries: Unveiling Air Quality Trends📈,pass
+51,guillaumedr/enzyme-name,Enzyme_name,"failed table check (no CSV/TSV/XLSX with >=30 rows, >=3 cols, >=2 numeric measurement cols)"
+52,ziya07/gene-expression-dataset,Gene Expression Dataset,pass
+53,aatifahmad123/weather-and-air-quality-of-indian-cities,Weather and Air Quality of Indian Cities,not lab/research measurement data (judged after download)
+54,rabieelkharoua/europe-s-ageing-population-1960-2025,Europe's Ageing Population (1960-2025),not lab/research measurement data (judged from title/subtitle)
+55,mannekuntanagendra/metagenomic-pipeline-diversity-analysis-phyloseq,Metagenomic Pipeline Diversity Analysis Phyloseq,pass
+56,yashdogra/wuenic-immunization-coverage-2025,WUENIC Immunization Coverage 1980-2025,not lab/research measurement data (judged from title/subtitle)
+57,ravillatejakumar/telecom-complaints-monitoring-system,Telecom complaints monitoring system,not lab/research measurement data (judged from title/subtitle)
+58,samiraalipour/genomics-of-drug-sensitivity-in-cancer-gdsc,Genomics of Drug Sensitivity in Cancer (GDSC),pass
+59,tathagatachowdhury09/ab-testing-data-for-a-conservation-campaign,A/B TESTING DATA FOR A CONSERVATION CAMPAIGN,not lab/research measurement data (judged from title/subtitle)
+60,noramohamed001/alldata,drug molecular toxicity,"failed table check (no CSV/TSV/XLSX with >=30 rows, >=3 cols, >=2 numeric measurement cols)"
+61,rabieelkharoua/predict-liver-disease-1700-records-dataset,📊 Predict Liver Disease: 1700 Records Dataset,uploader's description says synthetic/simulated
+62,ashsummers/rocky-intertidal-data,Rocky Intertidal Data,pass
+63,jocelyndumlao/reef-ecological-assessment-del-norte,Reef Ecological Assessment: Del Norte,pass
+64,raghuprayaga/fwetybh,fwetybh,not lab/research measurement data (judged from title/subtitle)
+65,nicklitwinow/russian-military-installations,Contaminants In Water In The Marine Environment 🌊,not lab/research measurement data (judged after download)
+66,mathijs/weather-data-in-new-york-city-2016,Weather data in New York City - 2016,not lab/research measurement data (judged from title/subtitle)
+67,houjihao/asia-daily-weather-and-air-quality-2023-2026,"Asia Daily Weather & Air Quality, 2023-2026",not lab/research measurement data (judged from title/subtitle)
+68,groldotieno/adaption-med-preference-pairs,med_preference_pairs,not lab/research measurement data (judged from title/subtitle)
+69,asmasalema/vital-signs-of-breast-cancer,vital signs of breast cancer,pass
+70,sahityasetu/us-senate-election-returns-1976-2018,US Senate Election Returns (1976-2018),not lab/research measurement data (judged from title/subtitle)
+71,aiexplorer77/gaming-vs-academic-performance,Gaming vs Academic Performance,not lab/research measurement data (judged from title/subtitle)
+72,thedevastator/age-prediction-for-individuals-using-multi-omic,Age Prediction Using Genomic Information,pass
+73,willianoliveiragibin/dyadic-fnirs-hyperscanning,dyadic-fNIRS-hyperscanning,"failed table check (no CSV/TSV/XLSX with >=30 rows, >=3 cols, >=2 numeric measurement cols)"
+74,pooriamst/metro-interstate-traffic-volume,Metro Interstate Traffic Volume,not lab/research measurement data (judged from title/subtitle)
+75,sergylog/randomized-experiment-aggregated-results,Randomized experiment aggregated results,not lab/research measurement data (judged from title/subtitle)
+76,senadu34/air-quality-index-in-jakarta-2010-2021,Air Quality Index in Jakarta,pass
+77,biswaranjanrao/anemia-dataset,Anemia Dataset,pass
+78,ahsanneural/microplastics-food-to-human-bloodstream,Microplastics: Food to Human Bloodstream,pass
+79,manojk2002/soil-nutrient-dataset-of-southern-indian-states,Soil Nutrient Dataset of Southern Indian States,pass
+80,fuarresvij/steel-test-data,Steel Strength Data 2018,pass
+81,noaa/ghcn-d,Daily Global Historical Climatology Network ,"download failed (BigQuery-only dataset, no files)"
+82,mdshobuj/air-quality-dataset-of-bangladesh,Air Quality from Multiple Districts of Bangladesh.,pass
+83,ziya07/multivariate-dataset-on-iot-and-ai,Multivariate Dataset on IoT and AI,not lab/research measurement data (judged from title/subtitle)
+84,krishnanivja/ruminant-microbiome-dataset-pakistan,Ruminant Microbiome Dataset — Pakistan,pass
+85,willianoliveiragibin/harvest-time-traits-yield,Harvest Time_Traits_Yield,pass
+86,rajeev86/crop-demand-data-csv,Crop-Demand-Data.csv,not lab/research measurement data (judged from title/subtitle)
+87,willianoliveiragibin/countries-poluation,countries_poluation,not lab/research measurement data (judged from title/subtitle)
+88,miguelh65/corn-crop-growth,Corn Crop Growth,pass
+89,raidathmane/abitlity-to-fast-ramadan,abitlity to fast ramadan,pass
+90,datasetengineer/multi-visit-thyroid-cancer-monitoring-dataset-shd,Multi Visit Thyroid Cancer Monitoring Dataset- SHD,uploader's description says synthetic/simulated
+91,uom190346a/mental-health-research-dataset,Mental Health Research Dataset,not lab/research measurement data (judged from title/subtitle)
+92,momerer/robust-meox-nanoparticle-toxicity-data,Robust MeOx Nanoparticle Toxicity Data,"failed table check (no CSV/TSV/XLSX with >=30 rows, >=3 cols, >=2 numeric measurement cols)"
+93,mannacharya/vidwan-indian-faculty-and-researcher-dataset,Top Scientist and Researcher Dataset (Vidwan),not lab/research measurement data (judged from title/subtitle)
+94,fizzbuzz/cleaned-toxic-comments,Cleaned Toxic Comments,not lab/research measurement data (judged from title/subtitle)
+95,ikbalahmed/facebook-live-sell,Facebook Live Sell,not lab/research measurement data (judged from title/subtitle)
+96,luthfimuthathohirin/nobel-prize-laureates-1901-2026,Nobel Prize Laureates 1901-2026 Demographics,not lab/research measurement data (judged from title/subtitle)
+97,rupsarroy/heatwave-dataset-rajasthan-india-2006-2025,"Heatwave Dataset (Rajasthan, India, 2006-2025)",not lab/research measurement data (judged from title/subtitle)
+98,eddieglush/bookmaker-margin-panel,Bookmaker Margin Panel,not lab/research measurement data (judged from title/subtitle)
+99,kvigly55/demask-wt-enzyme,demask_wt_enzyme,not lab/research measurement data (judged after download)
+100,marg47/gzsl-set,gzsl_set,not lab/research measurement data (judged from title/subtitle)
+101,yousefturk/fluidmind-arc-agi-3,FluidMind ARC-AGI-3,not lab/research measurement data (judged from title/subtitle)
+102,mansoordaku/ckdisease,Chronic KIdney Disease dataset,pass
+103,vinayak123tyagi/milling-data-set-prognostic-data,NASA Milling Dataset ,pass
+104,gaming919/self-compacting-concrete-dataset,Self compacting concrete dataset,pass
+105,faviovaz/marketing-ab-testing,Marketing A/B Testing,not lab/research measurement data (judged from title/subtitle)
+106,broach/weekly-cdc-pneumonia-cases,Weekly CDC Pneumonia Cases,not lab/research measurement data (judged from title/subtitle)
+107,rajumavinmar/landslide-dataset,Landslide dataset,pass
+108,pritsheta/heart-attack,Heart Attack,pass
+109,willianoliveiragibin/untargeted-lc-msms,Untargeted LC-MS/MS,pass
+110,kirbysasuke/ivermectin-impacts-on-gut-microbial-ecosystem,Ivermectin's Influence on Gut Microbiota,pass
+111,willianoliveiragibin/endophytic-fungus-aspergillus,Endophytic Fungus Aspergillus,"failed table check (no CSV/TSV/XLSX with >=30 rows, >=3 cols, >=2 numeric measurement cols)"
+112,mikeboucher/air-handler-sound-levels,Air Handler Sound Levels,pass
+113,behrouzdarvishzad/geochemical-etl,Geochemical ETL,"failed table check (no CSV/TSV/XLSX with >=30 rows, >=3 cols, >=2 numeric measurement cols)"
+114,sethpointaverage/high-entropy-alloys-properties,High Entropy Alloys - Properties,pass
+115,nikitamanaenkov/titanium-group-minerals-xas-spectra,Titanium Group Minerals XAS Spectra,not lab/research measurement data (judged after download)
+116,x2020gtj/mytraintingdata,mytraintingdata,not lab/research measurement data (judged from title/subtitle)
+117,yashdogra/aqi-india,AQI India,pass
+118,volpatto/temperature-timeseries-for-some-brazilian-cities,Temperature Time-Series for some Brazilian cities,pass
+119,ommadav/indian-milk-adulteration-detection-dataset,Indian Milk Adulteration Detection Dataset,uploader's description says synthetic/simulated
+120,jacobsharples/secchi-depth,Secchi Depth,pass
+121,rauffauzanrambe/plc-and-industrial-control-system-dataset,PLC & Industrial Control System Dataset,not lab/research measurement data (judged from title/subtitle)
+122,samira1992/gene-expression-bioinformatics-dataset,🧬 Gene Expression - Bioinformatics 🗃️ Dataset,pass
+123,petrbarton/olivers-mtor-atlas,Oliver's mTOR Atlas,not lab/research measurement data (judged from title/subtitle)
+124,prvsiyan/casmi26-v6-checkpoint-disjoint-ranker-split,CASMI V6 Checkpoint-Disjoint Ranker Split,not lab/research measurement data (judged from title/subtitle)
+125,samaffolter/fred-interest-rate-spreads,FRED-interest-rate-spreads,not lab/research measurement data (judged from title/subtitle)
+126,calven22/singapore-lottery-numbers,Singapore Lottery Numbers,not lab/research measurement data (judged from title/subtitle)
+127,nancyalaswad90/cancer-statistics-in-us-states,Cancer Statistics in US States,pass
+128,qusaybtoush1990/disease-recovery-plos-paper,Disease Recovery PLOS paper  😷🙄,pass
+129,pierroberto/weather-humidity-temperature,Humidity and Temperature in Rome,"failed table check (no CSV/TSV/XLSX with >=30 rows, >=3 cols, >=2 numeric measurement cols)"
+130,ahmedshahriarsakib/assorted-medicine-dataset-of-bangladesh,Assorted Medicine Dataset of Bangladesh 💊💉🌿,not lab/research measurement data (judged from title/subtitle)
+131,sonalshinde123/vehicle-telemetry-for-driver-behavior-analysis,Vehicle Telemetry for Driver Behavior Analysis,not lab/research measurement data (judged from title/subtitle)
+132,gowtha69/creutzfeldtjakob-disease-60k-dataset,Creutzfeldt–Jakob Disease 60K Dataset,uploader's description says synthetic/simulated
+133,oftenpoppo/enzyme-dataset-cnn,enzyme_dataset_cnn,competition-derived files
+134,harshithgupta/endangered-fish-data,Endangered fishes dataset,pass
+135,utsavdey1410/food-nutrition-dataset,Food Nutrition Dataset,not lab/research measurement data (judged from title/subtitle)
+136,thedevastator/smartphone-sensor-data-for-mental-health-researc,Smartphone Sensor Data for Mental Health Research,"failed table check (no CSV/TSV/XLSX with >=30 rows, >=3 cols, >=2 numeric measurement cols)"
+137,anitarostami/enhanced-gait-biomechanics-dataset,Enhanced Gait Biomechanics Dataset,pass
+138,jocelyndumlao/prediction-of-mohs-hardness-with-machine-learning,Prediction of Mohs Hardness with Machine Learning,pass
+139,supriyoain/water-quality-data,Water Quality Data 🌊,pass

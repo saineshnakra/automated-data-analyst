@@ -369,6 +369,27 @@ locally only after you approve it. Model-generated code is never executed.
 
 Details: [Privacy](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/privacy.md) · [SECURITY.md](https://github.com/saineshnakra/automated-data-analyst/blob/main/SECURITY.md)
 
+## Tested on 60 research datasets
+
+We ran ADA's first look on 60 lab and research datasets drawn at random from
+Kaggle (blood tests, soil and water chemistry, gene expression, materials
+testing, field surveys, behavioural experiments). AI reviewers, each told to
+act as a sceptical scientist in the field, checked every finding against
+pandas, SciPy or statsmodels. After each of three rounds of 20 we fixed what
+they found, as general rules, and checked every dataset again.
+
+| | Good | Partly useful | Poor |
+|---|---|---|---|
+| First run | 2 | 27 | 31 |
+| Now | 29 | 27 | 4 |
+
+The calculations matched wherever they were re-run. What still goes wrong is
+what ADA chooses to lead with when nobody has told it the design: it can
+miss the comparison a study was built for, or report a pair of columns that
+move together by construction. [The results](https://github.com/saineshnakra/automated-data-analyst/blob/main/results/README.md) cover how the
+datasets were picked, every dataset's review, what changed, and what ADA
+still gets wrong.
+
 ## Documentation
 
 | Page | Contents |
