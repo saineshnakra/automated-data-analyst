@@ -62,6 +62,7 @@ from .metrics import metric_for
 from .quality import VALUE_CHECKS, QualityIssue, prefers_log_scale, show_value
 from .quality import scan as scan_quality
 from .schema import ColumnRoles, running_total_columns
+from .timepoints import is_timepoint_name
 from .timeseries import TREND_CONFIDENCE, period_positions, theil_sen, trend_test
 
 Intent = Literal[
@@ -3666,7 +3667,10 @@ def _execute_grouping(
         grouped = grouped.drop(columns="n").rename(columns={value_label: plan.measure})
         value_label = plan.measure
     numbered = bool(plan.time_part or plan.bins) or is_numeric_dtype(working[plan.dimension])
-    ordered = numbered and plan.intent == "breakdown" and len(grouped) <= GROUPING_LIMIT
+    # A time axis (a gait cycle in 99 steps, days since infection) is a profile
+    # however many points it has, so it is shown in order, not by its extremes.
+    profile = numbered and not (plan.time_part or plan.bins) and is_timepoint_name(plan.dimension)
+    ordered = numbered and plan.intent == "breakdown" and (len(grouped) <= GROUPING_LIMIT or profile)
     rankable, small = grouped, grouped.iloc[0:0]
     fragile = False
     if "n" in grouped.columns and plan.aggregation != "sum":
@@ -3743,6 +3747,14 @@ def _execute_grouping(
         )
     if single_rows and plan.intent == "breakdown":
         answer += f" Each {plan.dimension} is one row, so these are the rows' own values."
+    if ordered and profile and not counted and len(rankable) > 1:
+        low = rankable.loc[rankable[value_label].idxmin()]
+        column = working[plan.measure].dropna()
+        lowest = format_number(float(low[value_label]), plan.measure, column_values=column)
+        answer += (
+            f" It is lowest at {group_label(key, low[key])}, at {lowest}; the table follows {plan.dimension} "
+            "in order."
+        )
     if len(small):
         answer += (
             f" {len(small):,} {grouping} group{'s' if len(small) > 1 else ''} with fewer than "

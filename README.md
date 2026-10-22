@@ -144,6 +144,11 @@ ada ask orders.csv "which category made the most revenue"
   change, a fire) is found by binary segmentation and reported with its start
   and the levels before and after. Both are calibrated by simulation so a
   stable series raises a false alarm in about one analysis in twenty.
+- **Follows elapsed time and time courses**: a numeric time-point column
+  (days since infection, a gait cycle) is shown in order, with groups
+  followed for different lengths compared over the time they share, and
+  numbered columns such as 40 to 260 minutes are read as one series with its
+  profile, most variable rows and repeating period.
 - **Reads survival data**: a follow-up time beside its event flag is treated
   as censored, never averaged or compared across its own event. ADA gives
   Kaplan-Meier survival, log-rank tests across the groupings and a Cox model's

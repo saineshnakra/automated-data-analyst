@@ -515,6 +515,10 @@ Other behaviour:
   differ (Welch ANOVA, p = 0.19; η² = 0.00), so this ranking may be chance."
   When the leading group's mean is more than twice its median, the answer says
   a few large values carry it and suggests the medians.
+- A breakdown by a numeric column named like elapsed time (a gait cycle in 99
+  steps, days since infection) is a profile: every value in order, however
+  many there are, with the highest and the lowest named, instead of the ten
+  highest and ten lowest.
 - A trend says where the measure started and ended and between which periods,
   its Theil-Sen slope (per year, fitted on yearly averages of complete years
   once three or more are covered, so seasons can't tilt it; per decade too

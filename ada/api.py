@@ -48,6 +48,7 @@ from .pipeline import apply_focus, focus_options, prepare_analysis
 from .quality import quality_frame
 from .quality import scan as scan_quality
 from .schema import ColumnRoles
+from .timepoints import is_timepoint_name
 
 #: Rows analyzed by default. Over it, a table with a date keeps its newest
 #: rows and one without a date is sampled at random; see
@@ -152,7 +153,10 @@ def analyze(
     ADA picks a date column, a measure, a grouping column and an identifier
     on its own; ``date``, ``measure`` and ``dimension`` override that choice
     (``ada schema FILE`` prints what was picked). A ``date`` column of whole
-    years is read as 1 January of each year. ``frequency`` fixes the
+    years is read as 1 January of each year. A ``date`` column of other
+    numbers named like elapsed time ("timept", "Day", "hours") is a time
+    axis: the brief shows the measure at each of its values, in order, and
+    there is no calendar timeline to forecast. ``frequency`` fixes the
     period grain to one of ``s min h D W M Q Y``; without it the grain follows how
     often the data was recorded. Fix it for scheduled jobs so the grain
     doesn't change between runs.
@@ -184,8 +188,15 @@ def analyze(
     if missing:
         available = ", ".join(map(str, cleaned.columns))
         raise AdaError(f"No column named {missing[0]!r}. Columns: {available}")
+    axis = None
     if date is not None and not pd.api.types.is_datetime64_any_dtype(cleaned[date]):
-        raise AdaError(f"{date!r} could not be read as dates, so it can't be the date column.")
+        named = cleaned[date]
+        numbers = pd.api.types.is_numeric_dtype(named) and not pd.api.types.is_bool_dtype(named)
+        if not numbers or not is_timepoint_name(date):
+            raise AdaError(f"{date!r} could not be read as dates, so it can't be the date column.")
+        # Elapsed time as a number (days since infection, a cycle in percent) orders
+        # the rows without a calendar, so it is the axis of the brief's profile.
+        axis, overrides["date"] = date, None
     if measure is not None and not pd.api.types.is_numeric_dtype(cleaned[measure]):
         raise AdaError(f"{measure!r} is not numeric, so it can't be the measure.")
     roles = replace(prepared.detected_roles, **overrides, aggregation=aggregation)
@@ -223,6 +234,7 @@ def analyze(
         source_name=name,
         rows_note=prepared.rows_note,
         whole=whole,
+        axis=axis,
     )
 
 
@@ -273,6 +285,8 @@ class Analysis:
     rows_note: str = ""
     #: Every row of a long table, before the brief's focus on one parameter; Ask uses it.
     whole: WholeTable | None = field(default=None, repr=False, compare=False)
+    #: A numeric column of time points named as ``date``, which the brief shows the measure over.
+    axis: str | None = None
     _trends: dict = field(default_factory=dict, repr=False, compare=False)
 
     @property
@@ -282,7 +296,11 @@ class Analysis:
     @cached_property
     def _brief(self) -> BusinessBrief:
         return analyze_business(
-            self.frame, self.roles, frequency=self.frequency, blanked=self.cleaning.blanked_codes
+            self.frame,
+            self.roles,
+            frequency=self.frequency,
+            blanked=self.cleaning.blanked_codes,
+            axis=self.axis,
         )
 
     @property
@@ -332,6 +350,12 @@ class Analysis:
     def trend(self, frequency: str | None = None) -> TrendSeries | Refusal:
         """The measure per period. ``.notes`` lists any adjustments made to the periods."""
         if not self.roles.date:
+            if self.axis:
+                return Refusal(
+                    "no_date_column",
+                    f"{self.axis} is elapsed time, not dates, so there is no calendar timeline; the brief "
+                    f"shows the measure at each {self.axis} instead.",
+                )
             return Refusal("no_date_column", "This table has no date column, so there is no timeline.")
         grain = frequency or self.frequency
         if grain not in self._trends:
@@ -477,6 +501,7 @@ class Analysis:
             frequency=self.frequency,
             source_name=f"{self.source_name} · {value}",
             rows_note=self.rows_note,
+            axis=self.axis,
         )
 
     def to_markdown(self) -> str:

@@ -143,6 +143,13 @@ from .survival import (
     summarize_survival,
     survival_pair,
 )
+from .timepoints import (
+    PERIOD_CANDIDATES,
+    series_columns,
+    summarize_series,
+    time_profile,
+    timepoint_column,
+)
 from .timeseries import (
     MIN_SHIFT_EFFECT,
     TREND_CONFIDENCE,
@@ -1055,6 +1062,151 @@ def _follow_up_pairs(
     return [(reading, pair.event) for reading in readings if is_time_name(reading)]
 
 
+#: A profile whose end is within this share of its range from its start is a cycle.
+CYCLE_SHARE = 0.1
+
+
+def _axis_value(axis: str, value: float) -> str:
+    return f"{axis} = {value:g}"
+
+
+def _groups_phrase(grouping: str) -> str:
+    """ "The Treatment groups", or "The groups" for a column already called group."""
+    name = sentence_case(grouping)
+    return "The groups" if name.casefold() in ("group", "groups") else f"The {name} groups"
+
+
+def _profile_evidence(dataframe: pd.DataFrame, roles: ColumnRoles, axis: str) -> Evidence | None:
+    """The measure at each time point of an elapsed-time column, in order, and each group's reach.
+
+    Kendall's tau of the time-point means against time says whether the
+    measure rises or falls along the axis. When the groups were followed for
+    different lengths, their means are compared over the stretch they share.
+    """
+    profile = time_profile(dataframe, roles, axis)
+    if profile is None:
+        return None
+    means = profile.means
+    measure_values = dataframe[roles.measure].dropna()
+
+    def shown(value: float) -> str:
+        return format_number(float(value), roles.measure, column_values=measure_values)
+
+    times = means.index.to_numpy(dtype=float)
+    peak, trough = float(means.idxmax()), float(means.idxmin())
+    groups = _groups_phrase(roles.dimension) if roles.dimension else ""
+    statement = (
+        f"{roles.measure} by {axis}, in order across its {len(means)} time points: it starts at "
+        f"{shown(means.iloc[0])} ({_axis_value(axis, times[0])}), peaks at {shown(means.max())} "
+        f"({_axis_value(axis, peak)}), is lowest at {shown(means.min())} ({_axis_value(axis, trough)}) and "
+        f"ends at {shown(means.iloc[-1])} ({_axis_value(axis, times[-1])})."
+    )
+    if abs(means.iloc[-1] - means.iloc[0]) < CYCLE_SHARE * (means.max() - means.min()):
+        statement += " It ends about where it started, as a cycle does, so no steady rise or fall is tested."
+    elif profile.p_value < ALPHA:
+        verb = "rises" if profile.tau > 0 else "falls"
+        statement += (
+            f" It {verb} along {axis} (Kendall's τ = {profile.tau:.2f} over the time-point means, "
+            f"{format_p(profile.p_value)})."
+        )
+    else:
+        statement += (
+            f" It neither rises nor falls steadily along {axis} (Kendall's τ = {profile.tau:.2f}, "
+            f"{format_p(profile.p_value)})."
+        )
+    lead = ""
+    reach = profile.reach
+    if reach is not None:
+        grouping = reach.grouping
+        followed = list_names(
+            [f"{group_label(grouping, group)} to {high:g}" for group, _, high in reach.reach],
+            len(reach.reach),
+        )
+        low, high = reach.shared
+        shared = list_names(
+            [f"{group_label(grouping, group)} {shown(value)}" for group, value in reach.shared_means],
+            len(reach.shared_means),
+        )
+        pooled = list_names(
+            [f"{group_label(grouping, group)} {shown(value)}" for group, value in reach.pooled_means],
+            len(reach.pooled_means),
+        )
+        statement += (
+            f" {groups} were followed for different lengths along {axis} "
+            f"({followed}). Over the stretch they share ({axis} {low:g} to {high:g}), the averages are "
+            f"{shared}; over all rows they are {pooled}, which mixes in time points only some groups "
+            "reached. "
+            f"{axis} is the time axis, so it is not compared between groups as an outcome."
+        )
+        lead = (
+            f"{groups} were followed for different lengths along {axis} "
+            f"({followed}); over the stretch they share ({axis} {low:g} to {high:g}), {roles.measure} "
+            f"averages {shared}."
+        )
+    return Evidence(
+        kind="profile",
+        title=f"{sentence_case(roles.measure)} over {axis}",
+        value=f"peak at {_axis_value(axis, peak)}",
+        statement=statement,
+        calculation=(
+            f"mean of {roles.measure} at each value of {axis}, in order; Kendall's tau of those means "
+            f"against {axis} (scipy.stats.kendalltau); each group's first and last {axis}, and its mean "
+            "over the stretch all groups share"
+        ),
+        lead=lead,
+    )
+
+
+def _series_evidence(dataframe: pd.DataFrame, roles: ColumnRoles) -> Evidence | None:
+    """Numbered columns in an arithmetic progression read as one series: profile, varied rows, period."""
+    found = series_columns(dataframe)
+    if found is None:
+        return None
+    columns, positions = found
+    summary = summarize_series(dataframe, roles, columns, positions)
+    profile = summary.profile
+    step = positions[1] - positions[0]
+    statement = (
+        f"The columns {columns[0]} to {columns[-1]} look like a series: {len(columns)} points in steps of "
+        f"{step:g}, so they are read in order. Their mean across rows is highest at {profile.idxmax():g} "
+        f"({profile.max():.3g}) and lowest at {profile.idxmin():g} ({profile.min():.3g})."
+    )
+    names = [label for label, _ in summary.varied]
+    if summary.varied:
+        varied = list_names([f"{label} (SD {spread:.3g})" for label, spread in summary.varied], len(names))
+        statement += f" The rows that vary most across it: {varied}."
+    lead = (
+        f"The columns {columns[0]} to {columns[-1]} form a series of {len(columns)} points; the rows that "
+        f"vary most across it are {list_names(names, len(names))}."
+    )
+    if summary.period is not None and summary.clear_rows:
+        statement += (
+            f" A repeating pattern fits best with a period of about {summary.period:.3g}: at that period "
+            f"{summary.clear_rows:,} of the {summary.rows:,} complete rows have a clear sine-wave fit "
+            "(F test, "
+            f"{FALSE_DISCOVERY} at 5%; median R² {summary.median_fit:.2f}). The period was picked from "
+            f"{PERIOD_CANDIDATES} tried, so treat it as a lead to check."
+        )
+        lead = (
+            f"The columns {columns[0]} to {columns[-1]} form a series; {summary.clear_rows:,} of "
+            f"{summary.rows:,} rows follow a repeating pattern across it with a period of about "
+            f"{summary.period:.3g}."
+        )
+    return Evidence(
+        kind="series",
+        title="Series across columns",
+        value=f"{len(columns)} points",
+        statement=statement,
+        calculation=(
+            "columns named by evenly spaced numbers, in order; mean of each column; each row's standard "
+            f"deviation across them; least-squares sine and cosine fits at {PERIOD_CANDIDATES} periods from "
+            "two steps to the whole span, each row's fit tested by its F test with a "
+            f"{FALSE_DISCOVERY} false discovery rate, and the period with the most clear rows kept"
+        ),
+        lead=lead,
+    )
+
+
 def _long_run_headline(long_run: Evidence, evidence: list[Evidence]) -> str:
     """The headline of a long record: its trend, or without a clear one, the brief's other findings."""
     if long_run.lead:
@@ -1812,6 +1964,9 @@ def _differences_evidence(
     compared_on_card = not metric.additive or not _counts_money_or_things(roles, metric, measure_values)
     covered = (roles.measure, roles.dimension) if roles.measure and compared_on_card else None
     follow_up = _follow_up_pairs(dataframe, roles, readings)
+    # The time axis orders the rows; how far each group reached along it is not an outcome.
+    axis = timepoint_column(dataframe, roles)
+    follow_up += [(axis, grouping) for grouping in scanned] if axis in readings else []
     skip = tuple(set_by + items + ([covered] if covered else []) + follow_up)
     scan = scan_differences(frame, readings, scanned, entity=entity, skip=skip)
     used_rules = [rule for rule in rules if rule.grouping in scanned or rule.grouping == roles.dimension]
@@ -4150,6 +4305,7 @@ def analyze_business(
     roles: ColumnRoles | None = None,
     frequency: str | None = None,
     blanked: tuple[QualityIssue, ...] = (),
+    axis: str | None = None,
 ) -> BusinessBrief:
     """Create an executive brief from explainable calculations and rule-based interpretation.
 
@@ -4158,6 +4314,9 @@ def analyze_business(
     Without it the grain follows how often the data was recorded.
     ``blanked`` holds the missing-value codes cleaning set to missing
     (``CleaningReport.blanked_codes``), so the data checks card lists them too.
+    ``axis`` names a numeric column of time points (days since infection) to
+    show the measure over; without it, one named like elapsed time is used
+    when the table has no date.
     """
     roles = roles or detect_roles(dataframe)
     metric = metric_for(roles.measure, roles)
@@ -4204,8 +4363,19 @@ def analyze_business(
     survival, survived = _survival_evidence(dataframe, roles, pair) if estimable else (None, None)
     if survival:
         evidence.append(survival)
+    # Elapsed time as a number orders the rows: the measure is shown per time point,
+    # and groups followed for different lengths are compared over the time they share.
+    axis = axis or timepoint_column(dataframe, roles)
+    profile = _profile_evidence(dataframe, roles, axis) if axis else None
+    if profile:
+        evidence.append(profile)
+    series = _series_evidence(dataframe, roles)
+    if series:
+        evidence.append(series)
     segments = _segment_evidence(dataframe, roles, tested, note, found, rules=rules, built=built)
-    if pair and (roles.measure, roles.dimension) == (pair.time, pair.event):
+    circular = pair and (roles.measure, roles.dimension) == (pair.time, pair.event)
+    # Pooled means of groups followed for different lengths compare different times.
+    if circular or (profile and profile.lead):
         segments = [item for item in segments if item.kind != "leader"]
     evidence.extend(segments)
     evidence = _flag_driven_leader(evidence, dataframe, roles, issues)
@@ -4313,8 +4483,9 @@ def analyze_business(
     if long_run and not (growth and growth.lead):
         # A long record leads with its trend unless the latest move is outside its usual range.
         headline = _long_run_headline(long_run, evidence)
-    if survival is not None:
-        headline = survival.lead
+    for item in (series if roles.table_shape == "matrix" else None, profile, survival):
+        if item is not None and item.lead:
+            headline = item.lead
 
     # Without a trend the headline already gives the one finding there is, so
     # the summary says what the table seems to be instead of repeating it.
@@ -4324,8 +4495,9 @@ def analyze_business(
         summary_parts = [_table_description(dataframe, roles)]
     if long_run:
         summary_parts.insert(0, long_run.statement)
-    if survival:
-        summary_parts.insert(1, survival.statement)
+    for item in (survival, profile, series):
+        if item:
+            summary_parts.insert(1, item.statement)
     if design:
         summary_parts.append(design.sentence)
     if repeats:

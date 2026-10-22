@@ -40,6 +40,8 @@ assembled in this order:
 |---|---|---|
 | `campaigns` | When the dates cluster into a few sampling trips with most periods between them empty, the trips instead of periods: how many, their sizes, the latest trip against the one before, and the trend across trips (see [Sampling trips](#sampling-trips)) | Fewer than 3 trips, or most periods hold data |
 | `survival` | For a follow-up time beside its 0/1 event flag, Kaplan-Meier survival, log-rank tests across the groupings and a Cox model (see [Survival](#survival)) | No such pair, fewer than 20 subjects or fewer than 5 events |
+| `profile` | For a numeric time-point column (days since infection, minutes, a gait cycle), the measure at each time point in order, its peak and trough, and groups followed for different lengths compared over the time they share (see [Time points](#time-points)) | A date column, or no column named like elapsed time with repeated values |
+| `series` | Numbered columns in an arithmetic progression (40, 50, ... 260) read as one series: the mean profile, the rows that vary most, and the period of a repeating pattern | Fewer than 5 evenly numbered columns |
 | `longtrend` | The trend across a record of 20 or more complete years: Theil-Sen slope per year and per decade with its 95% interval and a Mann-Kendall test, the months it runs highest and lowest in, and the slopes either side of a change in level (see [Long records](#long-records)) | No date, or fewer than 20 complete years |
 | `trend` | Latest period-over-period change on the groups present in both periods, compared with the series' usual movement or with the time of year | No date, fewer than 2 periods, a percentage change from a previous period of zero, or rows counted where the design fixes how many each period holds (see [Fixed designs](#fixed-designs)) |
 | `driver` | The segment that moved the measure most between the last two periods | No date, measure or segment |
@@ -237,6 +239,41 @@ never compared across its own event flag: the leading-group card that would
 do so is dropped, follow-up times are left out of the differences scan across
 the event and of the measure's variance shares, and the average-measure tile
 becomes the share event-free at the landmark.
+
+### Time points
+
+Many experiments record time as a number: days since infection, minutes after
+a stimulus, the percentage of a gait cycle, a visit number.
+`timepoints.timepoint_column` takes a numeric column named like elapsed time
+(`time`, `timept`, `day`, `hours`, `visit`, `cycle`, `phase` and similar)
+with 4 to 400 non-negative values, each on several rows, as the axis of a
+table with no date; `ada.analyze(..., date="timept")` names one directly.
+The `profile` card gives the measure at each time point in order: where it
+starts, peaks, bottoms out and ends, and whether it rises or falls along the
+axis (Kendall's tau of the time-point means). A profile that ends about where
+it started is called a cycle and is not tested for a steady rise.
+
+When the groups were followed for different lengths (the animals that died
+are measured to day 10, the survivors to day 15), a comparison of all rows
+mixes in time points only some groups reached. The card then gives each
+group's reach, compares the groups' averages over the stretch they share,
+and leads the headline; the leading-group card on pooled means is dropped,
+and the time column is never compared between groups as an outcome.
+
+### Series across columns
+
+Columns named by evenly spaced numbers (40, 50, ... 260 minutes) are a series
+laid out wide, not unrelated readings. `timepoints.series_columns` finds at
+least five of them, and the `series` card gives the mean of each column in
+order with its highest and lowest point, the rows whose standard deviation
+across the series is largest (named by the identifier or a text column that
+names each row once), and, when one fits, the period of a repeating pattern:
+sine and cosine least-squares fits at 40 periods from two steps to the whole
+span, each row's fit tested by its F test at a 5% false discovery rate
+(Benjamini-Hochberg), keeping the period with the most clear rows. *"A
+repeating pattern fits best with a period of about 112: at that period 562 of
+the 4,381 complete rows have a clear sine-wave fit."* For a matrix table,
+whose measure is the row mean, the card leads the headline.
 
 ### Drivers on the same groups
 
