@@ -91,17 +91,23 @@ ada ask orders.csv "which category made the most revenue"
   code in the measure is set aside, with a note.
 - **Detects column roles**: the date, the measure, the grouping column and an
   ID column, from names, values and cardinality. Numeric category codes (a 0/1
-  flag, a status, a set dose) group rows instead of being added up; a column of
-  unique row numbers is an ID; a running total such as a rain gauge's is never
-  the measure. A long table (one column naming the parameter, one holding the
-  result) is analyzed one parameter at a time, and a matrix of sample or
-  channel columns is measured by its row mean. Override any role with
+  flag, a status, a set dose, a swept frequency) group rows instead of being
+  added up, while rating items (`RDB1` to `RDB3` on 0 to 10) stay quantities; a
+  column of unique row numbers is an ID; a running total such as a rain gauge's,
+  a constant, a p-value or a date stored as a number is never the measure.
+  Coordinates, compass directions and quality flags are never compared as
+  readings. A long table (one column naming the parameter, one holding the
+  result) is analyzed one parameter at a time, a file stacking several tables
+  is read as its largest one, and a matrix of sample or channel columns is
+  measured by its row mean. Override any role with
   `ada.analyze(df, measure="OD600")` or in the app.
 - **Knows what can be added up**: money and counts are summed; rates
   (`Viability %`, `Churn Rate`), measured levels (`Water Temp (°C)`, `pH`,
   `Concentration (mg/L)`), per-unit prices and anything it doesn't recognise as
-  money or a count (`CO2`, `mpg`) are averaged. Averages get no totals and no
-  "share of total", and a change in a rate is reported in percentage points.
+  money or a count (`CO2`, `mpg`) are averaged, and so is a score or count per
+  subject when each row is one participant or sample. Averages get no totals
+  and no "share of total", and a change in a rate is reported in percentage
+  points.
   When the name misleads, `aggregation="sum"` or `"mean"` (or **Combine rows
   by** in the app) says how the measure combines.
 - **Prints readings in full**: `K` and `M` are kept for money and large
