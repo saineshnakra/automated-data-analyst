@@ -1719,16 +1719,17 @@ def find_derivation(
     # A part recorded on only some rows (acidity measured only on acid soils)
     # still shows the identity on the rows that have it, so candidates are
     # kept while enough rows have all of them.
-    complete = frame[column].notna()
+    recorded = frame[[column, *candidates]].notna().to_numpy()
+    complete = recorded[:, 0]
     needed = max(DERIVATION_MIN_ROWS, DERIVATION_MIN_SHARE * int(complete.sum()))
     admitted = []
-    for candidate in candidates:
-        joint = complete & frame[candidate].notna()
+    for index, candidate in enumerate(candidates, start=1):
+        joint = complete & recorded[:, index]
         if joint.sum() >= needed:
             admitted.append(candidate)
             complete = joint
     candidates = admitted
-    data = frame.loc[complete, [column, *candidates]]
+    data = frame[[column, *candidates]].iloc[np.flatnonzero(complete)]
     if len(data) > DERIVATION_ROWS:
         data = data.iloc[np.linspace(0, len(data) - 1, DERIVATION_ROWS).astype(int)]
     rows = len(data)
