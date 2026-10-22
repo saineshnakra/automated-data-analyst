@@ -4577,6 +4577,7 @@ def analyze_business(
     roles: ColumnRoles | None = None,
     frequency: str | None = None,
     blanked: tuple[QualityIssue, ...] = (),
+    issues: tuple[QualityIssue, ...] | None = None,
 ) -> BusinessBrief:
     """Create an executive brief from explainable calculations and rule-based interpretation.
 
@@ -4585,10 +4586,11 @@ def analyze_business(
     Without it the grain follows how often the data was recorded.
     ``blanked`` holds the missing-value codes cleaning set to missing
     (``CleaningReport.blanked_codes``), so the data checks card lists them too.
+    ``issues`` is the data checks' scan when the caller has already run it.
     """
     roles = roles or detect_roles(dataframe)
     metric = metric_for(roles.measure, roles)
-    issues = scan_quality(dataframe, roles, blanked=blanked)
+    issues = issues if issues is not None else scan_quality(dataframe, roles, blanked=blanked)
     # Cells the checks found can't be readings (codes, impossible values, fill
     # values, swapped or stuck readings) are blanked for the scans that compare
     # and relate columns, and each of those cards says how many were left out.

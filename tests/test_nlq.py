@@ -4,7 +4,7 @@ from dataclasses import replace
 import numpy as np
 import pandas as pd
 
-from ada import ui
+from ada import nlq, ui
 from ada.business_insights import describe_correlation, measure_correlation
 from ada.demo_data import make_demo_data
 from ada.file_io import list_sample_datasets as samples
@@ -20,6 +20,7 @@ from ada.nlq import (
     unsupported_phrasing,
 )
 from ada.pipeline import prepare_analysis
+from ada.quality import QualityIssue
 from ada.schema import ColumnRoles, detect_roles
 
 MONTHS = pd.date_range("2024-01-01", periods=12, freq="MS")
@@ -2108,6 +2109,32 @@ class ScopeAndCautionTests(unittest.TestCase):
         answer = answer_question("maximum Wind Speed", frame, roles)
 
         self.assertIn("Caution: the data checks flag this value", answer.answer)
+
+    def test_the_data_checks_given_are_used_instead_of_a_new_scan(self):
+        frame = pd.DataFrame({"Wind Speed": [3.0, 4.0, 5.0, 2.5, 3.5] * 8})
+        roles = detect_roles(frame)
+        given = QualityIssue(
+            "impossible", ("Wind Speed",), 1, 2.5, "A gust the sensor can't record.", "Wind Speed: 1 value",
+            "a test rule", cells={"Wind Speed": pd.Index([2])},
+        )
+
+        answer = answer_question("maximum Wind Speed", frame, roles, checks=(given,))
+
+        self.assertIn("Caution: the data checks flag this value (Wind Speed: 1 value)", answer.answer)
+
+    def test_a_wide_table_reads_its_column_names_once(self):
+        frame = pd.DataFrame(
+            np.arange(40 * 3000, dtype=float).reshape(40, 3000) % 7,
+            columns=[f"Probe_{number}" for number in range(3000)],
+        ).assign(Group=["a", "b"] * 20)
+        roles = detect_roles(frame)
+
+        first = answer_question("average Probe_17 by Group", frame, roles)
+        second = answer_question("correlation between Probe_17 and Probe_2999", frame, roles)
+
+        self.assertEqual((first.plan.measure, first.plan.dimension), ("Probe_17", "Group"))
+        self.assertEqual((second.plan.measure, second.plan.partner), ("Probe_17", "Probe_2999"))
+        self.assertIs(nlq._name_index(frame.columns), nlq._name_index(list(frame.columns)))
 
 
 if __name__ == "__main__":

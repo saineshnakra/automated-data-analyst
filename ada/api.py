@@ -38,7 +38,7 @@ from .nlq import (
     unsupported_phrasing,
 )
 from .pipeline import apply_focus, focus_options, prepare_analysis
-from .quality import quality_frame
+from .quality import QualityIssue, quality_frame
 from .quality import scan as scan_quality
 from .schema import ColumnRoles
 
@@ -275,9 +275,15 @@ class Analysis:
         return len(self.frame)
 
     @cached_property
+    def _issues(self) -> tuple[QualityIssue, ...]:
+        """The data checks' scan, run once and shared by the brief, :meth:`quality` and :meth:`ask`."""
+        return scan_quality(self.frame, self.roles, blanked=self.cleaning.blanked_codes)
+
+    @cached_property
     def _brief(self) -> BusinessBrief:
         return analyze_business(
-            self.frame, self.roles, frequency=self.frequency, blanked=self.cleaning.blanked_codes
+            self.frame, self.roles, frequency=self.frequency, blanked=self.cleaning.blanked_codes,
+            issues=self._issues,
         )
 
     @property
@@ -322,7 +328,7 @@ class Analysis:
         changed by the checks. An empty frame means nothing was flagged. See
         ``ada/quality.py`` for the rules.
         """
-        return quality_frame(scan_quality(self.frame, self.roles, blanked=self.cleaning.blanked_codes))
+        return quality_frame(self._issues)
 
     def trend(self, frequency: str | None = None) -> TrendSeries | Refusal:
         """The measure per period. ``.notes`` lists any adjustments made to the periods."""
@@ -417,7 +423,8 @@ class Analysis:
                 "ADA has no way to represent that question, so it will not guess at a near one.",
             )
         answer = answer_question(
-            question, self.frame, self.roles, rows_not_analyzed=self.rows_not_analyzed, whole=self.whole
+            question, self.frame, self.roles, rows_not_analyzed=self.rows_not_analyzed, whole=self.whole,
+            checks=self._issues,
         )
         if answer is None:
             message = "ADA could not build a plan for that question against this table."

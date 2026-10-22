@@ -457,21 +457,93 @@ def _column_names(columns: list[str]) -> dict[str, tuple[str, ...]]:
     """
     full = {column: _norm(column) for column in columns}
     cores = {column: _core_name(column) for column in columns}
+    # Every run of whole words in every full name, with the columns it occurs in,
+    # so finding a core inside another name is a lookup rather than a scan.
+    phrases: dict[str, set[str]] = defaultdict(set)
+    for column, name in full.items():
+        words = name.split()
+        for start in range(len(words)):
+            for end in range(start + 1, len(words) + 1):
+                phrases[" ".join(words[start:end])].add(column)
+    sharing = defaultdict(set)
+    for column, core in cores.items():
+        sharing[core].add(column)
     names: dict[str, tuple[str, ...]] = {}
     for column in columns:
         core = cores[column]
         if not core or core == full[column]:
             names[column] = (full[column],)
             continue
-        # Normalized names are single-spaced words, so padding makes this a whole-word match.
-        shared = any(
-            other != column and (cores[other] == core or f" {core} " in f" {full[other]} ")
-            for other in columns
-        )
+        shared = len(sharing[core] | phrases.get(core, set())) > 1
         names[column] = (full[column],) if shared else (full[column], core)
     return names
 
 
+@dataclass(frozen=True)
+class _NameIndex:
+    """A table's column names, indexed once so that each question is matched against them quickly.
+
+    A table with thousands of columns would otherwise be scanned name by name,
+    for every question and for every way of reading it.
+    """
+
+    names: dict[str, tuple[str, ...]]
+    #: Every form of every name, longest first, as (form, column).
+    forms: tuple[tuple[str, str], ...]
+    #: Each spelling of a form (its plurals too) and the positions in ``forms`` it spells.
+    spellings: dict[str, tuple[int, ...]]
+    #: Most words in any spelling.
+    longest: int
+    #: Each column's words for partial matching (see ``_partial_words``).
+    partial: dict[str, tuple[str, ...]]
+    #: Each of those words and the columns whose names hold it.
+    holding: dict[str, frozenset[str]]
+    position: dict[str, int]
+    #: Every word of every form, which a comparison may repeat ("condition 2 than condition 1").
+    words: frozenset[str] = frozenset()
+    #: Each column's unit words (see ``_unit_words``).
+    units: dict[str, set[str]] = field(default_factory=dict)
+
+
+_NAME_INDEXES: dict[tuple, _NameIndex] = {}
+
+
+def _name_index(columns) -> _NameIndex:
+    """The index of a table's column names, built once per set of names."""
+    key = tuple(columns)
+    cached = _NAME_INDEXES.get(key)
+    if cached is not None:
+        return cached
+    names = _column_names(list(key))
+    forms = tuple(sorted(
+        ((form, column) for column, column_forms in names.items() for form in column_forms if form),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    ))
+    spellings: dict[str, list[int]] = defaultdict(list)
+    for rank, (form, _) in enumerate(forms):
+        for variant in _word_variants(form):
+            spellings[variant].append(rank)
+    partial = _partial_words(list(key))
+    holding: dict[str, set[str]] = defaultdict(set)
+    for column, words in partial.items():
+        for word in words:
+            holding[word].add(column)
+    index = _NameIndex(
+        names=names,
+        forms=forms,
+        spellings={spelling: tuple(ranks) for spelling, ranks in spellings.items()},
+        longest=max((len(spelling.split()) for spelling in spellings), default=1),
+        partial=partial,
+        holding={word: frozenset(found) for word, found in holding.items()},
+        position={column: place for place, column in enumerate(key)},
+        words=frozenset(word for form, _ in forms for word in form.split()),
+        units={column: _unit_words(column) for column in key},
+    )
+    if len(_NAME_INDEXES) >= 16:
+        _NAME_INDEXES.clear()
+    _NAME_INDEXES[key] = index
+    return index
 
 
 def _follows(question: str, start: int, words: str = f"(?:{GROUPING_WORDS}|{RANKING_WORDS})") -> bool:
@@ -479,43 +551,53 @@ def _follows(question: str, start: int, words: str = f"(?:{GROUPING_WORDS}|{RANK
     return bool(re.search(rf"\b{words}\s+(?:the\s+)?$", question[:start]))
 
 
-def _mention_spans(question: str, names: dict[str, tuple[str, ...]]) -> dict[str, tuple[int, int]]:
+def _mention_spans(
+    question: str, index: _NameIndex, *, worded: bool = False, protected: tuple[tuple[int, int], ...] = ()
+) -> dict[str, tuple[int, int]]:
     """Map each column named in the question to the span that names it, in question order.
 
     Longer names claim their words first, so "revenue growth" is not also read
     as "revenue". A core name that is also a query word ("time" for "Time (h)")
     names its column only right after a grouping word: "by time", not "over time".
+    With ``worded``, columns named by a number ("120") are left for later, and
+    words inside a ``protected`` span (a value typed in full) name no column.
     """
-    remaining = question
+    tokens = _tokens(question)
+    words = [word for _, _, word in tokens]
+    claimed = [any(start <= token[0] and token[1] <= end for start, end in protected) for token in tokens]
+    hits: set[int] = set()
+    for first in range(len(words)):
+        for size in range(1, min(index.longest, len(words) - first) + 1):
+            hits.update(index.spellings.get(" ".join(words[first:first + size]), ()))
     found: dict[str, tuple[int, int]] = {}
-    forms = sorted(
-        ((form, column) for column, column_forms in names.items() for form in column_forms if form),
-        key=lambda item: len(item[0]),
-        reverse=True,
-    )
-    for form, column in forms:
-        if column in found:
+    for rank in sorted(hits):
+        form, column = index.forms[rank]
+        if column in found or (worded and _is_number(index.names[column][0])):
             continue
-        grouping_only = form in QUERY_GRAMMAR and form != names[column][0]
-        for variant in sorted(_word_variants(form), key=len, reverse=True):
+        grouping_only = form in QUERY_GRAMMAR and form != index.names[column][0]
+        for variant in sorted(_word_variants(form), key=lambda text: (-len(text), text)):
+            wanted = variant.split()
+            size = len(wanted)
             match = next(
                 (
-                    candidate
-                    for candidate in re.finditer(_word_regex(variant), remaining)
-                    if not grouping_only or _follows(question, candidate.start())
+                    first
+                    for first in range(len(words) - size + 1)
+                    if words[first:first + size] == wanted
+                    and not any(claimed[first:first + size])
+                    and (not grouping_only or _follows(question, tokens[first][0]))
                 ),
                 None,
             )
-            if match:
-                found[column] = (match.start(), match.end())
-                remaining = _blank(remaining, match.start(), match.end())
+            if match is not None:
+                found[column] = (tokens[match][0], tokens[match + size - 1][1])
+                claimed[match:match + size] = [True] * size
                 break
     return dict(sorted(found.items(), key=lambda item: item[1][0]))
 
 
-def _mentions(question: str, names: dict[str, tuple[str, ...]]) -> dict[str, int]:
+def _mentions(question: str, index: _NameIndex) -> dict[str, int]:
     """Map each column named in the question to where it is named, in question order."""
-    return {column: start for column, (start, _) in _mention_spans(question, names).items()}
+    return {column: start for column, (start, _) in _mention_spans(question, index).items()}
 
 
 def _longest(columns: list[str]) -> str | None:
@@ -659,6 +741,7 @@ class _Reading:
     text: str
     remaining: str
     names: dict[str, tuple[str, ...]]
+    index: _NameIndex | None = None
     spans: dict[str, tuple[int, int]] = field(default_factory=dict)
     #: Columns a filter or condition uses, so they are neither measure nor grouping.
     consumed: set[str] = field(default_factory=set)
@@ -785,11 +868,13 @@ def _vocabulary(dataframe: pd.DataFrame, roles: ColumnRoles) -> _Vocabulary:
     values: list[_Value] = []
     by_text: dict[str, list[int]] = defaultdict(list)
     by_word: dict[str, list[int]] = defaultdict(list)
-    for column in dataframe.columns:
-        series = dataframe[column]
-        if column == roles.date or is_numeric_dtype(series) or is_datetime64_any_dtype(series):
+    # Picking the text columns by dtype at once keeps a table of thousands of numeric columns quick.
+    texts = dataframe.select_dtypes(exclude=["number", "bool", "datetime", "datetimetz"])
+    for position in range(texts.shape[1]):
+        column = texts.columns[position]
+        if column == roles.date:
             continue
-        uniques = series.dropna().unique()
+        uniques = texts.iloc[:, position].dropna().unique()
         if len(uniques) > MAX_FILTER_CANDIDATES:
             continue
         for raw in uniques:
@@ -993,13 +1078,23 @@ def _claim_partial_names(reading: _Reading, dataframe: pd.DataFrame, roles: Colu
     is taken if it is the only one; otherwise the question is refused with the
     candidates. The answer says how the words were read. Returns the columns found.
     """
-    words = _partial_words([column for column in dataframe.columns if column not in reading.spans])
+    names = reading.index or _name_index(dataframe.columns)
+    words = {column: names.partial[column] for column in dataframe.columns if column not in reading.spans}
     found: list[str] = []
     for run in _runs(reading, content_only=True):
         index = 0
         while index < len(run):
             index += _claim_partial_at(reading, run, index, words, dataframe, roles, found)
     return found
+
+
+def _holding(words: dict[str, tuple[str, ...]], phrase: tuple[str, ...], index: _NameIndex) -> list[str]:
+    """The columns among ``words`` whose name holds ``phrase``, each word in singular or plural."""
+    pool: set[str] = set()
+    for variant in _word_variants(phrase[0]):
+        pool |= index.holding.get(variant, frozenset())
+    found = [column for column in pool if column in words and _holds_variants(words[column], phrase)]
+    return sorted(found, key=index.position.__getitem__)
 
 
 def _claim_partial_at(
@@ -1017,7 +1112,7 @@ def _claim_partial_at(
         phrase = tuple(word for _, _, word in window)
         if not any(char.isalpha() for word in phrase for char in word):
             continue
-        candidates = [column for column, names in words.items() if _holds_variants(names, phrase)]
+        candidates = _holding(words, phrase, reading.index or _name_index(dataframe.columns))
         if not candidates and size == 1:
             candidates = _prefixed_columns(phrase[0], words)
         if not candidates:
@@ -1356,11 +1451,8 @@ def _unit_words(column: str) -> set[str]:
 
 def _claim_unit_conditions(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
     """Read "at 28 days" as a column whose unit is days being 28, when one numeric column has that unit."""
-    units = {
-        column: _unit_words(column)
-        for column in roles.numeric
-        if column in dataframe.columns
-    }
+    index = reading.index or _name_index(dataframe.columns)
+    units = {column: index.units[column] for column in roles.numeric if column in index.units}
     pattern = rf"\b(?:(?:at|after|on|for|of|with)\s+)?(?P<number>{NUMBER})\s+(?P<unit>[a-z]+)\b"
     for match in list(re.finditer(pattern, reading.remaining)):
         if reading.original[match.end("number"):match.start("unit")].strip():
@@ -1624,10 +1716,9 @@ def _read_question(
     ``numbers_ok`` a leftover number is allowed, as a numbered group may be.
     """
     q = _norm(_question_text(question))
-    names = _column_names(list(dataframe.columns))
-    reading = _Reading(question=question, original=q, text=q, remaining=q, names=names)
-    worded = {column: forms for column, forms in names.items() if not _is_number(forms[0])}
-    reading.spans = _mention_spans(q, worded)
+    index = _name_index(dataframe.columns)
+    reading = _Reading(question=question, original=q, text=q, remaining=q, names=index.names, index=index)
+    reading.spans = _mention_spans(q, index, worded=True)
     # "which month had the highest wind" names a period, not a column called month.
     period = re.search(r"\b(?:which|what)\s+(day|week|month|quarter|year)\b", q) if roles.date else None
     if period:
@@ -3357,10 +3448,14 @@ def _data_checks(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[QualityIs
     if cached and cached[0]() is dataframe and cached[1] == roles:
         return cached[2]
     issues = scan_quality(dataframe, roles)
-    if len(_CHECKS_CACHE) >= 8:
+    _remember_checks(dataframe, roles, issues)
+    return issues
+
+
+def _remember_checks(dataframe: pd.DataFrame, roles: ColumnRoles, issues: tuple[QualityIssue, ...]) -> None:
+    if len(_CHECKS_CACHE) >= 8 and id(dataframe) not in _CHECKS_CACHE:
         _CHECKS_CACHE.clear()
     _CHECKS_CACHE[id(dataframe)] = (weakref.ref(dataframe), roles, issues)
-    return issues
 
 
 def _value_issues(issues: tuple[QualityIssue, ...], column: str, index: pd.Index) -> list[QualityIssue]:
@@ -3976,19 +4071,19 @@ def _comparison_plan(question: str, dataframe: pd.DataFrame, roles: ColumnRoles)
     # The question is read as any other is, so every word must be a column, a
     # value, a number or grammar, here including the words of comparison.
     # Numbered groups ("condition 2 than condition 1") may repeat a column's name.
-    names = _column_names(list(dataframe.columns))
-    column_words = frozenset(word for forms in names.values() for form in forms for word in form.split())
+    index = _name_index(dataframe.columns)
+    names = index.names
     reading = _read_question(
-        question, dataframe, roles, grammar=QUERY_GRAMMAR | COMPARISON_GRAMMAR | column_words, numbers_ok=True
+        question, dataframe, roles, grammar=QUERY_GRAMMAR | COMPARISON_GRAMMAR | index.words, numbers_ok=True
     )
     if reading.problem or reading.outliers or reading.describe or reading.duplicates:
         return None
     if reading.across:
-        return _columns_comparison(q, reading, dataframe, roles, names, differ or compare or significant)
+        return _columns_comparison(q, reading, dataframe, roles, index, differ or compare or significant)
     split = MEDIAN_SPLIT.search(q)
     if not split and {"high", "low"} & set(reading.remaining.split()):
         return None
-    mentioned = _mentions(q, names)
+    mentioned = _mentions(q, index)
     free = list(reading.mentioned)
     numeric_columns = [column for column in roles.numeric if column in dataframe.columns]
     scope = _scope(reading)
@@ -4063,14 +4158,14 @@ def _columns_comparison(
     reading: _Reading,
     dataframe: pd.DataFrame,
     roles: ColumnRoles,
-    names: dict[str, tuple[str, ...]],
+    index: _NameIndex,
     testing: bool,
 ) -> QueryPlan | None:
     """Plan "which genes differ between AML and ALL": every column of a set compared across one grouping."""
     if not testing:
         return None
-    mentioned = _mentions(q, names)
-    grouping, compared = _compared_groups(q, dataframe, roles, names, mentioned, reading.value_filters)
+    mentioned = _mentions(q, index)
+    grouping, compared = _compared_groups(q, dataframe, roles, index.names, mentioned, reading.value_filters)
     if grouping is None or any(column != grouping for column in reading.mentioned):
         return None
     filters = [item for item in reading.value_filters if item.column != grouping]
@@ -4882,6 +4977,7 @@ def answer_question(
     *,
     rows_not_analyzed: int = 0,
     whole: WholeTable | None = None,
+    checks: tuple[QualityIssue, ...] | None = None,
 ) -> QueryAnswer | None:
     """Parse and execute in one step; None means the rules could not read it.
 
@@ -4889,8 +4985,12 @@ def answer_question(
     ``dataframe``; the answer says so when it is not zero. ``whole`` holds a
     long table's every parameter when ``dataframe`` is the brief's focus on
     one: a question naming another parameter, or grouping by them, is answered
-    from it, and every other answer says it covers the focus only.
+    from it, and every other answer says it covers the focus only. ``checks``
+    is the data checks' scan of ``dataframe`` when the caller has it, so the
+    answers use the very issues the brief reports instead of scanning again.
     """
+    if checks is not None:
+        _remember_checks(dataframe, roles, checks)
     if whole is not None and (wider := _whole_table_answer(question, whole, rows_not_analyzed)):
         return wider
     plan = parse_question(question, dataframe, roles)
@@ -5017,8 +5117,9 @@ def rephrase_hint(
     if reason:
         return reason
     numeric_columns = [column for column in roles.numeric if column in dataframe.columns]
-    names = _column_names(list(dataframe.columns))
-    mentioned = _mentions(q, names)
+    index = _name_index(dataframe.columns)
+    names = index.names
+    mentioned = _mentions(q, index)
     numbers = [column for column in mentioned if column in numeric_columns]
     unnamed = _without_columns(q, tuple(mentioned), names)
     if len(numbers) < 2 and any(re.search(rf"\b{word}\b", unnamed) for word in CORRELATION_WORDS):

@@ -3,10 +3,13 @@ import subprocess
 import sys
 import textwrap
 import unittest
+import unittest.mock
 
 import pandas as pd
 
 import ada
+import ada.api
+import ada.nlq
 
 
 def rainfall(periods: int = 24) -> pd.DataFrame:
@@ -169,6 +172,22 @@ class SurfaceTests(unittest.TestCase):
     def test_the_limits_are_readable(self):
         self.assertEqual(ada.DEFAULT_ROW_LIMIT, 1_000_000)
         self.assertEqual(ada.MAX_FILE_BYTES, 25 * 1024 * 1024)
+
+    def test_the_brief_checks_and_answers_share_one_scan_of_the_data(self):
+        report = ada.analyze(ada.sample("Lab Measurements"))
+        calls = []
+        real = ada.api.scan_quality
+
+        def counted(*args, **kwargs):
+            calls.append(1)
+            return real(*args, **kwargs)
+
+        with unittest.mock.patch.object(ada.api, "scan_quality", counted), \
+                unittest.mock.patch.object(ada.nlq, "scan_quality", counted):
+            self.assertTrue(report.headline)
+            report.quality()
+            report.ask(report.suggestions[0])
+        self.assertEqual(len(calls), 1)
 
     def test_samples_ship_with_the_package(self):
         self.assertIn("Lab Measurements", ada.samples())

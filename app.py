@@ -335,12 +335,14 @@ def render_ask_ada(
     api_key: str,
     rows_not_analyzed: int = 0,
     whole: WholeTable | None = None,
+    checks: tuple | None = None,
 ) -> None:
     """Chat over the analyzed dataset; every answer is a local calculation.
 
     ``rows_not_analyzed`` is how many rows the row limit left out; answers say so.
     ``whole`` holds every row of a long table whose brief follows one parameter,
-    so a question about another parameter is answered from its rows.
+    so a question about another parameter is answered from its rows. ``checks``
+    is the data checks' scan the brief used, so answers caution about the same values.
     """
     fingerprint = dataset_fingerprint(dataframe, roles, source_name)
     if st.session_state.get("chat_fingerprint") != fingerprint:
@@ -362,7 +364,9 @@ def render_ask_ada(
         st.session_state.pending_ai_plan = None
         pending = None
     if question:
-        result = answer_question(question, dataframe, roles, rows_not_analyzed=rows_not_analyzed, whole=whole)
+        result = answer_question(
+            question, dataframe, roles, rows_not_analyzed=rows_not_analyzed, whole=whole, checks=checks
+        )
         if result is not None:
             st.session_state.chat_history.append({"question": question, "result": result})
         elif api_key and pending is None:
@@ -615,7 +619,9 @@ whole = (
     else None
 )
 dataframe, roles = apply_focus(dataframe, roles, focus_value)
-brief = analyze_business(dataframe, roles, blanked=prepared.cleaning_report.blanked_codes)
+# One scan of the data checks serves the brief, Ask and the Data room.
+issues = scan_quality(dataframe, roles, blanked=prepared.cleaning_report.blanked_codes)
+brief = analyze_business(dataframe, roles, blanked=prepared.cleaning_report.blanked_codes, issues=issues)
 
 render_dataset_bar(source_name, dataframe, roles, focus=focus_label)
 render_brief(brief)
@@ -679,7 +685,8 @@ with ask_tab:
         "for you to approve, never an answer.",
     )
     render_ask_ada(
-        dataframe, roles, source_name, api_key, rows_not_analyzed=prepared.truncated_rows, whole=whole
+        dataframe, roles, source_name, api_key, rows_not_analyzed=prepared.truncated_rows, whole=whole,
+        checks=issues,
     )
 
 with dashboard_tab:
@@ -755,7 +762,6 @@ with data_tab:
             "Values to look at before trusting the figures. Clear missing-value codes were set to "
             "missing during cleaning; nothing else was changed."
         )
-        issues = scan_quality(dataframe, roles, blanked=prepared.cleaning_report.blanked_codes)
         st.dataframe(quality_frame(issues), hide_index=True, width="stretch")
 
     st.subheader("Cleaned data")
