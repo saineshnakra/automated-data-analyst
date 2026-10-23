@@ -1,4 +1,7 @@
 streamlit==1.59.2
+# Streamlit 1.59 serves images and downloads through Starlette, and on Starlette 1.x they fail with a
+# server error, so the app keeps to the 0.x line until Streamlit supports it.
+starlette>=0.40,<1
 pandas>=2.2,<3
 numpy>=1.26,<3
 plotly>=5.24,<7

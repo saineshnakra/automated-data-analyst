@@ -9,8 +9,16 @@ from pathlib import Path
 
 import pandas as pd
 from streamlit.testing.v1 import AppTest
+from streamlit.util import calc_hash
 
 from ada.schema import ColumnRoles
+
+
+def first_look(timeout: float = 45) -> AppTest:
+    """The app on its first-look page. st.navigation keys each page by the hash of its URL path."""
+    app = AppTest.from_file("app.py", default_timeout=timeout)
+    app._page_hash = calc_hash("first-look")
+    return app
 
 
 class _BlockImport:
@@ -89,7 +97,7 @@ class DatasetIdentityTests(unittest.TestCase):
 
 class SourceSelectionTests(unittest.TestCase):
     def test_clearing_the_source_control_falls_back_instead_of_crashing(self):
-        app = AppTest.from_file("app.py", default_timeout=90).run()
+        app = first_look(90).run()
 
         app.segmented_control[0].set_value(None).run()
 
@@ -195,7 +203,7 @@ class StaleModuleCacheTests(unittest.TestCase):
 class OptionalAiLayerTests(unittest.TestCase):
     def test_the_app_is_whole_when_the_ai_layer_cannot_be_imported(self):
         with _BlockImport("pydantic", "openai", evict=("ada.ai_insights",)):
-            app = AppTest.from_file("app.py", default_timeout=90).run()
+            app = first_look(90).run()
 
         self.assertFalse(app.exception)
         # All six tabs, four KPIs and seven charts still render.
@@ -243,7 +251,7 @@ class DashboardForecastTests(unittest.TestCase):
 
 class AppSmokeTests(unittest.TestCase):
     def test_demo_renders_complete_product(self):
-        app = AppTest.from_file("app.py", default_timeout=45).run()
+        app = first_look().run()
 
         self.assertFalse(app.exception)
         self.assertEqual(
@@ -256,14 +264,14 @@ class AppSmokeTests(unittest.TestCase):
         self.assertEqual(len(app.dataframe), 5)
 
     def test_the_demo_is_the_lab_sample(self):
-        app = AppTest.from_file("app.py", default_timeout=45).run()
+        app = first_look().run()
 
         rendered = " ".join(str(block.value) for block in app.markdown)
         self.assertIn("Lab Measurements · demo", rendered)
         self.assertIn("Metric · Viability %", rendered)
 
     def test_drill_down_focuses_the_whole_analysis(self):
-        app = AppTest.from_file("app.py", default_timeout=45).run()
+        app = first_look().run()
         focus_box = next(box for box in app.selectbox if box.label.startswith("Drill into"))
         focus_box.set_value("Compound B").run()
 
@@ -273,7 +281,7 @@ class AppSmokeTests(unittest.TestCase):
         self.assertIn("Segment · Replicate", rendered)
 
     def test_combining_rows_follows_the_metric_and_can_be_switched(self):
-        app = AppTest.from_file("app.py", default_timeout=45).run()
+        app = first_look().run()
         combine = next(box for box in app.selectbox if box.label == "Combine rows by")
         self.assertEqual(combine.value, "Average")
         self.assertNotIn("Total Viability %", " ".join(str(block.value) for block in app.markdown))
@@ -284,7 +292,7 @@ class AppSmokeTests(unittest.TestCase):
         self.assertIn("Total Viability %", " ".join(str(block.value) for block in app.markdown))
 
     def test_ask_ada_answers_a_question(self):
-        app = AppTest.from_file("app.py", default_timeout=45).run()
+        app = first_look().run()
         app.chat_input[0].set_value("average viability by treatment").run()
 
         self.assertFalse(app.exception)
@@ -294,7 +302,7 @@ class AppSmokeTests(unittest.TestCase):
         self.assertIn("Treatment", history[0]["result"].answer)
 
     def test_ask_ada_explains_unreadable_questions(self):
-        app = AppTest.from_file("app.py", default_timeout=45).run()
+        app = first_look().run()
         app.chat_input[0].set_value("tell me a joke").run()
 
         self.assertFalse(app.exception)
@@ -303,7 +311,7 @@ class AppSmokeTests(unittest.TestCase):
         self.assertIsNone(history[0]["result"])
 
     def test_upload_mode_waits_for_a_file(self):
-        app = AppTest.from_file("app.py", default_timeout=45).run()
+        app = first_look().run()
         app.segmented_control[0].set_value("Upload your file").run()
 
         self.assertFalse(app.exception)
@@ -312,7 +320,7 @@ class AppSmokeTests(unittest.TestCase):
 
     def test_repeating_a_question_does_not_break_the_transcript(self):
         """Two answers that render the same chart need distinct element ids."""
-        app = AppTest.from_file("app.py", default_timeout=45).run()
+        app = first_look().run()
         app.chat_input[0].set_value("average viability by treatment").run()
         app.chat_input[0].set_value("average viability by treatment").run()
 
@@ -320,7 +328,7 @@ class AppSmokeTests(unittest.TestCase):
         self.assertEqual(len(app.session_state["chat_history"]), 2)
 
     def test_a_sample_dataset_can_be_analyzed_without_uploading(self):
-        app = AppTest.from_file("app.py", default_timeout=45).run()
+        app = first_look().run()
         app.segmented_control[0].set_value("Try a sample dataset").run()
 
         picker = next(box for box in app.selectbox if box.label == "Sample dataset")
@@ -334,7 +342,7 @@ class AppSmokeTests(unittest.TestCase):
         self.assertIn("SaaS Subscriptions · sample", rendered)
 
     def test_explore_charts_any_columns_and_says_why(self):
-        app = AppTest.from_file("app.py", default_timeout=45).run()
+        app = first_look().run()
         picker = next(box for box in app.multiselect if box.label == "Columns to chart")
 
         picker.set_value(["Treatment", "Viability %"]).run()
@@ -344,7 +352,7 @@ class AppSmokeTests(unittest.TestCase):
         self.assertIn("WHY THIS CHART", rendered)
 
     def test_explore_handles_every_recommended_form(self):
-        app = AppTest.from_file("app.py", default_timeout=45).run()
+        app = first_look().run()
         for columns in (
             ["Run Date", "Viability %"],
             ["Run Date", "Viability %", "Treatment"],
@@ -358,7 +366,7 @@ class AppSmokeTests(unittest.TestCase):
                 self.assertFalse(app.exception)
 
     def test_explore_says_how_it_fitted_a_long_date_range(self):
-        app = AppTest.from_file("app.py", default_timeout=45).run()
+        app = first_look().run()
         app.segmented_control[0].set_value("Try a sample dataset").run()
         samples = next(box for box in app.selectbox if box.label == "Sample dataset")
         samples.set_value("Ecommerce Orders").run()
@@ -373,3 +381,44 @@ class AppSmokeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HomePageTests(unittest.TestCase):
+    """The app opens on the page for researchers, which leads to the example study and the first look."""
+
+    def test_the_app_opens_on_the_page_for_researchers(self):
+        app = AppTest.from_file("app.py", default_timeout=45).run()
+
+        self.assertFalse(app.exception)
+        rendered = " ".join(str(block.value) for block in app.markdown)
+        self.assertIn("For researchers", rendered)
+        self.assertIn("traceable to it", rendered)
+        self.assertEqual(
+            [button.label for button in app.button],
+            [
+                "See an example study built here",
+                "Look at a table now",
+                "Open the example study",
+                "Look at a table",
+            ],
+        )
+
+    def test_the_example_study_is_built_and_shown(self):
+        app = AppTest.from_file("app.py", default_timeout=180).run()
+        app.button(key="home_example").click().run()
+
+        self.assertFalse(app.exception)
+        self.assertEqual(
+            [tab.label for tab in app.tabs],
+            ["Figures", "Tables", "Methods draft", "Data audit", "Processing record", "study.yml", "Verify"],
+        )
+        self.assertEqual(app.metric[0].value, "17")
+        self.assertEqual(app.metric[2].value, "2 of 2")
+        self.assertTrue(any("Every file matches a rebuild" in str(box.value) for box in app.success))
+
+    def test_the_first_look_is_one_click_away(self):
+        app = AppTest.from_file("app.py", default_timeout=90).run()
+        app.button(key="home_first_look").click().run()
+
+        self.assertFalse(app.exception)
+        self.assertEqual(len(app.tabs), 6)

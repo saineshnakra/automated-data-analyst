@@ -35,11 +35,17 @@ html, body, [class*="css"] {
 
 .block-container {
   max-width: 1280px;
-  padding-top: 1rem;
+  padding-top: 4.4rem;
   padding-bottom: 5rem;
 }
 
-header[data-testid="stHeader"] { background: transparent; }
+/* The page links sit in Streamlit's header, so it gets a surface of its own and the ADA bar below it scrolls away. */
+header[data-testid="stHeader"] {
+  background: rgba(246, 247, 250, .82);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--line);
+}
 footer[data-testid="stFooter"] { visibility: hidden; }
 
 ::selection { background: rgba(99, 91, 255, .22); }
@@ -80,9 +86,8 @@ input:focus-visible,
 /* ---------- Navigation ---------- */
 
 .ada-nav {
-  position: sticky;
-  top: .55rem;
-  z-index: 60;
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -274,6 +279,122 @@ div[data-testid="stFileUploaderDropzone"] button { color: white; border: 0; back
 .how-card:first-child .how-number { color: var(--lime); }
 .how-card h3 { margin: 1.55rem 0 .45rem; font-family: var(--display); font-size: 1.08rem; letter-spacing: -.015em; }
 .how-card p { margin: 0; color: var(--muted); font-size: .86rem; line-height: 1.55; }
+
+/* ---------- Research home ---------- */
+
+.hero.compact { padding-bottom: .4rem; }
+.hero.compact h1 { font-size: clamp(2rem, 3.4vw, 2.85rem); }
+.hero p code, .info-card code {
+  padding: .08rem .32rem;
+  font-size: .86em;
+  border-radius: .35rem;
+  background: var(--accent-soft);
+}
+
+.install-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: .6rem;
+  padding: .6rem .9rem;
+  color: #e9ebf0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: .84rem;
+  border-radius: .78rem;
+  background: var(--ink);
+  box-shadow: var(--shadow-sm);
+}
+.install-chip .prompt { color: var(--lime); font-weight: 700; }
+
+.step-grid, .info-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: .9rem;
+  margin-bottom: 1.6rem;
+}
+.step-card, .asset-card, .info-card, .try-card {
+  position: relative;
+  padding: 1.25rem;
+  border: 1px solid var(--line);
+  border-radius: 1.2rem;
+  background: rgba(255, 255, 255, .9);
+  animation: ada-rise .55s var(--ease) both;
+  transition: transform .3s var(--ease), box-shadow .3s var(--ease), border-color .3s var(--ease);
+}
+.step-card:hover, .asset-card:hover, .info-card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(99, 91, 255, .3);
+  box-shadow: var(--shadow-md);
+}
+.step-card:first-child { background: var(--ink); border-color: var(--ink); }
+.step-card:first-child h3 { color: white; }
+.step-card:first-child p { color: #aeb4c0; }
+.step-card:first-child .how-number { color: var(--lime); }
+.step-command {
+  display: inline-block;
+  margin-top: 1rem;
+  padding: .32rem .55rem;
+  color: var(--accent) !important;
+  font-size: .82rem;
+  border-radius: .45rem;
+  background: var(--accent-soft) !important;
+}
+.step-card:first-child .step-command { color: var(--lime) !important; background: rgba(255, 255, 255, .08) !important; }
+.step-card h3, .asset-card h3, .info-card h3, .try-card h3 {
+  margin: .85rem 0 .4rem;
+  font-family: var(--display);
+  font-size: 1.04rem;
+  letter-spacing: -.015em;
+}
+.step-card p, .asset-card p, .info-card p, .try-card p { margin: 0; color: var(--muted); font-size: .85rem; line-height: 1.55; }
+
+.asset-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: .8rem;
+  margin-bottom: 2rem;
+}
+.asset-card h3 { margin-top: .5rem; }
+.asset-folder {
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: .74rem;
+  font-weight: 700;
+}
+
+.figure-note h3 { margin: .35rem 0 .55rem; font-family: var(--display); font-size: 1.2rem; letter-spacing: -.02em; }
+.figure-note p { margin: 0 0 .8rem; color: #596171; font-size: .9rem; line-height: 1.6; }
+.figure-note ul, .principles { margin: 0; padding: 0; list-style: none; }
+.figure-note li, .principles li {
+  position: relative;
+  margin: 0 0 .55rem;
+  padding-left: 1.4rem;
+  color: #434a57;
+  font-size: .88rem;
+  line-height: 1.55;
+}
+.figure-note li::before, .principles li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: .5rem;
+  width: .55rem;
+  height: .55rem;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+}
+
+.design-table { width: 100%; border-collapse: collapse; font-size: .85rem; border-radius: 1rem; overflow: hidden; background: var(--paper); box-shadow: 0 0 0 1px var(--line); }
+.design-table th { padding: .7rem .8rem; color: var(--muted); font-size: .68rem; font-weight: 900; text-align: left; text-transform: uppercase; letter-spacing: .09em; background: #f2f3f7; }
+.design-table td { padding: .7rem .8rem; color: #2d323c; border-top: 1px solid var(--line); vertical-align: top; }
+.design-table td:first-child { font-weight: 750; }
+.table-note { margin: .7rem 0 0 !important; color: var(--muted); font-size: .8rem !important; line-height: 1.55; }
+
+.info-grid { margin-top: 1.6rem; }
+.info-card h3 { margin-top: 0; }
+.info-card a { color: var(--accent) !important; font-weight: 750; text-decoration: none !important; }
+.try-card { margin-bottom: .7rem; min-height: 11.5rem; }
+.try-card h3 { margin-top: 0; }
+.try-card a { color: var(--accent) !important; font-weight: 750; text-decoration: none !important; }
 
 /* ---------- Dataset bar ---------- */
 
@@ -600,7 +721,8 @@ div[data-testid="stExpander"] { border: 1px solid var(--line); border-radius: .9
 }
 
 @media (max-width: 900px) {
-  .how-grid, .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+  .how-grid, .kpi-grid, .asset-grid { grid-template-columns: repeat(2, 1fr); }
+  .step-grid, .info-grid { grid-template-columns: 1fr; }
   .evidence-grid { grid-template-columns: 1fr 1fr; }
   .ai-actions { grid-template-columns: 1fr; }
   .ada-nav-note, .nav-link { display: none; }
@@ -611,7 +733,8 @@ div[data-testid="stExpander"] { border: 1px solid var(--line); border-radius: .9
   .hero { padding-top: 1.6rem; }
   .hero h1 { font-size: 2.3rem; }
   .hero p { font-size: .97rem; }
-  .how-grid, .kpi-grid, .evidence-grid { grid-template-columns: 1fr; }
+  .how-grid, .kpi-grid, .evidence-grid, .asset-grid { grid-template-columns: 1fr; }
+  .install-chip { font-size: .76rem; }
   .dataset-bar, .footer { align-items: flex-start; flex-direction: column; }
   .brief { padding: 1.45rem; }
   .brief h1 { font-size: 1.95rem; }

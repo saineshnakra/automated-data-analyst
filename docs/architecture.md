@@ -31,7 +31,7 @@ runs from a script or a test with no browser and no API key.
  ai_insights.py  optional; the only module that makes a network call
 ```
 
-Only `app.py`, `ada/ui.py` and the `ada app` subcommand import Streamlit, and
+Only `app.py`, `ada/ui.py`, `ada/home.py` and the `ada app` subcommand import Streamlit, and
 `ada app` imports it only when run. The installed package depends on pandas,
 numpy, scipy, statsmodels, ruptures and python-calamine; Streamlit and Plotly come
 with the `app` extra, and the OpenAI client and Pydantic with the `ai` extra.
@@ -41,7 +41,7 @@ with the `app` extra, and the OpenAI client and Pydantic with the `ai` extra.
 
 | Layer | Files | Rule |
 |---|---|---|
-| Presentation | `app.py`, `ada/ui.py` | Draws results. Does not calculate. |
+| Presentation | `app.py`, `ada/ui.py`, `ada/home.py` | Draws results. Does not calculate. |
 | Public interface | `ada/api.py`, `ada/cli.py` | Wraps the engine for Python and the shell. No analysis of its own. |
 | Orchestration | `ada/pipeline.py` | Sequences cleaning, role detection and the row limit. |
 | Engine | `analysis.py`, `schema.py`, `metrics.py`, `aggregation.py`, `timeseries.py`, `anomalies.py`, `forecasting.py`, `survival.py`, `timepoints.py`, `compare.py`, `quality.py`, `business_insights.py`, `nlq.py`, `autovis.py`, `selection.py` | Functions over DataFrames. No network, no global state. |
@@ -53,8 +53,9 @@ with the `app` extra, and the OpenAI client and Pydantic with the `ai` extra.
 
 | File | Owns |
 |---|---|
-| `app.py` | Streamlit page setup, session state, sidebar, upload flow, the Ask ADA approval step |
+| `app.py` | Streamlit page setup and the three pages (home, example study, first look), session state, sidebar, upload flow, the Ask ADA approval step |
 | `ada/ui.py` | Render functions, Plotly styling, the chart palette |
+| `ada/home.py` | The home page for researchers, and the example study built with `ada.research` on the server |
 | `ada/api.py` | `analyze`, `Analysis`, `Refusal` and its codes, `sample`, `read_file` |
 | `ada/cli.py` | The `ada` command: `analyze`, `schema`, `ask`, `check`, `samples`, `app` |
 | `ada/pipeline.py` | `prepare_analysis`, role overrides, drill-down focus, chart-selection analysis, the audit and schema tables |

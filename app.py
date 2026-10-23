@@ -1,6 +1,8 @@
-"""ADA: exploratory analysis for any CSV or Excel table, research data included.
+"""ADA in the browser: paper assets for research data, and a first look at any table.
 
-Streamlit entry point: loads a table, detects its structure and renders the analysis.
+Streamlit entry point with three pages: a home page for researchers, the example study
+built on the server, and the first look, which loads a table, detects its structure and
+renders the analysis.
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ _LOCAL_MODULES = tuple(  # dependency order: each module imports only from those
     for name in (
         "formatting", "metrics", "schema", "timeseries", "quality", "anomalies", "forecasting",
         "aggregation", "analysis", "autovis", "file_io", "demo_data", "business_insights", "nlq", "selection",
-        "pipeline", "ai_insights", "ui",
+        "pipeline", "ai_insights", "ui", "home",
     )
 )
 _STAMP = "__ada_source_digest__"
@@ -94,6 +96,7 @@ from ada.business_insights import BusinessBrief, analyze_business, build_busines
 from ada.demo_data import make_demo_data  # noqa: E402
 from ada.file_io import list_excel_sheets, list_sample_datasets, read_tabular_file, safe_csv  # noqa: E402
 from ada.formatting import show_undated  # noqa: E402
+from ada.home import render_example_study, render_home  # noqa: E402
 from ada.metrics import metric_for  # noqa: E402
 from ada.nlq import QueryPlan, WholeTable, answer_question, rephrase_hint, suggested_questions  # noqa: E402
 from ada.pipeline import (  # noqa: E402
@@ -166,14 +169,15 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 MAX_ANALYSIS_ROWS = 1_000_000
 
 st.set_page_config(
-    page_title="ADA | See what is in your data",
+    page_title="ADA | Paper assets from research data",
     page_icon="◈",
     layout="wide",
     initial_sidebar_state="collapsed",
     menu_items={
         "Get Help": "https://github.com/saineshnakra/automated-data-analyst/issues",
         "Report a bug": "https://github.com/saineshnakra/automated-data-analyst/issues/new",
-        "About": "ADA takes a first look at a table of measurements and shows the calculation behind every number.",
+        "About": "ADA makes a paper's tables, figures and methods draft from research data, traceable to the "
+        "data, and takes a first look at any table.",
     },
 )
 
@@ -437,352 +441,371 @@ def render_ask_ada(
                 render_chat_fallback(suggestions, hint)
 
 
-inject_styles()
-render_nav()
-render_landing()
+def first_look_page() -> None:
+    """The first look: read a table and show what is in it, each finding with its calculation."""
+    st.set_page_config(page_title="ADA | A first look at any table")
+    render_landing()
 
-api_key = render_sidebar(server_api_key=get_openai_api_key())
+    api_key = render_sidebar(server_api_key=get_openai_api_key())
 
-sample_datasets = list_sample_datasets()
-source_options = ["Explore the lab demo", "Upload your file"]
-if sample_datasets:
-    source_options.insert(1, "Try a sample dataset")
+    sample_datasets = list_sample_datasets()
+    source_options = ["Explore the lab demo", "Upload your file"]
+    if sample_datasets:
+        source_options.insert(1, "Try a sample dataset")
 
-source_mode = st.segmented_control(
-    "Choose a source",
-    source_options,
-    default="Explore the lab demo",
-    label_visibility="collapsed",
-)
-# A segmented control returns None when the selected option is clicked again.
-if source_mode is None:
-    source_mode = "Explore the lab demo"
-
-uploaded_file = None
-business_context = ""
-selected_sample = None
-if source_mode == "Try a sample dataset":
-    selected_sample = st.selectbox(
-        "Sample dataset",
-        list(sample_datasets),
-        help="Synthetic files, safe to explore. Each one exercises a different part of the analysis.",
+    source_mode = st.segmented_control(
+        "Choose a source",
+        source_options,
+        default="Explore the lab demo",
+        label_visibility="collapsed",
     )
-    st.caption(SAMPLE_NOTES.get(selected_sample, "A synthetic dataset for trying ADA."))
-if source_mode == "Upload your file":
-    uploaded_file = st.file_uploader(
-        "Upload a table of measurements: CSV, TSV or Excel",
-        type=["csv", "tsv", "txt", "xlsx", "xlsm"],
-        help="Maximum file size: 25 MB. A workbook with several sheets lets you pick one.",
-    )
-    business_context = st.text_input(
-        "Optional context for the AI summary",
-        placeholder="Example: Weekly cell viability by treatment arm, three replicates per plate",
-        max_chars=500,
-    )
-    if uploaded_file is None:
-        render_how_it_works()
-        render_footer(build=build_identifier())
-        st.stop()
+    # A segmented control returns None when the selected option is clicked again.
+    if source_mode is None:
+        source_mode = "Explore the lab demo"
 
-try:
-    if source_mode == "Explore the lab demo" and DEMO_SAMPLE in sample_datasets:
-        sample_path = sample_datasets[DEMO_SAMPLE]
-        raw_dataframe = read_uploaded_file(sample_path.read_bytes(), sample_path.name)
-        source_name = f"{DEMO_SAMPLE} · demo"
-        business_context = SAMPLE_NOTES[DEMO_SAMPLE]
-    elif source_mode == "Explore the lab demo":
-        raw_dataframe = make_demo_data()
-        source_name = "Acme operating data · demo"
-        business_context = "Two years of orders across products, regions, and sales channels."
-    elif source_mode == "Try a sample dataset" and selected_sample is not None:
-        sample_path = sample_datasets[selected_sample]
-        raw_dataframe = read_uploaded_file(sample_path.read_bytes(), sample_path.name)
-        source_name = f"{selected_sample} · sample"
-        business_context = SAMPLE_NOTES.get(selected_sample, "")
-    elif uploaded_file is not None:
-        if uploaded_file.size > MAX_UPLOAD_BYTES:
-            st.error("That file is larger than ADA's 25 MB analysis limit.")
+    uploaded_file = None
+    business_context = ""
+    selected_sample = None
+    if source_mode == "Try a sample dataset":
+        selected_sample = st.selectbox(
+            "Sample dataset",
+            list(sample_datasets),
+            help="Synthetic files, safe to explore. Each one exercises a different part of the analysis.",
+        )
+        st.caption(SAMPLE_NOTES.get(selected_sample, "A synthetic dataset for trying ADA."))
+    if source_mode == "Upload your file":
+        uploaded_file = st.file_uploader(
+            "Upload a table of measurements: CSV, TSV or Excel",
+            type=["csv", "tsv", "txt", "xlsx", "xlsm"],
+            help="Maximum file size: 25 MB. A workbook with several sheets lets you pick one.",
+        )
+        business_context = st.text_input(
+            "Optional context for the AI summary",
+            placeholder="Example: Weekly cell viability by treatment arm, three replicates per plate",
+            max_chars=500,
+        )
+        if uploaded_file is None:
+            render_how_it_works()
+            render_footer(build=build_identifier())
             st.stop()
-        contents = uploaded_file.getvalue()
-        selected_sheet = None
-        worksheets = list_excel_sheets(contents, uploaded_file.name)
-        if len(worksheets) > 1:
-            selected_sheet = st.selectbox(
-                "Worksheet to analyze",
-                worksheets,
-                help="The workbook has several sheets; ADA analyzes one at a time.",
-            )
-        raw_dataframe = read_uploaded_file(contents, uploaded_file.name, selected_sheet)
-        source_name = (
-            f"{uploaded_file.name} · {selected_sheet}" if selected_sheet else uploaded_file.name
-        )
 
-    else:
-        # No usable source: show the explainer rather than a traceback.
-        render_how_it_works()
-        render_footer(build=build_identifier())
+    try:
+        if source_mode == "Explore the lab demo" and DEMO_SAMPLE in sample_datasets:
+            sample_path = sample_datasets[DEMO_SAMPLE]
+            raw_dataframe = read_uploaded_file(sample_path.read_bytes(), sample_path.name)
+            source_name = f"{DEMO_SAMPLE} · demo"
+            business_context = SAMPLE_NOTES[DEMO_SAMPLE]
+        elif source_mode == "Explore the lab demo":
+            raw_dataframe = make_demo_data()
+            source_name = "Acme operating data · demo"
+            business_context = "Two years of orders across products, regions, and sales channels."
+        elif source_mode == "Try a sample dataset" and selected_sample is not None:
+            sample_path = sample_datasets[selected_sample]
+            raw_dataframe = read_uploaded_file(sample_path.read_bytes(), sample_path.name)
+            source_name = f"{selected_sample} · sample"
+            business_context = SAMPLE_NOTES.get(selected_sample, "")
+        elif uploaded_file is not None:
+            if uploaded_file.size > MAX_UPLOAD_BYTES:
+                st.error("That file is larger than ADA's 25 MB analysis limit.")
+                st.stop()
+            contents = uploaded_file.getvalue()
+            selected_sheet = None
+            worksheets = list_excel_sheets(contents, uploaded_file.name)
+            if len(worksheets) > 1:
+                selected_sheet = st.selectbox(
+                    "Worksheet to analyze",
+                    worksheets,
+                    help="The workbook has several sheets; ADA analyzes one at a time.",
+                )
+            raw_dataframe = read_uploaded_file(contents, uploaded_file.name, selected_sheet)
+            source_name = (
+                f"{uploaded_file.name} · {selected_sheet}" if selected_sheet else uploaded_file.name
+            )
+
+        else:
+            # No usable source: show the explainer rather than a traceback.
+            render_how_it_works()
+            render_footer(build=build_identifier())
+            st.stop()
+
+        prepared = prepare_analysis(raw_dataframe, row_limit=MAX_ANALYSIS_ROWS, source_name=source_name)
+    except (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError, ValueError, ImportError) as error:
+        st.error(f"ADA could not read this file: {error}")
         st.stop()
 
-    prepared = prepare_analysis(raw_dataframe, row_limit=MAX_ANALYSIS_ROWS, source_name=source_name)
-except (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError, ValueError, ImportError) as error:
-    st.error(f"ADA could not read this file: {error}")
-    st.stop()
+    if prepared.rows_note:
+        st.warning(f"ADA analyzed {prepared.rows_note} for predictable performance.")
 
-if prepared.rows_note:
-    st.warning(f"ADA analyzed {prepared.rows_note} for predictable performance.")
+    # One collapsed list, so a file with many fixes still opens on its headline.
+    cleaning_notes = prepared.cleaning_report.notes
+    if cleaning_notes:
+        count = len(cleaning_notes)
+        with st.expander(f"What ADA changed while reading the file ({count} {'note' if count == 1 else 'notes'})"):
+            st.markdown("\n".join(f"- {note}" for note in cleaning_notes))
 
-# One collapsed list, so a file with many fixes still opens on its headline.
-cleaning_notes = prepared.cleaning_report.notes
-if cleaning_notes:
-    count = len(cleaning_notes)
-    with st.expander(f"What ADA changed while reading the file ({count} {'note' if count == 1 else 'notes'})"):
-        st.markdown("\n".join(f"- {note}" for note in cleaning_notes))
+    dataframe = prepared.dataframe
+    detected = prepared.detected_roles
+    date_options = [
+        "None",
+        *[
+            column
+            for column in dataframe.columns
+            if pd.api.types.is_datetime64_any_dtype(dataframe[column])
+        ],
+    ]
+    measure_options = ["None", *detected.numeric]
+    dimension_options = ["None", *detected.dimensions]
 
-dataframe = prepared.dataframe
-detected = prepared.detected_roles
-date_options = [
-    "None",
-    *[
-        column
-        for column in dataframe.columns
-        if pd.api.types.is_datetime64_any_dtype(dataframe[column])
-    ],
-]
-measure_options = ["None", *detected.numeric]
-dimension_options = ["None", *detected.dimensions]
-
-# Runners-up for the measure, when the pick was a close call. Older ColumnRoles have no such field.
-close_measures = [
-    column for column in getattr(detected, "measure_alternatives", ()) or () if column != detected.measure
-]
-if close_measures:
-    st.caption(
-        f"ADA measured {detected.measure}, but it was a close call: {', '.join(close_measures)} could "
-        "also be it. Change it under Tune ADA's schema detection."
-    )
-with st.expander("Tune ADA's schema detection"):
-    st.caption("ADA picked these columns automatically. Change any that are wrong.")
-    selectors = st.columns(3)
-    selected_date = selectors[0].selectbox(
-        "Date",
-        date_options,
-        index=date_options.index(detected.date) if detected.date in date_options else 0,
-    )
-    selected_measure = selectors[1].selectbox(
-        "Primary metric",
-        measure_options,
-        index=measure_options.index(detected.measure) if detected.measure in measure_options else 0,
-    )
-    selected_dimension = selectors[2].selectbox(
-        "Grouping column",
-        dimension_options,
-        index=dimension_options.index(detected.dimension) if detected.dimension in dimension_options else 0,
-    )
-    selected_aggregation = None
-    if selected_measure != "None":
-        # Keyed by metric, so each metric starts from its own detected default
-        # and a choice made for one never carries over to another.
-        combine_options = {"Total": "sum", "Average": "mean"}
-        detected_combine = metric_for(selected_measure, detected).combines_as.capitalize()
-        combine_labels = list(combine_options)
-        selected_combine = selectors[1].selectbox(
-            "Combine rows by",
-            combine_labels,
-            index=combine_labels.index(detected_combine),
-            key=f"combine_rows_{selected_measure}",
-            help="Total adds the metric's rows up (money, counts). Average takes their mean "
-            "(readings such as a temperature, a concentration or a price).",
+    # Runners-up for the measure, when the pick was a close call. Older ColumnRoles have no such field.
+    close_measures = [
+        column for column in getattr(detected, "measure_alternatives", ()) or () if column != detected.measure
+    ]
+    if close_measures:
+        st.caption(
+            f"ADA measured {detected.measure}, but it was a close call: {', '.join(close_measures)} could "
+            "also be it. Change it under Tune ADA's schema detection."
         )
-        if selected_combine != detected_combine:
-            selected_aggregation = combine_options[selected_combine]
-
-roles = apply_role_selection(
-    detected,
-    date=selected_date,
-    measure=selected_measure,
-    dimension=selected_dimension,
-    aggregation=selected_aggregation,
-)
-focus_value = None
-focus_label = None
-focus_values = focus_options(dataframe, roles)
-if focus_values:
-    everything = f"All {roles.dimension} values"
-    # A numeric code reads as "Status 2" rather than a bare "2".
-    focus_labels = dict(zip(focus_values, group_names(dataframe, roles.dimension, focus_values), strict=True))
-    # A long table's rows measure different things, so they are never pooled:
-    # the brief starts on the detected focus and offers no "all" option.
-    pooled = [] if roles.focus in focus_values else [everything]
-    focus_choices = [*pooled, *focus_values]
-    focus_columns = st.columns([0.34, 0.66])
-    choice = focus_columns[0].selectbox(
-        f"Drill into one {roles.dimension}",
-        focus_choices,
-        index=focus_choices.index(roles.focus) if roles.focus in focus_choices else 0,
-        format_func=lambda value: focus_labels.get(value, value),
-        help="Focus the brief, dashboard, chat, and exports on a single slice. "
-        "ADA regroups the slice by the next useful segment.",
-    )
-    if choice != everything:
-        focus_value = choice
-        focus_label = focus_labels[choice]
-
-# A long table's other parameters stay askable: Ask answers about them from every row.
-whole = (
-    WholeTable(dataframe, replace(roles, focus=None), roles.dimension, focus_value)
-    if roles.table_shape == "long" and focus_value and roles.dimension
-    else None
-)
-dataframe, roles = apply_focus(dataframe, roles, focus_value)
-# One scan of the data checks serves the brief, Ask and the Data room.
-issues = scan_quality(dataframe, roles, blanked=prepared.cleaning_report.blanked_codes)
-brief = analyze_business(dataframe, roles, blanked=prepared.cleaning_report.blanked_codes, issues=issues)
-
-render_dataset_bar(source_name, dataframe, roles, focus=focus_label)
-render_brief(brief)
-render_kpis(brief)
-
-summary_tab, ask_tab, charts_tab, explore_tab, findings_tab, data_tab = st.tabs(
-    ["Summary", "Ask ADA", "Charts", "Explore", "Findings", "Data"]
-)
-
-with summary_tab:
-    render_section_heading(
-        "Summary",
-        "Suggested next steps",
-        "Each recommendation sits beside the evidence it is based on.",
-    )
-    summary_columns = st.columns([1.08, 0.92], gap="large")
-    with summary_columns[0]:
-        st.markdown('<div class="section-label">What ADA would do next</div>', unsafe_allow_html=True)
-        render_recommendations(brief)
-    with summary_columns[1]:
-        st.markdown('<div class="section-label">What the data says</div>', unsafe_allow_html=True)
-        render_evidence(brief, limit=4)
-        st.markdown(
-            '<div class="trust-note">Evidence cards are calculations. Recommendations are interpretation, not causal proof.</div>',
-            unsafe_allow_html=True,
+    with st.expander("Tune ADA's schema detection"):
+        st.caption("ADA picked these columns automatically. Change any that are wrong.")
+        selectors = st.columns(3)
+        selected_date = selectors[0].selectbox(
+            "Date",
+            date_options,
+            index=date_options.index(detected.date) if detected.date in date_options else 0,
         )
+        selected_measure = selectors[1].selectbox(
+            "Primary metric",
+            measure_options,
+            index=measure_options.index(detected.measure) if detected.measure in measure_options else 0,
+        )
+        selected_dimension = selectors[2].selectbox(
+            "Grouping column",
+            dimension_options,
+            index=dimension_options.index(detected.dimension) if detected.dimension in dimension_options else 0,
+        )
+        selected_aggregation = None
+        if selected_measure != "None":
+            # Keyed by metric, so each metric starts from its own detected default
+            # and a choice made for one never carries over to another.
+            combine_options = {"Total": "sum", "Average": "mean"}
+            detected_combine = metric_for(selected_measure, detected).combines_as.capitalize()
+            combine_labels = list(combine_options)
+            selected_combine = selectors[1].selectbox(
+                "Combine rows by",
+                combine_labels,
+                index=combine_labels.index(detected_combine),
+                key=f"combine_rows_{selected_measure}",
+                help="Total adds the metric's rows up (money, counts). Average takes their mean "
+                "(readings such as a temperature, a concentration or a price).",
+            )
+            if selected_combine != detected_combine:
+                selected_aggregation = combine_options[selected_combine]
 
-    narrative = None
-    narrative_model = None
-    if api_key:
+    roles = apply_role_selection(
+        detected,
+        date=selected_date,
+        measure=selected_measure,
+        dimension=selected_dimension,
+        aggregation=selected_aggregation,
+    )
+    focus_value = None
+    focus_label = None
+    focus_values = focus_options(dataframe, roles)
+    if focus_values:
+        everything = f"All {roles.dimension} values"
+        # A numeric code reads as "Status 2" rather than a bare "2".
+        focus_labels = dict(zip(focus_values, group_names(dataframe, roles.dimension, focus_values), strict=True))
+        # A long table's rows measure different things, so they are never pooled:
+        # the brief starts on the detected focus and offers no "all" option.
+        pooled = [] if roles.focus in focus_values else [everything]
+        focus_choices = [*pooled, *focus_values]
+        focus_columns = st.columns([0.34, 0.66])
+        choice = focus_columns[0].selectbox(
+            f"Drill into one {roles.dimension}",
+            focus_choices,
+            index=focus_choices.index(roles.focus) if roles.focus in focus_choices else 0,
+            format_func=lambda value: focus_labels.get(value, value),
+            help="Focus the brief, dashboard, chat, and exports on a single slice. "
+            "ADA regroups the slice by the next useful segment.",
+        )
+        if choice != everything:
+            focus_value = choice
+            focus_label = focus_labels[choice]
+
+    # A long table's other parameters stay askable: Ask answers about them from every row.
+    whole = (
+        WholeTable(dataframe, replace(roles, focus=None), roles.dimension, focus_value)
+        if roles.table_shape == "long" and focus_value and roles.dimension
+        else None
+    )
+    dataframe, roles = apply_focus(dataframe, roles, focus_value)
+    # One scan of the data checks serves the brief, Ask and the Data room.
+    issues = scan_quality(dataframe, roles, blanked=prepared.cleaning_report.blanked_codes)
+    brief = analyze_business(dataframe, roles, blanked=prepared.cleaning_report.blanked_codes, issues=issues)
+
+    render_dataset_bar(source_name, dataframe, roles, focus=focus_label)
+    render_brief(brief)
+    render_kpis(brief)
+
+    summary_tab, ask_tab, charts_tab, explore_tab, findings_tab, data_tab = st.tabs(
+        ["Summary", "Ask ADA", "Charts", "Explore", "Findings", "Data"]
+    )
+
+    with summary_tab:
         render_section_heading(
-            "Optional AI summary",
-            "Summarize the findings with a model",
-            "Only the computed evidence and any context you add are sent. Raw rows are not, though segment names inside evidence sentences are.",
+            "Summary",
+            "Suggested next steps",
+            "Each recommendation sits beside the evidence it is based on.",
         )
-        control_column, note_column = st.columns([.42, .58], gap="large")
-        with control_column:
-            narrative, narrative_model = maybe_generate_narrative(
-                api_key=api_key,
-                brief=brief,
-                business_context=business_context,
+        summary_columns = st.columns([1.08, 0.92], gap="large")
+        with summary_columns[0]:
+            st.markdown('<div class="section-label">What ADA would do next</div>', unsafe_allow_html=True)
+            render_recommendations(brief)
+        with summary_columns[1]:
+            st.markdown('<div class="section-label">What the data says</div>', unsafe_allow_html=True)
+            render_evidence(brief, limit=4)
+            st.markdown(
+                '<div class="trust-note">Evidence cards are calculations. Recommendations are interpretation, not causal proof.</div>',
+                unsafe_allow_html=True,
             )
-        with note_column:
-            st.info(
-                "Luna is the efficient default. Terra is available when ambiguity justifies more reasoning. "
-                "The calculated dashboard remains authoritative either way."
-            )
-        if narrative and narrative_model:
-            render_ai_narrative(narrative, model=narrative_model)
-    else:
+
         narrative = None
         narrative_model = None
+        if api_key:
+            render_section_heading(
+                "Optional AI summary",
+                "Summarize the findings with a model",
+                "Only the computed evidence and any context you add are sent. Raw rows are not, though segment names inside evidence sentences are.",
+            )
+            control_column, note_column = st.columns([.42, .58], gap="large")
+            with control_column:
+                narrative, narrative_model = maybe_generate_narrative(
+                    api_key=api_key,
+                    brief=brief,
+                    business_context=business_context,
+                )
+            with note_column:
+                st.info(
+                    "Luna is the efficient default. Terra is available when ambiguity justifies more reasoning. "
+                    "The calculated dashboard remains authoritative either way."
+                )
+            if narrative and narrative_model:
+                render_ai_narrative(narrative, model=narrative_model)
+        else:
+            narrative = None
+            narrative_model = None
 
-with ask_tab:
-    render_section_heading(
-        "Conversational analyst",
-        "Ask this data anything",
-        "Questions become transparent pandas calculations that run locally, and every "
-        "reply shows its math. Only when the rules cannot read a question, and only if you "
-        "supplied a key, is the question itself sent to the planner, which returns a plan "
-        "for you to approve, never an answer.",
-    )
-    render_ask_ada(
-        dataframe, roles, source_name, api_key, rows_not_analyzed=prepared.truncated_rows, whole=whole,
-        checks=issues,
-    )
+    with ask_tab:
+        render_section_heading(
+            "Conversational analyst",
+            "Ask this data anything",
+            "Questions become transparent pandas calculations that run locally, and every "
+            "reply shows its math. Only when the rules cannot read a question, and only if you "
+            "supplied a key, is the question itself sent to the planner, which returns a plan "
+            "for you to approve, never an answer.",
+        )
+        render_ask_ada(
+            dataframe, roles, source_name, api_key, rows_not_analyzed=prepared.truncated_rows, whole=whole,
+            checks=issues,
+        )
 
-with charts_tab:
-    render_section_heading(
-        "Overview",
-        "The main charts",
-        "Trend, breakdown, distribution and the strongest relationship, chosen automatically.",
-    )
-    render_dashboard(dataframe, roles)
+    with charts_tab:
+        render_section_heading(
+            "Overview",
+            "The main charts",
+            "Trend, breakdown, distribution and the strongest relationship, chosen automatically.",
+        )
+        render_dashboard(dataframe, roles)
 
-with explore_tab:
-    render_explore(dataframe, roles, brief)
+    with explore_tab:
+        render_explore(dataframe, roles, brief)
 
-with findings_tab:
-    render_section_heading(
-        "Findings",
-        "Trace every conclusion",
-        "Every figure shows the calculation behind it. If ADA picked the wrong column for a role, change it under Tune ADA's schema detection.",
-    )
-    render_evidence(brief)
-    st.markdown('<div class="section-label" style="margin-top:1.5rem">Detected columns</div>', unsafe_allow_html=True)
-    st.dataframe(schema_frame(roles), hide_index=True, width="stretch")
+    with findings_tab:
+        render_section_heading(
+            "Findings",
+            "Trace every conclusion",
+            "Every figure shows the calculation behind it. If ADA picked the wrong column for a role, change it under Tune ADA's schema detection.",
+        )
+        render_evidence(brief)
+        st.markdown('<div class="section-label" style="margin-top:1.5rem">Detected columns</div>', unsafe_allow_html=True)
+        st.dataframe(schema_frame(roles), hide_index=True, width="stretch")
 
-with data_tab:
-    render_section_heading(
-        "Data",
-        "Clean, inspect, and take it with you",
-        "Review ADA's cleaning audit, inspect the cleaned table, and export the report and the analysis-ready data.",
-    )
-    report = build_business_report(
-        dataframe,
-        brief,
-        source_name=source_name,
-        context=business_context,
-    )
-    if narrative and narrative_model:
-        report += "\n\n" + narrative_to_markdown(narrative, model=narrative_model)
+    with data_tab:
+        render_section_heading(
+            "Data",
+            "Clean, inspect, and take it with you",
+            "Review ADA's cleaning audit, inspect the cleaned table, and export the report and the analysis-ready data.",
+        )
+        report = build_business_report(
+            dataframe,
+            brief,
+            source_name=source_name,
+            context=business_context,
+        )
+        if narrative and narrative_model:
+            report += "\n\n" + narrative_to_markdown(narrative, model=narrative_model)
 
-    downloads = st.columns(2)
-    downloads[0].download_button(
-        "Download executive brief",
-        data=report,
-        file_name="ada_executive_brief.md",
-        mime="text/markdown",
-        width="stretch",
-    )
-    downloads[1].download_button(
-        "Download cleaned data",
-        data=safe_csv(dataframe).encode("utf-8"),
-        file_name="ada_cleaned_data.csv",
-        mime="text/csv",
-        width="stretch",
-    )
-
-    quality_columns = st.columns(4)
-    quality_columns[0].metric("Rows analyzed", f"{len(dataframe):,}")
-    quality_columns[1].metric("Columns", f"{len(dataframe.columns):,}")
-    quality_columns[2].metric(
-        "Duplicates removed",
-        f"{prepared.cleaning_report.duplicate_rows_removed:,}",
-    )
-    quality_columns[3].metric("Missing cells", f"{int(dataframe.isna().sum().sum()):,}")
-
-    with st.expander("Cleaning audit"):
-        st.dataframe(
-            cleaning_audit_frame(prepared.cleaning_report),
-            hide_index=True,
+        downloads = st.columns(2)
+        downloads[0].download_button(
+            "Download executive brief",
+            data=report,
+            file_name="ada_executive_brief.md",
+            mime="text/markdown",
+            width="stretch",
+        )
+        downloads[1].download_button(
+            "Download cleaned data",
+            data=safe_csv(dataframe).encode("utf-8"),
+            file_name="ada_cleaned_data.csv",
+            mime="text/csv",
             width="stretch",
         )
 
-    with st.expander("Data checks"):
-        st.caption(
-            "Values to look at before trusting the figures. Clear missing-value codes were set to "
-            "missing during cleaning; nothing else was changed."
+        quality_columns = st.columns(4)
+        quality_columns[0].metric("Rows analyzed", f"{len(dataframe):,}")
+        quality_columns[1].metric("Columns", f"{len(dataframe.columns):,}")
+        quality_columns[2].metric(
+            "Duplicates removed",
+            f"{prepared.cleaning_report.duplicate_rows_removed:,}",
         )
-        st.dataframe(quality_frame(issues), hide_index=True, width="stretch")
+        quality_columns[3].metric("Missing cells", f"{int(dataframe.isna().sum().sum()):,}")
 
-    st.subheader("Cleaned data")
-    st.dataframe(show_undated(dataframe.head(1_000)), width="stretch", height=420)
-    st.caption("Preview limited to 1,000 rows. The download includes every analyzed row.")
-    st.subheader("Data dictionary")
-    st.dataframe(column_profile(dataframe), hide_index=True, width="stretch")
+        with st.expander("Cleaning audit"):
+            st.dataframe(
+                cleaning_audit_frame(prepared.cleaning_report),
+                hide_index=True,
+                width="stretch",
+            )
 
-render_footer(build=build_identifier())
+        with st.expander("Data checks"):
+            st.caption(
+                "Values to look at before trusting the figures. Clear missing-value codes were set to "
+                "missing during cleaning; nothing else was changed."
+            )
+            st.dataframe(quality_frame(issues), hide_index=True, width="stretch")
+
+        st.subheader("Cleaned data")
+        st.dataframe(show_undated(dataframe.head(1_000)), width="stretch", height=420)
+        st.caption("Preview limited to 1,000 rows. The download includes every analyzed row.")
+        st.subheader("Data dictionary")
+        st.dataframe(column_profile(dataframe), hide_index=True, width="stretch")
+
+    render_footer(build=build_identifier())
+
+
+# The home page tells researchers what ADA makes from a study; the example page builds one on the
+# server; the first look is the analysis of any table that the app used to open on.
+HOME = st.Page(
+    lambda: render_home(EXAMPLE, FIRST_LOOK, build=build_identifier()),
+    title="For researchers", icon=":material/science:", url_path="home", default=True,
+)
+EXAMPLE = st.Page(
+    lambda: render_example_study(FIRST_LOOK, build=build_identifier()),
+    title="Example study", icon=":material/menu_book:", url_path="example-study",
+)
+FIRST_LOOK = st.Page(first_look_page, title="First look at a table", icon=":material/table_view:", url_path="first-look")
+
+inject_styles()
+page = st.navigation([HOME, EXAMPLE, FIRST_LOOK], position="top")
+render_nav()
+page.run()
