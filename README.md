@@ -11,6 +11,19 @@ checks the data first · the design picks the test · every number computed in
 code · the calculation under every result · refuses instead of guessing ·
 rebuilds to the same numbers
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/ada-terminal.gif" width="88%" alt="A terminal: ada demo mice writes an example study, ada build makes 17 assets (tables, figures, a supplement) and reports 2 analyses requested, 2 fitted, 0 refused, ada verify confirms every file rebuilds the same, and the figure it drew is shown: body weight over eight weeks for mice on two diets">
+</p>
+
+<p align="center">
+  <a href="https://github.com/saineshnakra/automated-data-analyst"><b>⭐ Star ADA</b></a> if it saves you an afternoon ·
+  <a href="https://automated-data-analyst.streamlit.app/example-study">Try it in the browser</a> ·
+  <a href="https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/research.md">Docs</a> ·
+  <a href="https://github.com/saineshnakra/automated-data-analyst/blob/main/CHANGELOG.md">What's new in 0.5.0</a>
+  <br>
+  <sub>Read this in <a href="https://readme-i18n.com/saineshnakra/automated-data-analyst?lang=zh">中文</a> · <a href="https://readme-i18n.com/saineshnakra/automated-data-analyst?lang=ja">日本語</a> · <a href="https://readme-i18n.com/saineshnakra/automated-data-analyst?lang=ko">한국어</a> · <a href="https://readme-i18n.com/saineshnakra/automated-data-analyst?lang=es">Español</a> · <a href="https://readme-i18n.com/saineshnakra/automated-data-analyst?lang=pt">Português</a> · <a href="https://readme-i18n.com/saineshnakra/automated-data-analyst?lang=de">Deutsch</a> · <a href="https://readme-i18n.com/saineshnakra/automated-data-analyst?lang=fr">Français</a> · <a href="https://readme-i18n.com/saineshnakra/automated-data-analyst?lang=ru">Русский</a></sub>
+</p>
+
 **Your paper's tables and figures, built from your data and traceable to
 it.** Install ADA in the folder that holds a study's data, answer a few
 questions about the study, and `ada build` makes what the paper needs: a data
@@ -401,6 +414,9 @@ that read `.agents/skills` can use it too.
 [`llms.txt`](https://github.com/saineshnakra/automated-data-analyst/blob/main/llms.txt)
 gives a language model a short map of the docs.
 
+If the skill saves you time, a [⭐ star](https://github.com/saineshnakra/automated-data-analyst) is how other researchers and
+their assistants find it.
+
 ## Scheduled checks
 
 `ada check` runs anomaly detection and reports through its exit code, so it can
@@ -490,6 +506,17 @@ move together by construction. [The results](https://github.com/saineshnakra/aut
 datasets were picked, every dataset's review, what changed, and what ADA
 still gets wrong.
 
+Six of the 29 it now handles well, in its own words:
+
+| Dataset | What ADA leads with |
+|---|---|
+| [NHANES 2011-12, 4,571 adults](https://github.com/saineshnakra/automated-data-analyst/blob/main/results/datasets/rehoyt__adult-nhanes-2011-2012.md) (clinical) | Diabetes is 21.7% among people rating their health poor and 1.7% among those rating it excellent (χ², Holm-adjusted p < 0.001) |
+| [Social learning in house sparrows](https://github.com/saineshnakra/automated-data-analyst/blob/main/results/datasets/thedevastator__social-learning-in-house-sparrows.md) (behaviour) | Phenotype explains about a fifth of the variation in approach time, with the 24 birds, not 351 trials, as the sample |
+| [Foamed and normal concrete](https://github.com/saineshnakra/automated-data-analyst/blob/main/results/datasets/imtkaggleteam__compressive-strength-foamednormal-concrete.md) (materials) | Strength rises with curing age, from about 19 MPa at 3 days to 52 at 56 days, with a warning that the mixes differ between ages |
+| [Munich weather 1954-2022](https://github.com/saineshnakra/automated-data-analyst/blob/main/results/datasets/mexwell__weather-data-munich-1954-2022.md) (environment) | Daily maximum temperature rose about 0.47 °C per decade (Theil–Sen, Mann–Kendall p < 0.001), after treating −999 as missing |
+| [Gene expression in brain cancer](https://github.com/saineshnakra/automated-data-analyst/blob/main/results/datasets/khushim10__gene-expression-in-brain-cancer.md) (biology) | Recognises each row as a summary of 46 samples and ranks 54,675 probes by mean and spread |
+| [Steel strength](https://github.com/saineshnakra/automated-data-analyst/blob/main/results/datasets/fuarresvij__steel-test-data.md) (materials) | The strength–ductility trade-off (r = −0.62) and the elements that go with higher tensile strength |
+
 ## Documentation
 
 | Page | Contents |
@@ -514,7 +541,11 @@ the [good first issues](https://github.com/saineshnakra/automated-data-analyst/l
 and the [roadmap](https://github.com/saineshnakra/automated-data-analyst/blob/main/ROADMAP.md).
 New analysis rules need a test, including how they behave on thin data.
 
-If ADA is useful to you, a star helps other people find it.
+If ADA is useful to you, a [⭐ star](https://github.com/saineshnakra/automated-data-analyst) helps other people find it.
+
+**Used ADA for a paper, a thesis, a lab report or a class?** Open an
+[issue](https://github.com/saineshnakra/automated-data-analyst/issues/new) with
+a link, and it goes in a list here so others can see it on real work.
 
 ## Built on
 
