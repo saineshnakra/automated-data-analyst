@@ -20,6 +20,8 @@ EXTREME_Z = 3.5
 FEW_CLUSTERS = 5
 #: Missing share above which a variable is marked for checking.
 MISSING_SHARE = 0.2
+#: More time points than this (an hourly record) are summarised, not listed one by one.
+LISTED_TIME_POINTS = 50
 
 
 @dataclass(frozen=True)
@@ -352,17 +354,16 @@ def _design_findings(study: Study, data: pd.DataFrame) -> list[Finding]:
                         )
                     )
                 per_time = data.groupby(time, observed=True)[subject].nunique()
-                add(
-                    Finding(
-                        "design",
-                        time,
-                        "note",
-                        "Subjects measured at each time point: "
-                        + ", ".join(f"{moment} ({count})" for moment, count in per_time.items())
-                        + ".",
-                        int(per_time.sum()),
+                if len(per_time) <= LISTED_TIME_POINTS:
+                    listed = ", ".join(f"{moment} ({count})" for moment, count in per_time.items())
+                    text = f"Subjects measured at each time point: {listed}."
+                else:
+                    counts = " to ".join(map(str, sorted({int(per_time.min()), int(per_time.max())})))
+                    text = (
+                        f"{len(per_time):,} time points from {per_time.index[0]} to {per_time.index[-1]}, "
+                        f"with {counts} subjects measured at each."
                     )
-                )
+                add(Finding("design", time, "note", text, int(per_time.sum())))
     if study.design == "clustered" and cluster and cluster in data:
         per_cluster = data[cluster].value_counts()
         add(
