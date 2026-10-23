@@ -73,7 +73,8 @@ dependencies = [
 
 [project.optional-dependencies]
 # Only the Streamlit app (app.py, ada/ui.py) needs these.
-app = ["streamlit==1.59.2", "plotly>=5.24,<7"]
+# starlette<1: Streamlit 1.59 cannot serve images or downloads on Starlette 1.x.
+app = ["streamlit==1.59.2", "starlette>=0.40,<1", "plotly>=5.24,<7"]
 # Optional AI layer (ada/ai_insights.py). It proposes query plans; pandas runs them.
 ai = ["openai>=2.46,<3", "pydantic>=2.11,<3"]
 # openpyxl writes the workbooks the tests read.
@@ -108,3 +109,4 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.ruff.lint.per-file-ignores]
 "app.py" = ["E501"]
 "ada/ui.py" = ["E501"]
+"ada/home.py" = ["E501"]
