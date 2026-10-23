@@ -2,12 +2,14 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import pandas as pd
 import yaml
 from research_helpers import assay, assay_study, study_folder
 
-from ada.research import build, init, load
+from ada.research import StudyError, build, init, load
+from ada.research.study import sha256_of
 
 
 class BuildTests(unittest.TestCase):
@@ -55,6 +57,97 @@ class BuildTests(unittest.TestCase):
             build(path)
             built = build(path)
             self.assertEqual(built.changes, [])
+
+
+BROKEN_SCRIPT = """
+from ada import research
+
+
+@research.table("broken", title="A table that cannot be made")
+def broken(data, study):
+    raise ValueError("this table cannot be made")
+"""
+
+
+def files(out: Path) -> dict[str, bytes]:
+    """Every file under ``out``, by its path from ``out``, with its bytes."""
+    return {path.relative_to(out).as_posix(): path.read_bytes() for path in out.rglob("*") if path.is_file()}
+
+
+def edit_study(path: Path, change) -> None:
+    study = yaml.safe_load(path.read_text(encoding="utf-8"))
+    change(study)
+    path.write_text(yaml.safe_dump(study, sort_keys=False), encoding="utf-8")
+
+
+class FailedBuildTests(unittest.TestCase):
+    def assertNoScratchLeft(self, path: Path) -> None:
+        self.assertEqual([item.name for item in path.parent.iterdir() if "-building-" in item.name], [])
+
+    def test_a_changed_data_file_leaves_the_previous_build_as_it_was(self):
+        with study_folder(assay(), assay_study()) as path:
+            data = path.parent / "assay.csv"
+            edit_study(path, lambda study: study["data"].update(sha256=sha256_of(data)))
+            out = build(path).out
+            (out / "notes.txt").write_text("mine", encoding="utf-8")
+            before = files(out)
+            with data.open("a", encoding="utf-8") as handle:
+                handle.write("Z99,Control,5,88.0\n")
+
+            with self.assertRaisesRegex(StudyError, "has changed since study.yml recorded it"):
+                build(path)
+
+            self.assertEqual(files(out), before)
+            self.assertGreater(len(before), 40)
+            self.assertNoScratchLeft(path)
+
+    def test_a_step_that_fails_leaves_the_previous_build_as_it_was(self):
+        with study_folder(assay(), assay_study()) as path:
+            out = build(path).out
+            before = files(out)
+            original = path.read_text(encoding="utf-8")
+
+            with self.subTest("a custom table that raises"):
+                (path.parent / "broken.py").write_text(BROKEN_SCRIPT, encoding="utf-8")
+                edit_study(path, lambda study: study.update(custom=["broken.py"]))
+                with self.assertRaisesRegex(ValueError, "cannot be made"):
+                    build(path)
+                self.assertEqual(files(out), before)
+            path.write_text(original, encoding="utf-8")
+
+            with self.subTest("a figure that cannot be saved"), mock.patch(
+                "matplotlib.figure.Figure.savefig", side_effect=OSError("No space left on device")
+            ):
+                with self.assertRaisesRegex(OSError, "No space left"):
+                    build(path)
+                self.assertEqual(files(out), before)
+            self.assertNoScratchLeft(path)
+
+    def test_a_rebuild_replaces_what_the_build_owns_and_nothing_else(self):
+        with study_folder(assay(), assay_study()) as path:
+            out = build(path).out
+            first = files(out)
+            (out / "tables" / "stale.csv").write_text("left from before", encoding="utf-8")
+            (out / "drafts").mkdir()
+            (out / "drafts" / "letter.md").write_text("mine", encoding="utf-8")
+            (out / "notes.txt").write_text("mine", encoding="utf-8")
+            exclusion = {"exclude": {"where": {"column": "Viability (%)", "below": 0}}, "reason": "Error."}
+            edit_study(path, lambda study: study.update(processing=[exclusion]))
+
+            built = build(path)
+
+            self.assertEqual(built.out, out)
+            self.assertFalse((out / "tables" / "stale.csv").exists())
+            self.assertNotEqual(files(out)["tables/descriptives.csv"], first["tables/descriptives.csv"])
+            self.assertEqual((out / "drafts" / "letter.md").read_text(encoding="utf-8"), "mine")
+            self.assertEqual((out / "notes.txt").read_text(encoding="utf-8"), "mine")
+            changes = (out / "CHANGES.md").read_text(encoding="utf-8")
+            self.assertLess(changes.index("## Build 2"), changes.index("## Build 1"))
+            record = json.loads((out / "provenance.json").read_text(encoding="utf-8"))
+            self.assertIn("tables/descriptives.csv", record["assets"]["descriptives"]["files"])
+            written = [file for asset in built.assets for file in asset.files]
+            self.assertTrue(all(file.is_file() and file.is_relative_to(out) for file in written))
+            self.assertNoScratchLeft(path)
 
 
 class InitTests(unittest.TestCase):
