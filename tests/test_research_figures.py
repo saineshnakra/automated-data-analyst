@@ -611,6 +611,7 @@ class ScatterTests(unittest.TestCase):
             caption = asset(built, "dose-scatter").caption
         self.assertIn("ADA did not fit it", caption)
         self.assertNotIn("accounts for", caption)
+        self.assertIn("the 5 points come from 1 subject (Patient) measured more than once", caption)
         self.assertNotIn("ci_low", table.columns)
 
 

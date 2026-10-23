@@ -354,7 +354,7 @@ def draw_paired(target, result, spec: FigureSpec) -> Drawn:
     first, last = levels[0], levels[-1]
     sentences = [
         f"Each point is one measurement and thin grey lines join the measurements of the same subject "
-        f"({subject}); n = {len(complete):,} subjects with "
+        f"({subject}); n = {_count(len(complete), 'subject')} with "
         + (f"both {first} and {last}." if k == 2 else f"all {k} conditions."),
         f"Black dots and bars show the mean and {_ci(study)} confidence interval of each condition"
         + (f", as estimated in analysis {analysis.id}." if model else " (t distribution)."),
@@ -564,7 +564,7 @@ def draw_longitudinal(target, result, spec: FigureSpec) -> Drawn:
             split = ""
         first = (
             f"Thin lines join the measurements of each subject ({subject}); "
-            f"{used[subject].nunique():,} subjects{split}."
+            f"{_count(used[subject].nunique(), 'subject')}{split}."
         )
     else:
         first = f"{_each_point(study)}."
@@ -1331,14 +1331,19 @@ def _clustering(study, used: pd.DataFrame) -> str:
         subjects = used[study.subject].nunique()
         if subjects < len(used):
             return (
-                f"the {len(used):,} points come from {subjects:,} subjects ({study.subject}) measured more "
-                "than once"
+                f"the {len(used):,} points come from {_count(subjects, 'subject')} ({study.subject}) "
+                "measured more than once"
             )
     if study.design == "clustered" and study.cluster in used:
         clusters = used[study.cluster].nunique()
         if clusters < len(used):
-            return f"the {len(used):,} points come from {clusters:,} clusters ({study.cluster})"
+            return f"the {len(used):,} points come from {_count(clusters, 'cluster')} ({study.cluster})"
     return ""
+
+
+def _count(number: int, noun: str) -> str:
+    """A count with its noun: "1 subject", "42 subjects"."""
+    return f"{number:,} {noun}" + ("" if number == 1 else "s")
 
 
 def _held(study, held: dict) -> str:
