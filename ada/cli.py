@@ -7,7 +7,8 @@ For a research study, run these in the folder that holds the data:
     ada verify                         # rebuild and check every number still matches
     ada share                          # copy what may be shared into share/
 
-To try it on an example study first: ``ada demo``.
+To try it on an example study first: ``ada demo``. ``ada skill`` installs the
+skill that tells AI coding assistants how to use ADA.
 
 For a first look at any table:
 
@@ -207,6 +208,29 @@ def _status(_: argparse.Namespace) -> int:
     return EXIT_QUIET
 
 
+def _skill(args: argparse.Namespace) -> int:
+    """Write ADA's agent skill (SKILL.md) where AI coding assistants look for skills."""
+    from importlib.resources import files  # noqa: PLC0415
+
+    text = files("ada").joinpath("skills", "ada", "SKILL.md").read_text(encoding="utf-8")
+    if args.print:
+        print(text, end="")
+        return EXIT_QUIET
+    folder = Path(args.dir) if args.dir else (Path.home() if args.user else Path()) / ".claude" / "skills"
+    target = folder / "ada" / "SKILL.md"
+    if target.is_file() and target.read_text(encoding="utf-8") == text:
+        print(f"{target} is already this version's skill.")
+        return EXIT_QUIET
+    if target.exists() and not args.force:
+        print(f"error: {target} already exists and differs from this version's skill. "
+              "Pass --force to replace it.", file=sys.stderr)
+        return EXIT_ERROR
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+    print(f"Wrote {target}. An assistant that reads skills from {folder} now knows how to use ADA.")
+    return EXIT_QUIET
+
+
 def _samples(_: argparse.Namespace) -> int:
     for name, path in sorted(samples().items()):
         print(f"{name:22} {path}")
@@ -294,6 +318,14 @@ def build_parser() -> argparse.ArgumentParser:
     with_source("ask", "ask a question in plain English").add_argument("question")
     with_source("check", "flag periods outside the expected band; for cron")
 
+    skill = subcommands.add_parser("skill", help="install the skill that tells AI assistants how to use ADA")
+    where = skill.add_mutually_exclusive_group()
+    where.add_argument("--user", action="store_true",
+                       help="write to ~/.claude/skills for every project (default: .claude/skills here)")
+    where.add_argument("--dir", help="the skills folder of another assistant; writes DIR/ada/SKILL.md")
+    where.add_argument("--print", action="store_true", help="print the skill instead of writing it")
+    skill.add_argument("--force", action="store_true", help="replace a skill file that differs")
+
     subcommands.add_parser("samples", help="list the bundled datasets")
     subcommands.add_parser("app", help="launch the browser app (from a source checkout)")
     return parser
@@ -308,7 +340,7 @@ def main(argv: list[str] | None = None) -> int:
         "init": _init, "build": _build, "verify": _verify, "preview": _preview,
         "share": _share, "demo": _demo,
         "analyze": _analyze, "schema": _schema, "ask": _ask,
-        "check": _check, "samples": _samples, "app": _app, None: _status,
+        "check": _check, "skill": _skill, "samples": _samples, "app": _app, None: _status,
     }[command]
     try:
         return handler(args)

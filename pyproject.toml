@@ -95,8 +95,8 @@ Changelog = "https://github.com/saineshnakra/automated-data-analyst/releases"
 packages = ["ada", "ada.research"]
 
 [tool.setuptools.package-data]
-# Read from inside the package at runtime.
-ada = ["assets/*.css", "samples/*.csv", "samples/*.md"]
+# Read from inside the package at runtime. skills/ada/SKILL.md is what `ada skill` installs.
+ada = ["assets/*.css", "samples/*.csv", "samples/*.md", "skills/ada/SKILL.md"]
 
 [tool.ruff]
 line-length = 110

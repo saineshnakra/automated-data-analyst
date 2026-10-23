@@ -1,11 +1,15 @@
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import textwrap
 import unittest
 import unittest.mock
+from pathlib import Path
 
 import pandas as pd
+import yaml
 
 import ada
 import ada.api
@@ -371,6 +375,82 @@ class CommandLineTests(unittest.TestCase):
         self.assertIn("Rainfall (mm) (sum)", summed.stdout)
         self.assertEqual(json.loads(analyzed.stdout)["roles"]["aggregation"], "sum")
         self.assertEqual(refused.returncode, 2)
+
+
+class SkillTests(unittest.TestCase):
+    """`ada skill` installs the SKILL.md that tells AI assistants how to use ADA."""
+
+    SKILL = Path(ada.__file__).parent / "skills" / "ada" / "SKILL.md"
+
+    def run_ada(self, *args: str, cwd: str | None = None) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, "-m", "ada.cli", *args],
+            capture_output=True, text=True, timeout=300, cwd=cwd,
+            env={**os.environ, "PYTHONPATH": str(Path(ada.__file__).parent.parent)},
+        )
+
+    def test_the_skill_meets_the_agent_skills_format(self):
+        text = self.SKILL.read_text(encoding="utf-8")
+        front = yaml.safe_load(text.split("---")[1])
+        self.assertEqual(front["name"], self.SKILL.parent.name)
+        self.assertRegex(front["name"], r"^[a-z0-9]+(-[a-z0-9]+)*$")
+        self.assertLessEqual(len(front["description"]), 1024)
+        self.assertLessEqual(len(front["compatibility"]), 500)
+        self.assertLess(len(text.splitlines()), 500)
+
+    def test_every_command_in_the_skill_exists(self):
+        from ada.cli import build_parser
+
+        commands = build_parser()._subparsers._group_actions[0].choices
+        named = {
+            line.split()[1]
+            for line in self.SKILL.read_text(encoding="utf-8").splitlines()
+            if line.startswith("ada ") and not line.split()[1].startswith("-")
+        }
+        self.assertTrue(named)
+        self.assertLessEqual(named, set(commands))
+
+    def test_the_skills_study_file_is_a_valid_study(self):
+        from ada.research import load
+
+        text = self.SKILL.read_text(encoding="utf-8")
+        example = text.split("```yaml\n")[1].split("```")[0]
+        folder = Path(tempfile.mkdtemp())
+        (folder / "study.yml").write_text("study:\n  title: Example\n" + example, encoding="utf-8")
+
+        study = load(folder / "study.yml")
+
+        self.assertEqual((study.design, study.subject, study.time), ("repeated", "Mouse", "Week"))
+
+    def test_print_writes_the_skill_to_stdout(self):
+        result = self.run_ada("skill", "--print")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, self.SKILL.read_text(encoding="utf-8"))
+
+    def test_the_skill_goes_into_the_projects_claude_folder(self):
+        folder = tempfile.mkdtemp()
+        result = self.run_ada("skill", cwd=folder)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        written = Path(folder, ".claude", "skills", "ada", "SKILL.md")
+        self.assertEqual(written.read_text(encoding="utf-8"), self.SKILL.read_text(encoding="utf-8"))
+
+    def test_a_changed_skill_is_kept_unless_forced(self):
+        folder = tempfile.mkdtemp()
+        target = Path(folder, "ada", "SKILL.md")
+
+        first = self.run_ada("skill", "--dir", folder)
+        again = self.run_ada("skill", "--dir", folder)
+        target.write_text("my own notes", encoding="utf-8")
+        refused = self.run_ada("skill", "--dir", folder)
+        kept = target.read_text(encoding="utf-8")
+        forced = self.run_ada("skill", "--dir", folder, "--force")
+
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertIn("already this version", again.stdout)
+        self.assertEqual(refused.returncode, 2)
+        self.assertEqual(kept, "my own notes")
+        self.assertEqual(forced.returncode, 0, forced.stderr)
+        self.assertEqual(target.read_text(encoding="utf-8"), self.SKILL.read_text(encoding="utf-8"))
 
 
 class OverrideTests(unittest.TestCase):
