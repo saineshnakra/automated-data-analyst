@@ -12,10 +12,18 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Sainesh Nakra" }]
 keywords = [
+    "research",
     "reproducible-research",
+    "reproducibility",
     "research-data",
-    "publication-figures",
     "statistics",
+    "publication-figures",
+    "scientific-figures",
+    "methods-section",
+    "data-dictionary",
+    "provenance",
+    "mixed-models",
+    "paper",
     "exploratory-data-analysis",
     "eda",
     "data-profiling",
@@ -25,16 +33,23 @@ keywords = [
     "anomaly-detection",
     "forecasting",
     "tabular-data",
+    "agent-skills",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Framework :: Matplotlib",
     "Intended Audience :: Science/Research",
     "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
     "Topic :: Scientific/Engineering :: Information Analysis",
-    "Topic :: Office/Business :: Financial :: Spreadsheet",
+    "Topic :: Scientific/Engineering :: Visualization",
 ]
 
 # python-calamine is a core dependency so .xlsx files work out of the box, and
@@ -69,9 +84,12 @@ ada = "ada.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/saineshnakra/automated-data-analyst"
+Documentation = "https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/research.md"
 Demo = "https://automated-data-analyst.streamlit.app/"
+Results = "https://github.com/saineshnakra/automated-data-analyst/blob/main/results/README.md"
 Source = "https://github.com/saineshnakra/automated-data-analyst"
 Issues = "https://github.com/saineshnakra/automated-data-analyst/issues"
+Changelog = "https://github.com/saineshnakra/automated-data-analyst/releases"
 
 [tool.setuptools]
 packages = ["ada", "ada.research"]

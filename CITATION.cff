@@ -10,6 +10,9 @@ repository-code: "https://github.com/saineshnakra/automated-data-analyst"
 url: "https://automated-data-analyst.streamlit.app/"
 license: MIT
 keywords:
+  - reproducible research
+  - publication figures
+  - mixed models
   - exploratory data analysis
   - statistics
   - research data
