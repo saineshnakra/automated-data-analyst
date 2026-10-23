@@ -58,9 +58,11 @@ ada init data/measurements.csv --yes    # accepts ADA's guesses without asking
 `ada init` reads the file and writes `study.yml` with its guesses. In an
 agent session without a person at the terminal, use `--yes`, then edit
 `study.yml` with the researcher's answers. `--yes` marks every analysis
-exploratory, because only the researcher can say what was planned. Read the
-whole file before building: check the design, the subject or cluster column,
-each variable's role and type, and the proposed analyses.
+exploratory, because only the researcher can say what was planned, and writes
+`design.confirmed: false`, which the methods draft reports as an unconfirmed
+design. Read the whole file before building: check the design, the subject or
+cluster column, each variable's role and type, and the proposed analyses.
+Set `confirmed: true` only after the researcher has confirmed the design.
 
 The parts that matter most:
 
@@ -73,6 +75,7 @@ data:
 
 design:
   type: repeated              # independent | paired | repeated | clustered
+  confirmed: true             # only once the researcher has confirmed it
   subject: Mouse              # clustered designs name a `cluster` instead
   time: Week
 
@@ -130,10 +133,11 @@ Exclusion conditions: `below`, `above`, `at_most`, `at_least`, `equals`,
 ### 3. Build
 
 ```bash
-ada build
+ada build              # or ada build --strict: exit 1 if any analysis was refused
 ```
 
-This writes `paper-assets/`. Then:
+This writes `paper-assets/` and prints how many analyses were requested,
+fitted and refused, with the reason for each refusal. Then:
 
 - Read the printed summary and `paper-assets/README.md`, which lists every
   table and figure with its caption.
