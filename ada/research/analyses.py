@@ -44,6 +44,11 @@ FEW_UNITS = 10
 MIN_UNITS = 2
 #: A mixed model whose estimates' correlation matrix has an eigenvalue below this is singular.
 SINGULAR_EIGENVALUE = 1e-10
+#: A variance between subjects or clusters below this fraction of the residual variance is on the
+#: boundary (zero). statsmodels leaves a variance whose optimum is zero at up to about 2 × 10⁻⁷ of it.
+BOUNDARY_VARIANCE = 1e-6
+#: statsmodels' own boundary warning: it compares the variance with 0.01 in the outcome's units.
+STATSMODELS_BOUNDARY = "The MLE may be on the boundary of the parameter space."
 #: Shapiro–Wilk is computed up to this many residuals (SciPy's p-value is not accurate beyond it).
 SHAPIRO_LIMIT = 5000
 #: An expected count below this switches a 2 × 2 comparison of proportions to Fisher's exact test.
@@ -1349,7 +1354,9 @@ class _Analysis:
                 ) from error
         variance = float(np.asarray(fit.cov_re)[0, 0])
         residual = float(fit.scale)
-        boundary = variance <= 1e-8 * max(residual, 1e-300)
+        # The boundary is judged against the residual variance, the scale the ICC compares the variance
+        # with, rather than the outcome's variance, which also holds what the fixed effects explain.
+        boundary = variance <= BOUNDARY_VARIANCE * max(residual, 1e-300)
         # A fit that did not converge is not reported, nor one that statsmodels calls converged at a point
         # that is not a proper maximum, where the standard errors behind every interval and Wald test are
         # undefined.
@@ -1369,7 +1376,10 @@ class _Analysis:
             )
         self.fitted_formula = f"{formula}, groups = {unit}"
         for message in _record_warnings(caught):
-            found.warnings.append(f"statsmodels: {message}")
+            # Any outcome measured in small units falls below statsmodels' absolute threshold, so its
+            # boundary warning is replaced by the relative judgement above.
+            if message != STATSMODELS_BOUNDARY:
+                found.warnings.append(f"statsmodels: {message}")
         per_unit = work.groupby(unit).size()
         if self.unit_word == "cluster":
             found.clusters = int(units)

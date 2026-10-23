@@ -605,6 +605,24 @@ class MixedModelTests(unittest.TestCase):
         self.assertRegex(found.reason, "not positive definite|did not converge")
         self.assertIn("custom:", found.reason)
 
+    def test_the_variance_boundary_is_judged_on_the_outcome_scale(self):
+        frame = weights()
+        # The weights on a micro scale (about 2 × 10⁻⁵), where the mice still differ.
+        frame["Weight (g)"] = frame["Weight (g)"] * 1e-6
+        # The same mice and days with no difference between mice at all.
+        flat = frame.copy()
+        noise = np.random.default_rng(0).normal(0, 1, len(flat))
+        flat["Weight (g)"] = (20 + 0.1 * flat["Day"] + noise) * 1e-6
+        design = {"type": "repeated", "subject": "Mouse", "time": "Day"}
+        analyses = [analysis("a", "Weight (g)", compare="Diet")]
+        found = run_analyses(frame, study_dict(design, WEIGHT_VARIABLES, analyses))[2]["a"]
+        self.assertTrue(found.supported)
+        self.assertEqual(found.warnings, [])
+        found = run_analyses(flat, study_dict(design, WEIGHT_VARIABLES, analyses))[2]["a"]
+        self.assertTrue(found.supported)
+        self.assertTrue(any("was estimated as zero" in warning for warning in found.warnings))
+        self.assertFalse(any("boundary of the parameter space" in warning for warning in found.warnings))
+
     def test_the_covariance_check_ignores_units_but_not_singularity(self):
         scales = np.diag([1e-6, 1.0, 1e4])
         correlations = np.array([[1.0, 0.5, 0.2], [0.5, 1.0, 0.3], [0.2, 0.3, 1.0]])
