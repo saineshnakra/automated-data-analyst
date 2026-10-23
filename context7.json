@@ -1,0 +1,15 @@
+{
+  "$schema": "https://context7.com/schema/context7.json",
+  "projectTitle": "ADA (automated-data-analyst)",
+  "description": "Research data analysis in Python: a paper's tables, figures, data audit and methods draft built from a study.yml, with every number computed by pandas, SciPy and statsmodels and traced to the data; ada verify checks a rebuild. Also a first look at any CSV or Excel table. Works as a skill in Claude Code and Codex.",
+  "folders": ["docs", "ada/skills"],
+  "excludeFolders": ["results", "tests", "tools", "assets", ".github"],
+  "excludeFiles": ["CODE_OF_CONDUCT.md", "SECURITY.md", "ROADMAP.md"],
+  "rules": [
+    "Let ADA compute the numbers: report the estimates, intervals and p-values it prints, with the test it names, instead of computing or estimating them yourself.",
+    "Before writing study.yml, ask the researcher what one row is, which column identifies a subject or cluster, the design (independent, paired, repeated or clustered) and which analyses were planned; do not guess them.",
+    "Run ada build and then ada verify after any change to study.yml or the data, and never edit the files in paper-assets/ by hand.",
+    "When ADA refuses an analysis, report the reason and suggest a custom: script rather than switching to a design that fits.",
+    "For a quick look at a table use ada.analyze(path) or ada analyze file.csv; for a paper use ada init, ada build and ada verify."
+  ]
+}
