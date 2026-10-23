@@ -25,7 +25,8 @@ ada verify                         # rebuilds in a scratch folder and checks eve
 `ada preview` lists what would be shared and flags anything that shouldn't be;
 `ada share` copies what may be shared into `share/`. `ada demo` writes a small
 example study to try it all on. Running `ada` on its own says where the folder
-stands.
+stands. `ada skill` installs a skill that tells AI coding assistants how to use
+ADA on a study.
 
 The same commands are also under `ada research …`, and in Python:
 

@@ -1,0 +1,32 @@
+# ADA (automated-data-analyst)
+
+> ADA is a Python package and command-line tool that makes a paper's assets from research data: a data audit, a data dictionary, a record of every exclusion, descriptive and results tables (CSV, Word, LaTeX), figures with their source data and captions, a methods draft and a reproduction package. Every number traces back to the data through provenance.json, and `ada verify` rebuilds everything in a scratch folder and checks it matches. It also gives a quick first look at any CSV or Excel table. MIT licence, Python 3.11+.
+
+Install with `pip install automated-data-analyst`. In the folder that holds a study's data:
+
+```
+ada init data/measurements.csv   # asks about the study; writes study.yml
+ada build                        # writes paper-assets/
+ada verify                       # rebuilds and checks every number
+```
+
+`study.yml` holds the design (independent, paired, repeated or clustered), the subject or cluster column, each variable's role and type, exclusions with their reasons, and the planned analyses. The design picks the test: Welch's t-test or ANOVA for independent groups, the paired t-test for paired data, a linear mixed model with a random intercept per subject or cluster for repeated and clustered data, with p-values adjusted within families. ADA runs only the analyses listed, labels each planned or exploratory, and refuses designs it can't fit instead of approximating them.
+
+From Python: `from ada import research; research.build("study.yml")`, or `import ada; ada.analyze("data.csv")` for the first look.
+
+For AI coding assistants: `ada skill` writes a SKILL.md (Agent Skills format) into `.claude/skills/ada/`; in Claude Code, `/plugin install ada --marketplace saineshnakra/automated-data-analyst`.
+
+## Docs
+
+- [README](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/README.md): what ADA does, with examples
+- [Paper assets for a study](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/docs/research.md): `ada init`, `ada build` and `ada verify`, the study.yml format, the tests used and every file written
+- [Agent skill](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/ada/skills/ada/SKILL.md): how an AI assistant should use ADA on a researcher's data
+- [FAQ](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/docs/faq.md): short answers
+
+## Optional
+
+- [Concepts](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/docs/concepts.md): terms used in the first-look report
+- [How it works](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/docs/how-it-works.md): the steps from upload to report
+- [Credits](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/docs/credits.md): the libraries and methods behind each calculation, and how to cite them
+- [Tested on 60 research datasets](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/results/README.md): how the first look did on real data, and what it still gets wrong
+- [PyPI](https://pypi.org/project/automated-data-analyst/): releases

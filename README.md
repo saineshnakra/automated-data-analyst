@@ -22,7 +22,8 @@ ada verify                         # rebuilds in a scratch folder and checks eve
 ```
 
 ADA also takes a [quick first look at any table](#a-first-look-at-any-table),
-in the browser or with one line of Python.
+in the browser or with one line of Python, and comes with a
+[skill for AI coding assistants](#use-it-from-an-ai-assistant).
 
 ## Paper assets for a study
 
@@ -327,6 +328,31 @@ if not forecast:
 `report.anomalies` returns an empty tuple when it checked and found nothing,
 and a `Refusal` when it couldn't check (no date column, too few periods). Both
 are falsy, so check the type when the difference matters.
+
+## Use it from an AI assistant
+
+ADA ships a [skill](https://github.com/saineshnakra/automated-data-analyst/blob/main/ada/skills/ada/SKILL.md)
+that tells an AI coding assistant when to reach for ADA and how to use it on
+a researcher's data: ask for the design and the planned analyses instead of
+guessing them, write `study.yml`, build, verify, and pass on a refusal rather
+than work around it.
+
+```bash
+pip install automated-data-analyst
+ada skill               # writes .claude/skills/ada/SKILL.md in this project
+ada skill --user        # or in ~/.claude/skills, for every project
+ada skill --dir PATH    # or in another assistant's skills folder
+```
+
+In Claude Code it also installs as a plugin:
+
+```
+/plugin install ada --marketplace saineshnakra/automated-data-analyst
+```
+
+The skill is a plain SKILL.md in the Agent Skills format, so other assistants
+that read skills can use it too. [`llms.txt`](https://github.com/saineshnakra/automated-data-analyst/blob/main/llms.txt)
+gives a language model a short map of the docs.
 
 ## Scheduled checks
 
