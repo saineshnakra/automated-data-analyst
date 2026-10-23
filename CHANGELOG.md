@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- The plugin is now its own folder, `plugins/automated-data-analyst/`, named
+  `automated-data-analyst`, with manifests for the Claude and ChatGPT plugin
+  directories, an icon, a README and the license. It holds the same skill as
+  `ada skill` and no code. Install it with
+  `/plugin marketplace add saineshnakra/automated-data-analyst` then
+  `/plugin install automated-data-analyst@automated-data-analyst` in Claude
+  Code, or `codex plugin add automated-data-analyst@automated-data-analyst`
+  in Codex. An install of `ada@automated-data-analyst` moves to the new
+  name; run the install command once to fetch it.
+
 ## 0.5.0 (2026-10-23)
 
 ADA now works as a skill in Claude Code and Codex, and the study workflow is

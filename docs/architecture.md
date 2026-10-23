@@ -130,3 +130,4 @@ exact request, with no network access or API credits.
 | A detection heuristic | `ada/schema.py` | A synthetic fixture that fails without it |
 | A public API method | `ada/api.py` | A `Refusal` code from `REFUSAL_CODES` for each case it cannot answer |
 | Anything model-related | `ada/ai_insights.py` | A test showing no cell values enter the payload |
+| A change to the AI skill | `ada/skills/ada/` | The same change in `plugins/automated-data-analyst/skills/ada/`; a test checks the two match |

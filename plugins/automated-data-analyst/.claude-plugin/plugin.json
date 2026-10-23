@@ -1,0 +1,29 @@
+{
+  "name": "automated-data-analyst",
+  "displayName": "Automated Data Analyst",
+  "version": "0.5.0",
+  "description": "Data analysis where every number comes from the ADA Python package (pandas, SciPy, statsmodels) with its calculation: a first look at any CSV or Excel table, and a paper's data audit, tables, figures and methods draft built from a study.yml and verified.",
+  "author": {
+    "name": "Sainesh Nakra",
+    "url": "https://sainesh.com/"
+  },
+  "homepage": "https://github.com/saineshnakra/automated-data-analyst",
+  "repository": "https://github.com/saineshnakra/automated-data-analyst",
+  "license": "MIT",
+  "keywords": [
+    "data-analysis",
+    "statistics",
+    "research",
+    "reproducible-research",
+    "csv",
+    "excel",
+    "pandas",
+    "scipy",
+    "statsmodels",
+    "mixed-models",
+    "publication-figures"
+  ],
+  "icon": "./assets/logo.png",
+  "documentationUrl": "https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/research.md",
+  "supportUrl": "https://github.com/saineshnakra/automated-data-analyst/issues"
+}

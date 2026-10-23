@@ -6,13 +6,13 @@
   },
   "plugins": [
     {
-      "name": "ada",
-      "source": "./ada",
-      "description": "Teaches Claude Code and Codex to use ADA (pip install automated-data-analyst): every number computed in pandas, SciPy and statsmodels with its calculation, a study's data audit, tables, figures and methods draft built from study.yml and verified, and a first look at any table.",
-      "homepage": "https://github.com/saineshnakra/automated-data-analyst",
-      "repository": "https://github.com/saineshnakra/automated-data-analyst",
-      "license": "MIT",
-      "keywords": ["research", "statistics", "reproducibility", "figures", "tables", "methods"]
+      "name": "automated-data-analyst",
+      "source": "./plugins/automated-data-analyst",
+      "category": "data",
+      "tags": ["research", "statistics", "reproducibility", "figures", "tables", "methods"]
     }
-  ]
+  ],
+  "renames": {
+    "ada": "automated-data-analyst"
+  }
 }
