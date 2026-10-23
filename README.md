@@ -29,7 +29,9 @@ in the browser or with one line of Python, and comes with a
 
 `ada demo mice` writes a small example study, sixteen mice on two diets weighed
 weekly, so you can try it before using your own data. `cd mice && ada build`
-gives this figure, among 17 assets:
+gives this figure, among 17 assets. The
+[web app](https://automated-data-analyst.streamlit.app/example-study) builds the
+same study on its server and shows every asset, with a zip to download.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/study-figure.png" width="60%" alt="Body weight over eight weeks for mice on chow and on a high-fat diet: a thin line per mouse, and the mean with its 95% confidence interval at each week for each diet">
@@ -109,7 +111,7 @@ what relates to what, and what changed over time. Each finding names the test
 that produced it and prints the arithmetic, so you can check it before you
 trust it.
 
-[**Try it in your browser**](https://automated-data-analyst.streamlit.app/): it opens on a lab dataset, with no sign-up or install. Or `ada analyze data.csv`.
+[**Try it in your browser**](https://automated-data-analyst.streamlit.app/first-look): it opens on a lab dataset, with no sign-up or install. Or `ada analyze data.csv`.
 
 ![ADA's report on a cell-culture assay: the headline says viability differs across treatments, with the medians, group sizes and effect size, above the key numbers](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/assets/readme/brief.png)
 
@@ -229,9 +231,10 @@ plan you state.
 
 ## Get started with the first look
 
-**In the browser:** [open the web app](https://automated-data-analyst.streamlit.app/).
+**In the browser:** [open the first look](https://automated-data-analyst.streamlit.app/first-look).
 It starts on the lab sample; choose **Upload your file** for your own CSV, TSV
-or Excel file (up to 25 MB).
+or Excel file (up to 25 MB). The app's home page explains the research side
+and links to the example study.
 
 **In Python:**
 
@@ -399,7 +402,9 @@ pip install -e ".[app]"
 streamlit run app.py
 ```
 
-No API key is needed; the app opens on the lab sample. `pip install -e
+No API key is needed. The app has three pages: a home page for researchers,
+the example study built on the server, and the first look, which opens on the
+lab sample. `pip install -e
 ".[app,ai,dev]"` adds the optional AI layer and the linter. Tested on Python
 3.11, 3.12 and 3.13.
 
