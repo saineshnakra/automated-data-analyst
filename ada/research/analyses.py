@@ -21,7 +21,7 @@ import pandas as pd
 from scipy import optimize, special, stats
 
 from .build import DATA_SECTIONS
-from .processing import levels_of
+from .processing import SOURCE_ROW, levels_of
 from .provenance import Asset
 from .results import ESTIMATE_COLUMNS, MEAN_COLUMNS, AnalysisResult
 from .study import AnalysisSpec, Study
@@ -49,6 +49,11 @@ SINGULAR_EIGENVALUE = 1e-10
 BOUNDARY_VARIANCE = 1e-6
 #: statsmodels' own boundary warning: it compares the variance with 0.01 in the outcome's units.
 STATSMODELS_BOUNDARY = "The MLE may be on the boundary of the parameter space."
+#: In an independent design, residuals whose lag-1 autocorrelation in time order is above this mean the
+#: rows form a series rather than independent observations. Independent rows give about 0 ± 2/√n, so
+#: 0.5 is far outside chance once there are SERIAL_MIN_ROWS rows.
+SERIAL_CORRELATION = 0.5
+SERIAL_MIN_ROWS = 20
 #: Shapiro–Wilk is computed up to this many residuals (SciPy's p-value is not accurate beyond it).
 SHAPIRO_LIMIT = 5000
 #: An expected count below this switches a 2 × 2 comparison of proportions to Fisher's exact test.
@@ -180,6 +185,8 @@ REFERENCES = {
     "https://doi.org/10.1080/01621459.1974.10482955",
     "breusch_pagan": "Breusch, T. S. and Pagan, A. R. (1979). A simple test for heteroscedasticity and "
     "random coefficient variation. Econometrica, 47(5), 1287–1294. https://doi.org/10.2307/1911963",
+    "durbin_watson": "Durbin, J. and Watson, G. S. (1950). Testing for serial correlation in least squares "
+    "regression. I. Biometrika, 37(3–4), 409–428. https://doi.org/10.1093/biomet/37.3-4.409",
     "vif": "Marquardt, D. W. (1970). Generalized inverses, ridge regression, biased linear estimation, and "
     "nonlinear estimation. Technometrics, 12(3), 591–612. https://doi.org/10.2307/1267205",
 }
@@ -512,6 +519,7 @@ class _Analysis:
             self._fit_relate(test)
         else:
             self._fit_change()
+        self._serial()
         found.references = tuple(dict.fromkeys(self.references))
         if found.subjects is None and self.unit and study.design != "clustered":
             found.subjects = int(self.rows[self.unit].nunique())
@@ -822,6 +830,48 @@ class _Analysis:
             f"{values.size:,}), {verdict}."
         )
         self.references.append(REFERENCES["shapiro"])
+
+    def _serial(self) -> None:
+        """Check an independent design's residuals, in time order, for rows that stay alike one to the next.
+
+        Rows that stay alike after the model, as in a time series, are not independent, and the standard
+        errors, intervals and p-values that assume they are come out too small. The order is the study's
+        time, or else its first date column; without one there is no order to check, since a file sorted
+        by a group or a value makes neighbouring rows alike without making them dependent.
+        """
+        found = self.found
+        if self.study.design != "independent" or found.residuals is None:
+            return
+        residuals = pd.Series(found.residuals, dtype=float).dropna()
+        if len(residuals) < SERIAL_MIN_ROWS or float(residuals.std()) == 0:
+            return
+        times = [self.study.time] if self.study.time else []
+        times += [name for name, variable in self.study.variables.items() if variable.type == "date"]
+        times = [name for name in times if name in self.data and self.data[name].notna().any()]
+        if not times:
+            return
+        rows = self.data.loc[residuals.index]
+        keys = [times[0], *([SOURCE_ROW] if SOURCE_ROW in rows else [])]
+        where = f"in order of {times[0]}"
+        order = rows.sort_values(keys, kind="stable").index
+        values = residuals.loc[order].to_numpy() - residuals.mean()
+        spread = float(np.dot(values, values))
+        lag = float(np.dot(values[1:], values[:-1]) / spread)
+        statistic = float(np.sum(np.diff(values) ** 2) / spread)
+        found.diagnostics.append(
+            f"Durbin–Watson statistic of the residuals {where}: {statistic:.2f} (lag-1 autocorrelation "
+            f"{_plain(lag)}); about 2 when successive rows are independent."
+        )
+        self.references.append(REFERENCES["durbin_watson"])
+        if lag > SERIAL_CORRELATION:
+            found.warnings.append(
+                f"Successive rows stay alike after the model (lag-1 autocorrelation of the residuals {where} "
+                f"{_plain(lag)}, Durbin–Watson {statistic:.2f}), as in a time series or readings taken in "
+                "runs. The design treats the rows as independent, so the standard errors, intervals and "
+                "p-values are too small. If the rows are one series over time, model it under `custom:`, "
+                "for example as a time series; if they come in runs or from repeated units, name the unit "
+                "as the subject or cluster in `design:`."
+            )
 
     def _levene(self, samples: list[np.ndarray], group: str, note: str = "") -> None:
         if len(samples) < 2 or any(len(sample) < 2 for sample in samples):

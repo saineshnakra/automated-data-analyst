@@ -906,6 +906,68 @@ class OtherTestsTests(unittest.TestCase):
         self.assertTrue(any("1 is counted as the event" in item for item in results["a"].diagnostics))
 
 
+class SerialCorrelationTests(unittest.TestCase):
+    """An independent design's residuals are checked, in time order, for rows that stay alike."""
+
+    VARIABLES = {
+        "Time": {"role": "other", "type": "date"},
+        "Load": {"role": "covariate", "type": "numeric"},
+        "Reading": {"role": "outcome", "type": "numeric"},
+    }
+
+    def series(self, persistence: float, seed: int = 4) -> pd.DataFrame:
+        """Hourly readings that follow a load, plus noise that carries over from hour to hour."""
+        rng = np.random.default_rng(seed)
+        noise = np.zeros(200)
+        for hour in range(1, 200):
+            noise[hour] = persistence * noise[hour - 1] + rng.normal()
+        load = rng.normal(10, 2, 200)
+        return pd.DataFrame(
+            {
+                "Time": pd.date_range("2024-01-01", periods=200, freq="h").strftime("%Y-%m-%d %H:%M"),
+                "Load": load.round(3),
+                "Reading": (2 * load + 5 * noise).round(3),
+            }
+        )
+
+    def fitted(self, frame: pd.DataFrame, variables: dict | None = None):
+        study = study_dict(
+            {"type": "independent"}, variables or self.VARIABLES, [analysis("a", "Reading", relate="Load")]
+        )
+        return run_analyses(frame, study)[2]["a"]
+
+    def test_a_series_over_time_is_flagged_in_time_order(self):
+        # The file's rows are shuffled; the check orders them by Time.
+        found = self.fitted(self.series(0.95).sample(frac=1, random_state=0))
+
+        self.assertTrue(found.supported)
+        self.assertTrue(any(warning.startswith("Successive rows stay alike") for warning in found.warnings))
+        self.assertIn("in order of Time", " ".join(found.warnings))
+        self.assertTrue(any(line.startswith("Durbin–Watson") for line in found.diagnostics))
+
+    def test_independent_rows_are_not_flagged(self):
+        found = self.fitted(self.series(0.0))
+
+        self.assertFalse(any("Successive rows" in warning for warning in found.warnings))
+        line = next(line for line in found.diagnostics if line.startswith("Durbin–Watson"))
+        statistic = float(re.search(r": ([0-9.]+) \(", line).group(1))
+        self.assertGreater(statistic, 1.5)
+        self.assertLess(statistic, 2.5)
+
+    def test_a_file_sorted_by_group_with_no_time_is_not_checked(self):
+        # Rows sorted by a group the model leaves out are alike in file order, but not dependent.
+        frame = self.series(0.0).drop(columns="Time")
+        frame["Batch"] = np.repeat(["A", "B", "C", "D"], 50)
+        frame["Reading"] += np.repeat([0.0, 30.0, 60.0, 90.0], 50)
+        variables = {name: spec for name, spec in self.VARIABLES.items() if name != "Time"}
+        variables["Batch"] = {"role": "other", "type": "categorical"}
+
+        found = self.fitted(frame, variables)
+
+        self.assertFalse(any("Successive rows" in warning for warning in found.warnings))
+        self.assertFalse(any(line.startswith("Durbin–Watson") for line in found.diagnostics))
+
+
 class RefusalTests(unittest.TestCase):
     def refused(self, frame, study) -> str:
         _, _, results = run_analyses(frame, study)
