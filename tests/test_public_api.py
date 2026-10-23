@@ -382,11 +382,30 @@ class SkillTests(unittest.TestCase):
 
     SKILL = Path(ada.__file__).parent / "skills" / "ada" / "SKILL.md"
 
-    def run_ada(self, *args: str, cwd: str | None = None) -> subprocess.CompletedProcess:
+    def run_ada(
+        self, *args: str, cwd: str | None = None, env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess:
         return subprocess.run(
             [sys.executable, "-m", "ada.cli", *args],
             capture_output=True, text=True, timeout=300, cwd=cwd,
-            env={**os.environ, "PYTHONPATH": str(Path(ada.__file__).parent.parent)},
+            env={**os.environ, "PYTHONPATH": str(Path(ada.__file__).parent.parent), **(env or {})},
+        )
+
+    def snapshot(self, root: Path) -> dict:
+        """Keep contents and write-related metadata; reading may change access times."""
+        result = {}
+        for path in [root, *sorted(root.rglob("*"))]:
+            info = path.stat()
+            result[str(path.relative_to(root))] = (
+                info.st_mode, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns,
+                path.read_bytes() if path.is_file() else None,
+            )
+        return result
+
+    def assert_check_status(self, result: subprocess.CompletedProcess, path: Path, status: str):
+        self.assertTrue(
+            any(str(path) in line and status in line for line in result.stdout.splitlines()),
+            result.stdout + result.stderr,
         )
 
     def test_the_skill_meets_the_agent_skills_format(self):
@@ -423,9 +442,11 @@ class SkillTests(unittest.TestCase):
         self.assertEqual((study.design, study.subject, study.time), ("repeated", "Mouse", "Week"))
 
     def test_print_writes_the_skill_to_stdout(self):
-        result = self.run_ada("skill", "--print")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, self.SKILL.read_text(encoding="utf-8"))
+        for flags in ((), ("--force",)):
+            with self.subTest(flags=flags):
+                result = self.run_ada("skill", "--print", *flags)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, self.SKILL.read_text(encoding="utf-8"))
 
     def test_the_skill_goes_where_claude_code_and_codex_look(self):
         folder = tempfile.mkdtemp()
@@ -480,6 +501,195 @@ class SkillTests(unittest.TestCase):
         self.assertEqual(kept, "my own notes")
         self.assertEqual(forced.returncode, 0, forced.stderr)
         self.assertEqual(target.read_text(encoding="utf-8"), self.SKILL.read_text(encoding="utf-8"))
+
+    def test_check_matches_text_without_changing_files_or_directories(self):
+        with tempfile.TemporaryDirectory() as folder:
+            installed = self.run_ada("skill", cwd=folder)
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            skill = Path(folder, ".claude", "skills", "ada", "SKILL.md")
+            skill.write_bytes(skill.read_bytes().replace(b"\n", b"\r\n"))
+            os.utime(skill, ns=(1_000_000_000, 1_000_000_000))
+            before = self.snapshot(Path(folder))
+
+            result = self.run_ada("skill", "--check", cwd=folder)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(result.stderr, "")
+            self.assertEqual(self.snapshot(Path(folder)), before)
+
+    def test_check_reports_every_missing_file_without_creating_directories(self):
+        with tempfile.TemporaryDirectory() as folder:
+            before = self.snapshot(Path(folder))
+
+            result = self.run_ada("skill", "--check", "--for", "all", cwd=folder)
+
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertEqual(result.stderr, "")
+            for skills in (".claude/skills", ".agents/skills"):
+                for name in ("SKILL.md", "agents/openai.yaml"):
+                    self.assert_check_status(result, Path(skills, "ada", name), "missing")
+            self.assertEqual(self.snapshot(Path(folder)), before)
+
+    def test_check_reports_missing_changed_and_invalid_text_files_together(self):
+        with tempfile.TemporaryDirectory() as folder:
+            installed = self.run_ada("skill", cwd=folder)
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            missing = Path(".claude", "skills", "ada", "agents", "openai.yaml")
+            changed = Path(".agents", "skills", "ada", "SKILL.md")
+            invalid = Path(".agents", "skills", "ada", "agents", "openai.yaml")
+            Path(folder, missing).unlink()
+            Path(folder, changed).write_text("my own notes", encoding="utf-8")
+            Path(folder, invalid).write_bytes(b"\xff\xfe")
+            before = self.snapshot(Path(folder))
+
+            result = self.run_ada("skill", "--check", cwd=folder)
+
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertEqual(result.stderr, "")
+            for path, status in ((missing, "missing"), (changed, "differs"), (invalid, "differs")):
+                self.assert_check_status(result, path, status)
+            self.assertEqual(self.snapshot(Path(folder)), before)
+
+    def test_check_only_reads_the_selected_assistant(self):
+        for selected, other, skills in (("claude", "codex", ".agents"), ("codex", "claude", ".claude")):
+            with self.subTest(selected=selected), tempfile.TemporaryDirectory() as folder:
+                installed = self.run_ada("skill", cwd=folder)
+                self.assertEqual(installed.returncode, 0, installed.stderr)
+                changed = Path(skills, "skills", "ada", "SKILL.md")
+                Path(folder, changed).write_text("my own notes", encoding="utf-8")
+                before = self.snapshot(Path(folder))
+
+                matching = self.run_ada("skill", "--check", "--for", selected, cwd=folder)
+                different = self.run_ada("skill", "--check", "--for", other, cwd=folder)
+
+                self.assertEqual(matching.returncode, 0, matching.stdout + matching.stderr)
+                self.assertNotIn(str(changed), matching.stdout + matching.stderr)
+                self.assertEqual(different.returncode, 1, different.stdout + different.stderr)
+                self.assert_check_status(different, changed, "differs")
+                self.assertEqual(self.snapshot(Path(folder)), before)
+
+    def test_check_uses_a_custom_directory_even_when_an_assistant_is_selected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            destination = Path(folder, "nested", "skills")
+            before = self.snapshot(Path(folder))
+
+            missing = self.run_ada(
+                "skill", "--check", "--dir", str(destination), "--for", "codex", cwd=folder,
+            )
+
+            self.assertEqual(missing.returncode, 1, missing.stdout + missing.stderr)
+            for name in ("SKILL.md", "agents/openai.yaml"):
+                self.assert_check_status(missing, destination / "ada" / name, "missing")
+            self.assertEqual(self.snapshot(Path(folder)), before)
+            installed = self.run_ada("skill", "--dir", str(destination), cwd=folder)
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            before = self.snapshot(Path(folder))
+
+            matching = self.run_ada(
+                "skill", "--check", "--dir", str(destination), "--for", "codex", cwd=folder,
+            )
+
+            self.assertEqual(matching.returncode, 0, matching.stdout + matching.stderr)
+            self.assertEqual(self.snapshot(Path(folder)), before)
+
+    def test_check_user_reads_the_home_folder_instead_of_the_project(self):
+        with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as home:
+            installed = self.run_ada("skill", "--user", cwd=folder, env={"HOME": home})
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            before = (self.snapshot(Path(folder)), self.snapshot(Path(home)))
+
+            matching = self.run_ada("skill", "--check", "--user", cwd=folder, env={"HOME": home})
+            missing = self.run_ada("skill", "--check", cwd=folder, env={"HOME": home})
+
+            self.assertEqual(matching.returncode, 0, matching.stdout + matching.stderr)
+            self.assertEqual(missing.returncode, 1, missing.stdout + missing.stderr)
+            for skills in (".claude/skills", ".agents/skills"):
+                self.assertIn(str(Path(home, skills, "ada", "SKILL.md")), matching.stdout)
+            self.assertEqual((self.snapshot(Path(folder)), self.snapshot(Path(home))), before)
+
+    def test_check_rejects_print_and_force_without_writing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            installed = self.run_ada("skill", cwd=folder)
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            Path(folder, ".claude", "skills", "ada", "SKILL.md").write_text("my notes", encoding="utf-8")
+            before = self.snapshot(Path(folder))
+
+            for conflict in ("--print", "--force"):
+                with self.subTest(conflict=conflict):
+                    result = self.run_ada("skill", "--check", conflict, cwd=folder)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn("error:", result.stderr)
+                    self.assertIn("--check", result.stderr)
+                    self.assertIn(conflict, result.stderr)
+                    self.assertEqual(result.stdout, "")
+                    self.assertEqual(self.snapshot(Path(folder)), before)
+
+    def test_check_reports_path_errors_and_still_lists_other_differences(self):
+        cases = (("SKILL.md", "agents/openai.yaml"), ("agents/openai.yaml", "SKILL.md"))
+        for error_name, changed_name in cases:
+            with self.subTest(error=error_name), tempfile.TemporaryDirectory() as folder:
+                destination = Path(folder, "skills")
+                installed = self.run_ada("skill", "--dir", str(destination))
+                self.assertEqual(installed.returncode, 0, installed.stderr)
+                unreadable = destination / "ada" / error_name
+                unreadable.unlink()
+                unreadable.mkdir()
+                changed = destination / "ada" / changed_name
+                changed.write_text("my own notes", encoding="utf-8")
+                before = self.snapshot(Path(folder))
+
+                result = self.run_ada("skill", "--check", "--dir", str(destination))
+
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("error:", result.stderr)
+                self.assertIn(str(unreadable), result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assert_check_status(result, changed, "differs")
+                self.assertEqual(self.snapshot(Path(folder)), before)
+
+    def test_check_reports_a_file_in_the_destination_path_as_an_error(self):
+        with tempfile.TemporaryDirectory() as folder:
+            destination = Path(folder, "skills")
+            destination.write_text("not a directory", encoding="utf-8")
+            before = self.snapshot(Path(folder))
+
+            result = self.run_ada("skill", "--check", "--dir", str(destination))
+
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn("error:", result.stderr)
+            self.assertIn(str(destination / "ada" / "SKILL.md"), result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+            self.assertEqual(self.snapshot(Path(folder)), before)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX permissions are needed for an unreadable file")
+    def test_check_reports_an_unreadable_file_as_an_error(self):
+        with tempfile.TemporaryDirectory() as folder:
+            installed = self.run_ada("skill", "--dir", folder)
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            target = Path(folder, "ada", "SKILL.md")
+            original = target.stat()
+            target.chmod(0)
+            try:
+                try:
+                    target.read_bytes()
+                except PermissionError:
+                    pass
+                else:
+                    self.skipTest("This user can read files despite their permissions")
+                before = target.stat()
+
+                result = self.run_ada("skill", "--check", "--dir", folder)
+
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("error:", result.stderr)
+                self.assertIn(str(target), result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                after = target.stat()
+                for attribute in ("st_mode", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns"):
+                    self.assertEqual(getattr(after, attribute), getattr(before, attribute))
+            finally:
+                target.chmod(original.st_mode)
+            self.assertEqual(target.read_bytes(), self.SKILL.read_bytes())
 
 
 class PluginTests(unittest.TestCase):

@@ -390,6 +390,14 @@ ada skill --user        # the same in your home folder, for every project
 ada skill --for codex   # or one assistant only; --dir PATH for another tool's skills folder
 ```
 
+After upgrading ADA, run `ada skill --check` to check the installed skill
+without writing files or creating folders. It checks `SKILL.md` and
+`agents/openai.yaml` in each chosen folder, names any missing or different
+files, and exits 0 when all match or 1 when any are missing or different.
+It exits 2 if a file cannot be read. Use the same `--for`, `--user` or `--dir`
+options as when installing; for example, `ada skill --for codex --check`.
+`--check` cannot be combined with `--print` or `--force`.
+
 Or as a plugin, which updates with the repository:
 
 ```bash

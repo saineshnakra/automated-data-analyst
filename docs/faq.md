@@ -67,6 +67,16 @@ Claude Code, `/plugin marketplace add saineshnakra/automated-data-analyst` then
 `codex plugin marketplace add saineshnakra/automated-data-analyst` then
 `codex plugin add automated-data-analyst@automated-data-analyst`.
 
+**How do I check whether the installed skill matches my ADA version?**
+Run `ada skill --check`, with the same `--for`, `--user` or `--dir` options
+you used to install it. It checks every bundled skill file, reports which
+files are missing or different, and writes nothing. It exits 0 when all
+match, 1 when any are missing or different, and 2 for read errors, so you can
+use it in CI after upgrading ADA. Invalid UTF-8 content counts as different.
+`--check` refuses `--print` and `--force`. To update a missing installation,
+run `ada skill`; review any local edits before using `ada skill --force` to
+replace them.
+
 **Does the skill stop an AI assistant from making up numbers?**
 It takes the arithmetic away from the model: ADA computes every number with
 pandas, SciPy and statsmodels and prints the calculation beside it, and the
