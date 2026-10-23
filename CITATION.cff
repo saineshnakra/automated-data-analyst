@@ -2,6 +2,8 @@ cff-version: 1.2.0
 message: "If ADA supports your work, please cite the software using this metadata."
 title: "ADA: Automated Data Analyst"
 type: software
+version: "0.5.0"
+date-released: "2026-10-23"
 authors:
   - family-names: Nakra
     given-names: Sainesh
@@ -9,7 +11,17 @@ authors:
 repository-code: "https://github.com/saineshnakra/automated-data-analyst"
 url: "https://automated-data-analyst.streamlit.app/"
 license: MIT
+abstract: >-
+  ADA makes a paper's data audit, tables, figures and methods draft from research data and a
+  plain study.yml, with every number traced to the data and a rebuild that can be verified. Every
+  number is computed with pandas, SciPy and statsmodels and shown with its calculation, or refused
+  with a reason. It also takes a first look at any CSV or Excel table, and works as a skill in
+  Claude Code and Codex.
 keywords:
+  - data analysis
+  - agent skill
+  - Claude Code
+  - Codex
   - reproducible research
   - publication figures
   - mixed models

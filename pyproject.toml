@@ -4,14 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "automated-data-analyst"
-version = "0.4.0"
-description = "Paper assets for research data: audit, tables, figures and a methods draft built from a study.yml and traceable to the data, plus a first look at any table. Works as a skill in Claude Code and Codex."
+version = "0.5.0"
+description = "Research data analysis: a paper's tables, figures, data audit and methods draft from a study.yml, every number computed in code and traceable to the data, plus a first look at any table. A skill for Claude Code and Codex."
 requires-python = ">=3.11"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Sainesh Nakra" }]
 keywords = [
+    "data-analysis",
+    "ai-data-analyst",
     "research",
     "reproducible-research",
     "reproducibility",
@@ -34,6 +36,7 @@ keywords = [
     "forecasting",
     "tabular-data",
     "agent-skills",
+    "claude-skills",
     "claude-code",
     "codex",
     "ai-agents",
@@ -94,7 +97,7 @@ Demo = "https://automated-data-analyst.streamlit.app/"
 Results = "https://github.com/saineshnakra/automated-data-analyst/blob/main/results/README.md"
 Source = "https://github.com/saineshnakra/automated-data-analyst"
 Issues = "https://github.com/saineshnakra/automated-data-analyst/issues"
-Changelog = "https://github.com/saineshnakra/automated-data-analyst/releases"
+Changelog = "https://github.com/saineshnakra/automated-data-analyst/blob/main/CHANGELOG.md"
 
 [tool.setuptools]
 packages = ["ada", "ada.research"]
