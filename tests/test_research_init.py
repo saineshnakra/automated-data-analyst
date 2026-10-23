@@ -100,6 +100,31 @@ class DesignConfirmationTests(unittest.TestCase):
             self.assertTrue(load(path).design_confirmed)
 
 
+class UnitGuessTests(unittest.TestCase):
+    def test_only_a_known_unit_in_brackets_is_taken_as_the_unit(self):
+        frame = recordings()[["subject#", "Jitter(%)"]].assign(
+            **{
+                "Jitter(Abs)": 3e-5,
+                "Shimmer(dB)": 0.2,
+                "Systolic BP (mmHg)": 120.0,
+                "eGFR (mL/min/1.73m2)": 90.0,
+                "Score (0-10)": 4,
+                "Jitter (rel)": 0.1,
+                "Shimmer (ppq5)": 0.01,
+            }
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            frame.to_csv(Path(folder) / "data.csv", index=False)
+            units = guess(Path(folder) / "data.csv", Path(folder)).units
+        self.assertEqual(units.get("Jitter(%)"), "%")
+        self.assertEqual(units.get("Shimmer(dB)"), "dB")
+        self.assertEqual(units.get("Systolic BP (mmHg)"), "mmHg")
+        self.assertEqual(units.get("eGFR (mL/min/1.73m2)"), "mL/min/1.73m2")
+        for name in ("Jitter(Abs)", "Score (0-10)", "Jitter (rel)", "Shimmer (ppq5)"):
+            with self.subTest(name=name):
+                self.assertNotIn(name, units)
+
+
 class RepeatedSubjectTests(unittest.TestCase):
     def test_repeated_number_codes_are_proposed_as_the_subject(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -23,7 +23,7 @@ from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 from ..analysis import clean_dataframe
 from ..file_io import read_tabular_file
 from ..schema import (
-    _unit,
+    _UNIT_ANNOTATION,
     detect_roles,
     is_design_name,
     is_entity_name,
@@ -95,6 +95,28 @@ PERSONAL_WORDS = {
     "nhs",
     "initials",
 }
+#: Units recognised in the brackets that end a column name, lowercased, each with its prefix: "mg",
+#: "µmol", "kpa". Combinations such as "mg/dL", "kg/m2" or "mL per min" are built from these.
+#: Letters that are as often a label as a unit ("a", "c", "k", "t", "y") are left out.
+UNITS = frozenset(
+    {
+        *("g", "kg", "mg", "µg", "ug", "mcg", "ng", "pg", "lb", "lbs", "oz"),
+        *("m", "cm", "mm", "km", "µm", "um", "nm", "in", "inch", "inches", "ft", "mi"),
+        *("l", "ml", "µl", "ul", "dl", "cl", "cc", "gal"),
+        *("s", "sec", "secs", "second", "seconds", "ms", "µs", "us", "min", "mins", "minute", "minutes"),
+        *("h", "hr", "hrs", "hour", "hours", "d", "day", "days", "wk", "wks", "week", "weeks"),
+        *("mo", "month", "months", "yr", "yrs", "year", "years"),
+        *("°", "°c", "°f", "degc", "degf", "deg", "degree", "degrees", "rad"),
+        *("pa", "kpa", "mpa", "hpa", "gpa", "bar", "mbar", "atm", "mmhg", "cmh2o", "psi", "torr"),
+        *("j", "kj", "mj", "cal", "kcal", "wh", "kwh", "ev", "w", "kw", "mw"),
+        *("v", "mv", "µv", "uv", "ma", "µa", "ohm", "ohms", "ω", "kω"),
+        *("hz", "khz", "mhz", "ghz", "bpm", "rpm"),
+        *("mol", "mmol", "µmol", "umol", "nmol", "pmol", "meq", "iu", "u", "ppm", "ppb"),
+        *("db", "dba", "lux", "lx", "ha", "acre", "acres"),
+        *("cells", "copies", "cfu", "beats", "breaths"),
+        *("%", "‰", "usd", "eur", "gbp", "$", "€", "£"),
+    }
+)
 MAX_GROUP_LEVELS = 12
 JOURNALS = ("default", "plos", "nature", "cell", "science", "elife")
 
@@ -139,6 +161,23 @@ class Guess:
 
 def _words(name: str) -> set[str]:
     return set(re.findall(r"[a-z]+", str(name).lower()))
+
+
+def _unit_of(column: str) -> str:
+    """The unit in the brackets that end a column name, as written: "mmHg" in "Systolic BP (mmHg)".
+
+    Only known units (see UNITS) and their combinations count, such as "mg/dL", "kg/m²" or "mL/min/1.73m2".
+    Other words in brackets say what kind of value a column holds, not its unit: "Abs" in "Jitter(Abs)" is
+    absolute jitter, and "(0-10)" is a scale. Those leave the unit blank.
+    """
+    match = _UNIT_ANNOTATION.search(str(column))
+    if not match:
+        return ""
+    text = " ".join(match.group(1).split())
+    parts = [part for part in re.split(r"[/·*\s]+", text.lower().replace("μ", "µ")) if part and part != "per"]
+    # A power ("m2", "m^2", "m²", "s-1") and a number in front ("1.73m2") belong to the unit.
+    atoms = [re.sub(r"^[0-9.]+|\^?-?[0-9²³]+$", "", part) for part in parts]
+    return text if atoms and all(atom in UNITS for atom in atoms) else ""
 
 
 def _type_of(series: pd.Series, name: str, identifiers: list[str]) -> str:
@@ -260,7 +299,7 @@ def guess(data_path: Path, root: Path, sheet: str | None = None) -> Guess:
 
     result.types = {column: _type_of(frame[column], column, result.identifiers) for column in columns}
     for column in columns:
-        unit = _unit(column)
+        unit = _unit_of(column)
         if unit:
             result.units[column] = unit
         elif "%" in column or "percent" in _words(column):
