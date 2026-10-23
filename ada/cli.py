@@ -229,26 +229,52 @@ def _status(_: argparse.Namespace) -> int:
     return EXIT_QUIET
 
 
+#: Where each assistant looks for skills, in the project folder or the home folder: Claude Code reads
+#: .claude/skills, and Codex and other tools that follow the Agent Skills format read .agents/skills.
+SKILL_FOLDERS = {"claude": Path(".claude", "skills"), "codex": Path(".agents", "skills")}
+#: The skill's files, by their path in its folder. agents/openai.yaml is how Codex names and shows it.
+SKILL_FILES = ("SKILL.md", "agents/openai.yaml")
+
+
 def _skill(args: argparse.Namespace) -> int:
-    """Write ADA's agent skill (SKILL.md) where AI coding assistants look for skills."""
+    """Write ADA's agent skill where Claude Code and Codex look for skills."""
     from importlib.resources import files  # noqa: PLC0415
 
-    text = files("ada").joinpath("skills", "ada", "SKILL.md").read_text(encoding="utf-8")
+    source = files("ada").joinpath("skills", "ada")
+    contents = {name: source.joinpath(*name.split("/")).read_text(encoding="utf-8") for name in SKILL_FILES}
     if args.print:
-        print(text, end="")
+        print(contents["SKILL.md"], end="")
         return EXIT_QUIET
-    folder = Path(args.dir) if args.dir else (Path.home() if args.user else Path()) / ".claude" / "skills"
-    target = folder / "ada" / "SKILL.md"
-    if target.is_file() and target.read_text(encoding="utf-8") == text:
-        print(f"{target} is already this version's skill.")
-        return EXIT_QUIET
-    if target.exists() and not args.force:
-        print(f"error: {target} already exists and differs from this version's skill. "
+    if args.dir:
+        folders = {"": Path(args.dir)}
+    else:
+        base = Path.home() if args.user else Path()
+        chosen = SKILL_FOLDERS if args.target == "all" else {args.target: SKILL_FOLDERS[args.target]}
+        folders = {assistant: base / folder for assistant, folder in chosen.items()}
+
+    def differs(path: Path, text: str) -> bool:
+        return not path.is_file() or path.read_text(encoding="utf-8") != text
+
+    targets = {assistant: folder / "ada" for assistant, folder in folders.items()}
+    edited = [
+        target / name
+        for target in targets.values()
+        for name, text in contents.items()
+        if (target / name).exists() and differs(target / name, text)
+    ]
+    if edited and not args.force:
+        listed = ", ".join(str(path) for path in edited)
+        print(f"error: {listed} already exists and differs from this version's skill. "
               "Pass --force to replace it.", file=sys.stderr)
         return EXIT_ERROR
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(text, encoding="utf-8")
-    print(f"Wrote {target}. An assistant that reads skills from {folder} now knows how to use ADA.")
+    names = {"claude": "Claude Code", "codex": "Codex and other assistants that read .agents/skills", "": ""}
+    for assistant, target in targets.items():
+        written = [name for name, text in contents.items() if differs(target / name, text)]
+        for name in written:
+            (target / name).parent.mkdir(parents=True, exist_ok=True)
+            (target / name).write_text(contents[name], encoding="utf-8")
+        reader = f" for {names[assistant]}" if names[assistant] else ""
+        print(f"Wrote {target}{reader}." if written else f"{target} is already this version's skill.")
     return EXIT_QUIET
 
 
@@ -342,13 +368,17 @@ def build_parser() -> argparse.ArgumentParser:
     with_source("ask", "ask a question in plain English").add_argument("question")
     with_source("check", "flag periods outside the expected band; for cron")
 
-    skill = subcommands.add_parser("skill", help="install the skill that tells AI assistants how to use ADA")
+    skill = subcommands.add_parser(
+        "skill", help="install the skill that tells Claude Code and Codex how to use ADA"
+    )
+    skill.add_argument("--for", dest="target", choices=["all", "claude", "codex"], default="all",
+                       help="claude (.claude/skills), codex (.agents/skills) or all of them (default)")
     where = skill.add_mutually_exclusive_group()
     where.add_argument("--user", action="store_true",
-                       help="write to ~/.claude/skills for every project (default: .claude/skills here)")
-    where.add_argument("--dir", help="the skills folder of another assistant; writes DIR/ada/SKILL.md")
-    where.add_argument("--print", action="store_true", help="print the skill instead of writing it")
-    skill.add_argument("--force", action="store_true", help="replace a skill file that differs")
+                       help="write to the skills folders in your home folder, for every project")
+    where.add_argument("--dir", help="another assistant's skills folder; writes DIR/ada/")
+    where.add_argument("--print", action="store_true", help="print SKILL.md instead of writing it")
+    skill.add_argument("--force", action="store_true", help="replace skill files that differ")
 
     subcommands.add_parser("samples", help="list the bundled datasets")
     subcommands.add_parser("app", help="launch the browser app (from a source checkout)")

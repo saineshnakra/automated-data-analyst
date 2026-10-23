@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "automated-data-analyst"
 version = "0.4.0"
-description = "Paper assets for research data: audit, tables, figures and a methods draft built from a study.yml and traceable to the data, plus a first look at any table."
+description = "Paper assets for research data: audit, tables, figures and a methods draft built from a study.yml and traceable to the data, plus a first look at any table. Works as a skill in Claude Code and Codex."
 requires-python = ">=3.11"
 readme = "README.md"
 license = "MIT"
@@ -34,6 +34,10 @@ keywords = [
     "forecasting",
     "tabular-data",
     "agent-skills",
+    "claude-code",
+    "codex",
+    "ai-agents",
+    "llm",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -97,7 +101,7 @@ packages = ["ada", "ada.research"]
 
 [tool.setuptools.package-data]
 # Read from inside the package at runtime. skills/ada/SKILL.md is what `ada skill` installs.
-ada = ["assets/*.css", "samples/*.csv", "samples/*.md", "skills/ada/SKILL.md"]
+ada = ["assets/*.css", "samples/*.csv", "samples/*.md", "skills/ada/SKILL.md", "skills/ada/agents/openai.yaml"]
 
 [tool.ruff]
 line-length = 110

@@ -57,13 +57,21 @@ makes the data audit, tables in Word, LaTeX and CSV, figures with their source
 data, and a methods draft, and `ada verify` checks a rebuild gives the same
 numbers. See [Paper assets for a study](research.md).
 
-**Can an AI coding assistant use ADA?**
-Yes. `ada skill` writes a SKILL.md into `.claude/skills/ada/` that tells the
-assistant when to use ADA and how: ask the researcher for the design and the
-planned analyses, write `study.yml`, build and verify. `ada skill --dir PATH`
-writes it into another assistant's skills folder, and in Claude Code
-`/plugin install ada --marketplace saineshnakra/automated-data-analyst`
-installs it as a plugin.
+**Can Claude Code or Codex use ADA?**
+Yes. `ada skill` writes ADA's skill into `.claude/skills/ada/` for Claude Code
+and `.agents/skills/ada/` for Codex. It tells the assistant to ask you for the
+design and the planned analyses, let ADA compute the numbers, report them with
+their calculations, and pass on any refusal. It also installs as a plugin:
+`/plugin install ada --marketplace saineshnakra/automated-data-analyst` in
+Claude Code, or `codex plugin marketplace add saineshnakra/automated-data-analyst`
+then `codex plugin add ada@automated-data-analyst` in Codex.
+
+**Does the skill stop an AI assistant from making up numbers?**
+It takes the arithmetic away from the model: ADA computes every number with
+pandas, SciPy and statsmodels and prints the calculation beside it, and the
+skill tells the assistant to report those numbers and pass on refusals. That
+doesn't make a model incapable of a mistake, but every number in its answer
+can be checked against ADA's output and rebuilt with `ada verify`.
 
 **Can I self-host it?**
 Yes. It is a standard Streamlit app with no database:

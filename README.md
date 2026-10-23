@@ -4,6 +4,12 @@
 [![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.13-3776ab?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-20a779.svg)](https://github.com/saineshnakra/automated-data-analyst/blob/main/LICENSE)
 [![Stars](https://img.shields.io/github/stars/saineshnakra/automated-data-analyst?style=flat&logo=github&color=f5b731)](https://github.com/saineshnakra/automated-data-analyst/stargazers)
+[![PyPI](https://img.shields.io/pypi/v/automated-data-analyst?color=635bff)](https://pypi.org/project/automated-data-analyst/)
+[![Agent skill: Claude Code and Codex](https://img.shields.io/badge/agent%20skill-Claude%20Code%20%C2%B7%20Codex-0e0f13)](#use-it-from-claude-code-or-codex)
+
+checks the data first · the design picks the test · every number computed in
+code · the calculation under every result · refuses instead of guessing ·
+rebuilds to the same numbers
 
 **Your paper's tables and figures, built from your data and traceable to
 it.** Install ADA in the folder that holds a study's data, answer a few
@@ -21,9 +27,19 @@ ada build                          # writes paper-assets/
 ada verify                         # rebuilds in a scratch folder and checks every number
 ```
 
+**In Claude Code or Codex,** add the skill and ask in plain words: "make
+Table 1 and the figures from data/trial.csv", or "what's in this file?". The
+assistant asks you what only you know about the study, runs ADA, and reports
+the numbers ADA computed, each with the test behind it. The arithmetic runs in
+ADA, not in the model, and when ADA can't answer it says why instead of
+guessing. [More below](#use-it-from-claude-code-or-codex).
+
+```bash
+pip install automated-data-analyst && ada skill    # the skill, for Claude Code and Codex in this project
+```
+
 ADA also takes a [quick first look at any table](#a-first-look-at-any-table),
-in the browser or with one line of Python, and comes with a
-[skill for AI coding assistants](#use-it-from-an-ai-assistant).
+in the browser or with one line of Python.
 
 ## Paper assets for a study
 
@@ -332,29 +348,57 @@ if not forecast:
 and a `Refusal` when it couldn't check (no date column, too few periods). Both
 are falsy, so check the type when the difference matters.
 
-## Use it from an AI assistant
+## Use it from Claude Code or Codex
 
-ADA ships a [skill](https://github.com/saineshnakra/automated-data-analyst/blob/main/ada/skills/ada/SKILL.md)
-that tells an AI coding assistant when to reach for ADA and how to use it on
-a researcher's data: ask for the design and the planned analyses instead of
-guessing them, write `study.yml`, build, verify, and pass on a refusal rather
-than work around it.
+Ask an AI coding assistant to analyse a data file and it will usually write
+pandas on the spot and tell you what it thinks the numbers say. With ADA's
+[skill](https://github.com/saineshnakra/automated-data-analyst/blob/main/ada/skills/ada/SKILL.md),
+it runs ADA instead:
+
+- It asks you for what it can't know from the file: what a row is, which
+  column identifies a subject, the design, which analyses were planned.
+- ADA does the arithmetic with pandas, SciPy and statsmodels and prints the
+  calculation under each result. The assistant reports those numbers rather
+  than its own.
+- When ADA refuses (too few rows, a design it can't fit), the assistant passes
+  the reason on instead of working around it.
+- `ada verify` lets you, or anyone, check that the numbers rebuild from the
+  data.
+
+This doesn't make a model incapable of a mistake, but it means every number
+in its answer comes from code you can rerun, with the calculation beside it.
+
+**Install it**, in either assistant:
 
 ```bash
 pip install automated-data-analyst
-ada skill               # writes .claude/skills/ada/SKILL.md in this project
-ada skill --user        # or in ~/.claude/skills, for every project
-ada skill --dir PATH    # or in another assistant's skills folder
+ada skill               # .claude/skills/ada (Claude Code) and .agents/skills/ada (Codex)
+ada skill --user        # the same in your home folder, for every project
+ada skill --for codex   # or one assistant only; --dir PATH for another tool's skills folder
 ```
 
-In Claude Code it also installs as a plugin:
+Or as a plugin, which updates with the repository:
 
-```
+```bash
+# Claude Code
 /plugin install ada --marketplace saineshnakra/automated-data-analyst
+
+# Codex
+codex plugin marketplace add saineshnakra/automated-data-analyst
+codex plugin add ada@automated-data-analyst
 ```
+
+**Then ask**, for example:
+
+- "What's in data/plates.csv? Check it for problems first."
+- "Does viability differ between treatments? Each plate has several wells."
+- "Make Table 1, the results table and the figures for the paper from
+  data/trial.csv, and a methods draft."
+- "I changed an exclusion. Rebuild and tell me which numbers moved."
 
 The skill is a plain SKILL.md in the Agent Skills format, so other assistants
-that read skills can use it too. [`llms.txt`](https://github.com/saineshnakra/automated-data-analyst/blob/main/llms.txt)
+that read `.agents/skills` can use it too.
+[`llms.txt`](https://github.com/saineshnakra/automated-data-analyst/blob/main/llms.txt)
 gives a language model a short map of the docs.
 
 ## Scheduled checks

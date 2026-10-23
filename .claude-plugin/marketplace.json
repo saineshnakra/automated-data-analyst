@@ -8,7 +8,7 @@
     {
       "name": "ada",
       "source": "./ada",
-      "description": "Teaches Claude to use ADA (pip install automated-data-analyst) to build a study's data audit, tables, figures and methods draft from study.yml, verify the rebuild, and take a first look at any table.",
+      "description": "Teaches Claude Code and Codex to use ADA (pip install automated-data-analyst): every number computed in pandas, SciPy and statsmodels with its calculation, a study's data audit, tables, figures and methods draft built from study.yml and verified, and a first look at any table.",
       "homepage": "https://github.com/saineshnakra/automated-data-analyst",
       "repository": "https://github.com/saineshnakra/automated-data-analyst",
       "license": "MIT",

@@ -1,0 +1,5 @@
+# How Codex and the ChatGPT app name and show the skill. The instructions are in ../SKILL.md.
+interface:
+  display_name: "ADA"
+  short_description: "Data analysis with every number computed and its calculation shown"
+  default_prompt: "Use ADA to look at my data file and tell me what is in it, with the calculation behind each finding."
