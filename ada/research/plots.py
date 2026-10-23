@@ -636,7 +636,8 @@ def draw_scatter(target, result, spec: FigureSpec) -> Drawn:
     fit = sm.OLS(ys, sm.add_constant(xs)).fit()
     grid = np.linspace(xs.min(), xs.max(), 101)
     band = fit.get_prediction(sm.add_constant(grid, has_constant="add")).summary_frame(alpha=1 - confidence)
-    (intercept_low, slope_low), (intercept_high, slope_high) = fit.conf_int(alpha=1 - confidence)
+    # conf_int() has one row per coefficient, (low, high): the intercept first, then the slope.
+    (intercept_low, intercept_high), (slope_low, slope_high) = fit.conf_int(alpha=1 - confidence)
     mixed = _mixed_line(study, analysis, found, x)
     if mixed:
         ax.plot(grid, mixed[0] + mixed[1] * grid, color=INK, linewidth=1.0, zorder=3)

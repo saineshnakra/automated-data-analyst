@@ -67,6 +67,60 @@ def assay_with(**changes) -> dict:
     return assay_study(output={"figures": ["svg"]}, **changes)
 
 
+def readings(rows: int = 40, seed: int = 7) -> pd.DataFrame:
+    """A signal in thousandths falling with a dose in thousands: a negative slope on very different scales."""
+    rng = np.random.default_rng(seed)
+    dose = rng.uniform(1000, 5000, rows)
+    return pd.DataFrame(
+        {
+            "Sample": [f"S{index:02d}" for index in range(rows)],
+            "Dose": np.round(dose, 1),
+            "Signal": np.round(0.02 - 2.5e-6 * dose + rng.normal(0, 1e-3, rows), 6),
+        }
+    )
+
+
+def readings_study(**changes) -> dict:
+    study = {
+        "study": {"title": "Signal"},
+        "data": {"path": "readings.csv", "observation": "one sample"},
+        "design": {"type": "independent"},
+        "variables": {
+            "Sample": {"role": "identifier", "type": "text"},
+            "Dose": {"role": "covariate", "type": "numeric", "unit": "ng/mL"},
+            "Signal": {"role": "outcome", "type": "numeric"},
+        },
+        "analyses": [{"id": "dose", "outcome": "Signal", "relate": "Dose", "planned": True}],
+        "output": {"figures": ["svg"]},
+    }
+    study.update(changes)
+    return study
+
+
+def least_squares(xs, ys, confidence: float = 0.95) -> dict:
+    """Intercept and slope with t intervals, by NumPy least squares rather than statsmodels."""
+    design = np.column_stack([np.ones(len(xs)), xs])
+    coefficients, *_ = np.linalg.lstsq(design, ys, rcond=None)
+    residuals = ys - design @ coefficients
+    freedom = len(xs) - 2
+    errors = np.sqrt(np.diag(residuals @ residuals / freedom * np.linalg.inv(design.T @ design)))
+    half = stats.t.ppf(0.5 + confidence / 2, freedom) * errors
+    return {
+        name: (coefficients[index], coefficients[index] - half[index], coefficients[index] + half[index])
+        for index, name in enumerate(("intercept", "slope"))
+    }
+
+
+def assert_ordered_intervals(test, table: pd.DataFrame) -> None:
+    """Every row with an interval has low <= value <= high, whether the value is a fit or an estimate."""
+    rows = table.dropna(subset=["ci_low", "ci_high"])
+    test.assertGreater(len(rows), 0)
+    values = rows["fit"].fillna(rows["estimate"])
+    test.assertFalse(values.isna().any())
+    test.assertTrue((rows["ci_low"] <= values).all(), rows[rows["ci_low"] > values])
+    test.assertTrue((values <= rows["ci_high"]).all(), rows[values > rows["ci_high"]])
+
+
 def source(built, ident: str) -> pd.DataFrame:
     return pd.read_csv(built.out / "figures" / f"{ident}.source.csv")
 
@@ -296,6 +350,31 @@ class ScatterTests(unittest.TestCase):
         with study_folder(frame, study) as path:
             caption = asset(build(path), "passage-scatter").caption
         self.assertIn("fixed-effect fit of analysis passage", caption)
+
+    def test_the_coefficient_rows_match_an_independent_fit(self):
+        listed = [
+            {"id": "linked", "type": "scatter", "analysis": "dose"},
+            {"id": "plain", "type": "scatter", "x": "Dose", "y": "Signal"},
+        ]
+        frame = readings()
+        with study_folder(frame, readings_study(figures=listed), "readings.csv") as path:
+            built = build(path)
+            tables = {ident: source(built, ident) for ident in ("linked", "plain")}
+        xs, ys = frame["Dose"].to_numpy(float), frame["Signal"].to_numpy(float)
+        expected = least_squares(xs, ys)
+        fit = sm.OLS(ys, sm.add_constant(xs)).fit()
+        self.assertLess(expected["slope"][0], 0)
+        for ident, table in tables.items():
+            for position, name in enumerate(("intercept", "slope")):
+                with self.subTest(figure=ident, row=name):
+                    row = table[table["element"] == name].iloc[0]
+                    got = [row["estimate"], row["ci_low"], row["ci_high"]]
+                    np.testing.assert_allclose(got, expected[name], rtol=1e-8)
+                    np.testing.assert_allclose(
+                        got, [fit.params[position], *fit.conf_int(alpha=0.05)[position]], rtol=1e-8
+                    )
+                    self.assertEqual(row["n"], len(frame))
+            assert_ordered_intervals(self, table)
 
 
 class OtherTypesTests(unittest.TestCase):
