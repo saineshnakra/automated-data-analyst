@@ -427,12 +427,41 @@ class SkillTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, self.SKILL.read_text(encoding="utf-8"))
 
-    def test_the_skill_goes_into_the_projects_claude_folder(self):
+    def test_the_skill_goes_where_claude_code_and_codex_look(self):
         folder = tempfile.mkdtemp()
         result = self.run_ada("skill", cwd=folder)
         self.assertEqual(result.returncode, 0, result.stderr)
-        written = Path(folder, ".claude", "skills", "ada", "SKILL.md")
-        self.assertEqual(written.read_text(encoding="utf-8"), self.SKILL.read_text(encoding="utf-8"))
+        for skills in (".claude/skills", ".agents/skills"):
+            written = Path(folder, skills, "ada")
+            skill = (written / "SKILL.md").read_text(encoding="utf-8")
+            self.assertEqual(skill, self.SKILL.read_text(encoding="utf-8"))
+            self.assertTrue((written / "agents" / "openai.yaml").is_file())
+        self.assertIn("for Claude Code", result.stdout)
+        self.assertIn("for Codex", result.stdout)
+
+    def test_for_picks_one_assistant(self):
+        folder = tempfile.mkdtemp()
+        result = self.run_ada("skill", "--for", "codex", cwd=folder)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(Path(folder, ".agents", "skills", "ada", "SKILL.md").is_file())
+        self.assertFalse(Path(folder, ".claude").exists())
+
+    def test_user_writes_to_the_home_folder(self):
+        home = tempfile.mkdtemp()
+        result = subprocess.run(
+            [sys.executable, "-m", "ada.cli", "skill", "--user"], capture_output=True, text=True, timeout=300,
+            cwd=tempfile.mkdtemp(),
+            env={**os.environ, "HOME": home, "PYTHONPATH": str(Path(ada.__file__).parent.parent)},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(Path(home, ".claude", "skills", "ada", "SKILL.md").is_file())
+        self.assertTrue(Path(home, ".agents", "skills", "ada", "SKILL.md").is_file())
+
+    def test_codex_gets_a_name_and_a_starting_prompt(self):
+        shown = yaml.safe_load((self.SKILL.parent / "agents" / "openai.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(shown["interface"]["display_name"], "ADA")
+        self.assertTrue(shown["interface"]["short_description"])
+        self.assertTrue(shown["interface"]["default_prompt"])
 
     def test_a_changed_skill_is_kept_unless_forced(self):
         folder = tempfile.mkdtemp()
