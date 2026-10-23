@@ -21,7 +21,15 @@ from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 
 from ..analysis import clean_dataframe
 from ..file_io import read_tabular_file
-from ..schema import _unit, detect_roles, is_design_name, is_entity_name, looks_like_identifier
+from ..schema import (
+    _unit,
+    detect_roles,
+    is_design_name,
+    is_entity_name,
+    is_subject_name,
+    looks_like_identifier,
+    looks_like_subject,
+)
 from .study import DESIGNS, SHARING, sha256_of
 
 #: Numbers often used to mean "missing" in lab and survey files.
@@ -184,9 +192,14 @@ def guess(data_path: Path, root: Path, sheet: str | None = None) -> Guess:
         for column in columns
         if looks_like_identifier(column, frame[column])
         or (is_entity_name(column) and not is_numeric_dtype(frame[column]))
+        # Number codes of a unit measured more than once: subject# 1 to 42 over 5,875 recordings.
+        # Numbered sites and other clusters are found below.
+        or (looks_like_subject(column, frame[column]) and not _words(column) & CLUSTER_WORDS)
     ]
     if roles.identifier and roles.identifier not in identifiers:
         identifiers.insert(0, roles.identifier)
+    # A column with one value tells no rows apart, such as the station in one station's file.
+    identifiers = [column for column in identifiers if frame[column].nunique() > 1]
     clusters = [
         column
         for column in columns
@@ -247,7 +260,8 @@ def guess(data_path: Path, root: Path, sheet: str | None = None) -> Guess:
     result.missing_codes = _sentinels(frame, [c for c in columns if result.types[c] == "numeric"])
 
     subjects = [column for column in result.identifiers if column not in clusters]
-    repeated = [column for column in subjects if frame[column].duplicated().any()]
+    # A unit measured more than once, not a key with the odd value repeated or a visit number.
+    repeated = [column for column in subjects if looks_like_subject(column, frame[column])]
     if repeated:
         result.subject = repeated[0]
         per_subject = frame.groupby(result.subject, observed=True).size()
@@ -263,7 +277,8 @@ def guess(data_path: Path, root: Path, sheet: str | None = None) -> Guess:
         result.design = "clustered"
         result.cluster = clusters[0]
     if result.design != "independent":
-        result.notes.append(f"Guessed a {result.design} design from {result.subject or result.cluster}.")
+        unit = result.subject or result.cluster
+        result.notes.append(f"Guessed a {result.design} design from {unit} ({_repeats(frame, unit)}).")
 
     result.withhold = [column for column in columns if _words(column) & PERSONAL_WORDS]
     result.observation = _observation(result)
@@ -279,6 +294,14 @@ def _observation(found: Guess) -> str:
     if found.identifiers:
         return f"one {found.identifiers[0]}"
     return "one observation"
+
+
+def _repeats(frame: pd.DataFrame, column: str) -> str:
+    """How a column's values repeat: "42 values over 5,875 rows, 101 to 168 rows each"."""
+    counts = frame[column].value_counts()
+    low, high = int(counts.min()), int(counts.max())
+    each = f"{low:,} rows each" if low == high else f"{low:,} to {high:,} rows each"
+    return f"{len(counts):,} values over {int(counts.sum()):,} rows, {each}"
 
 
 def propose_analyses(found: Guess) -> list[dict]:
@@ -409,24 +432,45 @@ def interview(
         if codes.lower() == "none"
         else [_number_or_text(code) for code in codes.split(",") if code.strip()]
     )
+    unit = found.subject or found.cluster
+    if interactive and found.design != "independent" and unit:
+        # Rows that share a subject or cluster are not independent; answering independent must be a choice.
+        alone = (
+            "each row is a different subject"
+            if found.subject
+            else f"rows of the same {unit} are no more alike than any two rows"
+        )
+        say(
+            f"\n{unit} repeats: {_repeats(found.frame, unit)}. Rows of the same {unit} are not independent, "
+            f"so ADA suggests a {found.design} design. Answer independent only if {alone}."
+        )
+    elif interactive:
+        # A few repeated values are more likely a key's duplicates than a subject; the researcher knows.
+        for column in found.identifiers:
+            doubled = int(found.frame[column].duplicated(keep=False).sum())
+            if is_subject_name(column) and doubled:
+                say(
+                    f"\n{column} repeats on {doubled:,} of {len(found.frame):,} rows. If those rows measure "
+                    f"the same {column} more than once, answer repeated."
+                )
     found.design = asker.choice("Design", list(DESIGNS), found.design)
     found.confirmed = interactive
+    # Columns with one value were left out of the identifiers, but the researcher may have named one.
+    several = [column for column in found.identifiers if found.frame[column].nunique() > 1]
     if found.design in ("paired", "repeated"):
-        subjects = asker.columns_of(
+        found.subject = _unit_column(
+            asker,
+            found.frame,
             "Column naming the subject measured more than once",
-            [found.subject] if found.subject else found.identifiers[:1],
-            allow_none=False,
-            single=True,
+            [found.subject] if found.subject else several[:1],
         )
-        found.subject = subjects[0] if subjects else None
     if found.design == "clustered":
-        clusters = asker.columns_of(
+        found.cluster = _unit_column(
+            asker,
+            found.frame,
             "Column naming the cluster each row belongs to",
-            [found.cluster] if found.cluster else found.identifiers[-1:],
-            allow_none=False,
-            single=True,
+            [found.cluster] if found.cluster else several[-1:],
         )
-        found.cluster = clusters[0] if clusters else None
     found.analyses = propose_analyses(found)
     if interactive and found.analyses:
         say("\nAnalyses ADA can run for this design:")
@@ -449,6 +493,15 @@ def interview(
     )
     found.journal = asker.choice("Journal preset for figures", list(JOURNALS), found.journal)
     return found
+
+
+def _unit_column(asker: _Asker, frame: pd.DataFrame, question: str, default: list[str]) -> str | None:
+    """Ask for the subject or cluster column. One with a single value tells no rows apart, so ask again."""
+    while True:
+        chosen = asker.columns_of(question, default, allow_none=False, single=True)
+        if not chosen or frame[chosen[0]].nunique() > 1 or not asker.interactive:
+            return chosen[0] if chosen else None
+        asker.say(f"  {chosen[0]} has a single value, so it cannot tell one subject or cluster from another.")
 
 
 def _number_or_text(text: str):
@@ -629,6 +682,9 @@ def init(
     if target.exists() and not overwrite:
         raise FileExistsError(f"{target} already exists. Edit it, or pass --force to start again.")
     found = guess(data_path, target.resolve().parent, sheet)
+    if not interactive:
+        for note in found.notes:
+            say(f"{note} It is marked unconfirmed in study.yml until you check it.")
     found = interview(found, ask=ask, say=say, interactive=interactive)
     target.write_text(render(found), encoding="utf-8")
     return target

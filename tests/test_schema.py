@@ -16,9 +16,11 @@ from ada.schema import (
     is_identifier_name,
     is_month_name,
     is_quality_flag,
+    is_subject_name,
     is_time_part,
     is_year_name,
     looks_like_identifier,
+    looks_like_subject,
     row_summary_columns,
 )
 
@@ -164,6 +166,42 @@ class EntityNameTests(unittest.TestCase):
         for name in ("No.", "Specimen No", "Station No #"):
             with self.subTest(name=name):
                 self.assertTrue(is_entity_name(name))
+
+
+class SubjectColumnTests(unittest.TestCase):
+    def test_names_of_subjects_measured_more_than_once(self):
+        for name in ("subject#", "Subject", "Patient ID", "Mouse #", "specimen_no", "Station", "ID"):
+            with self.subTest(name=name):
+                self.assertTrue(is_subject_name(name))
+
+    def test_time_points_counts_groups_and_contact_details_are_not_subjects(self):
+        for name in ("Visit Number", "Run No", "Group ID", "Day #", "Number", "Code", "ZIP", "Phone", "NO"):
+            with self.subTest(name=name):
+                self.assertFalse(is_subject_name(name))
+
+    def test_repeated_number_codes_name_subjects(self):
+        codes = pd.Series(np.repeat(np.arange(1, 43), 5))
+        self.assertTrue(looks_like_subject("subject#", codes))
+        # A few people seen once still leave a subject column.
+        self.assertTrue(looks_like_subject("subject#", pd.Series([*np.repeat([1, 2, 3, 4], 3), 5, 6])))
+
+    def test_a_key_on_every_row_or_a_single_value_is_not_a_subject(self):
+        self.assertFalse(looks_like_subject("Patient ID", pd.Series(range(1001, 1061))))
+        self.assertFalse(looks_like_subject("Patient ID", pd.Series([*range(1001, 1059), 1001, 1002])))
+        self.assertFalse(looks_like_subject("station", pd.Series(["Aotizhongxin"] * 50)))
+        self.assertFalse(looks_like_subject("subject", pd.Series(np.repeat([1.5, 2.25, 3.75], 4))))
+
+    def test_counts_ratings_and_years_repeat_but_are_not_subjects(self):
+        rng = np.random.default_rng(3)
+        for name, values in (
+            ("children", rng.integers(0, 5, 60)),
+            ("rating", rng.integers(1, 6, 60)),
+            ("year", rng.integers(2015, 2020, 60)),
+            ("Visit Number", np.tile([1, 2, 3], 20)),
+            ("Number", rng.integers(1, 6, 60)),
+        ):
+            with self.subTest(name=name):
+                self.assertFalse(looks_like_subject(name, pd.Series(values)))
 
 
 class CalendarPartTests(unittest.TestCase):
