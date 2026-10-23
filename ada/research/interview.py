@@ -20,7 +20,7 @@ from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 
 from ..analysis import clean_dataframe
 from ..file_io import read_tabular_file
-from ..schema import _unit, detect_roles, is_design_name, is_entity_name, looks_like_identifier
+from ..schema import _unit, detect_roles, is_design_name, is_entity_name, is_time_part, looks_like_identifier
 from .study import DESIGNS, SHARING, sha256_of
 
 #: Numbers often used to mean "missing" in lab and survey files.
@@ -193,12 +193,15 @@ def guess(data_path: Path, root: Path, sheet: str | None = None) -> Guess:
     ]
     result.identifiers = identifiers + [column for column in clusters if column not in identifiers]
 
+    # The year, month, day or hour a timestamp was built from ("year-month-day-hour") is part of it.
+    stamps = [_words(column) for column in columns if is_datetime64_any_dtype(frame[column])]
     times = [
         column
         for column in columns
         if _words(column) & TIME_WORDS
         and column not in result.identifiers
         and frame[column].nunique() <= max(30, len(frame) // 5)
+        and not (is_time_part(column, frame[column]) and any(_words(column) < words for words in stamps))
     ]
     result.time = times[0] if times else None
 

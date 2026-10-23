@@ -109,6 +109,91 @@ class YearColumnTests(unittest.TestCase):
                 self.assertEqual(cleaned["year-month"].iloc[3], pd.Timestamp("1950-02-01"))
                 self.assertTrue(any("year and month were combined" in note for note in report.notes))
 
+    def _hourly(self, **names) -> pd.DataFrame:
+        """Six hourly readings across a new year, with the date in four columns named by ``names``."""
+        stamps = pd.date_range("2016-12-31 21:00", periods=6, freq="h")
+        parts = {"year": stamps.year, "month": stamps.month, "day": stamps.day, "hour": stamps.hour}
+        frame = pd.DataFrame({names.get(part, part): values for part, values in parts.items()})
+        frame["PM2.5"] = [4.0, 8.0, 7.0, 6.0, 3.0, 5.0]
+        return frame
+
+    def test_day_and_hour_columns_make_hourly_timestamps_beside_the_parts(self):
+        cleaned, report = clean_dataframe(self._hourly())
+
+        self.assertEqual(
+            cleaned.columns.tolist(), ["year-month-day-hour", "year", "month", "day", "hour", "PM2.5"]
+        )
+        self.assertEqual(
+            cleaned["year-month-day-hour"].tolist(),
+            list(pd.date_range("2016-12-31 21:00", periods=6, freq="h")),
+        )
+        self.assertEqual(cleaned["hour"].tolist(), [21, 22, 23, 0, 1, 2])
+        self.assertEqual(report.datetime_columns_inferred, 1)
+        self.assertIn(
+            "year, month, day and hour were combined into one timestamp column, year-month-day-hour, "
+            "to the hour, with no time zone attached; the original columns are kept.",
+            report.notes,
+        )
+
+    def test_a_day_column_makes_daily_dates(self):
+        frame = self._hourly().drop(columns=["hour"])
+
+        cleaned, report = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["year-month-day"].dt.day.tolist(), [31, 31, 31, 1, 1, 1])
+        self.assertIn("day", cleaned.columns)
+        self.assertTrue(any("to the day" in note for note in report.notes))
+
+    def test_an_hour_without_a_day_leaves_the_dates_monthly(self):
+        frame = self._hourly().drop(columns=["day"])
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(cleaned.columns.tolist(), ["year-month", "hour", "PM2.5"])
+
+    def test_parts_named_in_other_cases_and_ways_are_combined(self):
+        frame = self._hourly(year="YEAR", month="Month", day="DAY", hour="obs_hour")
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["YEAR-Month-DAY-obs_hour"].iloc[3], pd.Timestamp("2017-01-01 00:00"))
+
+    def test_minutes_and_seconds_join_the_timestamp(self):
+        frame = self._hourly(year="Year", month="Month", day="Day", hour="Hour")
+        frame["Minute"], frame["Second"] = 30, [0, 15, 30, 45, 0, 15]
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(
+            cleaned["Year-Month-Day-Hour-Minute-Second"].iloc[1], pd.Timestamp("2016-12-31 22:30:15")
+        )
+
+    def test_a_day_or_hour_no_calendar_has_leaves_that_row_without_a_timestamp(self):
+        frame = self._hourly()
+        frame.loc[1, ["month", "day"]] = [2, 31]
+        frame.loc[4, "hour"] = 24
+
+        cleaned, report = clean_dataframe(frame)
+
+        stamps = cleaned["year-month-day-hour"]
+        self.assertEqual(stamps.isna().tolist(), [False, True, False, False, True, False])
+        self.assertEqual(stamps.iloc[5], pd.Timestamp("2017-01-01 02:00"))
+        self.assertEqual(report.unparsed_date_cells, 2)
+        self.assertIn(
+            "2 rows have no year-month-day-hour, because their year, month, day and hour make no valid "
+            "date and time (such as 31 February or hour 24); the first is year 2016, month 2, day 31, "
+            "hour 22.",
+            report.notes,
+        )
+
+    def test_a_day_column_with_other_values_is_left_alone(self):
+        frame = self._hourly()
+        frame["day"] = ["Sat", "Sat", "Sat", "Sun", "Sun", "Sun"]
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(cleaned.columns.tolist(), ["year-month", "day", "hour", "PM2.5"])
+
     def test_a_month_column_with_other_values_is_left_alone(self):
         frame = pd.DataFrame({"Year": [2020, 2021], "Month": ["Spring", "Autumn"], "Yield": [1.0, 2.0]})
 

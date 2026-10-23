@@ -598,6 +598,20 @@ class FrequencyTests(unittest.TestCase):
         self.assertEqual(monthly.trend().frequency, "M")
         self.assertEqual(len(monthly.trend().frame), 36)
 
+    def test_year_month_day_and_hour_columns_make_an_hourly_timeline(self):
+        stamps = pd.date_range("2016-12-25", periods=10 * 24, freq="h")
+        frame = pd.DataFrame({
+            "year": stamps.year, "month": stamps.month, "day": stamps.day, "hour": stamps.hour,
+            "PM2.5": [float(10 + stamp.hour % 6) for stamp in stamps], "station": "Aotizhongxin",
+        })
+
+        report = ada.analyze(frame)
+
+        self.assertEqual(report.roles.date, "year-month-day-hour")
+        self.assertEqual(report.trend().frequency, "h")
+        self.assertEqual(len(report.trend().frame), 240)
+        self.assertEqual(report.trend().filled_periods, 0)
+
 
 class YearTimelineTests(unittest.TestCase):
     def setUp(self):

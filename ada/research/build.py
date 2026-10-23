@@ -2,7 +2,9 @@
 
 A build always starts from the original data file and rebuilds every asset, so
 nothing can go stale between builds. It then compares itself with the previous
-build's record and reports what changed in ``CHANGES.md``.
+build's record and reports what changed in ``CHANGES.md``. It works in a scratch
+folder beside the output folder and moves its files in only once every step has
+succeeded, so a build that fails leaves the previous one as it was.
 
 The output folder::
 
@@ -23,6 +25,7 @@ The output folder::
 from __future__ import annotations
 
 import shutil
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -38,7 +41,7 @@ from .provenance import Asset
 from .study import Study, load
 from .tables import Table, markdown, write
 
-#: Folders the build owns and empties before writing; anything else in the output folder is left alone.
+#: Folders the build owns and replaces at each build; anything else in the output folder is left alone.
 OWNED = (
     "audit",
     "dictionary",
@@ -50,6 +53,8 @@ OWNED = (
     "reproduce",
     "repository",
 )
+#: Files the build owns at the top of the output folder.
+TOP_FILES = ("README.md", provenance.CHANGES, provenance.MANIFEST)
 
 
 @dataclass
@@ -74,6 +79,11 @@ class Build:
     @property
     def data(self) -> pd.DataFrame:
         return self.processed.data
+
+    @property
+    def refused(self) -> dict[str, str]:
+        """The analyses in study.yml that ADA did not fit, by id, each with the reason."""
+        return {ident: found.reason for ident, found in self.results.items() if not found.supported}
 
     def folder(self, name: str) -> Path:
         path = self.out / name
@@ -131,31 +141,76 @@ class Build:
 
 
 def build(study: Study | str | Path = "study.yml", out: Path | None = None) -> Build:
-    """Build every asset of ``study`` into its output folder (``output.dir``, or ``out``)."""
+    """Build every asset of ``study`` into its output folder (``output.dir``, or ``out``).
+
+    The assets are made in a scratch folder beside the output folder and replace the previous
+    build's only once every step has succeeded, so a build that stops (a changed data file, a
+    custom function that raises) leaves the last good build as it was.
+    """
     if not isinstance(study, Study):
         study = load(study)
     out = (out or study.out_dir).resolve()
-    out.mkdir(parents=True, exist_ok=True)
+    out.parent.mkdir(parents=True, exist_ok=True)
     before = provenance.read_manifest(out)
-    for name in OWNED:
-        shutil.rmtree(out / name, ignore_errors=True)
-    processed = read(study)
-    result = Build(study=study, processed=processed, out=out)
+    scratch = Path(tempfile.mkdtemp(prefix=f".{out.name}-building-", dir=out.parent))
+    try:
+        processed = read(study)
+        result = Build(study=study, processed=processed, out=scratch)
 
-    _audit(result)
-    _dictionary(result)
-    _processing(result)
-    _descriptives(result)
-    for step in _later_steps():
-        step(result)
-    write_captions(result)
-    (out / "README.md").write_text(index_markdown(result), encoding="utf-8")
+        _audit(result)
+        _dictionary(result)
+        _processing(result)
+        _descriptives(result)
+        for step in _later_steps():
+            step(result)
+        write_captions(result)
+        (scratch / "README.md").write_text(index_markdown(result), encoding="utf-8")
 
-    record = provenance.manifest(study, out, result.assets, processed, result.custom)
-    result.changes = provenance.compare(before, record)
-    provenance.write_changes(out, provenance.changes_markdown(result.changes, before, record))
-    provenance.write_manifest(out, record)
+        record = provenance.manifest(study, scratch, result.assets, processed, result.custom)
+        result.changes = provenance.compare(before, record)
+        # This build's entry goes on top of the earlier ones.
+        if (out / provenance.CHANGES).is_file():
+            shutil.copyfile(out / provenance.CHANGES, scratch / provenance.CHANGES)
+        provenance.write_changes(scratch, provenance.changes_markdown(result.changes, before, record))
+        provenance.write_manifest(scratch, record)
+        _move_in(scratch, out)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    for asset in result.assets:
+        asset.files = [out / path.relative_to(scratch) for path in asset.files]
+    result.out = out
     return result
+
+
+def _move_in(scratch: Path, out: Path) -> None:
+    """Replace the folders and files the build owns in ``out`` with the finished ones in ``scratch``.
+
+    The previous ones are moved aside first, and back if a move fails, so ``out`` never holds
+    part of each build. Anything else in ``out`` is left alone.
+    """
+    out.mkdir(exist_ok=True)
+    previous = scratch / ".previous"
+    previous.mkdir()
+    names = [*OWNED, *TOP_FILES]
+    aside, placed = [], []
+    try:
+        for name in names:
+            if (out / name).exists():
+                shutil.move(out / name, previous / name)
+                aside.append(name)
+        for name in names:
+            if (scratch / name).exists():
+                shutil.move(scratch / name, out / name)
+                placed.append(name)
+    except OSError:
+        for name in placed:
+            if (out / name).is_dir():
+                shutil.rmtree(out / name)
+            else:
+                (out / name).unlink()
+        for name in aside:
+            shutil.move(previous / name, out / name)
+        raise
 
 
 def _later_steps():

@@ -124,6 +124,34 @@ class AuditTests(unittest.TestCase):
         paired = next(finding for finding in findings if "have both conditions" in finding.finding)
         self.assertIn("1 have only one and cannot be paired: c", paired.finding)
 
+    def test_hourly_readings_at_each_station_are_not_repeats_and_their_hours_are_summarised(self):
+        stamps = pd.date_range("2016-12-29", periods=5 * 24, freq="h")
+        frame = pd.concat(
+            pd.DataFrame({
+                "year": stamps.year, "month": stamps.month, "day": stamps.day, "hour": stamps.hour,
+                "PM2.5": [float(10 + stamp.hour % 6) for stamp in stamps], "station": station,
+            })
+            for station in ("Aotizhongxin", "Changping")
+        )
+        study = {
+            "study": {"title": "t"},
+            "data": {"path": "air.csv", "observation": "one station at one hour"},
+            "design": {"type": "repeated", "subject": "station", "time": "year-month-day-hour"},
+            "variables": {
+                "year-month-day-hour": {"role": "time", "type": "date"},
+                "station": {"role": "identifier", "type": "text"},
+                "PM2.5": {"role": "outcome", "type": "numeric"},
+            },
+        }
+        with study_folder(frame, study, "air.csv") as path:
+            findings = [finding.finding for finding in audit(load(path), read(load(path)))]
+        self.assertFalse(any("repeat a subject" in finding for finding in findings))
+        self.assertIn(
+            "120 time points from 2016-12-29 00:00:00 to 2017-01-02 23:00:00, "
+            "with 2 subjects measured at each.",
+            findings,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
