@@ -3,6 +3,7 @@ import math
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import pandas as pd
@@ -17,6 +18,7 @@ from statsmodels.stats.proportion import confint_proportions_2indep
 from ada.research import build, load
 from ada.research.analyses import (
     COLUMNS,
+    _positive_definite,
     adjust_families,
     analyse,
     games_howell,
@@ -25,6 +27,7 @@ from ada.research.analyses import (
     hodges_lehmann_shift,
     key_row,
     omega_squared,
+    results_table,
 )
 from ada.research.processing import read
 from ada.research.results import MEAN_COLUMNS
@@ -519,6 +522,116 @@ class MixedModelTests(unittest.TestCase):
         self.assertTrue(results["a"].supported)
         self.assertEqual(results["a"].subjects, 12)
         self.assertTrue(any("not in this model" in item for item in results["a"].diagnostics))
+
+    def test_a_single_subject_is_refused(self):
+        frame = weights()
+        one = frame[frame["Mouse"] == "M00"]
+        study = study_dict(
+            {"type": "repeated", "subject": "Mouse", "time": "Day"},
+            WEIGHT_VARIABLES,
+            [
+                analysis("change", "Weight (g)", change="Day", time_as="linear"),
+                analysis("relate", "Weight (g)", relate="Day"),
+            ],
+        )
+        loaded, data, results = run_analyses(one, study)
+        for found in results.values():
+            self.assertFalse(found.supported)
+            self.assertTrue(found.estimates.empty)
+            self.assertIn("single subject (Mouse M00)", found.reason)
+            self.assertIn("at least 2 subjects", found.reason)
+            self.assertIn("custom:", found.reason)
+        table = results_table(loaded, data, list(results.values()), planned=True)
+        self.assertTrue(table.display.empty)
+        self.assertTrue(any(note.startswith("Not fitted: relate.") for note in table.notes))
+
+    def test_two_subjects_are_fitted_with_a_warning(self):
+        frame = weights()
+        two = frame[frame["Mouse"].isin(["M00", "M01"])]
+        _, _, results = run_analyses(
+            two,
+            study_dict(
+                {"type": "repeated", "subject": "Mouse", "time": "Day"},
+                WEIGHT_VARIABLES,
+                [analysis("a", "Weight (g)", change="Day", time_as="linear")],
+            ),
+        )
+        found = results["a"]
+        self.assertTrue(found.supported)
+        self.assertEqual(found.subjects, 2)
+        direct = smf.mixedlm("Q('Weight (g)') ~ Day", two, groups="Mouse").fit(reml=True)
+        self.assertAlmostEqual(key_row(found)["estimate"], direct.params["Day"], places=6)
+        self.assertAlmostEqual(key_row(found)["p"], direct.pvalues["Day"], places=8)
+        self.assertTrue(any(warning.startswith("Only 2 subjects") for warning in found.warnings))
+
+    def test_a_subject_alone_in_its_group_is_refused(self):
+        frame = weights()
+        pair = frame[frame["Mouse"].isin(["M00", "M11"])]
+        _, _, results = run_analyses(
+            pair,
+            study_dict(
+                {"type": "repeated", "subject": "Mouse", "time": "Day"},
+                WEIGHT_VARIABLES,
+                [
+                    analysis("compare", "Weight (g)", compare="Diet"),
+                    analysis("change", "Weight (g)", change="Day", by="Diet"),
+                ],
+            ),
+        )
+        for found in results.values():
+            self.assertFalse(found.supported)
+            self.assertIn("every difference between the 2 subjects", found.reason)
+            self.assertIn("alone in its group", found.reason)
+
+    def test_a_singular_fit_is_refused(self):
+        frame = weights()
+        # Every mouse has the same mean weight, so the variance between mice is estimated at the boundary.
+        weight = frame["Weight (g)"]
+        frame["Weight (g)"] = weight - weight.groupby(frame["Mouse"]).transform("mean") + 20
+        _, _, results = run_analyses(
+            frame,
+            study_dict(
+                {"type": "repeated", "subject": "Mouse", "time": "Day"},
+                WEIGHT_VARIABLES,
+                [analysis("a", "Weight (g)", relate="Day")],
+            ),
+        )
+        found = results["a"]
+        self.assertFalse(found.supported)
+        self.assertTrue(found.estimates.empty)
+        self.assertRegex(found.reason, "not positive definite|did not converge")
+        self.assertIn("custom:", found.reason)
+
+    def test_the_covariance_check_ignores_units_but_not_singularity(self):
+        scales = np.diag([1e-6, 1.0, 1e4])
+        correlations = np.array([[1.0, 0.5, 0.2], [0.5, 1.0, 0.3], [0.2, 0.3, 1.0]])
+        self.assertTrue(_positive_definite(scales @ correlations @ scales))
+        self.assertFalse(_positive_definite(np.array([[1.0, 0.0], [0.0, -3.0]])))
+        self.assertFalse(_positive_definite(np.array([[4.0, 2.0], [2.0, 1.0]])))
+        self.assertFalse(_positive_definite(np.array([[1.0, np.nan], [np.nan, 1.0]])))
+
+    def test_a_fit_that_did_not_converge_is_refused(self):
+        from statsmodels.regression.mixed_linear_model import MixedLM  # noqa: PLC0415
+
+        fit = MixedLM.fit
+
+        def unconverged(model, *args, **kwargs):
+            result = fit(model, *args, **kwargs)
+            result.converged = False
+            return result
+
+        with mock.patch.object(MixedLM, "fit", unconverged):
+            _, _, results = run_analyses(
+                clustered_cells(),
+                study_dict(
+                    {"type": "clustered", "cluster": "Animal"},
+                    CLUSTER_VARIABLES,
+                    [analysis("a", "Current", compare="Genotype")],
+                ),
+            )
+        self.assertFalse(results["a"].supported)
+        self.assertIn("did not converge", results["a"].reason)
+        self.assertIn("12 clusters", results["a"].reason)
 
 
 class BinaryTests(unittest.TestCase):

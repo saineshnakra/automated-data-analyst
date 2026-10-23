@@ -39,6 +39,11 @@ COLUMNS = [*ESTIMATE_COLUMNS, *EXTRA_COLUMNS]
 CATEGORICAL_TIME_POINTS = 6
 #: Fewer subjects or clusters than this make a variance component and Wald z tests unreliable.
 FEW_UNITS = 10
+#: A random intercept needs at least this many subjects or clusters in the rows used, as a paired
+#: comparison needs this many pairs: with one, there is no variation between them to estimate.
+MIN_UNITS = 2
+#: A mixed model whose estimates' correlation matrix has an eigenvalue below this is singular.
+SINGULAR_EIGENVALUE = 1e-10
 #: Shapiro–Wilk is computed up to this many residuals (SciPy's p-value is not accurate beyond it).
 SHAPIRO_LIMIT = 5000
 #: An expected count below this switches a 2 × 2 comparison of proportions to Fisher's exact test.
@@ -387,6 +392,34 @@ def _record_warnings(caught) -> list[str]:
         if message not in messages:
             messages.append(message)
     return messages
+
+
+def _absorbs_units(exog, units: pd.Series) -> bool:
+    """Whether a mixed model's fixed effects span every difference between its units (subjects or clusters).
+
+    REML then has no information on the variance between units, so that variance, and the standard
+    errors that depend on it, are arbitrary. It can only happen with no more units than fixed effects.
+    """
+    exog = np.asarray(exog, dtype=float)
+    norms = np.linalg.norm(exog, axis=0)
+    exog = exog / np.where(norms > 0, norms, 1)
+    rank = np.linalg.matrix_rank(exog)
+    if units.nunique() > rank:
+        return False
+    indicators = pd.get_dummies(units).to_numpy(dtype=float)
+    indicators = indicators / np.linalg.norm(indicators, axis=0)
+    return np.linalg.matrix_rank(np.column_stack([exog, indicators])) == rank
+
+
+def _positive_definite(covariance) -> bool:
+    """Whether a covariance matrix of estimates is positive definite, judged on the correlations so that
+    the variables' units do not matter."""
+    matrix = np.asarray(covariance, dtype=float)
+    variances = np.diag(matrix)
+    if not np.isfinite(matrix).all() or (variances <= 0).any():
+        return False
+    scale = np.sqrt(variances)
+    return float(np.linalg.eigvalsh(matrix / np.outer(scale, scale)).min()) > SINGULAR_EIGENVALUE
 
 
 class _Analysis:
@@ -1285,21 +1318,58 @@ class _Analysis:
         found = self.found
         unit = self.names[self.unit]
         self._nested_check()
+        units = work[unit].nunique()
+        word = self.unit_word
+        if units < MIN_UNITS:
+            raise Unsupported(
+                f"All {len(work):,} rows this analysis uses come from a single {word} ({self.unit} "
+                f"{self.rows[self.unit].iloc[0]}), but a random intercept per {word} needs at least "
+                f"{MIN_UNITS} {word}s to estimate how they differ. Rows from one {word} form a single "
+                "series, not repeated measurements of several: write a model for that series, such as a "
+                "time-series model, under `custom:`, or set `design.type: independent` if the rows really "
+                "are independent."
+            )
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             try:
-                fit = smf.mixedlm(formula, data=work, groups=unit).fit(reml=True)
+                model = smf.mixedlm(formula, data=work, groups=unit)
+                if _absorbs_units(model.exog, work[unit]):
+                    raise Unsupported(
+                        "The fixed effects already account for every difference between the "
+                        f"{units} {word}s, as when each {word} is alone in its group, so the variance "
+                        f"between {word}s cannot be estimated and the mixed model's standard errors, "
+                        f"intervals and p-values would not be valid. Each group needs several {word}s; "
+                        "otherwise write the model under `custom:`."
+                    )
+                fit = model.fit(reml=True)
             except (np.linalg.LinAlgError, ValueError) as error:
                 raise Unsupported(
                     f"The linear mixed model could not be fitted ({error}). Check that each {self.unit_word} "
                     "has enough rows, or write the model under `custom:`."
                 ) from error
+        variance = float(np.asarray(fit.cov_re)[0, 0])
+        residual = float(fit.scale)
+        boundary = variance <= 1e-8 * max(residual, 1e-300)
+        # A fit that did not converge is not reported, nor one that statsmodels calls converged at a point
+        # that is not a proper maximum, where the standard errors behind every interval and Wald test are
+        # undefined.
+        if not fit.converged:
+            raise Unsupported(
+                "The linear mixed model did not converge, so its estimates, intervals and p-values cannot be "
+                f"relied on. This usually means the {units} {word}s hold too little information on the "
+                "variance between them; write the model under `custom:`."
+            )
+        if not _positive_definite(fit.cov_params()):
+            edge = f" with the variance between {word}s at zero, the edge of what the model allows"
+            raise Unsupported(
+                f"The linear mixed model's fit is singular{edge if boundary else ''}: the covariance matrix "
+                "of its estimates is not positive definite, so their standard errors, intervals and Wald "
+                f"p-values would not be valid. This happens when the {units} {word}s are too few or too "
+                "alike for the variance between them to be estimated; write the model under `custom:`."
+            )
         self.fitted_formula = f"{formula}, groups = {unit}"
         for message in _record_warnings(caught):
             found.warnings.append(f"statsmodels: {message}")
-        if not fit.converged:
-            found.warnings.append("The mixed model did not converge; treat its estimates with caution.")
-        units = work[unit].nunique()
         per_unit = work.groupby(unit).size()
         if self.unit_word == "cluster":
             found.clusters = int(units)
@@ -1307,17 +1377,15 @@ class _Analysis:
             found.subjects = int(units)
         found.diagnostics.append(
             f"{units:,} {self.unit_word}s ({self.unit}), {int(per_unit.min()):,} to {int(per_unit.max()):,} "
-            f"rows each; the model {'converged' if fit.converged else 'did not converge'} (REML)."
+            "rows each; the model converged (REML)."
         )
-        variance = float(np.asarray(fit.cov_re)[0, 0])
-        residual = float(fit.scale)
         icc = variance / (variance + residual) if variance + residual > 0 else math.nan
         found.diagnostics.append(
             f"Variance between {self.unit_word}s {_plain(variance)}, residual variance {_plain(residual)}; "
             f"intraclass correlation (ICC) {_plain(icc, 2)}."
         )
         self.icc = icc
-        if variance <= 1e-8 * max(residual, 1e-300):
+        if boundary:
             found.warnings.append(
                 f"The variance between {self.unit_word}s was estimated as zero, at the edge of what the "
                 f"model allows; the {self.unit_word}s look no more alike than unrelated rows."
