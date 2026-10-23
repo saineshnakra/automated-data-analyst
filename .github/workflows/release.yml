@@ -1,6 +1,6 @@
 name: Release
 
-# Publishing a GitHub release (tag v0.3.0 for version 0.3.0) builds the package,
+# Publishing a GitHub release (tag v0.4.0 for version 0.4.0) builds the package,
 # runs the tests and uploads it to PyPI. PyPI trusts this workflow directly
 # (trusted publishing), so no token is stored in the repository.
 

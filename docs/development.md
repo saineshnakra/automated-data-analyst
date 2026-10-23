@@ -69,10 +69,11 @@ it without the app extras and runs the `ada` command.
 ## Releasing
 
 `.github/workflows/release.yml` publishes to PyPI when a GitHub release is
-published. To release version 0.3.0:
+published. To release version 0.4.0:
 
-1. Set `version = "0.3.0"` in `pyproject.toml` and merge that to `main`.
-2. Create a release on GitHub with the tag `v0.3.0`.
+1. Set `version = "0.4.0"` in `pyproject.toml` and `__version__` in
+   `ada/__init__.py`, and merge that to `main`.
+2. Create a release on GitHub with the tag `v0.4.0`.
 
 The workflow checks that the tag matches the version, runs the tests, builds
 the sdist and the wheel, and uploads them. PyPI accepts the upload through

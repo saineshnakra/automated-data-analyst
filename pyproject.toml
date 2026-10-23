@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "automated-data-analyst"
-version = "0.3.0"
+version = "0.4.0"
 description = "Paper assets for research data: audit, tables, figures and a methods draft built from a study.yml and traceable to the data, plus a first look at any table."
 requires-python = ">=3.11"
 readme = "README.md"
