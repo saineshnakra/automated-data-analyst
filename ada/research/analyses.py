@@ -1173,6 +1173,46 @@ class _Analysis:
         intercept["measure"] = "intercept"
         return [slope, intercept]
 
+    def _line(self, fit, work: pd.DataFrame) -> dict:
+        """The model's prediction across the predictor, which the scatter figure draws (``found.line``).
+
+        Each covariate is held at a reference value: a number at its mean in the rows used, a category
+        at its reference level. The prediction is then a straight line, and the covariance of its
+        intercept and slope, from the covariance of the model's coefficients, gives its confidence band
+        at every x. Empty when the model has a term this cannot hold.
+        """
+        names = list(getattr(fit, "fe_params", fit.params).index)
+        # How much each coefficient adds to the line's intercept and to its slope.
+        weights = {"Intercept": (1.0, 0.0), self.names[self.spec.relate]: (0.0, 1.0)}
+        held = {}
+        for name in self.spec.covariates:
+            safe = self.names[name]
+            column = work[safe]
+            if isinstance(column.dtype, pd.CategoricalDtype):
+                reference, *others = column.cat.categories
+                held[name] = str(reference)
+                weights.update({f"C({safe})[T.{level}]": (0.0, 0.0) for level in others})
+            else:
+                held[name] = float(column.mean())
+                weights[safe] = (held[name], 0.0)
+        if any(term not in weights for term in names):
+            return {}
+        matrix = np.array([weights[term] for term in names]).T
+        intercept, slope = matrix @ fit.params[names].to_numpy(dtype=float)
+        covariance = matrix @ fit.cov_params().loc[names, names].to_numpy(dtype=float) @ matrix.T
+        # The quantile conf_int() uses, so the band agrees with the slope's interval.
+        if fit.use_t:
+            critical = stats.t.ppf(1 - self.alpha / 2, getattr(fit, "df_resid_inference", fit.df_resid))
+        else:
+            critical = stats.norm.ppf(1 - self.alpha / 2)
+        return {
+            "intercept": float(intercept),
+            "slope": float(slope),
+            "covariance": covariance,
+            "critical": float(critical),
+            "held": held,
+        }
+
     def _ols_diagnostics(self, fit, work: pd.DataFrame, group: str | None = None) -> None:
         from statsmodels.stats.diagnostic import het_breuschpagan  # noqa: PLC0415
         from statsmodels.stats.outliers_influence import variance_inflation_factor  # noqa: PLC0415
@@ -1569,6 +1609,7 @@ class _Analysis:
         found.diagnostics.append(f"{len(work):,} rows with both {spec.outcome} and {spec.relate}.")
         self._ols_diagnostics(fit, work)
         found.summary = _clean_summary(str(fit.summary()))
+        found.line = self._line(fit, work)
 
     def _relate_mixed(self) -> None:
         found, spec = self.found, self.spec
@@ -1582,6 +1623,7 @@ class _Analysis:
         rows = self._slope_rows(fit, "z", test="Linear mixed model")
         rows[0]["key"] = True
         found.estimates = _estimates(rows)
+        found.line = self._line(fit, work)
         if self.study.design == "paired":
             found.diagnostics.append(
                 f"Rows come in pairs from the same {self.unit}, so the slope comes from a mixed model with a "
