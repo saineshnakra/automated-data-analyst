@@ -16,7 +16,7 @@ from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_
 
 from .formatting import UNDATED_DAY, format_moment, normalized_name
 from .quality import QualityIssue, blank_codes
-from .schema import is_identifier_name, is_month_name, is_year_name
+from .schema import finer_part_name, is_identifier_name, is_month_name, is_year_name
 
 
 @dataclass(frozen=True)
@@ -1102,17 +1102,35 @@ def _month_numbers(series: pd.Series) -> pd.Series:
     return named.fillna(numbered.where(numbered.isin(range(1, 13))))
 
 
-def _year_columns(frame: pd.DataFrame, requested: str | None) -> tuple[str, str | None] | None:
-    """Choose the year column, and a month column to go with it, to build dates from.
+# The whole numbers a column of each part finer than a month may hold. An hour
+# column may hold 24, which some loggers write for the end of a day; those rows
+# get no timestamp rather than one moved into the next day.
+FINER_PART_RANGES = {"day": (1, 31), "hour": (0, 24), "minute": (0, 59), "second": (0, 59)}
+
+
+def _fills_part(values: pd.Series, bounds: tuple[int, int]) -> bool:
+    """True when every value is present and a whole number within ``bounds``."""
+    if values.empty or is_bool_dtype(values) or not is_numeric_dtype(values) or values.isna().any():
+        return False
+    return bool((values % 1 == 0).all()) and bool(values.between(*bounds).all())
+
+
+def _year_columns(
+    frame: pd.DataFrame, requested: str | None
+) -> tuple[str, str | None, dict[str, str]] | None:
+    """Choose the year column, and the month and finer columns to go with it, to build dates from.
 
     A column the caller asked for as the date is used alone. Otherwise one is
     found only when the table has no date column: a year-named column of whole
     years in DETECTED_YEARS with at least two distinct values. A month-named
     column readable for every row with a year is paired with it, so monthly
-    rows get monthly dates.
+    rows get monthly dates. Then a day, an hour, a minute and a second, by
+    name and each only after the one before it, join them when they hold a
+    whole number in range on every row with a year, so hourly rows get hourly
+    timestamps. The finer columns are returned by part, coarsest first.
     """
     if requested in frame.columns and _whole_years(frame[requested], REQUESTED_YEARS):
-        return requested, None
+        return requested, None, {}
     if any(is_datetime64_any_dtype(frame[column]) for column in frame.columns):
         return None
     candidates = [
@@ -1137,16 +1155,76 @@ def _year_columns(frame: pd.DataFrame, requested: str | None) -> tuple[str, str 
         ),
         None,
     )
-    return year, month
+    finer: dict[str, str] = {}
+    if month is None:
+        return year, month, finer
+    for part, bounds in FINER_PART_RANGES.items():
+        column = next(
+            (
+                column
+                for column in frame.columns
+                if finer_part_name(column) == part and _fills_part(frame.loc[dated, column], bounds)
+            ),
+            None,
+        )
+        if column is None:
+            break
+        finer[part] = column
+    return year, month, finer
 
 
-def _first_days(years: pd.Series, months: pd.Series | None = None) -> pd.Series:
-    """1 January of each year, or the first of each month when ``months`` is given.
+def _built_dates(
+    frame: pd.DataFrame, year: str, month: str | None = None, finer: dict[str, str] | None = None
+) -> pd.Series:
+    """Dates built from a year column and, when given, a month column and finer parts.
 
-    Years outside what a timestamp can hold (about 1678 to 2261) become missing.
+    A year alone gives 1 January of each year and a month the first of each
+    month; finer parts add the day, hour, minute and second they hold. A
+    combination no calendar has (31 February, or hour 24) becomes missing, as do
+    years outside what a timestamp can hold (about 1678 to 2261).
     """
-    parts = pd.DataFrame({"year": years, "month": 1 if months is None else months, "day": 1})
-    return pd.to_datetime(parts, errors="coerce")
+    parts = pd.DataFrame(
+        {"year": frame[year], "month": _month_numbers(frame[month]) if month else 1, "day": 1},
+        index=frame.index,
+    )
+    for part, column in (finer or {}).items():
+        parts[part] = frame[column]
+    dates = pd.to_datetime(parts, errors="coerce")
+    # pandas would move hour 24 into the next day.
+    return dates.mask(parts["hour"] == 24) if "hour" in parts else dates
+
+
+def _add_timestamp(frame: pd.DataFrame, dates: pd.Series, parts: list[str], unreadable: int) -> list[str]:
+    """Put ``dates``, built from the ``parts`` columns down to a day or finer, beside them; return notes.
+
+    The new column is named after the parts ("year-month-day-hour") and placed
+    where the year was. The parts stay: they are what the file holds, and a day
+    or an hour is a grouping in its own right (the daily cycle).
+    """
+    name = "-".join(parts)
+    while name in frame.columns:
+        name += " (built)"
+    frame.insert(frame.columns.get_loc(parts[0]), name, dates)
+    listed = f"{', '.join(parts[:-1])} and {parts[-1]}"
+    notes = [
+        f"{listed} were combined into one timestamp column, {name}, to the {finer_part_name(parts[-1])}, "
+        "with no time zone attached; the original columns are kept."
+    ]
+    if unreadable:
+        first = frame.loc[frame[parts[0]].notna() & dates.isna(), parts].iloc[0]
+        written = ", ".join(f"{column} {_as_written(first[column])}" for column in parts)
+        notes.append(
+            f"{unreadable:,} rows have no {name}, because their {listed} make no valid date and time "
+            f"(such as 31 February or hour 24); the first is {written}."
+        )
+    return notes
+
+
+def _as_written(value) -> str:
+    """A whole number without its decimal point (2021, not 2021.0); anything else as it is."""
+    if isinstance(value, float | np.floating) and float(value).is_integer():
+        return str(int(value))
+    return str(value)
 
 
 def _holds_decimals(distinct: _Distinct) -> bool:
@@ -1894,24 +1972,27 @@ def clean_dataframe(
     # Runs after inference, so year columns held as text have become numbers.
     year_columns = _year_columns(cleaned, None if elapsed else date)
     if year_columns:
-        year, month = year_columns
-        dates = _first_days(cleaned[year], _month_numbers(cleaned[month]) if month else None)
+        year, month, finer = year_columns
+        dates = _built_dates(cleaned, year, month, finer)
         if dates.notna().any():
             unreadable = int(cleaned[year].notna().sum() - dates.notna().sum())
-            cleaned[year] = dates
+            unparsed_date_cells += unreadable
             datetime_columns_inferred += 1
-            if month:
+            if finer:
+                notes.extend(_add_timestamp(cleaned, dates, [year, month, *finer.values()], unreadable))
+            elif month:
                 combined = f"{year}-{month}"
                 combined = year if combined in cleaned.columns else combined
+                cleaned[year] = dates
                 cleaned = cleaned.drop(columns=[month]).rename(columns={year: combined})
                 notes.append(
                     f"{year} and {month} were combined into one date column, {combined}, "
                     "on the first day of each month."
                 )
             else:
+                cleaned[year] = dates
                 notes.append(f"{year} holds whole years, so it was read as dates on 1 January of each year.")
-            if unreadable:
-                unparsed_date_cells += unreadable
+            if unreadable and not finer:
                 notes.append(f"{unreadable} {year} values could not be read as dates.")
 
     # Runs after inference, which can create new int64 columns.

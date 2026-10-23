@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pandas as pd
 import yaml
 from research_helpers import assay, assay_study, study_folder
 
@@ -108,6 +109,23 @@ class InitTests(unittest.TestCase):
                 root / "data" / "assay.csv", study_path=root / "analysis" / "study.yml", interactive=False
             )
             self.assertEqual(load(path).data_path, "../data/assay.csv")
+
+    def test_init_takes_the_hourly_timestamp_not_its_year_as_the_time(self):
+        stamps = pd.date_range("2016-12-25", periods=10 * 24, freq="h")
+        for stations in (["Aotizhongxin"], ["Aotizhongxin", "Changping", "Dingling", "Dongsi", "Guanyuan"]):
+            with self.subTest(stations=len(stations)), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                frame = pd.DataFrame({
+                    "year": stamps.year, "month": stamps.month, "day": stamps.day, "hour": stamps.hour,
+                    "PM2.5": [float(10 + stamp.hour % 6) for stamp in stamps],
+                })
+                frame = pd.concat([frame.assign(station=station) for station in stations])
+                frame.to_csv(root / "air.csv", index=False)
+                study = load(init(root / "air.csv", study_path=root / "study.yml", interactive=False))
+                self.assertEqual(study.variable("year-month-day-hour").type, "date")
+                self.assertEqual(study.variable("hour").type, "numeric")
+                # One station's timestamps each appear once, so they are not time points it repeats.
+                self.assertEqual(study.time, None if len(stations) == 1 else "year-month-day-hour")
 
     def test_init_will_not_overwrite_a_study(self):
         with study_folder(assay(), assay_study()) as path, self.assertRaises(FileExistsError):

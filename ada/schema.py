@@ -294,6 +294,14 @@ SWEEP_BALANCE = 0.5
 # its dates from these.
 YEAR_NAME_WORDS = frozenset({"year", "years", "yr"})
 MONTH_NAME_WORDS = frozenset({"month", "months", "mon", "mo"})
+# Head words of the parts finer than a month, coarsest first. With a year and a
+# month, cleaning adds them to its dates, down to the finest one present.
+FINER_PART_WORDS = {
+    "day": frozenset({"day", "da", "dy"}),
+    "hour": frozenset({"hour"}),
+    "minute": frozenset({"minute"}),
+    "second": frozenset({"second"}),
+}
 # Parts of a date held in their own column. Beside a date column they repeat it,
 # so they are not offered as the grouping.
 TIME_PART_WORDS = (
@@ -484,6 +492,15 @@ def is_month_name(name: str, values: pd.Series | None = None) -> bool:
     """
     words = _head_words(name)
     return bool(words) and words[-1] in MONTH_NAME_WORDS and (values is None or is_time_part(name, values))
+
+
+def finer_part_name(name: str) -> str | None:
+    """The part of a date finer than a month that the name marks ("day", "hour", ...), or None.
+
+    "Day", "DA" and "obs_hour" mark one; "Days" and "Hours" are as likely amounts of time.
+    """
+    words = _head_words(name)
+    return next((part for part, heads in FINER_PART_WORDS.items() if words and words[-1] in heads), None)
 
 
 def _calendar_range(words: list[str]) -> tuple[int, int] | None:
