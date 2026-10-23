@@ -434,7 +434,7 @@ $ ada verify
 Inputs
   ok    data/assay.csv matches study.yml and the build (sha256 3f2a9c81d0e4…).
 Out of date
-  ok    All 14 assets were built from the current study.yml by this version of ADA (0.3.0).
+  ok    All 14 assets were built from the current study.yml by this version of ADA (0.4.0).
 Edited since the build
   ok    None of the 41 files recorded in provenance.json has changed.
 Rebuild in a scratch folder
