@@ -51,6 +51,20 @@ the headline, evidence, KPIs, trend, anomalies, forecast and `ask()`. The
 shell. When ADA cannot answer, it returns a `Refusal` with a code rather than a
 number.
 
+**Can ADA make the tables and figures for my paper?**
+Yes. `ada init data.csv` writes a `study.yml` describing the study, `ada build`
+makes the data audit, tables in Word, LaTeX and CSV, figures with their source
+data, and a methods draft, and `ada verify` checks a rebuild gives the same
+numbers. See [Paper assets for a study](research.md).
+
+**Can an AI coding assistant use ADA?**
+Yes. `ada skill` writes a SKILL.md into `.claude/skills/ada/` that tells the
+assistant when to use ADA and how: ask the researcher for the design and the
+planned analyses, write `study.yml`, build and verify. `ada skill --dir PATH`
+writes it into another assistant's skills folder, and in Claude Code
+`/plugin install ada --marketplace saineshnakra/automated-data-analyst`
+installs it as a plugin.
+
 **Can I self-host it?**
 Yes. It is a standard Streamlit app with no database:
 `pip install -e ".[app]"` from a clone, then `streamlit run app.py`. It runs

@@ -1,0 +1,18 @@
+{
+  "name": "automated-data-analyst",
+  "description": "The ADA skill: paper tables, figures and a methods draft from research data, traceable to the data.",
+  "owner": {
+    "name": "Sainesh Nakra"
+  },
+  "plugins": [
+    {
+      "name": "ada",
+      "source": "./ada",
+      "description": "Teaches Claude to use ADA (pip install automated-data-analyst) to build a study's data audit, tables, figures and methods draft from study.yml, verify the rebuild, and take a first look at any table.",
+      "homepage": "https://github.com/saineshnakra/automated-data-analyst",
+      "repository": "https://github.com/saineshnakra/automated-data-analyst",
+      "license": "MIT",
+      "keywords": ["research", "statistics", "reproducibility", "figures", "tables", "methods"]
+    }
+  ]
+}

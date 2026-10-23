@@ -1,0 +1,263 @@
+---
+name: ada
+description: Make a paper's tables, figures, data audit and methods draft from research data with ADA (the automated-data-analyst Python package), with every number traceable to the data and a rebuild that can be checked. Use when someone has a CSV or Excel file of measurements from an experiment, trial, survey, field study or lab assay and wants a Table 1 or descriptive statistics, group comparisons (t-test, ANOVA, mixed model), publication figures with source data, Word or LaTeX tables, a methods section, a reproducible analysis to share, or a quick first look at what is in a table.
+license: MIT
+compatibility: Needs Python 3.11 or newer and `pip install automated-data-analyst` (0.4.0 or later for init, build and verify).
+metadata:
+  homepage: https://github.com/saineshnakra/automated-data-analyst
+  docs: https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/research.md
+---
+
+# ADA: paper assets from research data
+
+ADA turns a table of measurements and a plain `study.yml` into what a paper
+needs: a data audit, a data dictionary, a record of every exclusion,
+descriptive and results tables (CSV, Word, LaTeX), figures with their source
+data and captions, a methods draft, and a package another researcher can
+rebuild it all from. The numbers come from pandas, SciPy and statsmodels.
+
+Pick the mode from what the person wants:
+
+- **A paper or report from a study** (groups, subjects, time points, planned
+  analyses): the study workflow below.
+- **Just what is in a file**: `ada analyze data.csv`, or in Python
+  `ada.analyze("data.csv")`. See "First look" at the end.
+
+```bash
+pip install automated-data-analyst
+ada --version
+```
+
+## The study workflow
+
+Run every command in the folder that holds the study's data.
+
+### 1. Ask what only the researcher knows
+
+Look at the file first (columns, a few rows, counts), then ask about anything
+you can't tell from the data. Do not guess these and treat the guess as fact:
+
+- What one row is (one mouse at one week, one well, one patient visit).
+- Which column identifies a participant, animal, specimen, site or plate, and
+  whether each one has several rows. Check this yourself: if a subject-like
+  column has far fewer distinct values than there are rows, the rows are not
+  independent and the design is repeated or clustered.
+- The outcomes, the groups or conditions, the time variable and covariates.
+- Which analyses were planned before anyone saw the data. Everything else is
+  exploratory.
+- What may be shared, and which columns must never leave (names, dates of
+  birth, operator).
+
+### 2. Write study.yml
+
+```bash
+ada init data/measurements.csv          # asks each question in a terminal
+ada init data/measurements.csv --yes    # accepts ADA's guesses without asking
+```
+
+`ada init` reads the file and writes `study.yml` with its guesses. In an
+agent session without a person at the terminal, use `--yes`, then edit
+`study.yml` with the researcher's answers. `--yes` marks every analysis
+exploratory, because only the researcher can say what was planned. Read the
+whole file before building: check the design, the subject or cluster column,
+each variable's role and type, and the proposed analyses.
+
+The parts that matter most:
+
+```yaml
+data:
+  path: data/assay.csv
+  sha256: 3f2a…               # ADA stops if the file changes
+  observation: one well
+  missing_codes: [-99]
+
+design:
+  type: repeated              # independent | paired | repeated | clustered
+  subject: Mouse              # clustered designs name a `cluster` instead
+  time: Week
+
+variables:                    # every column the design, processing or analyses name
+  Mouse:
+    role: identifier
+    type: text
+  Week:
+    role: time
+    type: numeric
+    unit: weeks
+  Weight (g):
+    role: outcome             # outcome | group | time | covariate | identifier | other
+    type: numeric             # numeric | categorical | binary | date | text
+    unit: g
+    range: [10, 60]           # checked in the audit, never enforced
+  Diet:
+    role: group
+    type: categorical         # a group must be categorical or binary, even if coded 1/2/3
+    levels: [Chow, High fat]  # the first is the reference
+
+processing:                   # run in order; each step needs a reason
+  - exclude:
+      ids: [M07]
+    reason: M07 was given the wrong diet in weeks 2 and 3 (feeding log, entry 12).
+  - exclude:
+      where: {column: Weight (g), below: 0}
+    reason: Negative weights are scale errors.
+
+decisions:
+  multiple_comparisons: holm  # holm | bonferroni | fdr_bh | none
+  alpha: 0.05
+  confidence: 0.95
+
+analyses:
+  - id: weight-gain
+    question: Do mice on the high-fat diet gain weight faster?
+    outcome: Weight (g)
+    change: Week              # or compare: a group, or relate: a numeric predictor
+    by: Diet                  # with change: the time × group interaction
+    covariates: []
+    planned: true             # only when the researcher says it was planned
+    family: primary           # p-values are adjusted within a family
+
+sharing:
+  data: processed             # processed | raw | demo | none
+  withhold: [Operator]
+```
+
+Exclusion conditions: `below`, `above`, `at_most`, `at_least`, `equals`,
+`not_equals`, `in`, `not_in`, `missing`. Other steps: `transform` (`log`,
+`log10`, `log2`, `sqrt`, `zscore`, `center`, `scale`, …) into a new column, and
+`recode` with a `map`.
+
+### 3. Build
+
+```bash
+ada build
+```
+
+This writes `paper-assets/`. Then:
+
+- Read the printed summary and `paper-assets/README.md`, which lists every
+  table and figure with its caption.
+- Read `paper-assets/audit/data-audit.md` and tell the researcher about each
+  item to check.
+- Look for analyses that were refused or fitted with warnings (the methods
+  draft names them, and `supplement/models/` has each model's output). Report
+  a refusal and its reason as it is.
+
+### 4. Verify
+
+```bash
+ada verify
+```
+
+It rebuilds from `study.yml` and the data alone in a scratch folder and
+compares every file, number by number. Exit code 0 means everything matches.
+Run it before sharing results and in CI.
+
+## How ADA picks the test
+
+The design decides it; ADA does not search for a significant result.
+
+| Design | `compare:` a group | `relate:` a number | `change:` time |
+|---|---|---|---|
+| independent | Welch's t-test, or Welch's ANOVA with Games–Howell contrasts; regression with covariates | regression slope with Pearson's r and Spearman's ρ | not fitted |
+| paired | paired t-test | mixed model | mixed model |
+| repeated | linear mixed model, random intercept per subject | mixed model | mixed model over time |
+| clustered | linear mixed model, random intercept per cluster | mixed model | not fitted |
+
+Binary outcomes get the risk difference, odds ratio and χ² or Fisher's exact
+test, or logistic regression. `test:` asks for another test the design allows
+(`mann-whitney`, `kruskal`, `wilcoxon`, `student-t`, `anova`). In a change
+analysis, `time_as: categorical` or `time_as: linear` sets how time enters.
+Crossover trials, nested random effects, survival, ordinal outcomes and
+binary outcomes measured repeatedly are refused, not approximated.
+
+## Rules to keep
+
+- Never choose the design, the planned analyses or an exclusion from the
+  results. An exclusion's reason must not depend on the outcome.
+- Don't add analyses until one is significant. Anything added after seeing
+  the data stays `planned: false`.
+- Don't edit files in `paper-assets/` or the data file by hand. Change
+  `study.yml` and rebuild; `ada verify` flags edited files.
+- If the data file changes on purpose, put its new sha256 in `data.sha256`
+  (the error message prints it). Never remove the check to get past it.
+- If ADA refuses a design, say so and offer a `custom:` script for the
+  researcher's own analysis instead of switching to a design that fits.
+- Quote numbers from `paper-assets/tables/` (CSV files hold full precision)
+  with the test named in the table, and say whether the analysis was planned.
+
+## Your own tables and figures
+
+List a Python file under `custom:` in study.yml. Functions take the processed
+data and return a pandas table or a Matplotlib figure; ADA saves them in the
+study's formats and records them in `provenance.json`.
+
+```python
+import matplotlib.pyplot as plt
+from ada import research
+
+@research.table("adjusted-model", title="Viability adjusted for passage")
+def adjusted(data, study):
+    return data.groupby("Treatment")["Viability (%)"].describe().reset_index()
+
+@research.figure("dose-curve", title="Dose response", caption="Points are wells.")
+def dose_curve(data, study):
+    fig, ax = plt.subplots(figsize=research.figure_size(study))
+    ax.scatter(data["Dose"], data["Viability (%)"])
+    return fig, data[["Dose", "Viability (%)"]]
+```
+
+## Restricted data
+
+```bash
+ada preview    # every file, whether it may be shared, and why
+ada share      # copies only what may be shared into share/
+```
+
+`sharing.data: demo` writes synthetic data with the same columns so others
+can run the reproduction without the real data.
+
+## What the build writes
+
+| Folder | Contents |
+|---|---|
+| `audit/` | values outside their range, duplicates, whether the data fit the design |
+| `dictionary/` | each column's meaning, unit, type, allowed and observed values |
+| `processing/` | every step from the original file, rows before and after, the excluded rows |
+| `tables/` | descriptive and results tables as CSV, Word and LaTeX |
+| `figures/` | PDF, SVG, PNG or TIFF at a journal's size, `<id>.source.csv`, captions |
+| `methods/` | methods draft and results draft, written from what was run |
+| `supplement/` | exploratory analyses, model output, checks |
+| `reproduce/` | study.yml, pinned versions, input checksums, instructions |
+| `repository/` | README, CITATION.cff, .zenodo.json, availability statements |
+| `provenance.json`, `CHANGES.md` | where each number came from; what changed at each build |
+
+`output.journal` (`plos`, `nature`, `cell`, `science`, `elife`) sets figure
+sizes, resolution and fonts.
+
+## First look at any table
+
+For a file with no study behind it, or to see what is in one before writing
+`study.yml`:
+
+```bash
+ada analyze data.csv           # findings, each with the test and arithmetic
+ada analyze data.csv --json    # machine-readable
+ada schema data.csv            # detected columns and what was cleaned
+ada ask data.csv "average pH by site"
+```
+
+```python
+import ada
+
+report = ada.analyze("data.csv")        # a path, a DataFrame or raw bytes
+print(report)
+report.quality()                        # data-check issues with their rows
+report.evidence                         # findings, each with .statement and .calculation
+report.to_dict()                        # JSON-safe
+```
+
+When ADA can't answer it returns a `Refusal` (falsy, with `.code` and
+`.message`) instead of a number. Pass the reason on rather than working
+around it. The first look guesses what matters from the file alone, so for a
+paper use the study workflow, where the researcher states the design.

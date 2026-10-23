@@ -52,6 +52,7 @@ jobs:
         run: |
           /tmp/venv/bin/ada --version
           /tmp/venv/bin/ada analyze - > /dev/null
+          /tmp/venv/bin/ada skill --print | grep -q '^name: ada$'
           /tmp/venv/bin/python -c "import ada, sys; ada.analyze(ada.sample()); assert 'streamlit' not in sys.modules"
       - name: Build and verify a small study with the installed command
         run: |
