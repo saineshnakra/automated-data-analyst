@@ -237,9 +237,12 @@ SKILL_FILES = ("SKILL.md", "agents/openai.yaml")
 
 
 def _skill(args: argparse.Namespace) -> int:
-    """Write ADA's agent skill where Claude Code and Codex look for skills."""
+    """Install or check ADA's agent skill where Claude Code and Codex look for skills."""
     from importlib.resources import files  # noqa: PLC0415
 
+    if args.check and (args.print or args.force):
+        print("error: --check cannot be used with --print or --force.", file=sys.stderr)
+        return EXIT_ERROR
     source = files("ada").joinpath("skills", "ada")
     contents = {name: source.joinpath(*name.split("/")).read_text(encoding="utf-8") for name in SKILL_FILES}
     if args.print:
@@ -256,6 +259,29 @@ def _skill(args: argparse.Namespace) -> int:
         return not path.is_file() or path.read_text(encoding="utf-8") != text
 
     targets = {assistant: folder / "ada" for assistant, folder in folders.items()}
+    if args.check:
+        status = EXIT_QUIET
+        for target in targets.values():
+            for name, text in contents.items():
+                path = target / name
+                try:
+                    installed = path.read_text(encoding="utf-8")
+                except FileNotFoundError:
+                    print(f"{path} is missing (skill file not installed).")
+                except UnicodeDecodeError:
+                    print(f"{path} differs from this version's skill.")
+                except OSError as error:
+                    print(f"error: cannot read {path}: {error}", file=sys.stderr)
+                    status = EXIT_ERROR
+                    continue
+                else:
+                    if installed == text:
+                        print(f"{path} is already this version's skill.")
+                        continue
+                    print(f"{path} differs from this version's skill.")
+                if status != EXIT_ERROR:
+                    status = EXIT_FLAGGED
+        return status
     edited = [
         target / name
         for target in targets.values()
@@ -378,6 +404,8 @@ def build_parser() -> argparse.ArgumentParser:
                        help="write to the skills folders in your home folder, for every project")
     where.add_argument("--dir", help="another assistant's skills folder; writes DIR/ada/")
     where.add_argument("--print", action="store_true", help="print SKILL.md instead of writing it")
+    skill.add_argument("--check", action="store_true",
+                       help="check without writing; exit 1 if any skill file is missing or differs")
     skill.add_argument("--force", action="store_true", help="replace skill files that differ")
 
     subcommands.add_parser("samples", help="list the bundled datasets")
