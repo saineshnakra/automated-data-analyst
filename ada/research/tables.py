@@ -9,6 +9,7 @@ the Word, LaTeX and Markdown files.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -33,8 +34,24 @@ class Table:
         return f"{head}{self.title}"
 
 
+#: The most decimal places a variable's ``decimals`` in study.yml may set. Only ``decimals_for`` chooses
+#: more, for values below 10⁻³ that spread less than 10⁻⁴, and ``number`` then writes them in
+#: scientific notation.
+MAX_DECIMALS = 6
+#: Values below this are written in scientific notation when fixed decimals cannot show them.
+SCIENTIFIC_BELOW = 1e-3
+_SUPERSCRIPT = str.maketrans("-0123456789", "⁻⁰¹²³⁴⁵⁶⁷⁸⁹")
+
+
 def decimals_for(values: pd.Series | np.ndarray, fixed: int | None = None) -> int:
-    """Decimal places that show a variable's spread to about three significant figures."""
+    """Decimal places that show a variable's spread to about three significant figures.
+
+    The places are capped at 4, so ordinary tables keep their decimals, unless the values themselves are
+    small (a median size below 10⁻³) and their spread needs more places than four, which would round them
+    away; then they get the places they need, and above MAX_DECIMALS ``number`` writes them in scientific
+    notation. ``fixed``, a variable's ``decimals`` in study.yml, is returned as it is: ``number`` keeps
+    it, except that it never prints a nonzero value as zero.
+    """
     if fixed is not None:
         return fixed
     numbers = pd.to_numeric(pd.Series(values), errors="coerce").dropna()
@@ -44,17 +61,46 @@ def decimals_for(values: pd.Series | np.ndarray, fixed: int | None = None) -> in
     scale = spread if spread > 0 else float(numbers.abs().max())
     if not math.isfinite(scale) or scale == 0:
         return 0 if (numbers == numbers.round()).all() else 2
-    return int(min(4, max(0, 2 - math.floor(math.log10(scale)))))
+    places = 2 - math.floor(math.log10(scale))
+    if places > 4 and float(numbers.abs().median()) < SCIENTIFIC_BELOW:
+        return places
+    return int(min(4, max(0, places)))
 
 
 def number(value, decimals: int = 2) -> str:
-    """A number for print with a true minus sign, or an en dash when there is none."""
-    if value is None or (isinstance(value, float) and not math.isfinite(value)) or pd.isna(value):
+    """A number for print with a true minus sign, or an en dash when there is none.
+
+    It has ``decimals`` places, so a column keeps one precision, except where that would print a
+    nonzero value as zero or drop its sign. Such a value gets two significant figures instead: 0.0030
+    at 2 places, or −1.2 × 10⁻⁵ in scientific notation below 10⁻³. With more than MAX_DECIMALS places,
+    which only ``decimals_for`` chooses, a value below 10⁻³ is always in scientific notation, to the
+    same precision and at least three significant figures. Zero prints as zero.
+    """
+    if value is None or pd.isna(value) or not math.isfinite(float(value)):
         return "–"
-    text = f"{float(value):,.{decimals}f}"
-    if decimals and float(text.replace(",", "")) == 0:
-        text = f"{0:.{decimals}f}"
+    value = float(value)
+    if decimals > MAX_DECIMALS and 0 < abs(value) < SCIENTIFIC_BELOW:
+        text = _scientific(value, max(3, decimals + 1 + math.floor(math.log10(abs(value)))))
+    else:
+        text = f"{value:,.{decimals}f}"
+        if not value:
+            text = f"{0:.{decimals}f}"
+        elif not any(digit in text for digit in "123456789"):
+            text = _significant(value, 2)
     return text.replace("-", "−")
+
+
+def _significant(value: float, digits: int) -> str:
+    """``value`` to ``digits`` significant figures: fixed decimals from 10⁻³ up, scientific notation below."""
+    if abs(value) < SCIENTIFIC_BELOW:
+        return _scientific(value, digits)
+    return f"{value:,.{max(0, digits - 1 - math.floor(math.log10(abs(value))))}f}"
+
+
+def _scientific(value: float, digits: int) -> str:
+    """``value`` in scientific notation for print, to ``digits`` significant figures: "-1.20 × 10⁻⁵"."""
+    mantissa, exponent = f"{value:.{digits - 1}e}".split("e")
+    return f"{mantissa} × 10{str(int(exponent)).translate(_SUPERSCRIPT)}"
 
 
 def p_value(value) -> str:
@@ -126,17 +172,28 @@ _LATEX_SPECIAL = {
     "±": r"$\pm$",
     "–": "--",
     "×": r"$\times$",
-    "²": r"\textsuperscript{2}",
     "≥": r"$\geq$",
     "≤": r"$\leq$",
     "ω": r"$\omega$",
     "χ": r"$\chi$",
     "ρ": r"$\rho$",
 }
+#: A run of superscript characters, such as the ² of ω² or the ⁻⁵ of 10⁻⁵; LaTeX gets it in line, raised.
+_SUPERSCRIPT_RUN = re.compile("([⁻⁰¹²³⁴⁵⁶⁷⁸⁹]+)")
+_IN_LINE = str.maketrans("⁻⁰¹²³⁴⁵⁶⁷⁸⁹", "−0123456789")
 
 
 def latex_escape(text) -> str:
-    return "".join(_LATEX_SPECIAL.get(character, character) for character in str(text))
+    """``text`` for LaTeX, each run of superscript characters as one ``\\textsuperscript``."""
+
+    def escape(part: str) -> str:
+        return "".join(_LATEX_SPECIAL.get(character, character) for character in part)
+
+    parts = _SUPERSCRIPT_RUN.split(str(text))
+    return "".join(
+        f"\\textsuperscript{{{escape(part.translate(_IN_LINE))}}}" if index % 2 else escape(part)
+        for index, part in enumerate(parts)
+    )
 
 
 def latex(table: Table) -> str:

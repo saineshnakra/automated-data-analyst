@@ -1,5 +1,6 @@
 import json
 import math
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,9 +30,11 @@ from ada.research.analyses import (
     omega_squared,
     results_table,
 )
+from ada.research.descriptives import descriptive_table
 from ada.research.processing import read
 from ada.research.results import MEAN_COLUMNS
 from ada.research.study import StudyError
+from ada.research.tables import MAX_DECIMALS, decimals_for, interval, latex_escape, number
 
 
 def study_dict(design: dict, variables: dict, analyses: list, data: str = "data.csv", **extra) -> dict:
@@ -1196,6 +1199,142 @@ class BuildOutputTests(unittest.TestCase):
             self.assertIn("model-primary", changed)
             reasons = " ".join(changed["model-primary"].reasons)
             self.assertIn("adjusted", reasons)
+
+
+def micro_measurements(seed: int = 8) -> pd.DataFrame:
+    """Voice jitter in seconds, about 3 × 10⁻⁵: lower in group B, rising with age, flat over session."""
+    rng = np.random.default_rng(seed)
+    group = np.repeat(["A", "B"], 30)
+    age = np.round(rng.uniform(40, 80, 60), 1)
+    jitter = 3.6e-5 - 1.2e-5 * (group == "B") + 2e-7 * (age - 60) + rng.normal(0, 4e-6, 60)
+    return pd.DataFrame(
+        {"Group": group, "Age": age, "Session": np.round(rng.uniform(0, 200, 60), 1), "Jitter": jitter}
+    )
+
+
+MICRO_VARIABLES = {
+    "Group": {"role": "group", "type": "categorical", "levels": ["A", "B"]},
+    "Age": {"role": "covariate", "type": "numeric", "unit": "years"},
+    "Session": {"role": "covariate", "type": "numeric"},
+    "Jitter": {"role": "outcome", "type": "numeric", "unit": "s"},
+}
+MICRO_ANALYSES = [
+    analysis("group", "Jitter", compare="Group", family="micro"),
+    analysis("age", "Jitter", relate="Age", family="micro"),
+    analysis("session", "Jitter", relate="Session", family="micro"),
+]
+
+
+def printed(text: str) -> float:
+    """A number as the tables print it, such as "−1.20 × 10⁻⁵ s" or "1,234.5", read back."""
+    match = re.match(r"([−\d.,]+)(?: × 10([⁻⁰¹²³⁴⁵⁶⁷⁸⁹]+))?", text)
+    power = match.group(2).translate(str.maketrans("⁻⁰¹²³⁴⁵⁶⁷⁸⁹", "-0123456789")) if match.group(2) else "0"
+    return float(match.group(1).replace("−", "-").replace(",", "")) * 10 ** int(power)
+
+
+class PrintedNumberTests(unittest.TestCase):
+    def test_ordinary_numbers_print_as_before(self):
+        self.assertEqual(number(64.8012, 2), "64.80")
+        self.assertEqual(number(-11.19, 2), "−11.19")
+        self.assertEqual(number(1234.5, 1), "1,234.5")
+        self.assertEqual(number(0.0776, 4), "0.0776")
+        self.assertEqual(number(-0.0, 2), "0.00")
+        self.assertEqual(number(0, 0), "0")
+        self.assertEqual(number(math.nan), "–")
+        self.assertEqual(interval(-7.12, 0.01, 2), "−7.12 to 0.01")
+        for spread in (120.0, 12.0, 1.5, 0.12, 0.012, 0.0012, 0.00012, 0.000012):
+            values = 5 + spread * np.array([-1.0, 0.0, 1.0])
+            self.assertEqual(decimals_for(values), min(4, max(0, 2 - math.floor(math.log10(spread)))))
+
+    def test_a_nonzero_value_never_prints_as_zero_or_loses_its_sign(self):
+        self.assertEqual(number(-0.00001, 4), "−1.0 × 10⁻⁵")
+        self.assertEqual(number(0.003, 2), "0.0030")
+        self.assertEqual(number(-0.4, 0), "−0.40")
+        self.assertEqual(interval(-0.00003, 0.0123, 3), "−3.0 × 10⁻⁵ to 0.012")
+        self.assertEqual(interval(-0.004, 0.012, 2), "−0.0040 to 0.01")
+
+    def test_micro_scale_values_print_in_scientific_notation(self):
+        values = 3e-5 + 1e-5 * np.random.default_rng(1).standard_normal(200)
+        self.assertGreater(decimals_for(values), MAX_DECIMALS)
+        self.assertEqual(number(-1.195e-5, 7), "−1.20 × 10⁻⁵")
+        self.assertEqual(number(4.456e-4, 7), "4.456 × 10⁻⁴")
+        self.assertEqual(number(-7.65e-9, 10), "−7.65 × 10⁻⁹")
+        self.assertEqual(number(0.0, 7), "0.0000000")
+
+    def test_explicit_decimals_are_kept_unless_they_print_zero(self):
+        values = 3e-5 + 1e-5 * np.random.default_rng(1).standard_normal(200)
+        self.assertEqual(decimals_for(values, 6), 6)
+        self.assertEqual(number(4.4e-5, 6), "0.000044")
+        self.assertEqual(number(-4.4e-7, 6), "−4.4 × 10⁻⁷")
+
+    def test_scientific_notation_is_escaped_for_latex(self):
+        self.assertEqual(latex_escape("−1.20 × 10⁻⁵ s"), r"$-$1.20 $\times$ 10\textsuperscript{$-$5} s")
+        self.assertEqual(latex_escape("ω² = 0.80"), r"$\omega$\textsuperscript{2} = 0.80")
+        self.assertEqual(latex_escape("χ²(4) = 120.45"), r"$\chi$\textsuperscript{2}(4) = 120.45")
+
+    def test_micro_scale_estimates_and_slopes_keep_their_value_and_sign(self):
+        loaded, data, results = run_analyses(
+            micro_measurements(), study_dict({"type": "independent"}, MICRO_VARIABLES, MICRO_ANALYSES)
+        )
+        table = results_table(loaded, data, list(results.values()), planned=True)
+        rows = table.data[table.data["measure"].isin(["mean difference", "slope"])]
+        display = table.display.loc[rows.index]
+        self.assertEqual(len(rows), 3)
+        self.assertLess(rows.iloc[0]["estimate"], 0)
+        session = rows[rows["analysis"] == "session"].iloc[0]
+        self.assertLess(session["ci_low"], 0)
+        self.assertGreater(session["ci_high"], 0)
+        for (_, row), (_, shown) in zip(rows.iterrows(), display.iterrows(), strict=True):
+            low, high = shown["95% CI"].split(" to ")
+            pairs = ((shown["Estimate"], row["estimate"]), (low, row["ci_low"]), (high, row["ci_high"]))
+            for text, value in pairs:
+                self.assertIn("× 10⁻", text)
+                self.assertAlmostEqual(printed(text) / value, 1, delta=0.01)
+        self.assertTrue(display.iloc[1]["Estimate"].endswith(" s per year"))
+
+    def test_micro_scale_tables_and_prose_in_a_build(self):
+        study = study_dict({"type": "independent"}, MICRO_VARIABLES, MICRO_ANALYSES)
+        with study_folder(micro_measurements(), study, "data.csv") as path:
+            built = build(path)
+            tables = {table.id: table for table in built.tables}
+            estimate = tables["results"].display.iloc[0]["Estimate"]
+            self.assertIn(estimate, (built.out / "methods" / "results.md").read_text(encoding="utf-8"))
+            self.assertIn(latex_escape(estimate), (built.out / "tables" / "results.tex").read_text())
+            rows = {(name, row[1]): row[2:] for name, row in _named(tables["descriptives"].display)}
+            jitter = micro_measurements()["Jitter"]
+            mean, sd = rows[("Jitter (s)", "Mean (SD)")][0].rstrip(")").split(" (")
+            self.assertAlmostEqual(printed(mean) / jitter.mean(), 1, delta=0.01)
+            self.assertAlmostEqual(printed(sd) / jitter.std(), 1, delta=0.01)
+            for name in ("tables/results.tex", "tables/descriptives.tex", "methods/results.md"):
+                self.assertNotIn("0.0000", (built.out / name).read_text(encoding="utf-8"), name)
+
+    def test_the_descriptive_table_of_ordinary_values_is_unchanged(self):
+        study = assay_study()
+        study["processing"] = [
+            {"exclude": {"where": {"column": "Viability (%)", "below": 0}}, "reason": "Instrument error."}
+        ]
+        with study_folder(assay(), study) as path:
+            loaded = load(path)
+            display = descriptive_table(loaded, read(loaded)).display
+        rows = {(name, row[1]): row[2:] for name, row in _named(display)}
+        self.assertEqual(
+            rows[("Viability (%)", "Mean (SD)")],
+            ["84.57 (5.57)", "89.67 (3.95)", "86.12 (2.34)", "78.49 (2.29)"],
+        )
+        self.assertEqual(rows[("Viability (%)", "Median [IQR]")][0], "84.86 [79.87, 88.62]")
+        self.assertEqual(rows[("Viability (%)", "Range")][0], "74.77 to 99.97")
+        self.assertEqual(
+            rows[("Passage", "Mean (SD)")], ["6.83 (2.84)", "5.92 (2.84)", "7.27 (3.32)", "7.33 (2.35)"]
+        )
+        self.assertEqual(rows[("Passage", "Range")][0], "3.00 to 11.00")
+
+
+def _named(display: pd.DataFrame):
+    """Each row of a descriptive table with the variable it belongs to (the last named above it)."""
+    current = ""
+    for row in display.itertuples(index=False):
+        current = row[0] or current
+        yield current, list(row)
 
 
 class SyntheticStudyTests(unittest.TestCase):
