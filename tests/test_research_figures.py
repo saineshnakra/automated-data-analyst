@@ -68,6 +68,24 @@ def assay_with(**changes) -> dict:
     return assay_study(output={"figures": ["svg"]}, **changes)
 
 
+def plated_wells(plates: int = 6, wells: int = 8, seed: int = 11) -> pd.DataFrame:
+    """Wells on plates whose levels clearly differ, so a random intercept per plate is well away from zero
+    and the mixed model converges with any version of the libraries."""
+    rng = np.random.default_rng(seed)
+    plate = np.repeat(np.arange(plates), wells)
+    passage = rng.integers(3, 12, plates * wells)
+    viability = 85 + np.linspace(-8, 8, plates)[plate] - 0.8 * passage + rng.normal(0, 1.5, plates * wells)
+    return pd.DataFrame(
+        {
+            "Well": [f"W{index:02d}" for index in range(plates * wells)],
+            "Treatment": np.resize(["Control", "Low", "High"], plates * wells),
+            "Passage": passage,
+            "Viability (%)": np.round(viability, 2),
+            "Plate": [f"Plate {number}" for number in plate],
+        }
+    )
+
+
 def readings(rows: int = 40, seed: int = 7) -> pd.DataFrame:
     """A signal in thousandths falling with a dose in thousands: a negative slope on very different scales."""
     rng = np.random.default_rng(seed)
@@ -428,9 +446,7 @@ class ScatterTests(unittest.TestCase):
         self.assertNotIn("ci_low", table.columns)
 
     def test_a_clustered_design_draws_the_mixed_model_line(self):
-        frame = assay()
-        # Neighbouring wells share a plate, so the plates differ and the mixed model converges.
-        frame["Plate"] = [f"Plate {index // 9}" for index in range(len(frame))]
+        frame = plated_wells()
         study = assay_with(
             design={"type": "clustered", "cluster": "Plate"},
             analyses=[{"id": "passage", "outcome": "Viability (%)", "relate": "Passage", "planned": True}],
