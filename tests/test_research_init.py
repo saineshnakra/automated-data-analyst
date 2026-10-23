@@ -6,10 +6,13 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from research_helpers import assay
+from research_helpers import assay, assay_study, study_folder
 
 from ada.research import build, init, load
+from ada.research.analyses import analyse, refusal
 from ada.research.interview import guess
+from ada.research.processing import read
+from ada.research.study import AnalysisSpec
 
 
 def recordings(people: int = 12, per_person: int = 8, seed: int = 7) -> pd.DataFrame:
@@ -203,6 +206,42 @@ class PlanCheckTests(unittest.TestCase):
         compared = [found for found in built.results.values() if found.spec.compare == "cultivar"]
         self.assertTrue(compared)
         self.assertTrue(all(found.supported for found in built.results.values()))
+
+    def test_an_analysis_the_build_would_refuse_is_left_out_with_the_reason(self):
+        dates = pd.to_datetime(["2024-01-08", "2024-01-15", "2024-01-22", "2024-01-29"])
+        rng = np.random.default_rng(1)
+        frame = pd.DataFrame(
+            {
+                "Patient": np.repeat([f"P{number:02d}" for number in range(1, 9)], 4),
+                "Visit Date": np.tile(dates.strftime("%Y-%m-%d"), 8),
+                "Dose (mg)": np.round(rng.uniform(5, 50, 32), 1),
+                "Systolic BP (mmHg)": np.round(rng.normal(130, 12, 32), 1),
+            }
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            said: list[str] = []
+            path = write_and_init(frame, Path(folder), interactive=False, say=said.append)
+            text = path.read_text()
+            study = load(path)
+            data = read(study).data
+            self.assertEqual(study.design, "repeated")
+            self.assertEqual(study.time, "Visit Date")
+            self.assertFalse(any(analysis.change for analysis in study.analyses))
+            self.assertTrue(study.analyses)
+            self.assertTrue(all(refusal(study, data, spec) == "" for spec in study.analyses))
+        self.assertIn("\nLeft out 1 proposed analysis that `ada build` would not run:", said)
+        self.assertTrue(any("Visit Date is date" in line for line in said))
+        self.assertIn("# Left out because `ada build` would not run them:", text)
+        self.assertIn("over Visit Date? The time variable Visit Date is date.", text)
+
+    def test_the_check_gives_the_reason_the_build_would_give(self):
+        with study_folder(assay(), assay_study()) as path:
+            study = load(path)
+            data = read(study).data
+            numeric = AnalysisSpec(id="by-passage", outcome="Viability (%)", compare="Passage")
+            self.assertEqual(refusal(study, data, numeric), analyse(study, data, numeric).reason)
+            self.assertIn("`compare:` needs a categorical or binary group", refusal(study, data, numeric))
+            self.assertEqual(refusal(study, data, study.analyses[0]), "")
 
 
 if __name__ == "__main__":

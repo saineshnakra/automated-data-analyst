@@ -4,8 +4,9 @@ ADA reads the file, guesses each column's role, unit and type, and proposes an
 answer to every question; the researcher presses Enter to accept or types a
 better one. With ``--yes`` every guess is accepted, every analysis is marked
 exploratory, since only the researcher can say what was planned, and the design
-is marked unconfirmed. Either way the result is a plain, commented YAML file
-meant to be read and edited.
+is marked unconfirmed. Analyses ``ada build`` would refuse are left out, with the
+reason. Either way the result is a plain, commented YAML file meant to be read
+and edited.
 """
 
 from __future__ import annotations
@@ -30,8 +31,9 @@ from ..schema import (
     looks_like_identifier,
     looks_like_subject,
 )
-from .processing import _as_labels
-from .study import DESIGNS, SHARING, sha256_of
+from .analyses import refusal
+from .processing import _as_labels, read
+from .study import DESIGNS, SHARING, StudyError, parse, sha256_of
 
 #: Numbers often used to mean "missing" in lab and survey files.
 SENTINELS = (-9, -99, -999, -9999, 99, 999, 9999, -1)
@@ -122,6 +124,8 @@ class Guess:
     subject: str | None = None
     cluster: str | None = None
     analyses: list[dict] = field(default_factory=list)
+    #: Proposed analyses left out because ``ada build`` would refuse them: (question, reason).
+    dropped: list[tuple[str, str]] = field(default_factory=list)
     planned: list[str] = field(default_factory=list)
     sharing: str = "processed"
     withhold: list[str] = field(default_factory=list)
@@ -129,6 +133,8 @@ class Guess:
     license: str = ""
     journal: str = "default"
     notes: list[str] = field(default_factory=list)
+    #: The folder study.yml is written to; ``data_path`` is relative to it.
+    root: Path = Path(".")
 
 
 def _words(name: str) -> set[str]:
@@ -186,6 +192,7 @@ def guess(data_path: Path, root: Path, sheet: str | None = None) -> Guess:
         columns=columns,
         frame=frame,
         title=data_path.stem.replace("_", " ").replace("-", " ").strip().capitalize(),
+        root=root,
     )
 
     identifiers = [
@@ -499,6 +506,7 @@ def interview(
             [found.cluster] if found.cluster else several[-1:],
         )
     found.analyses = propose_analyses(found)
+    _leave_out_refused(found, say)
     if interactive and found.analyses:
         say("\nAnalyses ADA can run for this design:")
         for number, analysis in enumerate(found.analyses, 1):
@@ -529,6 +537,39 @@ def _unit_column(asker: _Asker, frame: pd.DataFrame, question: str, default: lis
         if not chosen or frame[chosen[0]].nunique() > 1 or not asker.interactive:
             return chosen[0] if chosen else None
         asker.say(f"  {chosen[0]} has a single value, so it cannot tell one subject or cluster from another.")
+
+
+def _leave_out_refused(found: Guess, say: Callable[[str], None]) -> None:
+    """Leave out each proposed analysis that `ada build` would refuse, saying which and why.
+
+    The study is read and processed as `ada build` will read it, and each analysis goes through the
+    build's own checks before fitting (``analyses.refusal``). A study file with a problem of its own
+    is left for `ada build` to report.
+    """
+    import yaml  # noqa: PLC0415
+
+    found.dropped = []
+    if not found.analyses:
+        return
+    try:
+        study = parse(yaml.safe_load(render(found)), (found.root / "study.yml").resolve())
+        data = read(study).data
+    except StudyError:
+        return
+    kept = []
+    for analysis, spec in zip(found.analyses, study.analyses, strict=True):
+        reason = refusal(study, data, spec)
+        if reason:
+            found.dropped.append((analysis["question"], reason))
+        else:
+            kept.append(analysis)
+    found.analyses = kept
+    if found.dropped:
+        count = len(found.dropped)
+        noun = "analysis" if count == 1 else "analyses"
+        say(f"\nLeft out {count} proposed {noun} that `ada build` would not run:")
+        for question, reason in found.dropped:
+            say(f"  - {question} {reason}")
 
 
 def _number_or_text(text: str):
@@ -652,8 +693,11 @@ def render(found: Guess) -> str:
         "",
         "# Only these analyses are run. planned: true means decided before seeing the data; everything",
         "# else is reported as exploratory. Analyses in the same family are adjusted together.",
-        "analyses:" + ("" if found.analyses else " []"),
     ]
+    if found.dropped:
+        lines.append("# Left out because `ada build` would not run them:")
+        lines += [f"#   - {question} {' '.join(reason.split())}" for question, reason in found.dropped]
+    lines.append("analyses:" + ("" if found.analyses else " []"))
     for analysis in found.analyses:
         planned = analysis["id"] in found.planned
         lines.append(f"  - id: {analysis['id']}")
