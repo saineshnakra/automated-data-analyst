@@ -61,10 +61,11 @@ numbers. See [Paper assets for a study](research.md).
 Yes. `ada skill` writes ADA's skill into `.claude/skills/ada/` for Claude Code
 and `.agents/skills/ada/` for Codex. It tells the assistant to ask you for the
 design and the planned analyses, let ADA compute the numbers, report them with
-their calculations, and pass on any refusal. It also installs as a plugin:
-`/plugin install ada --marketplace saineshnakra/automated-data-analyst` in
-Claude Code, or `codex plugin marketplace add saineshnakra/automated-data-analyst`
-then `codex plugin add ada@automated-data-analyst` in Codex.
+their calculations, and pass on any refusal. It also installs as a plugin: in
+Claude Code, `/plugin marketplace add saineshnakra/automated-data-analyst` then
+`/plugin install automated-data-analyst@automated-data-analyst`; in Codex,
+`codex plugin marketplace add saineshnakra/automated-data-analyst` then
+`codex plugin add automated-data-analyst@automated-data-analyst`.
 
 **Does the skill stop an AI assistant from making up numbers?**
 It takes the arithmetic away from the model: ADA computes every number with

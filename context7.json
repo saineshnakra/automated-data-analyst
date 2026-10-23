@@ -3,7 +3,7 @@
   "projectTitle": "ADA (automated-data-analyst)",
   "description": "Research data analysis in Python: a paper's tables, figures, data audit and methods draft built from a study.yml, with every number computed by pandas, SciPy and statsmodels and traced to the data; ada verify checks a rebuild. Also a first look at any CSV or Excel table. Works as a skill in Claude Code and Codex.",
   "folders": ["docs", "ada/skills"],
-  "excludeFolders": ["results", "tests", "tools", "assets", ".github"],
+  "excludeFolders": ["results", "tests", "tools", "assets", ".github", "plugins"],
   "excludeFiles": ["CODE_OF_CONDUCT.md", "SECURITY.md", "ROADMAP.md"],
   "rules": [
     "Let ADA compute the numbers: report the estimates, intervals and p-values it prints, with the test it names, instead of computing or estimating them yourself.",

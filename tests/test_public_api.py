@@ -482,6 +482,73 @@ class SkillTests(unittest.TestCase):
         self.assertEqual(target.read_text(encoding="utf-8"), self.SKILL.read_text(encoding="utf-8"))
 
 
+class PluginTests(unittest.TestCase):
+    """plugins/automated-data-analyst is the plugin for Claude Code, Codex and the two plugin directories."""
+
+    ROOT = Path(__file__).resolve().parent.parent
+    PLUGIN = ROOT / "plugins" / "automated-data-analyst"
+
+    def manifests(self) -> tuple[dict, dict]:
+        claude = json.loads((self.PLUGIN / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        portable = json.loads((self.PLUGIN / "plugin.json").read_text(encoding="utf-8"))
+        return claude, portable
+
+    def test_the_plugin_holds_the_skill_ada_skill_installs(self):
+        from ada.cli import SKILL_FILES
+
+        for name in SKILL_FILES:
+            packaged = (Path(ada.__file__).parent / "skills" / "ada" / name).read_bytes()
+            self.assertEqual((self.PLUGIN / "skills" / "ada" / name).read_bytes(), packaged, name)
+
+    def test_both_manifests_name_this_version(self):
+        claude, portable = self.manifests()
+        for key in ("name", "version", "description", "author", "license"):
+            self.assertEqual(claude[key], portable[key], key)
+        self.assertEqual(claude["name"], self.PLUGIN.name)
+        self.assertEqual(claude["version"], ada.__version__)
+
+    def test_the_marketplace_points_at_the_plugin_and_moves_the_old_name(self):
+        catalog = self.ROOT / ".claude-plugin" / "marketplace.json"
+        marketplace = json.loads(catalog.read_text(encoding="utf-8"))
+        (entry,) = marketplace["plugins"]
+        self.assertEqual(entry["name"], self.PLUGIN.name)
+        self.assertEqual((self.ROOT / entry["source"]).resolve(), self.PLUGIN)
+        self.assertEqual(marketplace["renames"], {"ada": self.PLUGIN.name})
+
+    def test_the_listing_fits_the_directories_limits(self):
+        shown = self.manifests()[1]["extensions"]["com.openai"]["interface"]
+        self.assertLessEqual(len(shown["displayName"]), 30)
+        self.assertLessEqual(len(shown["shortDescription"]), 30)
+        self.assertLessEqual(len(shown["longDescription"]), 4000)
+        self.assertLessEqual(len(shown["capabilities"]), 20)
+        self.assertTrue(all(len(label) <= 120 for label in shown["capabilities"]))
+        self.assertLessEqual(len(shown["defaultPrompt"]), 3)
+        self.assertTrue(all(len(prompt) <= 128 for prompt in shown["defaultPrompt"]))
+        prose = (self.PLUGIN / "README.md").read_text(encoding="utf-8").split("```")[::2]
+        self.assertGreaterEqual(sum(len(part.split()) for part in prose), 40)
+
+    def test_the_icon_is_a_square_png_both_directories_accept(self):
+        claude, portable = self.manifests()
+        shown = portable["extensions"]["com.openai"]["interface"]
+        for path in {claude["icon"], shown["logo"], shown["composerIcon"]}:
+            icon = (self.PLUGIN / path).read_bytes()
+            self.assertEqual(icon[:8], b"\x89PNG\r\n\x1a\n", path)
+            width, height = int.from_bytes(icon[16:20], "big"), int.from_bytes(icon[20:24], "big")
+            self.assertEqual(width, height, path)
+            self.assertTrue(512 <= width <= 2048, path)
+            self.assertLess(len(icon), 2 * 1024 * 1024, path)
+
+    def test_the_plugin_holds_only_small_text_files_and_the_icon(self):
+        files = [path for path in self.PLUGIN.rglob("*") if path.is_file()]
+        self.assertLessEqual(len(files), 512)
+        for path in files:
+            self.assertIn(path.suffix, {".md", ".json", ".yaml", ".png", ""}, path)
+            self.assertLess(path.stat().st_size, 256 * 1024, path)
+            if path.suffix != ".png":
+                credential = r"[A-Z]+_(API_)?(KEY|TOKEN|SECRET)\b"
+                self.assertNotRegex(path.read_text(encoding="utf-8"), credential, path)
+
+
 class OverrideTests(unittest.TestCase):
     def test_an_unknown_override_column_raises(self):
         with self.assertRaisesRegex(ada.AdaError, "No column named 'Nope'"):

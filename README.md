@@ -394,12 +394,16 @@ Or as a plugin, which updates with the repository:
 
 ```bash
 # Claude Code
-/plugin install ada --marketplace saineshnakra/automated-data-analyst
+/plugin marketplace add saineshnakra/automated-data-analyst
+/plugin install automated-data-analyst@automated-data-analyst
 
 # Codex
 codex plugin marketplace add saineshnakra/automated-data-analyst
-codex plugin add ada@automated-data-analyst
+codex plugin add automated-data-analyst@automated-data-analyst
 ```
+
+The plugin is the folder [plugins/automated-data-analyst](plugins/automated-data-analyst), which holds
+the same skill and nothing that runs.
 
 **Then ask**, for example:
 
