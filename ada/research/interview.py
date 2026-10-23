@@ -2,9 +2,10 @@
 
 ADA reads the file, guesses each column's role, unit and type, and proposes an
 answer to every question; the researcher presses Enter to accept or types a
-better one. With ``--yes`` every guess is accepted, and every analysis is marked
-exploratory, since only the researcher can say what was planned. Either way
-the result is a plain, commented YAML file meant to be read and edited.
+better one. With ``--yes`` every guess is accepted, every analysis is marked
+exploratory, since only the researcher can say what was planned, and the design
+is marked unconfirmed. Either way the result is a plain, commented YAML file
+meant to be read and edited.
 """
 
 from __future__ import annotations
@@ -107,6 +108,8 @@ class Guess:
     types: dict[str, str] = field(default_factory=dict)
     missing_codes: list = field(default_factory=list)
     design: str = "independent"
+    #: Whether the researcher answered the design question; with ``--yes`` the design is only a guess.
+    confirmed: bool = False
     subject: str | None = None
     cluster: str | None = None
     analyses: list[dict] = field(default_factory=list)
@@ -407,6 +410,7 @@ def interview(
         else [_number_or_text(code) for code in codes.split(",") if code.strip()]
     )
     found.design = asker.choice("Design", list(DESIGNS), found.design)
+    found.confirmed = interactive
     if found.design in ("paired", "repeated"):
         subjects = asker.columns_of(
             "Column naming the subject measured more than once",
@@ -514,6 +518,9 @@ def render(found: Guess) -> str:
         "",
         "design:",
         f"  type: {found.design}   # " + " | ".join(DESIGNS),
+        "  confirmed: true   # you answered the design question"
+        if found.confirmed
+        else "  confirmed: false   # ADA guessed the design from the data; check it, then set this to true",
     ]
     if found.subject:
         lines.append(f"  subject: {_yaml(found.subject)}   # who or what was measured more than once")

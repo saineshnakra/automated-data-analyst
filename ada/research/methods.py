@@ -348,30 +348,41 @@ def _design_sentences(study, data: pd.DataFrame) -> list[str]:
     time = study.time if study.time in data else None
     rows = len(data)
     sentences = []
+    # A design ADA guessed and the researcher has not confirmed is what the analyses assumed, not a fact.
+    lead = "The design was" if study.design_confirmed else "The analyses treated the design as"
     if study.design == "independent":
-        sentences.append("The design was independent: each row came from a different subject.")
+        sentences.append(
+            "The design was independent: each row came from a different subject."
+            if study.design_confirmed
+            else "The analyses treated the rows as independent, as if each came from a different subject."
+        )
     elif study.design == "paired":
-        sentences.append(_paired_sentence(study, data, subject))
+        sentences.append(_paired_sentence(study, data, subject, lead))
     elif study.design == "repeated":
         if subject:
             per = data[subject].value_counts()
             sentences.append(
-                f"The design was repeated measures: the {_n(rows, 'row')} analysed came from "
+                f"{lead} repeated measures: the {_n(rows, 'row')} analysed came from "
                 f"{_n(per.size, 'subject')}, identified by {subject}, with {_spread(per)} rows each."
             )
         else:
-            sentences.append("The design was repeated measures.")
+            sentences.append(f"{lead} repeated measures.")
     elif study.design == "clustered":
         if cluster:
             per = data[cluster].value_counts()
             from_subjects = f" and {_n(data[subject].nunique(), 'subject')} ({subject})" if subject else ""
             sentences.append(
-                f"The design was clustered: the {_n(rows, 'row')} analysed came from "
+                f"{lead} clustered: the {_n(rows, 'row')} analysed came from "
                 f"{_n(per.size, 'cluster')}, identified by {cluster}{from_subjects}, with {_spread(per)} "
                 "rows per cluster."
             )
         else:
-            sentences.append("The design was clustered.")
+            sentences.append(f"{lead} clustered.")
+    if not study.design_confirmed:
+        sentences.append(
+            "ADA guessed this design from the data and the authors have not confirmed it "
+            "(design.confirmed: false in study.yml); check it before relying on the results."
+        )
     if time:
         moments = _moments(data, time)
         listed = (
@@ -415,17 +426,17 @@ def _condition(study, data: pd.DataFrame) -> str | None:
     return next((name for name in study.with_role("group") if name in data), None)
 
 
-def _paired_sentence(study, data: pd.DataFrame, subject: str | None) -> str:
+def _paired_sentence(study, data: pd.DataFrame, subject: str | None, lead: str = "The design was") -> str:
     condition = _condition(study, data)
     if not subject or not condition:
-        return "The design was paired."
+        return f"{lead} paired."
     levels = levels_of(data, condition)
     seen = data.groupby(subject, observed=True)[condition].nunique()
     complete = int((seen == len(levels)).sum())
     partial = int(seen.size - complete)
     every = "both conditions" if len(levels) == 2 else "every condition"
     text = (
-        f"The design was paired: each subject, identified by {subject}, was measured under the "
+        f"{lead} paired: each subject, identified by {subject}, was measured under the "
         f"{_count(len(levels), 'condition')} of {condition} ({_join(levels)}). Of the "
         f"{_n(seen.size, 'subject')}, {complete:,} had {every}"
     )
