@@ -80,6 +80,11 @@ class Build:
     def data(self) -> pd.DataFrame:
         return self.processed.data
 
+    @property
+    def refused(self) -> dict[str, str]:
+        """The analyses in study.yml that ADA did not fit, by id, each with the reason."""
+        return {ident: found.reason for ident, found in self.results.items() if not found.supported}
+
     def folder(self, name: str) -> Path:
         path = self.out / name
         path.mkdir(parents=True, exist_ok=True)

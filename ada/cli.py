@@ -7,7 +7,9 @@ For a research study, run these in the folder that holds the data:
     ada verify                         # rebuild and check every number still matches
     ada share                          # copy what may be shared into share/
 
-To try it on an example study first: ``ada demo``.
+To try it on an example study first: ``ada demo``. ``ada build`` counts the analyses
+study.yml asks for, fitted and refused; ``ada build --strict`` exits with 1 when any
+was refused, so a manuscript build cannot pass without them.
 
 For a first look at any table:
 
@@ -130,13 +132,32 @@ def _build(args: argparse.Namespace) -> int:
     for asset in built.assets:
         if asset.section in ("main", "supplement"):
             print(f"  {asset.number:12} {asset.title}")
+    # Counted apart from the notes, so a build can't look complete while an analysis never ran.
+    requested, refused = len(built.results), built.refused
+    if requested:
+        fitted = requested - len(refused)
+        print(f"\nAnalyses: {requested} requested, {fitted} fitted, {len(refused)} refused.")
+    else:
+        print("\nAnalyses: none requested in the study file.")
+    for ident, reason in refused.items():
+        print(f"  refused  {ident}: {reason}")
     if checks:
         print(f"\nThe data audit lists {checks} item(s) to check: {built.out / 'audit' / 'data-audit.md'}")
     changed = [change for change in built.changes if change.status != "new"]
     if changed:
         print(f"\n{len(changed)} asset(s) changed since the last build; see {built.out / 'CHANGES.md'}")
+    listed = {f"Analysis {ident} was not fitted: {reason}" for ident, reason in refused.items()}
     for warning in built.warnings:
-        print(f"note: {warning}")
+        if warning not in listed:
+            print(f"note: {warning}")
+    if args.strict and refused:
+        print(
+            f"error: --strict: {len(refused)} of {requested} requested analyses "
+            f"{'was' if len(refused) == 1 else 'were'} refused ({', '.join(refused)}). "
+            "The assets were written, but without the refused analyses.",
+            file=sys.stderr,
+        )
+        return EXIT_FLAGGED
     return EXIT_QUIET
 
 
@@ -254,6 +275,9 @@ def build_parser() -> argparse.ArgumentParser:
         built = group.add_parser("build", help="make the paper assets: tables, figures, methods and records")
         built.add_argument("--study", default="study.yml", help="the study file")
         built.add_argument("--out", help="the output folder (default: output.dir in the study file)")
+        built.add_argument(
+            "--strict", action="store_true", help="exit with status 1 if any analysis in the study is refused"
+        )
         check = group.add_parser("verify", help="rebuild in a scratch folder and check every asset matches")
         check.add_argument("--study", default="study.yml", help="the study file")
         check.add_argument("--out", help="the output folder to check (default: output.dir in the study file)")

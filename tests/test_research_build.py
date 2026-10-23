@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import tempfile
 import unittest
@@ -8,6 +10,7 @@ import pandas as pd
 import yaml
 from research_helpers import assay, assay_study, study_folder
 
+from ada.cli import main
 from ada.research import StudyError, build, init, load
 from ada.research.study import sha256_of
 
@@ -148,6 +151,38 @@ class FailedBuildTests(unittest.TestCase):
             written = [file for asset in built.assets for file in asset.files]
             self.assertTrue(all(file.is_file() and file.is_relative_to(out) for file in written))
             self.assertNoScratchLeft(path)
+
+
+class BuildSummaryTests(unittest.TestCase):
+    def run_build(self, path: Path, *options: str) -> tuple[int, str, str]:
+        printed, errors = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(printed), contextlib.redirect_stderr(errors):
+            code = main(["build", "--study", str(path), *options])
+        return code, printed.getvalue(), errors.getvalue()
+
+    def test_the_summary_counts_the_analyses_and_names_each_refused_one(self):
+        study = assay_study()
+        study["analyses"].append(
+            {"id": "by-passage", "outcome": "Viability (%)", "compare": "Passage", "planned": False}
+        )
+        with study_folder(assay(), study) as path:
+            code, printed, _ = self.run_build(path)
+            self.assertEqual(code, 0)
+            self.assertIn("Analyses: 2 requested, 1 fitted, 1 refused.", printed)
+            self.assertIn("  refused  by-passage: `compare:` needs a categorical or binary group", printed)
+            self.assertNotIn("note: Analysis by-passage was not fitted", printed)
+            self.assertEqual(list(build(path).refused), ["by-passage"])
+
+            code, _, errors = self.run_build(path, "--strict")
+            self.assertEqual(code, 1)
+            self.assertIn("--strict: 1 of 2 requested analyses was refused (by-passage)", errors)
+
+    def test_strict_passes_when_every_analysis_is_fitted(self):
+        with study_folder(assay(), assay_study()) as path:
+            code, printed, errors = self.run_build(path, "--strict")
+            self.assertEqual(code, 0)
+            self.assertIn("Analyses: 1 requested, 1 fitted, 0 refused.", printed)
+            self.assertEqual(errors, "")
 
 
 class InitTests(unittest.TestCase):
