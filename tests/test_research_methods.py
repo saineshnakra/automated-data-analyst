@@ -3,6 +3,7 @@ import json
 import platform
 import unittest
 from dataclasses import dataclass
+from pathlib import Path
 from unittest import mock
 
 import pandas as pd
@@ -12,8 +13,9 @@ from research_helpers import assay, assay_study, study_folder, weights
 from ada import __version__
 from ada.research import build, provenance
 from ada.research.analyses import COLUMNS, REFERENCES
-from ada.research.methods import LIBRARIES, _for_paper, _join, _test_prose, _with_article
+from ada.research.methods import LIBRARIES, _design_sentences, _for_paper, _join, _test_prose, _with_article
 from ada.research.results import ESTIMATE_COLUMNS, AnalysisResult
+from ada.research.study import parse
 from ada.research.tables import Table
 
 WELCH = "Welch, B. L. (1947). The generalization of 'Student's' problem. Biometrika 34, 28–35."
@@ -228,6 +230,47 @@ def make(study: dict, frame=None, data_name: str = "assay.csv", draw=None, **mak
 
 def read(built, name: str) -> str:
     return (built.out / name).read_text(encoding="utf-8")
+
+
+class GuessedDesignTests(unittest.TestCase):
+    def sentences(self, study: dict, frame: pd.DataFrame) -> str:
+        return " ".join(_design_sentences(parse(study, Path("/tmp/study.yml")), frame))
+
+    def test_a_confirmed_independent_design_is_stated(self):
+        text = self.sentences(assay_study(), assay())
+        self.assertIn("The design was independent: each row came from a different subject.", text)
+        self.assertNotIn("guessed", text)
+
+    def test_a_guessed_independent_design_is_not_stated_as_fact(self):
+        text = self.sentences(assay_study(design={"type": "independent", "confirmed": False}), assay())
+        self.assertNotIn("each row came from a different subject", text)
+        self.assertIn(
+            "The analyses treated the rows as independent, as if each came from a different subject.", text
+        )
+        self.assertIn(
+            "ADA guessed this design from the data and the authors have not confirmed it "
+            "(design.confirmed: false in study.yml)",
+            text,
+        )
+
+    def test_a_guessed_repeated_design_keeps_its_counts(self):
+        study = assay_study(
+            design={"type": "repeated", "subject": "Mouse", "confirmed": False},
+            variables={
+                "Mouse": {"role": "identifier", "type": "text"},
+                "Diet": {"role": "group", "type": "categorical"},
+                "Weight (g)": {"role": "outcome", "type": "numeric"},
+            },
+            analyses=[],
+        )
+        text = self.sentences(study, weights())
+        self.assertIn(
+            "The analyses treated the design as repeated measures: the 60 rows analysed came from 12 "
+            "subjects, identified by Mouse, with 5 rows each.",
+            text,
+        )
+        self.assertNotIn("The design was", text)
+        self.assertIn("ADA guessed this design from the data", text)
 
 
 class MethodsDraftTests(unittest.TestCase):

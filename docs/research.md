@@ -53,6 +53,24 @@ accepts every guess and marks every analysis exploratory, because only you
 can say what was planned. The answers go into `study.yml`, which is yours from
 then on: ADA reads it and never rewrites it.
 
+A few guesses are checked before they are offered:
+
+- **Repeated subjects.** A column whose name says it identifies a subject,
+  patient, animal, station or site (`subject#`, `Patient ID`) and whose
+  whole-number codes repeat is proposed as the subject of a repeated design.
+  ADA says how often the codes repeat and asks you to confirm the design.
+  A column with a single value is never a subject or cluster.
+- **Unconfirmed designs.** `--yes` writes `design.confirmed: false`, and the
+  methods draft then says the design was guessed and not confirmed. Answering
+  the design question writes `true`.
+- **Groups coded as numbers.** A group of a few whole-number codes (cultivar
+  1, 2, 3) is written as categorical, with its levels in number order.
+- **Proposed analyses.** Each one is run through the build's own checks, and
+  any the build would refuse is left out, with the reason printed and kept as
+  a comment in study.yml.
+- **Units.** A word in brackets in a column name is taken as the unit only
+  when it is a known unit: `Shimmer(dB)` has dB, `Jitter(Abs)` has none.
+
 ## `study.yml`
 
 ```yaml
@@ -72,6 +90,7 @@ data:
 
 design:
   type: clustered             # independent | paired | repeated | clustered
+  confirmed: true             # false when ADA guessed it; the methods draft says so
   cluster: Plate              # repeated and paired designs name a `subject` instead
   time: null
 
@@ -172,6 +191,20 @@ significant results, and every result says whether it was planned.
   level, survival outcomes, ordinal or multinomial outcomes, and binary
   outcomes in repeated or clustered designs are not fitted. ADA says so and
   points to `custom` for your own analysis.
+- **Mixed models it can't trust.** A mixed model is not fitted when the rows
+  come from fewer than 2 subjects or clusters, when the fixed effects already
+  separate every subject (each alone in its group), or when the fit did not
+  converge or is singular. Its p-values would not mean anything, so the
+  analysis is refused with the reason instead.
+- **Rows that form a series.** In an independent design with a time or date
+  column, ADA checks the residuals in time order (Durbin–Watson). When
+  successive rows stay alike, as in an hourly log from one station, it warns
+  that the p-values are too small and suggests modelling the series under
+  `custom:`.
+- **Small numbers.** A nonzero estimate or interval never prints as zero or
+  loses its sign: very small values are written to significant figures, as
+  `−1.20 × 10⁻⁵`. A variable's `decimals:` in study.yml sets its decimal
+  places, unless they would print a nonzero value as zero.
 
 ### How each analysis is fitted
 
@@ -237,7 +270,7 @@ their confidence intervals drawn in black beside or over the points. Each
 | `groups` | Every observation per group, spread sideways so none hide each other, with the group mean and its confidence interval. `by` splits each group again. |
 | `paired` | A line per subject joining its conditions, the condition means, and a second panel with each subject's difference and the mean difference. |
 | `longitudinal` | A light line per subject over time, and the mean with its interval at each time point per group (`by`). |
-| `scatter` | Points, the least-squares line and its confidence band for the mean, coloured by `by`. |
+| `scatter` | Points coloured by `by`, with the line and band of the linked analysis's own model, other covariates held at stated values. With no linked analysis, the least-squares line and its band; in a repeated or clustered design, the line only, since that band would assume independent rows. |
 | `missingness` | The share of missing values per variable, and a map of rows by variables up to 2,000 rows. |
 | `diagnostics` | Residuals against fitted values and a normal Q–Q plot, for an analysis with residuals. |
 | `panel` | The figures named in `panels`, side by side, lettered A, B, C. They are not drawn again on their own. |
@@ -293,6 +326,13 @@ paper-assets/
   reproduce/              study.yml, pinned requirements, input checksums, instructions
   repository/             README, CITATION.cff, .zenodo.json, data and code availability drafts
 ```
+
+The build works in a scratch folder beside the output folder and moves its
+files in only once every step has succeeded, so a build that stops (a changed
+data file, a custom function that raises) leaves the previous assets as they
+were. It ends by counting the analyses study.yml asked for, fitted and
+refused, with the reason for each refusal; `ada build --strict` exits with 1
+when any was refused, for a manuscript build that must not pass without them.
 
 Tables come as CSV with full-precision numbers (for re-analysis) and as
 Word and LaTeX with the numbers formatted for print. Figures come as PDF and

@@ -44,6 +44,11 @@ class AnalysisResult:
     #: The fitted values and residuals, for the diagnostic plots.
     fitted: pd.Series | None = None
     residuals: pd.Series | None = None
+    #: The line the scatter figure draws for a relate analysis: the model's prediction across the predictor
+    #: with each covariate held at a reference value. {"intercept", "slope", "covariance" (2 × 2, of the
+    #: intercept and slope), "critical" (the t or z quantile behind the model's intervals), "held"
+    #: ({covariate: a number at its mean in the rows used, or the reference level of a category})}.
+    line: dict = field(default_factory=dict)
     #: Checks of the model's assumptions, in plain sentences, and anything the reader should know.
     diagnostics: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)

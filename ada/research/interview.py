@@ -2,9 +2,11 @@
 
 ADA reads the file, guesses each column's role, unit and type, and proposes an
 answer to every question; the researcher presses Enter to accept or types a
-better one. With ``--yes`` every guess is accepted, and every analysis is marked
-exploratory, since only the researcher can say what was planned. Either way
-the result is a plain, commented YAML file meant to be read and edited.
+better one. With ``--yes`` every guess is accepted, every analysis is marked
+exploratory, since only the researcher can say what was planned, and the design
+is marked unconfirmed. Analyses ``ada build`` would refuse are left out, with the
+reason. Either way the result is a plain, commented YAML file meant to be read
+and edited.
 """
 
 from __future__ import annotations
@@ -20,8 +22,19 @@ from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 
 from ..analysis import clean_dataframe
 from ..file_io import read_tabular_file
-from ..schema import _unit, detect_roles, is_design_name, is_entity_name, looks_like_identifier
-from .study import DESIGNS, SHARING, sha256_of
+from ..schema import (
+    _UNIT_ANNOTATION,
+    detect_roles,
+    is_design_name,
+    is_entity_name,
+    is_subject_name,
+    is_time_part,
+    looks_like_identifier,
+    looks_like_subject,
+)
+from .analyses import refusal
+from .processing import _as_labels, read
+from .study import DESIGNS, SHARING, StudyError, parse, sha256_of
 
 #: Numbers often used to mean "missing" in lab and survey files.
 SENTINELS = (-9, -99, -999, -9999, 99, 999, 9999, -1)
@@ -83,6 +96,28 @@ PERSONAL_WORDS = {
     "nhs",
     "initials",
 }
+#: Units recognised in the brackets that end a column name, lowercased, each with its prefix: "mg",
+#: "µmol", "kpa". Combinations such as "mg/dL", "kg/m2" or "mL per min" are built from these.
+#: Letters that are as often a label as a unit ("a", "c", "k", "t", "y") are left out.
+UNITS = frozenset(
+    {
+        *("g", "kg", "mg", "µg", "ug", "mcg", "ng", "pg", "lb", "lbs", "oz"),
+        *("m", "cm", "mm", "km", "µm", "um", "nm", "in", "inch", "inches", "ft", "mi"),
+        *("l", "ml", "µl", "ul", "dl", "cl", "cc", "gal"),
+        *("s", "sec", "secs", "second", "seconds", "ms", "µs", "us", "min", "mins", "minute", "minutes"),
+        *("h", "hr", "hrs", "hour", "hours", "d", "day", "days", "wk", "wks", "week", "weeks"),
+        *("mo", "month", "months", "yr", "yrs", "year", "years"),
+        *("°", "°c", "°f", "degc", "degf", "deg", "degree", "degrees", "rad"),
+        *("pa", "kpa", "mpa", "hpa", "gpa", "bar", "mbar", "atm", "mmhg", "cmh2o", "psi", "torr"),
+        *("j", "kj", "mj", "cal", "kcal", "wh", "kwh", "ev", "w", "kw", "mw"),
+        *("v", "mv", "µv", "uv", "ma", "µa", "ohm", "ohms", "ω", "kω"),
+        *("hz", "khz", "mhz", "ghz", "bpm", "rpm"),
+        *("mol", "mmol", "µmol", "umol", "nmol", "pmol", "meq", "iu", "u", "ppm", "ppb"),
+        *("db", "dba", "lux", "lx", "ha", "acre", "acres"),
+        *("cells", "copies", "cfu", "beats", "breaths"),
+        *("%", "‰", "usd", "eur", "gbp", "$", "€", "£"),
+    }
+)
 MAX_GROUP_LEVELS = 12
 JOURNALS = ("default", "plos", "nature", "cell", "science", "elife")
 
@@ -107,9 +142,13 @@ class Guess:
     types: dict[str, str] = field(default_factory=dict)
     missing_codes: list = field(default_factory=list)
     design: str = "independent"
+    #: Whether the researcher answered the design question; with ``--yes`` the design is only a guess.
+    confirmed: bool = False
     subject: str | None = None
     cluster: str | None = None
     analyses: list[dict] = field(default_factory=list)
+    #: Proposed analyses left out because ``ada build`` would refuse them: (question, reason).
+    dropped: list[tuple[str, str]] = field(default_factory=list)
     planned: list[str] = field(default_factory=list)
     sharing: str = "processed"
     withhold: list[str] = field(default_factory=list)
@@ -117,10 +156,29 @@ class Guess:
     license: str = ""
     journal: str = "default"
     notes: list[str] = field(default_factory=list)
+    #: The folder study.yml is written to; ``data_path`` is relative to it.
+    root: Path = Path(".")
 
 
 def _words(name: str) -> set[str]:
     return set(re.findall(r"[a-z]+", str(name).lower()))
+
+
+def _unit_of(column: str) -> str:
+    """The unit in the brackets that end a column name, as written: "mmHg" in "Systolic BP (mmHg)".
+
+    Only known units (see UNITS) and their combinations count, such as "mg/dL", "kg/m²" or "mL/min/1.73m2".
+    Other words in brackets say what kind of value a column holds, not its unit: "Abs" in "Jitter(Abs)" is
+    absolute jitter, and "(0-10)" is a scale. Those leave the unit blank.
+    """
+    match = _UNIT_ANNOTATION.search(str(column))
+    if not match:
+        return ""
+    text = " ".join(match.group(1).split())
+    parts = [part for part in re.split(r"[/·*\s]+", text.lower().replace("μ", "µ")) if part and part != "per"]
+    # A power ("m2", "m^2", "m²", "s-1") and a number in front ("1.73m2") belong to the unit.
+    atoms = [re.sub(r"^[0-9.]+|\^?-?[0-9²³]+$", "", part) for part in parts]
+    return text if atoms and all(atom in UNITS for atom in atoms) else ""
 
 
 def _type_of(series: pd.Series, name: str, identifiers: list[str]) -> str:
@@ -174,6 +232,7 @@ def guess(data_path: Path, root: Path, sheet: str | None = None) -> Guess:
         columns=columns,
         frame=frame,
         title=data_path.stem.replace("_", " ").replace("-", " ").strip().capitalize(),
+        root=root,
     )
 
     identifiers = [
@@ -181,9 +240,14 @@ def guess(data_path: Path, root: Path, sheet: str | None = None) -> Guess:
         for column in columns
         if looks_like_identifier(column, frame[column])
         or (is_entity_name(column) and not is_numeric_dtype(frame[column]))
+        # Number codes of a unit measured more than once: subject# 1 to 42 over 5,875 recordings.
+        # Numbered sites and other clusters are found below.
+        or (looks_like_subject(column, frame[column]) and not _words(column) & CLUSTER_WORDS)
     ]
     if roles.identifier and roles.identifier not in identifiers:
         identifiers.insert(0, roles.identifier)
+    # A column with one value tells no rows apart, such as the station in one station's file.
+    identifiers = [column for column in identifiers if frame[column].nunique() > 1]
     clusters = [
         column
         for column in columns
@@ -193,12 +257,15 @@ def guess(data_path: Path, root: Path, sheet: str | None = None) -> Guess:
     ]
     result.identifiers = identifiers + [column for column in clusters if column not in identifiers]
 
+    # The year, month, day or hour a timestamp was built from ("year-month-day-hour") is part of it.
+    stamps = [_words(column) for column in columns if is_datetime64_any_dtype(frame[column])]
     times = [
         column
         for column in columns
         if _words(column) & TIME_WORDS
         and column not in result.identifiers
         and frame[column].nunique() <= max(30, len(frame) // 5)
+        and not (is_time_part(column, frame[column]) and any(_words(column) < words for words in stamps))
     ]
     result.time = times[0] if times else None
 
@@ -236,7 +303,7 @@ def guess(data_path: Path, root: Path, sheet: str | None = None) -> Guess:
 
     result.types = {column: _type_of(frame[column], column, result.identifiers) for column in columns}
     for column in columns:
-        unit = _unit(column)
+        unit = _unit_of(column)
         if unit:
             result.units[column] = unit
         elif "%" in column or "percent" in _words(column):
@@ -244,7 +311,8 @@ def guess(data_path: Path, root: Path, sheet: str | None = None) -> Guess:
     result.missing_codes = _sentinels(frame, [c for c in columns if result.types[c] == "numeric"])
 
     subjects = [column for column in result.identifiers if column not in clusters]
-    repeated = [column for column in subjects if frame[column].duplicated().any()]
+    # A unit measured more than once, not a key with the odd value repeated or a visit number.
+    repeated = [column for column in subjects if looks_like_subject(column, frame[column])]
     if repeated:
         result.subject = repeated[0]
         per_subject = frame.groupby(result.subject, observed=True).size()
@@ -260,7 +328,8 @@ def guess(data_path: Path, root: Path, sheet: str | None = None) -> Guess:
         result.design = "clustered"
         result.cluster = clusters[0]
     if result.design != "independent":
-        result.notes.append(f"Guessed a {result.design} design from {result.subject or result.cluster}.")
+        unit = result.subject or result.cluster
+        result.notes.append(f"Guessed a {result.design} design from {unit} ({_repeats(frame, unit)}).")
 
     result.withhold = [column for column in columns if _words(column) & PERSONAL_WORDS]
     result.observation = _observation(result)
@@ -276,6 +345,40 @@ def _observation(found: Guess) -> str:
     if found.identifiers:
         return f"one {found.identifiers[0]}"
     return "one observation"
+
+
+def _repeats(frame: pd.DataFrame, column: str) -> str:
+    """How a column's values repeat: "42 values over 5,875 rows, 101 to 168 rows each"."""
+    counts = frame[column].value_counts()
+    low, high = int(counts.min()), int(counts.max())
+    each = f"{low:,} rows each" if low == high else f"{low:,} to {high:,} rows each"
+    return f"{len(counts):,} values over {int(counts.sum()):,} rows, {each}"
+
+
+def _codes(series: pd.Series) -> bool:
+    """Whether a numeric column holds a few whole-number codes, such as cultivar 1, 2 and 3."""
+    present = series.dropna()
+    return (
+        is_numeric_dtype(present)
+        and bool((present % 1 == 0).all())
+        and 1 < present.nunique() <= MAX_GROUP_LEVELS
+    )
+
+
+def _kind(found: Guess, column: str) -> str:
+    """The type written for a column. A group of number codes is categorical: `compare:` needs it."""
+    kind = found.types.get(column, "text")
+    if kind == "numeric" and column in found.groups and _codes(found.frame[column]):
+        return "categorical"
+    return kind
+
+
+def _levels(found: Guess, column: str) -> list[str]:
+    """A group's levels: number codes in their order (the lowest is the reference), others as they come."""
+    present = found.frame[column].dropna()
+    if is_numeric_dtype(present):
+        return list(_as_labels(pd.Series(sorted(present.unique()))))
+    return list(dict.fromkeys(present.astype(str)))
 
 
 def propose_analyses(found: Guess) -> list[dict]:
@@ -406,24 +509,47 @@ def interview(
         if codes.lower() == "none"
         else [_number_or_text(code) for code in codes.split(",") if code.strip()]
     )
+    unit = found.subject or found.cluster
+    if interactive and found.design != "independent" and unit:
+        # Rows that share a subject or cluster are not independent; answering independent must be a choice.
+        alone = (
+            "each row is a different subject"
+            if found.subject
+            else f"rows of the same {unit} are no more alike than any two rows"
+        )
+        say(
+            f"\n{unit} repeats: {_repeats(found.frame, unit)}. Rows of the same {unit} are not independent, "
+            f"so ADA suggests a {found.design} design. Answer independent only if {alone}."
+        )
+    elif interactive:
+        # A few repeated values are more likely a key's duplicates than a subject; the researcher knows.
+        for column in found.identifiers:
+            doubled = int(found.frame[column].duplicated(keep=False).sum())
+            if is_subject_name(column) and doubled:
+                say(
+                    f"\n{column} repeats on {doubled:,} of {len(found.frame):,} rows. If those rows measure "
+                    f"the same {column} more than once, answer repeated."
+                )
     found.design = asker.choice("Design", list(DESIGNS), found.design)
+    found.confirmed = interactive
+    # Columns with one value were left out of the identifiers, but the researcher may have named one.
+    several = [column for column in found.identifiers if found.frame[column].nunique() > 1]
     if found.design in ("paired", "repeated"):
-        subjects = asker.columns_of(
+        found.subject = _unit_column(
+            asker,
+            found.frame,
             "Column naming the subject measured more than once",
-            [found.subject] if found.subject else found.identifiers[:1],
-            allow_none=False,
-            single=True,
+            [found.subject] if found.subject else several[:1],
         )
-        found.subject = subjects[0] if subjects else None
     if found.design == "clustered":
-        clusters = asker.columns_of(
+        found.cluster = _unit_column(
+            asker,
+            found.frame,
             "Column naming the cluster each row belongs to",
-            [found.cluster] if found.cluster else found.identifiers[-1:],
-            allow_none=False,
-            single=True,
+            [found.cluster] if found.cluster else several[-1:],
         )
-        found.cluster = clusters[0] if clusters else None
     found.analyses = propose_analyses(found)
+    _leave_out_refused(found, say)
     if interactive and found.analyses:
         say("\nAnalyses ADA can run for this design:")
         for number, analysis in enumerate(found.analyses, 1):
@@ -445,6 +571,48 @@ def interview(
     )
     found.journal = asker.choice("Journal preset for figures", list(JOURNALS), found.journal)
     return found
+
+
+def _unit_column(asker: _Asker, frame: pd.DataFrame, question: str, default: list[str]) -> str | None:
+    """Ask for the subject or cluster column. One with a single value tells no rows apart, so ask again."""
+    while True:
+        chosen = asker.columns_of(question, default, allow_none=False, single=True)
+        if not chosen or frame[chosen[0]].nunique() > 1 or not asker.interactive:
+            return chosen[0] if chosen else None
+        asker.say(f"  {chosen[0]} has a single value, so it cannot tell one subject or cluster from another.")
+
+
+def _leave_out_refused(found: Guess, say: Callable[[str], None]) -> None:
+    """Leave out each proposed analysis that `ada build` would refuse, saying which and why.
+
+    The study is read and processed as `ada build` will read it, and each analysis goes through the
+    build's own checks before fitting (``analyses.refusal``). A study file with a problem of its own
+    is left for `ada build` to report.
+    """
+    import yaml  # noqa: PLC0415
+
+    found.dropped = []
+    if not found.analyses:
+        return
+    try:
+        study = parse(yaml.safe_load(render(found)), (found.root / "study.yml").resolve())
+        data = read(study).data
+    except StudyError:
+        return
+    kept = []
+    for analysis, spec in zip(found.analyses, study.analyses, strict=True):
+        reason = refusal(study, data, spec)
+        if reason:
+            found.dropped.append((analysis["question"], reason))
+        else:
+            kept.append(analysis)
+    found.analyses = kept
+    if found.dropped:
+        count = len(found.dropped)
+        noun = "analysis" if count == 1 else "analyses"
+        say(f"\nLeft out {count} proposed {noun} that `ada build` would not run:")
+        for question, reason in found.dropped:
+            say(f"  - {question} {reason}")
 
 
 def _number_or_text(text: str):
@@ -514,6 +682,9 @@ def render(found: Guess) -> str:
         "",
         "design:",
         f"  type: {found.design}   # " + " | ".join(DESIGNS),
+        "  confirmed: true   # you answered the design question"
+        if found.confirmed
+        else "  confirmed: false   # ADA guessed the design from the data; check it, then set this to true",
     ]
     if found.subject:
         lines.append(f"  subject: {_yaml(found.subject)}   # who or what was measured more than once")
@@ -531,14 +702,14 @@ def render(found: Guess) -> str:
         "variables:",
     ]
     for column in found.columns:
-        kind = found.types.get(column, "text")
+        kind = _kind(found, column)
         lines.append(f"  {_yaml(column)}:")
         lines.append(f"    role: {_role(found, column)}")
         lines.append(f"    type: {kind}")
         if found.units.get(column):
             lines.append(f"    unit: {_yaml(found.units[column])}")
         if kind in ("categorical", "binary") and _role(found, column) == "group":
-            levels = list(dict.fromkeys(found.frame[column].dropna().astype(str)))
+            levels = _levels(found, column)
             if len(levels) <= MAX_GROUP_LEVELS:
                 lines.append(f"    levels: {_yaml(levels)}")
         lines.append('    description: ""')
@@ -565,8 +736,11 @@ def render(found: Guess) -> str:
         "",
         "# Only these analyses are run. planned: true means decided before seeing the data; everything",
         "# else is reported as exploratory. Analyses in the same family are adjusted together.",
-        "analyses:" + ("" if found.analyses else " []"),
     ]
+    if found.dropped:
+        lines.append("# Left out because `ada build` would not run them:")
+        lines += [f"#   - {question} {' '.join(reason.split())}" for question, reason in found.dropped]
+    lines.append("analyses:" + ("" if found.analyses else " []"))
     for analysis in found.analyses:
         planned = analysis["id"] in found.planned
         lines.append(f"  - id: {analysis['id']}")
@@ -622,6 +796,9 @@ def init(
     if target.exists() and not overwrite:
         raise FileExistsError(f"{target} already exists. Edit it, or pass --force to start again.")
     found = guess(data_path, target.resolve().parent, sheet)
+    if not interactive:
+        for note in found.notes:
+            say(f"{note} It is marked unconfirmed in study.yml until you check it.")
     found = interview(found, ask=ask, say=say, interactive=interactive)
     target.write_text(render(found), encoding="utf-8")
     return target

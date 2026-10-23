@@ -21,7 +21,7 @@ import pandas as pd
 from scipy import optimize, special, stats
 
 from .build import DATA_SECTIONS
-from .processing import levels_of
+from .processing import SOURCE_ROW, levels_of
 from .provenance import Asset
 from .results import ESTIMATE_COLUMNS, MEAN_COLUMNS, AnalysisResult
 from .study import AnalysisSpec, Study
@@ -39,6 +39,21 @@ COLUMNS = [*ESTIMATE_COLUMNS, *EXTRA_COLUMNS]
 CATEGORICAL_TIME_POINTS = 6
 #: Fewer subjects or clusters than this make a variance component and Wald z tests unreliable.
 FEW_UNITS = 10
+#: A random intercept needs at least this many subjects or clusters in the rows used, as a paired
+#: comparison needs this many pairs: with one, there is no variation between them to estimate.
+MIN_UNITS = 2
+#: A mixed model whose estimates' correlation matrix has an eigenvalue below this is singular.
+SINGULAR_EIGENVALUE = 1e-10
+#: A variance between subjects or clusters below this fraction of the residual variance is on the
+#: boundary (zero). statsmodels leaves a variance whose optimum is zero at up to about 2 × 10⁻⁷ of it.
+BOUNDARY_VARIANCE = 1e-6
+#: statsmodels' own boundary warning: it compares the variance with 0.01 in the outcome's units.
+STATSMODELS_BOUNDARY = "The MLE may be on the boundary of the parameter space."
+#: In an independent design, residuals whose lag-1 autocorrelation in time order is above this mean the
+#: rows form a series rather than independent observations. Independent rows give about 0 ± 2/√n, so
+#: 0.5 is far outside chance once there are SERIAL_MIN_ROWS rows.
+SERIAL_CORRELATION = 0.5
+SERIAL_MIN_ROWS = 20
 #: Shapiro–Wilk is computed up to this many residuals (SciPy's p-value is not accurate beyond it).
 SHAPIRO_LIMIT = 5000
 #: An expected count below this switches a 2 × 2 comparison of proportions to Fisher's exact test.
@@ -170,6 +185,8 @@ REFERENCES = {
     "https://doi.org/10.1080/01621459.1974.10482955",
     "breusch_pagan": "Breusch, T. S. and Pagan, A. R. (1979). A simple test for heteroscedasticity and "
     "random coefficient variation. Econometrica, 47(5), 1287–1294. https://doi.org/10.2307/1911963",
+    "durbin_watson": "Durbin, J. and Watson, G. S. (1950). Testing for serial correlation in least squares "
+    "regression. I. Biometrika, 37(3–4), 409–428. https://doi.org/10.1093/biomet/37.3-4.409",
     "vif": "Marquardt, D. W. (1970). Generalized inverses, ridge regression, biased linear estimation, and "
     "nonlinear estimation. Technometrics, 12(3), 591–612. https://doi.org/10.2307/1267205",
 }
@@ -235,6 +252,25 @@ def analyse(study: Study, data: pd.DataFrame, spec: AnalysisSpec) -> AnalysisRes
         found.group_means = found.fitted = found.residuals = None
         found.summary = ""
     return found
+
+
+def refusal(study: Study, data: pd.DataFrame, spec: AnalysisSpec) -> str:
+    """Why ``analyse`` would refuse ``spec`` on ``data``, or "" when it passes the checks made before fitting.
+
+    ``ada init`` uses it to leave out analyses the build would refuse. A model that fails only while
+    being fitted is not caught here.
+    """
+    analysis = _Analysis(study, data, spec, AnalysisResult(spec=spec, design=study.design))
+    try:
+        analysis.check()
+        for column in (spec.compare, spec.by):
+            if column:
+                analysis._levels(column)
+    except Unsupported as reason:
+        return str(reason)
+    except ValueError as reason:
+        return f"The model could not be fitted ({reason})."
+    return ""
 
 
 def key_row(found: AnalysisResult) -> pd.Series | None:
@@ -389,6 +425,34 @@ def _record_warnings(caught) -> list[str]:
     return messages
 
 
+def _absorbs_units(exog, units: pd.Series) -> bool:
+    """Whether a mixed model's fixed effects span every difference between its units (subjects or clusters).
+
+    REML then has no information on the variance between units, so that variance, and the standard
+    errors that depend on it, are arbitrary. It can only happen with no more units than fixed effects.
+    """
+    exog = np.asarray(exog, dtype=float)
+    norms = np.linalg.norm(exog, axis=0)
+    exog = exog / np.where(norms > 0, norms, 1)
+    rank = np.linalg.matrix_rank(exog)
+    if units.nunique() > rank:
+        return False
+    indicators = pd.get_dummies(units).to_numpy(dtype=float)
+    indicators = indicators / np.linalg.norm(indicators, axis=0)
+    return np.linalg.matrix_rank(np.column_stack([exog, indicators])) == rank
+
+
+def _positive_definite(covariance) -> bool:
+    """Whether a covariance matrix of estimates is positive definite, judged on the correlations so that
+    the variables' units do not matter."""
+    matrix = np.asarray(covariance, dtype=float)
+    variances = np.diag(matrix)
+    if not np.isfinite(matrix).all() or (variances <= 0).any():
+        return False
+    scale = np.sqrt(variances)
+    return float(np.linalg.eigvalsh(matrix / np.outer(scale, scale)).min()) > SINGULAR_EIGENVALUE
+
+
 class _Analysis:
     """One analysis being fitted: its complete cases, the chosen test, and the result being filled."""
 
@@ -407,8 +471,10 @@ class _Analysis:
 
     # The steps every analysis goes through.
 
-    def fit(self) -> None:
-        spec, study, found = self.spec, self.study, self.found
+    def check(self) -> None:
+        """What is settled before fitting: the variables' types, the design's unit, the complete cases,
+        the outcome's kind and the test. Raises Unsupported for an analysis that cannot be fitted."""
+        spec, found = self.spec, self.found
         self._check_columns()
         self.unit, self.unit_word = self._unit()
         needed = [spec.outcome, spec.predictor, spec.by, *spec.covariates, self.unit]
@@ -440,6 +506,11 @@ class _Analysis:
             )
         test = self._choose_test()
         self.test = test
+
+    def fit(self) -> None:
+        spec, study, found = self.spec, self.study, self.found
+        self.check()
+        test = self.test
         if self.outcome_kind == "binary":
             self._fit_binary(test)
         elif spec.kind == "compare":
@@ -448,6 +519,7 @@ class _Analysis:
             self._fit_relate(test)
         else:
             self._fit_change()
+        self._serial()
         found.references = tuple(dict.fromkeys(self.references))
         if found.subjects is None and self.unit and study.design != "clustered":
             found.subjects = int(self.rows[self.unit].nunique())
@@ -758,6 +830,48 @@ class _Analysis:
             f"{values.size:,}), {verdict}."
         )
         self.references.append(REFERENCES["shapiro"])
+
+    def _serial(self) -> None:
+        """Check an independent design's residuals, in time order, for rows that stay alike one to the next.
+
+        Rows that stay alike after the model, as in a time series, are not independent, and the standard
+        errors, intervals and p-values that assume they are come out too small. The order is the study's
+        time, or else its first date column; without one there is no order to check, since a file sorted
+        by a group or a value makes neighbouring rows alike without making them dependent.
+        """
+        found = self.found
+        if self.study.design != "independent" or found.residuals is None:
+            return
+        residuals = pd.Series(found.residuals, dtype=float).dropna()
+        if len(residuals) < SERIAL_MIN_ROWS or float(residuals.std()) == 0:
+            return
+        times = [self.study.time] if self.study.time else []
+        times += [name for name, variable in self.study.variables.items() if variable.type == "date"]
+        times = [name for name in times if name in self.data and self.data[name].notna().any()]
+        if not times:
+            return
+        rows = self.data.loc[residuals.index]
+        keys = [times[0], *([SOURCE_ROW] if SOURCE_ROW in rows else [])]
+        where = f"in order of {times[0]}"
+        order = rows.sort_values(keys, kind="stable").index
+        values = residuals.loc[order].to_numpy() - residuals.mean()
+        spread = float(np.dot(values, values))
+        lag = float(np.dot(values[1:], values[:-1]) / spread)
+        statistic = float(np.sum(np.diff(values) ** 2) / spread)
+        found.diagnostics.append(
+            f"Durbin–Watson statistic of the residuals {where}: {statistic:.2f} (lag-1 autocorrelation "
+            f"{_plain(lag)}); about 2 when successive rows are independent."
+        )
+        self.references.append(REFERENCES["durbin_watson"])
+        if lag > SERIAL_CORRELATION:
+            found.warnings.append(
+                f"Successive rows stay alike after the model (lag-1 autocorrelation of the residuals {where} "
+                f"{_plain(lag)}, Durbin–Watson {statistic:.2f}), as in a time series or readings taken in "
+                "runs. The design treats the rows as independent, so the standard errors, intervals and "
+                "p-values are too small. If the rows are one series over time, model it under `custom:`, "
+                "for example as a time series; if they come in runs or from repeated units, name the unit "
+                "as the subject or cluster in `design:`."
+            )
 
     def _levene(self, samples: list[np.ndarray], group: str, note: str = "") -> None:
         if len(samples) < 2 or any(len(sample) < 2 for sample in samples):
@@ -1135,6 +1249,46 @@ class _Analysis:
         intercept["measure"] = "intercept"
         return [slope, intercept]
 
+    def _line(self, fit, work: pd.DataFrame) -> dict:
+        """The model's prediction across the predictor, which the scatter figure draws (``found.line``).
+
+        Each covariate is held at a reference value: a number at its mean in the rows used, a category
+        at its reference level. The prediction is then a straight line, and the covariance of its
+        intercept and slope, from the covariance of the model's coefficients, gives its confidence band
+        at every x. Empty when the model has a term this cannot hold.
+        """
+        names = list(getattr(fit, "fe_params", fit.params).index)
+        # How much each coefficient adds to the line's intercept and to its slope.
+        weights = {"Intercept": (1.0, 0.0), self.names[self.spec.relate]: (0.0, 1.0)}
+        held = {}
+        for name in self.spec.covariates:
+            safe = self.names[name]
+            column = work[safe]
+            if isinstance(column.dtype, pd.CategoricalDtype):
+                reference, *others = column.cat.categories
+                held[name] = str(reference)
+                weights.update({f"C({safe})[T.{level}]": (0.0, 0.0) for level in others})
+            else:
+                held[name] = float(column.mean())
+                weights[safe] = (held[name], 0.0)
+        if any(term not in weights for term in names):
+            return {}
+        matrix = np.array([weights[term] for term in names]).T
+        intercept, slope = matrix @ fit.params[names].to_numpy(dtype=float)
+        covariance = matrix @ fit.cov_params().loc[names, names].to_numpy(dtype=float) @ matrix.T
+        # The quantile conf_int() uses, so the band agrees with the slope's interval.
+        if fit.use_t:
+            critical = stats.t.ppf(1 - self.alpha / 2, getattr(fit, "df_resid_inference", fit.df_resid))
+        else:
+            critical = stats.norm.ppf(1 - self.alpha / 2)
+        return {
+            "intercept": float(intercept),
+            "slope": float(slope),
+            "covariance": covariance,
+            "critical": float(critical),
+            "held": held,
+        }
+
     def _ols_diagnostics(self, fit, work: pd.DataFrame, group: str | None = None) -> None:
         from statsmodels.stats.diagnostic import het_breuschpagan  # noqa: PLC0415
         from statsmodels.stats.outliers_influence import variance_inflation_factor  # noqa: PLC0415
@@ -1285,21 +1439,63 @@ class _Analysis:
         found = self.found
         unit = self.names[self.unit]
         self._nested_check()
+        units = work[unit].nunique()
+        word = self.unit_word
+        if units < MIN_UNITS:
+            raise Unsupported(
+                f"All {len(work):,} rows this analysis uses come from a single {word} ({self.unit} "
+                f"{self.rows[self.unit].iloc[0]}), but a random intercept per {word} needs at least "
+                f"{MIN_UNITS} {word}s to estimate how they differ. Rows from one {word} form a single "
+                "series, not repeated measurements of several: write a model for that series, such as a "
+                "time-series model, under `custom:`, or set `design.type: independent` if the rows really "
+                "are independent."
+            )
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             try:
-                fit = smf.mixedlm(formula, data=work, groups=unit).fit(reml=True)
+                model = smf.mixedlm(formula, data=work, groups=unit)
+                if _absorbs_units(model.exog, work[unit]):
+                    raise Unsupported(
+                        "The fixed effects already account for every difference between the "
+                        f"{units} {word}s, as when each {word} is alone in its group, so the variance "
+                        f"between {word}s cannot be estimated and the mixed model's standard errors, "
+                        f"intervals and p-values would not be valid. Each group needs several {word}s; "
+                        "otherwise write the model under `custom:`."
+                    )
+                fit = model.fit(reml=True)
             except (np.linalg.LinAlgError, ValueError) as error:
                 raise Unsupported(
                     f"The linear mixed model could not be fitted ({error}). Check that each {self.unit_word} "
                     "has enough rows, or write the model under `custom:`."
                 ) from error
+        variance = float(np.asarray(fit.cov_re)[0, 0])
+        residual = float(fit.scale)
+        # The boundary is judged against the residual variance, the scale the ICC compares the variance
+        # with, rather than the outcome's variance, which also holds what the fixed effects explain.
+        boundary = variance <= BOUNDARY_VARIANCE * max(residual, 1e-300)
+        # A fit that did not converge is not reported, nor one that statsmodels calls converged at a point
+        # that is not a proper maximum, where the standard errors behind every interval and Wald test are
+        # undefined.
+        if not fit.converged:
+            raise Unsupported(
+                "The linear mixed model did not converge, so its estimates, intervals and p-values cannot be "
+                f"relied on. This usually means the {units} {word}s hold too little information on the "
+                "variance between them; write the model under `custom:`."
+            )
+        if not _positive_definite(fit.cov_params()):
+            edge = f" with the variance between {word}s at zero, the edge of what the model allows"
+            raise Unsupported(
+                f"The linear mixed model's fit is singular{edge if boundary else ''}: the covariance matrix "
+                "of its estimates is not positive definite, so their standard errors, intervals and Wald "
+                f"p-values would not be valid. This happens when the {units} {word}s are too few or too "
+                "alike for the variance between them to be estimated; write the model under `custom:`."
+            )
         self.fitted_formula = f"{formula}, groups = {unit}"
         for message in _record_warnings(caught):
-            found.warnings.append(f"statsmodels: {message}")
-        if not fit.converged:
-            found.warnings.append("The mixed model did not converge; treat its estimates with caution.")
-        units = work[unit].nunique()
+            # Any outcome measured in small units falls below statsmodels' absolute threshold, so its
+            # boundary warning is replaced by the relative judgement above.
+            if message != STATSMODELS_BOUNDARY:
+                found.warnings.append(f"statsmodels: {message}")
         per_unit = work.groupby(unit).size()
         if self.unit_word == "cluster":
             found.clusters = int(units)
@@ -1307,17 +1503,15 @@ class _Analysis:
             found.subjects = int(units)
         found.diagnostics.append(
             f"{units:,} {self.unit_word}s ({self.unit}), {int(per_unit.min()):,} to {int(per_unit.max()):,} "
-            f"rows each; the model {'converged' if fit.converged else 'did not converge'} (REML)."
+            "rows each; the model converged (REML)."
         )
-        variance = float(np.asarray(fit.cov_re)[0, 0])
-        residual = float(fit.scale)
         icc = variance / (variance + residual) if variance + residual > 0 else math.nan
         found.diagnostics.append(
             f"Variance between {self.unit_word}s {_plain(variance)}, residual variance {_plain(residual)}; "
             f"intraclass correlation (ICC) {_plain(icc, 2)}."
         )
         self.icc = icc
-        if variance <= 1e-8 * max(residual, 1e-300):
+        if boundary:
             found.warnings.append(
                 f"The variance between {self.unit_word}s was estimated as zero, at the edge of what the "
                 f"model allows; the {self.unit_word}s look no more alike than unrelated rows."
@@ -1491,6 +1685,7 @@ class _Analysis:
         found.diagnostics.append(f"{len(work):,} rows with both {spec.outcome} and {spec.relate}.")
         self._ols_diagnostics(fit, work)
         found.summary = _clean_summary(str(fit.summary()))
+        found.line = self._line(fit, work)
 
     def _relate_mixed(self) -> None:
         found, spec = self.found, self.spec
@@ -1504,6 +1699,7 @@ class _Analysis:
         rows = self._slope_rows(fit, "z", test="Linear mixed model")
         rows[0]["key"] = True
         found.estimates = _estimates(rows)
+        found.line = self._line(fit, work)
         if self.study.design == "paired":
             found.diagnostics.append(
                 f"Rows come in pairs from the same {self.unit}, so the slope comes from a mixed model with a "

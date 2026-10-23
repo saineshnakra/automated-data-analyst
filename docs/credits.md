@@ -106,7 +106,7 @@ The methods ADA applies, with the papers that introduced them:
 | van der Corput sequence | van der Corput, J. G. (1935), *Proceedings of the Koninklijke Akademie van Wetenschappen te Amsterdam* 38, 813–821 | Spreading the points of each group sideways the same way at every build, scaled by `scipy.stats.gaussian_kde` |
 | Normal Q–Q plot | Wilk, M. B. and Gnanadesikan, R. (1968), *Biometrika* 55, 1–17 | The model checks, through `scipy.stats.probplot` |
 | t confidence interval | `scipy.stats.t.interval` with `scipy.stats.sem` | Means and their intervals when an analysis gives none |
-| Confidence band for the mean | `statsmodels` OLS `get_prediction().summary_frame()` | The band in the scatter figure |
+| Confidence band for the mean | The linked model's coefficient covariance (the fixed-effect covariance for a mixed model); `statsmodels` OLS `get_prediction().summary_frame()` without a linked analysis | The band in the scatter figure |
 
 ## Checking a rebuild
 
@@ -163,3 +163,4 @@ output in `supplement/models/` names the library call behind every number.
 | Logistic regression | `statsmodels.formula.api.logit` | Cox, D. R. (1958), *JRSS B* 20, 215–242 |
 | Holm, Bonferroni and Benjamini–Hochberg adjustment | `statsmodels.stats.multitest.multipletests` | Holm, S. (1979), *Scandinavian Journal of Statistics* 6, 65–70; Dunn, O. J. (1961), *JASA* 56, 52–64; Benjamini and Hochberg (1995) |
 | Shapiro–Wilk, Levene (median-centred) and Breusch–Pagan tests; variance inflation factors | `scipy.stats.shapiro`, `levene`; `statsmodels.stats.diagnostic.het_breuschpagan`, `variance_inflation_factor` | Shapiro and Wilk (1965); Brown and Forsythe (1974); Breusch and Pagan (1979); Marquardt (1970) |
+| Durbin–Watson statistic of the residuals in time order | NumPy | Durbin and Watson (1950) |

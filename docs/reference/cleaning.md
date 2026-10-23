@@ -371,6 +371,15 @@ into one column of monthly dates, named after both (`year-month`), and the
 month column is dropped. When several columns qualify, the one whose name is
 only the year word wins, then the first alphabetically.
 
+With a day column too (`day`, `da`, `dy`), and then an hour, minute and second
+column, each used only if the one before it was and only if it holds a whole
+number in range on every row with a year, the parts become one timestamp at
+the finest grain given, named after them (`year-month-day-hour`). The parts
+are kept as columns of their own, and the note says what was combined, to
+which grain, and that no time zone is attached. A date no calendar has (31
+February, hour 24) is left missing rather than rolled into the next day, and
+the note gives the number of such rows and the first one as written.
+
 The name and the range both matter. `model_year` holding 70 to 82 is not a
 year, and a count that happens to fall between 1800 and 2100 is not a year
 unless its name says so.

@@ -1,8 +1,10 @@
 import json
 import math
+import re
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import pandas as pd
@@ -17,6 +19,7 @@ from statsmodels.stats.proportion import confint_proportions_2indep
 from ada.research import build, load
 from ada.research.analyses import (
     COLUMNS,
+    _positive_definite,
     adjust_families,
     analyse,
     games_howell,
@@ -25,10 +28,13 @@ from ada.research.analyses import (
     hodges_lehmann_shift,
     key_row,
     omega_squared,
+    results_table,
 )
+from ada.research.descriptives import descriptive_table
 from ada.research.processing import read
 from ada.research.results import MEAN_COLUMNS
 from ada.research.study import StudyError
+from ada.research.tables import MAX_DECIMALS, decimals_for, interval, latex_escape, number
 
 
 def study_dict(design: dict, variables: dict, analyses: list, data: str = "data.csv", **extra) -> dict:
@@ -520,6 +526,134 @@ class MixedModelTests(unittest.TestCase):
         self.assertEqual(results["a"].subjects, 12)
         self.assertTrue(any("not in this model" in item for item in results["a"].diagnostics))
 
+    def test_a_single_subject_is_refused(self):
+        frame = weights()
+        one = frame[frame["Mouse"] == "M00"]
+        study = study_dict(
+            {"type": "repeated", "subject": "Mouse", "time": "Day"},
+            WEIGHT_VARIABLES,
+            [
+                analysis("change", "Weight (g)", change="Day", time_as="linear"),
+                analysis("relate", "Weight (g)", relate="Day"),
+            ],
+        )
+        loaded, data, results = run_analyses(one, study)
+        for found in results.values():
+            self.assertFalse(found.supported)
+            self.assertTrue(found.estimates.empty)
+            self.assertIn("single subject (Mouse M00)", found.reason)
+            self.assertIn("at least 2 subjects", found.reason)
+            self.assertIn("custom:", found.reason)
+        table = results_table(loaded, data, list(results.values()), planned=True)
+        self.assertTrue(table.display.empty)
+        self.assertTrue(any(note.startswith("Not fitted: relate.") for note in table.notes))
+
+    def test_two_subjects_are_fitted_with_a_warning(self):
+        frame = weights()
+        two = frame[frame["Mouse"].isin(["M00", "M01"])]
+        _, _, results = run_analyses(
+            two,
+            study_dict(
+                {"type": "repeated", "subject": "Mouse", "time": "Day"},
+                WEIGHT_VARIABLES,
+                [analysis("a", "Weight (g)", change="Day", time_as="linear")],
+            ),
+        )
+        found = results["a"]
+        self.assertTrue(found.supported)
+        self.assertEqual(found.subjects, 2)
+        direct = smf.mixedlm("Q('Weight (g)') ~ Day", two, groups="Mouse").fit(reml=True)
+        self.assertAlmostEqual(key_row(found)["estimate"], direct.params["Day"], places=6)
+        self.assertAlmostEqual(key_row(found)["p"], direct.pvalues["Day"], places=8)
+        self.assertTrue(any(warning.startswith("Only 2 subjects") for warning in found.warnings))
+
+    def test_a_subject_alone_in_its_group_is_refused(self):
+        frame = weights()
+        pair = frame[frame["Mouse"].isin(["M00", "M11"])]
+        _, _, results = run_analyses(
+            pair,
+            study_dict(
+                {"type": "repeated", "subject": "Mouse", "time": "Day"},
+                WEIGHT_VARIABLES,
+                [
+                    analysis("compare", "Weight (g)", compare="Diet"),
+                    analysis("change", "Weight (g)", change="Day", by="Diet"),
+                ],
+            ),
+        )
+        for found in results.values():
+            self.assertFalse(found.supported)
+            self.assertIn("every difference between the 2 subjects", found.reason)
+            self.assertIn("alone in its group", found.reason)
+
+    def test_a_singular_fit_is_refused(self):
+        frame = weights()
+        # Every mouse has the same mean weight, so the variance between mice is estimated at the boundary.
+        weight = frame["Weight (g)"]
+        frame["Weight (g)"] = weight - weight.groupby(frame["Mouse"]).transform("mean") + 20
+        _, _, results = run_analyses(
+            frame,
+            study_dict(
+                {"type": "repeated", "subject": "Mouse", "time": "Day"},
+                WEIGHT_VARIABLES,
+                [analysis("a", "Weight (g)", relate="Day")],
+            ),
+        )
+        found = results["a"]
+        self.assertFalse(found.supported)
+        self.assertTrue(found.estimates.empty)
+        self.assertRegex(found.reason, "not positive definite|did not converge")
+        self.assertIn("custom:", found.reason)
+
+    def test_the_variance_boundary_is_judged_on_the_outcome_scale(self):
+        frame = weights()
+        # The weights on a micro scale (about 2 × 10⁻⁵), where the mice still differ.
+        frame["Weight (g)"] = frame["Weight (g)"] * 1e-6
+        # The same mice and days with no difference between mice at all.
+        flat = frame.copy()
+        noise = np.random.default_rng(0).normal(0, 1, len(flat))
+        flat["Weight (g)"] = (20 + 0.1 * flat["Day"] + noise) * 1e-6
+        design = {"type": "repeated", "subject": "Mouse", "time": "Day"}
+        analyses = [analysis("a", "Weight (g)", compare="Diet")]
+        found = run_analyses(frame, study_dict(design, WEIGHT_VARIABLES, analyses))[2]["a"]
+        self.assertTrue(found.supported)
+        self.assertEqual(found.warnings, [])
+        found = run_analyses(flat, study_dict(design, WEIGHT_VARIABLES, analyses))[2]["a"]
+        self.assertTrue(found.supported)
+        self.assertTrue(any("was estimated as zero" in warning for warning in found.warnings))
+        self.assertFalse(any("boundary of the parameter space" in warning for warning in found.warnings))
+
+    def test_the_covariance_check_ignores_units_but_not_singularity(self):
+        scales = np.diag([1e-6, 1.0, 1e4])
+        correlations = np.array([[1.0, 0.5, 0.2], [0.5, 1.0, 0.3], [0.2, 0.3, 1.0]])
+        self.assertTrue(_positive_definite(scales @ correlations @ scales))
+        self.assertFalse(_positive_definite(np.array([[1.0, 0.0], [0.0, -3.0]])))
+        self.assertFalse(_positive_definite(np.array([[4.0, 2.0], [2.0, 1.0]])))
+        self.assertFalse(_positive_definite(np.array([[1.0, np.nan], [np.nan, 1.0]])))
+
+    def test_a_fit_that_did_not_converge_is_refused(self):
+        from statsmodels.regression.mixed_linear_model import MixedLM  # noqa: PLC0415
+
+        fit = MixedLM.fit
+
+        def unconverged(model, *args, **kwargs):
+            result = fit(model, *args, **kwargs)
+            result.converged = False
+            return result
+
+        with mock.patch.object(MixedLM, "fit", unconverged):
+            _, _, results = run_analyses(
+                clustered_cells(),
+                study_dict(
+                    {"type": "clustered", "cluster": "Animal"},
+                    CLUSTER_VARIABLES,
+                    [analysis("a", "Current", compare="Genotype")],
+                ),
+            )
+        self.assertFalse(results["a"].supported)
+        self.assertIn("did not converge", results["a"].reason)
+        self.assertIn("12 clusters", results["a"].reason)
+
 
 class BinaryTests(unittest.TestCase):
     def test_rates_give_newcombe_risk_difference_and_odds_ratio(self):
@@ -770,6 +904,68 @@ class OtherTestsTests(unittest.TestCase):
         )
         self.assertAlmostEqual(key_row(results["a"])["estimate"], 17 / 30 - 8 / 30)
         self.assertTrue(any("1 is counted as the event" in item for item in results["a"].diagnostics))
+
+
+class SerialCorrelationTests(unittest.TestCase):
+    """An independent design's residuals are checked, in time order, for rows that stay alike."""
+
+    VARIABLES = {
+        "Time": {"role": "other", "type": "date"},
+        "Load": {"role": "covariate", "type": "numeric"},
+        "Reading": {"role": "outcome", "type": "numeric"},
+    }
+
+    def series(self, persistence: float, seed: int = 4) -> pd.DataFrame:
+        """Hourly readings that follow a load, plus noise that carries over from hour to hour."""
+        rng = np.random.default_rng(seed)
+        noise = np.zeros(200)
+        for hour in range(1, 200):
+            noise[hour] = persistence * noise[hour - 1] + rng.normal()
+        load = rng.normal(10, 2, 200)
+        return pd.DataFrame(
+            {
+                "Time": pd.date_range("2024-01-01", periods=200, freq="h").strftime("%Y-%m-%d %H:%M"),
+                "Load": load.round(3),
+                "Reading": (2 * load + 5 * noise).round(3),
+            }
+        )
+
+    def fitted(self, frame: pd.DataFrame, variables: dict | None = None):
+        study = study_dict(
+            {"type": "independent"}, variables or self.VARIABLES, [analysis("a", "Reading", relate="Load")]
+        )
+        return run_analyses(frame, study)[2]["a"]
+
+    def test_a_series_over_time_is_flagged_in_time_order(self):
+        # The file's rows are shuffled; the check orders them by Time.
+        found = self.fitted(self.series(0.95).sample(frac=1, random_state=0))
+
+        self.assertTrue(found.supported)
+        self.assertTrue(any(warning.startswith("Successive rows stay alike") for warning in found.warnings))
+        self.assertIn("in order of Time", " ".join(found.warnings))
+        self.assertTrue(any(line.startswith("Durbin–Watson") for line in found.diagnostics))
+
+    def test_independent_rows_are_not_flagged(self):
+        found = self.fitted(self.series(0.0))
+
+        self.assertFalse(any("Successive rows" in warning for warning in found.warnings))
+        line = next(line for line in found.diagnostics if line.startswith("Durbin–Watson"))
+        statistic = float(re.search(r": ([0-9.]+) \(", line).group(1))
+        self.assertGreater(statistic, 1.5)
+        self.assertLess(statistic, 2.5)
+
+    def test_a_file_sorted_by_group_with_no_time_is_not_checked(self):
+        # Rows sorted by a group the model leaves out are alike in file order, but not dependent.
+        frame = self.series(0.0).drop(columns="Time")
+        frame["Batch"] = np.repeat(["A", "B", "C", "D"], 50)
+        frame["Reading"] += np.repeat([0.0, 30.0, 60.0, 90.0], 50)
+        variables = {name: spec for name, spec in self.VARIABLES.items() if name != "Time"}
+        variables["Batch"] = {"role": "other", "type": "categorical"}
+
+        found = self.fitted(frame, variables)
+
+        self.assertFalse(any("Successive rows" in warning for warning in found.warnings))
+        self.assertFalse(any(line.startswith("Durbin–Watson") for line in found.diagnostics))
 
 
 class RefusalTests(unittest.TestCase):
@@ -1083,6 +1279,142 @@ class BuildOutputTests(unittest.TestCase):
             self.assertIn("model-primary", changed)
             reasons = " ".join(changed["model-primary"].reasons)
             self.assertIn("adjusted", reasons)
+
+
+def micro_measurements(seed: int = 8) -> pd.DataFrame:
+    """Voice jitter in seconds, about 3 × 10⁻⁵: lower in group B, rising with age, flat over session."""
+    rng = np.random.default_rng(seed)
+    group = np.repeat(["A", "B"], 30)
+    age = np.round(rng.uniform(40, 80, 60), 1)
+    jitter = 3.6e-5 - 1.2e-5 * (group == "B") + 2e-7 * (age - 60) + rng.normal(0, 4e-6, 60)
+    return pd.DataFrame(
+        {"Group": group, "Age": age, "Session": np.round(rng.uniform(0, 200, 60), 1), "Jitter": jitter}
+    )
+
+
+MICRO_VARIABLES = {
+    "Group": {"role": "group", "type": "categorical", "levels": ["A", "B"]},
+    "Age": {"role": "covariate", "type": "numeric", "unit": "years"},
+    "Session": {"role": "covariate", "type": "numeric"},
+    "Jitter": {"role": "outcome", "type": "numeric", "unit": "s"},
+}
+MICRO_ANALYSES = [
+    analysis("group", "Jitter", compare="Group", family="micro"),
+    analysis("age", "Jitter", relate="Age", family="micro"),
+    analysis("session", "Jitter", relate="Session", family="micro"),
+]
+
+
+def printed(text: str) -> float:
+    """A number as the tables print it, such as "−1.20 × 10⁻⁵ s" or "1,234.5", read back."""
+    match = re.match(r"([−\d.,]+)(?: × 10([⁻⁰¹²³⁴⁵⁶⁷⁸⁹]+))?", text)
+    power = match.group(2).translate(str.maketrans("⁻⁰¹²³⁴⁵⁶⁷⁸⁹", "-0123456789")) if match.group(2) else "0"
+    return float(match.group(1).replace("−", "-").replace(",", "")) * 10 ** int(power)
+
+
+class PrintedNumberTests(unittest.TestCase):
+    def test_ordinary_numbers_print_as_before(self):
+        self.assertEqual(number(64.8012, 2), "64.80")
+        self.assertEqual(number(-11.19, 2), "−11.19")
+        self.assertEqual(number(1234.5, 1), "1,234.5")
+        self.assertEqual(number(0.0776, 4), "0.0776")
+        self.assertEqual(number(-0.0, 2), "0.00")
+        self.assertEqual(number(0, 0), "0")
+        self.assertEqual(number(math.nan), "–")
+        self.assertEqual(interval(-7.12, 0.01, 2), "−7.12 to 0.01")
+        for spread in (120.0, 12.0, 1.5, 0.12, 0.012, 0.0012, 0.00012, 0.000012):
+            values = 5 + spread * np.array([-1.0, 0.0, 1.0])
+            self.assertEqual(decimals_for(values), min(4, max(0, 2 - math.floor(math.log10(spread)))))
+
+    def test_a_nonzero_value_never_prints_as_zero_or_loses_its_sign(self):
+        self.assertEqual(number(-0.00001, 4), "−1.0 × 10⁻⁵")
+        self.assertEqual(number(0.003, 2), "0.0030")
+        self.assertEqual(number(-0.4, 0), "−0.40")
+        self.assertEqual(interval(-0.00003, 0.0123, 3), "−3.0 × 10⁻⁵ to 0.012")
+        self.assertEqual(interval(-0.004, 0.012, 2), "−0.0040 to 0.01")
+
+    def test_micro_scale_values_print_in_scientific_notation(self):
+        values = 3e-5 + 1e-5 * np.random.default_rng(1).standard_normal(200)
+        self.assertGreater(decimals_for(values), MAX_DECIMALS)
+        self.assertEqual(number(-1.195e-5, 7), "−1.20 × 10⁻⁵")
+        self.assertEqual(number(4.456e-4, 7), "4.456 × 10⁻⁴")
+        self.assertEqual(number(-7.65e-9, 10), "−7.65 × 10⁻⁹")
+        self.assertEqual(number(0.0, 7), "0.0000000")
+
+    def test_explicit_decimals_are_kept_unless_they_print_zero(self):
+        values = 3e-5 + 1e-5 * np.random.default_rng(1).standard_normal(200)
+        self.assertEqual(decimals_for(values, 6), 6)
+        self.assertEqual(number(4.4e-5, 6), "0.000044")
+        self.assertEqual(number(-4.4e-7, 6), "−4.4 × 10⁻⁷")
+
+    def test_scientific_notation_is_escaped_for_latex(self):
+        self.assertEqual(latex_escape("−1.20 × 10⁻⁵ s"), r"$-$1.20 $\times$ 10\textsuperscript{$-$5} s")
+        self.assertEqual(latex_escape("ω² = 0.80"), r"$\omega$\textsuperscript{2} = 0.80")
+        self.assertEqual(latex_escape("χ²(4) = 120.45"), r"$\chi$\textsuperscript{2}(4) = 120.45")
+
+    def test_micro_scale_estimates_and_slopes_keep_their_value_and_sign(self):
+        loaded, data, results = run_analyses(
+            micro_measurements(), study_dict({"type": "independent"}, MICRO_VARIABLES, MICRO_ANALYSES)
+        )
+        table = results_table(loaded, data, list(results.values()), planned=True)
+        rows = table.data[table.data["measure"].isin(["mean difference", "slope"])]
+        display = table.display.loc[rows.index]
+        self.assertEqual(len(rows), 3)
+        self.assertLess(rows.iloc[0]["estimate"], 0)
+        session = rows[rows["analysis"] == "session"].iloc[0]
+        self.assertLess(session["ci_low"], 0)
+        self.assertGreater(session["ci_high"], 0)
+        for (_, row), (_, shown) in zip(rows.iterrows(), display.iterrows(), strict=True):
+            low, high = shown["95% CI"].split(" to ")
+            pairs = ((shown["Estimate"], row["estimate"]), (low, row["ci_low"]), (high, row["ci_high"]))
+            for text, value in pairs:
+                self.assertIn("× 10⁻", text)
+                self.assertAlmostEqual(printed(text) / value, 1, delta=0.01)
+        self.assertTrue(display.iloc[1]["Estimate"].endswith(" s per year"))
+
+    def test_micro_scale_tables_and_prose_in_a_build(self):
+        study = study_dict({"type": "independent"}, MICRO_VARIABLES, MICRO_ANALYSES)
+        with study_folder(micro_measurements(), study, "data.csv") as path:
+            built = build(path)
+            tables = {table.id: table for table in built.tables}
+            estimate = tables["results"].display.iloc[0]["Estimate"]
+            self.assertIn(estimate, (built.out / "methods" / "results.md").read_text(encoding="utf-8"))
+            self.assertIn(latex_escape(estimate), (built.out / "tables" / "results.tex").read_text())
+            rows = {(name, row[1]): row[2:] for name, row in _named(tables["descriptives"].display)}
+            jitter = micro_measurements()["Jitter"]
+            mean, sd = rows[("Jitter (s)", "Mean (SD)")][0].rstrip(")").split(" (")
+            self.assertAlmostEqual(printed(mean) / jitter.mean(), 1, delta=0.01)
+            self.assertAlmostEqual(printed(sd) / jitter.std(), 1, delta=0.01)
+            for name in ("tables/results.tex", "tables/descriptives.tex", "methods/results.md"):
+                self.assertNotIn("0.0000", (built.out / name).read_text(encoding="utf-8"), name)
+
+    def test_the_descriptive_table_of_ordinary_values_is_unchanged(self):
+        study = assay_study()
+        study["processing"] = [
+            {"exclude": {"where": {"column": "Viability (%)", "below": 0}}, "reason": "Instrument error."}
+        ]
+        with study_folder(assay(), study) as path:
+            loaded = load(path)
+            display = descriptive_table(loaded, read(loaded)).display
+        rows = {(name, row[1]): row[2:] for name, row in _named(display)}
+        self.assertEqual(
+            rows[("Viability (%)", "Mean (SD)")],
+            ["84.57 (5.57)", "89.67 (3.95)", "86.12 (2.34)", "78.49 (2.29)"],
+        )
+        self.assertEqual(rows[("Viability (%)", "Median [IQR]")][0], "84.86 [79.87, 88.62]")
+        self.assertEqual(rows[("Viability (%)", "Range")][0], "74.77 to 99.97")
+        self.assertEqual(
+            rows[("Passage", "Mean (SD)")], ["6.83 (2.84)", "5.92 (2.84)", "7.27 (3.32)", "7.33 (2.35)"]
+        )
+        self.assertEqual(rows[("Passage", "Range")][0], "3.00 to 11.00")
+
+
+def _named(display: pd.DataFrame):
+    """Each row of a descriptive table with the variable it belongs to (the last named above it)."""
+    current = ""
+    for row in display.itertuples(index=False):
+        current = row[0] or current
+        yield current, list(row)
 
 
 class SyntheticStudyTests(unittest.TestCase):

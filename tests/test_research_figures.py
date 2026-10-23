@@ -6,6 +6,7 @@ from unittest import mock
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
+import statsmodels.formula.api as smf
 from research_helpers import assay, assay_study, study_folder, weights
 from scipy import stats
 
@@ -65,6 +66,158 @@ def weights_study(**changes) -> dict:
 
 def assay_with(**changes) -> dict:
     return assay_study(output={"figures": ["svg"]}, **changes)
+
+
+def plated_wells(plates: int = 6, wells: int = 8, seed: int = 11) -> pd.DataFrame:
+    """Wells on plates whose levels clearly differ, so a random intercept per plate is well away from zero
+    and the mixed model converges with any version of the libraries."""
+    rng = np.random.default_rng(seed)
+    plate = np.repeat(np.arange(plates), wells)
+    passage = rng.integers(3, 12, plates * wells)
+    viability = 85 + np.linspace(-8, 8, plates)[plate] - 0.8 * passage + rng.normal(0, 1.5, plates * wells)
+    return pd.DataFrame(
+        {
+            "Well": [f"W{index:02d}" for index in range(plates * wells)],
+            "Treatment": np.resize(["Control", "Low", "High"], plates * wells),
+            "Passage": passage,
+            "Viability (%)": np.round(viability, 2),
+            "Plate": [f"Plate {number}" for number in plate],
+        }
+    )
+
+
+def readings(rows: int = 40, seed: int = 7) -> pd.DataFrame:
+    """A signal in thousandths falling with a dose in thousands: a negative slope on very different scales."""
+    rng = np.random.default_rng(seed)
+    dose = rng.uniform(1000, 5000, rows)
+    return pd.DataFrame(
+        {
+            "Sample": [f"S{index:02d}" for index in range(rows)],
+            "Dose": np.round(dose, 1),
+            "Signal": np.round(0.02 - 2.5e-6 * dose + rng.normal(0, 1e-3, rows), 6),
+        }
+    )
+
+
+def readings_study(**changes) -> dict:
+    study = {
+        "study": {"title": "Signal"},
+        "data": {"path": "readings.csv", "observation": "one sample"},
+        "design": {"type": "independent"},
+        "variables": {
+            "Sample": {"role": "identifier", "type": "text"},
+            "Dose": {"role": "covariate", "type": "numeric", "unit": "ng/mL"},
+            "Signal": {"role": "outcome", "type": "numeric"},
+        },
+        "analyses": [{"id": "dose", "outcome": "Signal", "relate": "Dose", "planned": True}],
+        "output": {"figures": ["svg"]},
+    }
+    study.update(changes)
+    return study
+
+
+def least_squares(xs, ys, confidence: float = 0.95) -> dict:
+    """Intercept and slope with t intervals, by NumPy least squares rather than statsmodels."""
+    design = np.column_stack([np.ones(len(xs)), xs])
+    coefficients, *_ = np.linalg.lstsq(design, ys, rcond=None)
+    residuals = ys - design @ coefficients
+    freedom = len(xs) - 2
+    errors = np.sqrt(np.diag(residuals @ residuals / freedom * np.linalg.inv(design.T @ design)))
+    half = stats.t.ppf(0.5 + confidence / 2, freedom) * errors
+    return {
+        name: (coefficients[index], coefficients[index] - half[index], coefficients[index] + half[index])
+        for index, name in enumerate(("intercept", "slope"))
+    }
+
+
+def confounded(rows: int = 60, seed: int = 13) -> pd.DataFrame:
+    """Older patients get higher doses and score higher; with age held, the score falls with dose."""
+    rng = np.random.default_rng(seed)
+    age = rng.uniform(40, 80, rows)
+    batch = np.where(np.arange(rows) % 3 == 0, "B", "A")
+    dose = 0.5 * age + rng.normal(0, 3, rows)
+    score = 10 - 1.0 * dose + 2.0 * age + 3.0 * (batch == "B") + rng.normal(0, 2, rows)
+    return pd.DataFrame(
+        {
+            "Patient": [f"P{index:02d}" for index in range(rows)],
+            "Age": np.round(age, 1),
+            "Batch": batch,
+            "Dose": np.round(dose, 2),
+            "Score": np.round(score, 2),
+        }
+    )
+
+
+def visits(people: int = 16, seed: int = 17) -> pd.DataFrame:
+    """Patients seen five times each; the score falls with dose within a patient and rises with age."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for person in range(people):
+        age, sex, level = rng.uniform(40, 80), "F" if person % 2 else "M", rng.normal(0, 4)
+        usual = 0.5 * age + rng.normal(0, 2)
+        for _ in range(5):
+            dose = usual + rng.normal(0, 2)
+            score = 20 - 0.8 * dose + 0.6 * age + (2.0 if sex == "F" else 0.0) + level + rng.normal(0, 1)
+            rows.append(
+                {
+                    "Patient": f"P{person:02d}",
+                    "Age": round(age, 1),
+                    "Sex": sex,
+                    "Dose": round(dose, 2),
+                    "Score": round(score, 2),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def patients_study(design: dict, covariates=(), **changes) -> dict:
+    study = {
+        "study": {"title": "Dose"},
+        "data": {"path": "patients.csv", "observation": "one visit of one patient"},
+        "design": design,
+        "variables": {
+            "Patient": {"role": "identifier", "type": "text"},
+            "Age": {"role": "covariate", "type": "numeric", "unit": "years"},
+            "Dose": {"role": "covariate", "type": "numeric", "unit": "mg"},
+            "Score": {"role": "outcome", "type": "numeric"},
+        },
+        "analyses": [
+            {
+                "id": "dose",
+                "outcome": "Score",
+                "relate": "Dose",
+                "covariates": list(covariates),
+                "planned": True,
+            }
+        ],
+        "output": {"figures": ["svg"]},
+    }
+    study.update(changes)
+    return study
+
+
+def reported_slope(built, ident: str) -> pd.Series:
+    """The slope row of an analysis as the results table on disk reports it."""
+    table = pd.read_csv(built.out / "tables" / "results.csv")
+    return table[(table["analysis"] == ident) & (table["measure"] == "slope")].iloc[0]
+
+
+def fixed_effect_band(fit, rows: np.ndarray, names: list[str], confidence: float = 0.95) -> np.ndarray:
+    """A mixed model's prediction and Wald interval at each row of a design matrix, from its fixed effects."""
+    mean = rows @ fit.fe_params[names].to_numpy()
+    covariance = fit.cov_params().loc[names, names].to_numpy()
+    half = stats.norm.ppf(0.5 + confidence / 2) * np.sqrt(np.einsum("ij,jk,ik->i", rows, covariance, rows))
+    return np.column_stack([mean, mean - half, mean + half])
+
+
+def assert_ordered_intervals(test, table: pd.DataFrame) -> None:
+    """Every row with an interval has low <= value <= high, whether the value is a fit or an estimate."""
+    rows = table.dropna(subset=["ci_low", "ci_high"])
+    test.assertGreater(len(rows), 0)
+    values = rows["fit"].fillna(rows["estimate"])
+    test.assertFalse(values.isna().any())
+    test.assertTrue((rows["ci_low"] <= values).all(), rows[rows["ci_low"] > values])
+    test.assertTrue((values <= rows["ci_high"]).all(), rows[values > rows["ci_high"]])
 
 
 def source(built, ident: str) -> pd.DataFrame:
@@ -273,7 +426,7 @@ class ScatterTests(unittest.TestCase):
         self.assertAlmostEqual(slope["estimate"], regression.slope, places=9)
         self.assertEqual((table["element"] == "point").sum(), len(data))
 
-    def test_a_clustered_design_says_the_band_ignores_the_clustering(self):
+    def test_a_clustered_design_without_a_fitted_model_draws_no_band(self):
         frame = assay()
         frame["Plate"] = [f"Plate {index % 4}" for index in range(len(frame))]
         study = assay_with(
@@ -282,12 +435,18 @@ class ScatterTests(unittest.TestCase):
         )
         study["variables"]["Plate"] = {"role": "identifier", "type": "categorical"}
         with study_folder(frame, study) as path, with_results(lambda result: None):
-            caption = asset(build(path), "passage-scatter").caption
-        self.assertIn("come from 4 clusters (Plate), so it is narrower than it should be", caption)
+            built = build(path)
+            caption = asset(built, "passage-scatter").caption
+            table = source(built, "passage-scatter")
+        self.assertIn(
+            "come from 4 clusters (Plate), so the points are not independent and least squares gives no "
+            "valid confidence band",
+            caption,
+        )
+        self.assertNotIn("ci_low", table.columns)
 
     def test_a_clustered_design_draws_the_mixed_model_line(self):
-        frame = assay()
-        frame["Plate"] = [f"Plate {index % 4}" for index in range(len(frame))]
+        frame = plated_wells()
         study = assay_with(
             design={"type": "clustered", "cluster": "Plate"},
             analyses=[{"id": "passage", "outcome": "Viability (%)", "relate": "Passage", "planned": True}],
@@ -296,6 +455,181 @@ class ScatterTests(unittest.TestCase):
         with study_folder(frame, study) as path:
             caption = asset(build(path), "passage-scatter").caption
         self.assertIn("fixed-effect fit of analysis passage", caption)
+
+    def test_the_coefficient_rows_match_an_independent_fit(self):
+        listed = [
+            {"id": "linked", "type": "scatter", "analysis": "dose"},
+            {"id": "plain", "type": "scatter", "x": "Dose", "y": "Signal"},
+        ]
+        frame = readings()
+        with study_folder(frame, readings_study(figures=listed), "readings.csv") as path:
+            built = build(path)
+            tables = {ident: source(built, ident) for ident in ("linked", "plain")}
+        xs, ys = frame["Dose"].to_numpy(float), frame["Signal"].to_numpy(float)
+        expected = least_squares(xs, ys)
+        fit = sm.OLS(ys, sm.add_constant(xs)).fit()
+        self.assertLess(expected["slope"][0], 0)
+        for ident, table in tables.items():
+            for position, name in enumerate(("intercept", "slope")):
+                with self.subTest(figure=ident, row=name):
+                    row = table[table["element"] == name].iloc[0]
+                    got = [row["estimate"], row["ci_low"], row["ci_high"]]
+                    np.testing.assert_allclose(got, expected[name], rtol=1e-8)
+                    np.testing.assert_allclose(
+                        got, [fit.params[position], *fit.conf_int(alpha=0.05)[position]], rtol=1e-8
+                    )
+                    self.assertEqual(row["n"], len(frame))
+            assert_ordered_intervals(self, table)
+
+    def test_an_adjusted_regression_draws_its_prediction_at_the_reference_values(self):
+        frame = confounded()
+        study = patients_study({"type": "independent"}, covariates=["Age", "Batch"])
+        study["data"]["observation"] = "one patient"
+        study["variables"]["Batch"] = {"role": "covariate", "type": "categorical", "levels": ["A", "B"]}
+        with study_folder(frame, study, "patients.csv") as path:
+            built = build(path)
+            table = source(built, "dose-scatter")
+            caption = asset(built, "dose-scatter").caption
+            reported = reported_slope(built, "dose")
+        fit = smf.ols("Score ~ Dose + Age + C(Batch)", data=frame).fit()
+        line = table[table["element"] == "fit"]
+        intercept = table[table["element"] == "intercept"].iloc[0]
+        slope = table[table["element"] == "slope"].iloc[0]
+        at = pd.DataFrame({"Dose": [*line["Dose"], 0.0], "Age": frame["Age"].mean(), "Batch": "A"})
+        expected = fit.get_prediction(at).summary_frame(alpha=0.05)
+        drawn = np.vstack(
+            [line[["fit", "ci_low", "ci_high"]], intercept[["estimate", "ci_low", "ci_high"]].to_numpy(float)]
+        )
+        np.testing.assert_allclose(drawn, expected[["mean", "mean_ci_lower", "mean_ci_upper"]], rtol=1e-8)
+        np.testing.assert_allclose(line["Age"], frame["Age"].mean(), rtol=1e-10)
+        self.assertEqual(set(line["Batch"]), {"A"})
+        # The slope is the analysis's, which has the opposite sign to least squares on dose alone.
+        np.testing.assert_allclose(
+            slope[["estimate", "ci_low", "ci_high"]].to_numpy(float),
+            reported[["estimate", "ci_low", "ci_high"]].to_numpy(float),
+            rtol=1e-10,
+        )
+        self.assertLess(slope["estimate"], 0)
+        self.assertGreater(stats.linregress(frame["Dose"], frame["Score"]).slope, 0)
+        assert_ordered_intervals(self, table)
+        self.assertIn(
+            "least-squares fit of analysis dose (Linear regression (OLS) adjusted for Age, Batch) and its "
+            "95% confidence interval for the mean, holding Age at its mean in the rows analysed "
+            f"({frame['Age'].mean():.4g} years) and Batch at its reference level (A).",
+            caption,
+        )
+        self.assertIn("The points are the observed values, not adjusted for Age, Batch", caption)
+        self.assertNotIn("the line does not", caption)
+
+    def test_a_mixed_model_with_covariates_draws_its_fixed_effect_prediction(self):
+        frame = visits()
+        study = patients_study({"type": "repeated", "subject": "Patient"}, covariates=["Age", "Sex"])
+        study["variables"]["Sex"] = {"role": "covariate", "type": "categorical", "levels": ["M", "F"]}
+        with study_folder(frame, study, "patients.csv") as path:
+            built = build(path)
+            table = source(built, "dose-scatter")
+            caption = asset(built, "dose-scatter").caption
+            reported = reported_slope(built, "dose")
+        data = frame.assign(Sex=pd.Categorical(frame["Sex"], categories=["M", "F"]))
+        fit = smf.mixedlm("Score ~ Dose + Age + C(Sex)", data=data, groups="Patient").fit(reml=True)
+        names = ["Intercept", "C(Sex)[T.F]", "Dose", "Age"]
+        line = table[table["element"] == "fit"]
+        doses = line["Dose"].to_numpy()
+        rows = np.column_stack(
+            [np.ones(len(doses)), np.zeros(len(doses)), doses, np.full(len(doses), frame["Age"].mean())]
+        )
+        expected = fixed_effect_band(fit, rows, names)
+        np.testing.assert_allclose(line[["fit", "ci_low", "ci_high"]], expected, rtol=1e-6)
+        at = pd.DataFrame({"Dose": doses, "Age": frame["Age"].mean(), "Sex": "M"})
+        np.testing.assert_allclose(line["fit"], fit.predict(at), rtol=1e-6)
+        slope = table[table["element"] == "slope"].iloc[0]
+        np.testing.assert_allclose(
+            slope[["estimate", "ci_low", "ci_high"]].to_numpy(float),
+            reported[["estimate", "ci_low", "ci_high"]].to_numpy(float),
+            rtol=1e-10,
+        )
+        np.testing.assert_allclose(
+            [slope["estimate"], *fit.conf_int(alpha=0.05).loc["Dose"]],
+            slope[["estimate", "ci_low", "ci_high"]].to_numpy(float),
+            rtol=1e-6,
+        )
+        self.assertLess(slope["estimate"], 0)
+        assert_ordered_intervals(self, table)
+        self.assertIn("fixed-effect fit of analysis dose (Linear mixed model", caption)
+        self.assertIn("holding Age at its mean in the rows analysed", caption)
+        self.assertIn("and Sex at its reference level (M).", caption)
+        self.assertIn("measured more than once, the line and band come from the mixed model", caption)
+        self.assertNotIn("narrower than it should be", caption)
+        self.assertNotIn("the line does not", caption)
+
+    def test_a_mixed_model_without_covariates_draws_its_line_and_band(self):
+        frame = visits()
+        study = patients_study({"type": "repeated", "subject": "Patient"})
+        with study_folder(frame, study, "patients.csv") as path:
+            built = build(path)
+            table = source(built, "dose-scatter")
+            caption = asset(built, "dose-scatter").caption
+            reported = reported_slope(built, "dose")
+        fit = smf.mixedlm("Score ~ Dose", data=frame, groups="Patient").fit(reml=True)
+        line = table[table["element"] == "fit"]
+        doses = line["Dose"].to_numpy()
+        rows = np.column_stack([np.ones(len(doses)), doses])
+        expected = fixed_effect_band(fit, rows, ["Intercept", "Dose"])
+        np.testing.assert_allclose(line[["fit", "ci_low", "ci_high"]], expected, rtol=1e-6)
+        limits = fit.conf_int(alpha=0.05)
+        for term, element in (("Intercept", "intercept"), ("Dose", "slope")):
+            row = table[table["element"] == element].iloc[0]
+            np.testing.assert_allclose(
+                row[["estimate", "ci_low", "ci_high"]].to_numpy(float),
+                [fit.fe_params[term], *limits.loc[term]],
+                rtol=1e-6,
+            )
+        slope = table[table["element"] == "slope"].iloc[0]
+        np.testing.assert_allclose(
+            slope[["estimate", "ci_low", "ci_high"]].to_numpy(float),
+            reported[["estimate", "ci_low", "ci_high"]].to_numpy(float),
+            rtol=1e-10,
+        )
+        assert_ordered_intervals(self, table)
+        self.assertIn("fixed-effect fit of analysis dose (Linear mixed model", caption)
+        self.assertNotIn("holding", caption)
+
+    def test_a_repeated_design_without_a_linked_analysis_draws_no_band(self):
+        frame = visits()
+        listed = [{"id": "plain", "type": "scatter", "x": "Dose", "y": "Score"}]
+        study = patients_study({"type": "repeated", "subject": "Patient"}, figures=listed)
+        with study_folder(frame, study, "patients.csv") as path:
+            built = build(path)
+            table = source(built, "plain")
+            caption = asset(built, "plain").caption
+            result = processed(path)
+            figure = mock.MagicMock()
+            axes = mock.MagicMock()
+            figure.add_subplot.return_value = axes
+            plots.draw_scatter(figure, result, plots.FigureSpec(id="p", type="scatter", x="Dose", y="Score"))
+        axes.fill_between.assert_not_called()
+        axes.plot.assert_called_once()
+        self.assertNotIn("ci_low", table.columns)
+        slope = table[table["element"] == "slope"].iloc[0]
+        pooled = stats.linregress(frame["Dose"], frame["Score"])
+        self.assertAlmostEqual(slope["estimate"], pooled.slope, places=9)
+        self.assertIn("drawn only to describe them: the 80 points come from 16 subjects (Patient)", caption)
+        self.assertIn("least squares gives no valid confidence band", caption)
+        self.assertIn("No analysis is linked to this figure", caption)
+
+    def test_a_refused_analysis_is_not_said_to_account_for_the_repeated_measurements(self):
+        frame = visits()
+        frame = frame[frame["Patient"] == "P00"]
+        analyses = [{"id": "dose", "outcome": "Score", "relate": "Dose", "test": "pearson", "planned": True}]
+        study = patients_study({"type": "repeated", "subject": "Patient"}, analyses=analyses)
+        with study_folder(frame, study, "patients.csv") as path:
+            built = build(path)
+            table = source(built, "dose-scatter")
+            caption = asset(built, "dose-scatter").caption
+        self.assertIn("ADA did not fit it", caption)
+        self.assertNotIn("accounts for", caption)
+        self.assertIn("the 5 points come from 1 subject (Patient) measured more than once", caption)
+        self.assertNotIn("ci_low", table.columns)
 
 
 class OtherTypesTests(unittest.TestCase):
