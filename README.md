@@ -213,21 +213,24 @@ Compound B the lowest, 85.1% (n = 233); ε² = 0.64.
 ### What the first look doesn't do
 
 It runs standard tests (Welch, Mann-Whitney, Kruskal-Wallis, chi-squared,
-Fisher, Tukey's HSD, least squares) through SciPy and statsmodels, adjusts
-the p-values for how many it ran, and names the method behind every figure.
-What it can't know is your study design: it doesn't model paired or repeated
-measures beyond one value per subject, nested or blocked designs, or
-covariates you planned to adjust for, and it picks its tests by rule, after
-seeing the data, not from a plan written before. So treat what it finds as a
-first pass and its recommendations as what to look at next, not as causal
-claims. For results you will report, describe the study with `ada init` and
-let `ada build` fit the design and the plan you state.
+Fisher, Tukey's HSD, paired and repeated-measures tests, Kaplan-Meier
+survival, least squares) through SciPy and statsmodels, adjusts the p-values
+for how many it ran, and names the method behind every figure. What it can't
+know is your study design: it finds subjects, samples and fully crossed
+within-subject designs from the table itself, but it doesn't fit mixed
+models, nested or blocked designs, or covariates you planned to adjust for
+(asked to, Ask holds a reading fixed only as a straight line would), and it
+picks its tests by rule, after seeing the data, not from a plan written
+before. So treat what it finds as a first pass and its recommendations as
+what to look at next, not as causal claims. For results you will report,
+describe the study with `ada init` and let `ada build` fit the design and the
+plan you state.
 
 ## Get started with the first look
 
 **In the browser:** [open the web app](https://automated-data-analyst.streamlit.app/).
-It starts on the lab sample; choose **Upload your file** for your own CSV or
-Excel file (up to 25 MB).
+It starts on the lab sample; choose **Upload your file** for your own CSV, TSV
+or Excel file (up to 25 MB).
 
 **In Python:**
 
@@ -249,6 +252,7 @@ report.ask("does pH differ by site?")
 ada analyze measurements.csv          # the same report
 ada analyze measurements.csv --json   # as JSON
 ada schema measurements.csv           # which column ADA used for what, and how it combines
+ada analyze results.xlsx --sheet Data # one worksheet of a workbook
 ada ask measurements.csv "average pH by site"
 ```
 
@@ -294,6 +298,7 @@ close.
 ```python
 report = ada.analyze(df, date="Survey Date", measure="Water Temp (°C)", dimension="Site")
 ada.analyze(df, measure="Rainfall (mm)", aggregation="sum")   # monthly totals, not averages
+ada.analyze(df, date="timept")   # days since infection as the time axis: a profile, no calendar
 
 report.profile()          # one row per column: type, missing, distinct values
 report.quality()          # every data-check issue, with its rows and the rule that fired
@@ -302,6 +307,7 @@ report.trend()            # the measure per period, with notes on adjustments
 report.segments()         # the measure by group, as a DataFrame
 report.anomalies          # flagged periods
 report.forecast()         # forecast with .backtest
+report.long_form()        # a year-by-month table as one row per month
 report.ask("average pH by site")
 report.focus("North Marsh")   # the same analysis for one group
 report.to_dict()          # JSON-safe, versioned by schema_version
@@ -387,6 +393,27 @@ names, types and the computed findings, not rows. Findings can name a group
 locally only after you approve it. Model-generated code is never executed.
 
 Details: [Privacy](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/privacy.md) · [SECURITY.md](https://github.com/saineshnakra/automated-data-analyst/blob/main/SECURITY.md)
+
+## Tested on 60 research datasets
+
+We ran ADA's first look on 60 lab and research datasets drawn at random from
+Kaggle (blood tests, soil and water chemistry, gene expression, materials
+testing, field surveys, behavioural experiments). AI reviewers, each told to
+act as a sceptical scientist in the field, checked every finding against
+pandas, SciPy or statsmodels. After each of three rounds of 20 we fixed what
+they found, as general rules, and checked every dataset again.
+
+| | Good | Partly useful | Poor |
+|---|---|---|---|
+| First run | 2 | 27 | 31 |
+| Now | 29 | 27 | 4 |
+
+The calculations matched wherever they were re-run. What still goes wrong is
+what ADA chooses to lead with when nobody has told it the design: it can
+miss the comparison a study was built for, or report a pair of columns that
+move together by construction. [The results](https://github.com/saineshnakra/automated-data-analyst/blob/main/results/README.md) cover how the
+datasets were picked, every dataset's review, what changed, and what ADA
+still gets wrong.
 
 ## Documentation
 

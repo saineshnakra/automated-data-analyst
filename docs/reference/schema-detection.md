@@ -54,7 +54,7 @@ by:
 Three kinds of column key or label the rows, and the first found wins:
 
 1. **A key name.** One of the name's words is `id`, `uuid`, `key`, `code`,
-   `number`, `invoice` or `order` (as a whole word), the last word is not a
+   `number`, `invoice`, `order` or `barcode` (as a whole word), the last word is not a
    measure keyword, at least 80% of the values are distinct, and the values are
    whole numbers or text. A `Reynolds Number` with decimals is a measurement.
 2. **A row key by its values.** Unique whole numbers on every row, under a
@@ -65,7 +65,9 @@ Three kinds of column key or label the rows, and the first found wins:
    is unique too.
 3. **A row label.** A text column with a different value on every row, such
    as a taxon or a file name. Sentences are unique too but label nothing, so
-   values of more than six words do not count.
+   values of more than six words do not count. A header can mislead: a column
+   named `time` whose values are codes with letters (gene names `YAL001C` …)
+   rather than times labels the rows, and its note says so.
 
 Identifiers are left out of `numeric`, so they are never the measure, never in
 the strongest-relationship scan and never offered as something to correlate.
@@ -88,15 +90,17 @@ A numeric column is a factor, a category code rather than a quantity, when:
 |---|---|
 | A 0/1 flag | Exactly the values 0 and 1, whatever the name, unless it is a count like its siblings (see below) |
 | A label name | Whole numbers, each used twice on average, that can group rows (see [Picking the segment](#picking-the-segment)), under a label word (`status`, `condition`, `group`, `treatment`, `label`, `class`, `stage`, `phase`, `sex`, `gender`, `race`, `ethnicity`, `phenotype`, `genotype`, `type`, `category`, `diagnosis`, `arm`, `cohort`), a design label (see below), an entity (`subject`, `patient`, `station`, `site`, `plot`, a key word) or a name starting with `id` or `code` (`id_reef`). So 159 weather stations, each with hundreds of days, are a label |
-| A short code | Two values, or up to 12 whole numbers each used about five times or more, such as race, education or an income band |
+| A short code | Two values, or up to 12 whole numbers each used about five times or more, such as race, education or an income band, recorded on at least a fifth of the rows. Six or more whole numbers on a grid coarser than one (blood pressure 50, 60 … 180) are a reading rounded to that grid, not a code (`_on_a_grid`) |
 | A design level | Up to 15 levels, each used about five times or more, under a word such as `dose`, `concentration`, `age`, `day`, `time` or `frequency`, and varying within the groups of another column: a set concentration crossed with dyes, a curing age crossed with recipes |
 | A swept setting | 3 to 100 evenly spaced levels, each used about equally often (the rarest at least half as often as the commonest, and five times or more), stepping by more than the values' own resolution: a frequency swept from 100 to 590 GHz in steps of 10, a transect read every 5 m. A reading rounded to whole percent steps by its resolution and is not used equally at every level |
 
 A name that marks a count or an amount keeps a short code a quantity: a count
 word anywhere (`count`, `number`, `num`, `qty`, `quantity`, `amount`, `total`),
 a plural last word (`Cylinders`, `Visits`), or a last word such as `size`,
-`children`, `score`, `rating`, `price` or an outcome word. A 0/1 flag stays a
-flag even then.
+`children`, `score`, `rating`, `price` or an outcome word. So does a unit in
+brackets (`O content (wppm)`, `Pin Dia (mm)`; not a range such as
+`(40 - 100)` or codes such as `(Y/N)`), so design inputs measured in units are
+read alike. A 0/1 flag stays a flag even then.
 
 Rating items stay quantities too, however few their values. A column of whole
 numbers is an item when it shares a numbered stem with another column
@@ -117,6 +121,18 @@ count-named columns of whole numbers of at least zero, one of which passes 1
 Short codes, design levels and swept settings are weaker evidence, so they
 are dropped when every numeric column would otherwise be a factor: a table of
 marks out of 10 and nothing else measures the marks.
+
+**Experimental units.** A numeric column that numbers blocks of consecutive
+rows, each value on one unbroken run, is the unit those rows belong to (an
+experiment `case` 1 to 16, a subject `indiv` 2.41) when another column stays
+fixed within every run while varying between them (the material of each
+case, the group of each animal). It must hold at least five values on runs of
+three rows on average, have no missing cells, and not be named as a quantity,
+a level, a label word or a part of a date, so a reading sorted down the file
+is not mistaken for one (`_block_units`). It becomes a factor, is grouped by
+only as a last resort, like one subject each, and a note names it. Numeric
+columns fixed within each run with two to four values (`feed`, depth of cut)
+are settings of the unit, so they become factors too, never the measure.
 
 A part of a date (`Month`, `MO`, `YR`, `DA`) beside a date column is neither a
 factor nor a grouping, since it only repeats the timeline. A name counts as a
@@ -163,6 +179,15 @@ several units or the result's typical size differs tenfold or more between
 parameters. A unit column holding several units, with no parameter column, is
 used as the parameter.
 
+Failing both, a column is the parameter when its rows behave like one,
+whatever its name (`pollutant_id`): a text column with 2 to 30 values across
+which the result's typical size differs tenfold or more, beside an entity
+column with more values (`station`) such that each entity holds at most one
+row per parameter on 95% of rows and half the entities or more hold several
+parameters (`_parameter_by_rows`). Money and counts are never split this
+way, since revenue by category is one quantity however much the categories
+differ.
+
 The table is then `"long"`: the parameter column is the grouping, the most
 common parameter recorded in one unit is the `focus`, and a note names it and
 the next most common ones. `ada.analyze` applies the focus, so the brief, the
@@ -180,15 +205,23 @@ measure. So does a table of counts whose columns have no numbered names, such
 as 26 samples of read counts named `AQC1cm`, `CC1` … `Even3` beside an OTU id:
 at least 10 columns of whole numbers of at least zero, three quarters of the
 numeric columns or more, with average sizes within a factor of 1,000 of one
-another, and an identifier naming each row. It is `"matrix"`: `measure` is
+another, and an identifier naming each row. When most of those columns share
+a structured name, with each run of letters and digits counted as one part
+(`20A_508_1_2107` and `QC9_112_1_2104` are both `x_x_x_x`), only they are
+kept, so an annotation code (`AQ`) or a plot setting (`Boxplot`) beside the
+injections is not averaged into the row mean. It is `"matrix"`: `measure` is
 `None`, and a note says what the table appears to be, suggests reshaping it to
 long form, and names prefix groups (`A*` and `B*`) that may be groups to
 compare. For counts it also says how far the columns' totals differ and to put
 them on a common scale before comparing them. `pipeline.prepare_analysis`
 then adds each row's mean across the matrix columns, named
 `Row mean (60 columns)`, and uses it as the measure (`schema.add_row_summary`).
-`schema.row_summary_columns` gives the columns that mean is built from, so the
-relationship card does not report any of them as relating to it.
+When the rows have been centred, as log ratios and z-scores are (a typical
+row's mean under a tenth of its standard deviation), the mean would only show
+that normalisation, so ADA follows each row's standard deviation instead,
+named `Row SD (23 columns)`, and the note says why.
+`schema.row_summary_columns` gives the columns either summary is built from,
+so the relationship card does not report any of them as relating to it.
 
 ### Summary statistics
 
@@ -218,16 +251,61 @@ candidates are scored:
 | A check that a study worked (`realism`, `attention`, `manipulation`, or last word `check`) | −6 |
 | The one column whose unit differs from a unit at least three others share (a strength in MPa among ingredients in kg/m³) | +4 |
 | Records the amounts of a running total that was set aside (`Interval Rain` for `Total Rain`) | +10 |
+| Named in the file or sheet name (`secchi` in `georgian_bay_secchi.csv`), when no more than two candidates are | +4 |
+| The one column outside a family of names the others belong to: columns sharing a first or a last word are kin, and kin of kin are one family (`Hardness` beside `density_Total`, `density_Average`, `val_e_Average` ...) | +4 |
+| The mean of the other candidates row by row, as an annual mean is of its months (`metANN` beside `JAN` … `DEC` and the seasons), or the average of a reading beside its extremes (`pollutant_avg` beside `pollutant_min` and `pollutant_max`) | +3 |
+| Measured in a bracketed unit fewer than three candidates share (`Sound Level (dBA)` beside `RSSI` and `SNR`); seven ingredients all in kg/m³ are a recipe, not readings | +2 |
+| In a table of experimental units (see [Category codes](#category-codes)), the first reading after the columns that lay out the design, unless it is a time point or a dose | +1 |
 | One value in more than 80% of rows (nearly constant or mostly zero) | −6 |
 | Any word is a condition usually recorded beside the outcome (`temp`, `temperature`, `humidity`, `wind`, `air`) or the size of a subject or plot (`weight`, `size`, `area`, `acres`, `height`, `age`) | −3, but only when another column is a plausible outcome |
 
+`total` counts as a keyword only when another candidate names money or a
+count of things, or for the total of numbered items beside it (`CorrectTotal`
+beside `Correct1` … `Correct4`): among lab readings, `nitrates_total` is all
+forms of nitrate, not a sum.
+
 When the grouping its name ranks first names an outcome class (its last word,
 before `label` or `name`, is `result`, `outcome`, `diagnosis`, `class`,
-`label`, `disease`, `case`, `condition` or `status`, with 2 to 20 values), ties
-go first to the reading that best separates its groups: the most variance in
-the reading's ranks that the classes explain, adjusted for their number. A
-heart study's troponin beats CK-MB across positive and negative results, and a
-blood count's haemoglobin beats MCV across anaemia diagnoses.
+`classification`, `label`, `target`, `disease`, `case`, `condition` or
+`status`, with 2 to 20 values), ties go first to the reading that best
+separates its groups: the most variance in the reading's ranks that the
+classes explain, adjusted for their number. A heart study's troponin beats
+CK-MB across positive and negative results, and a blood count's haemoglobin
+beats MCV across anaemia diagnoses.
+
+### An outcome to explain
+
+Many research tables exist to explain one two-level column: a diagnosis, a
+label to predict, whether a landslide happened. ADA treats such a column as
+the outcome (`_outcome_flag`), recognised in this order:
+
+1. Its last word names a label: `target`, `label`, `class`,
+   `classification`, `outcome`, `result` or `diagnosis`.
+2. The file or sheet is named for it (`Landslide` in `landslide_dataset.csv`).
+3. It is a 0/1 event recorded beside the time each row was followed
+   (`eventdeath` beside `survival`; words such as `event`, `death`, `dead`,
+   `relapse` or `recurrence`, run together or not).
+4. With no column named as a label, it is a 0/1 column filed straight after
+   the identifiers, where a label to predict usually sits (`fasting_ability`
+   after `id`).
+
+Sex, gender, race, ethnicity, treatment arms, cohorts, groups, conditions,
+blocks, batches, phases, sites and visits describe who was studied or how,
+so they never qualify. The outcome becomes the grouping, and a note says
+why. The measure is then the reading that best tells its two groups apart:
+every candidate within 5 points of the best score (`OUTCOME_WINDOW`) is
+ranked by the variance in its ranks that the two groups explain, so a weak
+keyword (`body_mass_index`'s `index`) no longer decides, while money and
+amounts, which score far higher, still do. Covariates stay out of that
+ranking.
+
+Two kinds of reading only restate the outcome and are left out first, each
+with a note. A reading the outcome was cut from by a threshold, where one cut
+point puts 99.5% of rows in their own group (`SET_BY_SHARE`), as
+`Landslide` is set by `Earthquake_Activity` from 4.00 (`_sets_outcome`). And
+follow-up time beside its event (`survival`, `os_time`, `followup_months`):
+how long a row was followed depends on whether the event happened, so it is
+neither averaged nor compared across the event.
 
 Other ties are broken by how much information the column holds: the entropy
 of its values, counting missing cells as one more value, so many distinct,
@@ -271,7 +349,11 @@ A column that climbs like a gauge or a meter, such as a weather station's
 period means nothing. Within each group of the grouping, in date order, it
 must rise many times for each fall, and its falls must be resets to a tenth of
 the last value or less. A name such as `Cumulative Cases` (`cumulative`,
-`cum`, `running`, `accumulated`, `ytd`, `odometer`) is enough without a reset.
+`cum`, `running`, `accumulated`, `ytd`, `odometer`) is enough without a reset,
+and so is counting up by exactly one at half the steps or more while falling
+back at no more than 1% of them, as a packet or frame counter numbers the
+messages a device sends. A money column or a named level such as an age is
+never read as such a counter.
 Rainfall that falls back to zero after each shower rises and falls as often,
 so it does not qualify, and neither does a day-of-month column. A sibling
 column recording each reading's own amount (`Interval Rain`, `Hourly ...`,
@@ -338,6 +420,9 @@ Keyword weights (`DIMENSION_KEYWORDS`): `product` 12, `category` 12,
 `site` 7, `status` 6, `stage` 6, `phase` 6, `type` 5, `sex` 5, `gender` 5,
 `race` 4, `ethnicity` 4.
 
+An [outcome to explain](#an-outcome-to-explain) is the grouping whenever it
+shares rows with the measure, whatever the scores.
+
 About ten groups reads well on a chart; two is thin, and sixty is too many
 bars. A design label such as a plate's `Row` (A to H) groups wells by where
 they sat, so it is picked only when no other column qualifies; `Sample` or
@@ -360,14 +445,17 @@ A note names them, except parts of a date.
 | Quality flags | A word `qn`, `qc`, `qa` or `qf` (`QN_3`), a name starting with `quality` and ending in `flag` or `code`, or a name ending in `flag` after another column's name (`TMK_flag` beside `TMK`) (`is_quality_flag`). `Fraud_Flag` on its own is an outcome to compare. Text quality flags are not groupings either |
 | Numbered rows | A different whole number on every row, in order, not named as a quantity: a key or a date stored as a number |
 | Parts of a date | A time-part name with values that fit it (see [Category codes](#category-codes)) |
+| Running totals and counters | See [Running totals](#running-totals): a gauge reading or a message counter compared across groups or correlated with anything says nothing. Their own note names them |
 
 ## Notes
 
 `ColumnRoles.notes` explains what detection did that a reader would not
 guess: identifiers found by their values, columns that are not readings,
-category codes and flag shares, a summary-statistics table, running totals set
-aside, groupings swapped for a twin or splitting the rows alike, a long or
-stacked table's focus, and a matrix.
+category codes and flag shares, experimental units and their settings, a
+summary-statistics table, running totals set aside, an outcome to explain and
+the readings left out because they restate it, groupings swapped for a twin
+or splitting the rows alike, a long or stacked table's focus, and a matrix,
+with the summary it follows.
 `pipeline.prepare_analysis` adds them to the cleaning notes, so the app, `ada
 schema` and `to_dict()["cleaning_notes"]` list them too.
 
@@ -400,6 +488,7 @@ prints the measure with how it combines, for example `Resolution Hours
 | Every numeric column a 0/1 flag or a labelled code | `measure` is `None`; ADA counts records by the grouping |
 | Every text column is near-unique | `dimension` is `None` unless a factor qualifies |
 | Several plausible measures | Highest score, then most information, wins; the runners-up are in `measure_alternatives` |
+| A two-level outcome every reading restates | The readings that set it are kept as candidates, so a measure is still picked |
 
 ## Changing this
 

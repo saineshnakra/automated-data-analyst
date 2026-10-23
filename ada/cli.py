@@ -50,6 +50,7 @@ def _load(args: argparse.Namespace):
     source = sample() if args.file == "-" else args.file
     return analyze(
         source,
+        sheet=getattr(args, "sheet", None),
         date=getattr(args, "date", None),
         measure=getattr(args, "measure", None),
         dimension=getattr(args, "dimension", None),
@@ -274,7 +275,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     def with_source(name: str, help_text: str):
         sub = subcommands.add_parser(name, help=help_text)
-        sub.add_argument("file", help="a CSV or Excel file, or - for a bundled sample")
+        sub.add_argument("file", help="a CSV, TSV or Excel file, or - for a bundled sample")
+        sub.add_argument("--sheet", help="the worksheet to read from a workbook (default: the first)")
         sub.add_argument("--date", help="override the detected date column")
         sub.add_argument("--measure", help="override the detected measure column")
         sub.add_argument("--dimension", help="override the detected segment column")

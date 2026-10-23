@@ -5,7 +5,9 @@ what a measure is. Only money and counts of things are summed: a reading such
 as a temperature, a concentration or a price is averaged, since adding it up
 across rows gives no meaningful quantity, and an unfamiliar name is averaged
 too, because the mean of an amount still reads sensibly while the sum of a
-reading does not.
+reading does not. Among lab readings "total" means all forms of a substance
+(total nitrogen, total phosphorus), so a name that is an amount only by that
+word is averaged there.
 """
 
 from __future__ import annotations
@@ -77,6 +79,8 @@ SUBJECT_WORDS = frozenset({
     "subject", "participant", "patient", "animal", "mouse", "rat", "donor", "individual",
     "specimen", "sample", "respondent", "infant", "child", "person",
 })
+# Words that make a name a total, which is money or a count only beside other money or counts.
+TOTAL_WORDS = frozenset({"total", "totals"})
 # How a measure may be told to combine, overriding what its name implies.
 AGGREGATION_CHOICES = ("sum", "mean")
 # Unit annotations that mark a level: a concentration or density (mg/L, cells/mL,
@@ -247,6 +251,27 @@ def _names_money(name: str) -> bool:
     return is_currency(name) or bool(set(_name_words(name)) & MONEY_WORDS)
 
 
+def _total_only(name: str) -> bool:
+    """Whether the name is an amount only because it says "total": "nitrates_total", "density_Total"."""
+    words = set(_name_words(name))
+    named = words & (ADDITIVE_WORDS - TOTAL_WORDS) or words & PRICE_WORDS or _names_money(name)
+    return bool(words & TOTAL_WORDS) and not named
+
+
+def _among_readings(column: str, roles: ColumnRoles) -> bool:
+    """Whether the column's numeric neighbours are readings, with no money or count among them.
+
+    Two at least are needed: a table of a date, a store and a "Total" is a
+    sales total.
+    """
+    others = [
+        other for other in roles.numeric
+        if other != column and other not in roles.factors and other not in roles.non_readings
+    ]
+    counted = [other for other in others if is_additive_name(other) and not _total_only(other)]
+    return len(others) >= 2 and not counted
+
+
 def metric_for(column: str | None, roles: ColumnRoles | None = None) -> MetricSpec:
     """How ``column`` combines, with the roles' override applied when it is their measure.
 
@@ -258,6 +283,9 @@ def metric_for(column: str | None, roles: ColumnRoles | None = None) -> MetricSp
     each row is one subject or sample (see ``rows_are_subjects``), a count or
     a total that is not money is averaged too: summing each infant's looking
     time across infants, or splitting it into shares, mostly counts infants.
+    So is a name that is an amount only because it says "total" when every
+    other numeric column is a reading (see ``_among_readings``): nitrate summed
+    over water samples is no quantity at all.
     """
     override = roles.aggregation if roles is not None and column and column == roles.measure else None
     if roles is not None and column in roles.flags and override != "sum":
@@ -271,6 +299,10 @@ def metric_for(column: str | None, roles: ColumnRoles | None = None) -> MetricSp
         )
     spec = resolve_metric(column, override)
     per_subject = override is None and rows_are_subjects(roles) and not _names_money(column)
-    if spec.aggregation == "sum" and per_subject:
+    reading = (
+        override is None and roles is not None and bool(column) and _total_only(column)
+        and _among_readings(column, roles)
+    )
+    if spec.aggregation == "sum" and (per_subject or reading):
         return resolve_metric(column, "mean")
     return spec

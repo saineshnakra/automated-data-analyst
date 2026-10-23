@@ -4,10 +4,11 @@ from dataclasses import replace
 import numpy as np
 import pandas as pd
 
-from ada import ui
+from ada import nlq, ui
 from ada.business_insights import describe_correlation, measure_correlation
 from ada.demo_data import make_demo_data
 from ada.file_io import list_sample_datasets as samples
+from ada.formatting import format_number
 from ada.nlq import (
     Condition,
     QueryPlan,
@@ -20,6 +21,7 @@ from ada.nlq import (
     unsupported_phrasing,
 )
 from ada.pipeline import prepare_analysis
+from ada.quality import QualityIssue
 from ada.schema import ColumnRoles, detect_roles
 
 MONTHS = pd.date_range("2024-01-01", periods=12, freq="MS")
@@ -1643,7 +1645,7 @@ class CorrelatesQuestionTests(unittest.TestCase):
 
         answer = answer_question("what correlates with Even1", frame, detect_roles(frame))
 
-        self.assertIn("Left out of the ranking for Even1: Even2 (the same measurement", answer.answer)
+        self.assertIn("Left out of the ranking for Even1: Even2 (moving with it almost", answer.answer)
         self.assertEqual(answer.answer.count("Left out"), 1)
         self.assertIn("Depth is the only other numeric column tested against Even1", answer.answer)
         self.assertNotIn("picked from several columns", answer.answer)
@@ -1730,6 +1732,595 @@ class ColumnNameWordTests(unittest.TestCase):
                 with self.subTest(question=question):
                     answer = answer_question(question, frame, roles)
                     self.assertIsNotNone(answer, rephrase_hint(question, frame, roles))
+
+
+class NamesBeforeKeywordsTests(unittest.TestCase):
+    def test_a_research_word_inside_a_column_name_asks_for_no_relationship(self):
+        frame = pd.DataFrame({
+            "Pin Dia (mm)": [6, 7, 8] * 10,
+            "Charpy Impact Strength (kg-m)": [5.0, 6.0, 7.5] * 9 + [5.5, 6.5, 7.0],
+        })
+        roles = detect_roles(frame)
+
+        answer = answer_question("average Charpy Impact Strength (kg-m) by Pin Dia (mm)", frame, roles)
+
+        self.assertEqual(answer.plan.intent, "breakdown")
+        self.assertEqual(answer.plan.dimension, "Pin Dia (mm)")
+
+    def test_a_column_called_max_after_a_superlative_or_in_is_the_column(self):
+        dates = pd.date_range("2022-01-01", periods=730, freq="D")
+        rng = np.random.default_rng(1)
+        frame = pd.DataFrame({"Date": dates, "max": rng.gamma(4, 20, 730), "o3": rng.gamma(3, 10, 730)})
+        roles = detect_roles(frame)
+
+        month = answer_question("month of year with the highest max", frame, roles)
+        outliers = answer_question("outliers in max", frame, roles)
+
+        self.assertEqual((month.plan.measure, month.plan.time_part), ("max", "month"))
+        self.assertEqual(outliers.plan.measure, "max")
+
+    def test_columns_named_like_months_are_columns(self):
+        frame = pd.DataFrame({
+            "YEAR": pd.to_datetime([f"{year}-01-01" for year in range(1950, 1990)]),
+            "SEP": np.linspace(20, 24, 40) + np.tile([0.3, -0.2], 20),
+            "OCT": np.linspace(21, 25, 40) + np.tile([-0.1, 0.4], 20),
+        })
+        roles = detect_roles(frame)
+
+        self.assertFalse(unsupported_phrasing("correlation between SEP and OCT", frame.columns))
+        answer = answer_question("correlation between SEP and OCT", frame, roles)
+        self.assertEqual((answer.plan.measure, answer.plan.partner), ("SEP", "OCT"))
+
+    def test_a_column_named_by_a_number_takes_a_threshold(self):
+        frame = pd.DataFrame({"time": [f"gene{n}" for n in range(30)], "120": np.linspace(-2, 2, 30),
+                              "130": np.linspace(-1, 1, 30)})
+        roles = detect_roles(frame)
+
+        answer = answer_question("how many rows have 120 above 1", frame, roles)
+
+        self.assertEqual(answer.plan.conditions, (Condition("120", ">", 1.0),))
+        self.assertTrue(answer.answer.startswith("8 of the 30 rows"), answer.answer)
+
+    def test_a_value_typed_in_full_wins_over_a_column_name_inside_it(self):
+        frame = pd.DataFrame({
+            "source_table": ["human_organs_tissues"] * 12 + ["human_blood_by_type"] * 12,
+            "organ": ["liver", "lung", "skin"] * 8,
+            "sample_size": np.arange(24.0),
+        })
+        roles = detect_roles(frame)
+
+        answer = answer_question("average sample_size for source_table human_organs_tissues", frame, roles)
+
+        self.assertEqual(answer.plan.filters[0].values, ("human_organs_tissues",))
+        self.assertIn("is 5.50", answer.answer)
+
+
+class NamedGroupTests(unittest.TestCase):
+    def setUp(self):
+        rng = np.random.default_rng(0)
+        self.frame = pd.DataFrame({
+            "condition": np.repeat([1, 2, 3], 40),
+            "Probiotics": np.tile([0, 1], 60),
+            "Weight_kg": rng.normal(400, 20, 120),
+        })
+        self.frame["angle"] = self.frame["condition"] * 0.1 + rng.normal(0, 0.01, 120)
+        self.roles = detect_roles(self.frame)
+
+    def ask(self, question):
+        return answer_question(question, self.frame, self.roles)
+
+    def test_between_two_levels_after_a_grouping_picks_those_groups(self):
+        answer = answer_question("compare Weight_kg between Probiotics 0 and 1", self.frame, self.roles)
+
+        self.assertEqual(answer.plan.dimension, "Probiotics")
+        self.assertEqual(answer.plan.conditions, ())
+        self.assertNotIn("No rows match", answer.answer)
+
+    def test_levels_named_with_their_column_are_the_groups_not_a_filter(self):
+        compared = self.ask("compare angle between condition 1 and condition 2")
+        directed = self.ask("is angle higher in condition 3 than condition 1")
+
+        self.assertEqual(compared.plan.filters[0].values, ("1", "2"))
+        self.assertEqual(compared.plan.conditions, ())
+        self.assertTrue(directed.answer.startswith("Yes."), directed.answer)
+
+    def test_a_range_on_the_measure_is_still_a_range(self):
+        answer = answer_question("how many rows have Weight_kg between 390 and 410", self.frame, self.roles)
+
+        self.assertEqual(
+            answer.plan.conditions, (Condition("Weight_kg", ">=", 390.0), Condition("Weight_kg", "<=", 410.0))
+        )
+
+
+class YesNoOutcomeTests(unittest.TestCase):
+    def setUp(self):
+        self.frame = pd.DataFrame({
+            "grade": [1] * 40 + [2] * 40 + [3] * 40,
+            "chemo": [0, 1] * 60,
+            "eventdeath": [1] * 4 + [0] * 36 + [1] * 12 + [0] * 28 + [1] * 22 + [0] * 18,
+            "age": np.linspace(30, 70, 120),
+        })
+        self.roles = detect_roles(self.frame)
+
+    def ask(self, question):
+        return answer_question(question, self.frame, self.roles)
+
+    def test_share_rate_and_average_of_a_flag_by_a_group_are_rates_with_a_rate_test(self):
+        for question in (
+            "share of eventdeath by grade", "rate of eventdeath by grade", "eventdeath rate by grade",
+            "average eventdeath by grade", "percentage of eventdeath by grade",
+        ):
+            with self.subTest(question=question):
+                answer = self.ask(question)
+                self.assertEqual(answer.plan.counted, (Condition("eventdeath", "=", 1.0),))
+                self.assertIn("grade 3 55.0% (22 of 40)", answer.answer)
+                self.assertIn("chi-squared test", answer.answer)
+
+    def test_does_a_flag_differ_by_a_group_compares_rates(self):
+        answer = self.ask("does eventdeath differ by chemo")
+
+        self.assertEqual(answer.plan.intent, "compare")
+        self.assertIn("percentage points", answer.answer)
+        self.assertNotIn("Welch", answer.answer)
+
+    def test_the_group_with_the_highest_share_is_named(self):
+        answer = self.ask("which grade has the highest share of eventdeath 1")
+
+        self.assertTrue(answer.answer.startswith("grade 3 has the highest share of rows with eventdeath = 1"))
+
+    def test_a_small_two_by_two_table_uses_fishers_exact_test(self):
+        frame = pd.DataFrame({"arm": ["a"] * 8 + ["b"] * 8, "cured": [1] * 7 + [0] + [1] * 2 + [0] * 6})
+
+        answer = answer_question("share of cured by arm", frame, detect_roles(frame))
+
+        self.assertIn("Fisher's exact test", answer.answer)
+
+    def test_a_rate_with_nothing_to_count_is_refused_with_the_reason(self):
+        question = "rate of age by grade"
+        self.assertIsNone(self.ask(question))
+        self.assertIn("A rate is the share of rows", rephrase_hint(question, self.frame, self.roles))
+
+    def test_a_cue_word_narrows_the_rows_instead_of_naming_what_is_counted(self):
+        answer = self.ask("share of eventdeath 1 by grade for chemo 1")
+
+        self.assertEqual(answer.plan.counted, (Condition("eventdeath", "=", 1.0),))
+        self.assertEqual(answer.plan.conditions, (Condition("chemo", "=", 1.0),))
+
+
+class MorePhrasingTests(unittest.TestCase):
+    def setUp(self):
+        rng = np.random.default_rng(3)
+        dates = pd.date_range("1990-01-01", periods=30 * 12, freq="MS")
+        self.frame = pd.DataFrame({
+            "Date": dates,
+            "DO": 8 - (dates.year >= 2000) * 2 + np.cos(dates.month / 12 * 2 * np.pi)
+            + rng.normal(0, 0.3, len(dates)),
+            "Temp": 15 + 10 * np.sin(dates.month / 12 * 2 * np.pi) + rng.normal(0, 1, len(dates)),
+        })
+        self.roles = detect_roles(self.frame)
+
+    def ask(self, question):
+        return answer_question(question, self.frame, self.roles)
+
+    def test_ranges_of_years_are_conditions_on_the_date(self):
+        for question, operator, year in (
+            ("average DO since 2000", ">=", 2000.0), ("average DO after 1999", ">", 1999.0),
+            ("average DO before 1995", "<", 1995.0), ("average DO until 1995", "<=", 1995.0),
+            ("average DO where Date > 1999", ">", 1999.0),
+        ):
+            with self.subTest(question=question):
+                answer = self.ask(question)
+                self.assertEqual(answer.plan.conditions, (Condition("Date", operator, year, part="year"),))
+        between = self.ask("average DO between 1990 and 1994")
+        self.assertIn("Date between 1990 and 1994", between.answer)
+        self.assertFalse(unsupported_phrasing("average DO between 1990 and 1994", self.frame.columns))
+
+    def test_before_and_after_a_year_compares_the_two_spans(self):
+        answer = self.ask("average DO before and after 2000")
+
+        self.assertEqual((answer.plan.intent, answer.plan.split), ("compare", 2000.0))
+        self.assertTrue(answer.answer.startswith("DO is higher in the years before 2000 than in 2000 and"))
+
+    def test_a_grouping_beside_a_split_at_a_year_is_refused(self):
+        frame = self.frame.assign(site=np.tile(["North", "South", "East"], len(self.frame) // 3))
+        roles = detect_roles(frame)
+        question = "does DO differ by site before and after 2000"
+
+        self.assertIsNone(answer_question(question, frame, roles))
+        self.assertIn("two groupings, site and Date", rephrase_hint(question, frame, roles))
+
+    def test_by_month_over_several_years_is_the_month_of_the_year(self):
+        answer = self.ask("average DO by month")
+
+        self.assertEqual(answer.plan.time_part, "month")
+        self.assertIn('Read "by month" as the month of the year', answer.answer)
+        self.assertEqual(self.ask("monthly DO trend").plan.intent, "trend")
+
+    def test_by_season_groups_three_month_spans(self):
+        answer = self.ask("average Temp by season")
+
+        self.assertEqual(answer.plan.time_part, "season")
+        self.assertEqual(sorted(answer.table["Season"]), ["Dec–Feb", "Jun–Aug", "Mar–May", "Sep–Nov"])
+
+    def test_range_is_the_spread_from_lowest_to_highest(self):
+        answer = self.ask("range of Temp")
+
+        expected = self.frame["Temp"].max() - self.frame["Temp"].min()
+        self.assertEqual(answer.plan.aggregation, "range")
+        self.assertIn(format_number(expected, "Temp"), answer.answer)
+
+    def test_a_comparison_after_accounting_for_a_reading_holds_it_fixed(self):
+        rng = np.random.default_rng(5)
+        time = rng.uniform(0, 50, 200)
+        feed = np.tile([0.25, 0.5], 100)
+        wear = 0.01 * time + (feed == 0.5) * 0.1 + rng.normal(0, 0.02, 200)
+        frame = pd.DataFrame({"time": time, "feed": feed, "VB": wear})
+        question = "does VB differ by feed after accounting for time"
+
+        answer = answer_question(question, frame, detect_roles(frame))
+
+        self.assertEqual(answer.plan.adjusted_for, ("time",))
+        self.assertTrue(answer.answer.startswith("With time held fixed, VB is 0.0998 higher in feed 0.5"))
+        self.assertIn("Without adjusting", answer.answer)
+
+    def test_a_yes_no_outcome_is_not_compared_unadjusted_when_a_reading_should_be_held_fixed(self):
+        rng = np.random.default_rng(6)
+        frame = pd.DataFrame({
+            "dose": rng.uniform(0, 10, 200), "site": np.tile(["North", "South"], 100),
+            "relapse": rng.integers(0, 2, 200),
+        })
+        roles = detect_roles(frame)
+        question = "does relapse differ by site after accounting for dose"
+
+        self.assertIsNone(answer_question(question, frame, roles))
+        hint = rephrase_hint(question, frame, roles)
+        self.assertIn("relapse holds only 0 and 1", hint)
+        self.assertIn("holds dose fixed only for a numeric measure", hint)
+
+
+class FilterPhrasingTests(unittest.TestCase):
+    def setUp(self):
+        self.frame = pd.DataFrame({
+            "admixture": [0.0, 0.0, 2.5, 3.0, 0.0, 4.0] * 5,
+            "VMA": [0.0, 1.0, 0.0, 0.0, 2.0, 0.0] * 5,
+            "strength": [40.0, 42.0, 55.0, 58.0, 41.0, 60.0] * 5,
+            "sampleID": [f"RB{n % 3}.Ivc.{n}" if n % 2 else f"RB{n % 3}.Ctl.{n}" for n in range(30)],
+            "fasting_ability": [1, 0, 1, 1, 0, 1] * 5,
+        })
+        self.roles = detect_roles(self.frame)
+
+    def ask(self, question):
+        return answer_question(question, self.frame, self.roles)
+
+    def test_a_noun_for_the_rows_may_come_before_a_condition(self):
+        answer = self.ask("average strength for mixes with admixture above 0")
+
+        self.assertEqual(answer.plan.conditions, (Condition("admixture", ">", 0.0),))
+
+    def test_a_value_after_a_column_with_or_without_of_is_equality(self):
+        for question in ("how many rows have VMA of 0", "how many rows have VMA 0"):
+            with self.subTest(question=question):
+                self.assertEqual(self.ask(question).plan.conditions, (Condition("VMA", "=", 0.0),))
+
+    def test_part_of_a_text_filters_the_rows_that_contain_it(self):
+        answer = self.ask("average strength for sampleID containing Ivc")
+
+        self.assertEqual(answer.plan.conditions, (Condition("sampleID", "contains", text="Ivc"),))
+        self.assertIn('sampleID containing "Ivc"', answer.answer)
+
+    def test_a_word_names_the_column_named_by_a_longer_form_of_it(self):
+        answer = self.ask("what percentage of patients can fast")
+
+        self.assertIn('Read "fast" as fasting_ability', answer.answer)
+        self.assertTrue(answer.answer.startswith("20 of the 30 rows"), answer.answer)
+
+
+class NameFormTests(unittest.TestCase):
+    def test_a_prefix_most_names_share_and_latex_are_optional(self):
+        rng = np.random.default_rng(2)
+        frame = pd.DataFrame({
+            "PROPERTY: YS (MPa)": rng.normal(1000, 200, 60),
+            "PROPERTY: Test temperature ($^\\circ$C)": rng.choice([25.0, 600.0, 800.0], 60),
+            "PROPERTY: Type of test": rng.choice(["C", "T"], 60),
+            "PROPERTY: BCC/FCC/other": rng.choice(["BCC", "FCC", "other"], 60),
+        })
+        roles = detect_roles(frame)
+
+        grouped = answer_question("average YS by Type of test", frame, roles)
+        related = answer_question("correlation between YS (MPa) and Test temperature", frame, roles)
+        slashed = answer_question("average YS (MPa) by BCC/FCC/other", frame, roles)
+
+        self.assertEqual(grouped.plan.measure, "PROPERTY: YS (MPa)")
+        self.assertEqual(grouped.plan.dimension, "PROPERTY: Type of test")
+        self.assertEqual(related.plan.partner, "PROPERTY: Test temperature ($^\\circ$C)")
+        self.assertEqual(slashed.plan.dimension, "PROPERTY: BCC/FCC/other")
+
+    def test_column_words_are_never_read_as_the_row_label(self):
+        frame = pd.DataFrame({"Unnamed: 0": range(40), "VB": np.linspace(0, 1, 40), "time": np.arange(40.0),
+                              "load": np.tile([1.0, 3.0, 2.0, 5.0], 10)})
+        roles = detect_roles(frame)
+
+        answer = answer_question("which columns relate most to VB", frame, roles)
+
+        self.assertEqual((answer.plan.intent, answer.plan.measure), ("correlates", "VB"))
+
+
+class GroupRankingTests(unittest.TestCase):
+    def test_single_row_groups_rank_the_rows_and_placeholders_are_never_named(self):
+        frame = pd.DataFrame({
+            "Name": ["-"] * 30 + [f"compound {n}" for n in range(10)],
+            "Intensity": [900.0] * 30 + [float(100 * n) for n in range(10)],
+        })
+        roles = detect_roles(frame)
+
+        top = answer_question("top 5 Name by Intensity", frame, roles)
+
+        self.assertEqual(top.table["Name"].tolist(), [f"compound {n}" for n in (9, 8, 7, 6, 5)])
+        self.assertTrue(top.answer.startswith("compound 9 has the highest Intensity"), top.answer)
+        self.assertIn('30 rows labelled "-" are left out', top.answer)
+
+    def test_a_breakdown_names_no_placeholder_group_as_the_highest(self):
+        frame = pd.DataFrame({
+            "method": [None] * 10 + ["cast"] * 10 + ["forged"] * 10,
+            "HV": [700.0] * 10 + [400.0] * 10 + [500.0] * 10,
+        })
+        answer = answer_question("average HV by method", frame, detect_roles(frame))
+
+        self.assertTrue(answer.answer.startswith("forged has the highest average HV"), answer.answer)
+
+    def test_per_sample_in_a_matrix_totals_each_sample_column(self):
+        rng = np.random.default_rng(4)
+        frame = pd.DataFrame(rng.poisson(20, size=(200, 12)), columns=[f"S{n}" for n in range(12)])
+        frame.insert(0, "OTU", [f"otu{n}" for n in range(200)])
+        prepared = prepare_analysis(frame, row_limit=10_000)
+
+        answer = answer_question("total reads per sample", prepared.dataframe, prepared.detected_roles)
+
+        self.assertEqual(answer.plan.intent, "columns")
+        self.assertNotIn("Row mean", " ".join(answer.table["Column"]))
+        self.assertIn('Read "reads" as the values in the 12 columns', answer.answer)
+
+
+class BriefAgreementTests(unittest.TestCase):
+    def test_tests_run_on_the_distinct_rows_when_most_rows_are_copies(self):
+        rng = np.random.default_rng(6)
+        base = pd.DataFrame({"Gender": np.tile([0, 1], 50), "MCV": np.linspace(70.05, 99.95, 100),
+                             "Result": rng.integers(0, 2, 100)})
+        frame = pd.concat([base, base.iloc[:40], base.iloc[:40]], ignore_index=True)
+        roles = detect_roles(frame)
+
+        answer = answer_question("share of Result 1 by Gender", frame, roles)
+        count = answer_question("how many rows have Result 1", frame, roles)
+
+        self.assertIn("this uses the 100 distinct rows, leaving out 80 exact repeats", answer.answer)
+        self.assertEqual(int(answer.table["Rows"].sum()), 100)
+        share = frame["Result"].mean() * 100
+        self.assertTrue(count.answer.endswith(f"of the 180 rows ({share:.1f}%) have Result = 1."))
+
+    def test_correlations_leave_out_the_cells_the_data_checks_set_aside(self):
+        frame = pd.DataFrame({"PM10": np.linspace(50, 100, 40), "WS": np.linspace(1, 2, 40)})
+        frame.loc[30:, "WS"] = 250.0
+        given = QualityIssue(
+            "swapped", ("WS",), 10, 25.0, "WS holds wind directions.", "WS swapped on 10 rows",
+            "a test rule", cells={"WS": pd.Index(range(30, 40))},
+        )
+
+        question = "correlation between PM10 and WS"
+        answer = answer_question(question, frame, detect_roles(frame), checks=(given,))
+
+        self.assertIn("n = 30", answer.answer)
+        self.assertIn("10 values the data checks flag are left out (WS swapped on 10 rows)", answer.answer)
+
+    def test_a_value_named_after_by_is_refused_rather_than_read_as_a_filter(self):
+        rng = np.random.default_rng(10)
+        frame = pd.DataFrame({
+            "Soil_Type": rng.choice(["Gravel", "Silt", "Sand"], 90), "Activity": rng.normal(3, 1, 90),
+        })
+        roles = detect_roles(frame)
+
+        grouped = "average Activity by Soil_Type_Gravel"
+        for question in (grouped, "which Soil_Type_Gravel has the highest Activity"):
+            with self.subTest(question=question):
+                self.assertIsNone(answer_question(question, frame, roles))
+                hint = rephrase_hint(question, frame, roles)
+                self.assertIn("Gravel is a value of Soil_Type, so the answer would keep only those", hint)
+        self.assertIsNotNone(answer_question("average Activity for Soil_Type Gravel", frame, roles))
+
+    def test_a_count_of_columns_in_a_name_is_not_a_unit_to_set_a_condition_on(self):
+        values = np.random.default_rng(9).normal(50, 10, 30)
+        frame = pd.DataFrame({"Name": [f"m{n}" for n in range(30)], "Row mean (3 columns)": values})
+        roles = detect_roles(frame)
+
+        self.assertIsNone(answer_question("which Name has the highest Row mean (4 columns)", frame, roles))
+        self.assertIsNotNone(answer_question("which Name has the highest Row mean (3 columns)", frame, roles))
+
+    def test_one_cell_left_out_is_said_in_the_singular(self):
+        frame = pd.DataFrame({"hemo": np.linspace(10, 17, 40), "pcv": np.linspace(30, 52, 40)})
+        frame.loc[0, "pcv"] = 9.0
+        given = QualityIssue(
+            "impossible", ("pcv",), 1, 2.5, "pcv below 10.", "pcv: 1 value below 10 (9)",
+            "a test rule", cells={"pcv": pd.Index([0])},
+        )
+
+        question = "correlation between hemo and pcv"
+        answer = answer_question(question, frame, detect_roles(frame), checks=(given,))
+
+        self.assertIn("1 value the data checks flag is left out (pcv: 1 value below 10 (9))", answer.answer)
+
+    def test_a_count_on_flagged_values_and_a_code_set_to_missing_are_named(self):
+        frame = pd.DataFrame({"Na": [140.0] * 30 + [250.0] * 5, "pm2_5": [10.0] * 35})
+        flagged = QualityIssue(
+            "impossible", ("Na",), 5, 14.0, "Sodium above 200.", "Na: 5 values above 200", "a test rule",
+            cells={"Na": pd.Index(range(30, 35))},
+        )
+        blanked = QualityIssue(
+            "sentinel", ("pm2_5",), 4, 10.0, "-1 set to missing.", "pm2_5: -1 on 4 rows", "a test rule",
+            group=-1.0,
+        )
+        roles = detect_roles(frame)
+
+        checks = (flagged, blanked)
+        high = answer_question("how many rows have Na above 150", frame, roles, checks=checks)
+        negative = answer_question("how many rows have pm2_5 below 0", frame, roles, checks=checks)
+
+        self.assertIn("Caution: 5 of these rows have Na values the data checks flag", high.answer)
+        self.assertIn("-1 in pm2_5 was read as a missing-value code", negative.answer)
+
+    def test_an_answer_says_it_rests_on_the_rows_with_the_measure(self):
+        frame = pd.DataFrame({"Side": ["L", "R"] * 60, "Crabs": [1.0, 2.0] * 55 + [np.nan] * 10})
+
+        answer = answer_question("total Crabs by Side", frame, detect_roles(frame))
+
+        self.assertIn("Based on the 110 rows with Crabs recorded, of 120 rows.", answer.answer)
+
+    def test_an_unfiltered_aggregate_says_its_rows_once(self):
+        frame = pd.DataFrame({"Side": ["L", "R"] * 60, "Crabs": [1.0, 2.0] * 55 + [np.nan] * 10})
+
+        answer = answer_question("average Crabs", frame, detect_roles(frame))
+
+        self.assertIn("calculated from 110 rows", answer.answer)
+        self.assertNotIn("Based on", answer.answer)
+
+
+class CorrelatesWordingTests(unittest.TestCase):
+    def test_nothing_to_correlate_gives_the_real_reason(self):
+        frame = pd.DataFrame(
+            {"Crabs": np.arange(40.0) % 7, "Nudibranchs": [0, 1] * 20, "Cucumbers": [0.0] * 40}
+        )
+
+        answer = answer_question("what correlates with Crabs", frame, detect_roles(frame))
+
+        self.assertIn("Nudibranchs holds only 0 and 1", answer.answer)
+        self.assertIn("Cucumbers never varies", answer.answer)
+        self.assertNotIn("shares 12 or more rows", answer.answer)
+
+    def test_one_outlier_in_ten_sits_outside(self):
+        frame = pd.DataFrame(
+            {"DDO": [40.0, 42.0, 45.0, 47.0, 50.0, 41.0, 44.0, 46.0, 43.0, 48.0, 49.0, 45.5, 95.0]}
+        )
+
+        answer = answer_question("outliers in DDO", frame, detect_roles(frame))
+
+        self.assertIn("1 of the 13 DDO values sits outside", answer.answer)
+
+
+class WideScanAndGroupingRuleTests(unittest.TestCase):
+    def test_a_screen_of_many_columns_names_its_false_discovery_adjustment(self):
+        rng = np.random.default_rng(7)
+        frame = pd.DataFrame(rng.normal(2.5, 0.5, size=(120, 400)), columns=[f"Gene_{n}" for n in range(400)])
+        frame["Diagnosis"] = np.repeat(["AML", "ALL", "Healthy"], 40)
+        roles = detect_roles(frame)
+
+        answer = answer_question("which genes differ between AML and ALL", frame, roles)
+
+        self.assertEqual(answer.plan.filters[0].values, ("AML", "ALL"))
+        self.assertIn("between AML and ALL", answer.answer)
+        self.assertIn("false-discovery-rate adjusted", answer.answer)
+        self.assertNotIn("Holm", answer.answer + answer.calculation)
+
+    def test_a_grouping_cut_from_the_measure_gets_its_rule_not_a_test(self):
+        values = np.linspace(5, 300, 200)
+        cuts = [values <= 50, values <= 100, values <= 200]
+        band = np.select(cuts, ["good", "moderate", "unhealthy"], "severe")
+        frame = pd.DataFrame({"max": values, "categori": band, "station": np.tile(["a", "b"], 100)})
+        roles = detect_roles(frame)
+
+        breakdown = answer_question("average max by categori", frame, roles)
+        compared = answer_question("does max differ by categori", frame, roles)
+
+        self.assertIn("categori is set by max", breakdown.answer)
+        self.assertNotIn("Welch", breakdown.answer)
+        self.assertIn("no test is run", compared.answer)
+
+
+class StackedTableTests(unittest.TestCase):
+    def setUp(self):
+        rng = np.random.default_rng(8)
+        food = pd.DataFrame({"source_table": "food", "food_category": rng.choice(["fish", "salt"], 40),
+                             "particles": rng.poisson(30, 40).astype(float)})
+        organs = pd.DataFrame({"source_table": "organs", "organ_system": rng.choice(["skin", "liver"], 20),
+                               "sample_size": rng.integers(10, 200, 20).astype(float)})
+        blood = pd.DataFrame({"source_table": "blood", "p_value": rng.uniform(0, 1, 8)})
+        self.frame = pd.concat([food, organs, blood], ignore_index=True)
+        roles = detect_roles(self.frame)
+        self.whole = WholeTable(self.frame, roles, "source_table", "food")
+        self.focused = self.frame[self.frame["source_table"] == "food"].reset_index(drop=True)
+        self.roles = replace(roles, dimension="food_category")
+
+    def ask(self, question):
+        return answer_question(question, self.focused, self.roles, whole=self.whole)
+
+    def test_columns_recorded_in_one_other_part_are_answered_there(self):
+        answer = self.ask("average sample_size by organ_system")
+
+        self.assertEqual(answer.plan.dimension, "organ_system")
+        self.assertIn("only recorded in the rows with source_table = organs (20 rows)", answer.answer)
+
+    def test_a_column_in_another_part_gives_the_real_reason(self):
+        question = "correlation between particles and p_value"
+
+        self.assertIsNone(self.ask(question))
+        hint = rephrase_hint(question, self.focused, self.roles, whole=self.whole)
+        self.assertIn("p_value has no values in the source_table = food part the brief follows", hint)
+        self.assertNotIn("not numeric", hint)
+
+    def test_rows_per_part_are_counted_and_ranked(self):
+        answer = self.ask("how many rows per source_table")
+
+        self.assertTrue(answer.answer.startswith("food has the most rows of any source_table, at 40"))
+        self.assertNotIn("own scale", answer.answer)
+
+    def test_a_long_table_inside_one_part_answers_from_the_column_marking_the_parts(self):
+        # The brief follows a unit beside the food readings; the other tables have no unit at all.
+        units = np.where(self.frame["source_table"] == "food", "items", None)
+        frame = self.frame.assign(**{"particles unit": units})
+        frame.loc[:9, "particles unit"] = "mg"
+        roles = detect_roles(frame)
+        whole = WholeTable(frame, roles, "particles unit", "items")
+        focused = frame[frame["particles unit"] == "items"].reset_index(drop=True)
+        roles = replace(roles, dimension="food_category")
+
+        answer = answer_question("average sample_size by organ_system", focused, roles, whole=whole)
+
+        self.assertIn("only recorded in the rows with source_table = organs (20 rows)", answer.answer)
+        self.assertNotIn("None", answer.answer)
+
+    def test_a_unit_column_named_for_one_reading_leaves_the_others_whole(self):
+        rng = np.random.default_rng(11)
+        organs = pd.DataFrame({
+            "organ_system": rng.choice(["skin", "liver"], 20),
+            "sample_size": rng.integers(10, 200, 20).astype(float),
+            "abundance": rng.uniform(1, 90, 20), "abundance unit": np.tile(["particles", "particles/g"], 10),
+        })
+        others = self.frame[self.frame["source_table"] != "organs"]
+        frame = pd.concat([others, organs.assign(source_table="organs")], ignore_index=True)
+        roles = detect_roles(frame)
+        whole = WholeTable(frame, roles, "source_table", "food")
+        focused = frame[frame["source_table"] == "food"].reset_index(drop=True)
+        roles = replace(roles, dimension="food_category")
+
+        answer = answer_question("average sample_size by organ_system", focused, roles, whole=whole)
+
+        self.assertIn("Based on all 20 rows", answer.answer)
+        self.assertNotIn("abundance unit", answer.answer)
+
+
+class PerUnitTests(unittest.TestCase):
+    def test_a_measure_per_unit_by_a_grouping_compares_the_units(self):
+        rows = []
+        for reef, status in (("North", "NTZ"), ("South", "OA"), ("East", "OA"), ("West", "NTZ")):
+            for transect in range(1, 7):
+                for fish in range(5):
+                    rows.append({"reef": reef, "protection_status": status, "transect": transect,
+                                 "quantity": float(fish + (5 if status == "NTZ" else 1))})
+        frame = pd.DataFrame(rows)
+
+        question = "average quantity per transect by protection_status"
+        answer = answer_question(question, frame, detect_roles(frame))
+
+        self.assertEqual(answer.plan.per, ("transect",))
+        self.assertIn("reef and transect together, 24 in all", answer.answer)
+        self.assertEqual(answer.table["n"].tolist(), [12, 12])
 
 
 class RefusalHintTests(unittest.TestCase):
@@ -1993,6 +2584,64 @@ class DatePartTests(unittest.TestCase):
         self.assertIn("2018 is left out because the data starts part-way through it", answer.calculation)
 
 
+class TrendSlopeTests(unittest.TestCase):
+    def test_a_slope_over_sparse_months_is_per_month(self):
+        months = ["2003-06-15", "2003-09-15", "2003-11-15", "2004-04-15", "2004-05-15",
+                  "2004-08-15", "2004-10-15", "2005-04-15", "2005-07-15", "2005-10-15"]
+        dates = pd.to_datetime(months)
+        elapsed = (dates.year - 2003) * 12 + dates.month - 6
+        frame = pd.DataFrame({"Date": dates, "Depth": 1.0 + 0.1 * elapsed})
+        roles = replace(detect_roles(frame), date="Date", measure="Depth")
+
+        answer = answer_question("Depth trend by month", frame, roles)
+
+        self.assertIn("The Theil-Sen trend is +0.1 per month", answer.answer)
+
+    def test_a_slope_whose_interval_spans_zero_is_no_clear_trend(self):
+        frame = pd.DataFrame({
+            "Date": pd.date_range("2023-01-01", periods=5, freq="MS"),
+            "AQI": [60.0, 70.0, 58.0, 65.0, 68.0],
+        })
+        roles = replace(detect_roles(frame), date="Date", measure="AQI")
+
+        answer = answer_question("AQI trend", frame, roles)
+
+        self.assertIn("95% CI", answer.answer)
+        self.assertIn("no clear trend", answer.answer)
+
+    def test_a_reading_that_starts_late_counts_only_its_own_years(self):
+        days = pd.date_range("2010-01-01", "2024-12-31", freq="7D")
+        late = np.where(days.year >= 2021, 80.0 + days.year - 2021, np.nan)
+        frame = pd.DataFrame({"Date": days, "o3": 50.0, "pm25": late})
+        roles = replace(detect_roles(frame), date="Date", measure="o3")
+
+        answer = answer_question("pm25 per year", frame, roles)
+
+        self.assertIn("across 4 years", answer.answer)
+        self.assertIn("pm25 is recorded only from 2021", answer.answer)
+
+    def test_a_seasonal_series_compares_whole_years(self):
+        months = pd.date_range("2018-01-01", periods=60, freq="MS")
+        frame = pd.DataFrame({"Date": months, "TMK": 10 + 8 * np.cos(2 * np.pi * (months.month - 7) / 12)})
+        roles = replace(detect_roles(frame), date="Date", measure="TMK")
+
+        answer = answer_question("TMK trend by quarter", frame, roles)
+
+        self.assertIn("TMK, averaged over each complete year, moved from 10.00 to 10.00", answer.answer)
+        self.assertIn("across 5 complete years", answer.answer)
+
+    def test_a_series_that_never_moves_is_stated_once(self):
+        frame = pd.DataFrame({"Year": [2005 + index for index in range(11)], "Index": [100.0] * 11})
+        frame["Year"] = pd.to_datetime(frame["Year"].astype(str))
+        roles = replace(detect_roles(frame), date="Year", measure="Index")
+
+        answer = answer_question("Index trend by year", frame, roles)
+
+        self.assertIn("in every year", answer.answer)
+        self.assertNotIn("peaked", answer.answer)
+        self.assertNotIn("Theil-Sen", answer.answer)
+
+
 class GroupedAnswerTests(unittest.TestCase):
     def test_a_share_within_groups_is_the_rate_in_each_group(self):
         frame = pd.DataFrame({"Gender": [0] * 10 + [1] * 10, "Result": [1] * 3 + [0] * 7 + [1] * 6 + [0] * 4})
@@ -2122,6 +2771,32 @@ class ScopeAndCautionTests(unittest.TestCase):
         answer = answer_question("maximum Wind Speed", frame, roles)
 
         self.assertIn("Caution: the data checks flag this value", answer.answer)
+
+    def test_the_data_checks_given_are_used_instead_of_a_new_scan(self):
+        frame = pd.DataFrame({"Wind Speed": [3.0, 4.0, 5.0, 2.5, 3.5] * 8})
+        roles = detect_roles(frame)
+        given = QualityIssue(
+            "impossible", ("Wind Speed",), 1, 2.5, "A gust the sensor can't record.", "Wind Speed: 1 value",
+            "a test rule", cells={"Wind Speed": pd.Index([2])},
+        )
+
+        answer = answer_question("maximum Wind Speed", frame, roles, checks=(given,))
+
+        self.assertIn("Caution: the data checks flag this value (Wind Speed: 1 value)", answer.answer)
+
+    def test_a_wide_table_reads_its_column_names_once(self):
+        frame = pd.DataFrame(
+            np.arange(40 * 3000, dtype=float).reshape(40, 3000) % 7,
+            columns=[f"Probe_{number}" for number in range(3000)],
+        ).assign(Group=["a", "b"] * 20)
+        roles = detect_roles(frame)
+
+        first = answer_question("average Probe_17 by Group", frame, roles)
+        second = answer_question("correlation between Probe_17 and Probe_2999", frame, roles)
+
+        self.assertEqual((first.plan.measure, first.plan.dimension), ("Probe_17", "Group"))
+        self.assertEqual((second.plan.measure, second.plan.partner), ("Probe_17", "Probe_2999"))
+        self.assertIs(nlq._name_index(frame.columns), nlq._name_index(list(frame.columns)))
 
 
 if __name__ == "__main__":

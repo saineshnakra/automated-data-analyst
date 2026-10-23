@@ -187,5 +187,26 @@ class PerSubjectTests(unittest.TestCase):
         self.assertEqual(metric_for("CorrectTotal", self.roles("ParticipantId", "sum")).aggregation, "sum")
 
 
+class LabTotalTests(unittest.TestCase):
+    def roles(self, *numeric):
+        return ColumnRoles(
+            date=None, measure=numeric[0], dimension=None, identifier=None, numeric=numeric, dimensions=(),
+        )
+
+    def test_a_total_among_lab_readings_is_averaged(self):
+        spec = metric_for("nitrates_total", self.roles("nitrates_total", "calcium", "chloride"))
+
+        self.assertEqual(spec.aggregation, "mean")
+
+    def test_a_total_beside_money_or_counts_still_adds_up(self):
+        self.assertEqual(metric_for("Total", self.roles("Total", "Quantity", "Discount")).aggregation, "sum")
+        self.assertEqual(metric_for("Order Total", self.roles("Order Total")).aggregation, "sum")
+
+    def test_a_total_named_for_a_count_still_adds_up(self):
+        spec = metric_for("Total Cases", self.roles("Total Cases", "temperature", "humidity"))
+
+        self.assertEqual(spec.aggregation, "sum")
+
+
 if __name__ == "__main__":
     unittest.main()

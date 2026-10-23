@@ -7,14 +7,18 @@ recent history. The model is a simple, explainable baseline.
 
 ## The model
 
-Theil-Sen trendline plus optional month-of-year seasonality.
+Theil-Sen trendline plus the usual offset for the time of year.
 
 1. Drop periods with no observation, then fit the shared trendline over the
-   period values.
-2. If the grain is monthly and there are at least 18 periods
-   (`MIN_SEASONAL_PERIODS`), learn a seasonal adjustment: the median residual of
-   each calendar month that has at least two observations, centred so it does
-   not shift the level.
+   period values. The calendar positions use the grain the trend was built at
+   (`grain=TrendSeries.frequency`), read from the period spacing before empty
+   periods are dropped, so months with gaps between them stay months.
+2. At any grain below a year (day, week, month, quarter) with a year and a
+   half of history (`MIN_SEASONAL_YEARS`: 18 months, 6 quarters, 78 weeks),
+   learn a seasonal adjustment: the median residual of each month, quarter or
+   week of the year seen in at least two different years, centred so it does
+   not shift the level. A daily series is offset by its month, since an offset
+   for each of 365 days would rest on one or two values.
 3. Project the line forward and add the seasonal adjustment back.
 4. Put a band around the projection at ±2 robust deviations
    (`BAND_DEVIATIONS`), widened with distance using the least-squares
@@ -39,7 +43,7 @@ be estimated.
 | Minimum history | 8 observed periods (`MIN_PERIODS`) | Below that, `build_forecast` returns `None` |
 | Maximum horizon | Half the history | 12 periods of history allow at most 6 forecast periods |
 | Default horizon | 6 periods | Capped by the rule above |
-| Seasonality | 18 or more monthly periods | A yearly pattern needs more than one year |
+| Seasonality | A year and a half of days, weeks, months or quarters | A yearly pattern needs each season seen twice |
 | Non-negative clamp | A measure whose history has no negatives, other than a temperature or elevation | It cannot go below zero; a temperature can |
 
 ## The backtest
@@ -52,16 +56,23 @@ the rest, and the held-out periods are scored.
 |---|---|
 | MAPE | Mean absolute percentage error on the held-out periods |
 | MASE | Mean absolute error on the held-out periods ÷ the in-sample mean absolute error of a one-step no-change forecast |
+| Seasonal MASE | The same error ÷ the in-sample mean absolute error of repeating the same period a year earlier; only when the forecast models the time of year |
 
 A MASE below 1.0 means the forecast beat "next period equals this period". At
 1.0 it did not, and above 1.0 it did worse; `describe_backtest` says so
 plainly, for example: "held out the last 3 periods, ±14.9% average error,
 MASE 2.33: worse than simply assuming no change, so do not rely on this
-forecast". `Backtest.worse_than_no_change` and `Forecast.reliable` carry the
-same verdict, and `Forecast.summary` puts the projection and the backtest in
-one sentence.
+forecast". A seasonal forecast must also beat repeating the same month or
+quarter of the previous year, which a strong yearly cycle makes a hard
+benchmark: "seasonal MASE 0.81, better than repeating the same quarter a year
+earlier", or "worse than ..., so do not rely on this forecast".
+`Backtest.worse_than_no_change`, `Backtest.worse_than_last_year` and
+`Forecast.reliable` carry the verdicts, `Backtest.shortfall` names the simpler
+forecast that won, and `Forecast.summary` puts the projection and the backtest
+in one sentence.
 
-The dashboard does not draw a forecast whose backtest is worse than no change.
+The dashboard does not draw a forecast whose backtest is worse than no change
+or than last year's same period.
 It says why under the chart, with a toggle to draw it anyway, since a dashed
 line that lost to "no change" on held-out periods would still look like a
 prediction.
@@ -76,16 +87,24 @@ undefined.
 |---|---|
 | Fewer than 8 observed periods | `None`; no forecast shown |
 | 10 periods, horizon 6 requested | Horizon capped at 5 |
-| Weekly, quarterly or yearly grain | No seasonal component |
-| Monthly, under 18 periods | No seasonal component |
+| Yearly grain | No seasonal component |
+| Under a year and a half of history | No seasonal component |
+| Monthly with gaps between the recorded months | Fitted and projected by the month, not re-read as quarters |
 | History never negative | Forecast and lower band clamped at 0, unless the measure is a level |
 | Held-out values of zero | Excluded from MAPE, counted separately |
 | No variation in history | Zero-width band, stated in `method` |
-| Backtest worse than no change (MASE above 1) | Stated plainly; not drawn on the dashboard unless asked for |
+| Backtest worse than no change (MASE above 1) or than last year's same period (seasonal MASE above 1) | Stated plainly; not drawn on the dashboard unless asked for |
 | Grain finer than a day | Forecast in seconds, minutes or hours, labelled by the clock |
 
 `ada.Analysis.forecast()` returns a `Refusal` with code `thin_history` where
-`build_forecast` returns `None`.
+`build_forecast` returns `None`, and one with code `no_measure_column` when the
+table has no measure and its rows per period are fixed by its design (each
+plot once a year; see [Fixed designs](evidence.md#fixed-designs)), or
+`not_enough_periods` when the dates cluster into a few sampling trips with
+most periods between them empty ([Sampling trips](evidence.md#sampling-trips)),
+or `changing_units` when most sites or stations behind an averaged measure
+appear in only one year, so the average per period follows which were
+visited.
 
 ## Changing this
 
@@ -94,6 +113,5 @@ Any replacement model must keep two properties:
 1. Return `None` on thin history rather than a guess.
 2. Report a backtest that can say "no better than assuming no change".
 
-Rolling-origin backtesting and a seasonal-naive comparison are on the
-[roadmap](../../ROADMAP.md); both use short histories better than a single
-holdout split.
+Rolling-origin backtesting is on the [roadmap](../../ROADMAP.md); it uses
+short histories better than a single holdout split.

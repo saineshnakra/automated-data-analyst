@@ -38,7 +38,14 @@ assembled in this order:
 
 | Kind | Reports | Skipped when |
 |---|---|---|
-| `trend` | Latest period-over-period change on the groups present in both periods, compared with the series' usual movement or with the time of year | No date, fewer than 2 periods, or a percentage change from a previous period of zero |
+| `campaigns` | When the dates cluster into a few sampling trips with most periods between them empty, the trips instead of periods: how many, their sizes, the latest trip against the one before, and the trend across trips (see [Sampling trips](#sampling-trips)) | Fewer than 3 trips, or most periods hold data |
+| `survival` | For a follow-up time beside its 0/1 event flag, Kaplan-Meier survival, log-rank tests across the groupings and a Cox model (see [Survival](#survival)) | No such pair, fewer than 20 subjects or fewer than 5 events |
+| `profile` | For a numeric time-point column (days since infection, minutes, a gait cycle), the measure at each time point in order, its peak and trough, and groups followed for different lengths compared over the time they share (see [Time points](#time-points)) | A date column, or no column named like elapsed time with repeated values |
+| `series` | Numbered columns in an arithmetic progression (40, 50, ... 260) read as one series: the mean profile, the rows that vary most, and the period of a repeating pattern | Fewer than 5 evenly numbered columns |
+| `longtrend` | The trend across a record of 20 or more complete years: Theil-Sen slope per year and per decade with its 95% interval and a Mann-Kendall test, the months it runs highest and lowest in, and the slopes either side of a change in level (see [Long records](#long-records)) | No date, or fewer than 20 complete years |
+| `months` | For a table with one row per year and a column per month (JAN to DEC), the monthly series it holds: the mean of each calendar month and the trend of the years with all twelve months (see [Long records](#long-records)) | No year column, or not all twelve month columns |
+| `modes` | For an averaged reading over time that sits in one of two separate ranges (a fan off or on), the share of readings in the upper range by month of the year, or by period under a year (see [Two modes](#two-modes)) | No date, a total, under 200 readings, or no clear gap between two modes |
+| `trend` | Latest period-over-period change on the groups present in both periods, compared with the series' usual movement or with the time of year | No date, fewer than 2 periods, a percentage change from a previous period of zero, or rows counted where the design fixes how many each period holds (see [Fixed designs](#fixed-designs)) |
 | `driver` | The segment that moved the measure most between the last two periods | No date, measure or segment |
 | `leader` | For money or a count of things, the group with the largest share of the total ("Largest share by ..."), or with the most rows when there is no measure ("Most rows by ..."). For any other measure, a comparison of the groups with its test and effect size (see below). For mixed-sign values, the largest by size with no share | No segment, or a total of zero |
 | `concentration` | Effective number of segments, and the top-three share | Shares are not meaningful (averaged measure or mixed signs), or the measure is neither money nor a count of things |
@@ -47,7 +54,9 @@ assembled in this order:
 | `rates` | How often a yes/no outcome occurs in each group of another column (see [Rates](#rates)) | No yes/no column, or no grouping across which its rate differs clearly |
 | `anomaly` | The most severe flagged period and how many were flagged, against the band for its time of year when the series has a yearly pattern | Under 8 periods even at a finer grain, or nothing flagged |
 | `relationship` | What relates to the measure, then the strongest other pair, or a null result | Fewer than two numeric readings, or no pair with 12 complete rows |
-| `model` | The measure fitted on the readings that relate to it, together (see [A joint model](#a-joint-model)) | Fewer than two such readings, too few rows, or a fit that adds nothing to the best single reading |
+| `model` | The measure fitted on the readings that relate to it, together (see [A joint model](#a-joint-model)), or the identity it is when the fit leaves no residual | Fewer than two such readings, too few distinct rows, or a fit that adds nothing to the best single reading |
+| `logistic` | A yes/no measure fitted on the readings that relate to it by logistic regression, with odds ratios | A measure that is not yes/no, too few cases per reading, or a fit that does not converge or that the readings separate |
+| `ranking` | The rows ranked by their mean and spread, when each row summarises a set of values (a table of each probe's count, mean, std and quartiles) | Any other table |
 | `outliers` | Values outside 1.5 × IQR in every reading, judged on each one's shape and within the grouping that explains it; a shift when one reading's form one run in time; for a mostly-zero measure, its tail instead | No reading with more flagged values than chance gives, and no shift |
 | `quality` | The data checks' leading issues with counts, and the share of populated cells | No issue and no missing cells |
 
@@ -55,6 +64,30 @@ A `differences` card that found nothing comes after `outliers` rather than
 after the segment cards, so a null result never pushes out a finding. If
 more than eight cards qualify, the first eight are shown. A `quality` card that
 falls past the eighth replaces the eighth, since it qualifies every other figure.
+
+### Two modes
+
+A reading that is either low or high, such as a sound level with a fan off
+(about 42 dBA) or on (about 81), averages to a level it never has.
+`timeseries.two_modes` splits it at the threshold that best separates the two
+sides of its histogram (Otsu's method) and keeps the split only when the
+histogram dips between the two peaks to a quarter of the smaller one, Ashman's
+D between the sides is at least 2.5, and each side holds a tenth of the
+readings; a single hump split in two would pass Ashman's D alone. The card
+then gives the share of readings in the upper range over time: *"34.5% of
+readings are at 61.25 or above; by month of the year that share runs from
+7.7% in April to 80.0% in January."* The histogram never has more bins than
+the reading has distinct values, so whole numbers leave no false gaps. When
+the latest movement is no clear change, this leads the headline ahead of
+rates and the scan of differences.
+
+### Snapshots and undated rows
+
+A table whose only date column holds one value has no timeline; the summary
+says so ("Every row is stamped 14 Feb 2025 17:00:00: the table is a snapshot,
+so there is no timeline") instead of saying no date column was found. Rows
+with no date are left out of every figure over time, and the summary counts
+them ("5 rows have no Date, so the figures over time leave them out").
 
 ### Exact repeats
 
@@ -104,7 +137,12 @@ headline over a finding nor gets a "check whether the change holds"
 recommendation. When the last period ends short of typical
 coverage but was not excluded, the card calls it the "latest period" rather
 than the "latest complete period" and says part of the change may be missing
-data.
+data. When each period is a single row, the card names the period by its
+grain ("in the latest year (2019)") and gives no row-count caveat, since the
+period is that row; in a table with a column per month, a year whose row
+leaves months blank is not called complete: "in the latest year (2019, which
+has 10 of its 12 months recorded)". A change judged outside its usual range
+sets the card's `lead`, so it can still lead a long record's brief.
 
 **Time of year.** At a monthly or quarterly grain, a series with a clear yearly
 pattern (`yearly_pattern` in `ada/timeseries.py`; see
@@ -115,14 +153,28 @@ previous month or quarter into the latest one), says whether the latest move
 is within that range, and sets the latest value beside the same period a year
 earlier: *"In the 6 earlier years on record, the move into Q2 ranged from
 +8.63 to +16.40 (median +13.86), so this one is within the range usual for the
-time of year. Against Q2 2022 (15.52), it is down 2.39."*
+time of year. Against Q2 2022 (15.52), it is down 2.39."* A move that looks
+unusual against all past changes is set beside the same time of year even
+when the yearly pattern is too short to pass the test, as long as two earlier
+years show the same move. When the move is outside their range but the
+latest value is within the usual gap between a period and the same one a year
+earlier (the median of those gaps), the card says the latest level is
+ordinary for the time of year and the period before it was the unusual one,
+and marks the change as no clear change.
 
 **Groups that come and go.** With a grouping column, or without one but with a
 column naming the unit each row belongs to (a station; `entity_column`), the
 change is measured on the groups that reported in both of the last two periods
 (`matched_period_change` in `ada/aggregation.py`). Weather stations that start
 reporting halfway through a record, or a site that stops, would otherwise
-move a pooled average on their own. The card names the groups left out and
+move a pooled average on their own. This applies only to units that report
+over time (`reporting_unit`): a column named like one (station, site, plot,
+city, region, store, sensor and similar), or one whose values report side by
+side, several on most dates and each at most once a date. A per-row condition,
+such as a weather code, a status or the pollutant that peaked, is never
+matched: a snow code missing from one quarter did not stop reporting, it did
+not snow, and its mix is part of the outcome. Category codes and yes/no flags
+count as conditions. The card names the groups left out and
 gives the pooled figures too: *"This compares the 88 station values that
 reported in both periods; ... With every station included it went from 29.96
 to 24.82."* The usual movement and the time-of-year comparison then use the
@@ -133,6 +185,147 @@ The card's tone follows the measure's meaning: a rising cost or ticket count is
 negative (`increase_is_welcome` in `ada/metrics.py`). A level whose name has no
 word for which way is good, such as CO2 or a temperature, gets a neutral tone
 (`MetricSpec.direction_known`), and so does its driver card.
+
+### Long records
+
+Over a record of 20 or more complete years (`LONG_RECORD_YEARS`), the change
+between the last two periods is mostly noise, so the `longtrend` card comes
+first. It fits the Theil-Sen slope to the yearly values of the complete years
+(`aggregation.yearly_values`: a year counts when 90% of its periods hold a
+value, and its value is the mean of its periods, or their total for an
+additive measure) and tests it with `timeseries.trend_test` (see
+[Periods](periods.md#trend-test)): *"Across the 99 complete years from 1910 to
+2019, M-A-M rose by 0.0154 per year (+0.154 per decade; 95% CI +0.0103 to
++0.0203 per year). The Mann-Kendall test finds a clear rise (Kendall's τ =
+0.50, p < 0.001)."* When the interval spans zero it says "no clear trend".
+For an averaged measure recorded within the year it names the months it runs
+highest and lowest in, when the month of the year explains the monthly values
+by the shared F test. When the series also has a change in level, it gives the
+slope within each stretch either side of it and says whether the trend runs on
+both sides or the long-run slope is mostly the step.
+
+When most units (the column naming each row's site or station; a key that
+names one visit, each value on a single date, is passed over for the next
+column named like a unit) appear in only one year, a yearly average follows which sites were visited as much as
+any change in the reading (`aggregation.unit_turnover`, for an averaged
+measure). The card says so, gives the trend measured from each recurring
+site's own level instead (`within_unit_yearly`), and does not lead the
+headline; `Analysis.forecast()` returns a `Refusal` with code
+`changing_units`.
+
+A table with one row per year and a column per month holds one monthly
+series laid out wide. The `months` card reads it in long form
+(`aggregation.months_long`): the calendar months it runs highest and lowest
+in, and the Theil-Sen trend of the yearly mean over the years with all twelve
+months, tested the same way. `Analysis.long_form()` returns that long form
+(`Date`, `Value`), so `ada.analyze(report.long_form())` analyses the monthly
+series itself.
+
+A clear trend whose stretch slopes agree leads the headline ("M-A-M rose by
+0.154 per decade from 1910 to 2019 (95% CI +0.103 to +0.203; Mann-Kendall
+p < 0.001)") and opens the summary. A latest change judged outside its usual
+range still leads instead. Without a clear trend, a change in level, a group
+finding or a rate leads, and otherwise the card's "no clear trend" sentence.
+
+### Fixed designs
+
+With no measure, the brief counts rows per period. When each unit (the
+column naming what each row belongs to, `compare.entity_column`) appears at
+most once a period, recurs in most periods, and the count barely moves (the
+fewest at least 80% of the most), that count is set by the design: ten plots
+observed every year give ten rows a year. `aggregation.fixed_design` finds
+this, and the brief then has no `longtrend`, `trend` or `anomaly` card and
+says so in the summary instead: *"Each plot code appears at most once a year:
+9 to 10 of the 10 in each of the 11 years. Rows per year follow that design,
+so they are not trended or forecast."* `Analysis.forecast()` and
+`Analysis.anomalies` return a `Refusal` with code `no_measure_column` and the
+same sentence. A count that moves, such as active customers per month, is
+still followed.
+
+### Sampling trips
+
+Field data often comes from a few trips of a few days each. On a calendar
+grid most periods are then empty, and a trend, anomaly check or forecast over
+those periods runs over gaps (or over zeros, for a total).
+`aggregation.sampling_campaigns` splits the distinct dates into trips at gaps
+of more than 14 days and five times the median gap (`CAMPAIGN_GAP_DAYS`,
+`CAMPAIGN_GAP_RATIO`), and treats them as campaigns when there are at least
+three and over half the periods at the chosen grain are empty. The brief then
+has a `campaigns` card in place of the `longtrend`, `trend`, `driver`,
+`shift` and `anomaly` cards: *"The rows come from 9 sampling trips between Jun
+2003 and Oct 2005, 44 to 46 rows each; 19 of the 29 months in that span have
+none, so trips are compared rather than months."* It compares the latest trip
+with the one before and fits the Theil-Sen slope across trips on each trip's
+middle date, per year, with its interval and Mann-Kendall test.
+`Analysis.forecast()` and `Analysis.anomalies` return a `Refusal` with code
+`not_enough_periods` that names the trips.
+
+### Survival
+
+A follow-up time (a non-negative column named like `survival`, `OS_months`,
+`futime` or `days_to_death`) beside a two-valued event column (`eventdeath`,
+`vital_status`, `relapse`, or a `censored` flag read the other way) is
+censored: subjects without the event were still event-free when last seen.
+`ada/survival.py` pairs them by name (a shared stem such as `os_time` and
+`os_status`, or both about death), codes the event (1, True, the larger of
+1 and 2, or a text value such as "Dead"; a text pair without one is left
+alone), and summarises survival with statsmodels:
+
+- Kaplan-Meier (`SurvfuncRight`): the median survival, or that it was not
+  reached, and the share still event-free at a round landmark within the
+  follow-up (the largest of 1, 2, 2.5 or 5 times a power of ten below the
+  75th percentile of follow-up);
+- the log-rank test (`survdiff`) across every grouping of 2 to 8 levels with
+  at least 5 subjects each, Holm-adjusted, with each level's survival at the
+  landmark;
+- a Cox proportional-hazards model (`PHReg`) of up to three clear groupings,
+  giving hazard ratios of the clearest one's levels against its first level,
+  adjusted for the others; left out when the fit does not converge to finite
+  estimates.
+
+*"survival is follow-up time, censored where eventdeath = 0: 77 of 272
+subjects had the event ... Survival differs by grade (log-rank χ² = 35.4,
+df = 2, Holm-adjusted p < 0.001): at survival = 10, 96.9% for grade 1, 72.9%
+for grade 2 and 50.5% for grade 3."* The card leads the headline. The time is
+never compared across its own event flag: the leading-group card that would
+do so is dropped, follow-up times are left out of the differences scan across
+the event and of the measure's variance shares, and the average-measure tile
+becomes the share event-free at the landmark.
+
+### Time points
+
+Many experiments record time as a number: days since infection, minutes after
+a stimulus, the percentage of a gait cycle, a visit number.
+`timepoints.timepoint_column` takes a numeric column named like elapsed time
+(`time`, `timept`, `day`, `hours`, `visit`, `cycle`, `phase` and similar)
+with 4 to 400 non-negative values, each on several rows, as the axis of a
+table with no date; `ada.analyze(..., date="timept")` names one directly.
+The `profile` card gives the measure at each time point in order: where it
+starts, peaks, bottoms out and ends, and whether it rises or falls along the
+axis (Kendall's tau of the time-point means). A profile that ends about where
+it started is called a cycle and is not tested for a steady rise.
+
+When the groups were followed for different lengths (the animals that died
+are measured to day 10, the survivors to day 15), a comparison of all rows
+mixes in time points only some groups reached. The card then gives each
+group's reach, compares the groups' averages over the stretch they share,
+and leads the headline; the leading-group card on pooled means is dropped,
+and the time column is never compared between groups as an outcome.
+
+### Series across columns
+
+Columns named by evenly spaced numbers (40, 50, ... 260 minutes) are a series
+laid out wide, not unrelated readings. `timepoints.series_columns` finds at
+least five of them, and the `series` card gives the mean of each column in
+order with its highest and lowest point, the rows whose standard deviation
+across the series is largest (named by the identifier or a text column that
+names each row once), and, when one fits, the period of a repeating pattern:
+sine and cosine least-squares fits at 40 periods from two steps to the whole
+span, each row's fit tested by its F test at a 5% false discovery rate
+(Benjamini-Hochberg), keeping the period with the most clear rows. *"A
+repeating pattern fits best with a period of about 112: at that period 562 of
+the 4,381 complete rows have a clear sine-wave fit."* For a matrix table,
+whose measure is the row mean, the card leads the headline.
 
 ### Drivers on the same groups
 
@@ -203,9 +396,21 @@ is shaped:
   Each group's values are judged against that group's own quartiles, so a
   group's level is not mistaken for outliers (arctic and tropical stations,
   resonant frequencies). A group with fewer than 12 values
-  (`MIN_GROUP_FOR_FENCES`) or no spread uses the pooled quartiles.
+  (`MIN_GROUP_FOR_FENCES`) or no spread uses the pooled quartiles. A grouping
+  cut from the reading itself (health bands of an index, a largest-of label;
+  `GroupingRule` in `ada/compare.py`) is never used for it. The grouping is
+  named only when some group had quartiles of its own; otherwise the
+  calculation says the quartiles were pooled, and a reading judged within a
+  different grouping from the lead's names it in "Also beyond chance".
 - A count of subjects or samples is skipped, and so is a reading a quarter of
-  whose values are one value: its IQR measures that pile, not the spread.
+  whose values are one value: its IQR measures that pile, not the spread. A
+  reading the data checks find piled in a sliver of its range (`pile` in
+  `ada/quality.py`) is skipped too, and the card names it under "Not counted".
+- When more than 5% of a reading's values lie outside the fences
+  (`HEAVY_TAIL_SHARE`), the card says they are part of the reading's shape,
+  long tails or a second cluster, rather than a handful of exceptional records,
+  and when that reading leads, the card is titled **Long tails** instead of
+  **Exceptional records**.
 - A normal sample puts about 0.70% of its values outside the fences, so a
   reading's count is reported only when a normal sample of its size would reach
   it with under 1% chance (binomial, `OUTLIER_CHANCE`). One value in 104 is what
@@ -216,18 +421,26 @@ is shaped:
   the lead reading narrows its IQR.
 - Cells the data checks flagged as impossible, codes, fill values, swapped or
   stuck are left out, and the calculation says how many.
-- For a reading with more than 50,000 values, the scale, the quartiles and the
-  choice of grouping come from a random sample of 50,000 of them
-  (`FENCE_SAMPLE_ROWS`); the values are counted on every row.
+- For a reading with more than 50,000 values, the scale, the pooled quartiles
+  and the choice of grouping come from a random sample of 50,000 of them
+  (`FENCE_SAMPLE_ROWS`); each group's quartiles come from all its rows, and the
+  values are counted on every row.
 - When half or more of the measure's values are 0 (`HEAVY_TAIL_ZEROS`), no
   outliers are listed. The card is titled **Heavy-tailed measure** and gives the
   share of zeros and the 99th percentile instead.
 - With a date, each reading's flagged values are put in time order within each
   group, the measure first. When one unbroken run holds at least half of them
-  and at least five (`SHIFT_RUN_SHARE`, `MIN_SHIFT_RUN`), the card is titled
-  **Level shift**: that reading left its usual range at the run's first time and
-  stayed out, to the end of the record or until its last time. A fire that
-  raises every reading for ten minutes is an event, not a run of entry errors.
+  and at least five (`SHIFT_RUN_SHARE`, `MIN_SHIFT_RUN`), at five distinct
+  times or more (rows sharing one time are one record repeated, such as a
+  visit's chemistry on each species row), the card is titled
+  **Run of unusual values** (distinct from the **Change in level** card):
+  that reading left its usual range at the run's first time and stayed out,
+  to the end of the record or until its last time. A fire that raises every
+  reading for ten minutes is an event, not a run of entry errors. When the
+  reading has a clear trend in time, the run is judged again on the residuals
+  from its Theil-Sen line, so the last years of a steadily warming record,
+  beyond the whole record's range only because of the trend, are not called
+  a run.
 
 ### Data checks
 
@@ -236,7 +449,11 @@ Before the cards are built, `ada/quality.py` scans every numeric column; see
 titled **Data checks**, its value is the number of issues, and it names the
 three issues about values (`QUALITY_ISSUES_SHOWN`) and the two about gaps
 (`GAP_ISSUES_SHOWN`) that cover the most rows, each with its counts, followed by
-how complete the table is. `Analysis.quality()` lists them
+how complete the table is. Descriptions of the table (a constant column, a
+reading mostly 0, a narrow pile; `INFO_CHECKS`) come after the issues about
+values. For one part of a stacked file, completeness counts only that part's
+own columns and says how many columns of the other tables, empty throughout
+it, were left out. `Analysis.quality()` lists them
 all. With no issue, the card is the earlier **Data completeness** card,
 skipped when nothing is missing.
 
@@ -247,11 +464,15 @@ More comes from the same checks:
   simulated-looking data do (`CHECK_FIRST_SHARE`), or is any other issue about
   values covering a quarter of its column or more (`CHECK_FIRST_BROAD`, such as
   fill values in 61% of rows), the summary ends with up to two of them
-  (`CHECK_FIRST_SHOWN`), those covering the most rows first.
+  (`CHECK_FIRST_SHOWN`), ranked as the card ranks them. Issues still in the
+  data come before codes cleaning already set to missing, which no longer
+  touch any figure: when such a code qualifies, the card's leading open issue
+  takes its place. A description of the table is never named here.
 - **Cells left out.** The relationship scan, the group comparisons and the
   outlier count run on a copy of the table with the cells the checks found
   can't be readings blanked (`statistics_frame` in `ada/quality.py`): impossible
-  values, codes, fill values, swapped and stuck readings. Each of those cards
+  values, codes, fill values, swapped and stuck readings, failed records, rows
+  of zeros and placeholder cells. Each of those cards
   ends its calculation with how many cells were left out.
 - **A leader carried by flagged values.** For an averaged measure, the leading
   group's average is recomputed without the values the checks flagged
@@ -271,7 +492,34 @@ Kruskal-Wallis check for more, and an effect size. A skewed or capped measure
 is compared by medians and ranks, a mostly-zero one by its means and the share
 of values that are not zero, and a grouping of ordered numeric levels also
 gets a trend test. When a subject column repeats, each subject counts once per
-group, and each group's figure says so ("mean of per-Bird medians").
+group, and each group's figure says so ("mean of per-Bird medians"), as does
+the card's title and KPI ("Highest per-Bird average by phenotype"). The subject
+can be the sample the measure was read on: a site visit's conductivity copied
+onto each species row counts once per visit, and the summary says so. When
+every subject appears in every group, the groups are compared within
+subjects (a repeated-measures ANOVA, Friedman test, paired t-test or Wilcoxon
+signed-rank test). When each subject's rows follow a clock (a day or time
+point counted per subject) and the groups were followed for different lengths
+(animals that died stop early), only the stretch every group was followed
+over is compared.
+
+**Another grouping behind the gap.** The comparison is repeated within the
+levels of another grouping (`stratified_comparison`; see
+[Comparing groups](compare.md#comparing-within-the-levels-of-another-grouping))
+when that grouping is tied to the compared one (Cramér's V of 0.5 or more) and
+explains at least 14% of the measure, or explains half of it or more on its
+own (which joint an angle comes from). Every grouping with a few levels is a
+candidate, scanned or not. The card gives the comparison within each level:
+"Soil_Type_Gravel is tied to Landslide (Cramér's V = 0.59), which explains
+74% of Earthquake_Activity on its own, so the comparison is repeated within
+each Landslide: within Landslide 0, no clear difference, mean 2.02 in
+Soil_Type_Gravel 0 vs 1.93 in Soil_Type_Gravel 1 (...); Landslide 1 holds only
+Soil_Type_Gravel 0. Within the levels of Landslide the difference does not
+hold, so the pooled gap reflects Landslide rather than Soil_Type_Gravel." When
+it runs the other way in a level, or no level shows it clearly and it keeps
+less than half its size within the levels, the stratified result leads the
+headline instead of the pooled gap. A gap that keeps its size in levels too
+small to confirm it still stands; one that shrinks is said to.
 
 A summed per-row score (seconds of looking time per infant) is compared this
 way too, since its shares mostly count rows; the card adds the leading group's
@@ -311,21 +559,38 @@ including numeric codes listed in `ColumnRoles.factors`, with
 codes, design labels, time parts, yes/no flags or numbers for a grouping's
 levels (a `Group` 1 to 12 beside its `Gp` label). A grouping made of two others
 (a cell code for contour and depth) is replaced by those two, and the subject
-column is never a grouping. Nor, in a table with a date, is a column holding a
-part of it (a year, month or day number): the cycle over the year belongs to
-the timeline.
+column is never a grouping, nor a reading: its code and its clock (a time
+point climbing within each subject, `within_axis`) are left out of the
+readings, since how long a subject was followed differs between groups by
+design, not as a finding. A numeric setting with 2 to 4 values fixed within
+each subject (a test case's depth of cut) groups the subjects and is scanned
+as a grouping. Nor, in a table with a date, is a column holding a part of it
+(a year, month or day number): the cycle over the year belongs to the
+timeline. When every subject appears in every group of a grouping, its
+readings are compared within subjects, and the card says so: "Every subject
+appears in every joint group, so each is compared with itself
+(repeated-measures ANOVA)."
 
 The groupings are taken design factors first: the grouping column, then text
 labels, then two-level codes, then other codes by how few levels they have, so
-a rating item read as a code comes last. At most six are scanned
-(`MAX_SCAN_GROUPINGS`), and the calculation names the ones past the cap. Also
+a rating item read as a code comes last. Up to twelve are scanned
+(`MAX_SCAN_GROUPINGS`), so a table with a handful has every one scanned; a
+long, wide table, whose rows scanned times readings times groupings would
+pass 2.5 million values (`SCAN_GROUPING_CELLS`), keeps fewer, but never fewer
+than six. With more candidates than that, the codes that explain most of the
+measure come first, and the calculation names the ones past the cap. Also
 left out, and named:
 
 | Left out | Why |
 |---|---|
 | A numeric column that repeats a part of the date column (`MO` is the month of `Date`) | It shows the season or the trend, not a factor |
 | A grouping nested within one already scanned (concentrations 3 to 12 used only with the blue dyes) | Its differences repeat the other grouping's |
+| A grouping whose levels each hold whole levels of a finer one (a region holding two kinds of protected zone; `within_one_level`) | The finer one is compared instead and holds its differences and more, unless the coarser one is the grouping column |
+| A grouping that splits the rows exactly as one already kept | It is compared as that one, and the calculation says so |
 | A copy of a reading in other units (`MaxTemp` in °C beside `MAX` in °F) | The reading is compared once, as the measure when it is one |
+| Other statistics of one reading (`pm_min` and `pm_max` beside `pm_avg`) | One of them stands for the rest: the measure, or the mean |
+| A score standardised within each group ("Z_SCORE is LN_IC50 standardised within each DRUG_ID") | Its source is compared instead |
+| A reading fixed for each value of an item column (a species' trophic level; `item_attributes`) | It describes the item, so record by record it would weigh each item by how often it was recorded |
 
 Pairs related by construction are not compared:
 
@@ -334,13 +599,19 @@ Pairs related by construction are not compared:
 | A grouping set by the reading | Farm size cut from acres; anaemia set by haemoglobin below 12 for women and 13.5 for men; a pollutant label naming the largest sub-index | The rule is stated in the card: "Result is set by Hemoglobin: Result 1 below 12.0 for Gender 0 and below 13.5 for Gender 1, on 100% of rows, so it is not compared with Hemoglobin or anything built from it" |
 | A score and the items it is built from | A scale that is the mean of its rated items, read as codes | Named in the calculation |
 | A reading fixed within each group | A station's battery voltage, a reef's coordinates | Named in the calculation as an attribute of the group |
+| A grouping that holds the reading by definition (`built_in_grouping`) | Precipitation amount across its form code, whose "none" group is all 0; PM across an AQI level cut from it; trophic level across trophic group | Named in the calculation with the reason |
 | Coordinates and compass directions | Latitude, wind direction | Never compared |
 
 The rules come from `grouping_rules` and the pairs built from one another from
 the brief's screen of the table (`construction`), which the `relationship`
 card uses too (see [Comparing groups](compare.md#pairs-related-by-construction)).
-A grouping set by the measure also gets no `leader` card, so it never makes
-the headline.
+A grouping set by the measure, or holding it by definition, also gets no
+`leader` card, so it never makes the headline, and the `trend` and `driver`
+cards then follow the measure without it as a segment. The `outliers` card
+never judges a reading within a grouping cut from it, and leaves out readings
+fixed for each item. `grouping_set_by(dataframe, roles, reading, grouping)`
+gives Ask the same check as a sentence ("categori is set by max: ..."), or ""
+when the grouping holds the reading by no definition.
 
 - P-values are Holm-adjusted for every test run, or, over more than 300
   readings, Benjamini-Hochberg adjusted, and the calculation says which and
@@ -359,7 +630,8 @@ the headline.
   explains: "Of the variance in Ca, Depth explains 76%, Contour 5%", with one
   value per subject in each group when subjects repeat, so the shares match
   the comparisons beside them. Groupings set by the measure, or that it is
-  built from, are left out of the shares.
+  built from, are left out of the shares, and so is a grouping that explains
+  99% or more, each of whose groups holds about one value of the measure.
 - The measure across the grouping column is left to the `leader` card when
   that card compares the groups.
 
@@ -375,14 +647,26 @@ sex, gender, race, ethnicity, treatment, arm, cohort, condition, group, block,
 batch, phase, site, visit, or check as in a manipulation check;
 `NOT_OUTCOME_WORDS`), is never the outcome: the
 share of women among smokers is the sample's makeup. The outcome is compared
-across every other grouping, Holm-adjusted for their number; a grouping in
+across every other grouping, past the scan's cap too since a rate is a cheap
+count, Holm-adjusted for their number; a grouping in
 which every group is all yes or all no, or one named for the same thing
 (`diabetes` beside `diabetes.1`; `same_stem`), is another code for the outcome
 and is left out. The card appears when a rate differs clearly, and gives each group's rate
 and n, the chi-squared or Fisher test, Cramér's V and the risk difference with
 its interval: "The share of rows with Result 1 is 55.7% in Gender 1 (n = 740)
 against 30.5% in Gender 0 (n = 681): a difference of 25.1 percentage points
-(95% CI 20.1 to 30.0)".
+(95% CI 20.1 to 30.0)". When the outcome is fixed for each subject (a cell
+line's methylation flag on each of its drug rows), each subject counts once
+and n counts subjects. When another grouping is tied to the rate's grouping
+and goes with the outcome too, the rate is compared within its levels, the
+table's main grouping first: "htn is tied to classification (Cramér's V =
+0.59), which goes with ane = yes too (Cramér's V = 0.32), so the comparison is
+repeated within each classification: within ckd, 31.3% in htn = yes vs 13.6%
+in htn = no (...); notckd holds only htn = no." When the outcome is cut from
+a reading at a cut-off that moves with the grouping compared (anaemic below 12
+g/dL for women and 13.5 for men), the gap is built into the label: the card
+says so, says whether the reading itself differs across the grouping, ranks
+that grouping after the others and never leads the brief with it.
 
 ### Changes in level
 
@@ -404,21 +688,87 @@ it best, each at least 15% of the series. The split is reported when:
 The card gives the first period at the new level, the average before and
 after, and the shift in standard deviations: "PM10 rose to a new level from
 Jul 2024: it averaged 54.47 per month from May 2024 to Jun 2024 and 852.66 from
-Jul 2024 to Dec 2024". When the groups reporting changed at the same time, it
-says so, since that alone can move the level. Series whose noise wanders
-slowly show a shift more often than stable ones.
+Jul 2024 to Dec 2024". It then says what else changed at the same time,
+since any of it can move the level on its own:
+
+- the trend within each stretch, per year, and when one trend across the whole
+  record would mostly measure the step ("Within the two stretches the trend is
+  +0.0888 per year (Q2 1989–Q1 1999) and +0.0324 per year (Q3 1999–Q3 2019),
+  while one trend across the whole record gives -0.144 per year: that slope
+  mostly measures the step");
+- rows per period or per date changing by half or more (`SAMPLING_CHANGE`),
+  which points to more sites or a different sampling plan;
+- columns first or last recorded within a period of the shift ("At the same
+  time pm25 starts being recorded");
+- for units that report over time (`reporting_unit`), the ones that started or
+  stopped reporting; for any other grouping, the largest changes in each
+  group's share of rows ("PM25 went from 1.2% of rows to 89.6% and O3 went
+  from 73.8% of rows to 4.2%"), and for the column naming each row's unit, any
+  change in which units report.
+
+Series whose noise wanders slowly show a shift more often than stable ones.
 
 ### A joint model
 
 The `model` card fits the measure on the readings that relate to it with p
 below 0.05, at most six of them (`fit_joint_model`; see
-[Comparing groups](compare.md#a-joint-model)). It appears when the readings
-together explain clearly more than the best one alone (an R² at least 0.1
-above its r², `MODEL_GAIN`), or when a reading's coefficient points the other
-way from its own correlation. The card gives R² and adjusted R², the fitted
+[Comparing groups](compare.md#a-joint-model)). Left out, and named in the
+calculation: another candidate outcome (the alternatives the roles name),
+the same quantity in another form (a sibling reading at |r| ≥ 0.95), and a
+case number (a name such as case, run or trial over whole numbers each in one
+unbroken run of rows; `NUMBERING_WORDS`). Columns related by construction
+never reach it. A grouping of 2 to 4 levels across which the measure clearly
+differs (a one-way ANOVA with p below 0.05), such as a material or a cutting
+speed set by the design, enters too, each level a 0/1 indicator against the
+most common one ("material 2 +0.318 against material 1"); the subject, a case
+number and a grouping that holds the measure by definition never do, and the
+gain is then judged against the best grouping alone as well.
+
+It appears when the readings together explain clearly more than the best one
+alone (an R² at least 0.1 above its r², `MODEL_GAIN`), or when a reading's
+coefficient points the other way from its own correlation and its variance
+inflation factor is 5 or less, since a reversal among overlapping readings is
+arithmetic. A table with no grouping is one outcome against the columns
+recorded beside it, so it gets the model of the outcome on all of them (up to
+10, `MAX_INPUT_TERMS`) whenever no one reading explains half of it
+(`SINGLE_ANSWER`), however little they explain together; the gain then decides
+only whether it leads. The card gives R² and adjusted R², the fitted
 equation, each coefficient with its 95% interval, a sentence for each reversed
-reading, and a collinearity warning when a variance inflation factor is above
-5.
+reading, the readings that add little once the others are known, and a
+collinearity warning when a variance inflation factor is above 5. It is left
+out when a grouping that explains at least 14% of the measure (a 0/1 outcome
+the readings differ by) takes away what the readings explain: once its
+levels are in the fit, they add less than 0.1 to R² (`gain_within`), so the
+fit would only restate the gap between its groups. Its lead
+names only the readings that stay clear. A model whose readings all share the
+measure's name stem or unit (other acids of the same sample) never leads.
+
+A fit with an R² of 0.995 or more is an identity in how the columns were
+computed, not a relationship: the card is titled "M-A-M is a combination of
+other columns", names the combination by its clear terms, and reports no
+model.
+
+### A logistic model
+
+When the measure is yes/no, the `logistic` card fits it on the readings
+whose correlation with it has p below 0.05, at most six, by logistic
+regression (`fit_logistic_model`; see
+[Comparing groups](compare.md#a-logistic-model)): "Fitted together by
+logistic regression (n = 50,000, 38,842 with fasting_ability 1), the odds of
+fasting_ability 1 change with each reading, per standard deviation and with
+the others held fixed: OBS1_glucose_max ×0.40 (95% CI 0.39 to 0.41,
+p < 0.001); ...". One statistic of a reading is used, a column is never used
+with what it is built from, and a reading the outcome is cut from is left out
+and its rule named. A fit that does not converge or that the readings
+separate gets no card.
+
+### Rows of a summary table
+
+When each row summarises a set of values (`mean`, `std`, `min`, quartiles and
+`max` of each probe), the statistics move together by construction and none
+of their correlations is reported. The `ranking` card lists the rows with the
+highest and lowest mean, the largest standard deviation and the largest
+coefficient of variation, named by the identifier.
 
 ### Relationships
 
@@ -447,8 +797,13 @@ and listed in the calculation: a column and the columns it is built from (a
 total and its items, a mean, a difference, the largest of several readings, a
 score standardised within each group), shares that add up to a fixed total, a
 flag that only marks another column's cap, same-stem names above |r| = 0.95,
-two map coordinates, and near-duplicates (|r| ≥ 0.99 with ranks that agree,
-such as a reading and its adjusted copy). Near-duplicates are also named in
+two map coordinates, the statistics of one reading (its minimum, mean and
+maximum), and near-duplicates (|r| ≥ 0.99 with ranks that agree, such as a
+reading and its adjusted copy). The correlations are computed with the cells
+the data checks flagged left out, the same cells the calculation says were
+left out. When the pair the card leads with is two totals over the same items
+(`density_Total` and `allelectrons_Total`), it says both grow with how many
+items a row sums over, and the pair never leads the brief. Near-duplicates are also named in
 the statement: up to three of them (`NEAR_DUPLICATES_NAMED`), saying they
 probably measure the same thing or one is derived from another. The columns
 left out of the measure's own ranking are named with the reason ("Left out of
@@ -461,7 +816,14 @@ directions never enter the scan.
 
 Tables longer than 50,000 rows are screened on a fixed random sample of that
 many rows, the same one the comparisons use; the pairs the card names are
-computed on every row.
+computed on every row. When the measure is copied onto every row of a sample
+and at least half the readings are too (a site visit's chemistry on each
+species row), the scan, the card and the joint model use one row per sample,
+leaving out the columns that vary within it, and the calculation says so.
+When the rows are instead repeated readings of subjects (a mouse measured each
+day), the card says how many subjects they come from and that the intervals
+are narrower than the evidence, since readings of one subject are not
+independent.
 
 Each pair the card states is checked, and the sentence leads with the figure
 that one record or a few extreme ones do not decide:
@@ -474,7 +836,7 @@ that one record or a few extreme ones do not decide:
 | Spearman r more than 0.25 above Pearson r (`RANK_DIVERGENCE`), and dropping records over 5 robust SDs out closes the gap | Leads with r without those records; the extreme records hide the relationship |
 | Spearman r more than 0.25 above Pearson r otherwise | Leads with the rank correlation: consistent but not a straight line |
 | Spearman r more than 0.25 below Pearson r | Leads with the rank correlation and gives the cause: a few extreme records (with r without them), one unbroken stretch of records far beyond the rest (a phase of a run), or a pile-up at a column's floor or ceiling, which ties in rank |
-| The r within the groups of a grouping differs in sign, or by 0.1 or more beyond sampling noise (`WITHIN_GROUP_GAP`) | "Within each block it is stronger: r = 0.91 in Block 1 and 0.94 in Block 2 (0.92 once each block's own means are removed)", or that it is weaker or runs the other way. The grouping column is always checked and reported when it differs; another grouping is added when it differs more. Groupings set by either column, or that it is built from, are not used |
+| The r within the groups of a grouping differs in sign, or by 0.1 or more beyond sampling noise (`WITHIN_GROUP_GAP`) | "Within each block it is stronger: r = 0.91 in Block 1 and 0.94 in Block 2 (0.92 once each block's own means are removed)", or that it is weaker or runs the other way. The grouping column and the text labels are checked, and so is any code that explains at least 14% of either column (a 0/1 label the readings differ by); the grouping column is always reported when it differs, and another grouping is added when it differs more. When r of 0.3 or more falls below 0.1 within the groups, the card says "Within each landslide it all but vanishes: ..., so the pooled figure comes from the difference between the landslide groups". A grouping set by either column, or that it is built from, narrows that column's range within each group, so it is reported only when r all but vanishes there |
 
 Participant numbers, plate positions and other labels are not readings, so
 they never enter the scan. Wide tables are scanned on the measure and the 299

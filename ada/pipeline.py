@@ -125,7 +125,7 @@ def _most_recent(dataframe: pd.DataFrame, date_column: str | None, row_limit: in
 
 
 def prepare_analysis(
-    raw_dataframe: pd.DataFrame, *, row_limit: int, date: str | None = None
+    raw_dataframe: pd.DataFrame, *, row_limit: int, date: str | None = None, source_name: str | None = None
 ) -> PreparedAnalysis:
     """Clean the data, keep at most ``row_limit`` rows of it, and detect its schema.
 
@@ -133,17 +133,18 @@ def prepare_analysis(
     newest rows, so a random sample is taken instead, before cleaning so the
     rows left out cost nothing. ``date`` names a column the caller wants as the
     date, so cleaning can turn a column of years into dates before the schema
-    is detected. A matrix table gains a per-row mean to measure (see
-    ``schema.add_row_summary``). What detection concluded about the columns is
-    added to the cleaning notes, so every surface that lists the notes explains
-    the roles too.
+    is detected. ``source_name``, the file's name, helps tell which column
+    the table is about (see ``schema.detect_roles``). A matrix table gains a
+    per-row mean to measure (see ``schema.add_row_summary``). What detection
+    concluded about the columns is added to the cleaning notes, so every
+    surface that lists the notes explains the roles too.
     """
     raw = raw_dataframe
     sampled = len(raw) > row_limit and not _has_date(raw, date)
     if sampled:
         raw = _ordered_sample(raw, row_limit)
     dataframe, cleaning_report = clean_dataframe(raw, date=date)
-    roles = detect_roles(dataframe)
+    roles = detect_roles(dataframe, source_name)
     notes: list[str] = []
 
     # The column the caller named as the date, once cleaning has read it as dates.
@@ -157,7 +158,7 @@ def prepare_analysis(
             notes.append(stacked)
     if notes:
         # Rows were set aside or a Block column added, so the candidates have changed.
-        roles = detect_roles(dataframe)
+        roles = detect_roles(dataframe, source_name)
 
     available = len(raw_dataframe) if sampled else len(dataframe)
     selection = "sample" if sampled else ""
@@ -169,7 +170,7 @@ def prepare_analysis(
             dataframe = _ordered_sample(dataframe, row_limit).reset_index(drop=True)
             selection = "sample"
         # Re-detect so the numeric and dimension candidates describe the kept rows.
-        roles = detect_roles(dataframe)
+        roles = detect_roles(dataframe, source_name)
     dataframe, roles = add_row_summary(dataframe, roles)
     cleaning_report = replace(
         cleaning_report, notes=tuple(dict.fromkeys((*cleaning_report.notes, *roles.notes)))

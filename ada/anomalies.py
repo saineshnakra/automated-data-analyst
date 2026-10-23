@@ -16,7 +16,7 @@ import pandas as pd
 
 from .aggregation import GRAIN_ORDER, TrendSeries, build_trend
 from .schema import ColumnRoles
-from .timeseries import fit_trendline, observed_periods, robust_scale, yearly_pattern
+from .timeseries import fit_trendline, observed_periods, period_grain, robust_scale, yearly_pattern
 
 MIN_PERIODS = 8
 FALSE_ALARM_RATE = 0.05
@@ -75,6 +75,7 @@ def detect_anomalies(
     threshold: float | None = None,
     limit: int = 5,
     floor_at_zero: bool = True,
+    grain: str | None = None,
 ) -> tuple[Anomaly, ...]:
     """Flag periods whose value falls outside the trendline's expected range.
 
@@ -84,10 +85,14 @@ def detect_anomalies(
     value adds the usual offset for the period's month or quarter. With
     ``floor_at_zero`` and a history that never goes below zero, the expected
     range stops at zero, as for a forecast (``MetricSpec.floors_at_zero``).
-    Returns at most ``limit`` anomalies, most severe first.
+    ``grain`` is the grain the trend was built at; without it, it is read
+    from the spacing of the periods. Returns at most ``limit`` anomalies,
+    most severe first.
     """
     if trend.empty or not {"Period", "Value"}.issubset(trend.columns):
         return ()
+    # Read the grain before empty periods are dropped, which can make months look like quarters.
+    grain = grain or period_grain(pd.DatetimeIndex(pd.to_datetime(trend["Period"])))
     # Drop unobserved periods: one NaN makes the fit and scale NaN, which flags nothing.
     trend = observed_periods(trend)
     if len(trend) < min_periods:
@@ -96,10 +101,10 @@ def detect_anomalies(
     periods = pd.DatetimeIndex(pd.to_datetime(trend["Period"]))
     values = trend["Value"].to_numpy(dtype=float)
 
-    line = fit_trendline(periods, values)
+    line = fit_trendline(periods, values, grain)
     expected = line.fitted()
     residuals = values - expected
-    seasonal = yearly_pattern(periods, residuals, min_cycles=MIN_SEASONAL_CYCLES)
+    seasonal = yearly_pattern(periods, residuals, min_cycles=MIN_SEASONAL_CYCLES, grain=grain)
     if seasonal is not None:
         expected = expected + seasonal
         residuals = values - expected

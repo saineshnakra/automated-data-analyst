@@ -249,6 +249,54 @@ def _censored_note(column: str, distinct: _Distinct, censored: np.ndarray, side:
 
 #: Share of a column past a detection limit at which its note warns that the mean is biased.
 CENSORED_SHARE = 0.10
+#: A ">X" limit that matches another column on the same row (within
+#: REACHED_TOLERANCE of it) on REACHED_SHARE of at least REACHED_ROWS rows
+#: is that column's value: the reading reached it.
+REACHED_ROWS = 5
+REACHED_SHARE = 0.8
+REACHED_TOLERANCE = 0.1
+
+
+def _upper_limits(distinct: _Distinct, markers: np.ndarray) -> pd.Series:
+    """The limit in each row written as above one (">3.5" gives 3.5), for those rows only."""
+    above = _censored(distinct)[1] & markers
+    limits = np.full(len(distinct.values) + 1, np.nan)
+    for position in np.flatnonzero(above):
+        read = _read_formatted_number(str(distinct.values.iloc[position]).strip().lstrip("<>").strip())
+        limits[position] = np.nan if read is None else read
+    return pd.Series(limits[distinct.codes], index=distinct.index).dropna()
+
+
+def _reached_note(frame: pd.DataFrame, column: str, limits: pd.Series) -> str | None:
+    """Say so when the limit in a column's ">X" cells is another column's value on the same row.
+
+    Water clarity written ">3.5" at a site 3.5 m deep means the disk was still
+    seen on the bottom: the limit is the depth, and the clarity is at least
+    that. The limits must vary, so one shared limit matching a constant
+    column is not taken for this.
+    """
+    if len(limits) < REACHED_ROWS or limits.nunique() < 3:
+        return None
+    best = None
+    for other in frame.columns:
+        series = frame[other]
+        if other == column or is_bool_dtype(series) or not is_numeric_dtype(series):
+            continue
+        values = series.reindex(limits.index).astype("float64")
+        held = values.notna().to_numpy() & (values > 0).to_numpy()
+        if held.sum() < REACHED_ROWS:
+            continue
+        close = int(((limits[held] - values[held]).abs() <= REACHED_TOLERANCE * values[held]).sum())
+        if close >= REACHED_SHARE * held.sum() and (best is None or close > best[1]):
+            best = (other, close, int(held.sum()))
+    if best is None:
+        return None
+    other, close, held = best
+    return (
+        f'On {close:,} of the {held:,} rows where {column} is written as ">X" and {other} is recorded, X is '
+        f"{other} (within {REACHED_TOLERANCE:.0%}): the reading reached {other}, so its true value is at "
+        "least that."
+    )
 
 
 def _lone_token(distinct: _Distinct, unread: np.ndarray) -> str | None:
@@ -522,13 +570,16 @@ def _digit_groups(body: str) -> tuple[list[str], list[str]] | None:
     return groups, marks
 
 
-def _integer_and_fraction(body: str) -> tuple[str, str] | None:
+def _integer_and_fraction(body: str, decimal_comma: bool = False) -> tuple[str, str] | None:
     """Return the integer and fraction digits of a formatted number, or None if malformed.
 
     With several marks, the earlier ones must match and are grouping; a different last
-    "," or "." is the decimal point. A single "," is a decimal only before one or two
-    digits ("1,234" is a thousand); a single "." is always a decimal, as in pd.to_numeric.
-    Spaces and apostrophes only group. Integer groups after the first need three digits.
+    "," or "." is the decimal point. A single "," is a decimal before one or two digits,
+    after a lone 0 ("0,307"), or anywhere in a column that writes its decimals with
+    commas (``decimal_comma``); otherwise "1,234" is a thousand. A single "." is a
+    decimal, as in pd.to_numeric, except before three digits in such a column, where
+    "1.234" is a thousand. Spaces and apostrophes only group. Integer groups after the
+    first need three digits.
     """
     split = _digit_groups(body)
     if split is None:
@@ -539,9 +590,10 @@ def _integer_and_fraction(body: str) -> tuple[str, str] | None:
     last = marks[-1]
     if len(marks) == 1:
         if last == ",":
-            decimal = len(groups[-1]) in (1, 2)
+            decimal = decimal_comma or len(groups[-1]) in (1, 2) or groups[0] == "0"
         else:
-            decimal = last == "."
+            # Where commas are the decimals, "1.234" groups a thousand.
+            decimal = last == "." and not (decimal_comma and len(groups[-1]) == 3)
     else:
         grouping = set(marks[:-1])
         if len(grouping) != 1:
@@ -558,12 +610,13 @@ def _integer_and_fraction(body: str) -> tuple[str, str] | None:
     return "".join(integer_groups), fraction
 
 
-def _read_formatted_number(text: str) -> float | None:
+def _read_formatted_number(text: str, decimal_comma: bool = False) -> float | None:
     """Parse one business-formatted number, or return None.
 
     A sign, a currency symbol and enclosing parentheses may lead in any order, each at
     most once ("$-100", "-$100", "($100)"). A minus or parentheses make the value
-    negative. The remaining digits must pass _integer_and_fraction.
+    negative. The remaining digits must pass _integer_and_fraction, which reads a
+    single comma as the decimal point when ``decimal_comma`` says the column does.
     """
     raw = text.strip()
     negative = False
@@ -590,7 +643,7 @@ def _read_formatted_number(text: str) -> float | None:
             break
     if not raw or raw.endswith(")"):
         return None
-    digits = _integer_and_fraction(raw)
+    digits = _integer_and_fraction(raw, decimal_comma)
     if digits is None:
         return None
     integer, fraction = digits
@@ -1155,32 +1208,141 @@ def _merge_label_variants(distinct: _Distinct, column: str) -> tuple[dict, str |
     return mapping, note
 
 
-def _read_numbers(distinct: _Distinct) -> tuple[pd.Series, np.ndarray]:
+# Number bodies, once signs, currency, brackets and spaces are set aside, that
+# show how a column writes its decimals. A comma before other than three digits,
+# or after a lone 0, is a decimal point, as is one after dot-grouped thousands;
+# a comma before a dot, or several commas, groups thousands.
+_COMMA_DECIMAL = re.compile(r"^(?:\d+,(?:\d{1,2}|\d{4,})|0,\d+|\d{1,3}(?:\.\d{3})+,\d+)$")
+_COMMA_GROUPING = re.compile(r"^\d{1,3}(?:,\d{3})+\.\d+$|^\d{1,3}(?:,\d{3}){2,}$")
+# Thousands grouped with dots and no decimals: "1.234" in a column of "999,5".
+_DOT_THOUSANDS = re.compile(r"^[-+]?\d{1,3}(?:\.\d{3})+$")
+# A comma read differently once the column's decimal mark is known: one before
+# three digits or more ("-0,307", "306,27883").
+_LONG_COMMA_FRACTION = re.compile(r"^[-+]?\d+,\d{3,}$")
+# A dot that can only be a decimal point: one before other than three digits ("5.66").
+_DOT_DECIMAL = re.compile(r"^\d+\.(?:\d{1,2}|\d{4,})$")
+
+
+def _decimal_comma(text: pd.Series) -> bool:
+    """Whether a column writes its decimal point as a comma, judged from all its values.
+
+    One value is often ambiguous on its own: "0,307" or "-2,95" can only be
+    decimals, but "1,234" may be a thousand. When some values show commas used
+    as decimal points and none shows them grouping thousands ("1,234.5"), every
+    comma in the column is a decimal point, so one column is never read on two
+    scales.
+    """
+    bodies = text.dropna().astype(str).str.replace(r"[\s'$€£¥₹()+\-<>≤≥]", "", regex=True)
+    commas = bodies[bodies.str.contains(",", regex=False)]
+    if commas.empty:
+        return False
+    decimal_commas = int(commas.str.match(_COMMA_DECIMAL.pattern).sum())
+    if not decimal_commas or commas.str.match(_COMMA_GROUPING.pattern).any():
+        return False
+    # A few comma decimals among many dot decimals ("< 3,80" in a column of "5.66")
+    # are the exceptions: the column's decimal mark is the dot, and "6.207" is 6.207.
+    return decimal_commas >= int(bodies.str.match(_DOT_DECIMAL.pattern).sum())
+
+
+# Labels misspelt or abbreviated are merged only in columns of a few category
+# labels, and only when the rarer spelling is at most this share of the other.
+MAX_LABELS_TO_RESPELL = 50
+RARE_SPELLING = 0.2
+MIN_RESPELT_LETTERS = 5
+
+
+def _one_letter_apart(first: str, second: str) -> bool:
+    """Whether two words differ by a letter added or dropped, or two neighbours swapped: "Hipanic"."""
+    if abs(len(first) - len(second)) == 1:
+        shorter, longer = sorted((first, second), key=len)
+        return any(longer[:index] + longer[index + 1:] == shorter for index in range(len(longer)))
+    if len(first) == len(second):
+        apart = [index for index in range(len(first)) if first[index] != second[index]]
+        return (
+            len(apart) == 2 and apart[1] == apart[0] + 1
+            and first[apart[0]] == second[apart[1]] and first[apart[1]] == second[apart[0]]
+        )
+    return False
+
+
+def _respelt_labels(distinct: _Distinct, column: str) -> tuple[dict, str | None]:
+    """Merge labels that are one label written another way: "M" with "male", "Hipanic" with "Hispanic".
+
+    Two cases, kept conservative. A single letter is the first letter of
+    exactly one word in the column ("M" and "male", but not "A" beside "AB",
+    which is a code too). And two words of five letters or more one letter
+    apart (see ``_one_letter_apart``) where the rarer is at most RARE_SPELLING
+    of the other, as a typo is; "Type A" and "Type B" differ in a letter that
+    is not a typo, so letters other than a-z never count. The single letter
+    gives way to the word, and the rarer spelling to the commoner. Returns
+    the mapping from each spelling dropped to the one kept and a note.
+    """
+    counts = pd.Series(distinct.counts, index=distinct.values.to_numpy())
+    counts = counts[[isinstance(label, str) and count > 0 for label, count in counts.items()]]
+    if not 2 <= len(counts) <= MAX_LABELS_TO_RESPELL:
+        return {}, None
+    keys = {label: _label_key(label) for label in counts.index}
+    mapping: dict[str, str] = {}
+    words = [label for label, key in keys.items() if key.isalpha() and len(key) >= 2 and not label.isupper()]
+    for letter in [label for label, key in keys.items() if len(key) == 1 and key.isalpha()]:
+        matches = [word for word in words if keys[word][0] == keys[letter]]
+        if len(matches) == 1:
+            mapping[letter] = matches[0]
+    spelt = [
+        label for label, key in keys.items()
+        if re.fullmatch(r"[a-z ]+", key) and len(key) >= MIN_RESPELT_LETTERS
+    ]
+    for rare in spelt:
+        for common in spelt:
+            if (
+                rare != common and rare not in mapping and common not in mapping
+                and counts[rare] <= RARE_SPELLING * counts[common]
+                and _one_letter_apart(keys[rare], keys[common])
+            ):
+                mapping[rare] = common
+                break
+    if not mapping:
+        return {}, None
+    changed = int(counts[list(mapping)].sum())
+    shown = ", ".join(f'"{old}" into "{new}"' for old, new in list(mapping.items())[:3])
+    more = f", and {len(mapping) - 3:,} more" if len(mapping) > 3 else ""
+    return mapping, (
+        f"{changed:,} {column} values look like another label written a different way, so they were "
+        f"merged: {shown}{more}."
+    )
+
+
+def _read_numbers(distinct: _Distinct) -> tuple[pd.Series, np.ndarray, bool]:
     """Parse the distinct values as numbers.
 
-    Returns the numbers, worked out on ``distinct.cells`` for ``expand``, and
-    which distinct values were missing-value markers.
+    Returns the numbers, worked out on ``distinct.cells`` for ``expand``, which
+    distinct values were missing-value markers, and whether the column writes
+    decimals with commas (see ``_decimal_comma``).
     """
     markers = _missing_markers(distinct)
     cells = distinct.cells
     marked = distinct.on_cells(markers)
     numbers = pd.to_numeric(cells.mask(marked), errors="coerce")
+    comma = _decimal_comma(distinct.values.mask(markers))
     # Retry cells plain parsing missed as formatted numbers ("$1,203.55",
     # "(48.10)"). Large values are the ones with separators, so skipping
-    # them biases totals down. Values already read ("1e3") are kept.
+    # them biases totals down. Values already read ("1e3") are kept, except
+    # dot-grouped thousands in a column whose decimals are commas.
     gaps = numbers.isna().to_numpy() & cells.notna().to_numpy() & ~marked
+    if comma:
+        gaps |= _flags(cells.astype("string").str.strip().str.match(_DOT_THOUSANDS.pattern)) & ~marked
     if gaps.any():
         formatted = cells.where(gaps).map(
-            lambda value: _read_formatted_number(value) if isinstance(value, str) else None
+            lambda value: _read_formatted_number(value, comma) if isinstance(value, str) else None
         )
-        numbers = numbers.astype("float64").fillna(formatted.astype("float64"))
-    return numbers, markers
+        numbers = numbers.astype("float64").mask(gaps, formatted.astype("float64"))
+    return numbers, markers, comma
 
 
 def _numeric_share(values: pd.Series) -> float:
     """Share of the non-marker cells that read as numbers."""
     distinct = _Distinct.of(values)
-    numbers, markers = _read_numbers(distinct)
+    numbers, markers, _ = _read_numbers(distinct)
     counts = distinct.counts
     readable = int(counts[~markers].sum())
     read = numbers.notna().to_numpy()[: len(distinct.values)]
@@ -1251,6 +1413,196 @@ def _marker_notes(
                 )
             notes.append(note + ".")
     return notes
+
+
+# Yes/no words in a column otherwise holding 0 and 1, and the number each stands for.
+YES_NO_WORDS = {"true": 1.0, "false": 0.0, "yes": 1.0, "no": 0.0, "y": 1.0, "n": 0.0, "t": 1.0, "f": 0.0}
+
+
+def _yes_no_in_flags(
+    column: str, distinct: _Distinct, numbers: pd.Series, markers: np.ndarray
+) -> tuple[pd.Series, str | None]:
+    """Read "true", "false", "yes" or "no" as 1 or 0 in a column whose numbers are only 0 and 1.
+
+    Left unread they would become missing, though they say the same as the
+    1s and 0s around them. ``numbers`` is worked out on ``distinct.cells``.
+    Returns the numbers with the words read, and a note, or them unchanged and None.
+    """
+    count = len(distinct.values)
+    read = numbers.iloc[:count]
+    unread = read.isna().to_numpy() & ~markers & (distinct.counts > 0)
+    if not unread.any():
+        return numbers, None
+    words = distinct.text[unread]
+    known = read[~read.isna().to_numpy()].unique()
+    if not len(known) or not set(known) <= {0, 1} or not words.isin(list(YES_NO_WORDS)).all():
+        return numbers, None
+    filled = numbers.copy()
+    positions = np.flatnonzero(unread)
+    filled.iloc[positions] = words.map(YES_NO_WORDS).to_numpy(dtype=float)
+    shown, cells = _marked(distinct, unread)
+    listed = ", ".join(f'"{word}"' for word in shown[:4])
+    noun = "cells" if cells > 1 else "cell"
+    return filled, (
+        f"{cells:,} {noun} in {column} held {listed}, read as 1 for yes and 0 for no, since the column "
+        "otherwise holds only 0 and 1."
+    )
+
+
+# "5.66 ± 1.69 items/10 g", "0.43 items/individual", "12 mg/L": a reading written
+# with its spread, its unit or both. The unit starts with a letter, so "4.5
+# *10^(6) items" is not read as 4.5, and may hold digits ("items/10 g") but no
+# second number range.
+_READING_WITH_UNIT = re.compile(
+    r"^(?P<number>[-+]?\d+(?:[.,]\d+)?)\s*(?P<spread>(?:±|\+/-|\+-)\s*\d+(?:[.,]\d+)?)?\s*"
+    r"(?P<unit>[A-Za-zµμ°%][^±–—]*)?$"
+)
+# Share of a column's readable cells that must read this way, and of those the
+# share that must carry a unit or a spread, so plain numbers keep their own path.
+READINGS_SHARE = 0.5
+LABELLED_SHARE = 0.5
+
+
+def _unit_text(unit: str) -> str:
+    """A unit written one way: "items/ individual" and "items/individual" are one unit."""
+    return re.sub(r"\s*/\s*", "/", " ".join(unit.split()))
+
+
+def _readings_with_units(
+    distinct: _Distinct, probe: pd.Series
+) -> tuple[pd.Series, pd.Series, np.ndarray] | None:
+    """Numbers and units of a text column of readings written with a spread or a unit, or None.
+
+    Returns, on ``distinct.cells``, the number each cell starts with (the mean
+    before a "±"), its unit, and which distinct values were missing-value
+    markers ("ND", "<LOQ"). ``probe`` holds cells drawn from the column, which
+    must show such readings before the whole column is parsed.
+    """
+    probe = probe.astype(str).str.strip().str.extract(_READING_WITH_UNIT.pattern)
+    shown = probe["number"].notna() & (probe["unit"].notna() | probe["spread"].notna())
+    if not shown.mean() >= PROBE_RATIO * READINGS_SHARE * LABELLED_SHARE:
+        return None
+    markers = _missing_markers(distinct)
+    text = distinct.values.astype("string").str.strip()
+    parts = text.str.extract(_READING_WITH_UNIT.pattern)
+    matched = parts["number"].notna().to_numpy() & ~markers
+    counts = distinct.counts
+    readable = int(counts[~markers].sum())
+    labelled = matched & (parts["unit"].notna() | parts["spread"].notna()).to_numpy()
+    if not readable or counts[matched].sum() < READINGS_SHARE * readable:
+        return None
+    if counts[labelled].sum() < LABELLED_SHARE * counts[matched].sum():
+        return None
+    numbers = parts["number"].where(matched).map(
+        lambda value: _read_formatted_number(value) if isinstance(value, str) else None
+    ).astype("float64")
+    units = parts["unit"].where(matched).map(lambda unit: _unit_text(unit) if isinstance(unit, str) else None)
+    cells = len(distinct.cells)
+    if cells > len(distinct.values):
+        numbers = pd.concat([numbers, pd.Series([np.nan])], ignore_index=True)
+        units = pd.concat([units, pd.Series([None], dtype=object)], ignore_index=True)
+    return numbers.reset_index(drop=True), units.reset_index(drop=True).astype(object), markers
+
+
+def _readings_note(column: str, example: str, value: float, units: list[str], unit_column: str | None) -> str:
+    note = (
+        f'{column} holds readings written with a spread or a unit ("{example}"), so each was read as '
+        f"the number it starts with ({value:g})"
+    )
+    if unit_column:
+        shown = ", ".join(units[:3]) + (f" and {len(units) - 3:,} more" if len(units) > 3 else "")
+        return note + (
+            f". They are in {len(units):,} different units ({shown}), recorded in a new column, "
+            f"{unit_column}, so readings in different units are never combined."
+        )
+    if units:
+        return note + f". Every one is in {units[0]}."
+    return note + "."
+
+
+def _decimal_comma_note(columns: list[tuple[str, str, float]]) -> str:
+    """Say which columns were read with commas as decimal points, with one value as written and as read."""
+    names = [column for column, _, _ in columns]
+    shown = ", ".join(names[:3]) + (f" and {len(names) - 3:,} more" if len(names) > 3 else "")
+    _, written, read = columns[0]
+    return (
+        f'Commas mark the decimal point in {shown}, as other values there show, so every comma '
+        f'in {"it" if len(names) == 1 else "them"} was read that way: "{written}" is {read:.10g}.'
+    )
+
+
+# Prefixes that start the names of separate yes/no questions, not the levels of one category.
+QUESTION_PREFIXES = frozenset({"is", "has", "had", "was", "flag", "any", "ever", "did"})
+# Where all of a one-hot set's columns are 0, the row belongs to the level left out.
+ONE_HOT_REST = "other"
+
+
+def _one_hot_sets(frame: pd.DataFrame) -> list[tuple[str, list[str]]]:
+    """Sets of 0/1 columns sharing a name prefix that never mark two levels on one row.
+
+    "Soil_Type_Gravel", "Soil_Type_Sand" and "Soil_Type_Silt" are soil type
+    split into one column per level, the way models are fed; a row where all
+    are 0 holds the level left out. Two columns qualify only when every row has
+    exactly one of them, and prefixes that start yes/no questions ("is_",
+    "has_") never do.
+    """
+    numeric = [
+        column for column, kind in frame.dtypes.items() if is_numeric_dtype(kind) and not is_bool_dtype(kind)
+    ]
+    if len(numeric) < 2:
+        return []
+    # Columns running from 0 to 1, then only those holding nothing else and no gaps.
+    lowest, highest = frame[numeric].min(), frame[numeric].max()
+    spanning = [column for column in numeric if lowest[column] == 0 and highest[column] == 1]
+    flags = [
+        column for column in spanning
+        if bool(((frame[column] == 0) | (frame[column] == 1)).all())
+    ]
+    prefixes: dict[str, list[str]] = {}
+    for column in flags:
+        name = str(column)
+        for match in re.finditer(r"[_.:\- ]+", name):
+            prefix, rest = name[: match.start()], name[match.end():]
+            if len(prefix) >= 3 and rest and normalized_name(prefix).split()[0] not in QUESTION_PREFIXES:
+                prefixes.setdefault(prefix, []).append(column)
+    found: list[tuple[str, list[str]]] = []
+    used: set[str] = set()
+    # The longest prefix shared by a set names it ("Soil_Type", not "Soil").
+    for prefix in sorted(prefixes, key=len, reverse=True):
+        members = [column for column in prefixes[prefix] if column not in used]
+        if len(members) < 2 or prefix in frame.columns:
+            continue
+        sums = frame[members].sum(axis=1)
+        if sums.max() > 1 or (len(members) == 2 and sums.min() < 1):
+            continue
+        found.append((prefix, members))
+        used.update(members)
+    return found
+
+
+def _join_one_hot(frame: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """Put each one-hot set (see ``_one_hot_sets``) back into one category column, with a note."""
+    notes = []
+    for prefix, members in _one_hot_sets(frame):
+        levels = [str(column)[len(prefix):].lstrip("_.:- ") for column in members]
+        chosen = frame[members].to_numpy().argmax(axis=1)
+        rest = frame[members].sum(axis=1).to_numpy() == 0
+        named = np.array(levels, dtype=object)[chosen]
+        joined = pd.Series(np.where(rest, ONE_HOT_REST, named), index=frame.index)
+        position = frame.columns.get_loc(members[0])
+        frame = frame.drop(columns=members)
+        frame.insert(position, prefix, joined)
+        note = (
+            f"{', '.join(map(str, members[:-1]))} and {members[-1]} each mark one level of a category "
+            f"and never two on one row, so they were joined into one column, {prefix}"
+        )
+        if rest.any():
+            note += (
+                f"; the {int(rest.sum()):,} rows where all are 0 hold the level left out, shown as "
+                f'"{ONE_HOT_REST}"'
+            )
+        notes.append(note + ".")
+    return frame, notes
 
 
 def _unread_note(column: str, unread: pd.Series) -> str:
@@ -1328,6 +1680,9 @@ def clean_dataframe(
     date_sample_size = 50
 
     clock_columns: list[str] = []
+    upper_limits: dict[str, pd.Series] = {}
+    # Columns read with commas as decimal points, each with a value as written and as read.
+    comma_columns: list[tuple[str, str, float]] = []
     # The text columns that stay text, for the checks after inference.
     still_text: dict[str, _Distinct] = {}
     for column in _text_columns(cleaned):
@@ -1383,8 +1738,37 @@ def clean_dataframe(
         # Whole numbers under a key name ("Order No") are keys; decimals under one
         # are measurements whatever the name says.
         keys = is_identifier_name(column) and not _holds_decimals(distinct)
+        readings = None if leading_zero else _readings_with_units(distinct, probe)
+        if readings is not None:
+            numbers, units, markers = readings
+            cleaned[column] = distinct.expand(numbers)
+            numeric_columns_inferred += 1
+            per_value = units.iloc[: len(distinct.values)]
+            rows = pd.Series(distinct.counts).groupby(per_value.to_numpy()).sum().sort_values(ascending=False)
+            found = [str(unit) for unit in rows.index]
+            unit_column = f"{column} unit"
+            if len(found) > 1 and unit_column not in cleaned.columns:
+                cleaned.insert(cleaned.columns.get_loc(column) + 1, unit_column, distinct.expand(units))
+            else:
+                unit_column = None
+            # An example with a spread shows best what was read.
+            read = numbers.iloc[: len(distinct.values)].notna().to_numpy()
+            spread = _flags(distinct.values.astype("string").str.contains("±", regex=False)) & read
+            first = int(np.flatnonzero(spread if spread.any() else read)[0])
+            example, value = str(distinct.values.iloc[first]).strip(), float(numbers.iloc[first])
+            notes.append(_readings_note(column, example, value, found, unit_column))
+            empty = distinct.rows(np.zeros(len(distinct.values), dtype=bool))
+            notes.extend(_marker_notes(column, distinct, markers, empty, None, non_null_before))
+            unread = distinct.rows(numbers.isna().to_numpy()[: len(distinct.values)] & ~markers)
+            if unread.any():
+                notes.append(_unread_note(column, distinct.column()[unread]))
+            del still_text[column]
+            continue
         if not keys and not leading_zero and _numeric_share(probe) >= PROBE_RATIO:
-            numbers, markers = _read_numbers(distinct)
+            numbers, markers, comma = _read_numbers(distinct)
+            numbers, yes_no_note = _yes_no_in_flags(column, distinct, numbers, markers)
+            if yes_no_note:
+                notes.append(yes_no_note)
             parsed_numeric = distinct.expand(numbers)
             unread_values = numbers.isna().to_numpy()[: len(distinct.values)] & ~markers
             unread = distinct.rows(unread_values)
@@ -1399,7 +1783,16 @@ def clean_dataframe(
                     parsed_numeric = parsed_numeric.mask(token_cells, 0.0)
                 cleaned[column] = parsed_numeric
                 numeric_columns_inferred += 1
+                if comma:
+                    long_fraction = _flags(distinct.text.str.match(_LONG_COMMA_FRACTION.pattern))
+                    if long_fraction.any():
+                        first = int(np.flatnonzero(long_fraction)[0])
+                        written = str(distinct.values.iloc[first]).strip()
+                        comma_columns.append((column, written, float(numbers.iloc[first])))
                 notes.extend(_marker_notes(column, distinct, markers, token_cells, token, non_null_before))
+                limits = _upper_limits(distinct, markers)
+                if len(limits):
+                    upper_limits[column] = limits
                 skipped = unread & ~token_cells
                 if skipped.any():
                     notes.append(_unread_note(column, distinct.column()[skipped]))
@@ -1421,10 +1814,20 @@ def clean_dataframe(
                     datetime_columns_inferred += 1
                     del still_text[column]
 
+    if comma_columns:
+        notes.append(_decimal_comma_note(comma_columns))
+
     # Codes typed in place of a reading (-999, 999.9) would drive every figure
     # on their columns, so they are set to missing before anything is computed.
     cleaned, blanked_codes, blanked_notes = blank_codes(cleaned)
     notes.extend(blanked_notes)
+    for column, limits in upper_limits.items():
+        if note := _reached_note(cleaned, column, limits):
+            notes.append(note)
+
+    # 0/1 columns that each mark one level of a category are put back together.
+    cleaned, one_hot_notes = _join_one_hot(cleaned)
+    notes.extend(one_hot_notes)
 
     # Whole numbers written as dates (19540601, 202403), now that text columns
     # of them have become numbers and codes among them are gone.
@@ -1479,11 +1882,12 @@ def clean_dataframe(
         if restored is not None:
             distinct, changed = distinct.relabel(restored), True
         if not is_identifier_name(column):
-            mapping, merge_note = _merge_label_variants(distinct, column)
-            if mapping:
-                notes.append(merge_note)
-                distinct = distinct.relabel(distinct.values.replace(mapping))
-                changed = True
+            for merge in (_merge_label_variants, _respelt_labels):
+                mapping, merge_note = merge(distinct, column)
+                if mapping:
+                    notes.append(merge_note)
+                    distinct = distinct.relabel(distinct.values.replace(mapping))
+                    changed = True
         if changed:
             cleaned[column] = distinct.column()
 

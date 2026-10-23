@@ -18,7 +18,7 @@ multiple-testing adjustments, the rate interval and the joint model come from
 
 ## Comparing a reading across groups
 
-`compare_groups(dataframe, measure, grouping, entity=None)` returns a
+`compare_groups(dataframe, measure, grouping, entity=None, axis=None)` returns a
 `GroupComparison`, or `None` when fewer than two groups have two or more
 values.
 
@@ -74,8 +74,18 @@ The pairs are kept on the comparison as `pairs_apart`, largest q first, with
 When half or more of a reading's values are 0 (`ZERO_HEAVY`), as for rain per
 interval, every group's median is 0 and "medians from 0 to 0" says nothing.
 Such a reading is named and ordered by its group means, and each group also
-gets the share of its values that are not 0, compared with a chi-squared test.
-The statement gives both; the table adds a `Share not 0` column.
+gets the share of its values that are not 0, compared with a chi-squared test,
+or Fisher's exact test for two groups with an expected count below 5, and the
+statement names the test used. The range of shares runs between groups large
+enough to name, or between all groups when fewer than two are, so a lone
+named group never stands at both ends. The statement gives both; the table
+adds a `Share not 0` column. When the rank test leads but the group with the
+higher mean is the one whose values rank lower (a few large values carry the
+mean), the statement names the direction the rank test supports: "Crabs tends
+to be larger in Nudibranchs 1 than in Nudibranchs 0: a value from Nudibranchs
+1 is the larger in 88% of pairs (Mann-Whitney, p = 0.0059), though the mean is
+higher in Nudibranchs 0". A check that disagrees with a thin difference is
+named too.
 
 ### Ordered numeric levels
 
@@ -116,16 +126,110 @@ Repeated readings of one subject are not independent evidence. With `entity`
 group: its mean, or its median for a reading that is skewed or capped. The
 statement says "Each Bird counts once per group", and names each group's
 figure for what it is: "the highest mean of per-Bird medians", not a plain
-mean that a table of rows would show (`centre_word`). When the same entity appears
-in more than one group (each subject saw both objects), the groups are not
-independent and the statement says the p-value is only a guide.
+mean that a table of rows would show (`centre_word`). A reading copied onto
+every row of an entity has one value per entity, not a summary of several:
+"the highest mean over Visit values". When the same entity appears in more
+than one group but not in all of them, the groups are not independent and the
+statement says the p-value is only a guide.
 
-`entity_column(dataframe, roles)` picks the entity: the identifier, or a column
-named like one (`is_entity_name` in `ada/schema.py`, such as `Subject` or
-`Patient ID`), provided some value repeats and the values can label units:
-text, or whole numbers with at most half as many distinct values as rows. A
-decimal reading named like a unit (`NO`, nitric oxide) is a measurement, and
-so is the measure or a close alternative to it.
+`entity_column(dataframe, roles)` picks the entity, in this order:
+
+| Entity | When |
+|---|---|
+| The sample the measure was read on (`reading_key`) | A column of labels (text, or whole-number codes named as a unit or a design label) that the measure never varies within, with at least 10 values (`KEY_MIN_LEVELS`) and a quarter or more of the rows repeating one (`KEY_REPEATED_SHARE`); the measure needs 10 distinct values. A site visit's conductivity copied onto each species row of the visit is one reading. The finest such column wins; a long table is screened on 5,000 rows first |
+| The identifier, or a column named like one | `is_entity_name` in `ada/schema.py` (`Subject`, `Patient ID`), provided some value repeats and the values can label units: text, whole numbers with at most half as many distinct values as rows, or codes listed in runs of consecutive rows (`1.2` for mouse 2 of cage 1) |
+| Unnamed codes listed in runs | At least 5 codes (`BLOCK_MIN_UNITS`), each filling one run of 4 or more rows on average, within which a numeric column climbs and starts again at the next run (`within_axis`): a time point or cycle counted per mouse or per test case |
+
+A decimal reading named like a unit (`NO`, nitric oxide) is a measurement, and
+so is the measure or a close alternative to it, except that runs with a
+restarting clock overrule a close call on the measure.
+
+`within_axis(dataframe, entity)` finds that clock: a numeric column that never
+falls within 90% of the units (`AXIS_SHARE`), climbs on at least half its
+steps, falls back at half the boundaries between units, and holds at most
+half as many values as rows, so a row counter running down the file is not
+one. A name like a time (`day`, `timept`, `cycle`) comes first.
+
+`reading_key(dataframe, measure)`, `constant_within(dataframe, entity,
+column)` and `one_row_per(dataframe, key)` are the parts: `one_row_per` keeps
+each key's first row, under its own index label, with every column that never
+varies within the key and the others left missing, so readings copied onto a
+sample's rows are correlated once per sample.
+
+### Groups followed for different lengths
+
+With `axis` (each entity's clock), when each entity sits in one group and the
+groups were followed over different stretches, a mean over all rows compares
+different times: animals that died were measured to day 9 and survivors to
+day 15, so survivors' late recovery would set the comparison. Each group's
+typical span runs from the median of its entities' first clock values to the
+median of their last; only rows inside the stretch every group shares are
+compared, when cutting to it leaves out at least 10% of the rows
+(`WINDOW_MIN_CUT`). The comparison keeps the stretch as `window` and each
+group's median last value as `followed`, and the statement says "The groups
+were followed for different lengths of day (the median mouse in Live to 15,
+Dead to 9), so only day 0 to 9, the stretch they share, is compared."
+
+### Groups that hold the same subjects
+
+When at least 5 entities (`PAIRED_MIN_UNITS`), and 80% of them
+(`PAIRED_SHARE`), appear in every group, as when each person walked in every
+condition, the groups are compared within entities (`paired`), on one value
+per entity in each group; the others are left out and counted
+(`unpaired_left_out`):
+
+| Groups | Test on means | Test on ranks | Effect |
+|---|---|---|---|
+| Two | Paired t-test (`scipy.stats.ttest_rel`), with the paired 95% interval for the mean within-entity difference | Wilcoxon's signed-rank test (`scipy.stats.wilcoxon`) | Partial eta squared |
+| Three or more | Repeated-measures ANOVA, with partial eta squared (between-group over between-group plus error sums of squares) | Friedman's test (`scipy.stats.friedmanchisquare`) | Kendall's W on ranks, Friedman's statistic over n(k − 1) |
+
+The repeated-measures F is computed for every column at once, with the figures
+of `statsmodels.stats.anova.AnovaRM`, which fits one reading at a time. A
+paired gap is judged small or not on the share of within-entity variation it
+explains, since Hedges' g scales it by the spread between entities, which the
+design sets aside. After a clear difference across three or more groups, the
+pairs are told apart by paired t-tests, Holm-adjusted over the pairs, in place
+of Tukey's HSD, which assumes independent groups. The statement says "Every
+subject appears in every group, so each is compared with itself
+(repeated-measures ANOVA)."
+
+### Comparing within the levels of another grouping
+
+`stratified_comparison(dataframe, measure, grouping, candidates, entity=None,
+axis=None, prefer=None)` repeats the comparison within the levels of another
+grouping that could make or hide it, and returns a `Stratified`, or None:
+
+| Stratum | When |
+|---|---|
+| A confounder | Tied to the grouping, with Cramér's V of 0.5 or more (`STRATUM_ASSOCIATION`, from `scipy.stats.contingency.association`), and explaining at least 14% of the measure (`STRATUM_EXPLAINED`, one value per entity when there is one). Gravel soils show less seismic activity only because gravel occurs only at sites without landslides |
+| A channel | Explaining half the measure or more on its own (`CHANNEL_EXPLAINED`), balanced or not: which joint an angle comes from |
+
+Confounders come first, ranked by the product of their two links, with
+`prefer` (the table's main grouping) winning among them. The stratum is
+chosen on a fixed sample of 10,000 rows of a longer table
+(`STRATUM_SCREEN_ROWS`), and the levels are compared on the scans' fixed
+sample of 50,000 (`sampled` gives the table's rows when they were). Each level holding
+two or more groups gets its own comparison; a level holding one group is
+named (`single`). `retained(pooled)` is the gap within the levels as a share
+of the pooled one, weighting each level by its size: the difference between
+the same two groups' means or rates, or the share of variance explained for
+more groups. `overturns(pooled)` is true when a clear pooled difference runs
+the other way in a level, or shows clearly in none and keeps less than half
+its size there (`RETAINED_SHARE`): a gap of the same size in levels too small
+to confirm it still stands. `describe_stratified` writes the sentences,
+saying when the gap shrinks below three quarters of its size
+(`SHRUNK_SHARE`), and `stratified_lead` a headline: "The gap in Shaking by
+Gravel comes from Landslide: within Landslide 0 it does not hold, ...".
+`stratified_rates(dataframe, outcome, grouping, candidates, entity=None,
+prefer=None)` does the same for a rate: the stratum must be tied to the
+grouping and go with the outcome too (Cramér's V of 0.3 or more,
+`STRATUM_OUTCOME`), as kidney disease is behind both hypertension and
+anaemia. Two groupings tied at V of 0.99 or more are one split recorded twice
+and are never strata.
+
+`gain_within(frame, measure, predictors, grouping)` gives R² of the measure on
+the grouping's levels alone and with the predictors added (statsmodels OLS):
+the difference is what the predictors explain within the groups.
 
 ### Describing it
 
@@ -137,8 +241,11 @@ one row per group (the centre, n, the other centre and the SD). P-values read
 
 ## Scanning every reading
 
-`scan_differences(dataframe, readings, groupings, entity=None, skip=())`
+`scan_differences(dataframe, readings, groupings, entity=None, axis=None, skip=())`
 compares each reading across each grouping and returns a `DifferenceScan`.
+Each reading is reduced to one value per entity as in `compare_groups`, and a
+grouping whose groups hold the same entities is compared within entities by
+the same tests, listed in `paired`.
 
 - P-values are Holm-adjusted over every test run, so the chance of naming any
   difference that isn't there stays at 5%. `holm_adjust` gives the figures of
@@ -163,6 +270,17 @@ compares each reading across each grouping and returns a `DifferenceScan`.
   (`ATTRIBUTE_EXPLAINED`) barely varies within a group: it describes the
   group (a station's battery voltage, a reef's depth) rather than its
   members, and is left out as an attribute (`attributes`).
+- A grouping that holds the reading by definition is left out (`defined`,
+  with the reason from `built_in_grouping(dataframe, reading, grouping)`): a
+  group holding 10% or more of the values (`CONSTANT_GROUP_SHARE`) pinned at
+  the reading's floor or ceiling while other groups vary, as days coded "no
+  precipitation" hold an amount of 0; a grouping whose name extends the
+  reading's (`RSKF` beside `RSK`) and explains half its ranks
+  (`NAMED_GROUPING_SHARE`), or shares a name stem with it (`trophic_group`
+  beside `trophic_level`) and explains 80% of them; a grouping named as a grade of an
+  index (`AQI_Level`, a risk band; `INDEX_GRADE_WORDS`) that explains 80% of
+  them (`INDEX_GROUPING_SHARE`); or one that explains all of them, one
+  cluster of values per group.
 - Coordinates and compass directions are never compared (`placed`): a
   coordinate places a row, and the mean of an angle means nothing.
 - `skip` holds pairs reported elsewhere, such as the measure across the
@@ -179,10 +297,12 @@ compares each reading across each grouping and returns a `DifferenceScan`.
 - Tables longer than 50,000 rows (`SCAN_ROWS`) are scanned on a fixed random
   sample of that many rows. A difference large enough to report shows in it.
 
-`variance_explained(dataframe, measure, groupings, entity=None)` gives the
+`variance_explained(dataframe, measure, groupings, entity=None, axis=None)` gives the
 share of the measure's variance each grouping explains on its own (eta
 squared), with one value per entity in each group when `entity` is given. In a
-soil survey, depth explains 76% of calcium and contour 5%.
+soil survey, depth explains 76% of calcium and contour 5%. As in a comparison,
+groups with fewer than two values are left out, so a grouping of mostly single
+sites does not explain everything by construction.
 `combined_groupings` finds a grouping that is the combination of two others
 (each level of a cell code such as `T0` is exactly one contour and one depth);
 it explains at least as much as either factor, which says nothing about which
@@ -191,6 +311,11 @@ levels of one grouping each occur with only some levels of another: half or
 more of the cells expected to hold five or more rows are empty
 (`NESTED_EMPTY_SHARE`), as when concentrations 3 to 12 were used only with the
 blue dyes. Across such a grouping the two can't be told apart.
+`item_attributes(dataframe, readings, items)` finds the readings that never
+vary within each value of an item column (a species, a product) on 99% of
+the items recorded twice or more (`ITEM_FIXED_SHARE`): a species' trophic
+level describes the species, so comparing it record by record weighs each
+species by how often it was recorded.
 `date_part(values, dates)` says which part of the date a numeric column
 repeats ("month", "year", "day" and so on) on 99% of rows: grouping by it
 shows the season or the trend, not a factor.
@@ -223,7 +348,7 @@ same sample of 50,000 rows the scan uses.
 
 ## Comparing rates
 
-`compare_rates(dataframe, outcome, grouping)` compares how often a yes/no
+`compare_rates(dataframe, outcome, grouping, entity=None)` compares how often a yes/no
 outcome is "yes" across the groups of another column and returns a
 `RateComparison`, or `None`. The outcome is a 0/1 column, a boolean, or a
 two-valued text column of yes and no words (`outcome_event`).
@@ -240,15 +365,28 @@ share of rows with Result 1 is 55.7% in Gender 1 (n = 740) against 30.5% in
 Gender 0 (n = 681): a difference of 25.1 percentage points (95% CI 20.1 to
 30.0)" and `rate_calculation` the calculation.
 
+With `entity`, an outcome that is the same on every row of a unit within a
+group (a cell line's methylation flag on each of its drug rows) is an
+attribute of the unit, so each unit counts once and n counts units: "Counting
+each COSMIC_ID once, the share with Methylation = Y is 97.2% in Gene
+Expression = Y (n = 904) against 57.7% in Gene Expression = N (n = 26)",
+where the rows gave 227,885 and 4,784. Groups of fewer than 5 units are not
+named, as in a group comparison. An outcome that differs between a unit's rows
+is kept by row and flagged as not independent (`clustered`).
+
 ## A joint model
 
-`fit_joint_model(frame, measure, predictors)` fits the measure on up to 6
-predictors at once (`MAX_MODEL_TERMS`) by ordinary least squares and returns a
-`JointModel`, or `None` with fewer than two usable predictors or fewer than 10
-rows per predictor (`ROWS_PER_TERM`). Ask uses it for "what predicts X".
+`fit_joint_model(frame, measure, predictors, limit=6)` fits the measure on up
+to `limit` predictors at once (`MAX_MODEL_TERMS`) by ordinary least squares and
+returns a `JointModel`, or `None` with fewer than two usable predictors or
+fewer than 10 distinct rows per predictor (`ROWS_PER_TERM`): a visit's
+readings repeated on every species row of the visit are one row of evidence,
+and a model with as many terms as distinct rows fits them exactly whatever
+they hold. Ask uses it for "what predicts X".
 
 - It uses the rows where the measure and every predictor are recorded, or a
-  fixed random sample of 50,000 of them (`MODEL_ROWS`).
+  fixed random sample of 50,000 of them (`MODEL_ROWS`). `distinct` counts the
+  distinct rows among them.
 - Predictors are taken in the order given; one that does not vary, or that the
   earlier ones reproduce exactly, is dropped.
 - Coefficients with 95% intervals and p-values, R², adjusted R² and the
@@ -261,8 +399,27 @@ rows per predictor (`ROWS_PER_TERM`). Ask uses it for "what predicts X".
 - `reversed` names the predictors whose clear coefficient points the other way
   from their own correlation of 0.3 or more: the pairwise figure partly
   stands for the readings that travel with it.
+- `clear` names the predictors whose coefficient stays clear of zero with the
+  others held fixed.
+- `exact` is true for an R² of 0.995 or more (`EXACT_FIT`), or a coefficient
+  whose interval has no width: the measure is a fixed combination of its
+  predictors (an annual mean and its seasons), an identity rather than a
+  relationship.
 
 A coefficient is an association with the others held fixed, not a cause.
+
+## A logistic model
+
+`fit_logistic_model(frame, outcome, predictors, limit=6)` fits a yes/no
+outcome on up to `limit` predictors by logistic regression
+(`statsmodels.discrete.discrete_model.Logit`) and returns a `LogisticModel`:
+each predictor's odds ratio per standard deviation, with the others held
+fixed, its 95% interval and p-value, the rows and the cases of the outcome,
+and McFadden's pseudo R². It needs 10 cases of the rarer outcome per
+predictor (`EVENTS_PER_TERM`), and returns `None` when the fit does not
+converge or the predictors separate the outcomes completely or all but
+completely (a log odds ratio per standard deviation beyond 5,
+`SEPARATED_LOG_ODDS`): then there is no estimate to report.
 
 ## Relationships
 
@@ -302,15 +459,17 @@ These pairs are set aside and listed in the calculation:
 
 | Kind | Rule |
 |---|---|
-| Near-duplicates | \|r\| of 0.99 or more with ranks that agree, and still 0.99 without the pair's most influential record: one quantity twice, such as a temperature in °C and in °F. A taxon holding half of all reads can make two count columns look identical; without it they are not |
+| One quantity twice | \|r\| of 0.99 or more with ranks that agree, still 0.99 without the pair's most influential record, and either 90% of the values identical (`IDENTICAL_SHARE`) or one a linear function of the other on 99% of rows, to the columns' own rounding: a temperature in °C and in °F. These form one family; a log or square root of a column joins its family too. A taxon holding half of all reads can make two count columns look identical; without it they are not |
+| Near-duplicates | \|r\| of 0.99 or more with ranks that agree, without being one quantity: two replicate samples, two counters that rise together. They are set aside from the ranking (`"near"`) but stay separate columns everywhere else |
+| Statistics of one reading | Both summarise the same reading (`summary_families`): `pollutant_min`, `pollutant_avg` and `pollutant_max`, or a table's `mean`, `std` and quartiles of each row's values, or the same test over numbered windows (`OBS1_bilirubin_max`, `OBS2_bilirubin_min`). A family needs a mean or median, or a minimum and a maximum, and the minimum must stay below the maximum on 95% of rows |
 | Built from the other | One column is built from others that include the second column (see below), or both are built from the same items (one's items contain the other's) |
 | Shares of a total | Both belong to a block of columns that add up to a fixed total, such as phylum shares of 100 |
 | Cap flags | A two-valued column set exactly on the rows where the other sits at its maximum or minimum |
 | Same stem | The names share a word that says what was measured (not a unit, a bracketed note or a word such as `total` or `mean`), and \|Spearman r\| and \|Pearson r\| without the most influential record are both above 0.95 (`SHARED_STEM_CORRELATION`), as `MaxTemp` and `MeanTemp` |
 | Coordinates | Both are map coordinates, which describe where the rows were taken |
 
-Pairs within one near-duplicate family are reported once. `set_aside` lists
-the measure's columns left out and why, so an answer can name them.
+Pairs within one family are reported once. `set_aside` lists the measure's
+columns left out and why, so an answer can name them.
 
 ### Finding derived columns
 
@@ -340,12 +499,31 @@ Correct3 + Correct4`), a mean, a difference, or another fixed combination.
    clipped at zero) can't hide it.
 6. A free combination, whose weights are not ±1 or 1/n, must hold on 99% of
    rows (`COMBINATION_SHARE`), since it has more freedom to fit.
-7. A fit needs three rows per term, so a few rows can't be matched by chance.
+7. A fit needs three distinct rows per term, so a few rows can't be matched
+   by chance, however often they repeat.
+
+A free combination that a rearrangement makes a plain sum or mean of the
+others is read that way round: "70 = 2 × 60 − 50" is named "60 = mean of 50
+and 70", the column filled in from its neighbours.
 
 A fit whose weights are all −1 with a constant is a `complement`: the column
 and its parts add up to a fixed total ("Diet_Silage, Diet_Grains and
 Diet_Forage add up to 100"). The rows that break the total are counted on
 every row and named in a note.
+
+Further searches find columns built in other ways:
+
+| Function | Finds |
+|---|---|
+| `find_product(frame, column, candidates)` | A product or ratio of powers of up to 3 columns (`MAX_PRODUCT_PARTS`), with powers from −3 to 3 and halves (`EXPONENTS`) and a constant factor: "body_mass_index = weight_kg ÷ height_cm² × 10,000". On logs a product is a sum, so it is `find_derivation` on the logs of positive columns. Tables of more than 100 positive readings (`PRODUCT_TARGETS`) are skipped |
+| `find_transform(frame, column, source)` | A log10, natural log, log2, log of one plus, square root, square or reciprocal of another column (`TRANSFORMS`), checked for pairs whose ranks agree to 0.995 (`TRANSFORM_RANKS`): "lcond = log10(COND)" |
+| Rates and lags | On rows in table order, a column that is a fixed multiple of another's row-to-row change on 90% of rows ("velocity = 100 × the row-to-row change in angle"; the rows where a new curve starts break it), and a combination that takes a part from the row before ("D-J-F = mean of JAN, FEB and DEC (row before)"). Tables of up to 60 readings (`ORDERED_TARGETS`) are searched, on their first 2,000 rows |
+| Built from built columns | A sum or mean of columns that are built themselves: "metANN = mean of D-J-F, M-A-M, J-J-A and S-O-N" |
+| Cut off at another | A column that never exceeds another on 99% of rows (`CAPPED_BELOW`) and equals it on at least 20% (`CAPPED_EQUAL`): a time to recurrence that equals the follow-up time wherever no recurrence was seen |
+
+A column built from a built column is built from that column's parts too, so
+an acceleration made from a velocity made from an angle relates to the angle
+by construction.
 
 Two summaries have no fixed formula:
 

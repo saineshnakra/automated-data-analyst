@@ -7,9 +7,10 @@
     report = ada.analyze("measurements.csv")
     print(report)
 
-``ada.research`` brings in Matplotlib, python-docx and PyYAML only when it is
-imported, so ``import ada`` stays quick. Streamlit, plotly and the optional AI
-layer are extras and are imported only when used.
+The core depends on pandas, numpy, scipy, statsmodels, ruptures and
+python-calamine. ``ada.research`` brings in Matplotlib, python-docx and PyYAML
+only when it is imported, so ``import ada`` stays quick. Streamlit, plotly and
+the optional AI layer are extras and are imported only when used.
 """
 
 from .api import (

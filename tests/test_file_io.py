@@ -17,6 +17,21 @@ class FileParsingTests(unittest.TestCase):
         self.assertEqual(result.columns.tolist(), ["Region", "Revenue"])
         self.assertEqual(result["Revenue"].sum(), 2100)
 
+    def test_reads_tab_separated_files(self) -> None:
+        contents = b"Patient\tDays to recovery\tDose, mg\nP1\t12\t5\nP2\t9\t10\n"
+
+        for filename in ("Data.tsv", "export.txt"):
+            with self.subTest(filename=filename):
+                result = read_tabular_file(contents, filename)
+
+                self.assertEqual(result.columns.tolist(), ["Patient", "Days to recovery", "Dose, mg"])
+                self.assertEqual(result["Days to recovery"].sum(), 21)
+
+    def test_reads_a_comma_separated_txt_file_as_a_csv(self) -> None:
+        result = read_tabular_file(b"Region,Revenue\nWest,1200\nEast,900\n", "export.txt")
+
+        self.assertEqual(result.columns.tolist(), ["Region", "Revenue"])
+
     def test_detects_semicolon_delimiter(self) -> None:
         result = read_tabular_file(b"Region;Revenue\nWest;1200\nEast;900\n", "sales.csv")
 

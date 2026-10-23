@@ -25,8 +25,9 @@ flowchart TD
 
 `ada/file_io.py` · [details](reference/reading-files.md)
 
-Accepts `.csv`, `.xlsx` and `.xlsm`. A CSV may be comma, semicolon, tab or pipe
-separated. For a workbook with several sheets, the app asks which one to
+Accepts `.csv`, `.tsv`, `.txt`, `.xlsx` and `.xlsm`. A CSV may be comma,
+semicolon, tab or pipe separated; a `.tsv` or `.txt` file is read as
+tab-separated when that splits its header. For a workbook with several sheets, the app asks which one to
 analyze; ADA analyzes one sheet at a time.
 
 The app refuses files over 25 MB (`MAX_UPLOAD_BYTES` in `app.py`).
@@ -101,10 +102,12 @@ the direction and the severity.
 
 `ada/forecasting.py` · [details](reference/forecasting.md)
 
-Extends the trendline, with month-of-year seasonality when there is enough
-monthly history. Needs at least 8 periods and forecasts at most half the
-history length. Each forecast includes a backtest that states whether it beat
-a no-change forecast. With too little history it returns nothing.
+Extends the trendline, with the usual offset of each month, quarter or week
+of the year once there is a year and a half of history. Needs at least 8
+periods and forecasts at most half the history length. Each forecast includes
+a backtest that states whether it beat a no-change forecast and, for a
+seasonal series, repeating the same period a year earlier. With too little
+history it returns nothing.
 
 ## 9. Build evidence and recommendations
 
