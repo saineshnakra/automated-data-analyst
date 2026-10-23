@@ -14,7 +14,7 @@ ada verify                       # rebuilds and checks every number
 
 From Python: `from ada import research; research.build("study.yml")`, or `import ada; ada.analyze("data.csv")` for the first look.
 
-For AI coding assistants: `ada skill` writes a SKILL.md (Agent Skills format) into `.claude/skills/ada/`; in Claude Code, `/plugin install ada --marketplace saineshnakra/automated-data-analyst`.
+For AI coding assistants: `ada skill` writes ADA's SKILL.md (Agent Skills format) into `.claude/skills/ada/` for Claude Code and `.agents/skills/ada/` for Codex. As a plugin: `/plugin install ada --marketplace saineshnakra/automated-data-analyst` in Claude Code, or `codex plugin marketplace add saineshnakra/automated-data-analyst` then `codex plugin add ada@automated-data-analyst` in Codex. The arithmetic runs in ADA, not in the model: the assistant reports the numbers ADA computed, each with its calculation, and passes on refusals.
 
 ## Docs
 

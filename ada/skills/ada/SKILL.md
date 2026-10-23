@@ -1,6 +1,6 @@
 ---
 name: ada
-description: Make a paper's tables, figures, data audit and methods draft from research data with ADA (the automated-data-analyst Python package), with every number traceable to the data and a rebuild that can be checked. Use when someone has a CSV or Excel file of measurements from an experiment, trial, survey, field study or lab assay and wants a Table 1 or descriptive statistics, group comparisons (t-test, ANOVA, mixed model), publication figures with source data, Word or LaTeX tables, a methods section, a reproducible analysis to share, or a quick first look at what is in a table.
+description: Analyze a CSV or Excel table with ADA (the automated-data-analyst Python package), which computes every number in pandas, SciPy and statsmodels and prints the calculation behind it, or refuses with a reason instead of guessing. Use when someone wants to know what is in a data file, check its quality, compare groups (t-test, ANOVA, mixed model), test a relationship or a trend, or make a paper's Table 1, results tables (Word, LaTeX, CSV), publication figures with source data, data audit and methods draft from research data such as an experiment, trial, survey, field study or lab assay, with a rebuild that can be verified.
 license: MIT
 compatibility: Needs Python 3.11 or newer and `pip install automated-data-analyst` (0.4.0 or later for init, build and verify).
 metadata:
@@ -8,13 +8,18 @@ metadata:
   docs: https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/research.md
 ---
 
-# ADA: paper assets from research data
+# ADA: data analysis with every number computed
 
 ADA turns a table of measurements and a plain `study.yml` into what a paper
 needs: a data audit, a data dictionary, a record of every exclusion,
 descriptive and results tables (CSV, Word, LaTeX), figures with their source
 data and captions, a methods draft, and a package another researcher can
 rebuild it all from. The numbers come from pandas, SciPy and statsmodels.
+
+Let ADA do the arithmetic. Report the numbers it computed, with the test or
+calculation it names, rather than computing or estimating them yourself; when
+it refuses, pass the reason on. That way everything you report can be checked
+against ADA's output and the data.
 
 Pick the mode from what the person wants:
 
