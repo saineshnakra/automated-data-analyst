@@ -247,6 +247,25 @@ def analyse(study: Study, data: pd.DataFrame, spec: AnalysisSpec) -> AnalysisRes
     return found
 
 
+def refusal(study: Study, data: pd.DataFrame, spec: AnalysisSpec) -> str:
+    """Why ``analyse`` would refuse ``spec`` on ``data``, or "" when it passes the checks made before fitting.
+
+    ``ada init`` uses it to leave out analyses the build would refuse. A model that fails only while
+    being fitted is not caught here.
+    """
+    analysis = _Analysis(study, data, spec, AnalysisResult(spec=spec, design=study.design))
+    try:
+        analysis.check()
+        for column in (spec.compare, spec.by):
+            if column:
+                analysis._levels(column)
+    except Unsupported as reason:
+        return str(reason)
+    except ValueError as reason:
+        return f"The model could not be fitted ({reason})."
+    return ""
+
+
 def key_row(found: AnalysisResult) -> pd.Series | None:
     """The headline row of an analysis: the one whose p-value is adjusted across its family."""
     estimates = found.estimates
@@ -445,8 +464,10 @@ class _Analysis:
 
     # The steps every analysis goes through.
 
-    def fit(self) -> None:
-        spec, study, found = self.spec, self.study, self.found
+    def check(self) -> None:
+        """What is settled before fitting: the variables' types, the design's unit, the complete cases,
+        the outcome's kind and the test. Raises Unsupported for an analysis that cannot be fitted."""
+        spec, found = self.spec, self.found
         self._check_columns()
         self.unit, self.unit_word = self._unit()
         needed = [spec.outcome, spec.predictor, spec.by, *spec.covariates, self.unit]
@@ -478,6 +499,11 @@ class _Analysis:
             )
         test = self._choose_test()
         self.test = test
+
+    def fit(self) -> None:
+        spec, study, found = self.spec, self.study, self.found
+        self.check()
+        test = self.test
         if self.outcome_kind == "binary":
             self._fit_binary(test)
         elif spec.kind == "compare":

@@ -2,7 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from research_helpers import assay_study
+import yaml
+from research_helpers import assay, assay_study, study_folder
 
 from ada.research.study import StudyError, load, parse
 
@@ -42,6 +43,15 @@ class ParseTests(unittest.TestCase):
             self.parse(assay_study(design={"type": "repeated"}))
         self.assertIn("design.subject", str(raised.exception))
 
+    def test_a_design_is_confirmed_unless_study_yml_says_otherwise(self):
+        self.assertTrue(self.parse(assay_study()).design_confirmed)
+        guessed = self.parse(assay_study(design={"type": "independent", "confirmed": False}))
+        self.assertFalse(guessed.design_confirmed)
+        self.assertEqual(guessed.raw["design"]["confirmed"], False)
+        with self.assertRaises(StudyError) as raised:
+            self.parse(assay_study(design={"type": "independent", "confirmed": "no"}))
+        self.assertIn("`design.confirmed` should be true or false", str(raised.exception))
+
     def test_names_must_be_described(self):
         study = assay_study(
             analyses=[{"id": "a", "outcome": "Viability", "compare": "Treatment", "planned": True}]
@@ -67,6 +77,12 @@ class ParseTests(unittest.TestCase):
         second = self.parse(changed)
         self.assertEqual(first.section_hash("analyses.primary"), second.section_hash("analyses.primary"))
         self.assertNotEqual(first.section_hash("study"), second.section_hash("study"))
+
+    def test_load_reads_an_unconfirmed_design_back(self):
+        with study_folder(assay(), assay_study(design={"type": "independent", "confirmed": False})) as path:
+            first = load(path)
+            path.write_text(yaml.safe_dump(first.raw, sort_keys=False), encoding="utf-8")
+            self.assertFalse(load(path).design_confirmed)
 
     def test_load_explains_a_missing_file(self):
         with tempfile.TemporaryDirectory() as folder, self.assertRaises(StudyError) as raised:

@@ -255,6 +255,9 @@ class Study:
     cluster: str | None = None
     time: str | None = None
     design_notes: str = ""
+    #: False while the design is ADA's guess from the data (``ada init --yes``) and the researcher
+    #: has not checked it; the methods draft then says so rather than state the design as fact.
+    design_confirmed: bool = True
     steps: tuple[Step, ...] = ()
     decisions: Decisions = Decisions()
     analyses: tuple[AnalysisSpec, ...] = ()
@@ -372,6 +375,7 @@ def parse(raw: dict[str, Any], path: Path) -> Study:
         cluster=design.get("cluster"),
         time=design.get("time"),
         design_notes=reader.text(design, "notes", "design.notes"),
+        design_confirmed=reader.flag(design, "confirmed", "design.confirmed", default=True),
         variables=variables,
         steps=tuple(reader.steps(raw.get("processing"), design.get("subject"))),
         decisions=Decisions(
@@ -482,6 +486,15 @@ class _Reader:
             self.problems.append(f"`{where}` should be between 0 and 1, not {value}.")
             return default
         return float(value)
+
+    def flag(self, parent: dict, key: str, where: str, default: bool) -> bool:
+        value = parent.get(key)
+        if value is None:
+            return default
+        if not isinstance(value, bool):
+            self.problems.append(f"`{where}` should be true or false, not {value!r}.")
+            return default
+        return value
 
     def choice(self, parent: dict, key: str, allowed, where: str, default: str) -> str:
         value = parent.get(key)

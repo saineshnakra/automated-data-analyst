@@ -248,6 +248,18 @@ INDIVIDUAL_NAME_WORDS = frozenset({
     "subject", "participant", "patient", "animal", "mouse", "rat", "donor", "individual",
     "specimen", "id", "ids", "key", "uuid",
 })
+# Key words that end the name of a subject measured more than once (a person, an
+# animal, a station) after a word saying which: "Patient ID", "Mouse #", "subject#".
+# Contact details and product codes (a ZIP code, a phone number, a SKU) are keys
+# too, but not subjects a study measures.
+SUBJECT_KEY_WORDS = frozenset({"id", "ids", "code", "codes", "number", "no", "#", "key", "uuid"})
+# Time points before a key word, beside the parts of a date and the set levels of
+# an experiment: "Visit Number" counts visits, not people.
+TIME_POINT_WORDS = frozenset({"visit", "wave", "session", "period", "cycle"})
+# A subject measured more than once repeats its value: at least this share of the
+# rows belong to subjects with two rows or more. A key with up to a fifth of its
+# values repeated (see ``looks_like_identifier``) stays below it.
+SUBJECT_ROW_SHARE = 0.5
 
 # Head words of numeric columns that label groups of rows: status 2 is a group,
 # not twice status 1.
@@ -588,6 +600,51 @@ def looks_like_identifier(name: str, series: pd.Series) -> bool:
         return False
     unique_ratio = series.nunique(dropna=True) / max(int(series.notna().sum()), 1)
     return unique_ratio >= 0.8
+
+
+def is_subject_name(name: str) -> bool:
+    """Whether the name labels a subject measured more than once: "Subject", "Patient ID", "subject#".
+
+    The last word must be an entity ("Subject", "Station", "Site") or a key word.
+    A key word needs a word before it that is not a time point, a count, a design
+    label or a group ("Visit Number", "Run No" and "Group ID" are not subjects),
+    except "ID" alone. A number mark run into a word counts as its own word.
+    """
+    words = []
+    for word in _head_words(name):
+        words += [word[:-1], "#"] if len(word) > 1 and word.endswith("#") else [word]
+    if not words or _bare_no(name, words):
+        return False
+    if words[-1] in ENTITY_NAME_WORDS - IDENTIFIER_NAME_WORDS:
+        return True
+    if words[-1] not in SUBJECT_KEY_WORDS:
+        return False
+    qualifiers = set(words[:-1])
+    if not qualifiers:
+        return words[-1] in {"id", "ids"}
+    times = TIME_POINT_WORDS | TIME_PART_WORDS | DESIGN_LEVEL_WORDS
+    return not qualifiers & (times | DESIGN_TOKENS | COUNT_NAME_WORDS | LABEL_NAME_WORDS)
+
+
+def looks_like_subject(name: str, series: pd.Series) -> bool:
+    """Whether the column names the subject each row belongs to, its value repeated on that subject's rows.
+
+    Recordings of 42 people carry "subject#" 1 to 42 on 5,875 rows. The name must
+    label a subject (see ``is_subject_name``), numbers must be whole codes, and
+    the values must repeat as subjects do: at least two of them, with most rows
+    (SUBJECT_ROW_SHARE) on a subject that has other rows too, so a few people
+    seen only once still leave a subject. That tells a subject from a key with a
+    different value on (nearly) every row (see ``looks_like_identifier``), and
+    from a column with one value, which tells no subjects apart. A count, a
+    rating or a year repeats too, but is not named as a subject.
+    """
+    if is_datetime64_any_dtype(series) or is_bool_dtype(series) or not is_subject_name(name):
+        return False
+    present = series.dropna()
+    if is_numeric_dtype(present) and not bool((present % 1 == 0).all()):
+        return False
+    counts = present.value_counts()
+    return len(counts) >= 2 and float(counts[counts >= 2].sum()) >= SUBJECT_ROW_SHARE * len(present)
 
 
 def _is_row_key(name: str, series: pd.Series, *, first: bool) -> bool:
