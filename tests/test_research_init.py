@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from research_helpers import assay
 
-from ada.research import init, load
+from ada.research import build, init, load
 from ada.research.interview import guess
 
 
@@ -30,6 +30,24 @@ def recordings(people: int = 12, per_person: int = 8, seed: int = 7) -> pd.DataF
                 }
             )
     return pd.DataFrame(rows)
+
+
+def cultivars(per_cultivar: int = 15, seed: int = 2) -> pd.DataFrame:
+    """Wines of three cultivars coded 1, 2 and 3, with chemical measurements."""
+    rng = np.random.default_rng(seed)
+    frames = []
+    for code, shift in ((1, 1.0), (2, -0.8), (3, 0.2)):
+        frames.append(
+            pd.DataFrame(
+                {
+                    "cultivar": code,
+                    "alcohol": np.round(13 + shift + rng.normal(0, 0.5, per_cultivar), 2),
+                    "malic_acid": np.round(2 + rng.normal(0, 0.6, per_cultivar), 2),
+                    "color_intensity": np.round(5 + 2 * shift + rng.normal(0, 1, per_cultivar), 2),
+                }
+            )
+        )
+    return pd.concat(frames, ignore_index=True)
 
 
 def one_station(hours: int = 120, seed: int = 4) -> pd.DataFrame:
@@ -171,6 +189,20 @@ class RepeatedSubjectTests(unittest.TestCase):
             study = load(write_and_init(frame, Path(folder), ask=ask, say=said.append))
         self.assertEqual(study.subject, "subject#")
         self.assertTrue(any("station has a single value" in text for text in said))
+
+
+class PlanCheckTests(unittest.TestCase):
+    def test_a_group_of_number_codes_is_written_as_categories_and_compared(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = write_and_init(cultivars(), Path(folder), interactive=False)
+            study = load(path)
+            self.assertEqual(study.with_role("group"), ["cultivar"])
+            self.assertEqual(study.variable("cultivar").type, "categorical")
+            self.assertEqual(study.variable("cultivar").levels, ("1", "2", "3"))
+            built = build(path)
+        compared = [found for found in built.results.values() if found.spec.compare == "cultivar"]
+        self.assertTrue(compared)
+        self.assertTrue(all(found.supported for found in built.results.values()))
 
 
 if __name__ == "__main__":

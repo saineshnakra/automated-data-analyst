@@ -30,6 +30,7 @@ from ..schema import (
     looks_like_identifier,
     looks_like_subject,
 )
+from .processing import _as_labels
 from .study import DESIGNS, SHARING, sha256_of
 
 #: Numbers often used to mean "missing" in lab and survey files.
@@ -302,6 +303,32 @@ def _repeats(frame: pd.DataFrame, column: str) -> str:
     low, high = int(counts.min()), int(counts.max())
     each = f"{low:,} rows each" if low == high else f"{low:,} to {high:,} rows each"
     return f"{len(counts):,} values over {int(counts.sum()):,} rows, {each}"
+
+
+def _codes(series: pd.Series) -> bool:
+    """Whether a numeric column holds a few whole-number codes, such as cultivar 1, 2 and 3."""
+    present = series.dropna()
+    return (
+        is_numeric_dtype(present)
+        and bool((present % 1 == 0).all())
+        and 1 < present.nunique() <= MAX_GROUP_LEVELS
+    )
+
+
+def _kind(found: Guess, column: str) -> str:
+    """The type written for a column. A group of number codes is categorical: `compare:` needs it."""
+    kind = found.types.get(column, "text")
+    if kind == "numeric" and column in found.groups and _codes(found.frame[column]):
+        return "categorical"
+    return kind
+
+
+def _levels(found: Guess, column: str) -> list[str]:
+    """A group's levels: number codes in their order (the lowest is the reference), others as they come."""
+    present = found.frame[column].dropna()
+    if is_numeric_dtype(present):
+        return list(_as_labels(pd.Series(sorted(present.unique()))))
+    return list(dict.fromkeys(present.astype(str)))
 
 
 def propose_analyses(found: Guess) -> list[dict]:
@@ -591,14 +618,14 @@ def render(found: Guess) -> str:
         "variables:",
     ]
     for column in found.columns:
-        kind = found.types.get(column, "text")
+        kind = _kind(found, column)
         lines.append(f"  {_yaml(column)}:")
         lines.append(f"    role: {_role(found, column)}")
         lines.append(f"    type: {kind}")
         if found.units.get(column):
             lines.append(f"    unit: {_yaml(found.units[column])}")
         if kind in ("categorical", "binary") and _role(found, column) == "group":
-            levels = list(dict.fromkeys(found.frame[column].dropna().astype(str)))
+            levels = _levels(found, column)
             if len(levels) <= MAX_GROUP_LEVELS:
                 lines.append(f"    levels: {_yaml(levels)}")
         lines.append('    description: ""')
