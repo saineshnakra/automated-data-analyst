@@ -602,7 +602,11 @@ def draw_longitudinal(target, result, spec: FigureSpec) -> Drawn:
 
 
 def draw_scatter(target, result, spec: FigureSpec) -> Drawn:
-    """Points with the least-squares line and its confidence band for the mean."""
+    """Points with a fitted line and its confidence band for the mean.
+
+    With a linked relate analysis the line is that model's prediction, covariates held at reference
+    values; otherwise it is least squares over the points, with no band when they are not independent.
+    """
     import statsmodels.api as sm  # noqa: PLC0415
 
     study, style = result.study, _style(result)
@@ -633,24 +637,40 @@ def draw_scatter(target, result, spec: FigureSpec) -> Drawn:
     if by and len(groups) > 1:
         _legend(ax, [(_look(by_order, group), group) for group in groups], style)
     confidence = study.decisions.confidence
-    fit = sm.OLS(ys, sm.add_constant(xs)).fit()
     grid = np.linspace(xs.min(), xs.max(), 101)
-    band = fit.get_prediction(sm.add_constant(grid, has_constant="add")).summary_frame(alpha=1 - confidence)
-    # conf_int() has one row per coefficient, (low, high): the intercept first, then the slope.
-    (intercept_low, intercept_high), (slope_low, slope_high) = fit.conf_int(alpha=1 - confidence)
-    mixed = _mixed_line(study, analysis, found, x)
-    if mixed:
-        ax.plot(grid, mixed[0] + mixed[1] * grid, color=INK, linewidth=1.0, zorder=3)
+    linked = _model_line(analysis, found, x, y)
+    clustering = _clustering(study, used)
+    mixed = study.design != "independent"
+    held = {}
+    if linked:
+        # The linked model's own prediction, with its covariates held at the values the analysis gives.
+        line, reported = linked
+        held = line["held"]
+        weights = np.column_stack([np.ones(len(grid)), grid])
+        mean = line["intercept"] + line["slope"] * grid
+        half = line["critical"] * np.sqrt(np.einsum("ij,jk,ik->i", weights, line["covariance"], weights))
+        low, high = mean - half, mean + half
+        offset = line["critical"] * math.sqrt(line["covariance"][0, 0])
+        intercept = (line["intercept"], line["intercept"] - offset, line["intercept"] + offset)
+        slope = (reported["estimate"], reported["ci_low"], reported["ci_high"])
+        n, banded = found.n, True
     else:
-        ax.fill_between(
-            grid,
-            band["mean_ci_lower"],
-            band["mean_ci_upper"],
-            color=tint(INK, 0.13, style),
-            linewidth=0,
-            zorder=1,
-        )
-        ax.plot(grid, band["mean"], color=INK, linewidth=1.0, zorder=3)
+        fit = sm.OLS(ys, sm.add_constant(xs)).fit()
+        prediction = fit.get_prediction(sm.add_constant(grid, has_constant="add"))
+        band = prediction.summary_frame(alpha=1 - confidence)
+        mean, low, high = (band[name].to_numpy() for name in ("mean", "mean_ci_lower", "mean_ci_upper"))
+        # conf_int() has one row per coefficient, (low, high): the intercept first, then the slope.
+        (intercept_low, intercept_high), (slope_low, slope_high) = fit.conf_int(alpha=1 - confidence)
+        intercept = (fit.params[0], intercept_low, intercept_high)
+        slope = (fit.params[1], slope_low, slope_high)
+        n, banded = len(used), not clustering
+        if not banded:
+            # Least squares treats every point as independent, so its intervals would be too narrow here.
+            low = high = np.full(len(grid), math.nan)
+            intercept, slope = (intercept[0], math.nan, math.nan), (slope[0], math.nan, math.nan)
+    if banded:
+        ax.fill_between(grid, low, high, color=tint(INK, 0.13, style), linewidth=0, zorder=1)
+    ax.plot(grid, mean, color=INK, linewidth=1.0, zorder=3)
     ax.set_xlabel(study.label(x))
     ax.set_ylabel(study.label(y))
     ids = _id_columns(study, used, exclude=(x, y, by))
@@ -665,63 +685,71 @@ def draw_scatter(target, result, spec: FigureSpec) -> Drawn:
         }
         for _, row in used.iterrows()
     ]
-    if mixed:
-        fitted = [{"element": "fit", x: value, "fit": mixed[0] + mixed[1] * value} for value in grid]
-        estimates = [{"element": "slope", "n": len(used), "estimate": mixed[1]}]
-    else:
-        fitted = [
-            {"element": "fit", x: value, "fit": mean, "ci_low": low, "ci_high": high}
-            for value, mean, low, high in zip(
-                grid, band["mean"], band["mean_ci_lower"], band["mean_ci_upper"], strict=True
-            )
-        ]
-        estimates = [
-            {
-                "element": "intercept",
-                "n": len(used),
-                "estimate": fit.params[0],
-                "ci_low": intercept_low,
-                "ci_high": intercept_high,
-            },
-            {
-                "element": "slope",
-                "n": len(used),
-                "estimate": fit.params[1],
-                "ci_low": slope_low,
-                "ci_high": slope_high,
-            },
-        ]
+    fitted = [
+        {"element": "fit", x: value, **held, "fit": fit_value, "ci_low": fit_low, "ci_high": fit_high}
+        for value, fit_value, fit_low, fit_high in zip(grid, mean, low, high, strict=True)
+    ]
+    interval = ("estimate", "ci_low", "ci_high")
+    estimates = [
+        {"element": "intercept", **held, "n": n, **dict(zip(interval, intercept, strict=True))},
+        {"element": "slope", "n": n, **dict(zip(interval, slope, strict=True))},
+    ]
     sentences = [
         f"{_each_point(study)}; {_n_list(counts) if by else f'n = {len(used):,}'}.",
         f"Colours mark {study.label(by)}." if by else "",
     ]
-    if mixed:
+    if linked:
+        kind = "fixed-effect" if mixed else "least-squares"
         sentences.append(
-            f"The line is the fixed-effect fit of analysis {analysis.id} ({found.test}), which accounts for "
-            "repeated measurements."
+            f"The line and shaded band show the {kind} fit of analysis {analysis.id} ({found.test}) and its "
+            f"{_ci(study)} confidence interval for the mean"
+            + (f", holding {_held(study, held)}." if held else ".")
         )
-    else:
+        if held:
+            sentences.append(
+                f"The points are the observed values, not adjusted for {', '.join(held)}, so the line need "
+                "not follow them."
+            )
+        if mixed and clustering:
+            sentences.append(
+                f"Because {clustering}, the line and band come from the mixed model rather than from least "
+                "squares over the points."
+            )
+    elif banded:
         sentences.append(
             f"The line and shaded band show the least-squares fit and its {_ci(study)} confidence interval "
             "for the mean (ordinary least squares, no covariates)."
         )
-        clustering = _clustering(study, used)
-        if clustering:
-            sentences.append(
-                f"The band treats the points as independent, but {clustering}, so it is narrower than it "
-                "should be" + (f"; analysis {analysis.id} accounts for this." if analysis else ".")
-            )
-    if analysis and analysis.covariates:
+    else:
+        accounted = analysis is not None and found is not None and getattr(found, "supported", False)
+        sentences.append(
+            "The line is the least-squares fit through the points (ordinary least squares, no covariates), "
+            f"drawn only to describe them: {clustering}, so the points are not independent and least "
+            "squares gives no valid confidence band."
+            + (f" Analysis {analysis.id} accounts for this." if accounted else "")
+        )
+    if analysis and analysis.covariates and not linked:
         sentences.append(
             f"Analysis {analysis.id} also adjusts for {', '.join(analysis.covariates)}; the line does not."
         )
     sentences += [left_out, _analysis_sentence(analysis, found) or NO_TEST]
-    calculation = (
-        f"Line from the intercept and slope reported by analysis {analysis.id}."
-        if mixed
-        else f"Ordinary least squares of {y} on {x} (statsmodels OLS); the band is the {_ci(study)} "
-        "confidence interval for the mean from get_prediction().summary_frame()."
-    )
+    if linked:
+        calculation = (
+            f"Line and band from analysis {analysis.id} ({found.method}): its prediction across {x}"
+            + (f", holding {_held(study, held)}" if held else "")
+            + f", with the {_ci(study)} confidence interval for that prediction from the covariance of the "
+            + ("model's fixed-effect coefficients." if mixed else "model's coefficients.")
+        )
+    elif banded:
+        calculation = (
+            f"Ordinary least squares of {y} on {x} (statsmodels OLS); the band is the {_ci(study)} "
+            "confidence interval for the mean from get_prediction().summary_frame()."
+        )
+    else:
+        calculation = (
+            f"Ordinary least squares of {y} on {x} (statsmodels OLS), drawn without a band because the "
+            "points are not independent."
+        )
     columns = [
         "element",
         *ids,
@@ -729,6 +757,7 @@ def draw_scatter(target, result, spec: FigureSpec) -> Drawn:
         SOURCE_ROW,
         x,
         y,
+        *held,
         "fit",
         "estimate",
         "n",
@@ -744,8 +773,8 @@ def draw_scatter(target, result, spec: FigureSpec) -> Drawn:
         depends=_analysis_depends(analysis),
         numbers={
             "n": len(used),
-            "slope": mixed[1] if mixed else fit.params[1],
-            **({} if mixed else {"slope ci_low": slope_low, "slope ci_high": slope_high}),
+            "slope": slope[0],
+            **({"slope ci_low": slope[1], "slope ci_high": slope[2]} if banded else {}),
         },
     )
 
@@ -1075,19 +1104,21 @@ def _model_means(result, spec: FigureSpec, found, cells: list[tuple]) -> dict | 
     return chosen
 
 
-def _mixed_line(study, analysis, found, x: str) -> tuple[float, float] | None:
-    """The intercept and slope of a mixed model without covariates, when the analysis reports both."""
-    if study.design not in ("paired", "repeated", "clustered") or analysis is None or found is None:
+def _model_line(analysis, found, x: str, y: str) -> tuple[dict, pd.Series] | None:
+    """The linked analysis's fitted line of y on x and its reported slope, when the statistics step gave both.
+
+    The line is the model's prediction with its covariates held at reference values (see
+    ``AnalysisResult.line``), so the figure shows the relationship the analysis estimated.
+    """
+    if analysis is None or found is None or not getattr(found, "supported", False):
         return None
-    estimates = getattr(found, "estimates", None)
-    if not getattr(found, "supported", False) or analysis.covariates or estimates is None or estimates.empty:
+    line, estimates = getattr(found, "line", None), getattr(found, "estimates", None)
+    if not line or analysis.relate != x or analysis.outcome != y or estimates is None:
         return None
-    terms = estimates["term"].astype(str)
-    intercept = estimates.loc[terms.isin(["Intercept", "(Intercept)", "const"]), "estimate"]
-    slope = estimates.loc[terms.isin([x, f'Q("{x}")', f"Q('{x}')"]), "estimate"]
-    if intercept.empty or slope.empty:
+    if "measure" not in estimates or estimates.empty:
         return None
-    return float(intercept.iloc[0]), float(slope.iloc[0])
+    slope = estimates[(estimates["term"].astype(str) == x) & (estimates["measure"] == "slope")]
+    return (line, slope.iloc[0]) if len(slope) else None
 
 
 def _residuals(found) -> pd.Series | None:
@@ -1308,6 +1339,19 @@ def _clustering(study, used: pd.DataFrame) -> str:
         if clusters < len(used):
             return f"the {len(used):,} points come from {clusters:,} clusters ({study.cluster})"
     return ""
+
+
+def _held(study, held: dict) -> str:
+    """Where a model's line holds each covariate: "age at its mean in the rows analysed (64.8 years)"."""
+    parts = []
+    for name, value in held.items():
+        if isinstance(value, str):
+            parts.append(f"{name} at its reference level ({value})")
+        else:
+            unit = study.variable(name).unit
+            number = (f"{value:.4g}" if abs(value) < 10_000 else f"{value:,.0f}").replace("-", "−")
+            parts.append(f"{name} at its mean in the rows analysed ({number}{f' {unit}' if unit else ''})")
+    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
 
 
 def _analysis_sentence(analysis, found) -> str:
