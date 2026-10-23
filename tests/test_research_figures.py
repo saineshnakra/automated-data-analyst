@@ -287,7 +287,8 @@ class ScatterTests(unittest.TestCase):
 
     def test_a_clustered_design_draws_the_mixed_model_line(self):
         frame = assay()
-        frame["Plate"] = [f"Plate {index % 4}" for index in range(len(frame))]
+        # Neighbouring wells share a plate, so the plates differ and the mixed model converges.
+        frame["Plate"] = [f"Plate {index // 9}" for index in range(len(frame))]
         study = assay_with(
             design={"type": "clustered", "cluster": "Plate"},
             analyses=[{"id": "passage", "outcome": "Viability (%)", "relate": "Passage", "planned": True}],
