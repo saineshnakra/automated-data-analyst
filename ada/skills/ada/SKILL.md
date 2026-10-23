@@ -2,7 +2,7 @@
 name: ada
 description: Analyze a CSV or Excel table with ADA (the automated-data-analyst Python package), which computes every number in pandas, SciPy and statsmodels and prints the calculation behind it, or refuses with a reason instead of guessing. Use when someone wants to know what is in a data file, check its quality, compare groups (t-test, ANOVA, mixed model), test a relationship or a trend, or make a paper's Table 1, results tables (Word, LaTeX, CSV), publication figures with source data, data audit and methods draft from research data such as an experiment, trial, survey, field study or lab assay, with a rebuild that can be verified.
 license: MIT
-compatibility: Needs Python 3.11 or newer and `pip install automated-data-analyst` (0.4.0 or later for init, build and verify).
+compatibility: Needs Python 3.11 or newer and `pip install automated-data-analyst` 0.5.0 or later.
 metadata:
   homepage: https://github.com/saineshnakra/automated-data-analyst
   docs: https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/research.md

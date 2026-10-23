@@ -501,6 +501,7 @@ still gets wrong.
 | [Reference](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/README.md#reference) | One page per step, with the exact rules and thresholds |
 | [Development](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/development.md) | Setup, tests, CI |
 | [FAQ](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/faq.md) | Short answers |
+| [Changelog](https://github.com/saineshnakra/automated-data-analyst/blob/main/CHANGELOG.md) | What changed in each release, and how to upgrade |
 
 Background on why it refuses rather than guesses:
 [I Built an AI Data Analyst That Tells You When It Hallucinates](https://medium.com/@saineshnakra/i-built-an-ai-data-analyst-that-tells-you-when-it-hallucinates-6051609c3f4a).
