@@ -487,3 +487,25 @@ Everything matches: 14 assets and their 41 files.
 
 It exits with 0 when everything matches and 1 otherwise, so it can run in
 continuous integration. `--out` checks a folder other than `output.dir`.
+
+`--json` prints the same findings as one JSON object instead of the report, for
+a job or a dashboard to read:
+
+```
+$ ada verify --json
+{
+  "study": "study.yml",
+  "ok": false,
+  "summary": "Does not match: see Edited since the build (1) above.",
+  "inputs": [{"status": "ok", "text": "data/assay.csv matches …", "detail": []}],
+  "stale": [],
+  "edited": [{"status": "fail", "text": "Changed since the build: …", "detail": []}],
+  "rebuild": []
+}
+```
+
+`study`, `ok` and `summary` are the ones the report prints, and each section
+holds its findings in the same order as its heading, with `status` (`ok`,
+`fail` or `note`), `text` and its `detail` lines. A section with nothing to say
+is an empty list, so a reader can ask for any of them. The exit code is the same
+with and without `--json`.

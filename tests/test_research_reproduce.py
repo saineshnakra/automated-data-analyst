@@ -9,6 +9,7 @@ import contextlib
 import hashlib
 import io
 import json
+import re
 import shutil
 import tempfile
 import unittest
@@ -19,7 +20,7 @@ from research_helpers import assay, assay_study
 
 from ada.cli import main
 from ada.research import build
-from ada.research.verify import compare_table, compare_word, verify
+from ada.research.verify import Report, compare_table, compare_word, verify
 
 EXCLUSION = {"exclude": {"where": {"column": "Viability (%)", "below": 0}}, "reason": "Instrument error."}
 
@@ -277,6 +278,84 @@ class VerifyTests(unittest.TestCase):
         (out / "tables" / "descriptives.tex").write_text("edited\n", encoding="utf-8")
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(main(["verify", "--study", str(path)]), 1)
+
+    def test_the_json_flag_prints_the_same_findings_and_exits_as_the_report(self):
+        path, out = self.built(custom=False)
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            self.assertEqual(main(["verify", "--study", str(path), "--json"]), 0)
+        payload = json.loads(printed.getvalue())
+        self.assertEqual(list(payload), ["study", "ok", "summary", "inputs", "stale", "edited", "rebuild"])
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["summary"].startswith("Everything matches"), payload["summary"])
+        for key in ("inputs", "stale", "edited"):
+            self.assertNotIn("fail", [line["status"] for line in payload[key]])
+
+        (out / "tables" / "descriptives.tex").write_text("edited\n", encoding="utf-8")
+        as_text, as_json = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(as_text):
+            text_code = main(["verify", "--study", str(path)])
+        with contextlib.redirect_stdout(as_json):
+            self.assertEqual(main(["verify", "--study", str(path), "--json"]), text_code)
+        payload = json.loads(as_json.getvalue())
+        self.assertFalse(payload["ok"])
+        edited = [line for line in payload["edited"] if line["status"] == "fail"]
+        self.assertEqual(len(edited), 1)
+        self.assertIn("Changed since the build: tables/descriptives.tex", edited[0]["text"])
+        self.assertIn("Changed since the build", as_text.getvalue())
+
+    def test_the_json_of_a_study_never_built_says_so_under_inputs(self):
+        write_study(self.root, custom=False)
+        printed = io.StringIO()
+        with contextlib.chdir(self.root), contextlib.redirect_stdout(printed):
+            self.assertEqual(main(["verify", "--json"]), 1)
+        payload = json.loads(printed.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertIn("nothing has been built", payload["summary"])
+        last = payload["inputs"][-1]
+        self.assertEqual(last["status"], "fail")
+        self.assertIn("There is no build in paper-assets to verify", last["text"])
+        self.assertIn("Run `ada build` first", last["text"])
+        self.assertEqual((payload["stale"], payload["edited"], payload["rebuild"]), ([], [], []))
+
+    def test_the_json_holds_no_absolute_paths_or_dates_and_is_the_same_twice(self):
+        _, out = self.built(custom=False)
+        runs = []
+        with contextlib.chdir(self.root):
+            for _ in range(2):
+                printed = io.StringIO()
+                with contextlib.redirect_stdout(printed):
+                    self.assertEqual(main(["verify", "--json"]), 0)
+                runs.append(printed.getvalue())
+        self.assertEqual(runs[0], runs[1])
+        payload = json.loads(runs[0])
+        self.assertEqual(payload["study"], "study.yml")
+        self.assertNotIn(str(self.root), runs[0])
+        self.assertNotIn(str(out.parent), runs[0])
+        self.assertIsNone(re.search(r"\b20\d\d-\d\d-\d\d\b", runs[0]))
+
+
+class ReportTests(unittest.TestCase):
+    def test_the_json_and_the_text_come_from_the_same_findings(self):
+        report = Report(study="study.yml")
+        report.add("inputs", "ok", "data/assay.csv is there.", ["sha256 3f2a9c81d0e4…"])
+        report.add("edited", "fail", "Changed since the build: tables/descriptives.csv.")
+        report.summary = "Does not match: see Edited since the build (1) above."
+        payload = report.to_dict()
+        self.assertEqual(payload["study"], "study.yml")
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["summary"], report.summary)
+        self.assertEqual(
+            payload["inputs"],
+            [{"status": "ok", "text": "data/assay.csv is there.", "detail": ["sha256 3f2a9c81d0e4…"]}],
+        )
+        self.assertEqual([line["text"] for line in payload["edited"]], [report.lines["edited"][0].text])
+        self.assertEqual((payload["stale"], payload["rebuild"]), ([], []))
+        text = report.text()
+        for shown in ("Inputs", "data/assay.csv is there.", "Edited since the build"):
+            self.assertIn(shown, text)
+        self.assertIn("Changed since the build", text)
+        self.assertTrue(json.loads(json.dumps(payload)))
 
 
 class ComparisonTests(unittest.TestCase):

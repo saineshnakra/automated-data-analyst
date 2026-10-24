@@ -166,7 +166,7 @@ def _verify(args: argparse.Namespace) -> int:
     from .research.verify import verify  # noqa: PLC0415
 
     report = verify(args.study, rtol=args.rtol, atol=args.atol, out=args.out)
-    print(report.text())
+    print(json.dumps(report.to_dict(), indent=2) if args.json else report.text())
     return EXIT_QUIET if report.ok else EXIT_FLAGGED
 
 
@@ -333,6 +333,7 @@ def build_parser() -> argparse.ArgumentParser:
         check.add_argument("--out", help="the output folder to check (default: output.dir in the study file)")
         check.add_argument("--rtol", type=float, default=1e-9, help="relative tolerance for numbers (1e-9)")
         check.add_argument("--atol", type=float, default=1e-12, help="absolute tolerance for numbers (1e-12)")
+        check.add_argument("--json", action="store_true", help="machine-readable output")
         shown = group.add_parser("preview", help="list what would be shared, and anything that should not be")
         shown.add_argument("--study", default="study.yml", help="the study file")
         shared = group.add_parser("share", help="copy the files that may be shared into share/")

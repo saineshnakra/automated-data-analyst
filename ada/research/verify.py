@@ -102,6 +102,27 @@ class Report:
         out.append(self.summary)
         return "\n".join(out)
 
+    def to_dict(self) -> dict:
+        """The same findings as :meth:`text`, as one JSON-serialisable object.
+
+        ``study``, ``ok`` and ``summary`` come first, then each section of :data:`SECTIONS` as a list
+        of findings, in the order the report prints them. A section the report leaves out is an empty
+        list, so a reader can ask for any of them. Two runs on the same study give the same object:
+        it holds no timestamps, and every path in it is the one the finding named.
+        """
+        return {
+            "study": self.study,
+            "ok": self.ok,
+            "summary": self.summary,
+            **{
+                key: [
+                    {"status": line.status, "text": line.text, "detail": list(line.detail)}
+                    for line in lines
+                ]
+                for key, lines in self.lines.items()
+            },
+        }
+
 
 def verify(
     study: str | Path = "study.yml",
