@@ -361,7 +361,10 @@ split). A word that starts with a column's whole name word names it when the
 name word is at least three letters and a third of the word: "conductivity"
 names `Conduc`, "stations" names `STA`, "healthy" names `Crop_Health_Label`.
 A word that is a name word less a common ending ("-ing", "-ed", "-ity",
-"-ation" and a few more) names it too: "fast" names `fasting_ability`.
+"-ation" and a few more) names it too: "fast" names `fasting_ability`. Two to
+four words whose initials spell a column named in capitals name it: "home
+runs" names `HR`, "stolen bases" names `SB`. The answer says so ('Read "home
+runs" as HR.'). A name in mixed case (`Hr`) is never matched this way.
 
 When several columns fit, the one suited to the word's place is used if it is
 the only one: the identifier after "how many", a groupable column after "by"
@@ -564,7 +567,8 @@ Every answer names its filters and conditions in the sentence ("for Dye Label
 = Tartrazine, FD&C Yellow 5 (US), E102 (EU)"), ends with the plan's notes on
 how the question was read, and says how many rows it used: "Based on 179 of
 1,228 rows." or "Based on all 1,228 rows." The rows used are those with the
-measure recorded (both columns, for a correlation), so a column filled on 110
+measure recorded (both columns, for a correlation; the measure and the
+grouping, for a comparison, which tests only the rows in a group), so a column filled on 110
 of 120 rows says "Based on the 110 rows with Crabs recorded, of 120 rows.",
 or "of the 42 in that scope" under a filter. An unfiltered aggregate says it
 once, in its own sentence ("calculated from 1,228 rows"), and a count states

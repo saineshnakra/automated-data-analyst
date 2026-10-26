@@ -10,6 +10,7 @@ from ada.quality import (
     blank_codes,
     flagged_index,
     name_bounds,
+    natural_end,
     prefers_log_scale,
     quality_frame,
     scan,
@@ -1272,6 +1273,50 @@ class SpeedTests(unittest.TestCase):
 
         # Well under a second on a laptop; the margin absorbs slow CI machines.
         self.assertLess(elapsed, 3.0)
+
+
+def emissions_frame() -> pd.DataFrame:
+    """Countries' emissions in million tonnes, their shares of the world's, and the world's own rows."""
+    rng = np.random.default_rng(120)
+    rows = 600
+    world = np.arange(rows) % 24 == 0
+    co2 = rng.gamma(2, 50, rows).round(3)
+    frame = pd.DataFrame({"co2": co2, "coal_co2": (co2 * rng.uniform(0.1, 0.9, rows)).round(3)})
+    for fuel in ("", "coal_", "oil_", "gas_", "cement_", "flaring_", "other_", "luc_", "cumulative_",
+                 "cumulative_coal_", "cumulative_oil_", "cumulative_gas_"):
+        values = rng.uniform(0, 3, rows).round(3)
+        values[world] = 100.0
+        frame[f"share_global_{fuel}co2"] = values
+    frame["cumulative_other_co2"] = np.cumsum(rng.uniform(0, 2, rows)).round(3)
+    return frame
+
+
+class ShareColumnTests(unittest.TestCase):
+    def test_a_share_at_100_is_the_whole_not_a_cap_or_a_code(self):
+        issues = scan(emissions_frame())
+        for check in ("cap", "sentinel"):
+            with self.subTest(check=check):
+                self.assertFalse([issue for issue in checks(issues, check)
+                                  if any("share" in column for column in issue.columns)])
+
+    def test_a_share_or_a_running_total_is_not_a_part_of_the_total(self):
+        frame = emissions_frame()
+        frame.loc[:4, "coal_co2"] = frame.loc[:4, "co2"] + 10
+        issues = checks(scan(frame), "part_whole")
+        self.assertEqual([issue.columns for issue in issues], [("coal_co2", "co2")])
+        self.assertEqual(issues[0].rows, 5)
+
+    def test_natural_ends(self):
+        shares = np.array([0.0, 2.5, 40.0, 100.0])
+        self.assertTrue(natural_end("vote_share", 100.0, shares))
+        self.assertTrue(natural_end("vote_share", 1.0, np.array([0.1, 0.4, 1.0])))
+        self.assertFalse(natural_end("vote_share", 150.0, np.array([0.0, 150.0])))
+        self.assertFalse(natural_end("share_price", 100.0, np.array([20.0, 100.0, 140.0])))
+        self.assertTrue(natural_end("Humidity", 100.0, shares))
+        self.assertFalse(natural_end("Latency", 100.0, shares))
+
+    def test_a_share_on_thin_data(self):
+        self.assertFalse(checks(scan(pd.DataFrame({"vote_share": [100.0, 20.0, 30.0]})), "cap"))
 
 
 if __name__ == "__main__":

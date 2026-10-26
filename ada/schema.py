@@ -566,9 +566,10 @@ def _named_like_a_date(name: str) -> bool:
 def _head_words(name: str) -> list[str]:
     """Words of a column name, with any trailing annotation and punctuation removed.
 
-    Dots separate words too, so "determinand.unit.label" ends in "label".
+    Dots separate words too, so "determinand.unit.label" ends in "label", and a
+    number sign is a word of its own, so "subject#" reads as "subject #".
     """
-    text = normalized_name(_ANNOTATION.sub("", str(name))).replace(".", " ")
+    text = normalized_name(_ANNOTATION.sub("", str(name))).replace(".", " ").replace("#", " # ")
     words = (word.strip(",:;") for word in text.split())
     return [word for word in words if word]
 

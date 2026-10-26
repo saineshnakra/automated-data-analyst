@@ -212,5 +212,24 @@ class TitleRowEncodingTests(unittest.TestCase):
                 self.assertEqual(list(frame.columns), ["Region", "Revenue"])
 
 
+class ArchiveSuffixTests(unittest.TestCase):
+    def test_a_data_file_is_read_as_comma_separated_text(self) -> None:
+        contents = b"subject#,age,sex,Jitter(%)\n1,72,0,0.00662\n1,72,0,0.003\n2,58,1,0.00481\n"
+
+        result = read_tabular_file(contents, "parkinsons_updrs.data")
+
+        self.assertEqual(result.columns.tolist(), ["subject#", "age", "sex", "Jitter(%)"])
+        self.assertEqual(len(result), 3)
+
+    def test_a_dat_file_is_read_as_tab_separated_when_its_header_splits(self) -> None:
+        result = read_tabular_file(b"site\tdepth\nA\t1.5\nB\t2.0\n", "survey.dat")
+
+        self.assertEqual(result["depth"].tolist(), [1.5, 2.0])
+
+    def test_other_suffixes_are_still_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "ADA supports CSV, TSV, TXT, DATA, DAT, XLSX and XLSM files"):
+            read_tabular_file(b"a,b\n1,2\n", "table.names")
+
+
 if __name__ == "__main__":
     unittest.main()

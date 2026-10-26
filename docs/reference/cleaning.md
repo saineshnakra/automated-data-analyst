@@ -150,7 +150,8 @@ earliest tenth of the readings so far starts a new log. Small steps back (a
 clock corrected by minutes, a stretch sent twice) do not count, and neither
 does a block shorter than 100 rows or 1% of the table. A file with more than
 12 such blocks, or with steps back on more than 1% of its rows, is left as it
-is.
+is, and so is one with fewer than 20 distinct times: three years shared by 344
+rows sorted by species are not the times of a log.
 
 When no column already names the logs (a site or sensor whose value changes
 wherever time starts again, and within which time never starts again), a
@@ -318,6 +319,12 @@ any figure is computed. Two kinds qualify:
 - one negative value that three or more columns, each otherwise never
   negative and holding readings rather than a few whole-number codes, hold on
   the same rows, as a logger writes `-1` in every channel when a read fails
+
+In a text column, `NA` or `na` is missing when half or more of the column's
+other values are words (`male`, `female`, `NA`). Among codes (values of three
+characters or fewer, or in capitals up to five letters: `EU`, `APAC`, `NA`;
+`Yes`, `No`, `NA`) it is kept as a code of its own, and `Na`, the symbol for
+sodium, is never matched. A column holding only `NA` is left as it is.
 
 Key columns and layout numbers are left alone. Each column gets a note with
 its count ("11,177 cells in PM held -999, a code for a missing reading far from
