@@ -2886,5 +2886,54 @@ class AnswerRecordTests(unittest.TestCase):
         self.assertEqual(data["result"]["values"][0], {"group": "South", "value": 37.0})
 
 
+def visits_frame() -> pd.DataFrame:
+    """Twelve numbered subjects, twenty visits each; sex is fixed within a subject."""
+    rng = np.random.default_rng(44)
+    subjects = np.repeat(np.arange(1, 13), 20)
+    sex = np.repeat(np.tile([0, 1], 6), 20)
+    level = np.repeat(rng.normal(50, 10, 12), 20)
+    return pd.DataFrame({"subject#": subjects, "sex": sex, "score": level + rng.normal(0, 1, 240)})
+
+
+class UnitOfAnalysisTests(unittest.TestCase):
+    def test_a_grouping_fixed_within_numbered_subjects_compares_subjects(self):
+        frame = visits_frame()
+        answer = answer_question("compare score between sex", frame, detect_roles(frame))
+        self.assertIn("Each subject# counts once per group", answer.answer)
+        self.assertIn("n = 6 and 6", answer.answer)
+        # By hand: Welch's t-test on the twelve subject means.
+        means = frame.groupby(["subject#", "sex"])["score"].mean().reset_index()
+        from scipy import stats
+        expected = stats.ttest_ind(means.loc[means.sex == 0, "score"], means.loc[means.sex == 1, "score"],
+                                   equal_var=False).pvalue
+        self.assertAlmostEqual(dict(answer.figures)["p_value"], expected, places=10)
+
+    def test_rows_with_no_group_are_not_counted_as_used_by_a_comparison(self):
+        frame = nitrate_frame()
+        frame.loc[[0, 6], "Site"] = None
+        answer = answer_question("compare nitrate between sites", frame, detect_roles(frame))
+        self.assertEqual(answer.scope.rows_used, 8)
+        self.assertEqual(answer.scope.left_out, (("rows with Nitrate or Site missing", 2),))
+
+
+class InitialsTests(unittest.TestCase):
+    def frame(self) -> pd.DataFrame:
+        return pd.DataFrame({
+            "playerID": [f"p{n}" for n in range(8)], "yearID": [2001] * 4 + [2002] * 4,
+            "HR": [73, 49, 10, 0, 46, 34, 12, 3], "Hr": [1, 2, 3, 4, 5, 6, 7, 8],
+        })
+
+    def test_words_whose_initials_spell_a_capitals_name_read_as_it(self):
+        frame = self.frame()
+        answer = answer_question("total home runs", frame, detect_roles(frame))
+        self.assertEqual(answer.calculation, "sum(HR)")
+        self.assertEqual(answer.value, 227)
+        self.assertIn('Read "home runs" as HR.', answer.answer)
+
+    def test_initials_never_stand_for_a_name_not_in_capitals(self):
+        frame = self.frame().drop(columns="HR")
+        self.assertIsNone(answer_question("total home runs", frame, detect_roles(frame)))
+
+
 if __name__ == "__main__":
     unittest.main()

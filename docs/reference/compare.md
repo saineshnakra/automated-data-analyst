@@ -137,7 +137,7 @@ statement says the p-value is only a guide.
 | Entity | When |
 |---|---|
 | The sample the measure was read on (`reading_key`) | A column of labels (text, or whole-number codes named as a unit or a design label) that the measure never varies within, with at least 10 values (`KEY_MIN_LEVELS`) and a quarter or more of the rows repeating one (`KEY_REPEATED_SHARE`); the measure needs 10 distinct values. A site visit's conductivity copied onto each species row of the visit is one reading. The finest such column wins; a long table is screened on 5,000 rows first |
-| The identifier, or a column named like one | `is_entity_name` in `ada/schema.py` (`Subject`, `Patient ID`), provided some value repeats and the values can label units: text, whole numbers with at most half as many distinct values as rows, or codes listed in runs of consecutive rows (`1.2` for mouse 2 of cage 1) |
+| The identifier, or a column named like one | `is_entity_name` in `ada/schema.py` (`Subject`, `Patient ID`, `subject#`), provided some value repeats and the values can label units: text, whole numbers with at most half as many distinct values as rows, or codes listed in runs of consecutive rows (`1.2` for mouse 2 of cage 1) |
 | Unnamed codes listed in runs | At least 5 codes (`BLOCK_MIN_UNITS`), each filling one run of 4 or more rows on average, within which a numeric column climbs and starts again at the next run (`within_axis`): a time point or cycle counted per mouse or per test case |
 
 A decimal reading named like a unit (`NO`, nitric oxide) is a measurement, and

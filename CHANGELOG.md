@@ -28,6 +28,12 @@
 
 ### Fixes
 
+- A comparison counts each subject once when the subject column is numbered
+  with a sign (`subject#`, `Patient #`): `#` is now a word of its own, so such
+  a column is read as the unit. On the UCI Parkinson's telemonitoring table,
+  "does Jitter(Abs) differ by sex" compared 5,875 recordings as if each were a
+  separate person (p = 2e-151); it now compares the 42 people (Welch's p =
+  0.14 on their medians) and says the two tests disagree.
 - `.data` and `.dat` files are read, as tab-separated text when the header
   splits on tabs and as comma-separated text otherwise (the UCI repository's
   `.data` files).
@@ -37,6 +43,10 @@
 - A year column shared by many rows (three years across a table sorted by
   species) no longer splits the file into "logs" with a made-up `Block`
   column.
+- A comparison's rows used leave out rows with no group: "compare body mass
+  between sex" rests on 333 rows, not 342.
+- Two to four words whose initials spell a column in capitals name it, and the
+  answer says so: "home runs" reads as `HR`.
 - Reading a table with hashed identifiers no longer crashes Python. pandas
   2.3 crashes on text such as `689e8820798347950a2649f71c734bd0`, which it
   reads as a number with an exponent past its limit; ADA 0.5.0 crashed on the

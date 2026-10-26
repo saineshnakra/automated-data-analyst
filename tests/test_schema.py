@@ -228,7 +228,7 @@ class CalendarPartTests(unittest.TestCase):
 
 class IdentifierNamePunctuationTests(unittest.TestCase):
     def test_key_names_with_punctuation_or_symbols(self):
-        for name in ("Phone No.", "Account #", "Zipcode", "Postcode", "Telephone"):
+        for name in ("Phone No.", "Account #", "Zipcode", "Postcode", "Telephone", "subject#"):
             with self.subTest(name=name):
                 self.assertTrue(is_identifier_name(name))
         for name in ("Width", "Humidity", "Paid Amount"):
@@ -1288,6 +1288,14 @@ class RowNounTests(unittest.TestCase):
         frame = pd.DataFrame({"subject": [1, 2, 3], "total_UPDRS": [20.0, 25.0, 30.0]})
         self.assertIsNone(detect_roles(frame, "parkinsons_updrs.csv").row_noun)
         self.assertEqual(detect_roles(frame, "visits.csv").row_noun, "visits")
+
+
+class NumberSignTests(unittest.TestCase):
+    def test_a_number_sign_after_a_unit_word_names_the_unit(self):
+        for name in ("subject#", "Patient #", "station#"):
+            with self.subTest(name=name):
+                self.assertTrue(is_entity_name(name))
+        self.assertFalse(is_entity_name("Jitter(%)"))
 
 
 if __name__ == "__main__":

@@ -1325,6 +1325,17 @@ def _holding(words: dict[str, tuple[str, ...]], phrase: tuple[str, ...], index: 
     return sorted(found, key=index.position.__getitem__)
 
 
+def _initialled_columns(phrase: tuple[str, ...], words: dict[str, tuple[str, ...]]) -> list[str]:
+    """Columns named in capitals by the initials of the phrase: "home runs" for HR, "stolen bases" for SB."""
+    if not all(word.isalpha() for word in phrase):
+        return []
+    initials = "".join(word[0] for word in phrase)
+    return [
+        column for column in words
+        if str(column).isalpha() and str(column).isupper() and str(column).lower() == initials
+    ]
+
+
 def _claim_partial_at(
     reading: _Reading,
     run: list[tuple[int, int, str]],
@@ -1346,6 +1357,8 @@ def _claim_partial_at(
         candidates = _holding(words, phrase, reading.index or _name_index(dataframe.columns))
         if not candidates and size == 1:
             candidates = _prefixed_columns(phrase[0], words) or _stemmed_columns(phrase[0], words)
+        if not candidates and 2 <= size <= 4:
+            candidates = _initialled_columns(phrase, words)
         if not candidates:
             continue
         start, end = window[0][0], window[-1][1]
@@ -3797,8 +3810,10 @@ def _with_scope(
     used = None
     # A count says its own rows, and an unfiltered aggregate says how many rows it used.
     if working is not None and not working.empty and plan.intent not in ("count", "missing"):
+        # A comparison tests the groups only; a breakdown shows rows with no group as their own.
+        grouping = (plan.dimension,) if plan.intent == "compare" else ()
         needed = [
-            column for column in (plan.measure, plan.partner)
+            column for column in (plan.measure, plan.partner, *grouping)
             if column and column in working.columns and plan.intent != "duplicates"
         ]
         used = int(working[needed].notna().all(axis=1).sum()) if needed else len(working)
@@ -4142,7 +4157,9 @@ def _run_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -> Q
         result = _run_related(plan, working, roles, scope, applied)
         if not left_out:
             return result
-        needed = [column for column in (plan.measure, plan.partner) if column and column in working.columns]
+        grouping = (plan.dimension,) if plan.intent == "compare" else ()
+        columns = (plan.measure, plan.partner, *grouping)
+        needed = [column for column in columns if column and column in working.columns]
         flagged = AnswerScope(
             rows_read=len(dataframe),
             rows_used=int(working[needed].notna().all(axis=1).sum()) if needed else None,
