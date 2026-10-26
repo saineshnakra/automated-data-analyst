@@ -28,6 +28,8 @@ from .api import (
     sample,
     samples,
 )
+from .claims import ClaimCheck, check_claim
+from .sources import Source
 
 __version__ = "0.5.0"
 
@@ -38,11 +40,14 @@ __all__ = [
     "SCHEMA_VERSION",
     "AdaError",
     "Analysis",
+    "ClaimCheck",
     "NothingToAnalyze",
     "Refusal",
+    "Source",
     "UnreadableData",
     "__version__",
     "analyze",
+    "check_claim",
     "read_file",
     "sample",
     "samples",

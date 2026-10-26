@@ -59,6 +59,9 @@ class ColumnRoles:
     #: stay in ``numeric`` so questions can name them, but are never the
     #: measure, a grouping or a reading to compare or correlate.
     non_readings: tuple[str, ...] = ()
+    #: The plural noun the file's name gives its rows, such as "penguins" for
+    #: penguins.csv, so a question can name the rows the way the file does.
+    row_noun: str | None = None
 
 
 MEASURE_KEYWORDS = {
@@ -2429,6 +2432,42 @@ def _block_note(units: dict[str, list[str]], settings: list[str]) -> str:
 
 
 def detect_roles(dataframe: pd.DataFrame, source_name: str | None = None) -> ColumnRoles:
+    """Infer likely roles from names, values, and cardinality, and the rows' noun from the file name."""
+    roles = _file_roles(dataframe, source_name)
+    noun = row_noun(source_name)
+    # A word that is part of a column's name ("updrs" in total_UPDRS) names that column, not the rows.
+    if noun and any(noun in re.findall(r"[a-z]+", normalized_name(column)) for column in dataframe.columns):
+        noun = None
+    return replace(roles, row_noun=noun) if noun else roles
+
+
+# Plurals that don't end in s.
+IRREGULAR_PLURALS = frozenset({"people", "children", "mice", "men", "women", "geese", "teeth", "feet"})
+
+
+def row_noun(source_name: str | None) -> str | None:
+    """The plural noun a file's name gives its rows: "penguins" for penguins.csv.
+
+    The last plural among the telling words of the name (see ``_source_words``)
+    counts, so olist_orders_dataset.csv gives "orders". A name with no plural,
+    such as data.csv or ChickWeight.csv, gives None.
+    """
+    if not source_name:
+        return None
+    stem = re.sub(r"\.[A-Za-z0-9]{1,5}$", "", re.split(r"[\\/]", str(source_name))[-1])
+    words = [
+        word for word in re.findall(r"[a-z]+", normalized_name(stem))
+        if len(word) >= 3 and word not in GENERIC_FILE_WORDS
+    ]
+    plurals = [
+        word for word in words
+        if word in IRREGULAR_PLURALS
+        or (len(word) > 3 and word.endswith("s") and not word.endswith(("ss", "is", "us")))
+    ]
+    return plurals[-1] if plurals else None
+
+
+def _file_roles(dataframe: pd.DataFrame, source_name: str | None = None) -> ColumnRoles:
     """Infer likely roles from names, values, and cardinality.
 
     ``source_name``, the file's name, counts for a column it names: the secchi

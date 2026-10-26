@@ -51,6 +51,8 @@ from .pipeline import apply_focus, focus_options, prepare_analysis
 from .quality import QualityIssue, quality_frame
 from .quality import scan as scan_quality
 from .schema import ColumnRoles
+from .sources import Source
+from .sources import describe as describe_source
 from .timepoints import is_timepoint_name
 
 #: Rows analyzed by default. Over it, a table with a date keeps its newest
@@ -119,20 +121,28 @@ class Refusal:
         return self.message
 
 
-def _frame_from(data: Any, sheet: str | None) -> tuple[pd.DataFrame, str]:
-    """Return a DataFrame and a display name for a frame, path or raw bytes."""
+def _frame_from(data: Any, sheet: str | None) -> tuple[pd.DataFrame, str, Source]:
+    """Return a DataFrame, a display name and the :class:`Source` for a frame, path or raw bytes."""
     if isinstance(data, pd.DataFrame):
-        return data, "DataFrame"
+        return data, "DataFrame", describe_source("DataFrame", rows=len(data), columns=data.shape[1])
     if isinstance(data, bytes | bytearray):
-        return read_tabular_file(bytes(data), "upload.csv", sheet), "upload"
+        contents = bytes(data)
+        frame = read_tabular_file(contents, "upload.csv", sheet)
+        return frame, "upload", describe_source(
+            "upload", contents=contents, rows=len(frame), columns=frame.shape[1], sheet=sheet
+        )
     if isinstance(data, str | Path):
         path = Path(data)
         if not path.is_file():
             raise UnreadableData(f"No such file: {path}")
+        contents = path.read_bytes()
         try:
-            return read_tabular_file(path.read_bytes(), path.name, sheet), path.name
+            frame = read_tabular_file(contents, path.name, sheet)
         except ValueError as error:
             raise UnreadableData(str(error)) from error
+        return frame, path.name, describe_source(
+            path.name, path=data, contents=contents, rows=len(frame), columns=frame.shape[1], sheet=sheet
+        )
     raise UnreadableData(
         f"analyze() takes a DataFrame, a path or bytes, not {type(data).__name__}."
     )
@@ -176,7 +186,7 @@ def analyze(
         raise AdaError(
             f"aggregation must be 'sum' (a total) or 'mean' (an average), not {aggregation!r}."
         )
-    frame, detected_name = _frame_from(data, sheet)
+    frame, detected_name, source = _frame_from(data, sheet)
     try:
         prepared = prepare_analysis(
             frame, row_limit=row_limit, date=date, source_name=source_name or detected_name
@@ -241,6 +251,7 @@ def analyze(
         rows_note=prepared.rows_note,
         whole=whole,
         axis=axis,
+        source=replace(source, name=name) if source_name else source,
     )
 
 
@@ -293,6 +304,8 @@ class Analysis:
     whole: WholeTable | None = field(default=None, repr=False, compare=False)
     #: A numeric column of time points named as ``date``, which the brief shows the measure over.
     axis: str | None = None
+    #: The file, its sha256 and the size of the table read from it; every answer names it.
+    source: Source | None = None
     _trends: dict = field(default_factory=dict, repr=False, compare=False)
 
     @property
@@ -519,7 +532,7 @@ class Analysis:
                 question, self.frame, self.roles, rows_not_analyzed=self.rows_not_analyzed, whole=self.whole
             )
             return Refusal("unrepresentable_question", f"{message} {hint}" if hint else message)
-        return answer
+        return replace(answer, source=self.source)
 
     def focus(self, value: str) -> Analysis | Refusal:
         """Re-run the analysis on one value of the grouping column."""
@@ -538,6 +551,7 @@ class Analysis:
             source_name=f"{self.source_name} · {value}",
             rows_note=self.rows_note,
             axis=self.axis,
+            source=self.source,
         )
 
     def to_markdown(self) -> str:

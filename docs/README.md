@@ -36,6 +36,7 @@ follows and its edge cases.
 | [Evidence and recommendations](reference/evidence.md) | `ada/business_insights.py` | Evidence cards, KPIs, recommendations |
 | [Comparing groups and finding relationships](reference/compare.md) | `ada/compare.py` | Group comparisons with tests and effect sizes, the scan of every reading, and what relates to the measure |
 | [Ask ADA](reference/ask-ada.md) | `ada/nlq.py` | How a question becomes a pandas calculation |
+| [Checking claims](reference/claims.md) | `ada/claims.py` | How a stated number is checked against the table: verified, or unverified with a reason |
 | [Formatting](reference/formatting.md) | `ada/formatting.py` | How numbers and dates are displayed |
 | [Choosing the chart](reference/autovis.md) | `ada/autovis.py` | How Explore picks a chart form, and the colour rules |
 | [Selecting a slice](reference/selection.md) | `ada/selection.py` | How a selection on the Explore chart becomes a filter, and how the slice is compared with the whole |

@@ -69,10 +69,10 @@ class HashedIdentifierTests(unittest.TestCase):
                 "payment_value": [float(n) + 0.5 for n in range(60)],
             }})
             report = ada.analyze(frame)
-            print(report.rows_analyzed, report.ask("total payment_value").calculation)
+            print(report.rows_analyzed, ada.check_claim(report, "The total payment value is 1800.").status)
         """)
         self.assertEqual(result.returncode, 0, result.stderr[-2000:])
-        self.assertEqual(result.stdout.strip().splitlines()[-1], "60 sum(payment_value)")
+        self.assertEqual(result.stdout.strip().splitlines()[-1], "60 verified")
 
 
 if __name__ == "__main__":

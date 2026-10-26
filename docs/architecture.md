@@ -11,6 +11,7 @@ runs from a script or a test with no browser and no API key.
    app.py  (Streamlit page, session state)      ada/cli.py  (the ada command)
       │                                              │
    ada/ui.py  (components, Plotly styling)       ada/api.py  (ada.analyze, Analysis, Refusal)
+      │                                              │   ada/claims.py  (ada.check_claim)
       │                                              │
       └──────────────────┬───────────────────────────┘
                          │
@@ -44,8 +45,8 @@ with the `app` extra, and the OpenAI client and Pydantic with the `ai` extra.
 | Presentation | `app.py`, `ada/ui.py`, `ada/home.py` | Draws results. Does not calculate. |
 | Public interface | `ada/api.py`, `ada/cli.py` | Wraps the engine for Python and the shell. No analysis of its own. |
 | Orchestration | `ada/pipeline.py` | Sequences cleaning, role detection and the row limit. |
-| Engine | `analysis.py`, `schema.py`, `metrics.py`, `aggregation.py`, `timeseries.py`, `anomalies.py`, `forecasting.py`, `survival.py`, `timepoints.py`, `compare.py`, `quality.py`, `business_insights.py`, `nlq.py`, `autovis.py`, `selection.py` | Functions over DataFrames. No network, no global state. |
-| Input | `ada/file_io.py`, `ada/numeric.py`, `ada/demo_data.py` | Parses and validates input. No analysis. |
+| Engine | `analysis.py`, `schema.py`, `claims.py`, `metrics.py`, `aggregation.py`, `timeseries.py`, `anomalies.py`, `forecasting.py`, `survival.py`, `timepoints.py`, `compare.py`, `quality.py`, `business_insights.py`, `nlq.py`, `autovis.py`, `selection.py` | Functions over DataFrames. No network, no global state. |
+| Input | `ada/file_io.py`, `ada/numeric.py`, `ada/sources.py`, `ada/demo_data.py` | Parses and validates input and records where it came from. No analysis. |
 | Output formatting | `ada/formatting.py` | Decides how a value is displayed, never what it is. |
 | Optional AI | `ada/ai_insights.py` | The only module that makes a network call. `app.py` imports it inside a `try`, so a missing dependency disables the AI features and nothing else. |
 
@@ -57,9 +58,11 @@ with the `app` extra, and the OpenAI client and Pydantic with the `ai` extra.
 | `ada/ui.py` | Render functions, Plotly styling, the chart palette |
 | `ada/home.py` | The home page for researchers, and the example study built with `ada.research` on the server |
 | `ada/api.py` | `analyze`, `Analysis`, `Refusal` and its codes, `sample`, `read_file` |
-| `ada/cli.py` | The `ada` command: `analyze`, `schema`, `ask`, `check`, `samples`, `app` |
-| `ada/pipeline.py` | `prepare_analysis`, role overrides, drill-down focus, chart-selection analysis, the audit and schema tables |
+| `ada/cli.py` | The `ada` command: `analyze`, `schema`, `ask`, `claim`, `check`, `init`, `build`, `verify`, `preview`, `share`, `demo`, `skill`, `samples`, `app` |
+| `ada/claims.py` | `check_claim`: reads a claim's number and interval, asks the question, compares, and returns `ClaimCheck` with its reason |
+| `ada/sources.py` | `Source`: the file, its sha256, rows and columns an answer was computed from |
 | `ada/numeric.py` | `to_numbers`: text read as numbers; every module uses it instead of `pd.to_numeric`, which crashes on some text |
+| `ada/pipeline.py` | `prepare_analysis`, role overrides, drill-down focus, chart-selection analysis, the audit and schema tables |
 | `ada/file_io.py` | CSV, TSV and Excel parsing, worksheet listing, bundled samples, formula-safe CSV export |
 | `ada/analysis.py` | Cleaning, the cleaning report, column profiling |
 | `ada/schema.py` | `ColumnRoles` and role detection |

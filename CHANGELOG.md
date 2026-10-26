@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Checking numbers against the data
+
+- `ada.check_claim(data, claim)` and `ada claim FILE "claim"` check a number
+  someone states about a table, such as "The average departure delay was
+  12.64 minutes". The result is `verified`, or `unverified` with one of six
+  reasons: `missing_context`, `ambiguous_intent`, `inaccessible_data`,
+  `unsupported_analysis`, `conflicting_evidence` or `failed_check`. Each check
+  gives the interval the claim's number stands for ("12.64" is 12.635 to
+  12.645, "about 13" is 12 to 14), the calculation, the rows used and left
+  out, the file's sha256, its assumptions and warnings, and, when the claim
+  can't be checked as stated, the one question that would let it go ahead.
+  `--json` prints all of it; the exit code is 0 verified, 1 failed check, 2
+  unreadable file, 3 unverified for another reason.
+  See [Checking claims](docs/reference/claims.md).
+- `ada ask FILE "question" --json` and `QueryAnswer.to_dict()` give an
+  answer as data: the full-precision `value`, the `values` per group, other
+  `figures` (counts, shares and their denominators, p-values, intervals), how
+  the question was read, and the rows read, used and left out with a reason
+  for each.
+- An answer names its source: `Analysis.source` and `QueryAnswer.source`
+  hold the file's name, path, sha256, rows and columns.
+- A question can name the rows by the file's name: "how many flights" in
+  flights.csv counts rows instead of distinct values of a `flight` column.
+
 ### Fixes
 
 - Reading a table with hashed identifiers no longer crashes Python. pandas

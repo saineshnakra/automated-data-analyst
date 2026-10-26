@@ -2110,6 +2110,9 @@ class BriefAgreementTests(unittest.TestCase):
 
         self.assertIn("n = 30", answer.answer)
         self.assertIn("10 values the data checks flag are left out (WS swapped on 10 rows)", answer.answer)
+        self.assertEqual(answer.scope.rows_used, 30)
+        self.assertEqual(answer.scope.left_out, (("values the data checks flag", 10),))
+        self.assertEqual(dict(answer.figures)["n"], 30)
 
     def test_a_value_named_after_by_is_refused_rather_than_read_as_a_filter(self):
         rng = np.random.default_rng(10)
@@ -2797,6 +2800,90 @@ class ScopeAndCautionTests(unittest.TestCase):
         self.assertEqual((first.plan.measure, first.plan.dimension), ("Probe_17", "Group"))
         self.assertEqual((second.plan.measure, second.plan.partner), ("Probe_17", "Probe_2999"))
         self.assertIs(nlq._name_index(frame.columns), nlq._name_index(list(frame.columns)))
+
+
+def nitrate_frame() -> pd.DataFrame:
+    """Two sites, five readings each, one depth missing. By hand: mean nitrate 25.65, North 14.3, South 37."""
+    return pd.DataFrame({
+        "Site": ["North"] * 5 + ["South"] * 5,
+        "Depth": [1.0, 2.0, 3.0, 4.0, 5.0, 2.0, 4.0, 6.0, 8.0, np.nan],
+        "Nitrate": [10.0, 12.0, 15.0, 15.5, 19.0, 30.0, 33.0, 37.0, 41.0, 44.0],
+    })
+
+
+class AnswerRecordTests(unittest.TestCase):
+    """Each answer carries its numbers at full precision and the rows they rest on."""
+
+    def ask(self, question: str, frame: pd.DataFrame | None = None):
+        frame = nitrate_frame() if frame is None else frame
+        return answer_question(question, frame, detect_roles(frame))
+
+    def test_an_aggregate_has_its_value_and_rows(self):
+        answer = self.ask("average nitrate")
+        self.assertAlmostEqual(answer.value, 25.65)
+        self.assertEqual(dict(answer.figures)["n"], 10)
+        self.assertEqual((answer.scope.rows_read, answer.scope.rows_used), (10, 10))
+        self.assertAlmostEqual(self.ask("total nitrate").value, 256.5)
+
+    def test_a_breakdown_has_one_value_per_group(self):
+        answer = self.ask("average nitrate by site")
+        self.assertIsNone(answer.value)
+        self.assertEqual(dict(answer.values), {"South": 37.0, "North": 14.3})
+
+    def test_a_condition_count_has_its_denominator(self):
+        answer = self.ask("how many rows have nitrate above 20")
+        self.assertEqual(answer.value, 5)
+        self.assertEqual(dict(answer.figures), {"share_percent": 50.0, "denominator": 10.0})
+        self.assertEqual((answer.scope.rows_in_scope, answer.scope.rows_used), (5, 5))
+
+    def test_a_comparison_has_group_centres_and_the_test(self):
+        answer = self.ask("compare nitrate between sites")
+        self.assertEqual(dict(answer.values), {"South": 37.0, "North": 14.3})
+        figures = dict(answer.figures)
+        # Welch's t-test by hand with scipy.stats.ttest_ind(..., equal_var=False): p = 0.000169050805.
+        self.assertAlmostEqual(figures["p_value"], 0.000169050805, places=10)
+        self.assertAlmostEqual(figures["difference"], 22.7)
+
+    def test_rows_left_out_are_counted_by_reason(self):
+        frame = pd.concat([nitrate_frame()] * 3, ignore_index=True)
+        frame["Depth"] = frame["Depth"] + np.arange(len(frame)) * 0.01
+        answer = self.ask("correlation between depth and nitrate", frame)
+        self.assertAlmostEqual(answer.value, frame[["Depth", "Nitrate"]].dropna().corr().iloc[0, 1])
+        self.assertEqual(dict(answer.figures)["n"], 27)
+        self.assertEqual(answer.scope.rows_used, 27)
+        self.assertEqual(answer.scope.left_out, (("rows with Depth or Nitrate missing", 3),))
+
+    def test_thin_data_gives_no_number(self):
+        answer = self.ask("correlation between depth and nitrate")
+        self.assertIsNone(answer.value)
+        self.assertIn("needs at least 12", answer.answer)
+
+    def test_exact_repeats_are_left_out_of_a_test_and_counted(self):
+        frame = pd.concat([nitrate_frame()] * 3, ignore_index=True)
+        frame["Depth"] = frame["Depth"] + np.arange(len(frame)) * 0.01
+        frame = pd.concat([frame, frame.iloc[:4]], ignore_index=True)
+        answer = self.ask("compare depth between sites", frame)
+        # The four copied rows, and two of the three copies of the row with no depth.
+        self.assertEqual(int(frame.duplicated().sum()), 6)
+        self.assertEqual(answer.scope.left_out[0], ("exact repeats of other rows", 6))
+        self.assertEqual(answer.scope.rows_read, 34)
+
+    def test_the_record_is_json_safe(self):
+        import json
+
+        keys = {"schema_version", "status", "question", "answer", "result", "reading", "calculation",
+                "evidence", "assumptions", "warnings"}
+        for question in ("average nitrate", "average nitrate by site", "compare nitrate between sites",
+                         "describe nitrate", "correlation between depth and nitrate", "missing depth"):
+            with self.subTest(question=question):
+                data = self.ask(question).to_dict()
+                self.assertEqual(set(data), keys)
+                self.assertEqual(data["question"], question)
+                json.dumps(data, allow_nan=False)
+        data = self.ask("average nitrate by site").to_dict()
+        self.assertEqual(data["reading"]["intent"], "breakdown")
+        self.assertEqual((data["reading"]["measure"], data["reading"]["group_by"]), ("Nitrate", "Site"))
+        self.assertEqual(data["result"]["values"][0], {"group": "South", "value": 37.0})
 
 
 if __name__ == "__main__":
