@@ -689,6 +689,24 @@ class MissingMarkerTests(unittest.TestCase):
         cleaned, _ = clean_dataframe(frame)
         self.assertEqual(cleaned["Region"].tolist(), ["NA", "EU", "APAC", "NA"])
 
+    def test_na_among_words_is_missing_but_not_among_codes(self):
+        cleaned, report = clean_dataframe(pd.DataFrame({
+            "sex": ["male", "female", "NA", "female", "NA"], "mass": [1.0, 2.0, 3.0, 4.0, 5.0],
+        }))
+        self.assertEqual(cleaned["sex"].isna().sum(), 2)
+        self.assertTrue(any('2 cells in sex held "NA"' in note for note in report.notes), report.notes)
+        for values in (["NA", "EU", "APAC", "LATAM"], ["Yes", "No", "NA", "Yes"], ["Na", "K", "Ca", "Mg"]):
+            with self.subTest(values=values):
+                cleaned, _ = clean_dataframe(pd.DataFrame({"label": values, "v": [1.0, 2.0, 3.0, 4.0]}))
+                self.assertEqual(cleaned["label"].tolist(), values)
+
+    def test_na_on_thin_data(self):
+        cleaned, _ = clean_dataframe(pd.DataFrame({"sex": ["NA", "male"], "v": [1.0, 2.0]}))
+        self.assertEqual(cleaned["sex"].tolist()[1], "male")
+        self.assertTrue(pd.isna(cleaned["sex"].iloc[0]))
+        cleaned, _ = clean_dataframe(pd.DataFrame({"sex": ["NA", "NA"], "v": [1.0, 2.0]}))
+        self.assertEqual(cleaned["sex"].tolist(), ["NA", "NA"])
+
     def test_a_column_of_only_markers_stays_text(self):
         frame = pd.DataFrame({"Note": ["nd", "nd", "NA"], "Value": [1.0, 2.0, 3.0]})
         cleaned, _ = clean_dataframe(frame)
@@ -1363,6 +1381,21 @@ class StackedLogTests(unittest.TestCase):
         )
 
         labelled, block, note = separate_stacked_logs(frame, "Datetime")
+
+        self.assertIsNone(block)
+        self.assertNotIn("Block", labelled.columns)
+        self.assertEqual(note, "")
+
+    def test_a_few_years_shared_by_many_rows_are_not_logs(self):
+        # Penguins sorted by species, each species measured in 2007, 2008 and 2009.
+        years = np.concatenate([np.repeat([2007, 2008, 2009], count) for count in (51, 41, 23)])
+        frame = pd.DataFrame({
+            "species": np.repeat(["Adelie", "Gentoo", "Chinstrap"], [153, 123, 69]),
+            "year": pd.to_datetime(years.astype(str), format="%Y"),
+            "mass": np.linspace(3000, 6000, 345),
+        })
+
+        labelled, block, note = separate_stacked_logs(frame, "year")
 
         self.assertIsNone(block)
         self.assertNotIn("Block", labelled.columns)

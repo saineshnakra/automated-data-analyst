@@ -11,7 +11,7 @@ from python_calamine import CalamineError
 
 from .schema import is_identifier_name
 
-SUPPORTED_SUFFIXES = {".csv", ".tsv", ".txt", ".xlsx", ".xlsm"}
+SUPPORTED_SUFFIXES = {".csv", ".tsv", ".txt", ".data", ".dat", ".xlsx", ".xlsm"}
 SAMPLES_DIRECTORY = Path(__file__).parent / "samples"
 # Title-casing a filename gets "Saas" and "Mrr" wrong; these keep their shape.
 SAMPLE_ACRONYMS = {"Saas": "SaaS", "Mrr": "MRR", "Arr": "ARR", "Ar": "AR", "Kpi": "KPI"}
@@ -19,8 +19,9 @@ EXCEL_SUFFIXES = {".xlsx", ".xlsm"}
 # python-calamine reads a workbook several times faster than openpyxl: a 178,000-row
 # sheet in 4 s rather than 20.
 EXCEL_ENGINE = "calamine"
-# Instrument and analysis software writes tab-separated text under these names.
-TAB_SUFFIXES = {".tsv", ".txt"}
+# Instrument and analysis software writes tab-separated text under these names, and data
+# archives such as the UCI repository write comma-separated text as .data.
+TAB_SUFFIXES = {".tsv", ".txt", ".data", ".dat"}
 
 
 def list_sample_datasets() -> dict[str, Path]:
@@ -58,7 +59,7 @@ def safe_csv(dataframe: pd.DataFrame) -> str:
 def _validate(contents: bytes, filename: str) -> str:
     suffix = Path(filename).suffix.lower()
     if suffix not in SUPPORTED_SUFFIXES:
-        raise ValueError("ADA supports CSV, TSV, TXT, XLSX and XLSM files.")
+        raise ValueError("ADA supports CSV, TSV, TXT, DATA, DAT, XLSX and XLSM files.")
     if not contents:
         raise ValueError("The uploaded file is empty.")
     return suffix
@@ -210,8 +211,8 @@ def read_tabular_file(
 ) -> pd.DataFrame:
     """Read CSV, TSV or text bytes, or the chosen (default: first) worksheet of a workbook.
 
-    A .tsv or .txt file is read as tab-separated when that splits its header,
-    and otherwise as a CSV.
+    A .tsv, .txt, .data or .dat file is read as tab-separated when that splits
+    its header, and otherwise as a CSV.
     """
     suffix = _validate(contents, filename)
     if suffix in EXCEL_SUFFIXES:

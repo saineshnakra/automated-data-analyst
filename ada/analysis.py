@@ -354,12 +354,22 @@ def _unstated(column: str, distinct: _Distinct) -> tuple[np.ndarray, list[str]]:
 
     "Not stated" phrases, "ND" (not detected) and placeholder labels such as
     "Unknown" or "UNABLE TO CLASSIFY" are missing values, not groups of their own.
+    So is "NA" among words ("male", "female", "NA"), though not among codes, where
+    it is a code of its own: a region (North America) or a country (Namibia).
     """
     text = distinct.text
     stated = _flags(text.isin(NOT_STATED_MARKERS))
     detected = _not_detected(distinct)
     placeholders = _flags(text.isin(PLACEHOLDER_LABELS))
+    bare = _bare_na(distinct) & ~stated & ~detected & ~placeholders
     notes = []
+    if bare.any():
+        count = int(distinct.counts[bare].sum())
+        noun, verb = ("cells", "were") if count > 1 else ("cell", "was")
+        notes.append(
+            f'{count:,} {noun} in {column} held "NA" and {verb} read as missing: the column\'s other '
+            "values are words, not codes, so it is not a code such as NA for North America."
+        )
     if stated.any():
         shown, count = _marked(distinct, stated)
         phrases = "This phrase means" if len(shown) == 1 else "These phrases mean"
@@ -379,7 +389,27 @@ def _unstated(column: str, distinct: _Distinct) -> tuple[np.ndarray, list[str]]:
             f"{_missing_marker_note(column, shown, count)} {labels} for a value nobody could give, "
             "not a group of its own."
         )
-    return stated | detected | placeholders, notes
+    return stated | detected | placeholders | bare, notes
+
+
+# A label this short, or in capitals up to CODE_LENGTH long, is a code ("EU", "APAC", "No").
+SHORT_LABEL = 3
+CODE_LENGTH = 5
+
+
+def _bare_na(distinct: _Distinct) -> np.ndarray:
+    """Distinct values written "NA" or "na" in a column whose other values are mostly words.
+
+    Among codes (half or more of the other values short or in capitals: "EU",
+    "APAC", "No") "NA" is kept as a code. "Na", the symbol for sodium, is never matched.
+    """
+    written = distinct.values.astype(str).str.strip()
+    bare = written.isin(("NA", "na")).to_numpy()
+    others = written[~bare & distinct.values.notna().to_numpy()]
+    if not bare.any() or others.empty:
+        return np.zeros(len(written), dtype=bool)
+    codes = (others.str.len() <= SHORT_LABEL) | others.str.fullmatch(rf"[A-Z]{{2,{CODE_LENGTH}}}")
+    return bare if float(codes.mean()) < 0.5 else np.zeros(len(written), dtype=bool)
 
 
 # "10-30" or "0.5 - 2": a numeric range written as text, with the mark between its ends.
@@ -2099,6 +2129,9 @@ def set_aside_coarser_rows(frame: pd.DataFrame, date_column: str) -> tuple[pd.Da
 # share of the readings so far; a clock correction or a re-sent stretch does not.
 RESTART_QUANTILE = 0.1
 MIN_BLOCK_ROWS = 100
+# A log has a time for nearly every reading. A file with fewer distinct times than this
+# shares each time across many rows, as a table sorted by species with a year beside it does.
+MIN_LOG_TIMES = MIN_BLOCK_ROWS // 5
 MIN_BLOCK_SHARE = 0.01
 MAX_BLOCKS = 12
 # Columns with more distinct values than this are not checked as the series label.
@@ -2170,11 +2203,13 @@ def separate_stacked_logs(
     labelled in a new Block column so it can be compared as its own series.
     Returns the frame, the new column's name (None when there is one log) and
     a note. A file whose timestamps mostly repeat a fixed number of times with
-    nothing to tell the repeats apart gets a note only.
+    nothing to tell the repeats apart gets a note only. Dates shared by many
+    rows (three years across 344 rows sorted by species) are not a log's times,
+    so they never start a new log.
     """
     dates = frame[date_column]
     present = dates.notna().to_numpy()
-    if present.sum() < 2 * MIN_BLOCK_ROWS:
+    if present.sum() < 2 * MIN_BLOCK_ROWS or dates.nunique() < MIN_LOG_TIMES:
         return frame, None, ""
     positions = np.flatnonzero(present)
     starts = _restarts(dates.to_numpy()[present].astype("int64"))

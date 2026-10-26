@@ -44,6 +44,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
 
+from .file_io import SUPPORTED_SUFFIXES as READABLE
 from .nlq import QueryAnswer
 from .sources import Source
 
@@ -685,8 +686,7 @@ def _source_of(data: Any) -> tuple[Any | None, Source | None, str | None]:
     if isinstance(data, Analysis):
         return data, data.source, None
     if isinstance(data, str | Path) and Path(data).is_dir():
-        readable = (".csv", ".tsv", ".txt", ".xlsx", ".xlsm")
-        files = sorted(path.name for path in Path(data).iterdir() if path.suffix.lower() in readable)
+        files = sorted(item.name for item in Path(data).iterdir() if item.suffix.lower() in READABLE)
         listed = ", ".join(files[:12]) + (" and more" if len(files) > 12 else "")
         return None, Source(name=str(data), path=str(data)), (
             f"{data} is a folder. Name the file the claim is about" + (f": {listed}." if files else ".")

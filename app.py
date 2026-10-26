@@ -476,7 +476,7 @@ def first_look_page() -> None:
     if source_mode == "Upload your file":
         uploaded_file = st.file_uploader(
             "Upload a table of measurements: CSV, TSV or Excel",
-            type=["csv", "tsv", "txt", "xlsx", "xlsm"],
+            type=["csv", "tsv", "txt", "data", "dat", "xlsx", "xlsm"],
             help="Maximum file size: 25 MB. A workbook with several sheets lets you pick one.",
         )
         business_context = st.text_input(

@@ -28,6 +28,15 @@
 
 ### Fixes
 
+- `.data` and `.dat` files are read, as tab-separated text when the header
+  splits on tabs and as comma-separated text otherwise (the UCI repository's
+  `.data` files).
+- `NA` in a text column of words (`male`, `female`, `NA`) is read as missing,
+  with a note; among codes (`EU`, `APAC`, `NA`) it stays a code. Penguins'
+  `sex` had an "NA" group of 11.
+- A year column shared by many rows (three years across a table sorted by
+  species) no longer splits the file into "logs" with a made-up `Block`
+  column.
 - Reading a table with hashed identifiers no longer crashes Python. pandas
   2.3 crashes on text such as `689e8820798347950a2649f71c734bd0`, which it
   reads as a number with an exponent past its limit; ADA 0.5.0 crashed on the

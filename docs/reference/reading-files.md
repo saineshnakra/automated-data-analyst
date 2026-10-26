@@ -10,10 +10,10 @@ analysis happens here.
 | Format | Extensions | Notes |
 |---|---|---|
 | CSV | `.csv` | Comma, semicolon, tab or pipe separated |
-| Tab-separated text | `.tsv`, `.txt` | Read as tab-separated when that splits the header, otherwise as a CSV |
+| Tab-separated text | `.tsv`, `.txt`, `.data`, `.dat` | Read as tab-separated when that splits the header, otherwise as a CSV (the UCI repository's `.data` files are comma-separated) |
 | Excel | `.xlsx`, `.xlsm` | Read with `python-calamine`, several times faster than `openpyxl` on large sheets |
 
-Any other extension is rejected with "ADA supports CSV, TSV, TXT, XLSX and XLSM files."
+Any other extension is rejected with "ADA supports CSV, TSV, TXT, DATA, DAT, XLSX and XLSM files."
 An empty file is rejected with "The uploaded file is empty."
 
 ## Limits
@@ -78,8 +78,10 @@ Two parsing rules apply to CSV and Excel alike:
   `postal`, `phone`, `sku`, `number`, `no`, `key`, `uuid`; see
   `is_identifier_name` in `ada/schema.py`) is read as text, so `00042` keeps
   its leading zeros.
-- The text `NA` is kept as a value, not read as missing, because in business
-  data it is often a region code (North America). pandas' other missing-value
+- The text `NA` is kept as a value when reading, because in business data it
+  is often a region code (North America). Cleaning then reads it as missing
+  in a text column whose other values are words (`male`, `female`, `NA`); see
+  [Cleaning](cleaning.md#missing-value-codes). pandas' other missing-value
   markers apply.
 
 ## Excel parsing
