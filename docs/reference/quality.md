@@ -86,7 +86,7 @@ single impossible value; ties follow the order below, the measure's first.
 | `equal_columns` | Copied values | Two columns hold the same non-zero value in half or more of the rows, overall or within one group |
 | `min_max` | Max below min | A max-named column is below its min-named sibling, or below the plain one |
 | `outside_range` | Average outside min to max | An average-named column lies below its min-named sibling or above its max-named one |
-| `part_whole` | Part above whole | A part exceeds the whole its name pairs it with, on the few rows that break an otherwise steady relation |
+| `part_whole` | Part above whole | A part exceeds the whole its name pairs it with, on the few rows that break an otherwise steady relation. A part qualified as another quantity (a share, percentage, ratio, rate, per-unit figure, cumulative total, change, growth, index or intensity) is not paired: `share_global_co2` is in other units than `co2` |
 | `cluster` | Second cluster | More than 2% of a column, and at least 10 values, lie cut off far from the rest |
 | `extreme` | Extreme values | A value is more than 10 robust standard deviations from the median and cut off from the rest by a gap |
 | `matrix_rows` | Rows off scale | In a matrix table, a row's overall level is far from every other row's |
@@ -324,6 +324,11 @@ Not a cap or floor:
   grouping column (3 levels or more) in which the column holds that value on
   95% of rows, as trophic level 2 is what every herbivore species has
 - a value already read as a missing-value code (`-999` in 45% of rows)
+- an end the column's kind reaches anyway (`natural_end`): the bounds its name
+  gives (100 for a percentage), and 0 and 100 for a share (`share`,
+  `proportion`, `fraction`) whose values stay at or below 100, or 0 and 1 for
+  one at or below 1. The whole is 100% of itself, as the World row is of world
+  emissions. The same ends are never read as a missing-value code
 
 A column of fewer than five values is checked only for one value holding half
 of it or more at its minimum or maximum (a reporting limit, 0.001 on 94% of

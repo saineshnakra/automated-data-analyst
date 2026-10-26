@@ -612,6 +612,27 @@ def name_bounds(column: str) -> tuple[float, float, str] | None:
     return None
 
 
+# Words naming a part of a total, written 0 to 100 or 0 to 1: "share_global_co2", "vote_share".
+SHARE_WORDS = frozenset({"share", "proportion", "fraction"})
+
+
+def natural_end(column: str, value: float, ordered: np.ndarray) -> bool:
+    """Whether ``value`` is an end the column's kind of reading reaches anyway, so piling there is no limit.
+
+    The bounds its name gives (100 for a percentage) are such ends, and so are
+    0 and 100 for a share whose values stay at or below 100 (0 and 1 for one at
+    or below 1): the whole is 100% of itself, as the World row is of world
+    emissions. A share of a total with negative parts can itself be negative.
+    """
+    bound = name_bounds(column)
+    if bound is not None and value in bound[:2]:
+        return True
+    if not (_name_words(column) & SHARE_WORDS) or not ordered.size:
+        return False
+    top = 1.0 if float(ordered[-1]) <= 1 else 100.0
+    return float(ordered[-1]) <= top and value in (0.0, top)
+
+
 def _may_go_negative(column: str) -> bool:
     """Whether a few negatives are ordinary here: money, sales quantities, signed readings."""
     return bool(_name_words(column) & (SIGNED_WORDS | BUSINESS_WORDS)) or is_currency(column)
@@ -1196,6 +1217,8 @@ def _edge_codes(column: _Column, taken: np.ndarray) -> list[QualityIssue]:
         count = int(column.counts[position])
         if value == 0 or count < EDGE_CODE_VALUES or count >= 0.25 * column.size:
             continue
+        if natural_end(column.name, value, column.ordered):
+            continue
         if count < SPIKE_RATIO * int(column.counts[inner].max()):
             continue
         rest = column.ordered[column.ordered != value]
@@ -1331,6 +1354,8 @@ def _caps(
         count = int(column.counts[position])
         neighbours = int(nearest[side].max())
         if value == 0 or count < 3 or count < 2 * neighbours or value in shared:
+            continue
+        if natural_end(column.name, value, column.ordered):
             continue
         # Counts start at 0 or 1, so piling up there is their shape, not a floor.
         if side == "minimum" and value == 1 and column.whole:
@@ -1476,8 +1501,7 @@ def _shared_clips(
             if value == 0:
                 continue
             for column in ends.index[ends == value]:
-                bound = name_bounds(column)
-                if bound is None or value not in bound[:2]:
+                if not natural_end(column, value, profiles[column].ordered):
                     limits.setdefault(column, set()).add(float(value))
     if len(limits) < needed:
         return {}, None
@@ -2374,6 +2398,12 @@ def _noun_words(column: str) -> list[str]:
     return re.findall(r"[^\W_]+", bare)
 
 
+# Qualifiers that make a column another quantity than the total it shares a last word with.
+OTHER_QUANTITY_WORDS = SHARE_WORDS | PERCENT_WORDS | frozenset({
+    "ratio", "rate", "per", "cumulative", "cum", "change", "growth", "index", "intensity",
+})
+
+
 def _parts_of_wholes(frame: pd.DataFrame, columns: list[str]) -> list[QualityIssue]:
     """Rows where a part exceeds the whole it belongs to, for pairs the names make plain.
 
@@ -2382,10 +2412,13 @@ def _parts_of_wholes(frame: pd.DataFrame, columns: list[str]) -> list[QualityIss
     the whole's other words, if any, are WHOLE_WORDS (or, for a depth, name
     the whole water column), and the part's are not. The part must stay at or
     below the whole on PART_WHOLE_SHARE of the rows holding both, so the
-    relation holds and the rows past it stand out.
+    relation holds and the rows past it stand out. A part qualified as another
+    quantity is no part: a share or a rate is in other units than the total
+    ("share_global_co2" beside "co2"), a cumulative figure spans more time than
+    an annual one, and a change is a difference, not a portion.
     """
     named = {column: _noun_words(column) for column in columns}
-    bounds_words = set(_MAX_WORDS) | set(_MAX_WORDS.values()) | MIDDLE_WORDS
+    bounds_words = set(_MAX_WORDS) | set(_MAX_WORDS.values()) | MIDDLE_WORDS | OTHER_QUANTITY_WORDS
     issues = []
     for whole, whole_words in named.items():
         if not whole_words:

@@ -45,6 +45,10 @@
   column.
 - A comparison's rows used leave out rows with no group: "compare body mass
   between sex" rests on 333 rows, not 342.
+- The data checks no longer call a share's 100 (the World row's share of world
+  emissions) a cap or a missing-value code, and no longer pair a share, a rate
+  or a cumulative total with the total it shares a word with as part and
+  whole (`share_global_co2` beside `co2`).
 - Two to four words whose initials spell a column in capitals name it, and the
   answer says so: "home runs" reads as `HR`.
 - Reading a table with hashed identifiers no longer crashes Python. pandas
