@@ -28,6 +28,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from ..numeric import to_numbers
 from .provenance import CHANGES, MANIFEST, TEXT_SUFFIXES, join, name, read_manifest, sections_sentence
 from .study import Study, StudyError, load, sha256_of
 
@@ -680,8 +681,8 @@ def compare_table(
     unequal = old.ne(new)
     mismatch = unequal.copy()
     for column in old.columns[unequal.any().to_numpy()]:
-        first = pd.to_numeric(old[column], errors="coerce").to_numpy(dtype=float)
-        second = pd.to_numeric(new[column], errors="coerce").to_numpy(dtype=float)
+        first = to_numbers(old[column]).to_numpy(dtype=float)
+        second = to_numbers(new[column]).to_numpy(dtype=float)
         numeric = ~np.isnan(first) & ~np.isnan(second)
         close = np.zeros(len(first), dtype=bool)
         close[numeric] = np.isclose(second[numeric], first[numeric], rtol=rtol, atol=atol)
@@ -705,7 +706,7 @@ def _row_labels(frame: pd.DataFrame) -> list[str]:
     for column in frame.columns[:3]:
         values = frame[column]
         present = values[values != ""]
-        if len(present) and pd.to_numeric(present, errors="coerce").notna().all():
+        if len(present) and to_numbers(present).notna().all():
             break
         chosen.append(column)
         if not frame[chosen].duplicated().any():

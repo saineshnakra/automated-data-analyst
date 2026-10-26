@@ -21,6 +21,7 @@ from .autovis import ChartSpec
 from .formatting import format_change, format_number, format_percentage, with_aggregate
 from .metrics import metric_for
 from .nlq import ValueFilter
+from .numeric import to_numbers
 from .schema import ColumnRoles
 
 # Below this many records an average or a segment mix moves a lot with one row,
@@ -307,8 +308,8 @@ def selection_mask(dataframe: pd.DataFrame, selection: Selection) -> pd.Series:
         for name in (region.x, region.y):
             if name not in dataframe.columns:
                 raise ValueError(f"Unknown selection column: {name}")
-        xs = pd.to_numeric(dataframe[region.x], errors="coerce").to_numpy(dtype=float)
-        ys = pd.to_numeric(dataframe[region.y], errors="coerce").to_numpy(dtype=float)
+        xs = to_numbers(dataframe[region.x]).to_numpy(dtype=float)
+        ys = to_numbers(dataframe[region.y]).to_numpy(dtype=float)
         present = ~(np.isnan(xs) | np.isnan(ys))
         mask &= pd.Series(present & _inside(xs, ys, region.vertices), index=dataframe.index)
     return mask
@@ -439,8 +440,8 @@ def compare_slice(
     measure = roles.measure if roles.measure and roles.measure in whole.columns else None
     if measure:
         spec = metric_for(measure, roles)
-        whole_values = pd.to_numeric(whole[measure], errors="coerce").dropna()
-        part_values = pd.to_numeric(part[measure], errors="coerce").dropna()
+        whole_values = to_numbers(whole[measure]).dropna()
+        part_values = to_numbers(part[measure]).dropna()
         if spec.additive:
             part_total, whole_total = float(part_values.sum()), float(whole_values.sum())
             same_sign = (whole_values >= 0).all() or (whole_values <= 0).all()

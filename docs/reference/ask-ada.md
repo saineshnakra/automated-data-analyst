@@ -550,6 +550,15 @@ computes the answer. It returns a `QueryAnswer`:
 | `calculation` | The operation that ran, in words |
 | `table` | Supporting rows, when useful |
 | `chart` | `"bar"`, `"line"`, `"scatter"` or `None` |
+| `value` | The answer's single number at full precision, or `None` |
+| `values` | (group, number) for each group of a breakdown, a comparison or a trend |
+| `figures` | (name, number) for the rest: `n`, `share_percent` and `denominator`, `p_value`, `ci_low` and `ci_high`, `spearman` |
+| `scope` | An `AnswerScope`: rows read, rows in scope and rows used, the filters, each reason rows were left out with its count, and the readings and cautions the sentence states |
+| `source` | The `Source` the table was read from, set by `Analysis.ask`: name, path, the file's `sha256`, rows and columns |
+
+`QueryAnswer.to_dict()` gives the same as JSON-safe data, and `ada ask FILE
+"question" --json` prints it. [Checking claims](claims.md) describes the
+layout, which a claim check shares.
 
 Every answer names its filters and conditions in the sentence ("for Dye Label
 = Tartrazine, FD&C Yellow 5 (US), E102 (EU)"), ends with the plan's notes on

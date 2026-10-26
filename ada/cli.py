@@ -16,11 +16,22 @@ For a first look at any table:
 
     ada analyze measurements.csv
     ada schema measurements.csv
-    ada ask orders.csv "which category made the most revenue"
+    ada ask orders.csv "which category made the most revenue"       # --json for programs
+    ada claim flights.csv "The average dep_delay was 12.64 minutes."   # check a stated number
     ada check metrics.csv --measure signups --frequency W
     ada check rainfall.csv --measure "Rainfall (mm)" --aggregation sum
     ada samples
     ada app
+
+``ada claim`` checks one number someone states about a table and says verified, or
+unverified with the reason (see ``ada.claims``). It is not ``ada verify``, which
+rebuilds a study's paper assets and compares them, nor ``ada check``, which watches
+a measure for unusual periods. It reports through its exit code too:
+
+    0  verified
+    1  unverified: the data give a different number, or a check on the analysis failed
+    2  the data could not be read
+    3  unverified for another reason: missing context, ambiguous wording, unsupported
 
 ``ada check`` is meant for scheduled jobs and reports through its exit code:
 
@@ -41,7 +52,9 @@ from pathlib import Path
 
 from . import __version__
 from .api import AdaError, Refusal, analyze, sample, samples
+from .claims import check_claim
 from .metrics import AGGREGATION_CHOICES, metric_for
+from .nlq import ANSWER_SCHEMA_VERSION
 
 EXIT_QUIET = 0
 EXIT_FLAGGED = 1
@@ -89,11 +102,33 @@ def _schema(args: argparse.Namespace) -> int:
 def _ask(args: argparse.Namespace) -> int:
     answer = _load(args).ask(args.question)
     if isinstance(answer, Refusal):
-        print(f"refused ({answer.code}): {answer.message}", file=sys.stderr)
+        if args.json:
+            print(json.dumps({
+                "schema_version": ANSWER_SCHEMA_VERSION, "status": "refused", "question": args.question,
+                "code": answer.code, "message": answer.message,
+            }, indent=2))
+        else:
+            print(f"refused ({answer.code}): {answer.message}", file=sys.stderr)
         return EXIT_COULD_NOT_LOOK
+    if args.json:
+        print(json.dumps(answer.to_dict(), indent=2))
+        return EXIT_QUIET
     print(answer.answer)
     print(f"  calc: {answer.calculation}")
     return EXIT_QUIET
+
+
+def _claim(args: argparse.Namespace) -> int:
+    if args.claim is None and (args.question is None or args.value is None):
+        print("error: give the claim as a sentence, or both --question and --value.", file=sys.stderr)
+        return EXIT_ERROR
+    check = check_claim(args.file, args.claim, question=args.question, value=args.value, sheet=args.sheet)
+    print(json.dumps(check.to_dict(), indent=2) if args.json else check)
+    if check.verified:
+        return EXIT_QUIET
+    if check.reason == "failed_check":
+        return EXIT_FLAGGED
+    return EXIT_ERROR if check.reason == "inaccessible_data" else EXIT_COULD_NOT_LOOK
 
 
 def _check(args: argparse.Namespace) -> int:
@@ -392,7 +427,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", help="machine-readable output"
     )
     with_source("schema", "print the columns ADA detected and what it cleaned")
-    with_source("ask", "ask a question in plain English").add_argument("question")
+    asked = with_source("ask", "ask a question in plain English")
+    asked.add_argument("question")
+    asked.add_argument("--json", action="store_true", help="machine-readable answer with its evidence")
+    claimed = subcommands.add_parser(
+        "claim", help="check a number stated about a table: verified, or unverified with the reason"
+    )
+    claimed.add_argument("file", help="the CSV, TSV or Excel file the claim is about")
+    claimed.add_argument("claim", nargs="?", help='the claim, such as "The average delay was 12.6 minutes."')
+    claimed.add_argument("--question", help="the calculation, when it is known: \"average dep_delay\"")
+    claimed.add_argument("--value", help="the number claimed, with --question; its decimals set precision")
+    claimed.add_argument("--sheet", help="the worksheet to read from a workbook (default: the first)")
+    claimed.add_argument("--json", action="store_true", help="machine-readable result")
     with_source("check", "flag periods outside the expected band; for cron")
 
     skill = subcommands.add_parser(
@@ -422,7 +468,7 @@ def main(argv: list[str] | None = None) -> int:
     handler = {
         "init": _init, "build": _build, "verify": _verify, "preview": _preview,
         "share": _share, "demo": _demo,
-        "analyze": _analyze, "schema": _schema, "ask": _ask,
+        "analyze": _analyze, "schema": _schema, "ask": _ask, "claim": _claim,
         "check": _check, "skill": _skill, "samples": _samples, "app": _app, None: _status,
     }[command]
     try:

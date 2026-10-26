@@ -21,6 +21,7 @@ from ada.schema import (
     is_year_name,
     looks_like_identifier,
     looks_like_subject,
+    row_noun,
     row_summary_columns,
 )
 
@@ -1271,6 +1272,22 @@ class GroupingChoiceTests(unittest.TestCase):
         self.assertNotIn("MO", roles.dimensions)
         self.assertIsNone(roles.dimension)
         self.assertEqual(roles.measure, "MaxTemp")
+
+
+class RowNounTests(unittest.TestCase):
+    def test_the_last_plural_in_a_file_name_names_the_rows(self):
+        for name, noun in (
+            ("penguins.csv", "penguins"), ("olist_orders_dataset.csv", "orders"), ("People.csv", "people"),
+            ("/data/flights.csv", "flights"), ("bus_routes.tsv", "routes"),
+            ("data.csv", None), ("ChickWeight.csv", None), ("analysis.csv", None), (None, None),
+        ):
+            with self.subTest(name=name):
+                self.assertEqual(row_noun(name), noun)
+
+    def test_a_noun_that_is_part_of_a_column_name_is_not_the_rows(self):
+        frame = pd.DataFrame({"subject": [1, 2, 3], "total_UPDRS": [20.0, 25.0, 30.0]})
+        self.assertIsNone(detect_roles(frame, "parkinsons_updrs.csv").row_noun)
+        self.assertEqual(detect_roles(frame, "visits.csv").row_noun, "visits")
 
 
 if __name__ == "__main__":

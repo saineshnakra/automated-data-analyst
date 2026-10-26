@@ -7,7 +7,7 @@ after the user approves them.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Literal, Protocol
 
 import pandas as pd
@@ -501,14 +501,7 @@ def execute_approved_ai_plan(
     if not approved:
         return None
     executed = execute_plan(plan, dataframe, roles, rows_not_analyzed=rows_not_analyzed)
-    return QueryAnswer(
-        question=question,
-        plan=executed.plan,
-        answer=executed.answer,
-        calculation=executed.calculation,
-        table=executed.table,
-        chart=executed.chart,
-    )
+    return replace(executed, question=question)
 
 
 def narrative_to_markdown(narrative: AINarrative, *, model: str) -> str:

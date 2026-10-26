@@ -20,6 +20,7 @@ from .forecasting import build_forecast, describe_backtest
 from .formatting import format_number, format_period, group_label, holds_undated, is_undated, show_undated
 from .metrics import metric_for
 from .nlq import QueryAnswer
+from .numeric import to_numbers
 from .pipeline import analyze_selection
 from .schema import ColumnRoles, is_design_name, is_entity_name
 from .selection import comparison_frame, selection_from_event, selection_modes
@@ -262,7 +263,7 @@ def group_names(dataframe: pd.DataFrame, dimension: str | None, values) -> list[
     numeric = bool(dimension) and pd.api.types.is_numeric_dtype(dataframe[dimension])
     if not numeric:
         return [str(value) for value in values]
-    codes = pd.to_numeric(pd.Series(list(values), dtype=object), errors="coerce")
+    codes = to_numbers(pd.Series(list(values), dtype=object))
     return [
         group_label(dimension, float(code)) if pd.notna(code) else str(value)
         for value, code in zip(values, codes, strict=True)

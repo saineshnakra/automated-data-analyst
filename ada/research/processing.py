@@ -16,6 +16,7 @@ import pandas as pd
 
 from ..analysis import clean_dataframe
 from ..file_io import read_tabular_file
+from ..numeric import to_numbers
 from .study import Condition, Step, Study, StudyError, sha256_of
 
 #: Column added to every row: its line in the original file (the header is line 1).
@@ -249,7 +250,7 @@ def _apply_types(study: Study, processed: Processed) -> None:
             continue
         column = data[name]
         if variable.type == "numeric" and not pd.api.types.is_numeric_dtype(column):
-            converted = pd.to_numeric(column, errors="coerce")
+            converted = to_numbers(column)
             lost = column.notna() & converted.isna()
             if lost.any():
                 examples = tuple(dict.fromkeys(map(str, column[lost])))[:5]
@@ -304,7 +305,7 @@ def _condition_mask(study: Study, condition: Condition, data: pd.DataFrame) -> p
         for value in values:
             hits |= _code_matches(column, value)
         return hits if condition.test in ("in", "equals") else ~hits & column.notna()
-    numbers = pd.to_numeric(column, errors="coerce")
+    numbers = to_numbers(column)
     limit = float(condition.value)
     compare = {
         "below": numbers < limit,
@@ -327,7 +328,7 @@ def _matches(study: Study, step: Step, data: pd.DataFrame) -> pd.Series:
 
 def _transform(step: Step, data: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     data = data.copy()
-    values = pd.to_numeric(data[step.column], errors="coerce").astype(float)
+    values = to_numbers(data[step.column]).astype(float)
     with np.errstate(divide="ignore", invalid="ignore"):
         result = {
             "log": lambda: np.log(values.where(values > 0)),

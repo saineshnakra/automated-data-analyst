@@ -1087,5 +1087,97 @@ class ChosenMeasureTests(unittest.TestCase):
         self.assertNotIn("Mark", report.roles.dimensions)
 
 
+class SourceTests(unittest.TestCase):
+    """An answer names the bytes it was computed from."""
+
+    def test_a_path_gives_its_checksum_and_shape(self):
+        import hashlib
+
+        path = ada.samples()["Lab Measurements"]
+        report = ada.analyze(path)
+        self.assertEqual(report.source.sha256, hashlib.sha256(path.read_bytes()).hexdigest())
+        self.assertEqual((report.source.name, report.source.rows, report.source.columns),
+                         ("lab-measurements.csv", 936, 6))
+        answer = report.ask("average viability %")
+        self.assertEqual(answer.source, report.source)
+        self.assertEqual(answer.to_dict()["evidence"]["source"]["sha256"], report.source.sha256)
+        self.assertEqual(report.focus("Control").source, report.source)
+
+    def test_a_dataframe_has_no_bytes_to_point_to(self):
+        report = ada.analyze(steady())
+        self.assertIsNone(report.source.sha256)
+        self.assertIsNone(report.source.path)
+        self.assertEqual(report.source.rows, 24)
+
+    def test_the_claim_check_is_public(self):
+        for name in ("check_claim", "ClaimCheck", "Source"):
+            self.assertIn(name, ada.__all__)
+
+
+class AnswerAndClaimCommandTests(unittest.TestCase):
+    """`ada ask --json` and `ada claim`: claim exit codes are 0 verified, 1 failed check, 2 unreadable,
+    3 unverified for any other reason."""
+
+    def run_ada(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, "-m", "ada.cli", *args],
+            capture_output=True, text=True, timeout=300,
+        )
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.folder = Path(folder.name)
+        self.path = str(self.folder / "readings.csv")
+        pd.DataFrame({
+            "Site": ["North"] * 5 + ["South"] * 5,
+            "Nitrate": [10.0, 12.0, 15.0, 15.5, 19.0, 30.0, 33.0, 37.0, 41.0, 44.0],
+        }).to_csv(self.path, index=False)
+
+    def test_ask_json_gives_the_answer_record(self):
+        result = self.run_ada("ask", self.path, "average nitrate", "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual((data["status"], data["result"]["value"]), ("answered", 25.65))
+        self.assertEqual(data["calculation"], "mean(Nitrate)")
+        self.assertEqual(data["evidence"]["source"]["name"], "readings.csv")
+
+    def test_a_refusal_is_json_too(self):
+        result = self.run_ada("ask", self.path, "average rainfall", "--json")
+        self.assertEqual(result.returncode, 3)
+        data = json.loads(result.stdout)
+        self.assertEqual(data["status"], "refused")
+        self.assertTrue(data["code"] and data["message"])
+
+    def test_claim_exit_codes(self):
+        for args, code, status in (
+            (("The average nitrate is 25.65.",), 0, "verified"),
+            (("The average nitrate is 30.",), 1, "unverified"),
+            (("The average is 25.65.",), 3, "unverified"),
+            (("--question", "average Nitrate", "--value", "25.5"), 1, "unverified"),
+            (("--question", "average Nitrate", "--value", "25.65"), 0, "verified"),
+        ):
+            with self.subTest(args=args):
+                result = self.run_ada("claim", self.path, *args, "--json")
+                self.assertEqual(result.returncode, code, result.stderr)
+                self.assertEqual(json.loads(result.stdout)["status"], status)
+
+    def test_an_unreadable_file_exits_two(self):
+        missing = str(self.folder / "nowhere.csv")
+        result = self.run_ada("claim", missing, "The average nitrate is 25.65.", "--json")
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(json.loads(result.stdout)["reason"], "inaccessible_data")
+
+    def test_a_claim_needs_a_sentence_or_a_question_and_value(self):
+        result = self.run_ada("claim", self.path, "--question", "average Nitrate")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--value", result.stderr)
+
+    def test_the_text_output_names_the_status_and_calculation(self):
+        result = self.run_ada("claim", self.path, "The average nitrate is 30.")
+        self.assertTrue(result.stdout.startswith("unverified: The average nitrate is 30."))
+        self.assertIn("calc: mean(Nitrate)", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

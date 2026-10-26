@@ -68,9 +68,11 @@ from .formatting import (
     with_aggregate,
 )
 from .metrics import metric_for
+from .numeric import to_numbers
 from .quality import MASKED_CHECKS, VALUE_CHECKS, QualityIssue, prefers_log_scale, show_value
 from .quality import scan as scan_quality
 from .schema import ColumnRoles, detect_roles, row_summary_columns, running_total_columns
+from .sources import Source
 from .timepoints import is_timepoint_name
 from .timeseries import TREND_CONFIDENCE, period_positions, theil_sen, trend_test
 
@@ -417,6 +419,26 @@ class WholeTable:
 
 
 @dataclass(frozen=True)
+class AnswerScope:
+    """The rows behind an answer: how many were read, which the question kept, and what was left out.
+
+    ``rows_used`` counts the rows the answer rests on (with the measure, and any
+    second column, recorded). Each ``left_out`` entry is a reason and its count,
+    such as ("rows with body_mass_g missing", 2). ``readings`` say how the
+    question was read and ``cautions`` what may sway the answer.
+    """
+
+    rows_read: int
+    rows_not_analyzed: int = 0
+    rows_in_scope: int | None = None
+    rows_used: int | None = None
+    filters: tuple[str, ...] = ()
+    left_out: tuple[tuple[str, int], ...] = ()
+    readings: tuple[str, ...] = ()
+    cautions: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class QueryAnswer:
     question: str
     plan: QueryPlan
@@ -424,6 +446,76 @@ class QueryAnswer:
     calculation: str
     table: pd.DataFrame | None = None
     chart: Literal["bar", "line", "scatter"] | None = None
+    #: The number the answer gives, at full precision, when it gives a single one.
+    value: float | None = None
+    #: The number for each group of a grouped answer, every group and not only those shown.
+    values: tuple[tuple[str, float], ...] = ()
+    #: Other numbers the answer states, by name: ("share_percent", 44.2), ("p_value", 0.003), ("n", 342).
+    figures: tuple[tuple[str, float], ...] = ()
+    #: The rows behind the answer, filled in by ``execute_plan``.
+    scope: AnswerScope | None = None
+    #: The file the answer was computed from, filled in by ``Analysis.ask``.
+    source: Source | None = None
+
+    def to_dict(self) -> dict:
+        """The answer as JSON-safe data: the result, how the question was read, the calculation and its rows.
+
+        ``result`` holds the full-precision numbers (``value`` for a single one,
+        ``values`` per group, ``figures`` for the rest), ``reading`` the plan
+        that ran, and ``evidence`` the source, the rows read, kept and used, and
+        each reason rows were left out. ``assumptions`` say how the question was
+        read; ``warnings`` say what may sway the answer.
+        """
+        scope = self.scope
+        return {
+            "schema_version": ANSWER_SCHEMA_VERSION,
+            "status": "answered",
+            "question": self.question,
+            "answer": self.answer,
+            "result": {
+                "value": self.value,
+                "values": [{"group": label, "value": value} for label, value in self.values],
+                "figures": {name: value for name, value in self.figures if _as_number(value) is not None},
+            },
+            "reading": plan_reading(self.plan),
+            "calculation": self.calculation,
+            "evidence": {
+                "source": None if self.source is None else self.source.to_dict(),
+                "rows_read": None if scope is None else scope.rows_read,
+                "rows_not_analyzed": 0 if scope is None else scope.rows_not_analyzed,
+                "rows_in_scope": None if scope is None else scope.rows_in_scope,
+                "rows_used": None if scope is None else scope.rows_used,
+                "filters": [] if scope is None else list(scope.filters),
+                "left_out": [] if scope is None else [
+                    {"reason": reason, "count": count} for reason, count in scope.left_out
+                ],
+            },
+            "assumptions": [] if scope is None else list(scope.readings),
+            "warnings": [] if scope is None else list(scope.cautions),
+        }
+
+
+#: Version of the ``QueryAnswer.to_dict`` layout. Bumped when a key changes meaning.
+ANSWER_SCHEMA_VERSION = 1
+
+
+def plan_reading(plan: QueryPlan) -> dict:
+    """What a plan computes, by name: the operation, the columns and the scope it was read with."""
+    return {
+        "intent": plan.intent,
+        "operation": plan.aggregation,
+        "measure": plan.measure,
+        "second_column": plan.partner,
+        "group_by": plan.dimension,
+        "second_group_by": plan.second_dimension,
+        "distinct_of": plan.count_column,
+        "per": list(plan.per),
+        "adjusted_for": list(plan.adjusted_for),
+        "year": plan.year,
+        "month": plan.month,
+        "quantile": plan.quantile,
+        "source": plan.source,
+    }
 
 
 def _norm(text: str) -> str:
@@ -1248,6 +1340,9 @@ def _claim_partial_at(
         phrase = tuple(word for _, _, word in window)
         if not any(char.isalpha() for word in phrase for char in word):
             continue
+        if size == 1 and phrase[0] == roles.row_noun:
+            # The file's own noun for its rows, left for _claim_entity: "flights" in flights.csv.
+            return 1
         candidates = _holding(words, phrase, reading.index or _name_index(dataframe.columns))
         if not candidates and size == 1:
             candidates = _prefixed_columns(phrase[0], words) or _stemmed_columns(phrase[0], words)
@@ -1845,6 +1940,9 @@ def _claim_row_label(reading: _Reading, roles: ColumnRoles) -> None:
 def _claim_entity(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
     """Read a noun for the rows ("patients", "birds") as what is counted.
 
+    The file's own noun for its rows (``roles.row_noun``, "penguins" in
+    penguins.csv) is one wherever it stands: "average body mass of Gentoo penguins".
+
     A plural that names nothing else, right before "with" or "where" and a
     condition, names the rows too: "average strength for mixes with admixture above 0".
     """
@@ -1856,12 +1954,13 @@ def _claim_entity(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles
         described = plural and re.match(
             r"\s+(?:with|where|whose|having|that\s+have|which\s+have)\s+\S", reading.original[end:]
         )
-        if word not in ENTITY_NOUNS and not (counted and plural) and not described:
+        rows = word == roles.row_noun
+        if word not in ENTITY_NOUNS and not rows and not (counted and plural) and not described:
             continue
         reading.claim(start, end)
         if reading.entity is None:
             reading.entity = word
-            reading.entity_column = _entity_column(word, dataframe, roles)
+            reading.entity_column = None if rows else _entity_column(word, dataframe, roles)
 
 
 def _has_times(dates: pd.Series) -> bool:
@@ -2194,6 +2293,12 @@ def _read_question(
     period = re.search(r"\b(?:which|what)\s+(day|week|month|quarter|year)\b", q) if roles.date else None
     if period:
         reading.spans = {column: span for column, span in reading.spans.items() if span[0] != period.start(1)}
+    # The file's own noun for its rows ("flights" in flights.csv) names the rows, not a
+    # column spelled like its singular (flight, a flight number).
+    if roles.row_noun:
+        reading.spans = {
+            column: span for column, span in reading.spans.items() if q[span[0]:span[1]] != roles.row_noun
+        }
     for start, end in reading.spans.values():
         reading.claim(start, end, keep_text=True)
     _reread_aggregation_names(reading)
@@ -2956,7 +3061,7 @@ def _split_plan(
 def _split_labels(series: pd.Series, at: float) -> pd.Series:
     """Each row's side of a split: "before 2000" or "2000 onwards" for a date, by value otherwise."""
     dated = is_datetime64_any_dtype(series)
-    values = series.dt.year.astype(float) if dated else pd.to_numeric(series, errors="coerce")
+    values = series.dt.year.astype(float) if dated else to_numbers(series)
     shown = _number_text(at)
     if dated:
         before, after = f"the years before {shown}", f"{shown} and later"
@@ -3361,7 +3466,7 @@ def _apply_filters(
 def _value_mask(series: pd.Series, values: tuple[str, ...]) -> pd.Series:
     """Rows whose value is one of ``values``; numbers compare as numbers, so "2" matches 2.0."""
     if is_numeric_dtype(series) and not is_bool_dtype(series):
-        wanted = pd.to_numeric(pd.Series(list(values), dtype=object), errors="coerce").dropna()
+        wanted = to_numbers(pd.Series(list(values), dtype=object)).dropna()
         if len(wanted) == len(values):
             return series.isin(wanted.tolist())
     return series.astype(str).isin(values)
@@ -3382,7 +3487,7 @@ def _condition_mask(series: pd.Series, condition: Condition) -> pd.Series:
         # A condition on a date compares its year: "since 1978".
         values = series.dt.year.astype(float)
     else:
-        values = pd.to_numeric(series, errors="coerce")
+        values = to_numbers(series)
     compare = {"=": values.eq, "<": values.lt, "<=": values.le, ">": values.gt, ">=": values.ge}
     return compare[condition.operator](condition.value)
 
@@ -3439,6 +3544,24 @@ def _share_text(share: float) -> str:
 
 def _scoped(applied_filters: list[str]) -> str:
     return f" · filtered to {', '.join(applied_filters)}" if applied_filters else ""
+
+
+def _as_number(value) -> float | None:
+    """``value`` as a float when it is a finite number, else None (a mode that is a label, a NaN)."""
+    if isinstance(value, bool | np.bool_) or not isinstance(value, int | float | np.integer | np.floating):
+        return None
+    number = float(value)
+    return number if np.isfinite(number) else None
+
+
+def _labelled_values(labels: pd.Series, numbers: pd.Series) -> tuple[tuple[str, float], ...]:
+    """(label, number) for every group with a finite number, in order."""
+    pairs = []
+    for label, number in zip(labels, numbers, strict=True):
+        value = _as_number(number)
+        if value is not None:
+            pairs.append((str(label), value))
+    return tuple(pairs)
 
 
 def _aggregate_series(series: pd.Series, aggregation: Aggregation, quantile: float | None = None) -> float:
@@ -3608,7 +3731,7 @@ def execute_plan(
         "of other rows."
         if repeats else ""
     )
-    return _with_scope(_run_plan(plan, basis, roles), basis, roles, rows_not_analyzed, note)
+    return _with_scope(_run_plan(plan, basis, roles), basis, roles, rows_not_analyzed, note, repeats)
 
 
 def _tested(plan: QueryPlan) -> bool:
@@ -3638,24 +3761,40 @@ def _distinct_basis(dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[pd.Dat
 
 
 def _with_scope(
-    result: QueryAnswer, dataframe: pd.DataFrame, roles: ColumnRoles, rows_not_analyzed: int, basis: str = ""
+    result: QueryAnswer,
+    dataframe: pd.DataFrame,
+    roles: ColumnRoles,
+    rows_not_analyzed: int,
+    basis: str = "",
+    repeats: int = 0,
 ) -> QueryAnswer:
     """Add the plan's readings, the rows the answer used and any rows the row limit left out.
 
     The rows used are those with the measure recorded, so an answer about a
     column filled on 110 of 120 rows says it rests on those 110. ``basis``
-    says when the answer runs on the distinct rows, as the brief's tests do.
+    says when the answer runs on the distinct rows, as the brief's tests do,
+    leaving out ``repeats`` exact copies. The same facts go into the answer's
+    ``scope``, for a program to read.
     """
     plan = result.plan
-    sentences = [result.answer, *plan.notes, *([basis] if basis else [])]
+    readings = [*plan.notes, *([basis] if basis else [])]
+    sentences = [result.answer, *readings]
+    cautions: list[str] = []
     try:
-        working, _ = _apply_filters(dataframe, plan, roles)
+        working, applied = _apply_filters(dataframe, plan, roles)
     except TimeScopeUnavailable:
-        working = None
+        working, applied = None, []
     if working is not None and not working.empty:
-        sentences.extend(_flag_cautions(plan, dataframe, working, roles))
-        sentences.extend(_condition_cautions(plan, dataframe, working, roles))
-    sentences.extend(_blanked_notes(plan, dataframe, roles))
+        cautions.extend(_flag_cautions(plan, dataframe, working, roles))
+        cautions.extend(_condition_cautions(plan, dataframe, working, roles))
+    cautions.extend(_blanked_notes(plan, dataframe, roles))
+    sentences.extend(cautions)
+    left_out = [*(result.scope.left_out if result.scope else ())]
+    if repeats:
+        left_out.insert(0, ("exact repeats of other rows", repeats))
+    if rows_not_analyzed:
+        left_out.append(("rows beyond the row limit", rows_not_analyzed))
+    used = None
     # A count says its own rows, and an unfiltered aggregate says how many rows it used.
     if working is not None and not working.empty and plan.intent not in ("count", "missing"):
         needed = [
@@ -3663,6 +3802,8 @@ def _with_scope(
             if column and column in working.columns and plan.intent != "duplicates"
         ]
         used = int(working[needed].notna().all(axis=1).sum()) if needed else len(working)
+        if used < len(working):
+            left_out.append((f"rows with {_listed(needed)} missing", len(working) - used))
         # An unfiltered aggregate already says it was calculated from those rows.
         whole = plan.intent == "aggregate" and len(working) == len(dataframe) and not rows_not_analyzed
         if used < len(working) and not whole:
@@ -3677,7 +3818,22 @@ def _with_scope(
             sentences.append(f"Based on {_analysed_rows(dataframe, roles, rows_not_analyzed, every=True)}.")
     elif rows_not_analyzed:
         sentences.append(f"ADA analysed {_analysed_rows(dataframe, roles, rows_not_analyzed, every=True)}.")
-    return replace(result, answer=" ".join(sentences))
+    if working is not None and plan.intent in ("count", "missing"):
+        used = len(working)
+    if result.scope is not None and result.scope.rows_used is not None:
+        # The rows left once the flagged values were set aside, counted where they were.
+        used = result.scope.rows_used
+    scope = AnswerScope(
+        rows_read=len(dataframe) + repeats,
+        rows_not_analyzed=rows_not_analyzed,
+        rows_in_scope=None if working is None else len(working),
+        rows_used=used,
+        filters=tuple(applied),
+        left_out=tuple(left_out),
+        readings=tuple(readings),
+        cautions=tuple(cautions),
+    )
+    return replace(result, answer=" ".join(sentences), scope=scope)
 
 
 # Intents whose answer combines a measure's values, so a flagged value can sway it.
@@ -3851,13 +4007,13 @@ def _run_related(
 
 def _left_out(
     working: pd.DataFrame, issues: tuple[QualityIssue, ...], columns: list[str]
-) -> tuple[pd.DataFrame, str]:
-    """``working`` without the values the brief leaves out of comparisons and correlations, and a note.
+) -> tuple[pd.DataFrame, str, int]:
+    """``working`` without the values the brief leaves out of comparisons and correlations, with a note.
 
     Those are the cells the data checks find can't be readings as they stand
     (``quality.MASKED_CHECKS``): impossible values, codes, fill values, swapped
     or stuck readings. The note names the checks, so a figure is never left to
-    rest on them unexplained.
+    rest on them unexplained; the count is of the values left out.
     """
     present = set(working.columns)
     hits: dict[str, pd.Index] = {}
@@ -3878,14 +4034,14 @@ def _left_out(
         if found:
             reasons.append(issue.summary)
     if not hits:
-        return working, ""
+        return working, "", 0
     masked = working.copy()
     for column, rows in hits.items():
         masked.loc[rows, column] = np.nan
     cells = sum(len(rows) for rows in hits.values())
     named = "; ".join(reasons[:3]) + ("; and more" if len(reasons) > 3 else "")
     noun, verb = ("value", "is") if cells == 1 else ("values", "are")
-    return masked, f"As in the brief, {cells:,} {noun} the data checks flag {verb} left out ({named})."
+    return masked, f"As in the brief, {cells:,} {noun} the data checks flag {verb} left out ({named}).", cells
 
 
 def _run_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -> QueryAnswer:
@@ -3960,6 +4116,8 @@ def _run_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -> Q
             plan=plan,
             answer=answer,
             calculation=f"{_aggregation_formula(plan, plan.measure)}{scope}",
+            value=_as_number(value),
+            figures=(("n", float(rows)),),
         )
 
     if plan.intent == "describe":
@@ -3980,9 +4138,17 @@ def _run_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -> Q
     if plan.intent in LEFT_OUT_INTENTS:
         # Comparisons and correlations leave out the cells the brief leaves out of its scans.
         issues = _data_checks(dataframe, roles)
-        working, left_out = _left_out(working, issues, _related_columns(plan, working, roles))
+        working, left_out, cells = _left_out(working, issues, _related_columns(plan, working, roles))
         result = _run_related(plan, working, roles, scope, applied)
-        return replace(result, answer=f"{result.answer} {left_out}") if left_out else result
+        if not left_out:
+            return result
+        needed = [column for column in (plan.measure, plan.partner) if column and column in working.columns]
+        flagged = AnswerScope(
+            rows_read=len(dataframe),
+            rows_used=int(working[needed].notna().all(axis=1).sum()) if needed else None,
+            left_out=(("values the data checks flag", cells),),
+        )
+        return replace(result, answer=f"{result.answer} {left_out}", scope=flagged)
 
     if plan.intent == "rank" and plan.dimension is None and plan.grain:
         return _rank_periods(plan, working, roles, scope, applied)
@@ -4105,6 +4271,8 @@ def _execute_trend(
         calculation=_with_notes(calculation, series),
         table=trend,
         chart="line",
+        values=_labelled_values(present["Period"].astype(str), present["Value"]),
+        figures=(("first", first), ("last", last)),
     )
 
 
@@ -4244,6 +4412,7 @@ def _execute_count(
             plan=plan,
             answer=f"There are {distinct:,} distinct {plan.count_column} values{_phrase(applied)}.",
             calculation=f"count distinct {plan.count_column}{scope}",
+            value=float(distinct),
         )
     if not (plan.filters or plan.conditions):
         return QueryAnswer(
@@ -4251,6 +4420,7 @@ def _execute_count(
             plan=plan,
             answer=f"{len(working):,} rows match{_phrase(applied)}.",
             calculation=f"row count{scope}",
+            value=float(len(working)),
         )
     base, _ = _apply_filters(dataframe, replace(plan, filters=(), conditions=()), roles)
     filtered = [item.column for item in plan.filters] + [
@@ -4275,6 +4445,8 @@ def _execute_count(
             f"rows with {described}, divided by the {len(base):,} rows"
             f"{' with ' + _and_listed(recorded) + ' recorded' if recorded else ''}{scope}"
         ),
+        value=float(len(working)),
+        figures=(("share_percent", share), ("denominator", float(len(base)))),
     )
 
 
@@ -4291,6 +4463,8 @@ def _execute_missing(plan: QueryPlan, working: pd.DataFrame, scope: str, applied
                 f" ({_share_text(missing / rows * 100)}){_phrase(applied)}."
             ),
             calculation=f"missing values of {plan.measure} over {rows:,} rows{scope}",
+            value=float(missing),
+            figures=(("share_percent", missing / rows * 100), ("denominator", float(rows))),
         )
     counts = working.isna().sum()
     gaps = pd.DataFrame({
@@ -4318,6 +4492,7 @@ def _execute_missing(plan: QueryPlan, working: pd.DataFrame, scope: str, applied
         answer=answer,
         calculation=f"missing values per column over {rows:,} rows{scope}",
         table=gaps,
+        values=_labelled_values(gaps["Column"], gaps["Missing"]),
     )
 
 
@@ -4420,7 +4595,13 @@ def _execute_describe(plan: QueryPlan, working: pd.DataFrame, scope: str, applie
     if missing:
         answer += f" {missing:,} rows have no value."
     table = pd.DataFrame({"Statistic": list(stats), "Value": [round(value, 6) for value in stats.values()]})
-    return QueryAnswer(question="", plan=plan, answer=answer, calculation=calculation, table=table)
+    return QueryAnswer(
+        question="", plan=plan, answer=answer, calculation=calculation, table=table,
+        figures=tuple(
+            (str(name).lower(), number) for name, value in stats.items()
+            if (number := _as_number(value)) is not None
+        ),
+    )
 
 
 #: Most flagged values an outlier answer lists in its table.
@@ -4887,6 +5068,7 @@ def _execute_grouping(
         calculation=calculation,
         table=table,
         chart="line" if ordered else "bar",
+        values=_labelled_values(grouped[key], grouped[value_label]),
     )
 
 
@@ -4970,7 +5152,7 @@ def _in_group_order(grouped: pd.DataFrame, key: str) -> pd.DataFrame:
     if isinstance(grouped[key].dtype, pd.CategoricalDtype):
         return grouped.sort_values(key, kind="stable").reset_index(drop=True)
     return grouped.sort_values(
-        key, key=lambda values: pd.to_numeric(values, errors="coerce"), kind="stable"
+        key, key=lambda values: to_numbers(values), kind="stable"
     ).reset_index(drop=True)
 
 
@@ -5130,6 +5312,11 @@ def _execute_correlation(
         calculation=calculation,
         table=points.reset_index(drop=True),
         chart="scatter",
+        value=_as_number(correlation.pearson),
+        figures=(
+            ("ci_low", correlation.low), ("ci_high", correlation.high),
+            ("spearman", correlation.spearman), ("n", float(pairs)),
+        ),
     )
 
 
@@ -5571,6 +5758,19 @@ def _execute_compare(
         calculation=calculation,
         table=comparison_table(comparison),
         chart="bar",
+        values=tuple(
+            (str(group.label), value) for group in comparison.groups
+            if (value := _as_number(comparison.centre(group))) is not None
+        ),
+        figures=tuple(
+            (name, number) for name, number in (
+                ("p_value", comparison.p_value), ("p_adjusted", comparison.adjusted_p),
+                ("difference", comparison.difference), ("ci_low", comparison.low),
+                ("ci_high", comparison.high), ("hedges_g", comparison.hedges_g),
+                ("explained", comparison.explained),
+            )
+            if _as_number(number) is not None
+        ),
     )
 
 
@@ -5926,9 +6126,11 @@ def _execute_shares(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles
     calculation = f"rows with {described}, divided by the rows of each {key}{kept}"
     if comparison is not None:
         calculation += f"; {rate_calculation(comparison).split('; ', 1)[1]}"
+    exact = hits / totals * 100
     return QueryAnswer(
         question="", plan=plan, answer=answer, calculation=f"{calculation}{scope}",
         table=table, chart="line" if plan.grain else "bar",
+        values=_labelled_values(table[key], table[key].map(exact)),
     )
 
 
@@ -6432,8 +6634,10 @@ def _execute_growth(
     )
     if unit in ("rate", "level"):
         formula = f"latest − previous period average{scope}"
+        moved = ("change", current - previous)
     else:
         formula = f"(latest − previous) ÷ |previous| on period {'totals' if measure else 'counts'}{scope}"
+        moved = ("change_percent", (current - previous) / abs(previous) * 100)
     return QueryAnswer(
         question="",
         plan=plan,
@@ -6441,6 +6645,8 @@ def _execute_growth(
         calculation=_with_notes(formula, series),
         table=trend,
         chart="line",
+        value=_as_number(moved[1]),
+        figures=(moved, ("previous", previous), ("latest", current)),
     )
 
 
@@ -6544,14 +6750,7 @@ def answer_question(
             f" This covers the {len(dataframe):,} rows with {whole.parameter} = {whole.focus}, which the "
             f"brief follows; name another {whole.parameter} to ask about it."
         )
-    return QueryAnswer(
-        question=question,
-        plan=result.plan,
-        answer=answer,
-        calculation=result.calculation,
-        table=result.table,
-        chart=result.chart,
-    )
+    return replace(result, question=question, answer=answer)
 
 
 def _named_columns(question: str, frame: pd.DataFrame) -> list[str]:
@@ -6805,10 +7004,7 @@ def _whole_table_answer(question: str, whole: WholeTable, rows_not_analyzed: int
             f" Each {whole.parameter} is measured on its own scale, often in its own unit, so compare each "
             "only with itself, not with the others."
         )
-    return QueryAnswer(
-        question=question, plan=result.plan, answer=answer, calculation=result.calculation,
-        table=result.table, chart=result.chart,
-    )
+    return replace(result, question=question, answer=answer)
 
 
 def _listed(columns: tuple[str, ...] | list[str]) -> str:

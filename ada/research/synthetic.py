@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from ..numeric import to_numbers
 from .processing import SOURCE_ROW
 from .study import Study
 
@@ -135,7 +136,7 @@ def _draw(series: pd.Series, kind: str, rng: np.random.Generator) -> tuple[pd.Se
     if kind == "date" or pd.api.types.is_datetime64_any_dtype(series):
         return _draw_dates(series, rng)
     if kind == "numeric" and pd.api.types.is_numeric_dtype(series) and not pd.api.types.is_bool_dtype(series):
-        values, decimals = _quantile_draws(pd.to_numeric(series, errors="coerce").astype(float), rng)
+        values, decimals = _quantile_draws(to_numbers(series).astype(float), rng)
         drawn = pd.Series(values)
         if decimals == 0:
             drawn = drawn.round().astype("Int64")

@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 from scipy import optimize, special, stats
 
+from ..numeric import to_numbers
 from .build import DATA_SECTIONS
 from .processing import SOURCE_ROW, levels_of
 from .provenance import Asset
@@ -320,7 +321,7 @@ def adjust_families(study: Study, results: dict[str, AnalysisResult]) -> None:
 def _estimates(rows: list[dict]) -> pd.DataFrame:
     frame = pd.DataFrame(rows, columns=COLUMNS)
     for column in ("estimate", "ci_low", "ci_high", "statistic", "df", "p", "p_adjusted", "df2"):
-        frame[column] = pd.to_numeric(frame[column], errors="coerce").astype(float)
+        frame[column] = to_numbers(frame[column]).astype(float)
     frame["key"] = frame["key"].fillna(False).astype(bool)
     for column in ("term", "label", "measure", "statistic_name", "test", "adjustment"):
         frame[column] = frame[column].fillna("").astype(str)

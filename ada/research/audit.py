@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from ..numeric import to_numbers
 from .processing import SOURCE_ROW, Processed, levels_of
 from .study import Study
 
@@ -147,7 +148,7 @@ def audit(study: Study, processed: Processed) -> list[Finding]:
             )
         if variable.type == "numeric" and variable.range:
             low, high = variable.range
-            numbers = pd.to_numeric(series, errors="coerce")
+            numbers = to_numbers(series)
             outside = ((numbers < low) if low is not None else False) | (
                 (numbers > high) if high is not None else False
             )
@@ -207,7 +208,7 @@ def audit(study: Study, processed: Processed) -> list[Finding]:
                     )
                 )
         if variable.type == "numeric" and variable.role in ("outcome", "covariate") and name in data:
-            z = robust_z(pd.to_numeric(data[name], errors="coerce"))
+            z = robust_z(to_numbers(data[name]))
             extreme = z.abs() > EXTREME_Z
             if extreme.any():
                 if study.decisions.outliers == "flag":

@@ -11,6 +11,8 @@ import re
 import numpy as np
 import pandas as pd
 
+from .numeric import to_numbers
+
 CURRENCY_TOKENS = (
     "revenue",
     "mrr",
@@ -77,7 +79,7 @@ MAX_BAND_CODE = 15
 
 
 def _finite_values(column_values: pd.Series) -> pd.Series:
-    values = pd.to_numeric(column_values, errors="coerce").dropna()
+    values = to_numbers(column_values).dropna()
     return values[np.isfinite(values)]
 
 
@@ -197,7 +199,7 @@ def _column_reads_as_percentage(
     negative or pass 100.
     """
     if column_values is not None:
-        values = pd.to_numeric(column_values, errors="coerce").dropna()
+        values = to_numbers(column_values).dropna()
         if not values.empty:
             if has_percent_unit(column) and not _name_tokens(column) & SIGNED_PERCENT_WORDS:
                 return bool(values.min() >= 0 and values.max() <= 100)
@@ -235,7 +237,7 @@ def _percentage_uses_fraction_scale(
     if column_values is None:
         return 0 <= value <= 1
 
-    values = pd.to_numeric(column_values, errors="coerce").dropna()
+    values = to_numbers(column_values).dropna()
     if values.empty:
         return False
 
