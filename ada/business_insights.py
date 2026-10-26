@@ -138,6 +138,7 @@ from .formatting import (
     with_aggregate,
 )
 from .metrics import MetricSpec, metric_for
+from .numeric import to_numbers
 from .quality import (
     INFO_CHECKS,
     TABLE_CHECKS,
@@ -3464,7 +3465,7 @@ def _summary_rows_evidence(
         if roles.identifier in dataframe.columns
         else pd.Series([f"row {index + 1:,}" for index in range(len(dataframe))], index=dataframe.index)
     )
-    centre = pd.to_numeric(dataframe[roles.measure], errors="coerce").dropna()
+    centre = to_numbers(dataframe[roles.measure]).dropna()
     if len(centre) < 2 * ROWS_RANKED:
         return None
 
@@ -3481,7 +3482,7 @@ def _summary_rows_evidence(
     calculation = f"rows ranked by {roles.measure}"
     spread = next((column for column in family if summary_statistic(column) in SPREAD_WORDS), None)
     if spread is not None and spread in dataframe.columns:
-        widths = pd.to_numeric(dataframe[spread], errors="coerce").dropna()
+        widths = to_numbers(dataframe[spread]).dropna()
         statement += f" Largest {spread}: {listed(widths.nlargest(ROWS_RANKED), spread)}."
         positive = centre[centre > 0]
         if len(positive) >= 2 * ROWS_RANKED and len(positive) == len(centre):
@@ -3677,7 +3678,7 @@ def _numbers_cases(name: str, values: pd.Series) -> bool:
     """Whether a column numbers cases: a numbering word, and whole numbers each in one run of rows."""
     if _last_word(name) not in NUMBERING_WORDS:
         return False
-    numbers = pd.to_numeric(values, errors="coerce").dropna()
+    numbers = to_numbers(values).dropna()
     if numbers.nunique() < 3 or bool((numbers % 1 != 0).any()):
         return False
     codes = pd.factorize(numbers)[0]
@@ -3765,7 +3766,7 @@ def _indicators(
     for factor in dict.fromkeys(column for column in candidates if column):
         if factor in skip or factor not in dataframe.columns or _numbers_cases(factor, dataframe[factor]):
             continue
-        data = pd.DataFrame({"value": pd.to_numeric(dataframe[roles.measure], errors="coerce"),
+        data = pd.DataFrame({"value": to_numbers(dataframe[roles.measure]),
                              "group": dataframe[factor]}).dropna()
         sizes = data["group"].value_counts()
         if not 2 <= len(sizes) <= MAX_FACTOR_LEVELS or sizes.min() < MIN_NAMED_GROUP:
@@ -3808,7 +3809,7 @@ def _level_name(factor: str, level: object) -> str:
 
 def _eta_squared(values: pd.Series, groups: pd.Series) -> float:
     """The share of a reading's variance between the means of the groups."""
-    data = pd.DataFrame({"value": pd.to_numeric(values, errors="coerce"), "group": groups}).dropna()
+    data = pd.DataFrame({"value": to_numbers(values), "group": groups}).dropna()
     total = float(((data["value"] - data["value"].mean()) ** 2).sum())
     if total == 0:
         return 0.0

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixes
+
+- Reading a table with hashed identifiers no longer crashes Python. pandas
+  2.3 crashes on text such as `689e8820798347950a2649f71c734bd0`, which it
+  reads as a number with an exponent past its limit; ADA 0.5.0 crashed on the
+  public Olist payments table this way. Such text is now set to missing
+  before pandas reads it as a number, which gives the same result without the
+  crash.
+
 - The plugin is now its own folder, `plugins/automated-data-analyst/`, named
   `automated-data-analyst`, with manifests for the Claude and ChatGPT plugin
   directories, an icon, a README and the license. It holds the same skill as

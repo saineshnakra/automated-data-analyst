@@ -29,6 +29,7 @@ from statsmodels.stats.proportion import confint_proportions_2indep
 
 from .formatting import format_number, format_values_apart, group_label, list_names, normalized_name
 from .metrics import metric_for
+from .numeric import to_numbers
 from .schema import COORDINATE_TOKENS, LABEL_NAME_WORDS, ColumnRoles, is_design_name, is_entity_name
 
 ALPHA = 0.05
@@ -1463,8 +1464,8 @@ def _spearman(first: np.ndarray, second: np.ndarray) -> float:
 def _ordered_trend(values: pd.Series, groups: pd.Series, measure: str, grouping: str) -> OrderedTrend | None:
     """Spearman's rank correlation between a reading and the numeric levels it was grouped by."""
     data = pd.DataFrame({
-        "value": pd.to_numeric(pd.Series(values.to_numpy()), errors="coerce"),
-        "level": pd.to_numeric(pd.Series(groups.to_numpy()), errors="coerce"),
+        "value": to_numbers(pd.Series(values.to_numpy())),
+        "level": to_numbers(pd.Series(groups.to_numpy())),
     }).dropna()
     if len(data) < MIN_TREND_VALUES or data["level"].nunique() < 3 or data["value"].nunique() < 2:
         return None
@@ -1618,7 +1619,7 @@ def built_in_grouping(dataframe: pd.DataFrame, reading: str, grouping: str) -> s
         return None
     frame = dataframe.sample(SCAN_ROWS, random_state=0) if len(dataframe) > SCAN_ROWS else dataframe
     data = pd.DataFrame({
-        "value": pd.to_numeric(frame[reading], errors="coerce"), "group": frame[grouping],
+        "value": to_numbers(frame[reading]), "group": frame[grouping],
     }).dropna()
     sizes = data["group"].value_counts()
     data = data[data["group"].isin(sizes[sizes >= MIN_GROUP_SIZE].index)]
@@ -1699,7 +1700,7 @@ def _trend_screen(block: pd.DataFrame, groups: pd.Series) -> dict[str, tuple[flo
     Ranks come from one sort per column over all its values, so with missing
     values rho is a close screen; a reported trend is recomputed exactly.
     """
-    levels = pd.to_numeric(groups, errors="coerce").to_numpy(dtype=float)
+    levels = to_numbers(groups).to_numpy(dtype=float)
     values = np.column_stack([levels, block.to_numpy(dtype=float)])
     rho, counts = pairwise_correlations(_rank_columns(values).ranks)
     found = {}
@@ -2393,7 +2394,7 @@ def date_part(values: pd.Series, dates: pd.Series) -> str | None:
     A month or year column beside the date it came from is the date again:
     grouping by it shows the seasonal cycle or the trend, not a factor.
     """
-    numbers = pd.to_numeric(values, errors="coerce")
+    numbers = to_numbers(values)
     stamps = pd.to_datetime(dates, errors="coerce")
     both = numbers.notna() & stamps.notna()
     if int(both.sum()) < MIN_CORRELATION_PAIRS:
@@ -4299,7 +4300,7 @@ def cap_flag(flag: pd.Series, values: pd.Series) -> CapFlag | None:
     # Codes and floats rather than a frame per pair: the scan calls this for
     # every reading against every two-valued grouping.
     codes = pd.factorize(flag)[0]
-    numbers = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
+    numbers = to_numbers(values).to_numpy(dtype=float)
     kept = (codes >= 0) & ~np.isnan(numbers)
     codes, numbers = codes[kept], numbers[kept]
     if numbers.size == 0 or np.unique(codes).size != 2 or np.unique(numbers).size < 3:
@@ -4446,7 +4447,7 @@ def is_angle(name: str, values: pd.Series) -> bool:
     """Whether a column holds compass directions: a direction word in its name and values from 0 to 360."""
     if not set(re.findall(r"[a-z]+", normalized_name(name))) & DIRECTION_NAME_WORDS:
         return False
-    numbers = pd.to_numeric(values, errors="coerce").dropna()
+    numbers = to_numbers(values).dropna()
     return bool(numbers.nunique() >= MIN_ANGLE_VALUES and numbers.min() >= 0 and numbers.max() <= 360)
 
 
@@ -4909,7 +4910,7 @@ def _checked(dataframe: pd.DataFrame, derivation: Derivation) -> tuple[Derivatio
     blank = dataframe.index[:0]
     if not parts or derivation.column not in dataframe.columns:
         return derivation, blank
-    target = pd.to_numeric(dataframe[derivation.column], errors="coerce")
+    target = to_numbers(dataframe[derivation.column])
     if derivation.kind in ("sum", "mean", "maximum", "minimum") and len(parts) == len(derivation.parts):
         blank = dataframe.index[(target == 0) & dataframe[parts].isna().all(axis=1)]
     if derivation.kind == "complement" and len(parts) == len(derivation.parts):

@@ -16,6 +16,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from ..numeric import to_numbers
+
 
 @dataclass
 class Table:
@@ -54,7 +56,7 @@ def decimals_for(values: pd.Series | np.ndarray, fixed: int | None = None) -> in
     """
     if fixed is not None:
         return fixed
-    numbers = pd.to_numeric(pd.Series(values), errors="coerce").dropna()
+    numbers = to_numbers(pd.Series(values)).dropna()
     if numbers.empty:
         return 2
     spread = float(numbers.std(ddof=1)) if len(numbers) > 1 else 0.0

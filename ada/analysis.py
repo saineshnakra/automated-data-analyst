@@ -15,6 +15,7 @@ import pandas as pd
 from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_dtype
 
 from .formatting import UNDATED_DAY, format_moment, normalized_name
+from .numeric import to_numbers
 from .quality import QualityIssue, blank_codes
 from .schema import finer_part_name, is_identifier_name, is_month_name, is_year_name
 
@@ -405,13 +406,13 @@ def _mangled_ranges(column: str, distinct: _Distinct) -> tuple[pd.Series | None,
     ranges = text.str.extract(_NUMERIC_RANGE)
     parts = text.str.extract(_MONTH_AND_NUMBER)
     month = parts[0].fillna(parts[3]).str.lower().map(MONTH_NUMBERS)
-    number = pd.to_numeric(parts[1].fillna(parts[2]), errors="coerce")
+    number = to_numbers(parts[1].fillna(parts[2]))
     dated = month.notna() & number.notna()
     is_range = ranges[0].notna()
     if not dated.any() or is_range.sum() < 2 or is_range.sum() < 0.5 * (~dated).sum():
         return None, None
-    ends = set(pd.to_numeric(ranges[0], errors="coerce").dropna()) | set(
-        pd.to_numeric(ranges[2], errors="coerce").dropna()
+    ends = set(to_numbers(ranges[0]).dropna()) | set(
+        to_numbers(ranges[2]).dropna()
     )
     mark = str(ranges[1][is_range].iloc[0])
     originals: dict[str, str] = {}
@@ -909,9 +910,9 @@ def _names_in_first_row(frame: pd.DataFrame) -> bool:
             continue
         if _BLANK_HEADER.match(str(name)) and not named:
             return False
-        if pd.to_numeric(values, errors="coerce").notna().mean() < 0.9:
+        if to_numbers(values).notna().mean() < 0.9:
             continue
-        if named and pd.isna(pd.to_numeric(pd.Series([cell]), errors="coerce").iloc[0]):
+        if named and pd.isna(to_numbers(pd.Series([cell])).iloc[0]):
             labels += 1
         elif not pd.isna(cell):
             return False
@@ -974,7 +975,7 @@ def _looks_like_exported_index(series: pd.Series, name: str) -> bool:
     if not name.lower().startswith("unnamed"):
         return False
 
-    numeric = pd.to_numeric(series, errors="coerce")
+    numeric = to_numbers(series)
     if numeric.isna().any() or not (numeric % 1 == 0).all():
         return False
 
@@ -1098,7 +1099,7 @@ def _month_numbers(series: pd.Series) -> pd.Series:
     """Months written as names ("March", "Mar") or as numbers 1-12; anything else is NaN."""
     text = series.astype("string").str.strip().str.lower().str.rstrip(".")
     named = text.map(MONTH_NUMBERS, na_action="ignore").astype("float64")
-    numbered = pd.to_numeric(text, errors="coerce").astype("float64")
+    numbered = to_numbers(text).astype("float64")
     return named.fillna(numbered.where(numbered.isin(range(1, 13))))
 
 
@@ -1233,7 +1234,7 @@ def _holds_decimals(distinct: _Distinct) -> bool:
     Missing-value markers ("NA", "<LOD") are left out of the count.
     """
     markers = _missing_markers(distinct)
-    numbers = pd.to_numeric(distinct.values.mask(markers), errors="coerce")
+    numbers = to_numbers(distinct.values.mask(markers))
     read = numbers.notna().to_numpy()
     counts = distinct.counts
     fractional = bool((numbers[read] % 1 != 0).any())
@@ -1400,7 +1401,7 @@ def _read_numbers(distinct: _Distinct) -> tuple[pd.Series, np.ndarray, bool]:
     markers = _missing_markers(distinct)
     cells = distinct.cells
     marked = distinct.on_cells(markers)
-    numbers = pd.to_numeric(cells.mask(marked), errors="coerce")
+    numbers = to_numbers(cells.mask(marked))
     comma = _decimal_comma(distinct.values.mask(markers))
     # Retry cells plain parsing missed as formatted numbers ("$1,203.55",
     # "(48.10)"). Large values are the ones with separators, so skipping

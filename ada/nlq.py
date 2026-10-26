@@ -68,6 +68,7 @@ from .formatting import (
     with_aggregate,
 )
 from .metrics import metric_for
+from .numeric import to_numbers
 from .quality import MASKED_CHECKS, VALUE_CHECKS, QualityIssue, prefers_log_scale, show_value
 from .quality import scan as scan_quality
 from .schema import ColumnRoles, detect_roles, row_summary_columns, running_total_columns
@@ -2956,7 +2957,7 @@ def _split_plan(
 def _split_labels(series: pd.Series, at: float) -> pd.Series:
     """Each row's side of a split: "before 2000" or "2000 onwards" for a date, by value otherwise."""
     dated = is_datetime64_any_dtype(series)
-    values = series.dt.year.astype(float) if dated else pd.to_numeric(series, errors="coerce")
+    values = series.dt.year.astype(float) if dated else to_numbers(series)
     shown = _number_text(at)
     if dated:
         before, after = f"the years before {shown}", f"{shown} and later"
@@ -3361,7 +3362,7 @@ def _apply_filters(
 def _value_mask(series: pd.Series, values: tuple[str, ...]) -> pd.Series:
     """Rows whose value is one of ``values``; numbers compare as numbers, so "2" matches 2.0."""
     if is_numeric_dtype(series) and not is_bool_dtype(series):
-        wanted = pd.to_numeric(pd.Series(list(values), dtype=object), errors="coerce").dropna()
+        wanted = to_numbers(pd.Series(list(values), dtype=object)).dropna()
         if len(wanted) == len(values):
             return series.isin(wanted.tolist())
     return series.astype(str).isin(values)
@@ -3382,7 +3383,7 @@ def _condition_mask(series: pd.Series, condition: Condition) -> pd.Series:
         # A condition on a date compares its year: "since 1978".
         values = series.dt.year.astype(float)
     else:
-        values = pd.to_numeric(series, errors="coerce")
+        values = to_numbers(series)
     compare = {"=": values.eq, "<": values.lt, "<=": values.le, ">": values.gt, ">=": values.ge}
     return compare[condition.operator](condition.value)
 
@@ -4970,7 +4971,7 @@ def _in_group_order(grouped: pd.DataFrame, key: str) -> pd.DataFrame:
     if isinstance(grouped[key].dtype, pd.CategoricalDtype):
         return grouped.sort_values(key, kind="stable").reset_index(drop=True)
     return grouped.sort_values(
-        key, key=lambda values: pd.to_numeric(values, errors="coerce"), kind="stable"
+        key, key=lambda values: to_numbers(values), kind="stable"
     ).reset_index(drop=True)
 
 
