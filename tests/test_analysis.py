@@ -14,6 +14,10 @@ from ada.analysis import (
     generate_insights,
     separate_stacked_logs,
     set_aside_coarser_rows,
+    CleaningSuggestion,
+    apply_cleaning_suggestion,
+    preview_cleaning_suggestion,
+    suggest_cleaning,
 )
 from ada.formatting import format_moment, is_undated
 from ada.schema import (
@@ -83,6 +87,329 @@ class CleanDataframeTests(unittest.TestCase):
         cleaned, _ = clean_dataframe(frame)
 
         self.assertFalse(is_datetime64_any_dtype(cleaned["Container"]))
+
+
+    def test_numeric_cleanup_is_suggested_without_changing_data(self):
+        frame = pd.DataFrame(
+            {"Amount": ["$4,906.87", "$1,200.00", "$850.50"]}
+        )
+
+        suggestions = suggest_cleaning(frame)
+
+        self.assertEqual(len(suggestions), 1)
+        self.assertEqual(suggestions[0].column, "Amount")
+        self.assertEqual(suggestions[0].operation, "parse_numeric")
+
+    def test_numeric_cleanup_preview_contains_before_and_after_values(self):
+        frame = pd.DataFrame(
+            {"Amount": ["$4,906.87", "$1,200.00", "$850.50"]}
+        )
+
+        suggestions = suggest_cleaning(frame)
+
+        preview = preview_cleaning_suggestion(frame, suggestions[0])
+
+        self.assertEqual(
+            preview["before"].tolist(),
+            ["$4,906.87", "$1,200.00", "$850.50"],
+        )
+        self.assertEqual(
+            preview["after"].tolist(),
+            [4906.87, 1200.00, 850.50],
+        )
+
+    def test_identifier_columns_are_not_suggested_as_numeric(self):
+        frame = pd.DataFrame(
+            {"Customer ID": ["00123", "00456", "00789"]}
+        )
+
+        suggestions = suggest_cleaning(frame)
+
+        self.assertEqual(suggestions, [])
+
+    def test_accounting_parentheses_are_suggested_as_negative_numbers(self):
+        frame = pd.DataFrame(
+            {"Amount": ["4,906.87", "(208.82)", "100.00"]}
+        )
+
+        suggestions = suggest_cleaning(frame)
+
+        self.assertEqual(len(suggestions), 1)
+        self.assertEqual(suggestions[0].column, "Amount")
+        self.assertEqual(suggestions[0].operation, "parse_numeric")
+
+        preview = preview_cleaning_suggestion(frame, suggestions[0])
+
+        self.assertEqual(
+            preview["after"].tolist(),
+            [4906.87, -208.82, 100.00],
+        )
+
+    def test_numeric_value_with_units_is_suggested(self):
+        frame = pd.DataFrame(
+            {"Quantity": ["3,450 units", "1,200 units", "850 units"]}
+        )
+
+        suggestions = suggest_cleaning(frame)
+
+        self.assertEqual(len(suggestions), 1)
+        self.assertEqual(suggestions[0].column, "Quantity")
+        self.assertEqual(suggestions[0].operation, "parse_numeric")
+
+        preview = preview_cleaning_suggestion(frame, suggestions[0])
+
+        self.assertEqual(
+            preview["after"].tolist(),
+            [3450, 1200, 850],
+        )
+
+    def test_consistent_delimiter_is_suggested_for_split(self):
+        frame = pd.DataFrame(
+            {
+                "Segment": [
+                    "West / Enterprise",
+                    "East / Consumer",
+                    "South / Enterprise",
+                ]
+            }
+        )
+
+        suggestions = suggest_cleaning(frame)
+
+        self.assertEqual(len(suggestions), 1)
+        self.assertEqual(suggestions[0].column, "Segment")
+        self.assertEqual(suggestions[0].operation, "split")
+    def test_split_preview_shows_before_and_after_values(self):
+        frame = pd.DataFrame(
+            {
+                "Segment": [
+                    "West / Enterprise",
+                    "East / Consumer",
+                    "South / Enterprise",
+                ]
+            }
+        )
+
+        suggestions = suggest_cleaning(frame)
+
+        preview = preview_cleaning_suggestion(frame, suggestions[0])
+
+        self.assertEqual(
+            preview["before"].tolist(),
+            [
+                "West / Enterprise",
+                "East / Consumer",
+                "South / Enterprise",
+            ],
+        )
+        self.assertEqual(
+            preview["after"].tolist(),
+            [
+                "West | Enterprise",
+                "East | Consumer",
+                "South | Enterprise",
+            ],
+        )
+
+    def test_apply_numeric_cleaning_suggestion(self):
+        frame = pd.DataFrame(
+            {
+                "Revenue": ["$4,906.87", "$1,200.00", "$850.50"],
+            }
+        )
+
+        suggestion = suggest_cleaning(frame)[0]
+
+        cleaned = apply_cleaning_suggestion(frame, suggestion)
+
+        self.assertEqual(
+            cleaned["Revenue"].tolist(),
+            [4906.87, 1200.0, 850.5],
+        )
+
+    def test_apply_split_cleaning_suggestion(self):
+        frame = pd.DataFrame(
+            {
+                "Segment": [
+                    "West / Enterprise",
+                    "East / Consumer",
+                    "South / Enterprise",
+                ]
+            }
+        )
+
+        suggestion = suggest_cleaning(frame)[0]
+
+        cleaned = apply_cleaning_suggestion(frame, suggestion)
+
+        self.assertNotIn("Segment", cleaned.columns)
+
+        self.assertEqual(
+            cleaned["Segment_1"].tolist(),
+            ["West", "East", "South"],
+        )
+
+        self.assertEqual(
+            cleaned["Segment_2"].tolist(),
+            ["Enterprise", "Consumer", "Enterprise"],
+        )
+
+    def test_apply_split_cleaning_suggestion_preserves_nulls(self):
+        frame = pd.DataFrame(
+            {
+                "Segment": [
+                    "West / Enterprise",
+                    None,
+                    "South / Enterprise",
+                ]
+            }
+        )
+
+        suggestion = suggest_cleaning(frame)[0]
+
+        cleaned = apply_cleaning_suggestion(frame, suggestion)
+
+        self.assertEqual(cleaned.loc[0, "Segment_1"], "West")
+        self.assertTrue(pd.isna(cleaned.loc[1, "Segment_1"]))
+        self.assertEqual(cleaned.loc[2, "Segment_1"], "South")
+
+        self.assertEqual(cleaned.loc[0, "Segment_2"], "Enterprise")
+        self.assertTrue(pd.isna(cleaned.loc[1, "Segment_2"]))
+        self.assertEqual(cleaned.loc[2, "Segment_2"], "Enterprise")
+
+    def test_apply_split_cleaning_suggestion_avoids_existing_column_names(self):
+        frame = pd.DataFrame(
+            {
+                "Segment": [
+                    "West / Enterprise",
+                    "East / Consumer",
+                ],
+                "Segment_1": [
+                    "existing value 1",
+                    "existing value 2",
+                ],
+            }
+        )
+
+        suggestion = suggest_cleaning(frame)[0]
+
+        cleaned = apply_cleaning_suggestion(frame, suggestion)
+
+        self.assertIn("Segment_1", cleaned.columns)
+        self.assertIn("Segment_1_2", cleaned.columns)
+        self.assertIn("Segment_2", cleaned.columns)
+
+        self.assertEqual(
+            cleaned["Segment_1"].tolist(),
+            ["existing value 1", "existing value 2"],
+        )
+
+        self.assertEqual(
+            cleaned["Segment_1_2"].tolist(),
+            ["West", "East"],
+        )
+
+        self.assertEqual(
+            cleaned["Segment_2"].tolist(),
+            ["Enterprise", "Consumer"],
+        )
+
+    def test_numeric_cleaning_suggestion_allows_consistent_currency(self):
+        frame = pd.DataFrame(
+            {
+                "Revenue": ["$100", "$200", "$300"],
+            }
+        )
+
+        suggestions = suggest_cleaning(frame)
+
+        self.assertTrue(
+            any(
+                suggestion.column == "Revenue"
+                and suggestion.operation == "parse_numeric"
+                for suggestion in suggestions
+            )
+        )
+
+
+    def test_numeric_cleaning_suggestion_rejects_mixed_currencies(self):
+        frame = pd.DataFrame(
+            {
+                "Revenue": ["$100", "\u20ac200", "$300"],
+            }
+        )
+
+        suggestions = suggest_cleaning(frame)
+
+        self.assertFalse(
+            any(
+                suggestion.column == "Revenue"
+                and suggestion.operation == "parse_numeric"
+                for suggestion in suggestions
+            )
+        )
+
+
+    def test_numeric_values_with_thousands_separator_are_not_split(self):
+        frame = pd.DataFrame({"Revenue": ["1,234", "5,678", "9,012"]})
+
+        suggestions = suggest_cleaning(frame)
+
+        self.assertTrue(
+            any(
+                s.column == "Revenue" and s.operation == "parse_numeric"
+                for s in suggestions
+            )
+        )
+        self.assertFalse(
+            any(
+                s.column == "Revenue" and s.operation == "split"
+                for s in suggestions
+            )
+        )
+
+    def test_split_preview_handles_null_values(self):
+        frame = pd.DataFrame(
+            {"Segment": ["West / Enterprise", None, "South / Enterprise"]}
+        )
+        suggestion = CleaningSuggestion(
+            column="Segment",
+            operation="split",
+            description="Split values",
+        )
+
+        preview = preview_cleaning_suggestion(frame, suggestion)
+
+        self.assertEqual(preview.loc[0, "after"], "West | Enterprise")
+        self.assertTrue(pd.isna(frame.loc[1, "Segment"]))
+        self.assertEqual(preview.loc[1, "after"], " | ")
+        self.assertEqual(preview.loc[2, "after"], "South | Enterprise")
+
+    def test_paid_column_is_not_excluded_by_protected_name_filter(self):
+        frame = pd.DataFrame({"Paid": ["100", "200", "300"]})
+
+        suggestions = suggest_cleaning(frame)
+
+        self.assertTrue(
+            any(
+                s.column == "Paid" and s.operation == "parse_numeric"
+                for s in suggestions
+            )
+        )
+
+    def test_numeric_parser_handles_negative_and_accounting_values(self):
+        frame = pd.DataFrame({"Revenue": ["-1,200", "(2,500)", "300"]})
+
+        suggestions = suggest_cleaning(frame)
+        numeric_suggestion = next(
+            s for s in suggestions
+            if s.column == "Revenue" and s.operation == "parse_numeric"
+        )
+
+        cleaned = apply_cleaning_suggestion(frame, numeric_suggestion)
+
+        self.assertEqual(cleaned["Revenue"].tolist(), [-1200.0, -2500.0, 300.0])
+
 
 
 class YearColumnTests(unittest.TestCase):
