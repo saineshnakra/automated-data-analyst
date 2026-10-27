@@ -267,10 +267,12 @@ Besides the number, a check records what could make the answer misleading:
   instead, the message says so: the claim counted each payment row, not each
   order.
 
-- **Other spellings of a value.** When the column a filter picks a value
-  from also holds it inside a longer value ("Sen. John McCain" for "John
-  McCain"), the claim may mean them all, and it gets `missing_context`
-  naming them. (A filter already matches a value in any capitals.) A value with
+- **Other spellings of a value.** When a column of more than 50 values (a
+  list of names) also holds a value of two words or more inside a longer one
+  ("Sen. John McCain" for "John McCain"), the claim may mean them all, and it
+  gets `missing_context` naming them. In a column of a few categories,
+  "Wheelchair Men" is a category of its own, not "Men" written another way.
+  (A filter already matches a value in any capitals.) A value with
   "non", "not" or "no" before the words is the opposite, not another
   spelling ("non-USA").
 - **A column of medians or means.** A column whose name says each row holds

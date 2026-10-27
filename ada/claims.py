@@ -1430,8 +1430,8 @@ def _summary_word(column: str | None) -> str | None:
     return next((SUMMARY_WORDS[word] for word in words if word in SUMMARY_WORDS), None)
 
 
-# Most distinct values of a column searched for other spellings of a value a filter picked.
-MAX_SPELLING_VALUES = 20_000
+# Fewest and most distinct values of a column searched for other spellings of a value a filter picked.
+SPELLING_MIN_VALUES, MAX_SPELLING_VALUES = 50, 20_000
 
 
 def _other_spellings(frame: Any, answer: QueryAnswer) -> tuple[str, str, list[str]] | None:
@@ -1439,17 +1439,21 @@ def _other_spellings(frame: Any, answer: QueryAnswer) -> tuple[str, str, list[st
 
     Another way is a longer value holding all its words in order ("Sen. John
     McCain" for "John McCain"); a filter already matches the value in any
-    capitals. Returns (column, value, the other ways) for the first such value.
+    capitals. Only a value of two words or more in a column of more than
+    SPELLING_MIN_VALUES values counts, as a name in a list of names does: in a
+    column of a few categories, "Wheelchair Men" is a category of its own, not
+    "Men" written another way. Returns (column, value, the other ways) for
+    the first such value.
     """
     for item in answer.plan.filters:
         if item.column not in frame.columns:
             continue
         uniques = frame[item.column].dropna().astype(str).unique()
-        if len(uniques) > MAX_SPELLING_VALUES:
+        if not SPELLING_MIN_VALUES < len(uniques) <= MAX_SPELLING_VALUES:
             continue
         for value in item.values:
             words = re.findall(r"[a-z0-9]+", value.lower())
-            if not words:
+            if len(words) < 2:
                 continue
             # "non-USA" is not another way to write "USA".
             pattern = re.compile(r"(?<!non-)(?<!non )(?<!not )(?<!no )\b" + r"\W+".join(map(re.escape, words))

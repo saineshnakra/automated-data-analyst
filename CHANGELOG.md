@@ -83,8 +83,9 @@
   manufacturers; "reached", "surveyed" and "came from" are grammar.
 - Fixed wrong verdict: "John McCain was a guest on the show 11 times" failed
   because the filter kept "John McCain" (5 rows) and not "Sen. John McCain"
-  (6 more). A claim whose filter value the column also holds inside a longer
-  value now gets `missing_context` naming the other spellings.
+  (6 more). A claim whose filter value, a name in a long list, the column
+  also holds inside a longer value now gets `missing_context` naming the
+  other spellings.
 - The column that numbers the units (a `Rat` column of 16 rats) is never
   averaged or ranked, and the word for the units names the rows when the
   question names a measure too: "The heaviest rat reached 628 grams" is the

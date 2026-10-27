@@ -791,8 +791,10 @@ class BaseAndScaleTests(unittest.TestCase):
 
 class OtherSpellingTests(unittest.TestCase):
     def test_a_value_written_another_way_too_is_not_a_verdict(self):
-        guests = pd.DataFrame({"guest": ["John McCain"] * 5 + ["Sen. John McCain"] * 6 + ["Jon Hamm"] * 2,
-                               "group": ["Politician"] * 11 + ["media", "Media"]})
+        others = [f"Guest {index}" for index in range(60)]
+        names = ["John McCain"] * 5 + ["Sen. John McCain"] * 6 + ["Jon Hamm"] * 2 + others
+        guests = pd.DataFrame({"guest": names,
+                               "group": ["Politician"] * 11 + ["media", "Media"] + ["Actor"] * 60})
         for claim in ("John McCain was a guest 11 times.", "John McCain was a guest 5 times."):
             with self.subTest(claim=claim):
                 check = ada.check_claim(guests, claim)
@@ -800,6 +802,11 @@ class OtherSpellingTests(unittest.TestCase):
                 self.assertIn('"Sen. John McCain"', check.message)
         # A filter matches a value in any capitals, so "media" and "Media" are counted together.
         self.assertEqual(ada.check_claim(guests, "There were 2 rows with group media.").status, "verified")
+
+    def test_a_category_holding_another_is_not_another_spelling(self):
+        races = pd.DataFrame({"Category": ["Men"] * 4 + ["Wheelchair Men"] * 3 + ["Women"] * 3,
+                              "Time": [130.0, 128, 129, 127, 90, 92, 91, 140, 141, 142]})
+        self.assertTrue(ada.check_claim(races, "There were 4 rows with Category Men.").verified)
 
     def test_the_opposite_value_is_not_another_spelling(self):
         cars = pd.DataFrame({"Origin": ["USA"] * 3 + ["non-USA"] * 2, "Price": [10.0, 20, 30, 40, 50]})
