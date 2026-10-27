@@ -1673,7 +1673,11 @@ def _claim_values(
                     continue
                 columns = list(dict.fromkeys(value.column for value in found))
                 beside = _column_beside(reading, columns, window[0][0], window[-1][1]) if (
-                    len(columns) > 1 or adverb) else None
+                    len(columns) > 1 or adverb or not exact) else None
+                if not exact and not adverb and beside is not None:
+                    # "London boroughs": a word only inside a value ("City of London"), before the name of
+                    # that value's own column, says which ones, not one of them.
+                    continue
                 if adverb and beside is None:
                     continue
                 if beside is not None:
@@ -4186,7 +4190,16 @@ def _plan_from_reading(reading: _Reading, dataframe: pd.DataFrame, roles: Column
         else:
             top_n = 1
             ascending = bool(re.search(ASCENDING_PATTERN, intent_text))
-        grouped = _grouped_aggregation(aggregation, explicit_extreme, default_aggregation)
+        # "which boroughs have the most rescues": with no measure named, "most" counts each group's rows,
+        # as it does for periods.
+        # A verb of selling or spending ("which product sells the fewest") is about the measure.
+        selling = re.search(r"\b(?:sells?|sold|earns?|earned|spends?|spent|costs?|pays?|paid)\b", intent_text)
+        counted = not measure and not selling and bool(
+            re.search(r"\b(?:most|fewest|busiest|quietest)\b", intent_text)
+        )
+        ranked = {**base, "measure": None} if counted else base
+        usual = "count" if counted else default_aggregation
+        grouped = _grouped_aggregation(aggregation, explicit_extreme, usual)
         if grouped == "mean" and (share := _flag_share(
             reading, dataframe, dimension, base, intent="rank", top_n=top_n, ascending=ascending,
             time_part=time_part,
@@ -4199,7 +4212,7 @@ def _plan_from_reading(reading: _Reading, dataframe: pd.DataFrame, roles: Column
             top_n=top_n,
             ascending=ascending,
             time_part=time_part,
-            **base,
+            **ranked,
         )
 
     if wants_trend and roles.date:

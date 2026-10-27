@@ -3478,6 +3478,28 @@ class CountColumnsAndNamesTests(unittest.TestCase):
         self.assertTrue(answer is None or "New" not in answer.calculation)
 
 
+class GroupsAndModifiersTests(unittest.TestCase):
+    def rescues(self) -> pd.DataFrame:
+        boroughs = ["Enfield"] * 5 + ["Croydon"] * 4 + ["City of London"] * 2 + ["Barnet"] * 3
+        costs = [100.0] * 5 + [900.0] * 4 + [50.0] * 2 + [10.0] * 3
+        return pd.DataFrame({"borough": boroughs, "cost": costs})
+
+    def test_the_most_with_no_measure_counts_each_group_s_rows(self):
+        frame = self.rescues()
+        answer = answer_question("which borough has the most cases", frame, detect_roles(frame))
+        # Croydon has the most cost; Enfield the most rows.
+        self.assertIn("Enfield", answer.answer)
+        self.assertIsNone(answer.plan.measure)
+
+    def test_part_of_a_value_before_its_column_s_name_is_no_filter(self):
+        frame = self.rescues()
+        answer = answer_question("which London boroughs have the most cases", frame, detect_roles(frame))
+        self.assertTrue(answer is None or "City of London" not in answer.calculation)
+        # A value written in full still picks its rows.
+        whole = answer_question("how many rows for City of London borough", frame, detect_roles(frame))
+        self.assertEqual(whole.value, 2)
+
+
 class StateAndNounTests(unittest.TestCase):
     def test_the_most_of_a_value_counts_rows_by_period(self):
         days = ["2020-01-01", "2020-01-01", "2020-01-02"]

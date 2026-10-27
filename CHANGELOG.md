@@ -34,6 +34,9 @@
 
 ### Reading claims and questions
 
+- Fixed a wrong answer: "which London boroughs have the most animal rescues"
+  filtered to City of London and ranked a cost column; "London boroughs" now
+  picks no rows, and "most" with no measure counts each group's rows.
 - "In 2016 the Democrats topped 60% in nine states" counts the states above
   60%; "topped", "exceeded" and "surpassed" bound a value; "Just 48 women"
   is 48; "by 2016" is up to 2016, not in 2016.

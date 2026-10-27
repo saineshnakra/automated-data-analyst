@@ -450,6 +450,10 @@ noun it comes from: "were adopted" is `outcome_type` = adoption, and
 value ("return to owner"), the word could mean either and is refused with
 both columns. A noun for rows ("birds", "animals") that a column of kinds
 holds ("bird" in `animal_type`) picks those rows instead of naming every row.
+A word found only inside a value, right before the name of that value's own
+column, says which ones and picks no rows: "London boroughs" is not the
+borough City of London. A value written in full still does ("City of London
+borough").
 A word in lower case that is the capitalised word of several longer names is
 none of them: "new cases" does not pick New Zealand or Papua New Guinea,
 while "the southwest border" still picks the one value Southwest Land Border. "named" and "called"
@@ -882,7 +886,10 @@ Other behaviour:
   the most rows" ranks row counts, and so does "most", "fewest", "busiest"
   or "quietest" when no measure is named: "which day had the most
   earthquakes" counts the rows of each day rather than ranking a measure the
-  question never names. "strongest" and "deepest" ask for the highest value,
+  question never names. Groups rank the same way: "which boroughs have the
+  most rescues" counts each borough's rows, unless a verb of selling or
+  spending ("which product sells the fewest") is about the measure.
+  "strongest" and "deepest" ask for the highest value,
   "weakest" and "shallowest" for the lowest.
 - A correlation reports Pearson r with its 95% interval (Fisher transform), the
   number of complete pairs and the Spearman rank correlation, in the same
