@@ -68,7 +68,15 @@ when the file can't be read, and 3 when it is unverified for any other reason.
    manufacturers" and a lead such as "Of the 5,144 Danes in the study,". The
    base must be the share's denominator, or for any other answer the rows in
    its scope; otherwise the claim gets `missing_context`. "Seven in ten", "one
-   in five" and "1 in 20" are shares, read as fractions are.
+   in five" and "1 in 20" are shares, read as fractions are. A lead naming
+   a group before a share ("Among victims aged 50 and over, 9.5% died") makes
+   the share of that group, and a percent takes no unit: in "9.5% died" the
+   verb says what is counted. A share stated after what it counts ("Men were
+   79% of the victims who died"; also made up, accounted for, represented,
+   comprised, formed) is read as "79% of the victims who died were men",
+   unless the subject is a measure ("The tax rate was 45% of ..."). A base
+   lead may run to eleven words ("Of the 186,730 people killed or injured on
+   French roads in 1958,"); its words are set aside and its count is checked.
 2. **The question.** The rest of the sentence is read as a question to
    `Analysis.ask` (see [Ask ADA](ask-ada.md)). "averaged 5050" becomes
    "average ...", and "There are 344 penguins" becomes "how many penguins",

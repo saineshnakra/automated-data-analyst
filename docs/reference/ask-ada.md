@@ -261,7 +261,15 @@ each word is claimed, in this order, by:
    and 2000", "from 1990 to 2000", "the 2010s" (2010 to 2019), and "before
    and after 2000", which splits the rows in two. A day written out ("April
    27, 2011", "27 April 2011", "2011-04-27") keeps the rows of that day,
-   whatever their time; a date that does not exist (February 30) is not read. "From 2019" right after the rows' own noun is that year
+   whatever their time; a date that does not exist (February 30) is not read.
+   Ages written out ("30- to 34-year-olds", "aged 50 and over", "people 65
+   and older", "65+", "20-year-olds") keep the rows of those ages in the one
+   column named for age: as conditions on a column of numbers, or as the
+   bands that make them up exactly on a column of bands ("50-64" and "65+"
+   for "50 and over"). Ages that cut a band in two ("40 and over" with a
+   band 35-49) are refused, as no row says which side its people are on.
+   Numbers with no age word ("rose from 12 to 20") are not ages. "From 2019"
+   right after the rows' own noun is that year
    ("sets from 2019" in `sets.csv` are 2019's sets); "from 2019 onwards"
    stays a range. A verb that only dates an event before a year ("sets
    released in 2020"; also published, launched, founded, built, made,
@@ -281,7 +289,12 @@ each word is claimed, in this order, by:
    capitals that is also a query word ("ALL" as a diagnosis) is the value
    when typed as the data spells it. "Men", "women", "boys" and "girls" name
    the values of the one column that holds only sexes (Male and Female, M and
-   F, besides Other or Unknown): "women" is `Gender` = Female. An adjective
+   F, besides Other or Unknown): "women" is `Gender` = Female. Words for
+   dying ("deaths", "killed", "dead", "fatalities") and for surviving
+   ("survivors", "alive") name the value that spells the same outcome in one
+   column ("deaths" is `result` = Died), or the Yes or No of the one yes/no
+   column named for it (`Survived`: "survivors" is Yes, "died" is No;
+   `OUTCOME_WORDS`). An adjective
    of nationality names its country ("Belgian" is Belgium, "Dutch" the
    Netherlands; `DEMONYMS`) in the one column that holds it, or, when a
    country of birth holds it too, in the column named for nationality. A
@@ -330,8 +343,9 @@ each word is claimed, in this order, by:
 15. **Nouns for the rows**: a word from `ENTITY_NOUNS` ("patients", "birds",
     "readings") or a plural word right after "how many", "number of" or
     "share of", or right before "with" or "where" ("for mixes with
-    superplasticizer above 0"). In a table of counts, any plural that names
-    nothing else names the cases the counts count ("female applicants").
+    superplasticizer above 0"). In a table of counts, the first plural that
+    names nothing else names the cases the counts count ("female
+    applicants"); a second one ("people who were cyclists") names nothing.
 16. **"missing"**, "null", "blank" or "empty" not attached to a column: a
     question about missing values.
 17. **Column words** ("column", "variable") right after a column's name ("the
@@ -600,10 +614,15 @@ A share of a group is of that group. After "share of", "percentage of",
 the verb (are, is, were, was, have, has, had, who, that, which) make the base,
 and those after it are counted: "what percentage of Adelie are female" gives
 "73 of the 146 rows with species = Adelie, sex recorded (50.0%) have sex =
-female", not 73 of all 333. A yes/no outcome is counted among the rest:
-"what share of women survived" is 344 of the 470 women (73.2%). Values side
-by side with no verb between them ("share of female Adelie") are counted
-together, over every row.
+female", not 73 of all 333. When a clause on the base comes first, the verb
+is the sentence's own one: "share of victims who died were men" is of the
+victims who died, while in "share of victims were men who died" the men who
+died are counted over every victim. A verb after "and" or "or" joins what
+is counted. With no verb, a value written as a past tense after the others
+is what is counted: "share of male victims died" is of the male victims. A
+yes/no outcome is counted among the rest: "what share of women survived" is
+344 of the 470 women (73.2%). Values side by side with no verb between them
+("share of female Adelie") are counted together, over every row.
 
 ### 4. Nothing left out
 

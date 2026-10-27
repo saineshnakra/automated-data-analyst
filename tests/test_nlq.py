@@ -3372,6 +3372,83 @@ class DistinctShareTests(unittest.TestCase):
         self.assertIn("50.0% of the 4 in all", answer.answer)
 
 
+class OutcomeWordTests(unittest.TestCase):
+    def test_words_for_dying_pick_the_value_that_spells_it(self):
+        frame = pd.DataFrame({"result": ["Died", "Injured", "Died"], "mode": ["Car", "Car", "Bus"],
+                              "Freq": [5, 50, 2]})
+        roles = detect_roles(frame)
+        for question in ("how many deaths", "how many were killed", "how many dead"):
+            with self.subTest(question=question):
+                self.assertEqual(answer_question(question, frame, roles).value, 7)
+
+    def test_a_yes_no_column_named_for_surviving_reads_both_ways(self):
+        frame = pd.DataFrame({"Sex": ["Male", "Female", "Male", "Female"],
+                              "Survived": ["Yes", "Yes", "No", "No"], "Freq": [10, 30, 90, 10]})
+        roles = detect_roles(frame)
+        self.assertEqual(answer_question("how many survivors", frame, roles).value, 40)
+        self.assertEqual(answer_question("how many passengers died", frame, roles).value, 100)
+
+    def test_two_columns_that_spell_an_outcome_leave_the_word_unread(self):
+        frame = pd.DataFrame({"driver": ["Died", "Lived"], "passenger": ["Lived", "Died"], "n": [1, 2]})
+        reading = nlq._read_question("how many deaths", frame, detect_roles(frame))
+        self.assertFalse(reading.filters)
+
+
+class ShareSplitTests(unittest.TestCase):
+    def frame(self) -> pd.DataFrame:
+        return pd.DataFrame({"result": ["Died", "Died", "Injured", "Injured"],
+                             "gender": ["Male", "Female", "Male", "Female"], "Freq": [80, 20, 500, 400]})
+
+    def test_the_sentence_s_own_verb_ends_the_base(self):
+        frame = self.frame()
+        roles = detect_roles(frame)
+        for question, share in (("share of victims who died were men", 80.0),
+                                ("share of victims were men who died", 8.0),
+                                ("share of male victims died", 80 / 580 * 100),
+                                ("share of victims who were men and had died", 8.0)):
+            with self.subTest(question=question):
+                answer = answer_question(question, frame, roles)
+                self.assertAlmostEqual(dict(answer.figures)["share_percent"], share)
+
+    def test_a_second_plural_in_a_table_of_counts_is_not_the_rows(self):
+        frame = self.frame()
+        hint = rephrase_hint("how many people were dentists", frame, detect_roles(frame))
+        self.assertIn("dentists", hint)
+
+
+class AgeTests(unittest.TestCase):
+    def bands(self) -> pd.DataFrame:
+        return pd.DataFrame({"age": ["12", "13", "20", "22-23", "30-34", "35-49", "50-64", "65+"],
+                             "use": [1.0, 2, 30, 40, 35, 25, 20, 10]})
+
+    def test_ages_written_out_pick_the_bands_that_make_them_up(self):
+        frame = self.bands()
+        roles = detect_roles(frame)
+        for question, values in (("average use among 30- to 34-year-olds", "age = 30-34"),
+                                 ("average use among people 65 and older", "age = 65+"),
+                                 ("average use among 20-year-olds", "age = 20"),
+                                 ("average use for people aged 35 and over", "age in (35-49, 50-64, 65+)")):
+            with self.subTest(question=question):
+                self.assertIn(values, answer_question(question, frame, roles).calculation)
+
+    def test_ages_that_cut_a_band_in_two_are_refused(self):
+        frame = self.bands()
+        roles = detect_roles(frame)
+        self.assertIsNone(answer_question("average use for people aged 40 and over", frame, roles))
+        hint = rephrase_hint("average use for people aged 40 and over", frame, roles)
+        self.assertIn("cuts the age band 35-49", hint)
+
+    def test_ages_on_a_numeric_column_are_conditions(self):
+        frame = pd.DataFrame({"age": [10, 20, 30, 40, 50, 60], "income": [0.0, 10, 20, 30, 40, 50]})
+        answer = answer_question("average income for people aged 30 and over", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 35)
+
+    def test_numbers_without_an_age_word_are_not_ages(self):
+        frame = self.bands()
+        reading = nlq._read_question("average use rose from 12 to 20", frame, detect_roles(frame))
+        self.assertFalse(reading.filters)
+
+
 class DayTests(unittest.TestCase):
     def test_a_day_written_out_or_in_iso_form_is_a_condition_on_the_date(self):
         times = ["2011-04-27 10:00", "2011-04-27 18:00", "2011-04-28 09:00"]

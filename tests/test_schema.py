@@ -5,6 +5,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
+from ada import analyze
 from ada.schema import (
     IDENTIFIER_NAME_WORDS,
     MEASURE_KEYWORDS,
@@ -25,6 +26,17 @@ from ada.schema import (
     row_summary_columns,
     running_total_columns,
 )
+
+
+class CountTableTests(unittest.TestCase):
+    def test_a_table_of_counts_is_not_a_long_table_of_readings(self):
+        rows = []
+        for age in ("0-9", "10-19", "20-49", "50-64", "65+"):
+            rows += [{"age": age, "result": "Died", "Freq": 10},
+                     {"age": age, "result": "Injured", "Freq": 990}]
+        analysis = analyze(pd.DataFrame(rows))
+        self.assertEqual(len(analysis.frame), 10)
+        self.assertEqual(set(analysis.frame["result"]), {"Died", "Injured"})
 
 
 class IdentifierNameTests(unittest.TestCase):
