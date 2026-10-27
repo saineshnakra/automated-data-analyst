@@ -13,7 +13,7 @@
   accuracy, F1, AUC, log loss, MAP@3, RMSE, RMSLE and MAE. It needs the new
   `model` extra (scikit-learn and LightGBM). See
   [Predicting a column](docs/reference/modelling.md).
-- `results/kaggle` scores it on 21 tabular competitions split into train,
+- `results/kaggle` scores it on 22 tabular competitions split into train,
   validation and locked test, against each leaderboard's top 10%, and
   submits only when the score clears the bar by twice its uncertainty.
 - When the test rows are groups the training rows never hold (stocks, stores
