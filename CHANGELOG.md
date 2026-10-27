@@ -34,6 +34,21 @@
 
 ### Reading claims and questions
 
+- "In 2015, 565 boys were named Jack" in a table of names with a `Number` of
+  babies each is checked against the rows and against the total of `Number`,
+  with Sex = Boy and Name = Jack: it gets `ambiguous_intent` when only the
+  total agrees, and fails when neither does.
+- "how many homes were sold in Austin in 2014" adds up `sales` instead of
+  counting the city's monthly rows; "a lake" names `LAKE` before `LAKES`; "new
+  cases" no longer picks New Zealand.
+- "The typical strike cost about $27,000" is checked against the median as
+  well as the mean, and gets `ambiguous_intent` when only one agrees.
+- Fixed a wrong verdict: "Of the strikes where the time of day was recorded,
+  almost a third happened at night" was compared with the sum of the `time`
+  column, as "recorded" read as a total; a percentage is never a total now.
+- Fixed a wrong verdict: "Total rain at Oxford peaked at 984 mm in 2012"
+  failed because the peak was checked across stations in 2012; a peak said in
+  a year is now checked across the years.
 - "Chorleywood had the best education score of any town, at 9.4" is checked
   as a peak, and any other claim that ranks a group against all the others is
   not verified on its value alone.

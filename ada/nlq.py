@@ -274,6 +274,7 @@ QUERY_STOPWORDS = {
     "her", "his", "hows", "i", "if", "in", "is", "it", "its", "just", "last", "least", "make", "made",
     "many", "me", "measured", "most", "much", "my", "next", "of", "on", "only", "or", "our", "overall",
     "please", "re", "recorded", "s", "she", "show", "tell", "tested", "than", "that", "the", "their",
+    "named", "called", "happened", "happen", "happens", "occurred", "occur", "occurs",
     "then", "there", "these", "this", "those", "to", "they", "us", "value", "values", "ve", "was", "we",
     "were", "what", "whats", "when", "where", "which", "who", "whom", "whose", "with", "without", "you",
     "your",
@@ -340,7 +341,9 @@ DETERMINERS = frozenset({
     "the", "a", "an", "other", "others", "another", "any", "all", "some", "this", "that", "these", "those",
     "same", "such", "each", "every",
 })
-VALUE_CUES = frozenset({"for", "in", "is", "at", "where", "when", "equals", "of", "from", "within", "among"})
+VALUE_CUES = frozenset({
+    "for", "in", "is", "at", "where", "when", "equals", "of", "from", "within", "among", "named", "called",
+})
 # Cue words that are grammar only when a filter or condition follows them.
 FILTER_CUES = frozenset({"within", "among", "amongst"})
 # Words before a 0/1 flag column that ask for the rows where it is set:
@@ -815,12 +818,14 @@ def _mention_spans(
         for size in range(1, min(index.longest, len(words) - first) + 1):
             hits.update(index.spellings.get(" ".join(words[first:first + size]), ()))
     found: dict[str, tuple[int, int]] = {}
-    for rank in sorted(hits):
+    # Every name as written first, then its plurals: "lake" names LAKE before it names LAKES.
+    for rank, exact in [(rank, True) for rank in sorted(hits)] + [(rank, False) for rank in sorted(hits)]:
         form, column = index.forms[rank]
         if column in found or (worded and _is_number(index.names[column][0])):
             continue
         grouping_only = form in QUERY_GRAMMAR and form != index.names[column][0]
-        for variant in sorted(_word_variants(form), key=lambda text: (-len(text), text)):
+        variants = [form] if exact else sorted(_word_variants(form), key=lambda text: (-len(text), text))
+        for variant in variants:
             wanted = variant.split()
             size = len(wanted)
             match = next(
@@ -1440,6 +1445,13 @@ def _pick_values(
             return None, [], None
         found = [value for value in found if value.column in categories]
         columns = categories
+    if not exact and re.sub(r"[^A-Za-z]", "", phrase).islower() and len({value.raw for value in found}) > 1:
+        # "new TB cases": a word in lower case is not the capitalised word of several names ("New Zealand",
+        # "Papua New Guinea"); one name it fits ("the southwest border") may still be meant.
+        found = [value for value in found if not _capitalised_in(value.raw, run)]
+        if not found:
+            return None, [], None
+        columns = list(dict.fromkeys(value.column for value in found))
     if len(columns) > 1 and dataframe is not None and _common_noun(phrase, question):
         # "dogs" is a kind in animal_type and one pet's name in animal_name: a word written in lower
         # case is a common noun, and a column of names does not hold kinds.
@@ -1471,6 +1483,18 @@ def _common_noun(phrase: str, question: str) -> bool:
         return True
     # "Dogs made up..." opens the sentence with a capital.
     return question.lstrip().startswith(phrase) and letters[1:].islower()
+
+
+def _capitalised_in(raw: str, run: tuple[str, ...]) -> bool:
+    """Whether the words of ``run`` start with a capital where ``raw`` holds them: "New" in "New Zealand"."""
+    tokens = re.findall(r"[A-Za-z0-9]+", raw)
+    lowered = [token.lower() for token in tokens]
+    for index in range(len(tokens) - len(run) + 1):
+        if tuple(lowered[index:index + len(run)]) == run or tuple(
+            _norm(word) for word in lowered[index:index + len(run)]
+        ) == run:
+            return tokens[index][:1].isupper()
+    return False
 
 
 def _names_column(series: pd.Series) -> bool:
@@ -2999,6 +3023,15 @@ def _kind_value(word: str, dataframe: pd.DataFrame) -> bool:
     return False
 
 
+# Verbs whose noun names a column of counts: "how many homes were sold" adds up sales.
+VERB_COUNTS = {
+    "sold": "sales", "bought": "purchases", "purchased": "purchases", "listed": "listings",
+    "booked": "bookings", "ordered": "orders", "delivered": "deliveries", "shipped": "shipments",
+    "admitted": "admissions", "discharged": "discharges", "born": "births", "installed": "installs",
+    "downloaded": "downloads", "registered": "registrations", "enrolled": "enrollments",
+}
+
+
 # Name words that say a column holds counts, so "encounter_count" counts encounters.
 COUNT_NAME_WORDS = frozenset({"count", "counts", "number", "num", "n", "no", "total", "totals"})
 
@@ -3076,6 +3109,18 @@ def _claim_count_column(reading: _Reading, dataframe: pd.DataFrame, roles: Colum
             column = _count_column(word, dataframe)
             if column is not None and not set(_norm(normalized_name(str(column))).split()) & COUNT_NAME_WORDS:
                 column = None
+        elif word in VERB_COUNTS and (counted := re.search(
+            rf"{COUNT_PATTERN}\s+(?:of\s+)?(?:the\s+)?(?P<noun>[a-z]+)\s+(?:were|was|are|is|have\s+been|had\s+been)"
+            r"\s+$", before
+        )):
+            # "how many homes were sold" adds up sales, a column holding how many were sold on each row.
+            column = _count_column(VERB_COUNTS[word], dataframe)
+            if column is not None:
+                reading.claim(*counted.span("noun"))
+                reading.spans = {named: span for named, span in reading.spans.items() if span != (start, end)}
+                reading.claim(start, end)
+                reading.entity, reading.entity_column, reading.weight = counted.group("noun"), None, column
+                return
         else:
             continue
         if column is None:
@@ -3801,7 +3846,9 @@ def _rule_plan(
         if plan.intent == "count" or plan.counted:
             plan = replace(plan, weight=reading.weight)
         else:
-            plan = replace(plan, measure=reading.weight, aggregation="sum")
+            # The trend and the change keep the column of counts named, so its totals read as counts.
+            counts = reading.weight if plan.intent in ("trend", "growth") else None
+            plan = replace(plan, measure=reading.weight, aggregation="sum", weight=counts)
     # In a table of counts each row stands for its count of cases, which the answer says itself.
     entity = () if frequency_column(dataframe) or weighted else _entity_note(reading, plan)
     notes = (*plan.notes, *reading.notes, *entity, *weighted, *_weather_note(reading, plan))
@@ -5734,7 +5781,9 @@ def _execute_trend(
     grain_name = GRAIN_NAMES.get(grain, "period")
     # Rates move in points and levels by a plain difference (see format_change).
     column = working[plan.measure].dropna() if plan.measure else None
-    unit = _unit(plan.measure, scoped_roles)
+    # A column of counts added up ("how many homes were sold": sales) reads as counts, not as money.
+    shown = None if plan.weight and plan.weight == plan.measure else plan.measure
+    unit = _unit(shown, scoped_roles) if shown else None
     # Periods from the first to the last with a value: empty ones before a
     # reading starts are not part of its record.
     spanned = (
@@ -5751,13 +5800,13 @@ def _execute_trend(
         first, last = float(yearly.iloc[0]), float(yearly.iloc[-1])
         first_period, last_period = str(yearly.index[0]), str(yearly.index[-1])
         spanned, grain_name = len(yearly), "complete year"
-    size = format_change(first, last, plan.measure, unit, column, signed=True)
+    size = format_change(first, last, shown, unit, column, signed=True)
     across = f"{spanned} {grain_name}s"
     if len(yearly) < SLOPE_YEARS and len(present) < spanned:
         # Periods with no value are not counted as part of the change.
         across += f", {len(present)} of them with values"
     movement = f"{size} across {across}" if size else f"across {across}, from a starting period of zero"
-    start, end = format_values_apart(first, last, column=plan.measure)
+    start, end = format_values_apart(first, last, column=shown)
     per = GRAIN_NAMES.get(grain, "period")
     shown_as = ", averaged over each complete year," if len(yearly) >= SLOPE_YEARS else f" per {per}"
     answer = (
@@ -5774,7 +5823,7 @@ def _execute_trend(
         # A series that never moves has no slope, peak or low worth naming.
         answer = (
             f"{named} per {per}{_phrase(applied)} is "
-            f"{format_number(first, plan.measure, column_values=column)} in every {per} with a value, "
+            f"{format_number(first, shown, column_values=column)} in every {per} with a value, "
             f"from {_period_words(present.iloc[0]['Period'], grain)} to "
             f"{_period_words(present.iloc[-1]['Period'], grain)}."
         )
@@ -5785,9 +5834,9 @@ def _execute_trend(
     if len(present) >= 4 and slope:
         peak, low = present.loc[present["Value"].idxmax()], present.loc[present["Value"].idxmin()]
         answer += (
-            f" It peaked at {format_number(float(peak['Value']), plan.measure, column_values=column)} in "
+            f" It peaked at {format_number(float(peak['Value']), shown, column_values=column)} in "
             f"{_period_words(peak['Period'], grain)} and was lowest, at "
-            f"{format_number(float(low['Value']), plan.measure, column_values=column)}, in "
+            f"{format_number(float(low['Value']), shown, column_values=column)}, in "
             f"{_period_words(low['Period'], grain)}."
         )
     calculation = f"{plan.aggregation}({plan.measure or 'rows'}) grouped per {per}{scope}"

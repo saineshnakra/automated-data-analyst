@@ -126,7 +126,7 @@ AGGREGATION_CUES = {
 UNIT_STOPS = frozenset({
     "in", "on", "for", "of", "per", "from", "by", "at", "during", "than", "and", "or", "with", "among",
     "across", "when", "where", "while", "since", "between", "after", "before", "to", "a", "an", "the",
-    "each", "every", "over", "under", "as", "if", "is", "was", "were", "are",
+    "each", "every", "over", "under", "as", "if", "is", "was", "were", "are", "who", "that", "which", "whose",
 })
 YEAR_RANGE = (1500, 2100)
 # Words before a number that name a time point, so the number picks rows: "on day 21".
@@ -150,7 +150,7 @@ FRACTION_PATTERN = re.compile(
     r"under|more\s+than|less\s+than|fewer\s+than|at\s+least|at\s+most)\s+)?"
     r"(?P<count>a|an|one|two|three|four|nine)?\s*(?P<part>half|halves|thirds?|quarters?|fifths?|tenths?)"
     r"(?=\s+of\b|\s+(?:had|have|has|were|was|are|is|went|did|said|got|came|made|lived|died|voted|used|took|"
-    r"chose|saw|reported|finished|passed|failed)\b)",
+    r"chose|saw|reported|finished|passed|failed|[a-z]{3,}ed)\b)",
     re.IGNORECASE,
 )
 # A change by a fraction: "rose by about half", "fell by a third".
@@ -593,7 +593,9 @@ def _candidates(claim: str, columns: list[str]) -> list[_Candidate]:
                 lowered = before.lower()
                 break
         previous = re.search(r"([A-Za-z]+)\W*$", before)
-        cue = previous.group(1).lower() if previous and previous.group(1).lower() in PREDICATE_CUES else None
+        # "Of the strikes where it was recorded, almost a third": a comma ends the clause the verb is in.
+        cued = previous is not None and not re.search(r"[,;:]", before[previous.end(1):])
+        cue = previous.group(1).lower() if cued and previous.group(1).lower() in PREDICATE_CUES else None
         cue_start = previous.start(1) if cue and previous else qualifier_start
         marked = any(match.group(name) for name in ("currency", "scale", "suffix", "percent"))
         plain = not marked and "," not in match.group("number") and "." not in match.group("number")
@@ -647,7 +649,10 @@ def _unit_after(claim: str, end: int, columns: list[str], row_noun: str | None) 
             break
         # "73 HR" names the HR column, not hours: a column's own name is no unit.
         known_unit = word.lower() in UNITS and not words and word.lower() not in exact
-        if word.lower() in UNIT_STOPS or (word.lower() in column_words and not known_unit) or len(words) == 3:
+        # "565 boys named Jack": a participle after the noun starts what picks the rows.
+        participle = bool(words) and len(word) > 4 and word.lower().endswith("ed")
+        stop = word.lower() in UNIT_STOPS or (word.lower() in column_words and not known_unit)
+        if stop or len(words) == 3 or participle:
             break
         words.append(word)
         position = end + match.end()
@@ -897,7 +902,9 @@ def read_claim(
         # A percent is its own unit: in "9.5% died" the verb says what is counted.
         unit, unit_end = None, chosen.match.end()
     averaged = re.search(r"\b(?:average|averages|mean|per)\b", claim, re.IGNORECASE)
-    if chosen.cue in TALLY_VERBS and not averaged and not (unit and unit.split()[0].lower() in UNITS):
+    measured = bool(unit and unit.split()[0].lower() in UNITS)
+    # "recorded 1,950 captures" totals them; a percentage is never a total.
+    if chosen.cue in TALLY_VERBS and not averaged and not measured and not chosen.match.group("percent"):
         written = claim[chosen.qualifier_start:chosen.match.end()]
         number = claimed_number(written, chosen.match, chosen.qualifier, None)
         named = f"{unit} " if unit else ""
@@ -941,11 +948,15 @@ def read_claim(
         written = claim[chosen.qualifier_start:chosen.match.end()]
         number = claimed_number(written, chosen.match, chosen.qualifier, None)
         return f"how many {of_the.group(1)} {rest}", number, ""
-    if counted and re.fullmatch(r"(?:there\s+(?:are|were|is|was))?", lead, flags=re.IGNORECASE):
+    # "In 2015, 565 boys were named Jack": a time or place before the count picks rows too.
+    led = re.fullmatch(r"(?P<scope>(?:in|during|on|by)\s+[^,]+?)?,?\s*(?:there\s+(?:are|were|is|was))?", lead,
+                       flags=re.IGNORECASE)
+    if counted and led:
         rest = re.sub(r"\s+", " ", claim[chosen.match.end():]).strip(" .,;:!?")
         written = claim[chosen.qualifier_start:chosen.match.end()]
         number = claimed_number(written, chosen.match, chosen.qualifier, None)
-        return f"how many {rest}", number, ""
+        scope = f" {led.group('scope')}" if led.group("scope") else ""
+        return f"how many {rest}{scope}", number, ""
     start = chosen.cue_start if chosen.cue in AGGREGATION_CUES or chosen.cue in TALLY_VERBS or chosen.cue in {
         "is", "was", "were", "are", "be", "been", "equals", "equalled", "equaled", "stood", "amounted",
         "came", "numbered", "at", "by", "of", "reached", "reaches",
@@ -1362,7 +1373,7 @@ def check_claim(
     if question is None and PEAK_VERB.search(_most_as_peak(text)) and (
         check.verified or check.reason == "failed_check"
     ):
-        return _checked_peak(check, analysis)
+        return _checked_peak(check, analysis, text)
     if question is None and check.verified and check.answer is not None and SUPERLATIVE.search(text) and (
         AGAINST_ALL.search(text) and not _ranked(check.answer)
     ):
@@ -1387,11 +1398,17 @@ PEAK_VERB = re.compile(
 # "California had more traffic deaths than any other state in 1988, with 5,390": a peak said as a lead.
 MOST_LEAD = re.compile(
     r"^\s*(?P<group>[A-Z][\w.'-]*(?:\s+[A-Z][\w.'-]*){0,3})\s+(?:had|recorded|saw|reported|counted)\s+"
-    r"(?:more\s+(?P<more>.+?)\s+than\s+any\s+other\s+[a-z]+|the\s+(?:most|highest|largest)\s+(?P<most>.+?))"
+    r"(?:more\s+(?P<more>.+?)(?P<year>\s+in\s+\d{4})?\s+than\s+(?:in\s+)?any\s+other\s+[a-z]+|"
+    r"the\s+(?:most|highest|largest)\s+(?P<most>.+?))"
     r"(?P<when>\s+(?:in|on|during)\s+[^,]+)?,\s*(?:with\s+|at\s+)?(?P<value>.+?)\s*[.!]?\s*$",
 )
 
 
+# Nouns for periods, which a peak "than any other year" is over.
+TIME_NOUNS = frozenset({
+    "year", "years", "month", "months", "day", "days", "week", "weeks", "season", "seasons", "decade",
+    "decades", "quarter", "quarters",
+})
 # "Chorleywood had the best education score of any town in England, at 9.4": a peak said with "of any".
 _PLACE = r"[A-Z][\w.'-]*(?:\s+[A-Z][\w.'-]*){0,2}"
 BEST_OF_ANY = re.compile(
@@ -1437,7 +1454,8 @@ def _most_as_peak(text: str) -> str:
         return f"The number of {noun} at {subject} {when} peaked at {busiest.group('number').strip()}."
     found = MOST_LEAD.match(text)
     if found is not None and NUMBER_PATTERN.search(found.group("value")):
-        what, when = found.group("more") or found.group("most"), found.group("when") or ""
+        what = found.group("more") or found.group("most")
+        when = found.group("when") or found.group("year") or ""
         return f"{what} in {found.group('group')}{when} peaked at {found.group('value')}."
     found = BEST_OF_ANY.match(text)
     if found is not None and NUMBER_PATTERN.search(found.group("value")):
@@ -1459,7 +1477,7 @@ def _without_peak(text: str) -> str:
     return f"{text[:found.start()]}{joined}{after}"
 
 
-def _checked_peak(check: ClaimCheck, analysis: Any) -> ClaimCheck:
+def _checked_peak(check: ClaimCheck, analysis: Any, text: str = "") -> ClaimCheck:
     """A value for a group, checked to be the highest of its column's groups too.
 
     The answer must keep one value of one column ("age = 20"); the same
@@ -1477,12 +1495,33 @@ def _checked_peak(check: ClaimCheck, analysis: Any) -> ClaimCheck:
         item for item in plan.filters
         if len(item.values) == 1 and analysis.frame[item.column].nunique(dropna=True) > 1
     ] if plan else []
-    yearly = plan is not None and plan.year is not None and plan.month is None and (
-        plan.measure is None and plan.aggregation == "count" and analysis.roles.date is not None
+    combined = plan is not None and plan.measure is not None and plan.aggregation in (
+        "mean", "sum", "median", "max", "min")
+    # "Rain at Oxford peaked at 984 mm in 2012" peaks over the years: the year comes after the peak.
+    # "more deaths than any other state in 1988" names the groups it peaks over.
+    rewritten = _most_as_peak(text)
+    peak = PEAK_VERB.search(rewritten)
+    against = re.search(
+        r"\b(?:than\s+(?:in\s+)?any\s+other|of\s+any|among\s+all(?:\s+the)?)\s+([a-z]+)", text
     )
-    if plan is None or not (len(groups) == 1 or yearly) or (not yearly and (
-        plan.measure is None or plan.aggregation not in ("mean", "sum", "median", "max", "min")
-    )):
+    over_groups = bool(against) and against.group(1) not in TIME_NOUNS
+    one_year = plan is not None and plan.year is not None and plan.month is None
+    in_year = one_year and not over_groups and bool(
+        peak and re.search(rf"\b{plan.year}\b", rewritten[peak.end():]) or against
+    )
+    yearly = one_year and analysis.roles.date is not None and (
+        (plan.measure is None and plan.aggregation == "count") or (combined and in_year)
+    )
+    if plan is not None and plan.year is not None and groups and not yearly and combined and not over_groups:
+        # "Rain at Oxford in 2012 peaked at 984 mm": over the years, or over the stations that year?
+        return replace(
+            check, status="unverified", reason="missing_context",
+            message=f"The claim names a peak, and ADA could not tell whether it is over the years or over "
+                    f"{groups[0].column}: {check.message}",
+            clarification=f"Is it the highest of the years, or of the {groups[0].column} values in "
+                          f"{plan.year}?",
+        )
+    if plan is None or not (len(groups) == 1 or yearly) or (not yearly and not combined):
         return replace(
             check, status="unverified", reason="missing_context",
             message=f"The claim names a peak, and ADA could not tell for which group: {check.message}",
@@ -1495,8 +1534,13 @@ def _checked_peak(check: ClaimCheck, analysis: Any) -> ClaimCheck:
         rows, _ = _apply_filters(analysis.frame, replace(plan, year=None), analysis.roles)
         dates = rows[analysis.roles.date]
         years = dates.dt.year if hasattr(dates, "dt") else dates
-        by_group = rows.groupby(years.astype("Int64").astype(str)).size()
-        column, named, how = "year", str(plan.year), "row count"
+        grouped = rows.groupby(years.astype("Int64").astype(str))
+        if plan.measure is None:
+            by_group, how = grouped.size(), "row count"
+        else:
+            by_group = grouped[plan.measure].agg(plan.aggregation).dropna()
+            how = f"{plan.aggregation}({plan.measure})"
+        column, named = "year", str(plan.year)
     else:
         group = groups[0]
         others = replace(plan, filters=tuple(item for item in plan.filters if item is not group))
@@ -1752,6 +1796,30 @@ AGGREGATION_SAID = re.compile(
 )
 
 
+def _typical_other(
+    analysis: Any, text: str, asked: str, number: ClaimedNumber, answer: QueryAnswer, choices: dict[str, str],
+    factor: float,
+) -> tuple[QueryAnswer, float, bool] | None:
+    """For a "typical" value read as a mean (or a median), the other one and whether it agrees."""
+    from .api import Refusal  # noqa: PLC0415
+
+    plan = answer.plan
+    said = re.search(r"\btypical(?:ly)?\b", text, re.IGNORECASE)
+    if not said or not plan.measure or plan.aggregation not in ("mean", "median"):
+        return None
+    word = "median" if plan.aggregation == "mean" else "average"
+    bare = re.sub(r"\b(?:typical|typically|average|mean|median)\b", " ", asked, flags=re.IGNORECASE)
+    other = analysis.ask(f"{word} {bare}", decisions=choices)
+    if isinstance(other, Refusal) or other.plan.measure != plan.measure or other.plan.aggregation == (
+        plan.aggregation
+    ):
+        return None
+    value, _ = _comparable(other, number)
+    if value is None:
+        return None
+    return other, value * factor, number.holds(value * factor)
+
+
 def _other_aggregation(
     analysis: Any, text: str, asked: str, number: ClaimedNumber, answer: QueryAnswer, choices: dict[str, str],
     factor: float, used: int | None,
@@ -1774,6 +1842,36 @@ def _other_aggregation(
     if value is None or not number.holds(value * factor):
         return None
     return word, other, value * factor
+
+
+# Names of a column that holds a count on each row: "Number" babies of a name, "n" cases in a cell.
+TALLY_NAMES = frozenset({"number", "num", "count", "counts", "n", "freq", "frequency", "total", "cases"})
+
+
+def _tallied(analysis: Any, answer: QueryAnswer, number: ClaimedNumber) -> tuple[str, float, str] | None:
+    """The total of the one column of counts over the rows a count of rows kept, when it agrees with the
+    claim: the claim may mean the things those rows count."""
+    from .nlq import _apply_filters  # noqa: PLC0415
+
+    plan = answer.plan
+    if plan.aggregation != "count" or plan.measure or plan.count_column or plan.weight or number.percent:
+        return None
+    frame = analysis.frame
+    found = []
+    for column in frame.columns:
+        values = frame[column]
+        if normalized_name(str(column)) not in TALLY_NAMES or values.dtype.kind not in "iuf":
+            continue
+        numbers = values.dropna()
+        if len(numbers) and bool((numbers >= 0).all()) and bool((numbers % 1 == 0).all()):
+            found.append(column)
+    if len(found) != 1:
+        return None
+    rows, _ = _apply_filters(frame, plan, analysis.roles)
+    value = float(rows[found[0]].sum())
+    if not number.holds(value):
+        return None
+    return str(found[0]), value, f"sum({found[0]}) over the {len(rows):,} rows kept"
 
 
 # Name words of a column that holds money, for a claim whose number carries a currency symbol.
@@ -1939,8 +2037,14 @@ def _check(
     choices: dict[str, str] | None = None, left: tuple[str, ...] = (),
 ) -> ClaimCheck:
     from .api import Refusal  # noqa: PLC0415
+    from .nlq import _kind_value  # noqa: PLC0415
 
     choices = choices or {}
+    noun = (number.unit or "").split()
+    unsaid = len(noun) == 1 and not re.search(rf"\b{re.escape(noun[0])}\b", asked, re.IGNORECASE)
+    if unsaid and not _claim_unit(number) and _kind_value(noun[0].lower(), analysis.frame):
+        # "565 boys were named Jack": the boys are Sex = Boy, so the noun picks rows as well as naming them.
+        asked = f"{asked} {noun[0]}"
     answer = analysis.ask(asked, decisions=choices)
     table_words = _table_name_words(source)
     for _ in range(3):
@@ -2176,7 +2280,7 @@ def _check(
             claimed=number, question=asked, answer=answer, assumptions=tuple(assumptions), source=source,
             clarification=f"Should {_quoted(others[:3])} count as {value!r}?",
         )
-    if number.percent and answer.plan.intent == "count" and not (
+    if number.percent and (answer.plan.intent == "count" or answer.plan.aggregation == "sum") and not (
         {"share_percent", "change_percent"} & set(dict(answer.figures))
     ):
         # A percentage compared with a plain count fails a true claim ("half of the squirrels" with 1,434).
@@ -2381,6 +2485,24 @@ def _check(
             checks=tuple(checks), source=source,
             clarification=f"Is the number about {measure}, or about another column?",
         )
+    typical = _typical_other(analysis, text, asked, number, answer, choices, factor)
+    if typical and typical[2] != (agreement == "match"):
+        # "the typical strike cost about $27,000": the median is 26,783 and the mean 242,388; "typical" is
+        # said of either.
+        other, value, agrees = typical
+        alternatives = (
+            Alternative(answer.plan.aggregation, asked, computed, agreement == "match", described),
+            Alternative(other.plan.aggregation, asked, value, agrees, other.calculation),
+        )
+        return ClaimCheck(
+            text, "unverified", "ambiguous_intent",
+            f'"Typical" may mean the mean or the median: the {answer.plan.aggregation} is {_plain(computed)} '
+            f"and the {other.plan.aggregation} {_plain(value)}, and only one is in {number.interval()}.",
+            claimed=number, question=asked, answer=answer, compared=computed, agreement=agreement,
+            assumptions=tuple(dict.fromkeys(assumptions)), warnings=tuple(dict.fromkeys(warnings)),
+            checks=tuple(checks), alternatives=alternatives, source=source,
+            clarification="Is the typical value the mean or the median?",
+        )
     otherwise = None
     if agreement == "mismatch":
         otherwise = _otherwise(analysis, asked, number, answer, choices, factor)
@@ -2403,6 +2525,23 @@ def _check(
             assumptions=tuple(dict.fromkeys(assumptions)), warnings=tuple(dict.fromkeys(warnings)),
             checks=tuple(checks), alternatives=alternatives, source=source,
             clarification=f"Is the number the {word} over those rows, or the {answer.plan.aggregation}?",
+        )
+    tallied = _tallied(analysis, answer, number) if agreement == "mismatch" and not otherwise else None
+    if tallied:
+        # "565 boys were named Jack" in a table of names with a Number of babies each: one row, 565 babies.
+        column, value, how = tallied
+        alternatives = (
+            Alternative("rows", asked, computed, False, described),
+            Alternative(column, f"total {column} {asked}", value, True, how),
+        )
+        return ClaimCheck(
+            text, "unverified", "ambiguous_intent",
+            f"The claim may count the rows ({_plain(computed)}, {described}) or add up {column}, which holds "
+            f"a count on each row: {_plain(value)} ({how}), which {number.text} stands for.",
+            claimed=number, question=asked, answer=answer, compared=computed, agreement="mismatch",
+            assumptions=tuple(dict.fromkeys(assumptions)), warnings=tuple(dict.fromkeys(warnings)),
+            checks=tuple(checks), alternatives=alternatives, source=source,
+            clarification=f"Does the claim count the rows, or the {column} on them?",
         )
     if otherwise:
         # The claim agrees once a choice goes the other way; the data alone cannot say which way it should go.

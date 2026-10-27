@@ -3449,6 +3449,35 @@ class KindsAndBoundsTests(unittest.TestCase):
         self.assertIsNone(answer_question(question, plain, detect_roles(plain)))
 
 
+class CountColumnsAndNamesTests(unittest.TestCase):
+    def test_a_column_s_own_name_wins_over_a_plural(self):
+        frame = pd.DataFrame({"LAKE": [1, 0, 1, 0], "LAKES": [0, 0, 0, 0], "TREE": [1, 1, 1, 0]})
+        roles = detect_roles(frame)
+        answer = answer_question("share of episodes that featured a lake", frame, roles)
+        self.assertIn("LAKE = 1", answer.calculation)
+        self.assertNotIn("LAKES", answer.calculation)
+        self.assertIn("LAKES = 1", answer_question("share of episodes with lakes", frame, roles).calculation)
+
+    def test_a_verb_names_the_column_that_counts_it(self):
+        dates = pd.to_datetime(["2014-01-01", "2014-02-01", "2014-01-01"])
+        frame = pd.DataFrame({"city": ["Austin", "Austin", "Dallas"], "date": dates,
+                              "sales": [1500, 1700, 4000], "median": [2e5, 2.1e5, 1.9e5]})
+        answer = answer_question("how many homes were sold in Austin in 2014", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 3200)
+        self.assertIn("sum of sales", " ".join(answer.plan.notes))
+        # With no column of sales, the rows are not homes sold.
+        rows = frame.drop(columns="sales")
+        answer = answer_question("how many homes were sold in Austin in 2014", rows, detect_roles(rows))
+        self.assertTrue(answer is None or "sales" not in answer.calculation)
+
+    def test_a_word_in_lower_case_is_not_part_of_a_name(self):
+        frame = pd.DataFrame({"country": ["New Zealand", "Kenya", "Papua New Guinea"], "cases": [10, 20, 30]})
+        roles = detect_roles(frame)
+        self.assertEqual(answer_question("total cases in New Zealand", frame, roles).value, 10)
+        answer = answer_question("total new cases in Kenya", frame, roles)
+        self.assertTrue(answer is None or "New" not in answer.calculation)
+
+
 class StateAndNounTests(unittest.TestCase):
     def test_the_most_of_a_value_counts_rows_by_period(self):
         days = ["2020-01-01", "2020-01-01", "2020-01-02"]

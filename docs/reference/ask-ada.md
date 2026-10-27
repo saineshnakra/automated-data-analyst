@@ -365,7 +365,10 @@ each word is claimed, in this order, by:
     way, "share of all the money" (also funding, spending, revenue, income,
     investment, budget) weighs each row by the one column of money, named
     for an amount, cost, commitment, payment and the like; negative amounts
-    stay in the total.
+    stay in the total. A verb names such a column too: "how many homes were
+    sold" adds up `sales` (also bought, listed, booked, ordered, delivered,
+    shipped, admitted, discharged, born, installed, downloaded, registered,
+    enrolled), and the totals read as counts, not money.
 16. **"missing"**, "null", "blank" or "empty" not attached to a column: a
     question about missing values.
 17. **Column words** ("column", "variable") right after a column's name ("the
@@ -446,8 +449,15 @@ noun it comes from: "were adopted" is `outcome_type` = adoption, and
 value ("return to owner"), the word could mean either and is refused with
 both columns. A noun for rows ("birds", "animals") that a column of kinds
 holds ("bird" in `animal_type`) picks those rows instead of naming every row.
+A word in lower case that is the capitalised word of several longer names is
+none of them: "new cases" does not pick New Zealand or Papua New Guinea,
+while "the southwest border" still picks the one value Southwest Land Border. "named" and "called"
+point at the value after them ("boys named Jack").
 
 ### Partial column names
+
+A column named as written wins over one its plural or singular names: "a
+lake" is `LAKE`, not `LAKES`, when the table has both.
 
 Words of a column's name that no other column shares name that column, and the
 answer says so: "strength" names `Concrete compressive strength (MPa)`, "pH"

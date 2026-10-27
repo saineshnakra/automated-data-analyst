@@ -166,6 +166,12 @@ of the group's column, with the claim's other filters, and the claim is
 verified only when the group named gives the highest. A value that agrees for
 a group that is not the peak gives `failed_check`, naming where the peak is.
 A peak with no group, or with more than one, gives `missing_context`. A
+peak said in a year ("Rain at Oxford peaked at 984 mm in 2012") is over the
+years: the same calculation is made for each year with the claim's other
+filters, and the year named must give the highest. When the year comes before
+the peak ("Rain at Oxford in 2012 peaked at 984 mm") and a group is named too,
+it could be over the years or over the groups that year, and the claim gets
+`missing_context`. A
 capitalised name that "had more X than any other" group, or "the most X",
 followed by its number ("California had more traffic deaths than any other
 state in 1988, with 5,390") is read as the same peak, and "Vesuvius had its
@@ -181,6 +187,29 @@ A claim that says neither "average" nor "total" ("Oxford got 984 mm of rain in
 by default is checked the other way too: if the total (or the average)
 agrees, the claim gets `ambiguous_intent` with both numbers, not
 `failed_check`.
+
+A count of rows in a table with one column of counts (named Number, Count,
+n, Freq, Total or Cases, with whole numbers never below 0) may mean the things
+that column counts: "In 2015, 565 boys were named Jack" is one row, but 565
+in `Number`. When the total of that column agrees and the row count does not,
+the claim gets `ambiguous_intent` with both; when neither agrees, it fails.
+The noun after a count that is a kind in the table ("boys" where `Sex` holds
+Boy) picks those rows as well, a time or place before the count ("In 2015,")
+stays in the question, and a participle or "who", "that" or "which" after the
+noun ends its unit: "565 boys named Jack". "named" and "called" point at the
+value after them.
+
+"Typical" may mean the mean or the median. A claim about a typical value is
+checked against both: it is verified when both agree, fails when neither does,
+and gets `ambiguous_intent` with both numbers when only one does ("the typical
+repair cost about $27,000", median 26,783, mean 242,388).
+
+A percentage is never a total: a claim in percent read as the sum of a column
+gets `missing_context`. A word before the number counts as its verb only in
+the same clause, so in "Of the strikes where the time was recorded, almost a
+third happened at night" "recorded" is not read as a total. A fraction before
+any verb in the past tense needs no "of" ("a third happened at night"), and
+"happened" and "occurred" pick no rows.
 
 A count or a share that comes to 0 because no row fits the words as read
 ("About 30% of the cats were gold" where no cat is) gives `missing_context`:

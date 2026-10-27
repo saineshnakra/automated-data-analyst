@@ -1087,6 +1087,63 @@ class KindsBoundsAndRanksTests(unittest.TestCase):
             self.assertIn("as the name of the table", " ".join(check.assumptions))
 
 
+class CountsAndPeaksOverTimeTests(unittest.TestCase):
+    def names(self) -> pd.DataFrame:
+        return pd.DataFrame({"Year": [2015, 2015, 2016, 2015, 2015],
+                             "Sex": ["Boy", "Girl", "Boy", "Boy", "Girl"],
+                             "Name": ["Jack", "Ines", "Jack", "Rory", "Jack"],
+                             "Number": [565, 40, 500, 30, 7]})
+
+    def test_a_count_may_mean_the_rows_or_the_column_of_counts(self):
+        names = self.names()
+        check = ada.check_claim(names, "In 2015, 565 boys were named Jack.")
+        self.assertEqual(check.reason, "ambiguous_intent")
+        self.assertIn("Sex = Boy", check.message)
+        self.assertIn("565 (sum(Number)", check.message)
+        girls = ada.check_claim(names, "In 2015 there were 7 girls called Jack.")
+        self.assertEqual(girls.reason, "ambiguous_intent")
+        # Neither one row nor 565 babies: false either way.
+        self.assertEqual(ada.check_claim(names, "In 2015, 572 boys were named Jack.").reason, "failed_check")
+
+    def test_a_percentage_is_never_a_total(self):
+        strikes = pd.DataFrame({"time_of_day": ["Night", "Day", "Day", None], "time": [2105, 830, 1200, 900]})
+        check = ada.check_claim(strikes, "Of the strikes where the time of day was recorded, almost a third "
+                                         "happened at night.")
+        self.assertNotEqual(check.reason, "failed_check", check.message)
+        self.assertNotIn("sum(time)", check.message)
+        _, number, problem = read_claim("Almost a third happened at night.", ["time_of_day"])
+        self.assertEqual(problem, "")
+        self.assertAlmostEqual(number.value, 100 / 3, places=3)
+
+    def test_typical_may_be_the_mean_or_the_median(self):
+        repairs = pd.DataFrame({"repair_cost": [20000.0, 25000, 27000, 30000, 1000000]})
+        check = ada.check_claim(repairs, "The typical repair cost was about $27,000.")
+        self.assertEqual(check.reason, "ambiguous_intent")
+        self.assertIn("the median 27,000", check.message)
+        self.assertEqual(ada.check_claim(repairs, "The typical repair cost was about $100,000.").reason,
+                         "failed_check")
+        # "average" is the mean alone.
+        self.assertTrue(ada.check_claim(repairs, "The average repair cost was about $220,000.").verified)
+        even = pd.DataFrame({"repair_cost": [20000.0, 25000, 27000, 30000, 33000]})
+        self.assertTrue(ada.check_claim(even, "The typical repair cost was about $27,000.").verified)
+
+    def test_a_peak_in_a_year_is_over_the_years(self):
+        rows = [{"station": station, "year": year, "month": month, "rain": rain}
+                for station, base in (("oxford", 50.0), ("braemar", 90.0))
+                for year, extra in ((2011, 0.0), (2012, 20.0), (2013, 5.0))
+                for month, rain in ((month, base + extra) for month in range(1, 13))]
+        frame = pd.DataFrame(rows)
+        check = ada.check_claim(frame, "Total rain at Oxford peaked at 840 mm in 2012.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("year = 2012 gives the highest", " ".join(check.assumptions))
+        wrong = ada.check_claim(frame, "Total rain at Oxford peaked at 660 mm in 2013.")
+        self.assertEqual(wrong.reason, "failed_check")
+        self.assertIn("year = 2012", wrong.message)
+        # The year before the peak could pick the stations of that year as well.
+        unclear = ada.check_claim(frame, "Total rain at Oxford in 2012 peaked at 840 mm.")
+        self.assertEqual(unclear.reason, "missing_context")
+
+
 class RateClaimTests(unittest.TestCase):
     def test_a_rate_for_every_hundred_is_checked_as_totals(self):
         frame = pd.DataFrame({"District": [1, 1, 1, 1, 2, 2, 2, 2],
