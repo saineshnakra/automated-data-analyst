@@ -146,9 +146,24 @@ it. ADA asks for the correlation of the two columns and compares the claim
 with the least-squares slope of the first on the second
 (`scipy.stats.linregress`), or, when each subject has several rows, the mean
 of the subjects' own slopes. A fall is compared with the slope's sign
-reversed. A unit before "of" after "per" ("per mm of flipper length", "per
+reversed, and so is a change between two periods: "fell by about 19%
+between 1982 and 1988" is compared with the size of the fall, and a rise
+that the data show as a fall fails. A unit before "of" after "per" ("per mm of flipper length", "per
 year of age") is the second column's unit. A percentage change per unit is not a slope, and too
 few rows for a correlation give `unsupported_analysis`.
+
+A peak ("Cocaine use peaked at 4.9% among 20-year-olds"; also "hit its
+peak", "reached its peak") is read as the value for the group named, and
+then checked to be the highest: the same calculation is made for every value
+of the group's column, with the claim's other filters, and the claim is
+verified only when the group named gives the highest. A value that agrees for
+a group that is not the peak gives `failed_check`, naming where the peak is.
+A peak with no group, or with more than one, gives `missing_context`. A
+capitalised name that "had more X than any other" group, or "the most X",
+followed by its number ("California had more traffic deaths than any other
+state in 1988, with 5,390") is read as the same peak, and "Vesuvius had its
+busiest year on record in 2024, with 1,315 earthquakes" as a peak of the rows
+counted in each year.
 
 ## Words that name nothing
 
@@ -169,6 +184,13 @@ rest only when no subset could agree by chance:
   the column after "per" ("day of sleep deprivation"); an average, a share or
   an extreme, and any bound ("more than 1,000"), give `missing_context` with
   the agreement shown.
+
+Words that are all words of the table's file or folder name ("Marvel's" for
+`marvel-characters/marvel-wikia-data.csv`, "road" for
+`road-victims/Accident.csv`) name the whole table, so they pick no rows: they
+are not counted as left out, and the assumptions say they were read as the
+table's name. Generic folder words (data, raw, files and the like) are not
+used.
 
 In a folder, a file read without some of the claim's words comes after the
 files and joins that read all of them.
