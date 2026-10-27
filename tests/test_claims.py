@@ -1357,6 +1357,16 @@ class NamingNumberTests(unittest.TestCase):
         self.assertIn("between 2007 and 2010", rest)
 
 
+class CountedBoundTests(unittest.TestCase):
+    def test_the_bound_that_counts_things_is_the_number_claimed(self):
+        frame = pd.DataFrame({"mag": [4.5, 4.7, 5.1, 6.0, 4.4, 7.1]})
+        check = ada.check_claim(frame, "More than 3 earthquakes of magnitude 4.5 or above were recorded.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("mag at least 4.5", check.message)
+        wrong = ada.check_claim(frame, "More than 10 earthquakes of magnitude 4.5 or above were recorded.")
+        self.assertEqual(wrong.reason, "failed_check")
+
+
 class RateClaimTests(unittest.TestCase):
     def test_a_rate_for_every_hundred_is_checked_as_totals(self):
         frame = pd.DataFrame({"District": [1, 1, 1, 1, 2, 2, 2, 2],

@@ -265,6 +265,7 @@ UNIT_TOKENS = frozenset({
     "l", "ml", "ul", "c", "f", "k", "s", "ms", "sec", "secs", "h", "hr", "hrs",
     "pct", "percent", "ppm", "ppb", "mol", "mmol", "umol", "kda", "rfu", "au",
     "hz", "kpa", "psi", "mph", "bpm", "rpm", "kcal", "usd", "eur", "gbp",
+    "w", "kw", "mw", "gw", "kwh", "mwh", "gwh", "twh",
 })
 _TRAILING_ANNOTATION = re.compile(r"\s*[(\[][^)\]]*[)\]]\s*$")
 
@@ -276,6 +277,7 @@ QUERY_STOPWORDS = {
     "many", "me", "measured", "most", "much", "my", "next", "of", "on", "only", "or", "our", "overall",
     "please", "re", "recorded", "s", "she", "show", "tell", "tested", "than", "that", "the", "their",
     "named", "called", "happened", "happen", "happens", "occurred", "occur", "occurs",
+    "reached", "reach", "reaches", "reaching",
     "then", "there", "these", "this", "those", "to", "they", "us", "value", "values", "ve", "was", "we",
     "were", "what", "whats", "when", "where", "which", "who", "whom", "whose", "with", "without", "you",
     "your",
@@ -2197,6 +2199,23 @@ def _abbreviated_columns(phrase: tuple[str, ...], words: dict[str, tuple[str, ..
     return [column for column, names in words.items() if shortens(names)]
 
 
+# Words a column's name may carry beside what it measures.
+NAME_FILLERS = frozenset({"of", "the", "in", "per", "a", "an", "and"})
+
+
+def _fully_named(
+    phrase: tuple[str, ...], candidates: list[str], words: dict[str, tuple[str, ...]]
+) -> list[str]:
+    """The candidates whose every name word, its units and fillers aside, starts a word of the phrase."""
+    full = []
+    for column in candidates:
+        units = _unit_words(column)
+        rest = [name for name in words.get(column, ()) if not any(word.startswith(name) for word in phrase)]
+        if all(name in units or name in UNIT_TOKENS or name in NAME_FILLERS for name in rest):
+            full.append(column)
+    return full
+
+
 def _initialled_columns(phrase: tuple[str, ...], words: dict[str, tuple[str, ...]]) -> list[str]:
     """Columns named in capitals by the initials of the phrase: "home runs" for HR, "stolen bases" for SB."""
     if not all(word.isalpha() for word in phrase):
@@ -2241,6 +2260,12 @@ def _claim_partial_at(
             reading.claim(start, end)
             return size
         extra = ""
+        if len(candidates) > 1 and len(full := _fully_named(phrase, candidates, words)) == 1:
+            # "magnitude" names mag, not magType or magError; "capacity" names capacity_mw.
+            others = _listed_capped([column for column in candidates if column != full[0]])
+            reading.notes.append(f'Read "{_raw_words(reading.question, list(phrase))}" as {full[0]}, the one '
+                                 f"column it names in full, not {others}.")
+            candidates = full
         if len(candidates) > 1:
             role = _role_of_position(reading.text, start)
             suited = [column for column in candidates if _suits(column, role, dataframe, roles)]
@@ -2476,6 +2501,13 @@ def _condition_words(
         return [Condition(column, ">=", low), Condition(column, "<=", high)], match.end()
     if (match := re.match(rf"\s+{LINKING_VERB}(?P<sign>negative|positive|zero)\b", after)):
         return [_sign_condition(column, match.group("sign"))], match.end()
+    if (match := re.match(
+        rf"\s+{LINKING_VERB}(?:of\s+)?{number}\s+or\s+(?P<side>more|above|higher|greater|over|less|below|lower|"
+        r"fewer|under)\b", after
+    )):
+        # "magnitude 7 or more": the number and those beyond it.
+        operator = ">=" if match.group("side") in ("more", "above", "higher", "greater", "over") else "<="
+        return [Condition(column, operator, _number(match.group("number")))], match.end()
     if (match := re.match(rf"\s+(?:is|are|was|were|equals|equal\s+to)\s+{number}", after)):
         return [Condition(column, "=", _number(match.group("number")))], match.end()
     if (match := re.match(rf"\s+(?:of\s+)?{number}", after)):
@@ -3329,11 +3361,12 @@ def _year_column(dataframe: pd.DataFrame, roles: ColumnRoles) -> str | None:
     ]
     if named:
         return named[0] if len(named) == 1 else None
-    # Chocolate ratings' review_date holds only years (2006 to 2021): a date of a year.
+    # Chocolate ratings' review_date holds only years (2006 to 2021): a date of a year; so does Eurostat's
+    # "TIME_PERIOD: Time".
     dated = [
         column for column in roles.numeric
-        if column in dataframe.columns and {"date", "season"} & set(_norm(normalized_name(column)).split())
-        and _holds_years(dataframe[column])
+        if column in dataframe.columns and {"date", "season", "time", "period"} & set(
+            _norm(normalized_name(column)).split()) and _holds_years(dataframe[column])
     ]
     return dated[0] if len(dated) == 1 else None
 

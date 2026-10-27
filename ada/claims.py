@@ -838,6 +838,12 @@ def _past_bounds(claim: str, usable: list[_Candidate]) -> _Candidate | None:
     4,000 feet, led by Ben Nevis at 4,411 feet")."""
     bounds = [item for item in usable if _bound_like(claim, item, percent=True)]
     rest = [item for item in usable if item not in bounds]
+    if bounds and not rest:
+        # "more than 1,000 earthquakes of magnitude 4.5 or above": the bound that counts things is the number
+        # claimed; the one written "or above" picks the rows.
+        rest = [item for item in bounds if item.qualifier and not OR_MORE.match(claim[item.match.end():])
+                and re.match(r"\s+[a-z]+s\b", claim[item.match.end():])]
+        bounds = [item for item in bounds if item not in rest]
     if not bounds or len(rest) != 1:
         return None
     if rest[0].match.group("percent") and any(item.match.group("percent") for item in bounds):
