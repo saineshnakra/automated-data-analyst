@@ -1206,6 +1206,82 @@ class StressAndDeadlineTests(unittest.TestCase):
         self.assertIn("up to 2016", check.message)
 
 
+class LevelsAndYearsTests(unittest.TestCase):
+    def rescues(self, years: tuple[int, ...] = (2019, 2020)) -> Path:
+        """A file of rescues, which names its rows: 32 foxes in 2019 and 61 in 2020."""
+        dates = [f"2019-{month:02d}-10" for month in [1, 2, 3, 4] * 8] + [
+            f"2020-{month:02d}-10" for month in [1, 2, 3, 4, 5, 6, 7] * 8 + [11, 12, 12, 12, 12]]
+        dates += ["2019-06-10"] * 10 + ["2020-06-10"] * 10
+        animals = ["Fox"] * 93 + ["Cat"] * 20
+        costs = [260.0 + 13 * (index % 7) for index in range(113)]
+        frame = pd.DataFrame({"date": pd.to_datetime(dates), "animal": animals, "cost": costs})
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        path = Path(folder.name) / "animal_rescues.csv"
+        frame[frame["date"].dt.year.isin(years)].to_csv(path, index=False)
+        return path
+
+    def test_a_year_pair_is_one_period_not_a_second_number(self):
+        _, number, problem = read_claim("In 2021-22, half of all employers reported a gap.", ["employer"])
+        self.assertEqual((problem, number.value), ("", 50))
+        _, number, problem = read_claim("Fatal accidents fell to 37 in 2000-2014.", ["accidents"])
+        self.assertEqual((problem, number.value), ("", 37))
+        # A score is no pair of years.
+        self.assertIn("more than one number", read_claim("The score was 21-22.", ["score"])[2])
+
+    def test_a_year_after_in_is_not_the_number_claimed(self):
+        _, number, problem = read_claim("The number of fox rescues rose in 2020.", ["animal", "date"])
+        self.assertIsNone(number)
+        self.assertEqual(problem, "The claim states no number to check.")
+
+    def test_a_change_in_a_year_is_against_the_year_before(self):
+        frame = self.rescues()
+        check = ada.check_claim(frame, "Fox rescues nearly doubled in 2020, from 32 the year before to 61.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("(2020 − 2019)", check.message)
+        self.assertIn("number of rescues", " ".join(check.assumptions))
+        wrong = ada.check_claim(frame, "Fox rescues nearly doubled in 2020, from 30 the year before to 61.")
+        self.assertEqual(wrong.reason, "failed_check")
+
+    def test_a_level_a_change_reached_is_the_value_that_year(self):
+        frame = self.rescues()
+        self.assertTrue(ada.check_claim(frame, "The number of fox rescues rose to 61 in 2020.").verified)
+        check = ada.check_claim(frame, "The number of fox rescues climbed above 50 in 2020.")
+        self.assertTrue(check.verified, check.message)
+        for claim in ("The number of fox rescues fell to 61 in 2020.",
+                      "The number of fox rescues fell below 40 in 2020.",
+                      "The number of fox rescues rose 91% to 70 in 2020."):
+            self.assertEqual(ada.check_claim(frame, claim).reason, "failed_check", claim)
+        check = ada.check_claim(frame, "The number of fox rescues rose 91% to 61 in 2020.")
+        self.assertTrue(check.verified, check.message)
+        # "rose over 80%" gives the size of the rise.
+        self.assertTrue(ada.check_claim(frame, "The number of fox rescues rose over 80% in 2020.").verified)
+
+    def test_a_level_with_no_year_before_it_is_not_verified(self):
+        self.assertEqual(ada.check_claim(self.rescues(), "The number of fox rescues rose to 61.").reason,
+                         "missing_context")
+        check = ada.check_claim(self.rescues((2020,)), "The number of fox rescues rose to 61 in 2020.")
+        self.assertEqual(check.reason, "missing_context")
+
+    def test_cases_name_the_one_column_of_counts(self):
+        states = ["Alabama", "Arizona", "California", "Colorado", "Florida", "Georgia", "Idaho", "Iowa",
+                  "Texas", "Utah", "Oregon", "Ohio"]
+        extra = {1951: 1, 1952: 2, 1953: 0}
+        rows = [{"disease": "Polio", "state": state, "year": year, "count": 100 * index + extra[year]}
+                for index, state in enumerate(states, 1) for year in (1951, 1952, 1953)]
+        frame = pd.DataFrame(rows)
+        # 1952 gives the most cases, 7,824 over 12 rows; each year has 12 rows.
+        check = ada.check_claim(frame, "Polio cases peaked in 1952, at almost 7,900.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("sum(count)", check.message)
+        check = ada.check_claim(frame, "Polio cases in the United States peaked in 1952, at almost 7,900.")
+        self.assertTrue(check.verified, check.message)
+        self.assertNotEqual(ada.check_claim(frame, "Polio cases peaked in 1952, at 12.").status, "verified")
+        # The peak is over the cases of each year, not its rows, which tie.
+        late = ada.check_claim(frame, "Polio cases peaked in 1953, at almost 7,800.")
+        self.assertEqual(late.reason, "failed_check", late.message)
+
+
 class RateClaimTests(unittest.TestCase):
     def test_a_rate_for_every_hundred_is_checked_as_totals(self):
         frame = pd.DataFrame({"District": [1, 1, 1, 1, 2, 2, 2, 2],

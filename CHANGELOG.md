@@ -34,6 +34,19 @@
 
 ### Reading claims and questions
 
+- Fixed wrong verdicts: "The number of fox rescues rose in 2020" took 2020 as
+  the number claimed; "rose to 61 in 2020" failed and "fell below 40 in 2020"
+  passed because the level was compared with the size of the change. A level
+  after a change verb is now the value that year, checked with the change
+  against the year before. A peak year in a table of counts compared the rows
+  of each year rather than the counts they hold; it now makes the answer's own
+  count for every year.
+- Fixed a wrong answer: a change "in 2020" compared the last two months of
+  2020, and groups ranked by their change "from 2019 to 2020" compared months
+  too. Both now compare whole years.
+- "Fox rescues nearly doubled in 2020, from 32 the year before to 61" counts
+  the rescues and checks both ends; "2021-22" is one period; "polio cases in
+  the United States" adds up the `count` column over all the states.
 - Fixed a wrong answer: "which London boroughs have the most animal rescues"
   filtered to City of London and ranked a cost column; "London boroughs" now
   picks no rows, and "most" with no measure counts each group's rows.

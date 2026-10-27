@@ -302,7 +302,9 @@ each word is claimed, in this order, by:
    column that holds only postal codes, at least ten of them ("Texas" is
    `state` = tx); in a column of state names, a postal code in capitals
    ("NM") or a newspaper's abbreviation with its full stop ("Calif.") picks
-   the state. A plural most values of two or more columns share
+   the state. In a table of the states with no row for the country as a whole,
+   "in the United States", "in the US", "across the country" and "nationwide"
+   mean all the rows, and "States" there is not the `state` column. A plural most values of two or more columns share
    ("characters" in "Male Characters" and "Good Characters") names the rows
    and is no value. An adjective of nationality, or its plural, names its
    country ("Belgian" is Belgium, "Venezuelans" Venezuela, "Mexican
@@ -927,9 +929,11 @@ Other behaviour:
   count, percentage points for a rate, the plain difference for a level,
   whose percent change is in the figures too. A change between two years the
   question names ("between 1982 and 1988", "from 1982 to 1988") compares
-  those two years as whole years, not the last two periods in the range. A
-  change in "the number of" rows with no measure named is a change in the
-  row count. "rose", "risen" and
+  those two years as whole years, not the last two periods in the range, and
+  segments ranked by their change do the same. A change in one year ("how did
+  rescues change in 2020") is that year against the year before, not the last
+  two months of the year. A change in "the number of" rows with no measure
+  named is a change in the row count. "rose", "risen" and
   "climbed" ask for a change as "grew" and "fell" do.
 - Growth by segment ranks amounts by percent change. It leaves out segments
   that started from zero and names them separately, since a growth rate from
