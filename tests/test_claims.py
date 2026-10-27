@@ -814,6 +814,30 @@ class OtherSpellingTests(unittest.TestCase):
         self.assertTrue(check.verified, check.message)
 
 
+class AgeBandTests(unittest.TestCase):
+    def victims(self) -> pd.DataFrame:
+        rows = []
+        counts = (("0-9", 10, 990), ("10-19", 20, 980), ("20-49", 30, 970), ("50-64", 40, 460),
+                  ("65+", 60, 440))
+        for age, died, injured in counts:
+            rows += [{"age": age, "result": "Died", "Freq": died},
+                     {"age": age, "result": "Injured", "Freq": injured}]
+        return pd.DataFrame(rows)
+
+    def test_among_a_group_a_share_is_of_that_group(self):
+        victims = self.victims()
+        check = ada.check_claim(victims, "Among victims aged 50 and over, 10% died.")
+        self.assertTrue(check.verified, check.message)
+        self.assertEqual(ada.check_claim(victims, "Among victims aged 50 and over, 3% died.").reason,
+                         "failed_check")
+
+    def test_ages_that_cut_a_band_are_not_a_verdict(self):
+        victims = self.victims()
+        check = ada.check_claim(victims, "Among victims aged 55 and over, 10% died.")
+        self.assertNotEqual(check.status, "verified")
+        self.assertNotEqual(check.reason, "failed_check")
+
+
 class UnitsAndDaysTests(unittest.TestCase):
     def rats(self) -> pd.DataFrame:
         rows = [{"Rat": rat, "Diet": 1 + rat // 3, "Time": day, "weight": 200.0 + 10 * rat + day}

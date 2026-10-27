@@ -3372,6 +3372,39 @@ class DistinctShareTests(unittest.TestCase):
         self.assertIn("50.0% of the 4 in all", answer.answer)
 
 
+class AgeTests(unittest.TestCase):
+    def bands(self) -> pd.DataFrame:
+        return pd.DataFrame({"age": ["12", "13", "20", "22-23", "30-34", "35-49", "50-64", "65+"],
+                             "use": [1.0, 2, 30, 40, 35, 25, 20, 10]})
+
+    def test_ages_written_out_pick_the_bands_that_make_them_up(self):
+        frame = self.bands()
+        roles = detect_roles(frame)
+        for question, values in (("average use among 30- to 34-year-olds", "age = 30-34"),
+                                 ("average use among people 65 and older", "age = 65+"),
+                                 ("average use among 20-year-olds", "age = 20"),
+                                 ("average use for people aged 35 and over", "age in (35-49, 50-64, 65+)")):
+            with self.subTest(question=question):
+                self.assertIn(values, answer_question(question, frame, roles).calculation)
+
+    def test_ages_that_cut_a_band_in_two_are_refused(self):
+        frame = self.bands()
+        roles = detect_roles(frame)
+        self.assertIsNone(answer_question("average use for people aged 40 and over", frame, roles))
+        hint = rephrase_hint("average use for people aged 40 and over", frame, roles)
+        self.assertIn("cuts the age band 35-49", hint)
+
+    def test_ages_on_a_numeric_column_are_conditions(self):
+        frame = pd.DataFrame({"age": [10, 20, 30, 40, 50, 60], "income": [0.0, 10, 20, 30, 40, 50]})
+        answer = answer_question("average income for people aged 30 and over", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 35)
+
+    def test_numbers_without_an_age_word_are_not_ages(self):
+        frame = self.bands()
+        reading = nlq._read_question("average use rose from 12 to 20", frame, detect_roles(frame))
+        self.assertFalse(reading.filters)
+
+
 class DayTests(unittest.TestCase):
     def test_a_day_written_out_or_in_iso_form_is_a_condition_on_the_date(self):
         times = ["2011-04-27 10:00", "2011-04-27 18:00", "2011-04-28 09:00"]

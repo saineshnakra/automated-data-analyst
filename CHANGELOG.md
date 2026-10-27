@@ -86,6 +86,14 @@
   (6 more). A claim whose filter value, a name in a long list, the column
   also holds inside a longer value now gets `missing_context` naming the
   other spellings.
+- Ages: "30- to 34-year-olds", "aged 50 and over", "people 65 and older" and
+  "20-year-olds" keep those ages, on a column of ages or of age bands ("50-64"
+  and "65+" make up "50 and over"); ages that cut a band in two are refused.
+  "Among victims aged 50 and over, 9.5% died" is the share of those victims.
+- Fixed wrong answers: a table of counts with one category and an outcome
+  (age, result, Freq) was read as a long table and kept only its commonest
+  outcome; and the word after a percent was taken as its unit, so "9.5%
+  died" lost what it counts.
 - The column that numbers the units (a `Rat` column of 16 rats) is never
   averaged or ranked, and the word for the units names the rows when the
   question names a measure too: "The heaviest rat reached 628 grams" is the

@@ -261,7 +261,15 @@ each word is claimed, in this order, by:
    and 2000", "from 1990 to 2000", "the 2010s" (2010 to 2019), and "before
    and after 2000", which splits the rows in two. A day written out ("April
    27, 2011", "27 April 2011", "2011-04-27") keeps the rows of that day,
-   whatever their time; a date that does not exist (February 30) is not read. "From 2019" right after the rows' own noun is that year
+   whatever their time; a date that does not exist (February 30) is not read.
+   Ages written out ("30- to 34-year-olds", "aged 50 and over", "people 65
+   and older", "65+", "20-year-olds") keep the rows of those ages in the one
+   column named for age: as conditions on a column of numbers, or as the
+   bands that make them up exactly on a column of bands ("50-64" and "65+"
+   for "50 and over"). Ages that cut a band in two ("40 and over" with a
+   band 35-49) are refused, as no row says which side its people are on.
+   Numbers with no age word ("rose from 12 to 20") are not ages. "From 2019"
+   right after the rows' own noun is that year
    ("sets from 2019" in `sets.csv` are 2019's sets); "from 2019 onwards"
    stays a range. A verb that only dates an event before a year ("sets
    released in 2020"; also published, launched, founded, built, made,

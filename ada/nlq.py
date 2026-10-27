@@ -266,7 +266,7 @@ QUERY_STOPWORDS = {
     "many", "me", "measured", "most", "much", "my", "next", "of", "on", "only", "or", "our", "overall",
     "please", "re", "recorded", "s", "she", "show", "tell", "tested", "than", "that", "the",
     "their", "then", "there", "this", "to", "they", "us", "value", "values", "ve", "was", "we", "were",
-    "what", "whats", "when", "where", "which", "whose", "with", "without", "you", "your",
+    "what", "whats", "when", "where", "which", "who", "whom", "whose", "with", "without", "you", "your",
 }
 # Words asking what share of the rows meet a condition: "what share have diabetes".
 SHARE_WORDS = ("share", "proportion", "percentage", "percent", "fraction")
@@ -920,6 +920,115 @@ def day_named(match: re.Match) -> pd.Timestamp | None:
         return pd.Timestamp(text)
     except ValueError:
         return None
+
+
+# Ages written out: "30- to 34-year-olds", "aged 50 and over", "people 65 and older", "20-year-olds".
+_AGE_CUE = r"(?:aged|ages|age)\s+"
+_YEAR_OLDS = r"\s*-?\s*years?\s*-?\s*olds?\b"
+AGE_PHRASE = re.compile(
+    rf"\b(?:{_AGE_CUE}(?P<low>\d{{1,3}})\s*-?\s*(?:to|-|–)\s*(?P<high>\d{{1,3}})(?:{_YEAR_OLDS})?"
+    rf"|(?P<low2>\d{{1,3}})\s*-?\s*(?:to|-|–)\s*(?P<high2>\d{{1,3}}){_YEAR_OLDS}"
+    rf"|(?:{_AGE_CUE})?(?P<older>\d{{1,3}})\s*(?:and|or)\s+older\b"
+    rf"|{_AGE_CUE}(?P<over>\d{{1,3}})\s*(?:\+|\s+and\s+(?:over|up|above)\b|\s+or\s+(?:over|more|above)\b)"
+    rf"|(?P<plus>\d{{1,3}})\+(?=\s|$|[,.;])"
+    rf"|{_AGE_CUE}(?P<one>\d{{1,3}})\b(?!\s*(?:-|–|to\b|and\b|or\b|\+|%))"
+    rf"|(?P<olds>\d{{1,3}}){_YEAR_OLDS})",
+    re.IGNORECASE,
+)
+# A band of ages as a table writes it: "30-34", "65+", ">50", "12".
+BAND_VALUE = re.compile(r"^\s*(?:(?P<low>\d{1,3})\s*(?:-|–|to)\s*(?P<high>\d{1,3})|(?P<plus>\d{1,3})\s*\+|"
+                        r">\s*(?P<above>\d{1,3})|(?P<one>\d{1,3}))\s*$")
+
+
+def age_range(match: re.Match) -> tuple[float, float]:
+    """The ages an ``AGE_PHRASE`` match names, inclusive; an open top is infinity."""
+    found = {name: int(value) for name, value in match.groupdict().items() if value}
+    if "low" in found or "low2" in found:
+        return float(found.get("low", found.get("low2"))), float(found.get("high", found.get("high2")))
+    start = next((found[name] for name in ("older", "over", "plus") if name in found), None)
+    if start is not None:
+        return float(start), float("inf")
+    single = found.get("one", found.get("olds"))
+    return float(single), float(single)
+
+
+def _band(value: str) -> tuple[float, float] | None:
+    """The ages a band value covers: "30-34" is 30 to 34, "65+" 65 and up, ">50" 51 and up."""
+    found = BAND_VALUE.match(value)
+    if not found:
+        return None
+    if found.group("low"):
+        return float(found.group("low")), float(found.group("high"))
+    if found.group("plus"):
+        return float(found.group("plus")), float("inf")
+    if found.group("above"):
+        return float(found.group("above")) + 1, float("inf")
+    return float(found.group("one")), float(found.group("one"))
+
+
+def _age_column(
+    dataframe: pd.DataFrame, roles: ColumnRoles
+) -> tuple[str, dict[str, tuple[float, float]]] | None:
+    """The column of ages, and its bands when it holds them as text ("30-34", "65+")."""
+    named = [column for column in dataframe.columns
+             if {"age", "ages", "agegroup"} & set(_norm(normalized_name(str(column))).split())]
+    if len(named) != 1:
+        return None
+    column = named[0]
+    series = dataframe[column]
+    if _is_measurement(series):
+        return column, {}
+    values = [str(value) for value in series.dropna().unique()]
+    bands = {value: band for value in values if (band := _band(value))}
+    return (column, bands) if values and len(bands) == len(values) else None
+
+
+def _claim_ages(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
+    """Read ages written out as the rows of those ages.
+
+    On a numeric age column, "aged 50 and over" is age >= 50. On a column of
+    bands ("30-34", "65+"), the bands that make up the ages exactly are kept:
+    "30- to 34-year-olds" is the band 30-34, "50 and over" is 50-64 and 65+.
+    Ages that cut a band in two are refused, as no row says which side it is.
+    """
+    found = _age_column(dataframe, roles)
+    if found is None:
+        return
+    column, bands = found
+    for match in AGE_PHRASE.finditer(reading.question):
+        low, high = age_range(match)
+        said = _norm(_question_text(match.group()))
+        start = reading.remaining.find(said)
+        span = slice(start, start + len(said))
+        if start < 0 or reading.remaining[span] != reading.original[span]:
+            continue
+        if not bands:
+            if low == high:
+                reading.conditions.append(Condition(column, "=", low))
+            else:
+                reading.conditions.append(Condition(column, ">=", low))
+                if high != float("inf"):
+                    reading.conditions.append(Condition(column, "<=", high))
+        else:
+            within = {value for value, band in bands.items() if band[0] >= low and band[1] <= high}
+            inside = sorted((band, value) for value, band in bands.items() if value in within)
+            cut = [value for value, band in bands.items()
+                   if band[0] <= high and band[1] >= low and value not in within]
+            covered = bool(inside) and inside[0][0][0] == low and inside[-1][0][1] == high and all(
+                after[0][0] == before[0][1] + 1 for before, after in zip(inside, inside[1:], strict=False))
+            if cut:
+                reading.flag(f'"{match.group().strip()}" cuts the {column} band {cut[0]} in two, and no row '
+                             "says which side its people are on.")
+            elif not covered:
+                continue
+            else:
+                picked = [_Value(column=column, raw=value, words=()) for _, value in inside]
+                _add_filter(reading, picked, start)
+                reading.notes.append(f'Read "{match.group().strip()}" as {column} in '
+                                     f"{_listed([value for _, value in inside])}.")
+        reading.consumed.add(column)
+        reading.scoped.add(column)
+        reading.claim(start, start + len(said))
 
 
 # A decade: "the 2010s" is 2010 to 2019.
@@ -2881,6 +2990,7 @@ def _read_question(
     _claim_time_part(reading, dataframe, roles)
     _claim_month_of_year(reading, dataframe, roles)
     _claim_days(reading, roles)
+    _claim_ages(reading, dataframe, roles)
     _claim_year_ranges(reading, dataframe, roles)
     _claim_fillers(reading)
     _claim_time_points(reading, dataframe, roles)

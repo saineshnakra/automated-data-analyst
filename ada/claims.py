@@ -48,7 +48,7 @@ from typing import Any, Literal
 from .decisions import Decision, checked_choices
 from .file_io import SUPPORTED_SUFFIXES as READABLE
 from .formatting import counted, list_names, normalized_name
-from .nlq import DAY_PATTERN, QueryAnswer
+from .nlq import AGE_PHRASE, DAY_PATTERN, QueryAnswer
 from .sources import Source
 
 #: Version of the ``ClaimCheck.to_dict`` layout. Bumped when a key changes meaning.
@@ -163,6 +163,12 @@ NUMBER_WORDS = {
     "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
 }
 LEFT_OUT_NOTE = "Read the claim without"
+# A lead naming the group a share is of, before the share: "Among victims aged 50 and over, 9.5% died".
+AMONG_LEAD = re.compile(
+    r"^\s*among\s+(?P<base>[^,]+?),\s*(?P<share>(?:(?:about|nearly|almost|roughly|around|only|just|over|"
+    r"under|more\s+than|less\s+than)\s+)?\d[\d,]*(?:\.\d+)?\s*%)\s+(?P<rest>.+)$",
+    re.IGNORECASE,
+)
 # A clause that says who reports the claim: "Owners estimated that", "The survey found that".
 REPORTING_CLAUSE = re.compile(
     r"^\s*(?:[A-Za-z']+\s+){1,4}?(?:estimated|estimates|estimate|reported|reports|report|found|finds|find|"
@@ -517,7 +523,8 @@ def _candidates(claim: str, columns: list[str]) -> list[_Candidate]:
     """
     found = []
     column_words = _column_words(columns)
-    days = [day.span() for day in DAY_PATTERN.finditer(claim)]
+    days = [day.span() for day in DAY_PATTERN.finditer(claim)] + [
+        age.span() for age in AGE_PHRASE.finditer(claim)]
     for match in NUMBER_PATTERN.finditer(claim):
         start = match.start()
         before = claim[:start].rstrip()
@@ -553,7 +560,7 @@ def _candidates(claim: str, columns: list[str]) -> list[_Candidate]:
             and any(_abbreviates(following.group(1).lower(), part) for part in column_words)
         )
         ordinal = plain and re.match(r"(?:st|nd|rd|th)\b", claim[match.end():], re.IGNORECASE) is not None
-        # "on May 22, 2011": the day and the year pick rows; "6.5 out of 10" gives the scale.
+        # "on May 22, 2011" and "aged 50 and over" pick rows; "6.5 out of 10" gives the scale.
         filter_like = filter_like or any(low <= start < high for low, high in days) or bool(
             re.search(r"\bout\s+of\s*$", before, re.IGNORECASE)
         )
@@ -691,6 +698,11 @@ def read_claim(
     """
     # "6.5 out of 10": the scale says what the number is out of, not a second number.
     claim = re.sub(r"(\d)\s+out\s+of\s+(?:10|5|100)\b", r"\1", claim)
+    among = AMONG_LEAD.match(claim)
+    if among:
+        # "Among victims aged 50 and over, 9.5% died" is a share of those victims.
+        rewritten = f"{among.group('share')} of {among.group('base')} who {among.group('rest')}"
+        return read_claim(rewritten, columns, row_noun)
     reported = REPORTING_CLAUSE.match(claim)
     if reported:
         # "Owners estimated that their cats caught 3.7 prey": who said it is not part of what is checked.
@@ -732,6 +744,9 @@ def read_claim(
             "check them one at a time."
         )
     unit, unit_end = _unit_after(claim, chosen.match.end(), columns, row_noun)
+    if chosen.match.group("percent"):
+        # A percent is its own unit: in "9.5% died" the verb says what is counted.
+        unit, unit_end = None, chosen.match.end()
     averaged = re.search(r"\b(?:average|averages|mean|per)\b", claim, re.IGNORECASE)
     if chosen.cue in TALLY_VERBS and not averaged and not (unit and unit.split()[0].lower() in UNITS):
         written = claim[chosen.qualifier_start:chosen.match.end()]
@@ -803,6 +818,9 @@ def read_claim(
     question = re.sub(r"\s+(?:is|was|were|are|of|at|by)$", "", question, flags=re.IGNORECASE)
     if not question:
         return None, number, "The claim says nothing about what the number measures."
+    if number.percent and re.match(r"of\s", question, re.IGNORECASE):
+        # "9.5% of victims aged 50 and over who died" asks for a share of those victims.
+        question = f"share {question}"
     return question, number, ""
 
 
@@ -1167,6 +1185,11 @@ def check_claim(
     if question is None and (base := _based(text)[1]) and check.answer is not None:
         return _checked_base(check, *base)
     return check
+
+
+def _share_question(asked: str) -> str:
+    """The question asked as a share, with one "of": "share of victims ..." for "of victims ..."."""
+    return f"share {asked}" if re.match(r"of\s", asked, re.IGNORECASE) else f"share of {asked}"
 
 
 def _based(text: str) -> tuple[str, tuple[str, str] | None]:
@@ -1617,9 +1640,9 @@ def _check(
     ]
     if unnamed and number.percent:
         # "32.3% survived" gives a share even with no word for one.
-        share = analysis.ask(f"share of {asked}", decisions=choices)
+        share = analysis.ask(_share_question(asked), decisions=choices)
         if not isinstance(share, Refusal) and "share_percent" in dict(share.figures):
-            answer, asked, unnamed = share, f"share of {asked}", []
+            answer, asked, unnamed = share, _share_question(asked), []
             assumptions.append("Read the percentage as a share, which the claim names no column for.")
     if unnamed and (unit_read := _one_unit_reading(analysis, asked, number, choices)):
         # "the pines averaged 60.3 feet": the one column of lengths is what the claim measures.
@@ -1663,9 +1686,9 @@ def _check(
     ):
         # "Men were admitted at a rate of 44.5%": the share is of the men, so it is asked as a share;
         # so is "half of the squirrels", which counts distinct squirrels rather than giving a share.
-        share = analysis.ask(f"share of {asked}", decisions=choices)
+        share = analysis.ask(_share_question(asked), decisions=choices)
         if not isinstance(share, Refusal) and share.plan.counted:
-            answer, asked = share, f"share of {asked}"
+            answer, asked = share, _share_question(asked)
     averaged = re.search(r"\b(?:average|averages|averaged|averaging|mean|median|typical|per|each)\b", text,
                          re.IGNORECASE)
     noun = (number.unit or "").split()[-1:] or [""]

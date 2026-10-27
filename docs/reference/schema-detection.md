@@ -177,7 +177,10 @@ in µS/cm. A column qualifies as the parameter when its last word (after `label`
 `metric` or `property`, and either a unit column (`unit`, `units`, `uom`) holds
 several units or the result's typical size differs tenfold or more between
 parameters. A unit column holding several units, with no parameter column, is
-used as the parameter.
+used as the parameter. A table of counts (a `Freq` column, see [Ask
+ADA](ask-ada.md)) is never a long table: its rows count the cases with their
+values, so Accident's `result` (Died, Injured) is a category, not what `Freq`
+measures.
 
 Failing both, a column is the parameter when its rows behave like one,
 whatever its name (`pollutant_id`): a text column with 2 to 30 values across

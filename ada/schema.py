@@ -1426,6 +1426,12 @@ def _long_layout(
     """
     if measure is None:
         return None, None
+    from .nlq import frequency_column  # noqa: PLC0415
+
+    if frequency_column(dataframe) == measure:
+        # A table of counts (Accident's age, result and Freq) is a cross-tabulation: each row counts the
+        # cases with its values, and no column names what the counts measure.
+        return None, None
     units = next(
         (
             column
