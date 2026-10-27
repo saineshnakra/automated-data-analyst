@@ -73,6 +73,14 @@ When you report numbers:
 - Pass on the assumptions and warnings that matter: rows left out, a scale
   or unit that was not given, a correlation that runs the other way within
   groups, repeated rows from one subject.
+- Read `decisions` on every answer and check: the choices ADA took, such as
+  leaving World and region rows out of an average. Each has a `question`,
+  its `options` and ADA's `default`. When the person's goal settles one
+  ("compare countries" leaves World out), pass that option with
+  `--decide KEY=OPTION`, such as `--decide aggregate_rows=keep`, and say you
+  did. When it does not, ask the person the decision's `question`. With no
+  one to ask, keep the default and say which it was. (`--decide` needs a
+  current ADA; upgrade if it is not recognised.)
 
 For a folder, `ada scan data/` lists each file, the keys that join them (with
 the rows a join leaves unmatched or repeats) and questions grouped by topic:

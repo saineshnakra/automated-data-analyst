@@ -58,9 +58,12 @@ ada ask flights.csv "average dep_delay by origin" --json   # the numbers, the ca
 ada scan nycflights13/                                     # the files, the keys that join them, what to confirm
 ```
 
-A question ADA can't answer comes back refused, with the reason. `ada scan`
-proposes joins from the values and lists what a person should confirm; it
-does not run them. See [Ask ADA](docs/reference/ask-ada.md) and
+When an answer rests on a choice, such as leaving World and region rows out
+of an average, it says which, and `--decide` picks the other
+([Decisions](docs/reference/decisions.md)). A question ADA can't answer comes
+back refused, with the reason. `ada scan` proposes joins from the values and
+lists what a person should confirm; it does not run them. See
+[Ask ADA](docs/reference/ask-ada.md) and
 [Reading a folder of tables](docs/reference/folder.md).
 
 Before it answers, ADA reports the rows it left out and why, counts each
@@ -97,9 +100,9 @@ gives a first look at any table, and `ada app` opens the same in a browser
 
 ## What it doesn't do yet
 
-Numbers that need two files joined, World or Total rows among countries, many
-phrasings ("horsepower" for `hp`, slopes, several numbers in one claim), and
-year columns read as dates. These come back unverified or refused with a
+Numbers that need two files joined, many phrasings ("horsepower" for `hp`,
+slopes, several numbers in one claim), and some year columns read as numbers
+rather than dates. These come back unverified or refused with a
 reason. See [Not covered yet](docs/reference/claims.md#not-covered-yet).
 
 ## Progress
@@ -110,10 +113,10 @@ pandas, SciPy and statsmodels; holdout cases are only scored
 
 | | ADA 0.5.0 | Now |
 |---|---|---|
-| Dev cases | 6/51 | 36/51 |
-| Holdout cases | 3/22 | 12/22 |
+| Dev cases | 6/51 | 37/51 |
+| Holdout cases | 3/22 | 11/22 |
 | Wrong verdicts on claims | | 0/35 |
-| True claims verified | 0/26 | 13/26 |
+| True claims verified | 0/26 | 12/26 |
 | False claims caught | 0/7 | 6/7 |
 
 ## More

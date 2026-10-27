@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+### Decisions
+
+- Answers and claim checks list the choices they rest on: `decisions` in the
+  JSON and a `decides:` line in the text, each with the question, the
+  options, ADA's default, the option used and why the default is the
+  default. `Analysis.ask(question, decisions=...)`, `ada.check_claim(...,
+  decisions=...)` and `--decide KEY=OPTION` on `ada ask` and `ada claim` pick
+  another option; an unknown key or option raises `UnknownDecision` (exit
+  code 2). A person, or an agent that knows the person's goal, decides; with
+  no one to ask, the defaults give the same answer every time. See
+  [Decisions](docs/reference/decisions.md).
+
+### Rows that add up others
+
+- World, region and Total rows listed beside the rows they add up (OWID's
+  World and Africa among countries, a spreadsheet's Total) are found by their
+  labels and left out of averages, rankings, counts and comparisons, and the
+  answer says which (`aggregate_rows`, default `leave_out`). A total over the
+  scope is read from the World or Total row, with what the other rows add up
+  to beside it (`total_from`, default `total_row`). "total co2 in 2022" on
+  the OWID file gives 37,527.773, the World row, instead of 240,370.227.
+- A claim that agrees only when one of these decisions goes the other way is
+  `ambiguous_intent`, with both readings and the question to settle it.
+
+### Fixes
+
+- A year in a question scopes a numeric column named for years when the table
+  has no date column (OWID's `year`, from 1750), and a year before 1900 is
+  read when that column holds it.
+- An aggregate over one row says "calculated from 1 row".
+
 ## 0.6.0 (2026-10-27)
 
 ADA now checks numbers as well as computing them. `ada claim` says whether a
