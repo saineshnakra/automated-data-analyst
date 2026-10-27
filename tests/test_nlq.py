@@ -3499,6 +3499,12 @@ class GroupsAndModifiersTests(unittest.TestCase):
         whole = answer_question("how many rows for City of London borough", frame, detect_roles(frame))
         self.assertEqual(whole.value, 2)
 
+    def test_part_of_a_value_before_its_column_s_name_in_the_singular_is_that_value(self):
+        regions = ["Southwest Land Border"] * 3 + ["Northern Land Border"] * 2 + ["Other"]
+        frame = pd.DataFrame({"land_border_region": regions, "encounters": [5.0, 6.0, 7.0, 1.0, 2.0, 3.0]})
+        answer = answer_question("total encounters at the southwest border", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 18)
+
 
 class OneYearChangeAndCountryTests(unittest.TestCase):
     def rescues(self) -> pd.DataFrame:

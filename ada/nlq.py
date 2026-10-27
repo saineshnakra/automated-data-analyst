@@ -1674,9 +1674,11 @@ def _claim_values(
                 columns = list(dict.fromkeys(value.column for value in found))
                 beside = _column_beside(reading, columns, window[0][0], window[-1][1]) if (
                     len(columns) > 1 or adverb or not exact) else None
-                if not exact and not adverb and beside is not None:
-                    # "London boroughs": a word only inside a value ("City of London"), before the name of
-                    # that value's own column, says which ones, not one of them.
+                named = reading.original[beside[1][0]:beside[1][1]].split() if beside else []
+                if not exact and not adverb and named and re.fullmatch(r"[a-z]+[^s]s", named[-1]):
+                    # "London boroughs": a word only inside a value ("City of London"), before the plural of
+                    # that value's own column, says which ones, not one of them. "the southwest border"
+                    # still names Southwest Land Border.
                     continue
                 if adverb and beside is None:
                     continue

@@ -452,10 +452,11 @@ noun it comes from: "were adopted" is `outcome_type` = adoption, and
 value ("return to owner"), the word could mean either and is refused with
 both columns. A noun for rows ("birds", "animals") that a column of kinds
 holds ("bird" in `animal_type`) picks those rows instead of naming every row.
-A word found only inside a value, right before the name of that value's own
-column, says which ones and picks no rows: "London boroughs" is not the
-borough City of London. A value written in full still does ("City of London
-borough").
+A word found only inside a value, right before the plural of that value's own
+column's name, says which ones and picks no rows: "London boroughs" is not the
+borough City of London. Before the name in the singular it is that value ("the
+southwest border" is Southwest Land Border), and a value written in full picks
+its rows too ("City of London borough").
 A word in lower case that is the capitalised word of several longer names is
 none of them: "new cases" does not pick New Zealand or Papua New Guinea,
 while "the southwest border" still picks the one value Southwest Land Border. "named" and "called"
