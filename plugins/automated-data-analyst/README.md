@@ -11,6 +11,10 @@ output and the data.
 
 ## What it does
 
+- **A check of any number.** `ada claim` checks a number stated about a table,
+  in a report or in the assistant's own answer, and says verified, or
+  unverified with the reason and the one question that would settle it. The
+  assistant says which of its numbers are verified and which are not.
 - **A first look at any table.** ADA reads a CSV or Excel file and reports
   what is in it: data-quality issues with their rows, group comparisons,
   relationships and trends, each with the test and the arithmetic.

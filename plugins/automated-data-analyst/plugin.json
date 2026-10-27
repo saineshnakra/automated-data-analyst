@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "automated-data-analyst",
-  "version": "0.5.0",
-  "description": "Data analysis where every number comes from the ADA Python package (pandas, SciPy, statsmodels) with its calculation: a first look at any CSV or Excel table, and a paper's data audit, tables, figures and methods draft built from a study.yml and verified.",
+  "version": "0.6.0",
+  "description": "Data analysis where every number comes from the ADA Python package (pandas, SciPy, statsmodels) with its calculation: a check of any number stated about a table, a first look at any CSV or Excel table or folder of them, and a paper's data audit, tables, figures and methods draft built from a study.yml and verified.",
   "author": {
     "name": "Sainesh Nakra",
     "url": "https://sainesh.com/"
@@ -28,10 +28,11 @@
       "interface": {
         "displayName": "Automated Data Analyst",
         "shortDescription": "Every number computed in code",
-        "longDescription": "Automated Data Analyst adds a skill that has the assistant analyze data with ADA, an open-source Python package, instead of doing the arithmetic itself. ADA computes every number with pandas, SciPy and statsmodels and prints the calculation behind it, or refuses with a reason when a number can't be computed honestly. The assistant reports ADA's numbers, each with its test or calculation, and passes refusals on.\n\nFor a quick look, ADA reads a CSV or Excel table and reports what is in it: data-quality issues with their rows, group comparisons, relationships and trends. For a paper, the assistant asks the researcher what only they know (what a row is, the subject column, the design, the planned analyses), writes a study.yml, and runs ada build, which makes a data audit, a data dictionary, descriptive and results tables in CSV, Word and LaTeX, figures with their source data and captions, and a methods draft. ada verify rebuilds everything from study.yml and the data and compares every number.\n\nThe skill needs a shell with Python 3.11 or newer where pip install automated-data-analyst works, as in Codex. ADA runs on your machine and its command line makes no network calls, so your data stays where it is.",
+        "longDescription": "Automated Data Analyst adds a skill that has the assistant analyze data with ADA, an open-source Python package, instead of doing the arithmetic itself. ADA computes every number with pandas, SciPy and statsmodels and prints the calculation behind it, or refuses with a reason when a number can't be computed honestly. The assistant reports ADA's numbers, each with its test or calculation, and passes refusals on. It checks every number it states with ada claim, which says verified, or unverified with the reason and the question that would settle it.\n\nFor a quick look, ADA reads a CSV or Excel table and reports what is in it: data-quality issues with their rows, group comparisons, relationships and trends. For a paper, the assistant asks the researcher what only they know (what a row is, the subject column, the design, the planned analyses), writes a study.yml, and runs ada build, which makes a data audit, a data dictionary, descriptive and results tables in CSV, Word and LaTeX, figures with their source data and captions, and a methods draft. ada verify rebuilds everything from study.yml and the data and compares every number.\n\nThe skill needs a shell with Python 3.11 or newer where pip install automated-data-analyst works, as in Codex. ADA runs on your machine and its command line makes no network calls, so your data stays where it is.",
         "developerName": "Sainesh Nakra",
         "category": "Productivity",
         "capabilities": [
+          "Check a number stated about a table: verified, or unverified with the reason",
           "Report what is in a CSV or Excel table, each finding with its test and arithmetic",
           "Check data quality: missing values, duplicates and values outside their range, with their rows",
           "Compare groups with the test the study design calls for: t-tests, ANOVA or mixed models",

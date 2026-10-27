@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If ADA supports your work, please cite the software using this metadata."
 title: "ADA: Automated Data Analyst"
 type: software
-version: "0.5.0"
+version: "0.6.0"
 date-released: "2026-10-23"
 authors:
   - family-names: Nakra

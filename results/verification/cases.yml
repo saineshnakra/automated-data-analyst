@@ -1,0 +1,784 @@
+# Evaluation cases. Expected values come from source documentation or from reference.py,
+# which recomputes them with pandas, SciPy and statsmodels and shares no code with ADA.
+#
+# kind:
+#   profile  read the file(s); expected shape and what a reader must notice
+#   compute  answer a question; expected value and the analysis it must rest on
+#   claim    check a stated number; expected status and reason
+#   folder   relate the files in a folder; expected links and what must be confirmed first
+# tests: the error category a failure counts against
+#   reading | interpretation | calculation | design | evidence | refusal | usability
+# split: dev cases may be used to diagnose and fix; holdout cases are only scored.
+
+datasets:
+  penguins:
+    split: dev
+    files: [penguins.csv, penguins_raw.csv]
+    source: https://github.com/allisonhorst/palmerpenguins (inst/extdata)
+    licence: CC0
+    docs: https://allisonhorst.github.io/palmerpenguins/
+  nycflights13:
+    split: dev
+    files: [flights.csv, airlines.csv, airports.csv, planes.csv, weather.csv]
+    source: https://vincentarelbundock.github.io/Rdatasets/csv/nycflights13/
+    licence: CC0 (nycflights13 R package)
+    docs: https://r4ds.hadley.nz/joins.html
+  lahman:
+    split: dev
+    files: [People.csv, Batting.csv, Teams.csv, Salaries.csv]
+    source: https://vincentarelbundock.github.io/Rdatasets/csv/Lahman/
+    licence: CC BY-SA 3.0 (Lahman baseball database)
+    docs: https://cran.r-project.org/package=Lahman
+  sleepstudy:
+    split: dev
+    files: [sleepstudy.csv]
+    source: https://vincentarelbundock.github.io/Rdatasets/csv/lme4/sleepstudy.csv
+    licence: GPL (lme4 package data; Belenky et al. 2003)
+    docs: https://cran.r-project.org/web/packages/lme4/vignettes/lmer.pdf
+  owid-co2:
+    split: dev
+    files: [owid-co2-data.csv, owid-co2-codebook.csv]
+    source: https://github.com/owid/co2-data
+    licence: CC BY 4.0
+    docs: https://github.com/owid/co2-data/blob/master/owid-co2-codebook.csv
+  parkinsons:
+    split: dev
+    files: [parkinsons_updrs.data, parkinsons_updrs.names]
+    source: https://archive.ics.uci.edu/dataset/189/parkinsons+telemonitoring
+    licence: CC BY 4.0
+    docs: parkinsons_updrs.names (42 people, 5,875 recordings)
+  gapminder:
+    split: dev   # moved from holdout: its "life expectancy" question drove a fix
+    files: [gapminder.csv]
+    source: https://vincentarelbundock.github.io/Rdatasets/csv/gapminder/gapminder.csv
+    licence: CC BY 3.0 (Gapminder)
+  chickweight:
+    split: holdout
+    files: [ChickWeight.csv]
+    source: https://vincentarelbundock.github.io/Rdatasets/csv/datasets/ChickWeight.csv
+    licence: public domain (R datasets; Crowder and Hand 1990)
+  titanic:
+    split: dev   # moved from holdout: its share and Class columns drove fixes
+    files: [Titanic.csv]
+    source: https://vincentarelbundock.github.io/Rdatasets/csv/datasets/Titanic.csv
+    licence: public domain (R datasets)
+  olist:
+    split: dev   # moved from holdout: a holdout crash on its payments file drove a fix
+    files: [olist_orders_dataset.csv, olist_order_items_dataset.csv, olist_order_payments_dataset.csv,
+            olist_order_reviews_dataset.csv, olist_customers_dataset.csv, olist_products_dataset.csv,
+            olist_sellers_dataset.csv, olist_geolocation_dataset.csv, product_category_name_translation.csv]
+    source: https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce
+    licence: CC BY-NC-SA 4.0
+  worldbank-lifeexp:
+    split: dev   # moved from holdout: its unreadable header drove a fix
+    files: [API_SP.DYN.LE00.IN_DS2_en_csv_v2_1528.csv, Metadata_Country_API_SP.DYN.LE00.IN_DS2_en_csv_v2_1528.csv,
+            Metadata_Indicator_API_SP.DYN.LE00.IN_DS2_en_csv_v2_1528.csv]
+    source: https://api.worldbank.org/v2/en/indicator/SP.DYN.LE00.IN?downloadformat=csv
+    licence: CC BY 4.0 (World Bank WDI), downloaded 2026-10-26, last updated 2026-10-08
+  bikesharing:
+    split: holdout
+    files: [day.csv, hour.csv, Readme.txt]
+    source: https://archive.ics.uci.edu/dataset/275/bike+sharing+dataset
+    licence: CC BY 4.0
+
+  f1:
+    split: dev   # fresh holdout on 2026-10-26; moved to dev when its spurious links drove a fix
+    files: [results.csv, races.csv, drivers.csv, constructors.csv, circuits.csv, status.csv, pit_stops.csv]
+    source: https://github.com/rfordatascience/tidytuesday/tree/main/data/2021/2021-09-07 (Ergast database)
+    licence: CC BY-NC-SA 3.0 (Ergast); sha256 results.csv 8d74abc3..., races.csv 2d7f7c23...; no subsetting
+  himalaya:
+    split: dev   # fresh holdout on 2026-10-27; moved to dev when its wrong verdict on deaths drove a fix
+    files: [members.csv, expeditions.csv, peaks.csv]
+    source: https://github.com/rfordatascience/tidytuesday/tree/main/data/2020/2020-09-22 (The Himalayan Database)
+    licence: as published by TidyTuesday; the Himalayan Database's terms apply; no subsetting
+  lego:
+    split: dev   # fresh holdout on 2026-10-27; moved to dev when its bare-id links drove a fix
+    files: [sets.csv, themes.csv, inventories.csv, inventory_parts.csv, parts.csv, colors.csv, part_categories.csv]
+    source: https://github.com/rfordatascience/tidytuesday/tree/main/data/2022/2022-09-06 (Rebrickable)
+    licence: Rebrickable database downloads, free to use; the .csv.gz files are decompressed, contents unchanged
+  deforestation:
+    split: holdout   # fresh, added 2026-10-27 to replace lego and gapminder; cases written before ADA read it
+    files: [forest.csv, forest_area.csv, brazil_loss.csv, soybean_use.csv, vegetable_oil.csv]
+    source: https://github.com/rfordatascience/tidytuesday/tree/main/data/2021/2021-04-06 (Our World in Data)
+    licence: CC BY 4.0 (Our World in Data); no subsetting
+  mtcars:
+    split: holdout   # fresh, added 2026-10-27; cases written before ADA read it
+    files: [mtcars.csv]
+    source: https://vincentarelbundock.github.io/Rdatasets/csv/datasets/mtcars.csv
+    licence: public domain (R datasets; Henderson and Velleman 1981)
+  chocolate:
+    split: holdout   # fresh, added 2026-10-27 to replace himalaya and titanic; cases written before ADA read it
+    files: [chocolate.csv]
+    source: https://github.com/rfordatascience/tidytuesday/tree/main/data/2022/2022-01-18 (Flavors of Cacao)
+    licence: as published by TidyTuesday; Flavors of Cacao's terms apply; no subsetting
+  haireyecolor:
+    split: holdout   # fresh, added 2026-10-27; cases written before ADA read it
+    files: [HairEyeColor.csv]
+    source: https://vincentarelbundock.github.io/Rdatasets/csv/datasets/HairEyeColor.csv
+    licence: public domain (R datasets; Snee 1974)
+  olympics:
+    split: holdout   # fresh, added 2026-10-27; cases written before ADA read it
+    files: [olympics.csv, regions.csv]
+    source: https://github.com/rfordatascience/tidytuesday/tree/main/data/2021/2021-07-27 (Kaggle, 120 years of Olympic history)
+    licence: CC0 (Kaggle dataset by rgriffin); no subsetting
+
+cases:
+  # ---------------------------------------------------------------- penguins (dev)
+  - id: penguins-profile
+    dataset: penguins
+    kind: profile
+    file: penguins.csv
+    expected: {rows: 344, columns: 8, missing: {body_mass_g: 2, sex: 11}}
+    reference: reference_dev.py penguins
+    tests: reading
+  - id: penguins-count-by-species
+    dataset: penguins
+    kind: compute
+    file: penguins.csv
+    question: how many penguins of each species
+    expected: {values: {Adelie: 152, Chinstrap: 68, Gentoo: 124}}
+    reference: palmerpenguins README; reference_dev.py penguins
+    tests: calculation
+  - id: penguins-mean-mass-gentoo-claim
+    dataset: penguins
+    kind: claim
+    file: penguins.csv
+    claim: The average body mass of Gentoo penguins is 5076 g.
+    expected: {status: verified, value: 5076.016, rows_used: 123, rows_excluded: 1}
+    reference: reference_dev.py penguins
+    tests: evidence
+  - id: penguins-mean-mass-adelie-false-claim
+    dataset: penguins
+    kind: claim
+    file: penguins.csv
+    claim: Adelie penguins weigh 4000 g on average.
+    expected: {status: unverified, reason: failed_check, value: 3700.662}
+    reference: reference_dev.py penguins
+    tests: evidence
+  - id: penguins-claim-missing-column
+    dataset: penguins
+    kind: claim
+    file: penguins.csv
+    claim: The average is 3.7.
+    expected: {status: unverified, reason: missing_context}
+    reference: the claim names no column and no group
+    tests: refusal
+  - id: penguins-bill-relationship
+    dataset: penguins
+    kind: compute
+    file: penguins.csv
+    question: is bill length related to bill depth
+    expected:
+      pooled_r: -0.235
+      within_r: {Adelie: 0.391, Chinstrap: 0.654, Gentoo: 0.643}
+      must: warn that the pooled relationship reverses within species (Simpson's paradox)
+    reference: reference_dev.py penguins
+    tests: design
+  - id: penguins-folder
+    dataset: penguins
+    kind: folder
+    expected:
+      links: []
+      must: say the two files describe the same 344 penguins with no shared key column, and ask before
+        joining them by row order
+    reference: penguins_raw.csv has Sample Number and Individual ID; penguins.csv has neither
+    tests: interpretation
+
+  # ---------------------------------------------------------------- nycflights13 (dev)
+  - id: flights-profile
+    dataset: nycflights13
+    kind: profile
+    file: flights.csv
+    expected: {rows: 336776, missing: {dep_time: 8255}}
+    reference: nycflights13 documentation (336,776 flights); reference_dev.py flights
+    tests: reading
+  - id: flights-count-by-origin
+    dataset: nycflights13
+    kind: compute
+    file: flights.csv
+    question: number of flights by origin
+    expected: {values: {EWR: 120835, JFK: 111279, LGA: 104662}}
+    reference: reference_dev.py flights
+    tests: calculation
+  - id: flights-mean-dep-delay-claim
+    dataset: nycflights13
+    kind: claim
+    file: flights.csv
+    claim: The average departure delay was 12.64 minutes.
+    expected: {status: verified, value: 12.639, rows_used: 328521, rows_excluded: 8255}
+    reference: R4DS; reference_dev.py flights
+    tests: evidence
+  - id: flights-wrong-column-claim
+    dataset: nycflights13
+    kind: claim
+    file: flights.csv
+    claim: The average arrival delay was 12.6 minutes.
+    expected: {status: unverified, reason: failed_check, value: 6.895}
+    reference: reference_dev.py flights (12.6 is the mean departure delay)
+    tests: evidence
+  - id: flights-ambiguous-delay-claim
+    dataset: nycflights13
+    kind: claim
+    file: flights.csv
+    claim: The average delay was about 13 minutes.
+    expected: {status: unverified, reason: ambiguous_intent, candidates: [dep_delay, arr_delay]}
+    reference: two delay columns; their means are 12.64 and 6.90
+    tests: refusal
+  - id: flights-folder
+    dataset: nycflights13
+    kind: folder
+    expected:
+      links:
+        - {from: flights.carrier, to: airlines.carrier, kind: many-to-one, unmatched_rows: 0}
+        - {from: flights.tailnum, to: planes.tailnum, kind: many-to-one, unmatched_values: 721}
+        - {from: flights.origin, to: airports.faa, kind: many-to-one, unmatched_rows: 0}
+        - {from: flights.dest, to: airports.faa, kind: many-to-one, unmatched_values: 4}
+        - {from: "flights.(origin, time_hour)", to: "weather.(origin, time_hour)", kind: many-to-one, unmatched_rows: 1556}
+      must: report unmatched keys rather than drop them silently; not treat rownames as a key
+    reference: R4DS chapter on joins; reference_dev.py flights
+    tests: interpretation
+
+  # ---------------------------------------------------------------- lahman (dev)
+  - id: lahman-bonds-claim
+    dataset: lahman
+    kind: claim
+    folder: true
+    claim: Barry Bonds hit 73 home runs in 2001.
+    expected: {status: verified, value: 73, needs: join People.playerID to Batting.playerID}
+    reference: reference_dev.py lahman
+    tests: evidence
+  - id: lahman-stints
+    dataset: lahman
+    kind: compute
+    file: Batting.csv
+    question: most home runs by a player in one season
+    expected: {value: 73, must: sum stints within player and year (10,712 rows are second or later stints)}
+    reference: reference_dev.py lahman
+    tests: design
+  - id: lahman-folder
+    dataset: lahman
+    kind: folder
+    expected:
+      links:
+        - {from: Batting.playerID, to: People.playerID, kind: many-to-one, unmatched_rows: 0}
+        - {from: Salaries.playerID, to: People.playerID, kind: many-to-one}
+        - {from: "Batting.(teamID, yearID)", to: "Teams.(teamID, yearID)", kind: many-to-one}
+      must: not propose teamID alone as a key of Teams (it repeats across years)
+    reference: reference_dev.py lahman
+    tests: interpretation
+
+  # ---------------------------------------------------------------- sleepstudy (dev)
+  - id: sleep-days-effect
+    dataset: sleepstudy
+    kind: compute
+    file: sleepstudy.csv
+    question: does reaction time increase with days
+    expected:
+      slope: 10.467
+      se_mixed: 1.546
+      must: treat the 18 subjects as the unit (10 rows each), not 180 independent rows
+    reference: lme4 vignette (fixed effect Days 10.467, SE 1.546); reference_dev.py sleepstudy
+    tests: design
+  - id: sleep-slope-claim
+    dataset: sleepstudy
+    kind: claim
+    file: sleepstudy.csv
+    claim: Reaction time rises by about 10.5 ms per day of sleep deprivation.
+    expected: {status: verified, value: 10.467, must: name the subject-level model as an assumption}
+    reference: reference_dev.py sleepstudy
+    tests: evidence
+
+  # ---------------------------------------------------------------- owid-co2 (dev)
+  - id: owid-profile
+    dataset: owid-co2
+    kind: profile
+    file: owid-co2-data.csv
+    expected: {rows: 50411, must: notice rows that are aggregates (World, continents, income groups) mixed with countries}
+    reference: 36 entities have no iso_code; reference_dev.py owid
+    tests: interpretation
+  - id: owid-total-2022
+    dataset: owid-co2
+    kind: compute
+    file: owid-co2-data.csv
+    question: total co2 in 2022
+    expected:
+      value: 37527.773
+      wrong_value: 240370.227
+      must: not sum aggregate rows with countries; the World row is 37,528 million tonnes
+    reference: reference_dev.py owid; codebook gives the unit (million tonnes)
+    tests: design
+  - id: owid-world-claim
+    dataset: owid-co2
+    kind: claim
+    file: owid-co2-data.csv
+    claim: World CO2 emissions in 2022 were 37,528 million tonnes.
+    expected: {status: verified, value: 37527.773}
+    reference: reference_dev.py owid
+    tests: evidence
+
+  # ---------------------------------------------------------------- parkinsons (dev; existing problem case)
+  - id: parkinsons-read
+    dataset: parkinsons
+    kind: profile
+    file: parkinsons_updrs.data
+    expected: {rows: 5875, columns: 22, subjects: 42}
+    reference: parkinsons_updrs.names
+    tests: reading
+  - id: parkinsons-jitter-by-sex
+    dataset: parkinsons
+    kind: compute
+    file: parkinsons_updrs.data
+    question: does Jitter(Abs) differ by sex
+    expected:
+      p_mixed: 0.106
+      wrong_p: 4.1e-28
+      must: use the 42 people as the unit (random intercept per subject#)
+    reference: reference_dev.py parkinsons (statsmodels mixedlm; Welch on recordings gives 4.1e-28)
+    tests: design
+
+  # ---------------------------------------------------------------- gapminder (holdout)
+  - id: gapminder-continent-2007
+    dataset: gapminder
+    kind: compute
+    file: gapminder.csv
+    question: average life expectancy by continent in 2007
+    expected: {values: {Africa: 54.806, Americas: 73.608, Asia: 70.728, Europe: 77.649, Oceania: 80.72}}
+    reference: reference_holdout.py gapminder
+    tests: calculation
+  - id: gapminder-world-claim
+    dataset: gapminder
+    kind: claim
+    file: gapminder.csv
+    claim: Average life expectancy in 2007 was 67 years.
+    expected: {status: verified, value: 67.007, must: state that this is the unweighted mean of 142 countries (68.9 weighted by population)}
+    reference: reference_holdout.py gapminder
+    tests: evidence
+  - id: gapminder-gdp-life
+    dataset: gapminder
+    kind: compute
+    file: gapminder.csv
+    question: is gdpPercap related to lifeExp
+    expected: {must: note that each country appears 12 times, so the 1,704 rows are not independent}
+    reference: 142 countries x 12 years
+    tests: design
+
+  # ---------------------------------------------------------------- chickweight (holdout)
+  - id: chick-diet
+    dataset: chickweight
+    kind: compute
+    file: ChickWeight.csv
+    question: does weight differ by Diet
+    expected: {must: treat the 50 chicks as the unit (weighed up to 12 times), not 578 rows}
+    reference: reference_holdout.py chickweight
+    tests: design
+  - id: chick-day21-claim
+    dataset: chickweight
+    kind: claim
+    file: ChickWeight.csv
+    claim: On day 21, chicks on diet 3 weighed 270.3 g on average.
+    expected: {status: verified, value: 270.3, rows_used: 10}
+    reference: reference_holdout.py chickweight
+    tests: evidence
+
+  # ---------------------------------------------------------------- titanic (holdout)
+  - id: titanic-survival-rate
+    dataset: titanic
+    kind: compute
+    file: Titanic.csv
+    question: what share survived
+    expected: {value: 0.3230, wrong_value: 0.5, must: weight rows by Freq (2,201 people in 32 rows)}
+    reference: reference_holdout.py titanic
+    tests: interpretation
+  - id: titanic-claim
+    dataset: titanic
+    kind: claim
+    file: Titanic.csv
+    claim: About 32% of the people on board survived.
+    expected: {status: verified, value: 0.323}
+    reference: reference_holdout.py titanic
+    tests: evidence
+
+  # ---------------------------------------------------------------- olist (dev, was holdout)
+  - id: olist-folder
+    dataset: olist
+    kind: folder
+    expected:
+      links:
+        - {from: olist_order_items_dataset.order_id, to: olist_orders_dataset.order_id, kind: many-to-one}
+        - {from: olist_order_payments_dataset.order_id, to: olist_orders_dataset.order_id, kind: many-to-one}
+        - {from: olist_order_reviews_dataset.order_id, to: olist_orders_dataset.order_id, kind: many-to-one}
+        - {from: olist_orders_dataset.customer_id, to: olist_customers_dataset.customer_id, kind: one-to-one}
+        - {from: olist_order_items_dataset.product_id, to: olist_products_dataset.product_id, kind: many-to-one}
+        - {from: olist_order_items_dataset.seller_id, to: olist_sellers_dataset.seller_id, kind: many-to-one}
+      must: warn that zip code prefix repeats in geolocation (up to 1,146 rows), so joining on it multiplies rows
+    reference: reference_olist.py
+    tests: interpretation
+  - id: olist-payment-total-claim
+    dataset: olist
+    kind: claim
+    file: olist_order_payments_dataset.csv
+    claim: Customers paid R$16,008,872 in total.
+    expected: {status: verified, value: 16008872.12}
+    reference: reference_olist.py
+    tests: evidence
+  - id: olist-average-order-claim
+    dataset: olist
+    kind: claim
+    file: olist_order_payments_dataset.csv
+    claim: The average order value is R$154.10.
+    expected: {status: unverified, reason: failed_check, must: say 154.10 is per payment row; per order it is 160.99}
+    reference: reference_olist.py (103,886 payment rows for 99,440 orders)
+    tests: evidence
+
+  # ---------------------------------------------------------------- worldbank (holdout)
+  - id: worldbank-read
+    dataset: worldbank-lifeexp
+    kind: profile
+    file: API_SP.DYN.LE00.IN_DS2_en_csv_v2_1528.csv
+    expected: {rows: 266, must: skip the 4 metadata lines above the header; years as columns}
+    reference: reference_holdout.py worldbank
+    tests: reading
+  - id: worldbank-japan-claim
+    dataset: worldbank-lifeexp
+    kind: claim
+    file: API_SP.DYN.LE00.IN_DS2_en_csv_v2_1528.csv
+    claim: Life expectancy in Japan was 84.4 years in 2021.
+    expected: {status: verified, value: 84.446}
+    reference: reference_holdout.py worldbank
+    tests: evidence
+  - id: worldbank-folder
+    dataset: worldbank-lifeexp
+    kind: folder
+    expected:
+      links:
+        - {from: API_SP.DYN.LE00.IN_DS2_en_csv_v2_1528.Country Code, to: Metadata_Country_API_SP.DYN.LE00.IN_DS2_en_csv_v2_1528.Country Code, kind: one-to-one}
+      must: notice that 48 rows are aggregates (no Region in the metadata file)
+    reference: reference_holdout.py worldbank
+    tests: interpretation
+
+  # ---------------------------------------------------------------- bikesharing (holdout)
+  - id: bike-growth-claim
+    dataset: bikesharing
+    kind: claim
+    file: day.csv
+    claim: Rentals grew by 64.9% from 2011 to 2012.
+    expected: {status: verified, value: 0.6488}
+    reference: reference_holdout.py bikesharing (1,243,103 to 2,049,576)
+    tests: evidence
+  - id: bike-circular
+    dataset: bikesharing
+    kind: compute
+    file: day.csv
+    question: what is cnt related to
+    expected: {must: not report cnt vs registered or casual as a finding; cnt = casual + registered on every row}
+    reference: Readme.txt; reference_dev.py bikesharing
+    tests: design
+  - id: bike-folder
+    dataset: bikesharing
+    kind: folder
+    expected:
+      links:
+        - {from: hour.dteday, to: day.dteday, kind: many-to-one}
+      must: notice that day.csv totals hour.csv (cnt per day is the sum of its hours)
+    reference: reference_holdout.py bikesharing
+    tests: interpretation
+
+  # ---------------------------------------------------------------- f1 (holdout, fresh)
+  - id: f1-results-profile
+    dataset: f1
+    kind: profile
+    file: results.csv
+    expected: {rows: 25220, columns: 18, missing: {position: 10762, fastestLapSpeed: 18443}}
+    reference: reference_f1.py (Ergast writes missing values as \N)
+    tests: reading
+  - id: f1-races-2020
+    dataset: f1
+    kind: compute
+    file: races.csv
+    question: how many races in 2020
+    expected: {value: 17}
+    reference: reference_f1.py
+    tests: calculation
+  - id: f1-points-total-claim
+    dataset: f1
+    kind: claim
+    file: results.csv
+    claim: The total points across all results are 45,350.05.
+    expected: {status: verified, value: 45350.05}
+    reference: reference_f1.py
+    tests: evidence
+  - id: f1-fastest-lap-speed-claim
+    dataset: f1
+    kind: claim
+    file: results.csv
+    claim: The average fastest lap speed is 202.6 km/h.
+    expected: {status: verified, value: 202.592, rows_used: 6777}
+    reference: reference_f1.py (18,443 results have no fastest lap recorded, written \N)
+    tests: evidence
+  - id: f1-grid-false-claim
+    dataset: f1
+    kind: claim
+    file: results.csv
+    claim: The average grid position is 10.
+    expected: {status: unverified, reason: failed_check, value: 11.207}
+    reference: reference_f1.py
+    tests: evidence
+  - id: f1-hamilton-claim
+    dataset: f1
+    kind: claim
+    folder: true
+    claim: Lewis Hamilton scored 3,999.5 points.
+    expected: {status: verified, value: 3999.5, needs: "join drivers.driverId to results.driverId"}
+    reference: reference_f1.py
+    tests: evidence
+  - id: f1-folder
+    dataset: f1
+    kind: folder
+    expected:
+      links:
+        - {from: results.raceId, to: races.raceId, kind: many-to-one, unmatched_rows: 0}
+        - {from: results.driverId, to: drivers.driverId, kind: many-to-one, unmatched_rows: 0}
+        - {from: results.constructorId, to: constructors.constructorId, kind: many-to-one, unmatched_rows: 0}
+        - {from: results.statusId, to: status.statusId, kind: many-to-one, unmatched_rows: 0}
+        - {from: races.circuitId, to: circuits.circuitId, kind: many-to-one, unmatched_rows: 0}
+        - {from: "pit_stops.(raceId, driverId)", to: "results.(raceId, driverId)", kind: many-to-many, unmatched_rows: 0}
+      must: "a driver can have up to 3 results rows in one race (shared drives), so (raceId, driverId) is not a key of results"
+    reference: reference_f1.py
+    tests: interpretation
+  # ---------------------------------------------------------------- himalaya (holdout, fresh)
+  - id: himalaya-folder
+    dataset: himalaya
+    kind: folder
+    expected:
+      links:
+        - {from: "members.(expedition_id, year)", to: "expeditions.(expedition_id, year)", kind: many-to-one, unmatched_rows: 0}
+        - {from: expeditions.peak_id, to: peaks.peak_id, kind: many-to-one, unmatched_rows: 1}
+        - {from: members.peak_id, to: peaks.peak_id, kind: many-to-one, unmatched_rows: 15}
+      must: "say expedition_id alone is not a key of expeditions: KANG10101 names a 1910 and a 2010 expedition"
+    reference: reference_fresh.py
+    tests: interpretation
+  - id: himalaya-height-claim
+    dataset: himalaya
+    kind: claim
+    file: peaks.csv
+    claim: The average peak is 6,657 metres high.
+    expected: {status: verified, value: 6656.637, rows_used: 468}
+    reference: reference_fresh.py
+    tests: evidence
+  - id: himalaya-age-false-claim
+    dataset: himalaya
+    kind: claim
+    file: members.csv
+    claim: The average member age was 35 years.
+    expected: {status: unverified, reason: failed_check, value: 37.334}
+    reference: reference_fresh.py
+    tests: evidence
+  - id: himalaya-success-share
+    dataset: himalaya
+    kind: compute
+    file: members.csv
+    question: what share of members had success
+    expected: {value: 0.3816}
+    reference: reference_fresh.py
+    tests: interpretation
+  - id: himalaya-expeditions-2019
+    dataset: himalaya
+    kind: compute
+    file: expeditions.csv
+    question: how many expeditions were there in 2019
+    expected: {value: 172}
+    reference: reference_fresh.py
+    tests: calculation
+  - id: himalaya-deaths-claim
+    dataset: himalaya
+    kind: claim
+    folder: true
+    claim: Expeditions recorded 788 member deaths in total.
+    expected: {status: verified, value: 788}
+    reference: reference_fresh.py
+    tests: evidence
+  # ---------------------------------------------------------------- lego (holdout, fresh)
+  - id: lego-folder
+    dataset: lego
+    kind: folder
+    expected:
+      links:
+        - {from: sets.theme_id, to: themes.id, kind: many-to-one, unmatched_rows: 0}
+        - {from: inventories.set_num, to: sets.set_num, kind: many-to-one, unmatched_rows: 12550}
+        - {from: inventory_parts.inventory_id, to: inventories.id, kind: many-to-one, unmatched_rows: 0}
+        - {from: inventory_parts.part_num, to: parts.part_num, kind: many-to-one, unmatched_rows: 0}
+        - {from: inventory_parts.color_id, to: colors.id, kind: many-to-one, unmatched_rows: 0}
+        - {from: parts.part_cat_id, to: part_categories.id, kind: many-to-one, unmatched_rows: 0}
+      must: "say 12,550 inventories name a set_num missing from sets.csv (minifigures, fig-...)"
+    reference: reference_fresh.py
+    tests: interpretation
+  - id: lego-parts-claim
+    dataset: lego
+    kind: claim
+    file: sets.csv
+    claim: The average Lego set has 161 parts.
+    expected: {status: verified, value: 161.058, rows_used: 19798}
+    reference: reference_fresh.py
+    tests: evidence
+  - id: lego-sets-2020
+    dataset: lego
+    kind: compute
+    file: sets.csv
+    question: how many sets were released in 2020
+    expected: {value: 967}
+    reference: reference_fresh.py
+    tests: calculation
+  - id: lego-2019-false-claim
+    dataset: lego
+    kind: claim
+    file: sets.csv
+    claim: Sets from 2019 have 250 parts on average.
+    expected: {status: unverified, reason: failed_check, value: 202.372}
+    reference: reference_fresh.py
+    tests: evidence
+  # ---------------------------------------------------------------- deforestation (holdout, fresh)
+  - id: deforestation-folder
+    dataset: deforestation
+    kind: folder
+    expected:
+      links:
+        - {from: "forest.(entity, year)", to: "forest_area.(entity, year)", kind: one-to-one, unmatched_rows: 0}
+        - {from: "brazil_loss.(entity, year)", to: "forest_area.(entity, year)", kind: one-to-one, unmatched_rows: 0}
+      must: "say that most soybean_use years (1961 to 1989) have no forest_area row, and that rows with no code are regions"
+    reference: reference_fresh2.py
+    tests: interpretation
+  - id: deforestation-pasture-claim
+    dataset: deforestation
+    kind: claim
+    file: brazil_loss.csv
+    claim: Brazil lost 2,564,000 hectares of forest to pasture in 2004.
+    expected: {status: verified, value: 2564000, rows_used: 1}
+    reference: reference_fresh2.py
+    tests: evidence
+  - id: deforestation-conversion-claim
+    dataset: deforestation
+    kind: claim
+    file: forest.csv
+    claim: The average net forest conversion was -76,931 hectares.
+    expected: {status: verified, value: -76931.03, rows_used: 475}
+    must: "note that the 475 rows include the World row and regions"
+    reference: reference_fresh2.py
+    tests: evidence
+  # ---------------------------------------------------------------- mtcars (holdout, fresh)
+  - id: mtcars-mpg-claim
+    dataset: mtcars
+    kind: claim
+    file: mtcars.csv
+    claim: The average mpg is 20.09.
+    expected: {status: verified, value: 20.0906, rows_used: 32}
+    reference: reference_fresh2.py
+    tests: evidence
+  - id: mtcars-horsepower-claim
+    dataset: mtcars
+    kind: claim
+    file: mtcars.csv
+    claim: The cars average 146.7 horsepower.
+    expected: {status: verified, value: 146.6875}
+    reference: reference_fresh2.py
+    tests: interpretation
+  - id: mtcars-mpg-by-cyl
+    dataset: mtcars
+    kind: compute
+    file: mtcars.csv
+    question: average mpg by cyl
+    expected: {values: {"4": 26.664, "6": 19.743, "8": 15.1}}
+    reference: reference_fresh2.py
+    tests: calculation
+  - id: mtcars-weight-false-claim
+    dataset: mtcars
+    kind: claim
+    file: mtcars.csv
+    claim: The average wt is 3.5.
+    expected: {status: unverified, reason: failed_check, value: 3.217}
+    reference: reference_fresh2.py
+    tests: evidence
+  - id: mtcars-four-cylinder-claim
+    dataset: mtcars
+    kind: claim
+    file: mtcars.csv
+    claim: Cars with 4 cylinders average 26.7 mpg.
+    expected: {status: verified, value: 26.664, rows_used: 11}
+    reference: reference_fresh2.py
+    tests: evidence
+  # ---------------------------------------------------------------- chocolate (holdout, fresh)
+  - id: chocolate-rating-claim
+    dataset: chocolate
+    kind: claim
+    file: chocolate.csv
+    claim: The average rating is 3.2.
+    expected: {status: verified, value: 3.1963, rows_used: 2530}
+    reference: reference_fresh3.py
+    tests: evidence
+  - id: chocolate-cocoa-claim
+    dataset: chocolate
+    kind: claim
+    file: chocolate.csv
+    claim: The average cocoa percent is 71.6%.
+    expected: {status: verified, value: 71.64}
+    reference: reference_fresh3.py
+    tests: reading
+  - id: chocolate-usa-compute
+    dataset: chocolate
+    kind: compute
+    file: chocolate.csv
+    question: average rating for U.S.A.
+    expected: {value: 3.1908}
+    reference: reference_fresh3.py
+    tests: interpretation
+  - id: chocolate-2019-count
+    dataset: chocolate
+    kind: compute
+    file: chocolate.csv
+    question: how many reviews in 2019
+    expected: {value: 193}
+    reference: reference_fresh3.py
+    tests: calculation
+  # ---------------------------------------------------------------- haireyecolor (holdout, fresh)
+  - id: hair-blue-share
+    dataset: haireyecolor
+    kind: compute
+    file: HairEyeColor.csv
+    question: what share have blue eyes
+    expected: {value: 0.3632, wrong_value: 0.25, must: "weight rows by Freq (592 people in 32 rows)"}
+    reference: reference_fresh3.py
+    tests: interpretation
+  - id: hair-female-claim
+    dataset: haireyecolor
+    kind: claim
+    file: HairEyeColor.csv
+    claim: 52.9% of the people are female.
+    expected: {status: verified, value: 52.87}
+    reference: reference_fresh3.py
+    tests: evidence
+  # ---------------------------------------------------------------- olympics (holdout, fresh)
+  - id: olympics-folder
+    dataset: olympics
+    kind: folder
+    expected:
+      links:
+        - {from: olympics.noc, to: regions.NOC, kind: many-to-one, unmatched_rows: 349}
+      must: "say that SGP (349 rows) has no row in regions.csv"
+    reference: reference_fresh3.py
+    tests: interpretation
+  - id: olympics-age-claim
+    dataset: olympics
+    kind: claim
+    file: olympics.csv
+    claim: The average age was 25.6.
+    expected: {status: verified, value: 25.557, rows_used: 261642}
+    must: "say that athletes repeat (135,571 athletes over 271,116 rows), so the average weights each by their rows"
+    reference: reference_fresh3.py
+    tests: evidence
+  - id: olympics-gold-count
+    dataset: olympics
+    kind: compute
+    file: olympics.csv
+    question: how many Gold medals were won
+    expected: {value: 13372}
+    reference: reference_fresh3.py
+    tests: calculation

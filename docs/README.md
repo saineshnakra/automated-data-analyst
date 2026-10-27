@@ -1,11 +1,16 @@
 # ADA documentation
 
-ADA does two things. For a study, `ada init`, `ada build` and `ada verify`
-make a paper's assets from the data and a `study.yml`, each traceable to the
-data: see [Paper assets for a study](research.md). For any table, ADA takes a
-first look: it checks the data for problems, tests which groups differ, finds
-what relates to what, flags changes over time and answers plain-English
-questions. Each number is shown with the calculation that produced it.
+ADA computes numbers from tables and checks numbers stated about them. `ada
+ask` answers a question with the calculation and the rows behind it, `ada
+claim` checks a stated number and says verified, or unverified with a reason
+(see [Checking claims](reference/claims.md)), and `ada scan` maps a folder of
+related files and the keys that join them (see [Reading a folder of
+tables](reference/folder.md)). For a study, `ada init`, `ada build` and `ada
+verify` make a paper's assets from the data and a `study.yml`, each traceable
+to the data: see [Paper assets for a study](research.md). For any table, ADA
+also takes a first look: it checks the data for problems, tests which groups
+differ, finds what relates to what and flags changes over time. Each number is
+shown with the calculation that produced it.
 
 The engine is the `ada` package. The Streamlit app is `app.py` at the
 repository root, and the bundled sample files are in `ada/samples/`.

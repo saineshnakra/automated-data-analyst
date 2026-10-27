@@ -69,12 +69,12 @@ it without the app extras and runs the `ada` command.
 ## Releasing
 
 `.github/workflows/release.yml` publishes to PyPI when a GitHub release is
-published. To release version 0.5.0:
+published. To release version 0.6.0:
 
-1. Set `version = "0.5.0"` in `pyproject.toml` and `__version__` in
+1. Set `version = "0.6.0"` in `pyproject.toml` and `__version__` in
    `ada/__init__.py`, add the release to `CHANGELOG.md` and the version to
    `CITATION.cff`, and merge that to `main`.
-2. Create a release on GitHub with the tag `v0.5.0`, and paste the
+2. Create a release on GitHub with the tag `v0.6.0`, and paste the
    release's section of `CHANGELOG.md` as its notes.
 
 The workflow checks that the tag matches the version, runs the tests, builds

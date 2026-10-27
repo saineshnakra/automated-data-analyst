@@ -54,6 +54,24 @@ jobs:
           /tmp/venv/bin/ada analyze - > /dev/null
           /tmp/venv/bin/ada skill --print | grep -q '^name: ada$'
           /tmp/venv/bin/python -c "import ada, sys; ada.analyze(ada.sample()); assert 'streamlit' not in sys.modules"
+      - name: Check a claim, answer a question and scan a folder with the installed command
+        run: |
+          cd "$(mktemp -d)"
+          /tmp/venv/bin/python - <<'PY'
+          import pandas as pd
+
+          pd.DataFrame({"order_id": ["a", "a", "b", "c"], "amount": [10.0, 5.0, 20.0, 30.0]}).to_csv("orders.csv", index=False)
+          pd.DataFrame({"order_id": ["a", "b", "c"], "region": ["North", "South", "North"]}).to_csv("regions.csv", index=False)
+          PY
+          /tmp/venv/bin/ada claim orders.csv "The total amount is 65." --json > verified.json
+          /tmp/venv/bin/python -c "import json; assert json.load(open('verified.json'))['status'] == 'verified'"
+          status=0; /tmp/venv/bin/ada claim orders.csv "The total amount is 70." > /dev/null || status=$?
+          test "$status" -eq 1
+          /tmp/venv/bin/ada ask orders.csv "total amount" --json > answer.json
+          /tmp/venv/bin/python -c "import json; assert json.load(open('answer.json'))['result']['value'] == 65.0"
+          /tmp/venv/bin/ada scan . --json > scan.json
+          /tmp/venv/bin/python -c "import json; assert json.load(open('scan.json'))['links'][0]['to'] == 'regions.order_id'"
+          /tmp/venv/bin/ada skill --print | grep -q 'ada claim'
       - name: Build and verify a small study with the installed command
         run: |
           cd "$(mktemp -d)"
