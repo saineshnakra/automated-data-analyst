@@ -104,6 +104,30 @@ class ModelTests(unittest.TestCase):
         self.assertLess(report.score, 0.4)
         self.assertTrue((report.submission["price"] > 0).all())
 
+    def test_a_skewed_target_is_fitted_on_logs_for_absolute_error(self):
+        rng = np.random.default_rng(5)
+        size = rng.integers(40, 300, 400)
+        frame = pd.DataFrame({"id": np.arange(400), "size": size,
+                              "price": np.round(size * 900 * rng.lognormal(0, 0.6, 400))})
+        report = ada.model(frame.iloc[:300], frame.iloc[300:].drop(columns="price"), metric="mae")
+        self.assertIn("log1p(price)", report.calculation)
+        self.assertGreater(report.submission["price"].min(), 0)
+        self.assertGreater(report.test_wobble(50), 0)
+        even = frame.assign(price=rng.normal(100, 10, 400))
+        report = ada.model(even.iloc[:300], even.iloc[300:].drop(columns="price"), metric="mae")
+        self.assertNotIn("log1p", report.calculation)
+
+    def test_numbers_written_as_text_in_one_table_are_read_as_numbers_in_both(self):
+        from ada.modelling import _align_types
+
+        train = pd.DataFrame({"cars": [0, 1, 2, 2], "name": ["a", "b", "c", "d"]})
+        test = pd.DataFrame({"cars": ["1", "NA", "3", "2"], "name": ["e", "f", "g", "h"]})
+        self.assertEqual(_align_types(train, test, ["cars", "name"]), ["cars"])
+        self.assertTrue(pd.api.types.is_numeric_dtype(test["cars"]))
+        self.assertTrue(test["cars"].isna().iloc[1])
+        words = pd.DataFrame({"cars": ["one", "two", "NA", "3"]})
+        self.assertEqual(_align_types(train, words, ["cars"]), [])
+
     def test_balanced_accuracy_gives_rare_classes_their_share(self):
         rng = np.random.default_rng(4)
         signal = rng.normal(0, 1, 900)
@@ -114,6 +138,113 @@ class ModelTests(unittest.TestCase):
                            metric="Balanced Accuracy Score", id_column="row")
         self.assertIn("rare", set(report.submission["label"]))
         self.assertGreater(report.score, 0.6)
+
+
+def stocks(codes: list[str], rows_each: int, seed: int) -> pd.DataFrame:
+    """Rows of several stocks; y follows f_0 the same way in every stock, around a level of its own."""
+    rng = np.random.default_rng(seed)
+    frames = []
+    for code in codes:
+        signal = rng.normal(0, 1, rows_each)
+        frames.append(pd.DataFrame({
+            "code": code, "f_0": signal, "f_1": rng.normal(0, 1, rows_each),
+            "y": 0.5 * signal + rng.normal(0, 1) + rng.normal(0, 1, rows_each),
+        }))
+    frame = pd.concat(frames, ignore_index=True)
+    return frame.assign(id=np.arange(len(frame)) + 1000 * seed)
+
+
+@unittest.skipUnless(HAS_EXTRA, "needs the model extra")
+class ModelGroupTests(unittest.TestCase):
+    def test_test_rows_of_new_groups_group_the_folds(self):
+        train = stocks([f"code_{index}" for index in range(8)], 60, 0)
+        test = stocks([f"code_{index}" for index in range(8, 12)], 60, 1).drop(columns="y")
+        report = ada.model(train, test, target="y", metric="RankIC", id_column="id")
+        self.assertEqual(report.metric.name, "spearman")
+        self.assertIn("code-grouped", report.calculation)
+        self.assertIn("folds are grouped by it", dict(report.dropped)["code"])
+        self.assertGreater(report.score, 0.2)
+        self.assertLessEqual(report.score, 1)
+
+    def test_groups_the_test_rows_share_with_training_do_not_group_the_folds(self):
+        train = stocks([f"code_{index}" for index in range(8)], 60, 0)
+        test = stocks([f"code_{index}" for index in range(6, 10)], 60, 1).drop(columns="y")
+        report = ada.model(train, test, target="y", metric="rmse", id_column="id")
+        self.assertNotIn("grouped", report.calculation)
+
+    def test_fewer_groups_than_folds_do_not_group_the_folds(self):
+        train = stocks(["a", "b", "c"], 100, 0)
+        test = stocks(["d", "e"], 50, 1).drop(columns="y")
+        report = ada.model(train, test, target="y", metric="rmse", id_column="id")
+        self.assertNotIn("grouped", report.calculation)
+
+    def test_each_fold_holds_whole_groups(self):
+        from ada.modelling import _group_folds
+
+        groups = pd.Series(["a"] * 5 + ["b"] * 3 + ["c"] * 3 + ["d"] * 2 + ["e"] * 1)
+        folds = _group_folds(groups, 3, seed=0)
+        held = [set(groups.iloc[rows]) for _, rows in folds]
+        self.assertEqual(sorted(name for names in held for name in names), ["a", "b", "c", "d", "e"])
+        self.assertEqual(sorted(len(rows) for _, rows in folds), [4, 5, 5])
+
+
+def daily_sales(days: int, stores: int = 3, seed: int = 0) -> pd.DataFrame:
+    """Daily sales of two families in each store, with a weekly cycle and a level per store."""
+    rng = np.random.default_rng(seed)
+    dates = pd.date_range("2020-01-01", periods=days, freq="D")
+    rows = []
+    for store in range(1, stores + 1):
+        for family in ("BREAD", "MILK"):
+            level = 20 * store + (5 if family == "MILK" else 0)
+            weekly = 1 + 0.4 * (dates.dayofweek >= 5)
+            sales = np.round(level * weekly * rng.lognormal(0, 0.1, days))
+            rows.append(pd.DataFrame({"date": dates.strftime("%Y-%m-%d"), "store_nbr": store,
+                                      "family": family, "onpromotion": rng.integers(0, 3, days),
+                                      "sales": sales}))
+    frame = pd.concat(rows, ignore_index=True)
+    return frame.assign(id=np.arange(len(frame)))
+
+
+@unittest.skipUnless(HAS_EXTRA, "needs the model extra")
+class ForecastTests(unittest.TestCase):
+    def test_test_dates_after_training_give_time_folds_and_lags(self):
+        frame = daily_sales(300)
+        cut = pd.to_datetime(frame["date"]) <= pd.Timestamp("2020-01-01") + pd.Timedelta(days=285)
+        train, test = frame[cut], frame[~cut].drop(columns="sales")
+        report = ada.model(train, test, target="sales", metric="rmsle", id_column="id")
+        self.assertIn("time-ordered folds", report.calculation)
+        self.assertIn("store_nbr, family", report.calculation)
+        self.assertIn("holding out 14 days of date", report.calculation)
+        names = dict(report.features)
+        self.assertIn("sales_lag14", names)
+        self.assertIn("date_dayofweek", names)
+        self.assertEqual(len(report.folds), 5)
+        self.assertLess(len(report.out_of_fold_predictions), len(train))
+        self.assertEqual(len(report.submission), len(test))
+        self.assertLess(report.score, 0.2)
+        self.assertTrue(all(check.passed for check in report.checks), report.checks)
+
+    def test_a_lag_is_never_nearer_than_the_horizon(self):
+        from ada.modelling import _lag_features
+
+        dates = pd.Series(pd.date_range("2021-01-01", periods=60, freq="D"))
+        train = pd.DataFrame({"date": dates[:50].to_numpy(), "shop": "a"})
+        test = pd.DataFrame({"date": dates[50:].to_numpy(), "shop": "a"})
+        values = np.arange(50, dtype=float)
+        past, ahead, _ = _lag_features(train, test, "date", ["shop"], values, 10, "y")
+        self.assertEqual(past["y_lag10"].iloc[30], 20)
+        self.assertEqual(past["y_mean7"].iloc[30], np.mean(np.arange(14, 21)))
+        self.assertTrue(np.isnan(past["y_lag10"].iloc[5]))
+        self.assertEqual(ahead["y_lag10"].iloc[-1], 49)
+        self.assertFalse(ahead.isna().any().any())
+
+    def test_too_little_history_keeps_shuffled_folds_and_says_so(self):
+        frame = daily_sales(40)
+        cut = pd.to_datetime(frame["date"]) <= pd.Timestamp("2020-01-01") + pd.Timedelta(days=19)
+        train, test = frame[cut], frame[~cut].drop(columns="sales")
+        report = ada.model(train, test, target="sales", metric="rmse", id_column="id")
+        self.assertNotIn("time-ordered", report.calculation)
+        self.assertTrue(any("flatters" in warning for warning in report.warnings))
 
 
 @unittest.skipUnless(HAS_EXTRA, "needs the model extra")

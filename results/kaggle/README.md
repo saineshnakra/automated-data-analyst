@@ -1,6 +1,6 @@
 # Kaggle competitions
 
-`ada model` is scored on 21 tabular Kaggle competitions, against the score
+`ada model` is scored on 22 tabular Kaggle competitions, against the score
 at the top 10% of each leaderboard. `competitions.yml` lists them and their
 metrics; `run.py` downloads the data, runs `ada.model`, reads the leaderboard
 and, only when asked and only when every gate passes, submits.
@@ -22,9 +22,19 @@ once, at the end.
 
 | Split | Competitions |
 |---|---|
-| train | Titanic, House Prices, Spaceship Titanic, Playground S6E7 to S6E9 |
-| validation | Housing Prices (Kaggle Learn), Store Sales, Playground S5E10 to S5E12 and S6E1 to S6E3 |
+| train | Titanic, House Prices, Spaceship Titanic, Playground S6E7 to S6E9, Housing Prices (Kaggle Learn), Store Sales, Stocks Predict challenge |
+| validation | Playground S5E10 to S5E12 and S6E1 to S6E3 |
 | test | Playground S5E7 to S5E9, S6E4 to S6E6 and S6E10 |
+
+Housing Prices (Kaggle Learn), Store Sales and the Stocks Predict challenge
+moved to train when their runs led to fixes: numbers read as text in one
+table, forecasts, and test rows from new groups.
+
+Three other competitions the account has entered are not used: House Price
+Prediction Project (two teams and no test table), Home Credit Credit Risk
+Model Stability (submissions only through notebooks) and Stocks Return
+Prediction V3 (data only as pickle files, which are not loaded from an
+untrusted source).
 
 ## The bar and the gate
 
@@ -44,8 +54,10 @@ when:
 
 | Competition | Split | Metric | Cross-validated | Top-10% bar | About | Gate |
 |---|---|---|---|---|---|---|
-| Titanic | train | accuracy | 0.8260 (sd 0.022) | 0.7943 | top 3.5% | held: the public leaderboard's 209 rows leave a wobble of 0.025, and the margin of 0.032 is under twice it (0.049) |
-| Housing Prices (Kaggle Learn) | validation | MAE | 15,459 (sd 1,423) | 15,010 | top 11.6% | held: not past the bar |
+| Titanic | train | accuracy | 0.8358 (sd 0.022) | 0.7943 | top 3.4% | held: the public leaderboard's 209 rows leave a wobble of about 0.025, and the margin is under twice it |
+| Housing Prices (Kaggle Learn) | train | MAE | 14,012 (sd 1,325) | 15,010 | top 7.1% | not yet run through the gate |
+| Store Sales | train | RMSLE | 0.3914 (sd 0.008, 5 time-ordered folds) | 0.3872 | top 13.6% | held: not past the bar |
+| Stocks Predict challenge | train | Spearman | 0.0506 (sd 0.015) | 0.0533 | top 27% | held: not past the bar |
 
 No submission has been sent. The other competitions are not scored yet: their
 rules have not been accepted for the account, so their data cannot be

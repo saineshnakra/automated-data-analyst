@@ -11,8 +11,9 @@ competitions:
   - {slug: playground-series-s6e7, split: train, metric: balanced_accuracy}
   - {slug: playground-series-s6e8, split: train, metric: auc}
   - {slug: playground-series-s6e9, split: train, metric: auc}
-  - {slug: home-data-for-ml-course, split: validation, metric: mae}
-  - {slug: store-sales-time-series-forecasting, split: validation, metric: rmsle}
+  - {slug: home-data-for-ml-course, split: train, metric: mae}
+  - {slug: store-sales-time-series-forecasting, split: train, metric: rmsle}
+  - {slug: stocks-challenge, split: train, metric: spearman, public_share: 0.18}
   - {slug: playground-series-s5e10, split: validation, metric: rmse}
   - {slug: playground-series-s5e11, split: validation, metric: auc}
   - {slug: playground-series-s5e12, split: validation, metric: auc}
