@@ -247,7 +247,9 @@ note lists them; `ND` and `<LOQ` are read as below a detection limit. When
 every reading is in one unit, the note names it. When the units differ, a new
 text column `<name> unit` holds each row's unit, so the schema treats the
 table as long by unit and never combines readings in different units (see
-[Schema detection](schema-detection.md#long-tables)).
+[Schema detection](schema-detection.md#long-tables)). A column with more than
+12 units holds codes that start with a number (`37F-PM-1014-03`), not
+readings, and stays text.
 
 **A lone token.** Weather records write `T` for a trace of rain, and instrument
 logs write `M` or `*`. When the only text left in a column after markers is one

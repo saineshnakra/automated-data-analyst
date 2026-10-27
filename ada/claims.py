@@ -161,6 +161,8 @@ NUMBER_WORDS = {
     "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
 }
 LEFT_OUT_NOTE = "Read the claim without"
+# "55 of the cats": a count of things the table's rows may be.
+OF_THE = re.compile(r"\s*of\s+(?:the|these|those|all(?:\s+the)?)\s+([A-Za-z]+)\b", re.IGNORECASE)
 # A lead that names a claim's base: "Of the 4,526 applicants,".
 BASE_LEAD = re.compile(
     r"^\s*(?:of|out\s+of)\s+(?:the\s+|all\s+)?(?P<count>\d{1,3}(?:,\d{3})+|\d+)\s+(?P<noun>[A-Za-z]+(?:\s[A-Za-z]+)?),\s*",
@@ -505,6 +507,10 @@ def _candidates(claim: str, columns: list[str]) -> list[_Candidate]:
         filter_like = bool(previous) and cue is None and (
             previous.group(1).lower() in column_words or previous.group(1).lower() in POINT_WORDS
         )
+        # "At 14, girls averaged 25.1 mm": a number opening the claim after "At" picks rows.
+        filter_like = filter_like or bool(
+            re.fullmatch(r"\s*at\s*", before, re.IGNORECASE) and re.match(r"\s*,", claim[match.end():])
+        )
         # "cars with 4 cylinders": a number between "with" and a column's name picks rows.
         following = re.match(r"\s*([A-Za-z]+)", claim[match.end():])
         filter_like = filter_like or bool(
@@ -575,6 +581,11 @@ def _worded_number(claim: str) -> tuple[str, Any] | None:
     into the words' own interval), or None when the claim has none.
     """
     fraction = FRACTION_PATTERN.search(claim)
+    ordinal = fraction and re.search(r"\b(?:first|second|third|fourth|last|final|1st|2nd|3rd|4th)\s+$",
+                                     claim[:fraction.start("part")], re.IGNORECASE)
+    if fraction and (ordinal or not (fraction.group("count") or fraction.group("part").lower() == "half")):
+        # "the fourth quarter of 2020" and "a third quarter" are periods; a fraction is "a quarter of".
+        fraction = None
     if fraction:
         count = COUNT_WORDS.get((fraction.group("count") or "a").lower(), 1)
         bottom = FRACTION_PARTS[fraction.group("part").lower()]
@@ -682,6 +693,14 @@ def read_claim(
             following.group(1).lower().endswith("s") or following.group(1).lower() in IRREGULAR_PLURALS
         ))
     )
+    # "55 of the cats were neutered" counts the cats that were.
+    of_the = OF_THE.match(claim[chosen.match.end():])
+    noun = of_the.group(1).lower() if of_the else ""
+    if of_the and not lead and (noun.endswith("s") or noun in IRREGULAR_PLURALS):
+        rest = re.sub(r"\s+", " ", claim[chosen.match.end() + of_the.end():]).strip(" .,;:!?")
+        written = claim[chosen.qualifier_start:chosen.match.end()]
+        number = claimed_number(written, chosen.match, chosen.qualifier, None)
+        return f"how many {of_the.group(1)} {rest}", number, ""
     if counted and re.fullmatch(r"(?:there\s+(?:are|were|is|was))?", lead, flags=re.IGNORECASE):
         rest = re.sub(r"\s+", " ", claim[chosen.match.end():]).strip(" .,;:!?")
         written = claim[chosen.qualifier_start:chosen.match.end()]
@@ -1295,6 +1314,16 @@ def _key_filter(frame: Any, answer: QueryAnswer) -> str | None:
     return None
 
 
+# Words in a column's name that say each row holds a statistic of a group, which do not combine.
+SUMMARY_WORDS = {"median": "median", "mean": "mean", "average": "average", "avg": "average"}
+
+
+def _summary_word(column: str | None) -> str | None:
+    """The statistic a column's name says each row holds: "median" for median_weekly_earn."""
+    words = normalized_name(str(column)).split() if column else []
+    return next((SUMMARY_WORDS[word] for word in words if word in SUMMARY_WORDS), None)
+
+
 def _quoted(phrases: Sequence[str]) -> str:
     """"a", "a" and "b", or "a", "b" and "c", each in quotes."""
     quoted = [f'"{phrase}"' for phrase in phrases]
@@ -1318,6 +1347,26 @@ def _check(
     alternatives: list[Alternative] = []
     assumptions: list[str] = [f"{LEFT_OUT_NOTE} {_quoted(left)}, which name no column or value in the table."
                               ] if left else []
+    counted_rows = re.match(r"how many (\w+) (.+)$", asked)
+    if counted_rows and OF_THE.search(text) and (
+        isinstance(answer, Refusal) or answer.plan.measure or answer.plan.count_column
+    ):
+        # "55 of the cats were neutered" read "cats" as n_cats; the cats are the rows when no unit repeats.
+        from .compare import repeated_unit  # noqa: PLC0415
+
+        rows = analysis.ask(f"how many rows {counted_rows.group(2)}", decisions=choices)
+        if (repeated_unit(analysis.frame, analysis.roles) is None and not isinstance(rows, Refusal)
+                and rows.plan.intent == "count" and not rows.plan.measure and not rows.plan.count_column):
+            assumptions.append(f'Read "{counted_rows.group(1)}" as the rows of the table, one each.')
+            answer, asked = rows, f"how many rows {counted_rows.group(2)}"
+        elif not isinstance(answer, Refusal):
+            return ClaimCheck(
+                text, "unverified", "missing_context",
+                f'The claim counts {counted_rows.group(1)}, but ADA read the words as {answer.calculation}, '
+                f"and the rows are not one {counted_rows.group(1)} each.",
+                claimed=number, question=asked, answer=answer, assumptions=tuple(assumptions), source=source,
+                clarification=f"Which column or rows are the {counted_rows.group(1)}?",
+            )
     subject = re.match(r"\s*(?:(?:total|average|mean)\s+)?([A-Za-z]+)\s+", asked, re.IGNORECASE)
     if isinstance(answer, Refusal) and subject and subject.group(1).lower() in PEOPLE_NOUNS and (
         not _names_anything(analysis.frame, subject.group(1))
@@ -1485,6 +1534,19 @@ def _check(
             )
         assumptions.append(f'Read "{number.text}" as a total, since it counts {noun[0]}.')
         answer, asked = total, f"total {asked}"
+    summary = _summary_word(answer.plan.measure)
+    used_rows = answer.scope.rows_used if answer.scope is not None else None
+    if summary and answer.plan.intent == "aggregate" and used_rows is not None and used_rows > 1:
+        # "women's median weekly earnings were $894": each row holds a group's median; averaging the
+        # medians of 32 groups of women is not the median of the women.
+        return ClaimCheck(
+            text, "unverified", "missing_context",
+            f"{answer.plan.measure} holds a {summary} for each row's group, and {used_rows:,} rows match; "
+            f"combining their {summary}s ({answer.calculation}) does not give the {summary} of all of them, "
+            "so the claim is about one row the question does not pick out.",
+            claimed=number, question=asked, answer=answer, assumptions=tuple(assumptions), source=source,
+            clarification="Which single group (row) is the number about?",
+        )
     computed, notes = _comparable(answer, number)
     slope = _slope_claim(text) if answer.plan.intent == "correlation" else None
     measure, sloped = answer.plan.measure, ""

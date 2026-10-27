@@ -3306,3 +3306,38 @@ class AbbreviatedNameTests(unittest.TestCase):
         self.assertEqual(_skeleton_columns("weight", {"wgt": ("wgt",)}), ["wgt"])
         self.assertEqual(_skeleton_columns("route", {"rate": ("rate",)}), [])
         self.assertEqual(_skeleton_columns("depot", {"dept": ("dept",)}), [])
+
+
+class OrdinalColumnTests(unittest.TestCase):
+    def test_an_ordinal_before_a_columns_name_picks_its_value(self):
+        frame = pd.DataFrame({"year": [2020] * 4 + [2021] * 4, "quarter": [1, 2, 3, 4] * 2,
+                              "employed": [10.0, 11, 12, 13, 14, 15, 16, 17]})
+        answer = answer_question("total employed in the fourth quarter of 2020", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 13)
+        self.assertIn('Read "the fourth quarter" as quarter = 4.', answer.scope.readings)
+
+    def test_an_ordinal_the_column_does_not_hold_is_not_read(self):
+        frame = pd.DataFrame({"quarter": [1, 2, 3] * 2, "employed": [10.0, 11, 12, 13, 14, 15]})
+        answer = answer_question("total employed in the fourth quarter", frame, detect_roles(frame))
+        self.assertTrue(answer is None or "quarter = 4" not in answer.calculation)
+
+
+class LeadValueTests(unittest.TestCase):
+    def frame(self) -> pd.DataFrame:
+        return pd.DataFrame({"age": [8, 10, 12, 14] * 3, "Sex": ["Female"] * 8 + ["Male"] * 4,
+                             "distance": [20.0, 21, 22, 23, 21, 22, 23, 25, 22, 24, 26, 28]})
+
+    def test_at_a_number_before_a_comma_picks_the_one_column_of_few_values_that_holds_it(self):
+        answer = answer_question("average At 14, girls distance", self.frame(), detect_roles(self.frame()))
+        self.assertEqual(answer.value, 24)
+        self.assertIn("age = 14", answer.calculation)
+
+    def test_a_number_two_columns_hold_is_not_read(self):
+        frame = self.frame().assign(visit=[14, 1, 2, 3] * 3)
+        answer = answer_question("average At 14, girls distance", frame, detect_roles(frame))
+        self.assertTrue(answer is None or "= 14" not in answer.calculation)
+
+    def test_a_column_of_many_values_is_not_read(self):
+        frame = pd.DataFrame({"age": range(1, 41), "distance": [float(value) for value in range(40)]})
+        answer = answer_question("average At 14, distance", frame, detect_roles(frame))
+        self.assertTrue(answer is None or "age = 14" not in answer.calculation)

@@ -53,6 +53,14 @@
   had 5.2 million residents" on a table of counties) and a column guessed
   from part of a word ("seedlings" for `Seed`) are no longer compared with
   the claim; a bound is never read in thousands or millions.
+- More fixed wrong verdicts, found on data ADA had not seen: "55 of the cats
+  were neutered" counts the cats (the rows), not the mean of `n_cats`; "the
+  fourth quarter of 2020" is a period, not 25%; squirrel IDs such as
+  `37F-PM-1014-03` are no longer read as numbers in 42 units; and a claim
+  about a column of medians (`median_weekly_earn`) that matches several rows
+  gets `missing_context` instead of an average of medians.
+- "At 14, girls averaged 24.1 mm" reads "At 14" as `age` = 14, the one column
+  of few values that holds 14, and "the fourth quarter" as `quarter` = 4.
 
 ### Answers
 

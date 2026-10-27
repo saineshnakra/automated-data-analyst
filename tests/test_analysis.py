@@ -1196,6 +1196,15 @@ class NotDetectedTests(unittest.TestCase):
         self.assertNotIn("particle_number unit", cleaned.columns)
         self.assertTrue(any("Every one is in items/g" in note for note in report.notes))
 
+    def test_codes_that_start_with_a_number_are_not_readings_in_units(self):
+        # Central Park squirrel IDs: hectare, shift, date and a count, one code per squirrel.
+        codes = [f"{hectare}{letter}-{shift}-10{day:02d}-{count:02d}" for hectare in range(1, 9)
+                 for letter in "ABCD" for shift in ("AM", "PM") for day, count in ((6, 1), (13, 2))]
+        cleaned, _ = clean_dataframe(pd.DataFrame({"Unique Squirrel ID": codes}))
+
+        self.assertEqual(cleaned["Unique Squirrel ID"].tolist(), codes)
+        self.assertEqual(cleaned["Unique Squirrel ID"].nunique(), len(codes))
+
     def test_ordinals_are_labels_not_readings_in_a_unit(self):
         # Titanic's classes: "st", "nd" and "rd" are not units, and Crew is a class.
         frame = pd.DataFrame({"Class": ["1st", "2nd", "3rd", "Crew"] * 8, "Freq": range(32)})

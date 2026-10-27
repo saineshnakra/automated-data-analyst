@@ -553,6 +553,13 @@ class WordedNumberTests(ClaimFileTestCase):
         self.assertEqual(self.check("More than half of the birds are Gentoo.").reason, "failed_check")
         self.assertEqual(self.check("Nearly a third of the birds are Gentoo.").reason, "failed_check")
 
+    def test_an_ordinal_quarter_is_a_period_not_a_fraction(self):
+        from ada.claims import _worded_number
+
+        self.assertIsNone(_worded_number("In the fourth quarter of 2020, earnings were $894."))
+        self.assertIsNone(_worded_number("Sales in quarter of the year rose."))
+        self.assertIsNotNone(_worded_number("Half of the birds are Gentoo."))
+
     def test_a_whole_number_in_words(self):
         self.assertTrue(self.check("There are eight birds.").verified)
         self.assertTrue(self.check("Four birds are Gentoo.").verified)
@@ -661,3 +668,24 @@ class ShareClaimTests(unittest.TestCase):
         self.assertTrue(ada.check_claim(admissions(), "100 women applied.").verified)
         self.assertEqual(ada.check_claim(admissions(), "More than 70 men applied to department A.").reason,
                          "missing_context")
+
+
+class SummaryColumnTests(unittest.TestCase):
+    def test_medians_of_several_groups_are_not_averaged_for_a_claim(self):
+        earnings = pd.DataFrame({"sex": ["Women"] * 3 + ["Men"] * 3,
+                                 "race": ["All Races", "White", "Black"] * 2,
+                                 "median_earn": [894.0, 920.0, 775.0, 1104.0, 1140.0, 860.0]})
+        check = ada.check_claim(earnings, "Women's median earnings were $894.")
+        self.assertEqual(check.reason, "missing_context")
+        self.assertIn("holds a median for each row's group", check.message)
+        one = ada.check_claim(earnings, "Black women's median earnings were $775.")
+        self.assertTrue(one.verified)
+
+
+class CountOfThingsTests(unittest.TestCase):
+    def test_n_of_the_things_counts_rows(self):
+        cats = pd.DataFrame({"tag_id": [f"t{index}" for index in range(8)],
+                             "condition": ["Neutered"] * 3 + ["Spayed"] * 4 + ["Not fixed"],
+                             "n_cats": [1, 2, 2, 3, 1, 1, 4, 2]})
+        self.assertTrue(ada.check_claim(cats, "3 of the cats were neutered.").verified)
+        self.assertEqual(ada.check_claim(cats, "5 of the cats were neutered.").reason, "failed_check")
