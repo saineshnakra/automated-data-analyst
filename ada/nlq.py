@@ -264,9 +264,10 @@ QUERY_STOPWORDS = {
     "every", "for", "from", "get", "give", "got", "have", "had", "has", "having", "he", "how",
     "her", "his", "hows", "i", "if", "in", "is", "it", "its", "just", "last", "least", "make", "made",
     "many", "me", "measured", "most", "much", "my", "next", "of", "on", "only", "or", "our", "overall",
-    "please", "re", "recorded", "s", "she", "show", "tell", "tested", "than", "that", "the",
-    "their", "then", "there", "this", "to", "they", "us", "value", "values", "ve", "was", "we", "were",
-    "what", "whats", "when", "where", "which", "who", "whom", "whose", "with", "without", "you", "your",
+    "please", "re", "recorded", "s", "she", "show", "tell", "tested", "than", "that", "the", "their",
+    "then", "there", "these", "this", "those", "to", "they", "us", "value", "values", "ve", "was", "we",
+    "were", "what", "whats", "when", "where", "which", "who", "whom", "whose", "with", "without", "you",
+    "your",
 }
 # Words asking what share of the rows meet a condition: "what share have diabetes".
 SHARE_WORDS = ("share", "proportion", "percentage", "percent", "fraction")
@@ -1618,6 +1619,56 @@ def _claim_sexes(reading: _Reading, vocabulary: _Vocabulary) -> None:
         )
 
 
+# Words for dying and for surviving. A value spelled with one of them ("Died", "Deceased Characters")
+# or a yes/no column named with one ("Survived") is what the others mean: "deaths" keeps result = Died.
+OUTCOME_WORDS = {
+    "died": frozenset({"died", "die", "dead", "death", "deaths", "deceased", "killed", "fatal", "fatality",
+                       "fatalities"}),
+    "survived": frozenset({"survived", "survive", "survivor", "survivors", "survival", "alive"}),
+}
+YES_NO_VALUES = {"yes": frozenset({"yes", "y", "true", "1"}), "no": frozenset({"no", "n", "false", "0"})}
+
+
+def _claim_outcomes(reading: _Reading, vocabulary: _Vocabulary) -> None:
+    """Filter on dying or surviving for a word of the same meaning: "deaths", "killed", "survivors".
+
+    The table must spell the outcome in one column only, as a value ("Died")
+    or as a yes/no column named for it ("Survived" with Yes and No, where
+    "deaths" keeps No). Otherwise nothing is read.
+    """
+    sides = {word: side for side, words in OUTCOME_WORDS.items() for word in words}
+    columns: dict[str, list[_Value]] = defaultdict(list)
+    for value in vocabulary.values:
+        columns[value.column].append(value)
+    for start, end, word in _tokens(reading.remaining):
+        side = sides.get(word)
+        if side is None:
+            continue
+        spelled = [
+            value for value in vocabulary.values if any(sides.get(part) == side for part in value.words)
+        ]
+        if not spelled:
+            named = [
+                column for column, values in columns.items()
+                if set(_norm(normalized_name(str(column))).split()) & set(sides)
+                and {" ".join(value.words) for value in values} <= YES_NO_VALUES["yes"] | YES_NO_VALUES["no"]
+            ]
+            if len(named) != 1:
+                continue
+            name = _norm(normalized_name(str(named[0]))).split()
+            same = sides[next(part for part in name if part in sides)]
+            wanted = YES_NO_VALUES["yes" if same == side else "no"]
+            spelled = [value for value in columns[named[0]] if " ".join(value.words) in wanted]
+        if not spelled or len({value.column for value in spelled}) != 1:
+            continue
+        _add_filter(reading, spelled, start)
+        reading.claim(start, end)
+        reading.notes.append(
+            f'Read "{_raw_words(reading.question, [word])}" as {spelled[0].column} = '
+            f"{_listed([value.raw for value in spelled])}."
+        )
+
+
 # Adjectives of nationality and the country names a column may spell them with: "Belgian" is Belgium.
 DEMONYMS = {
     "american": ("united states", "usa", "us", "united states of america"), "argentine": ("argentina",),
@@ -2513,7 +2564,7 @@ def _claim_entity(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles
 
     A plural that names nothing else, right before "with" or "where" and a
     condition, names the rows too: "average strength for mixes with admixture above 0".
-    In a table of counts, any plural that names nothing else names the cases
+    In a table of counts, the first plural that names nothing else names the cases
     the counts count: "female applicants" in UCBAdmissions.
     """
     counts = frequency_column(dataframe) is not None
@@ -2526,8 +2577,9 @@ def _claim_entity(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles
             r"\s+(?:with|where|whose|having|that\s+have|which\s+have)\s+\S", reading.original[end:]
         )
         rows = word == roles.row_noun
-        # In a table of counts every plural noun left over names the cases counted: "female applicants".
-        cases = plural and counts
+        # In a table of counts the first plural noun left over names the cases counted: "female
+        # applicants". A second one ("people who were cyclists") is a word the table may not hold.
+        cases = plural and counts and reading.entity is None
         if word not in ENTITY_NOUNS and not rows and not (counted and plural) and not described and not cases:
             continue
         reading.claim(start, end)
@@ -2999,6 +3051,7 @@ def _read_question(
     _claim_person_names(reading, dataframe)
     _claim_values(reading, vocabulary, dataframe, exact_only=True, row_noun=roles.row_noun)
     _claim_sexes(reading, vocabulary)
+    _claim_outcomes(reading, vocabulary)
     _claim_demonyms(reading, vocabulary)
     _claim_analysis_words(reading, dataframe, roles)
     _claim_rate(reading)
@@ -4007,6 +4060,12 @@ def _count_plan(
 SHARE_ANCHOR = re.compile(rf"\b(?:{'|'.join(SHARE_WORDS)}|rate)\s+of\b")
 # The verb that ends what a share is of: "share of Adelie | are female", "of passengers | who survived".
 LINK_VERB = re.compile(r"\b(?:are|is|were|was|have|has|had|got|did|do|does|who|that|which|whose)\b")
+# The words that open a clause on the base: "victims who died", "Adelie that are female".
+RELATIVE_WORDS = ("who", "that", "which", "whose")
+# Past tenses that do not end in "ed": "won", "lost".
+PAST_FORMS = frozenset({
+    "won", "lost", "left", "fell", "rose", "grew", "ran", "met", "got", "went", "came", "made",
+})
 
 
 def _asks_share(reading: _Reading) -> bool:
@@ -4014,15 +4073,29 @@ def _asks_share(reading: _Reading) -> bool:
 
 
 def _share_base(reading: _Reading, counting: dict) -> tuple[dict, tuple] | None:
-    """Split a share's filters into the rows it is of and what it counts, at the verb after "share of".
+    """Split a share's filters into the rows it is of and what it counts, at a verb after "share of".
 
     Values and conditions before the verb make the base; those after are
-    counted. None when the question asks no share, or one side is empty.
+    counted. The verb is the sentence's own one when a clause on the base
+    comes first: in "share of victims who died were men" the base is the
+    victims who died, while in "share of victims were men who died" the men
+    who died are counted. Otherwise it is the first verb, as in "share of
+    Adelie that are female". A verb after "and" or "or" joins what is counted
+    and never splits. None when the question asks no share, or one side is empty.
     """
     anchor = SHARE_ANCHOR.search(reading.original)
-    verb = LINK_VERB.search(reading.original, anchor.end()) if anchor else None
-    if verb is None:
+    if anchor is None:
         return None
+    text = reading.original
+    verbs = [
+        verb for verb in LINK_VERB.finditer(text, anchor.end())
+        if not re.search(r"\b(?:and|or)\s*$", text[:verb.start()])
+    ]
+    main = [
+        verb for verb in verbs
+        if verb.group() not in RELATIVE_WORDS and not re.search(rf"\b(?:{'|'.join(RELATIVE_WORDS)})\s+$",
+                                                                text[:verb.start()])
+    ]
     items = [*counting["filters"], *counting["conditions"]]
 
     def place(item: ValueFilter | Condition) -> int | None:
@@ -4032,14 +4105,24 @@ def _share_base(reading: _Reading, counting: dict) -> tuple[dict, tuple] | None:
         return span[0] if span else None
 
     places = {id(item): place(item) for item in items}
-    counted = tuple(item for item in items if (places[id(item)] or -1) >= verb.start())
-    if not counted or len(counted) == len(items):
-        return None
-    base = {
-        "filters": tuple(item for item in counting["filters"] if item not in counted),
-        "conditions": tuple(item for item in counting["conditions"] if item not in counted),
-    }
-    return base, counted
+    starts = [verb.start() for verb in [*main[:1], *verbs[:1]]]
+    if not verbs:
+        # "share of male victims died": with no verb to split at, a value written as a past tense
+        # ("died", "won") after the others is what is counted.
+        for item in sorted(items, key=lambda item: places[id(item)] or -1)[1:]:
+            word = re.match(r"[a-z]+", text[places[id(item)]:]) if places[id(item)] is not None else None
+            if word and (word.group().endswith("ed") or word.group() in PAST_FORMS):
+                starts.append(places[id(item)])
+                break
+    for start in starts:
+        counted = tuple(item for item in items if (places[id(item)] or -1) >= start)
+        if counted and len(counted) < len(items):
+            base = {
+                "filters": tuple(item for item in counting["filters"] if item not in counted),
+                "conditions": tuple(item for item in counting["conditions"] if item not in counted),
+            }
+            return base, counted
+    return None
 
 
 # Words joining two groupings: "by A and B", "by A by B", "A x B".

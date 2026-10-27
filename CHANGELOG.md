@@ -90,6 +90,17 @@
   "20-year-olds" keep those ages, on a column of ages or of age bands ("50-64"
   and "65+" make up "50 and over"); ages that cut a band in two are refused.
   "Among victims aged 50 and over, 9.5% died" is the share of those victims.
+- Fixed wrong verdicts on shares of a group: "79% of the victims who died
+  were men" and "4.95% of male victims died" were divided by every victim,
+  and "Men were 79% of the victims who died" by the men. The base now ends
+  at the sentence's own verb, a past tense with no verb before it is what is
+  counted, and a share stated after what it counts is read the other way
+  round.
+- Words for dying and surviving ("deaths", "killed", "survivors") name the
+  value or yes/no column that records the outcome.
+- Fixed silent drop: in a table of counts every plural that named nothing
+  was taken for the rows, so "Cyclists made up 15% of the people killed"
+  ignored "Cyclists". Only the first one is now.
 - Fixed wrong answers: a table of counts with one category and an outcome
   (age, result, Freq) was read as a long table and kept only its commonest
   outcome; and the word after a percent was taken as its unit, so "9.5%

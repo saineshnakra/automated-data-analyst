@@ -838,6 +838,55 @@ class AgeBandTests(unittest.TestCase):
         self.assertNotEqual(check.reason, "failed_check")
 
 
+class ShareBaseTests(unittest.TestCase):
+    def victims(self) -> pd.DataFrame:
+        # 100 died (80 of them men) and 900 were injured (500 of them men).
+        return pd.DataFrame({
+            "result": ["Died", "Died", "Injured", "Injured"],
+            "gender": ["Male", "Female", "Male", "Female"],
+            "Freq": [80, 20, 500, 400],
+        })
+
+    def test_a_clause_on_the_base_keeps_the_share_of_that_base(self):
+        victims = self.victims()
+        for claim in ("80% of the victims who died were men.", "Among victims who died, 80% were men.",
+                      "Of the victims who died, 80% were men.", "Men were 80% of the victims who died.",
+                      "Men accounted for 80% of the deaths.", "80% of those killed were men."):
+            with self.subTest(claim=claim):
+                check = ada.check_claim(victims, claim)
+                self.assertTrue(check.verified, check.message)
+        self.assertEqual(ada.check_claim(victims, "Men were 58% of the victims who died.").reason,
+                         "failed_check")
+
+    def test_a_clause_on_what_is_counted_keeps_the_share_of_all_rows(self):
+        check = ada.check_claim(self.victims(), "8% of the victims were men who died.")
+        self.assertTrue(check.verified, check.message)
+
+    def test_a_past_tense_after_the_group_is_what_is_counted(self):
+        victims = self.victims()
+        # 80 of the 580 men died.
+        self.assertTrue(ada.check_claim(victims, "About 13.8% of male victims died.").verified)
+        self.assertEqual(ada.check_claim(victims, "About 8% of male victims died.").reason, "failed_check")
+
+    def test_a_subject_that_is_a_measure_is_not_read_as_a_group(self):
+        question, number, _ = read_claim("The tax rate was 45% of the national average.", ["rate"])
+        self.assertNotIn("who were", question or "")
+        self.assertEqual(number.value, 45)
+
+    def test_a_long_base_lead_is_checked_against_the_share_s_base(self):
+        victims = self.victims()
+        lead = "people killed or injured on the roads in 1958, 10% died."
+        check = ada.check_claim(victims, f"Of the 1,000 {lead}")
+        self.assertTrue(check.verified, check.message)
+        wrong = ada.check_claim(victims, f"Of the 400 {lead}")
+        self.assertEqual(wrong.reason, "missing_context")
+
+    def test_a_word_the_table_lacks_is_never_dropped_silently(self):
+        check = ada.check_claim(self.victims(), "Cyclists made up 15% of the people killed.")
+        self.assertEqual(check.status, "unverified")
+        self.assertNotEqual(check.reason, "failed_check")
+
+
 class UnitsAndDaysTests(unittest.TestCase):
     def rats(self) -> pd.DataFrame:
         rows = [{"Rat": rat, "Diet": 1 + rat // 3, "Time": day, "weight": 200.0 + 10 * rat + day}

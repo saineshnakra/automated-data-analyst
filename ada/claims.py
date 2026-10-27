@@ -169,6 +169,21 @@ AMONG_LEAD = re.compile(
     r"under|more\s+than|less\s+than)\s+)?\d[\d,]*(?:\.\d+)?\s*%)\s+(?P<rest>.+)$",
     re.IGNORECASE,
 )
+# A share stated after what it counts: "Men were 79% of the victims who died", "Women made up 21% of
+# the riders". The share is of what follows "of".
+SUBJECT_SHARE = re.compile(
+    r"^\s*(?P<part>[A-Za-z'-]+(?:\s+[A-Za-z'-]+){0,3}?)\s+(?P<verb>were|was|are|is|made\s+up|make\s+up|"
+    r"makes\s+up|accounted\s+for|account\s+for|accounts\s+for|represented|represent|represents|"
+    r"comprised|comprise|comprises|formed|form|forms)\s+"
+    r"(?P<share>(?:(?:about|nearly|almost|roughly|around|only|just|over|under|more\s+than|less\s+than)\s+)?"
+    r"\d[\d,]*(?:\.\d+)?\s*%)\s+of\s+(?P<rest>.+?)[.!?]?\s*$",
+    re.IGNORECASE,
+)
+# Words in a subject that make it a measure rather than a group: "The tax rate was 45% of ...".
+MEASURE_SUBJECTS = frozenset({
+    "rate", "average", "mean", "median", "share", "percentage", "proportion", "growth", "increase",
+    "decrease", "change", "total", "sum", "income", "tax", "cost", "price", "value", "level", "number",
+})
 # A clause that says who reports the claim: "Owners estimated that", "The survey found that".
 REPORTING_CLAUSE = re.compile(
     r"^\s*(?:[A-Za-z']+\s+){1,4}?(?:estimated|estimates|estimate|reported|reports|report|found|finds|find|"
@@ -181,7 +196,7 @@ OF_THE = re.compile(r"\s*of\s+(?:the|these|those|all(?:\s+the)?)\s+([A-Za-z]+)\b
 # A lead that names a claim's base: "Of the 4,526 applicants,", "Of the 5,144 Danes in the study,".
 BASE_LEAD = re.compile(
     r"^\s*(?:of|out\s+of)\s+(?:the\s+|all\s+)?(?P<count>\d{1,3}(?:,\d{3})+|\d+)\s+"
-    r"(?P<noun>[A-Za-z]+(?:\s[A-Za-z']+){0,6}),\s*",
+    r"(?P<noun>[A-Za-z]+(?:\s[\w']+){0,10}),\s*",
     re.IGNORECASE,
 )
 # A count of a base: "34 of the 93 cars had no airbags", read as "Of the 93 cars, 34 cars had ...".
@@ -700,8 +715,15 @@ def read_claim(
     claim = re.sub(r"(\d)\s+out\s+of\s+(?:10|5|100)\b", r"\1", claim)
     among = AMONG_LEAD.match(claim)
     if among:
-        # "Among victims aged 50 and over, 9.5% died" is a share of those victims.
-        rewritten = f"{among.group('share')} of {among.group('base')} who {among.group('rest')}"
+        # "Among victims aged 50 and over, 9.5% died" is a share of those victims, and so is "Among
+        # victims who died, 79% were men".
+        joined = "" if re.match(r"(?:were|was|are|is|had|have|has)\b", among.group("rest"), re.I) else "who "
+        rewritten = f"{among.group('share')} of {among.group('base')} {joined}{among.group('rest')}"
+        return read_claim(rewritten, columns, row_noun)
+    subject = SUBJECT_SHARE.match(claim)
+    if subject and not MEASURE_SUBJECTS & {word.lower() for word in subject.group("part").split()}:
+        # "Men were 79% of the victims who died" is a share of those victims.
+        rewritten = f"{subject.group('share')} of {subject.group('rest')} were {subject.group('part')}"
         return read_claim(rewritten, columns, row_noun)
     reported = REPORTING_CLAUSE.match(claim)
     if reported:
