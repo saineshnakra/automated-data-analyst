@@ -289,12 +289,16 @@ each word is claimed, in this order, by:
    capitals that is also a query word ("ALL" as a diagnosis) is the value
    when typed as the data spells it. "Men", "women", "boys" and "girls" name
    the values of the one column that holds only sexes (Male and Female, M and
-   F, besides Other or Unknown): "women" is `Gender` = Female. Words for
-   dying ("deaths", "killed", "dead", "fatalities") and for surviving
-   ("survivors", "alive") name the value that spells the same outcome in one
-   column ("deaths" is `result` = Died), or the Yes or No of the one yes/no
-   column named for it (`Survived`: "survivors" is Yes, "died" is No;
-   `OUTCOME_WORDS`). An adjective
+   F, besides Other, Unknown or a gender such as Agender or Non-binary;
+   `GENDER_VALUES`): "women" is `Gender` = Female. Words for dying ("deaths", "killed", "dead", "fatalities") and for
+   surviving ("survivors", "alive") name the value that spells the same
+   outcome in one column ("deaths" is `result` = Died), or the Yes or No of
+   the one yes/no column named for it (`Survived`: "survivors" is Yes, "died"
+   is No; `OUTCOME_WORDS`). A US state's name picks its postal code in the one
+   column that holds only postal codes, at least ten of them ("Texas" is
+   `state` = tx). A plural most values of two or more columns share
+   ("characters" in "Male Characters" and "Good Characters") names the rows
+   and is no value. An adjective
    of nationality names its country ("Belgian" is Belgium, "Dutch" the
    Netherlands; `DEMONYMS`) in the one column that holds it, or, when a
    country of birth holds it too, in the column named for nationality. A
@@ -830,7 +834,11 @@ Other behaviour:
 - Ranking periods ("which month had the highest wind") builds the trend at
   that grain with `build_trend` and names the highest or lowest period with its
   value. Periods left empty for a rate or level are skipped. "Which month had
-  the most rows" ranks row counts.
+  the most rows" ranks row counts, and so does "most", "fewest", "busiest"
+  or "quietest" when no measure is named: "which day had the most
+  earthquakes" counts the rows of each day rather than ranking a measure the
+  question never names. "strongest" and "deepest" ask for the highest value,
+  "weakest" and "shallowest" for the lowest.
 - A correlation reports Pearson r with its 95% interval (Fisher transform), the
   number of complete pairs and the Spearman rank correlation, in the same
   wording as the brief's relationship card (see
@@ -856,7 +864,13 @@ Other behaviour:
 - Sum and count groupings get a `Share %` column when every group has the same
   sign.
 - Changes are given in the measure's own terms: percent for an amount or
-  count, percentage points for a rate, the plain difference for a level.
+  count, percentage points for a rate, the plain difference for a level,
+  whose percent change is in the figures too. A change between two years the
+  question names ("between 1982 and 1988", "from 1982 to 1988") compares
+  those two years as whole years, not the last two periods in the range. A
+  change in "the number of" rows with no measure named is a change in the
+  row count. "rose", "risen" and
+  "climbed" ask for a change as "grew" and "fell" do.
 - Growth by segment ranks amounts by percent change. It leaves out segments
   that started from zero and names them separately, since a growth rate from
   zero is undefined. For a rate or level, segments are ranked by the change in

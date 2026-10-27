@@ -3372,6 +3372,34 @@ class DistinctShareTests(unittest.TestCase):
         self.assertIn("50.0% of the 4 in all", answer.answer)
 
 
+class StateAndNounTests(unittest.TestCase):
+    def test_the_most_of_a_value_counts_rows_by_period(self):
+        days = ["2020-01-01", "2020-01-01", "2020-01-02"]
+        frame = pd.DataFrame({"time": pd.to_datetime(days), "type": ["quake"] * 3, "depth": [1.0, 2.0, 9.0]})
+        answer = answer_question("which day had the most quakes", frame, detect_roles(frame))
+        self.assertIn("row count", answer.answer)
+        self.assertIn("1 Jan 2020", answer.answer)
+
+    def test_a_state_s_name_picks_its_postal_code(self):
+        codes = ["al", "az", "ar", "ca", "co", "ct", "de", "fl", "ga", "id", "tx", "wv", "va"]
+        frame = pd.DataFrame({"state": codes, "deaths": [float(index) for index in range(len(codes))]})
+        roles = detect_roles(frame)
+        self.assertEqual(answer_question("deaths in Texas", frame, roles).value, 10)
+        self.assertEqual(answer_question("deaths in West Virginia", frame, roles).value, 11)
+
+    def test_few_codes_are_not_read_as_states(self):
+        frame = pd.DataFrame({"state": ["tx", "ca"], "deaths": [1.0, 2.0]})
+        reading = nlq._read_question("deaths in Texas", frame, detect_roles(frame))
+        self.assertFalse(reading.filters)
+
+    def test_a_plural_the_values_of_several_columns_share_names_the_rows(self):
+        frame = pd.DataFrame({
+            "SEX": ["Male Characters", "Female Characters", "Agender Characters", "Male Characters"],
+            "ALIGN": ["Good Characters", "Bad Characters", "Bad Characters", "Neutral Characters"],
+        })
+        roles = detect_roles(frame)
+        self.assertEqual(answer_question("how many characters are women", frame, roles).value, 1)
+        self.assertEqual(answer_question("how many characters are men", frame, roles).value, 2)
 class OutcomeWordTests(unittest.TestCase):
     def test_words_for_dying_pick_the_value_that_spells_it(self):
         frame = pd.DataFrame({"result": ["Died", "Injured", "Died"], "mode": ["Car", "Car", "Bus"],
@@ -3387,6 +3415,14 @@ class OutcomeWordTests(unittest.TestCase):
         roles = detect_roles(frame)
         self.assertEqual(answer_question("how many survivors", frame, roles).value, 40)
         self.assertEqual(answer_question("how many passengers died", frame, roles).value, 100)
+
+    def test_a_death_word_names_the_one_column_called_for_deaths(self):
+        frame = pd.DataFrame({"year": [2000, 2000, 2001], "fatal": [5.0, 7, 9], "nfatal": [1.0, 2, 3]})
+        roles = detect_roles(frame)
+        self.assertEqual(answer_question("total deaths in 2000", frame, roles).value, 12)
+        two = pd.DataFrame({"year": [2000, 2001], "fatal": [5.0, 7], "deaths": [1.0, 2]})
+        reading = nlq._read_question("total killed in 2000", two, detect_roles(two))
+        self.assertNotIn("fatal", reading.spans)
 
     def test_two_columns_that_spell_an_outcome_leave_the_word_unread(self):
         frame = pd.DataFrame({"driver": ["Died", "Lived"], "passenger": ["Lived", "Died"], "n": [1, 2]})

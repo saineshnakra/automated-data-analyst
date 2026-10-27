@@ -764,7 +764,8 @@ class BaseAndScaleTests(unittest.TestCase):
         cars = self.cars()
         check = ada.check_claim(cars, "The 10 models came from 5 manufacturers.")
         self.assertTrue(check.verified, check.message)
-        self.assertIn("The claim's 10 models are the 10 rows in scope.", check.assumptions)
+        note = "The claim's 10 models are the 10 Model values in the answer's rows."
+        self.assertIn(note, check.assumptions)
         self.assertEqual(ada.check_claim(cars, "The 10 models came from 4 manufacturers.").reason,
                          "failed_check")
         self.assertEqual(ada.check_claim(cars, "The 9 models came from 5 manufacturers.").reason,
@@ -838,6 +839,55 @@ class AgeBandTests(unittest.TestCase):
         self.assertNotEqual(check.reason, "failed_check")
 
 
+class TableNameAndBaseTests(unittest.TestCase):
+    def characters(self) -> pd.DataFrame:
+        return pd.DataFrame({
+            "SEX": ["Male Characters"] * 6 + ["Female Characters"] * 2,
+            "ALIGN": ["Good Characters", "Bad Characters"] * 4,
+        })
+
+    def test_words_of_the_table_s_own_name_pick_no_rows(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "marvel-characters" / "marvel-wikia-data.csv"
+            path.parent.mkdir()
+            self.characters().to_csv(path, index=False)
+            check = ada.check_claim(path, "About a quarter of Marvel's characters are women.")
+            self.assertTrue(check.verified, check.message)
+            self.assertTrue(any("name of the table" in note for note in check.assumptions))
+            other = ada.check_claim(path, "About a quarter of DC's characters are women.")
+            self.assertNotEqual(other.status, "verified")
+
+    def test_a_base_the_claim_spans_is_checked_against_distinct_values(self):
+        states = [f"s{index}" for index in range(12)]
+        frame = pd.DataFrame({"state": states * 2, "year": [1987] * 12 + [1988] * 12,
+                              "tax": [0.5] * 24})
+        check = ada.check_claim(frame, "In 1988 the tax averaged 0.5 across the 12 states.")
+        self.assertTrue(check.verified, check.message)
+        wrong = ada.check_claim(frame, "In 1988 the tax averaged 0.5 across the 40 states.")
+        self.assertEqual(wrong.reason, "missing_context")
+
+    def test_a_change_between_two_years_of_dated_rows_compares_whole_years(self):
+        days = pd.date_range("2023-01-01", periods=10, freq="MS").tolist() + pd.date_range(
+            "2024-01-01", periods=15, freq="SMS").tolist()
+        frame = pd.DataFrame({"time": days, "depth": [1.0] * 25})
+        # 10 rows in 2023 and 15 in 2024: up by half.
+        check = ada.check_claim(frame, "The number of rows rose by about half from 2023 to 2024.")
+        self.assertTrue(check.verified, check.message)
+        third = ada.check_claim(frame, "The number of rows rose by about a third from 2023 to 2024.")
+        self.assertEqual(third.reason, "failed_check")
+        self.assertEqual(ada.check_claim(frame, "The number of rows rose from 2023 to 2024.").message,
+                         "The claim states no number to check.")
+
+    def test_a_change_between_two_years_compares_those_years(self):
+        frame = pd.DataFrame({"state": ["tx"] * 4 + ["ca"] * 4, "year": [1982, 1983, 1984, 1985] * 2,
+                              "deaths": [100.0, 90, 70, 80, 50, 60, 70, 55]})
+        # Texas: 100 in 1982 and 80 in 1985, a fall of 20%; the last two years alone rose by 14%.
+        fall = ada.check_claim(frame, "Total deaths for tx fell by 20% between 1982 and 1985.")
+        self.assertTrue(fall.verified, fall.message)
+        for claim in ("Total deaths for tx rose by 20% between 1982 and 1985.",
+                      "Total deaths for tx fell by 14% between 1982 and 1985."):
+            with self.subTest(claim=claim):
+                self.assertEqual(ada.check_claim(frame, claim).reason, "failed_check")
 class ShareBaseTests(unittest.TestCase):
     def victims(self) -> pd.DataFrame:
         # 100 died (80 of them men) and 900 were injured (500 of them men).
@@ -885,6 +935,45 @@ class ShareBaseTests(unittest.TestCase):
         check = ada.check_claim(self.victims(), "Cyclists made up 15% of the people killed.")
         self.assertEqual(check.status, "unverified")
         self.assertNotEqual(check.reason, "failed_check")
+
+
+class PeakTests(unittest.TestCase):
+    def use(self) -> pd.DataFrame:
+        return pd.DataFrame({"age": ["18", "19", "20", "21", "22-23"],
+                             "cocaine_use": [3.2, 4.1, 4.9, 4.8, 4.5]})
+
+    def test_a_peak_holds_only_where_the_column_is_highest(self):
+        frame = self.use()
+        check = ada.check_claim(frame, "Cocaine use peaked at 4.9% among 20-year-olds.")
+        self.assertTrue(check.verified, check.message)
+        elsewhere = ada.check_claim(frame, "Cocaine use peaked at 4.8% among 21-year-olds.")
+        self.assertEqual(elsewhere.reason, "failed_check")
+        self.assertIn("age = 20", elsewhere.message)
+        self.assertEqual(ada.check_claim(frame, "Cocaine use peaked at 6% among 20-year-olds.").reason,
+                         "failed_check")
+
+    def test_more_than_any_other_is_a_peak(self):
+        frame = pd.DataFrame({"state": ["California", "Texas", "Ohio"] * 2, "year": [1987] * 3 + [1988] * 3,
+                              "deaths": [10.0, 30, 20, 50, 40, 30]})
+        check = ada.check_claim(frame, "California had more deaths than any other state in 1988, with 50.")
+        self.assertTrue(check.verified, check.message)
+        wrong = ada.check_claim(frame, "Texas had more deaths than any other state in 1988, with 40.")
+        self.assertEqual(wrong.reason, "failed_check")
+
+    def test_the_busiest_year_counts_rows_by_year(self):
+        days = ["2017-03-01"] * 3 + ["2018-03-01"] * 5 + ["2019-03-01"] * 4
+        frame = pd.DataFrame({"time": pd.to_datetime(days), "depth": [1.0] * 12, "area": ["Vesuvius"] * 12})
+        check = ada.check_claim(frame, "Vesuvius had its busiest year on record in 2018, with 5 earthquakes.")
+        self.assertTrue(check.verified, check.message)
+        wrong = ada.check_claim(frame, "Vesuvius had its busiest year on record in 2019, with 4 earthquakes.")
+        self.assertEqual(wrong.reason, "failed_check")
+        self.assertIn("2018", wrong.message)
+
+    def test_a_peak_without_a_group_is_never_judged_by_a_mean(self):
+        frame = pd.DataFrame({"cocaine_use": [4.0, 4.0, 4.0, 1.0, 9.0]})
+        for claim in ("Cocaine use peaked at 4.4%.", "Cocaine use peaked at 9%."):
+            with self.subTest(claim=claim):
+                self.assertEqual(ada.check_claim(frame, claim).reason, "missing_context")
 
 
 class UnitsAndDaysTests(unittest.TestCase):

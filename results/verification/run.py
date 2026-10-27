@@ -122,7 +122,9 @@ def run_compute(case):
     if "values" in expected:
         values = table_values(table)
         for label, want in expected["values"].items():
-            checks[f"value:{label}"] = any(close(v, want) for v in values.get(label_key(label), []))
+            checks[f"value:{label}"] = any(
+                close(v, form) for v in values.get(label_key(label), []) for form in share_forms(want)
+            )
     if "value" in expected:
         found = numbers_in(answer.answer) + [v for row in table_values(table).values() for v in row]
         checks["value"] = any(close(n, form) for n in found for form in share_forms(expected["value"]))
