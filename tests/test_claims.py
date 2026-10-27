@@ -237,10 +237,14 @@ class CheckClaimTests(ClaimFileTestCase):
         self.assertEqual(ada.check_claim(self.path, question="average body_mass_g", value="n/a").reason,
                          "missing_context")
 
-    def test_a_folder_asks_for_the_file(self):
+    def test_a_folder_is_checked_against_the_file_the_claim_fits(self):
         check = ada.check_claim(self.folder, "The average body mass is 4457 g.")
-        self.assertEqual(check.reason, "missing_context")
-        self.assertIn("birds.csv", check.clarification)
+        self.assertTrue(check.verified)
+        self.assertIn("birds.csv, the only file", check.assumptions[0])
+        empty = self.folder / "empty"
+        empty.mkdir()
+        nothing = ada.check_claim(empty, "The average body mass is 4457 g.")
+        self.assertEqual(nothing.reason, "inaccessible_data")
 
     def test_unreadable_data(self):
         missing = ada.check_claim(self.folder / "nowhere.csv", "The average body mass is 4457 g.")
