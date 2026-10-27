@@ -2520,6 +2520,10 @@ def _detect_roles(dataframe: pd.DataFrame, source_words: frozenset[str] = frozen
         for column in dataframe.columns
         if is_datetime64_any_dtype(dataframe[column]) and dataframe[column].nunique() >= 2
     ]
+    # Clock times read onto one day ("1:27.452", a fastest lap) place a row in the day, not the
+    # calendar; a column of dates over several days is the table's date when there is one.
+    calendar = [column for column in date_columns if dataframe[column].dropna().dt.normalize().nunique() > 1]
+    date_columns = calendar or date_columns
     notes: list[str] = []
 
     # Sorted by name first because max() keeps the first of equal elements, so a

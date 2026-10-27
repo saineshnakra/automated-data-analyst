@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import itertools
 import re
-import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -320,11 +319,11 @@ def load_answers(answers: str | Path | dict | None) -> dict[str, str]:
 
 
 def _profile(path: Path) -> tuple[FileProfile, pd.DataFrame | None]:
-    from .api import AdaError, analyze  # noqa: PLC0415
+    from .api import AdaError, analyze_file  # noqa: PLC0415
     from .compare import entity_column  # noqa: PLC0415
 
     try:
-        analysis = analyze(path, row_limit=sys.maxsize)
+        analysis = analyze_file(path)
     except AdaError as error:
         return FileProfile(name=path.name, problem=str(error)), None
     frame, roles = analysis.frame, analysis.roles

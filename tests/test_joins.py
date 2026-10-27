@@ -143,6 +143,60 @@ class JoinTests(JoinTestCase):
         self.assertIn("1 row unmatched", answer.answer)
 
 
+def races() -> dict[str, pd.DataFrame]:
+    """Results of six races over two seasons, with the drivers and the races in files of their own.
+
+    By hand: Lewis Hamilton scored 25 + 18 + 25 = 68 points in 2019 and 10 + 25 + 15 = 50 in 2020.
+    Each result has a fastest lap read as a clock time, and each driver a birth date.
+    """
+    results = pd.DataFrame({
+        "resultId": range(1, 13),
+        "raceId": [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6],
+        "driverId": [1, 2] * 6,
+        "points": [25, 18, 18, 25, 25, 18, 10, 25, 25, 18, 15, 25],
+        "fastestLapTime": ["1:27.452", "1:28.001", "1:30.100", "1:29.900", "1:26.000", "1:26.500"] * 2,
+    })
+    drivers = pd.DataFrame({"driverId": [1, 2], "forename": ["Lewis", "Max"],
+                            "surname": ["Hamilton", "Verstappen"], "dob": ["1985-01-07", "1997-09-30"]})
+    calendar = pd.DataFrame({"raceId": range(1, 7), "year": [2019] * 3 + [2020] * 3,
+                             "date": ["2019-03-17", "2019-03-31", "2019-04-14", "2020-07-05", "2020-07-12",
+                                      "2020-07-19"]})
+    return {"results.csv": results, "drivers.csv": drivers, "races.csv": calendar}
+
+
+class WideJoinTests(JoinTestCase):
+    def test_a_claim_that_needs_three_files_is_checked_on_them_joined(self):
+        root = self.folder(races())
+        check = ada.check_claim(root, "Lewis Hamilton scored 68 points in 2019.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("drivers.csv", check.source.name)
+        self.assertIn("races.csv", check.source.name)
+        self.assertIn("date in 2019", check.answer.calculation)
+        self.assertEqual(ada.check_claim(root, "Lewis Hamilton scored 60 points in 2019.").reason,
+                         "failed_check")
+
+    def test_a_birth_date_is_not_the_joined_rows_date(self):
+        from ada.folder import scan
+        from ada.joins import joined_tables
+
+        root = self.folder(races())
+        tables = joined_tables(root, scan(root), "sure", wide=True)
+        joined = next(table for table in tables if table.name.startswith("results.csv"))
+        self.assertNotIn("dob", joined.frame.columns)
+        self.assertIn("date", joined.frame.columns)
+        self.assertEqual(ada.analyze(joined.frame).roles.date, "date")
+
+    def test_a_file_is_read_once_while_it_is_unchanged(self):
+        from ada.api import analyze_file
+
+        root = self.folder(races())
+        path = root / "drivers.csv"
+        first = analyze_file(path)
+        self.assertIs(analyze_file(path), first)
+        path.write_text("driverId,forename\n1,Lewis\n2,Max\n3,Lando\n")
+        self.assertEqual(len(analyze_file(path).frame), 3)
+
+
 class AskFolderTests(JoinTestCase):
     def test_a_question_one_file_answers(self):
         root = self.folder({"Batting.csv": batting(), "People.csv": people()})

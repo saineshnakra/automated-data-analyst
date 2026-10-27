@@ -154,9 +154,23 @@ same way: "Barry Bonds hit 73 home runs in 2001." needs the names in
   empty columns from the second, and the note counts them
 - matches keys as text, as the scan compares them, so 7 and 7.0 match
 - leaves out the second file's dates and date parts (a birth date, a birth
-  year), so a year in the question still means the first file's
+  year) when the first file has dates of its own, so a year in the question
+  still means the first file's; a first file with none takes them (a
+  result's race date). A clock time read onto one day ("1:27.452", a fastest
+  lap) is not a date. A birth or death date is always left out: it
+  describes a person, not the row
 - renames a column of the second file that the first also has: `name
   (People)`
+
+When no pair answers it either, each file is joined to every file it links
+to, and to the files those link to in turn, along the same kind of links:
+"Lewis Hamilton scored 413 points in 2019" needs the names in `drivers.csv`,
+the points in `results.csv` and the year in `races.csv`. The note lists each
+join.
+
+Each file is read once while it is unchanged (`ada.api.analyze_file`, keyed
+on its path, modification time and size), so a claim about a folder reads a
+file for its own check, for the scan and for each join only once.
 
 The answer says which join it used ("Joined Batting.csv to People.csv on
 Batting.playerID = People.playerID (many-to-one; 100.0% of keys found, 0 rows
