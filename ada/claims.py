@@ -1669,6 +1669,12 @@ def _safe_without(
     return used == 1 or answer.plan.aggregation in ("sum", "count")
 
 
+# Units a price or an amount is given in: "a gallon", "per barrel".
+MEASURE_UNIT_NOUNS = frozenset({
+    "gallon", "gallons", "litre", "litres", "liter", "liters", "pound", "pounds", "kilo", "kilos",
+    "kilogram", "kilograms", "barrel", "barrels", "tonne", "tonnes", "ton", "tons", "bushel", "bushels",
+    "ounce", "ounces", "dozen", "a", "per",
+})
 # Words of a folder's name that say nothing about what a table holds.
 GENERIC_NAME_WORDS = frozenset({
     "data", "dataset", "datasets", "file", "files", "table", "tables", "csv", "tsv", "xlsx", "raw", "clean",
@@ -2125,6 +2131,18 @@ def _check(
     described = f"{sloped}{answer.calculation}"
     used = scope.rows_used if scope is not None else None
     rows = f" ({counted(used, 'row')})" if used is not None else ""
+    if number.percent and "change_percent" in dict(answer.figures):
+        # "the price of a gallon fell by 11%": a change in percent is the same in any unit.
+        units = [phrase for phrase in left_out if set(_words(phrase)) <= MEASURE_UNIT_NOUNS]
+        if units:
+            left_out = [phrase for phrase in left_out if phrase not in units]
+            assumptions = [item for item in assumptions if not item.startswith(LEFT_OUT_NOTE)]
+            if left_out:
+                assumptions.append(
+                    f"{LEFT_OUT_NOTE} {_quoted(left_out)}, which name no column or value in the table."
+                )
+            assumptions.append(f"Read {_quoted(units)} as the unit the measure is in; a change in percent is "
+                               "the same in any unit.")
     named = [phrase for phrase in left_out if _names_table(phrase, _table_name_words(source))]
     if named:
         # "Marvel's characters" in marvel-wikia-data.csv: the words name the whole table, so leaving

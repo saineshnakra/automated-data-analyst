@@ -34,6 +34,8 @@
 
 ### Reading claims and questions
 
+- "The average price of a gallon fell by about 11%" is checked: a unit left
+  out of a change in percent does not change it.
 - "doubled", "more than sixfold", "tripled" and "halved" are changes in
   percent; "nearly half went on to college" is a fraction without "of"; and
   in a column of state names "NM" and "Calif." pick their states.

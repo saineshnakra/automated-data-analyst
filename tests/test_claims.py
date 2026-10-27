@@ -989,6 +989,16 @@ class MultipleAndFractionTests(unittest.TestCase):
         self.assertEqual(ada.check_claim(frame, "Encounters tripled between 2021 and 2023.").reason,
                          "failed_check")
 
+    def test_the_unit_of_a_price_does_not_change_its_change_in_percent(self):
+        days = pd.date_range("2022-01-03", periods=104, freq="W-MON")
+        frame = pd.DataFrame({"date": days, "price": [4.0] * 52 + [3.56] * 52})
+        claim = "The average price of a gallon fell by about 11% between 2022 and 2023."
+        check = ada.check_claim(frame, claim)
+        self.assertTrue(check.verified, check.message)
+        # An amount in a unit the table may not use is still not checked without it.
+        amount = ada.check_claim(frame, "The average price of a gallon was 3.56 in 2023.")
+        self.assertNotEqual(amount.status, "verified")
+
     def test_a_fraction_before_a_verb_needs_no_of(self):
         claim = "Among the top third of their class, nearly half went on to college."
         question, number, _ = read_claim(claim, ["Status"])

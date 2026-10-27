@@ -195,6 +195,11 @@ rest only when no subset could agree by chance:
   an extreme, and any bound ("more than 1,000"), give `missing_context` with
   the agreement shown.
 
+A unit a price or an amount is given in ("a gallon", "per barrel") is left out
+of a change in percent without counting as a word that names nothing, since
+a change in percent is the same in any unit; an amount in such a unit is
+still checked only as other left-out words allow.
+
 Words that are all words of the table's file or folder name ("Marvel's" for
 `marvel-characters/marvel-wikia-data.csv`, "road" for
 `road-victims/Accident.csv`) name the whole table, so they pick no rows: they
