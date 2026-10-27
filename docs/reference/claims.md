@@ -165,6 +165,11 @@ state in 1988, with 5,390") is read as the same peak, and "Vesuvius had its
 busiest year on record in 2024, with 1,315 earthquakes" as a peak of the rows
 counted in each year.
 
+A multiple is a change in percent: "doubled" is a rise of about 100%, "more
+than sixfold" one of more than 500%, "tripled" about 200% and "halved" a fall
+of about 50%. A fraction before a verb needs no "of": "nearly half went on to
+college" is read as "nearly half of" is.
+
 A rate ("about 20 claims for every 100 policyholders", "16 Claims per 100
 Holders") is checked as the total of one column over the total of the other,
 times the number after "per" or "for every", which is part of the question

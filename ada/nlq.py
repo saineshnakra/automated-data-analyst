@@ -1687,6 +1687,18 @@ US_STATES = {
 }
 # The fewest postal codes a column must hold, and nothing else, to be read as a column of states.
 STATE_CODES_MIN = 10
+# The abbreviations newspapers use for states, written with a full stop: "Calif." is California.
+PRESS_STATES = {
+    "ala": "alabama", "ariz": "arizona", "ark": "arkansas", "calif": "california", "colo": "colorado",
+    "conn": "connecticut", "del": "delaware", "fla": "florida", "ga": "georgia", "ill": "illinois",
+    "ind": "indiana", "kan": "kansas", "kans": "kansas", "ky": "kentucky", "la": "louisiana",
+    "md": "maryland", "mass": "massachusetts", "mich": "michigan", "minn": "minnesota", "miss": "mississippi",
+    "mo": "missouri", "mont": "montana", "neb": "nebraska", "nebr": "nebraska", "nev": "nevada",
+    "okla": "oklahoma", "ore": "oregon", "pa": "pennsylvania", "tenn": "tennessee", "tex": "texas",
+    "vt": "vermont", "va": "virginia", "wash": "washington", "wis": "wisconsin", "wyo": "wyoming",
+}
+# Postal codes that are also English words in capitals, never read as states.
+WORD_CODES = frozenset({"in", "or", "me", "ok", "hi", "oh"})
 
 
 def _claim_us_states(reading: _Reading, vocabulary: _Vocabulary) -> None:
@@ -1700,6 +1712,12 @@ def _claim_us_states(reading: _Reading, vocabulary: _Vocabulary) -> None:
     columns: dict[str, list[_Value]] = defaultdict(list)
     for value in vocabulary.values:
         columns[value.column].append(value)
+    named = [
+        column for column, values in columns.items()
+        if sum(" ".join(value.words) in US_STATES for value in values) >= STATE_CODES_MIN
+    ]
+    if len(named) == 1:
+        _claim_state_codes(reading, columns[named[0]])
     held = [
         column for column, values in columns.items()
         if len(values) >= STATE_CODES_MIN and all(" ".join(value.words) in codes for value in values)
@@ -1786,6 +1804,25 @@ def _claim_outcomes(reading: _Reading, vocabulary: _Vocabulary) -> None:
             f'Read "{_raw_words(reading.question, [word])}" as {spelled[0].column} = '
             f"{_listed([value.raw for value in spelled])}."
         )
+
+
+def _claim_state_codes(reading: _Reading, values: list[_Value]) -> None:
+    """Filter a column of state names on a postal code in capitals ("NM") or a newspaper's "Calif."."""
+    by_code = {code: name for name, code in US_STATES.items()}
+    raw = reading.question
+    for start, end, word in _tokens(reading.remaining):
+        spelled = _raw_words(raw, [word])
+        state = None
+        if len(word) == 2 and word in by_code and word not in WORD_CODES and spelled.isupper():
+            state = by_code[word]
+        elif word in PRESS_STATES and spelled[:1].isupper() and re.search(rf"\b{re.escape(spelled)}\.", raw):
+            state = PRESS_STATES[word]
+        found = [value for value in values if " ".join(value.words) == state] if state else []
+        if not found:
+            continue
+        _add_filter(reading, found, start)
+        reading.claim(start, end)
+        reading.notes.append(f'Read "{spelled}" as {found[0].column} = {found[0].raw}.')
 
 
 # Adjectives of nationality and the country names a column may spell them with: "Belgian" is Belgium.

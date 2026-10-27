@@ -3387,6 +3387,17 @@ class StateAndNounTests(unittest.TestCase):
         self.assertEqual(answer_question("deaths in Texas", frame, roles).value, 10)
         self.assertEqual(answer_question("deaths in West Virginia", frame, roles).value, 11)
 
+    def test_a_postal_code_or_a_press_abbreviation_picks_a_state_name(self):
+        names = ["Alabama", "Arizona", "California", "Colorado", "Florida", "Georgia", "Idaho", "Iowa",
+                 "New Mexico", "Texas", "Utah", "Oregon"]
+        frame = pd.DataFrame({"state": names, "colonies": [float(index) for index in range(len(names))]})
+        roles = detect_roles(frame)
+        self.assertEqual(answer_question("colonies in NM", frame, roles).value, 8)
+        self.assertEqual(answer_question("colonies in Calif.", frame, roles).value, 2)
+        # "OR" in capitals is a word, and "calif" without its full stop is no abbreviation.
+        self.assertIsNone(answer_question("colonies in OR", frame, roles))
+        self.assertIsNone(answer_question("colonies in calif", frame, roles))
+
     def test_few_codes_are_not_read_as_states(self):
         frame = pd.DataFrame({"state": ["tx", "ca"], "deaths": [1.0, 2.0]})
         reading = nlq._read_question("deaths in Texas", frame, detect_roles(frame))

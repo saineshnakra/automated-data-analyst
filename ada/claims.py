@@ -149,7 +149,8 @@ FRACTION_PATTERN = re.compile(
     r"\b(?:(?P<qualifier>about|roughly|around|approximately|nearly|almost|just\s+over|just\s+under|over|"
     r"under|more\s+than|less\s+than|fewer\s+than|at\s+least|at\s+most)\s+)?"
     r"(?P<count>a|an|one|two|three|four|nine)?\s*(?P<part>half|halves|thirds?|quarters?|fifths?|tenths?)"
-    r"(?=\s+of\b)",
+    r"(?=\s+of\b|\s+(?:had|have|has|were|was|are|is|went|did|said|got|came|made|lived|died|voted|used|took|"
+    r"chose|saw|reported|finished|passed|failed)\b)",
     re.IGNORECASE,
 )
 # A change by a fraction: "rose by about half", "fell by a third".
@@ -158,6 +159,15 @@ BY_FRACTION = re.compile(
     r"\s+)?(?:(?P<count>a|one)\s+)?(?P<part>half|third|quarter|fifth|tenth)\b(?!\s+of\b)",
     re.IGNORECASE,
 )
+# A change by a multiple: "doubled", "more than sixfold", "halved", "three-fold".
+MULTIPLE = re.compile(
+    r"(?P<verb>\b(?:rose|grew|increased|jumped|climbed|fell|dropped|declined|decreased)\s+)?"
+    r"(?P<qualifier>\b(?:more\s+than|nearly|almost|about|roughly|over|less\s+than)\s+)?"
+    r"\b(?P<word>doubled|tripled|trebled|quadrupled|halved|(?P<n>two|three|four|five|six|seven|eight|nine|ten|"
+    r"\d{1,3})[- ]?fold)\b",
+    re.IGNORECASE,
+)
+MULTIPLE_WORDS = {"doubled": 2, "tripled": 3, "trebled": 3, "quadrupled": 4, "halved": 0.5}
 # Two years that bound a range: "from 2023 to 2024", "between 1982 and 1988".
 YEAR_SPAN = re.compile(r"\b(?:from|between)\s+\d{4}\s*(?:to|and|until|through|-|–)\s*\d{4}\b", re.IGNORECASE)
 FRACTION_PARTS = {"half": 2, "halves": 2, "third": 3, "thirds": 3, "quarter": 4, "quarters": 4, "fifth": 5,
@@ -667,13 +677,27 @@ def _worded_number(claim: str) -> tuple[str, Any] | None:
     Returns (rewritten claim, function that turns the number read from it back
     into the words' own interval), or None when the claim has none.
     """
+    multiple = MULTIPLE.search(claim)
+    if multiple:
+        # "more than doubled" is a rise of more than 100%, "halved" a fall of about 50%.
+        word = multiple.group("word").lower()
+        times = MULTIPLE_WORDS.get(word) or float(NUMBER_WORDS.get((multiple.group("n") or "").lower())
+                                                  or multiple.group("n"))
+        change = (times - 1) * 100
+        qualifier = (multiple.group("qualifier") or "about ").strip()
+        verb = "fell" if change < 0 else "rose"
+        written = f"{verb} by {qualifier} {abs(change):g}%"
+        return f"{claim[:multiple.start()]}{written}{claim[multiple.end():]}", lambda number: number
+    def is_fraction(found: re.Match) -> bool:
+        # "the fourth quarter of 2020", "a third quarter" and "the top third of the class" are no shares;
+        # a fraction is "a quarter of" or "half".
+        ordinal = re.search(r"\b(?:first|second|third|fourth|last|final|1st|2nd|3rd|4th)\s+$",
+                            claim[:found.start("part")], re.IGNORECASE)
+        return not ordinal and bool(found.group("count") or found.group("part").lower() == "half")
+
     # "rose by about half" is a change of about 50%, read as "about half of" is.
-    fraction = BY_FRACTION.search(claim) or FRACTION_PATTERN.search(claim)
-    ordinal = fraction and re.search(r"\b(?:first|second|third|fourth|last|final|1st|2nd|3rd|4th)\s+$",
-                                     claim[:fraction.start("part")], re.IGNORECASE)
-    if fraction and (ordinal or not (fraction.group("count") or fraction.group("part").lower() == "half")):
-        # "the fourth quarter of 2020" and "a third quarter" are periods; a fraction is "a quarter of".
-        fraction = None
+    fraction = next((found for found in (*BY_FRACTION.finditer(claim), *FRACTION_PATTERN.finditer(claim))
+                     if is_fraction(found)), None)
     value = None
     if fraction:
         count = COUNT_WORDS.get((fraction.group("count") or "a").lower(), 1)

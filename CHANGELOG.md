@@ -34,6 +34,9 @@
 
 ### Reading claims and questions
 
+- "doubled", "more than sixfold", "tripled" and "halved" are changes in
+  percent; "nearly half went on to college" is a fraction without "of"; and
+  in a column of state names "NM" and "Calif." pick their states.
 - Fixed wrong answers: "how many encounters in 2023" counted rows when each
   row holds a count (`encounter_count`), and "Mexican nationals accounted for
   29% of encounters" was the share of rows. A plural that names a column of

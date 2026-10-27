@@ -296,7 +296,9 @@ each word is claimed, in this order, by:
    the one yes/no column named for it (`Survived`: "survivors" is Yes, "died"
    is No; `OUTCOME_WORDS`). A US state's name picks its postal code in the one
    column that holds only postal codes, at least ten of them ("Texas" is
-   `state` = tx). A plural most values of two or more columns share
+   `state` = tx); in a column of state names, a postal code in capitals
+   ("NM") or a newspaper's abbreviation with its full stop ("Calif.") picks
+   the state. A plural most values of two or more columns share
    ("characters" in "Male Characters" and "Good Characters") names the rows
    and is no value. An adjective of nationality, or its plural, names its
    country ("Belgian" is Belgium, "Venezuelans" Venezuela, "Mexican
