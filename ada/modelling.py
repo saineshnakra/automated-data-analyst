@@ -1,0 +1,824 @@
+"""Predict a column of a table from its other columns, as a tabular Kaggle competition asks.
+
+    import ada
+    report = ada.model("titanic/", metric="accuracy")    # a folder with train.csv and test.csv
+    report.score          # the mean cross-validated score; each fold's is in report.folds
+    report.submission     # one row per test row, in the sample submission's layout
+    report.write("submission.csv")
+
+Every score is out of fold: each training row is predicted by models that
+never saw it, and the test rows by the average of the fold models. The
+features come from rules on the shape of each column (see ``build_features``),
+never from knowledge of one competition. The model is LightGBM gradient
+boosting, averaged over folds and, on small tables, over several seeds.
+
+Checks run around the fit: a score so close to perfect that a column may leak
+the target, a test set unlike the training rows, and the submission's rows,
+ids and values. A model that can't be fitted honestly (no target, too few rows,
+a class too rare to cross-validate) gives a ``Refusal`` with the reason.
+
+Needs the optional extra: ``pip install "automated-data-analyst[model]"``
+(scikit-learn and LightGBM).
+"""
+
+from __future__ import annotations
+
+import inspect
+import re
+from collections import Counter
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_dtype
+
+from .formatting import normalized_name
+
+#: Fewest training rows a model is cross-validated on.
+MIN_MODEL_ROWS = 100
+#: A text column with at most this many distinct values is a category.
+MAX_CATEGORIES = 64
+#: Most common words of a text column offered as a feature, and the share of rows a word needs.
+FREQUENT_WORDS = 40
+MIN_WORD_SHARE = 0.01
+#: Below this many rows, cross-validation is repeated with more seeds, as small folds are noisy.
+SMALL_TABLE = 20_000
+#: A cross-validated score this close to perfect suggests a column that leaks the target.
+NEAR_PERFECT = 0.995
+#: Train-against-test AUC above which the test rows count as unlike the training rows.
+SHIFT_AUC = 0.8
+#: Rows of each side the shift check samples.
+SHIFT_SAMPLE = 20_000
+
+
+@dataclass(frozen=True)
+class Metric:
+    """How a competition scores predictions: the name, whether higher is better and what it scores."""
+
+    name: str
+    higher: bool
+    #: "label" (classes), "probability" (of the positive class or each class) or "value" (a number).
+    output: str
+    task: str
+
+    def score(self, truth: np.ndarray, predicted: np.ndarray, classes: np.ndarray | None = None) -> float:
+        from sklearn import metrics  # noqa: PLC0415
+
+        if self.name == "accuracy":
+            return float(metrics.accuracy_score(truth, predicted))
+        if self.name == "balanced_accuracy":
+            return float(metrics.balanced_accuracy_score(truth, predicted))
+        if self.name == "f1":
+            average = "binary" if len(set(truth)) <= 2 else "macro"
+            return float(metrics.f1_score(truth, predicted, average=average))
+        if self.name == "auc":
+            if predicted.ndim == 2:
+                return float(metrics.roc_auc_score(truth, predicted, multi_class="ovr", labels=classes))
+            return float(metrics.roc_auc_score(truth, predicted))
+        if self.name == "logloss":
+            return float(metrics.log_loss(truth, predicted, labels=classes))
+        if self.name == "map@3":
+            top = np.argsort(-predicted, axis=1)[:, :3]
+            index = {label: position for position, label in enumerate(classes)}
+            wanted = np.array([index[label] for label in truth])
+            hits = top == wanted[:, None]
+            return float((hits / np.arange(1, 4)).sum(axis=1).mean())
+        if self.name == "rmse":
+            return float(np.sqrt(metrics.mean_squared_error(truth, predicted)))
+        if self.name == "rmsle":
+            return float(np.sqrt(metrics.mean_squared_log_error(truth, np.clip(predicted, 0, None))))
+        if self.name == "mae":
+            return float(metrics.mean_absolute_error(truth, predicted))
+        raise ValueError(f"Unknown metric {self.name}")
+
+
+METRICS = {
+    "accuracy": Metric("accuracy", True, "label", "classification"),
+    "balanced_accuracy": Metric("balanced_accuracy", True, "label", "classification"),
+    "f1": Metric("f1", True, "label", "classification"),
+    "auc": Metric("auc", True, "probability", "classification"),
+    "logloss": Metric("logloss", False, "probability", "classification"),
+    "map@3": Metric("map@3", True, "top3", "classification"),
+    "rmse": Metric("rmse", False, "value", "regression"),
+    "rmsle": Metric("rmsle", False, "value", "regression"),
+    "mae": Metric("mae", False, "value", "regression"),
+}
+#: Other names for the metrics, as Kaggle and scikit-learn write them.
+METRIC_NAMES = {
+    "categorization accuracy": "accuracy", "accuracy score": "accuracy", "roc auc score": "auc",
+    "roc_auc": "auc",
+    "balanced accuracy score": "balanced_accuracy", "balanced accuracy": "balanced_accuracy",
+    "area under roc curve": "auc", "log loss": "logloss", "multiclass loss": "logloss", "map@3": "map@3",
+    "mean average precision @ 3": "map@3",
+    "root mean squared error": "rmse", "root mean squared logarithmic error": "rmsle",
+    "mean absolute error": "mae", "f-score": "f1", "f-score (micro)": "f1", "f1 score": "f1",
+}
+
+
+def metric_named(name: str) -> Metric | None:
+    key = name.strip().lower()
+    return METRICS.get(METRIC_NAMES.get(key, key))
+
+
+@dataclass(frozen=True)
+class Check:
+    name: str
+    passed: bool
+    detail: str
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "passed": self.passed, "detail": self.detail}
+
+
+@dataclass(frozen=True)
+class ModelReport:
+    """A cross-validated model and its predictions for the test rows."""
+
+    target: str
+    task: str
+    metric: Metric
+    folds: tuple[float, ...]
+    score: float
+    spread: float
+    out_of_fold: float
+    rows_train: int
+    rows_test: int
+    calculation: str
+    features: tuple[tuple[str, str], ...]
+    dropped: tuple[tuple[str, str], ...]
+    checks: tuple[Check, ...]
+    importances: tuple[tuple[str, float], ...]
+    submission: pd.DataFrame = field(repr=False)
+    warnings: tuple[str, ...] = ()
+    #: Each training row's out-of-fold prediction beside its target, in the training table's order.
+    out_of_fold_predictions: pd.DataFrame | None = field(default=None, repr=False)
+
+    def test_wobble(self, rows: int | None = None, draws: int = 200, seed: int = 0) -> float:
+        """How much the score moves between test sets of ``rows`` rows (default: the test table's).
+
+        The standard deviation of the score over ``draws`` bootstrap samples of
+        that many out-of-fold predictions: on a small test set, chance alone
+        moves a leaderboard score this much.
+        """
+        frame = self.out_of_fold_predictions
+        size = rows or self.rows_test
+        rng = np.random.default_rng(seed)
+        truth = frame["target"].to_numpy()
+        predicted = frame.drop(columns=["target"]).to_numpy()
+        priors = np.bincount(truth.astype(int)) / len(truth) if self.task == "classification" else None
+        classes = np.arange(predicted.shape[1] if predicted.shape[1] > 1 else 2)
+        scores = []
+        for _ in range(draws):
+            rows_drawn = rng.integers(0, len(frame), size)
+            try:
+                drawn = predicted[rows_drawn]
+                scores.append(_score(self.metric, self.task, classes, truth, rows_drawn, drawn, priors))
+            except ValueError:
+                continue
+        return float(np.std(scores)) if scores else float("nan")
+
+    def write(self, path: str | Path) -> Path:
+        out = Path(path)
+        self.submission.to_csv(out, index=False)
+        return out
+
+    def to_dict(self) -> dict:
+        return {
+            "schema_version": 1,
+            "target": self.target,
+            "task": self.task,
+            "metric": {"name": self.metric.name, "higher_is_better": self.metric.higher},
+            "score": self.score,
+            "spread": self.spread,
+            "folds": list(self.folds),
+            "out_of_fold": self.out_of_fold,
+            "rows": {"train": self.rows_train, "test": self.rows_test},
+            "calculation": self.calculation,
+            "features": [{"name": name, "from": how} for name, how in self.features],
+            "dropped": [{"column": column, "reason": reason} for column, reason in self.dropped],
+            "checks": [check.to_dict() for check in self.checks],
+            "importances": [{"feature": name, "share": share} for name, share in self.importances],
+            "warnings": list(self.warnings),
+        }
+
+    def __str__(self) -> str:
+        better = "higher" if self.metric.higher else "lower"
+        lines = [
+            f"{self.metric.name} {self.score:.5f} (sd {self.spread:.5f} over {len(self.folds)} folds; "
+            f"{better} is better), predicting {self.target} ({self.task}) for {self.rows_test:,} test rows",
+            f"  calc: {self.calculation}",
+            f"  features: {len(self.features)} from {self.rows_train:,} training rows; "
+            + ", ".join(f"{name} {share:.0%}" for name, share in self.importances[:5]),
+        ]
+        lines.extend(f"  dropped: {column} ({reason})" for column, reason in self.dropped)
+        lines.extend(f"  check: {'passed' if check.passed else 'FAILED'} {check.name}: {check.detail}"
+                     for check in self.checks)
+        lines.extend(f"  warning: {warning}" for warning in self.warnings)
+        return "\n".join(lines)
+
+
+def _refusal(code: str, message: str):
+    from .api import Refusal  # noqa: PLC0415
+
+    return Refusal(code, message)
+
+
+def _read(source) -> pd.DataFrame:
+    if isinstance(source, pd.DataFrame):
+        return source.copy()
+    from .file_io import read_tabular_file  # noqa: PLC0415
+
+    path = Path(source)
+    return read_tabular_file(path.read_bytes(), path.name)
+
+
+def _find(folder: Path, stem: str) -> Path | None:
+    return next((path for path in sorted(folder.iterdir()) if path.stem.lower() == stem and path.is_file()),
+                None)
+
+
+# ---------------------------------------------------------------- features
+
+#: Separators a structured code may use: "B/45/P", "0013_02", "Smith, Mr. John".
+SEPARATORS = ("/", "_", ",", "-", " ")
+
+
+def _identifier(train: pd.DataFrame, test: pd.DataFrame, sample: pd.DataFrame | None) -> str | None:
+    """The column naming each row: the sample submission's first column, or a unique id-like column."""
+    if sample is not None and sample.columns[0] in test.columns:
+        return str(sample.columns[0])
+    for column in test.columns:
+        words = normalized_name(str(column)).split()
+        if column in train.columns and words and words[-1] in ("id", "key"):
+            if test[column].is_unique and train[column].is_unique:
+                return str(column)
+    return None
+
+
+def _structured_parts(text: pd.Series) -> tuple[str, int] | None:
+    """The separator and part count when nearly every value splits into the same 2 to 4 parts."""
+    present = text.dropna()
+    if present.empty:
+        return None
+    for separator in SEPARATORS:
+        sizes = present.str.count(re.escape(separator)) + 1
+        common = sizes.mode().iloc[0]
+        if 2 <= common <= 4 and (sizes == common).mean() >= 0.95:
+            return separator, int(common)
+    return None
+
+
+def _as_number_or_category(values: pd.Series) -> pd.Series:
+    numbers = pd.to_numeric(values, errors="coerce")
+    if numbers.notna().sum() >= 0.95 * values.notna().sum():
+        return numbers
+    return values.astype("category")
+
+
+def build_features(both: pd.DataFrame, skip: set[str]) -> tuple[pd.DataFrame, list[tuple[str, str]],
+                                                                 list[tuple[str, str]], list[str]]:
+    """Model features from every column but ``skip``, by rules on each column's shape.
+
+    - A number stays a number; a yes/no column becomes 0 and 1.
+    - A date becomes its year, month, day of the month, day of the week and day of the year.
+    - Text with at most ``MAX_CATEGORIES`` values is a category.
+    - Other text gives, when they apply: the parts of a structured code ("B/45/P"
+      gives three), the most common word it holds among the column's most common
+      words ("Mr" in a name), its first character, and how many rows share it.
+      Its raw values are encoded in each fold from the training rows' targets.
+
+    Returns the features, how each was made, the columns left out with the
+    reason, and the high-cardinality text columns to target-encode.
+    """
+    features: dict[str, pd.Series] = {}
+    made: list[tuple[str, str]] = []
+    dropped: list[tuple[str, str]] = []
+    encode: list[str] = []
+    for column in both.columns:
+        if column in skip:
+            continue
+        values = both[column]
+        name = str(column)
+        if values.notna().sum() == 0:
+            dropped.append((name, "every value missing"))
+            continue
+        if values.nunique(dropna=False) <= 1:
+            dropped.append((name, "one value only"))
+            continue
+        if is_bool_dtype(values):
+            features[name] = values.astype(float)
+            made.append((name, "yes/no as 1 and 0"))
+            continue
+        if is_numeric_dtype(values):
+            features[name] = values.astype(float)
+            made.append((name, "number"))
+            continue
+        if is_datetime64_any_dtype(values):
+            for part in ("year", "month", "day", "dayofweek", "dayofyear"):
+                features[f"{name}_{part}"] = getattr(values.dt, part).astype(float)
+                made.append((f"{name}_{part}", f"the {part} of {name}"))
+            continue
+        text = values.astype("string").str.strip()
+        distinct = text.nunique()
+        if distinct <= MAX_CATEGORIES:
+            features[name] = text.astype("category")
+            made.append((name, "category"))
+            continue
+        structured = _structured_parts(text)
+        if structured:
+            separator, count = structured
+            parts = text.str.split(separator, n=count - 1, regex=False)
+            for index in range(count):
+                part = _as_number_or_category(parts.str[index].str.strip())
+                part_name = f"{name}_part{index + 1}"
+                if isinstance(part.dtype, pd.CategoricalDtype) and part.nunique() > MAX_CATEGORIES:
+                    shared = part.astype("string").map(part.value_counts())
+                    features[f"{part_name}_count"] = shared.astype(float)
+                    made.append((f"{part_name}_count", f"how many rows share part {index + 1} of {name}"))
+                    features[part_name] = part.astype("string")
+                    encode.append(part_name)
+                else:
+                    features[part_name] = part
+                made.append((part_name, f"part {index + 1} of {name}, split at {separator!r}"))
+        words = text.fillna("").str.findall(r"[A-Za-z]+")
+        counts = Counter(word for row in words for word in set(row))
+        least = MIN_WORD_SHARE * len(text)
+        common = [word for word, seen in counts.most_common(FREQUENT_WORDS) if seen >= least]
+        if common:
+            features[f"{name}_word"] = words.map(_commonest(common)).astype("category")
+            made.append((f"{name}_word", f"the most common of {name}'s frequent words it holds"))
+        first = text.str[0]
+        if first.nunique() <= MAX_CATEGORIES:
+            features[f"{name}_first"] = first.astype("category")
+            made.append((f"{name}_first", f"the first character of {name}"))
+        features[f"{name}_count"] = text.map(text.value_counts()).astype(float)
+        made.append((f"{name}_count", f"how many rows share {name}'s value"))
+        features[name] = text
+        encode.append(name)
+        made.append((name, "its training rows' mean target, from the other folds"))
+    return pd.DataFrame(features, index=both.index), made, dropped, encode
+
+
+def _commonest(common: list[str]):
+    """A function giving the first of ``common`` a row's words hold, or "none"."""
+    rank = {word: position for position, word in enumerate(common)}
+    return lambda row: min((word for word in row if word in rank), key=rank.get, default="none")
+
+
+def _target_encode(fit: pd.Series, y_fit: np.ndarray, apply: pd.Series, smoothing: float = 10.0
+                   ) -> np.ndarray:
+    """Each value's mean target in ``fit``, pulled toward the overall mean when it has few rows."""
+    frame = pd.DataFrame({"value": fit.fillna("<missing>").to_numpy(), "y": y_fit})
+    overall = float(np.mean(y_fit))
+    stats = frame.groupby("value")["y"].agg(["sum", "count"])
+    smoothed = (stats["sum"] + smoothing * overall) / (stats["count"] + smoothing)
+    return apply.fillna("<missing>").map(smoothed).fillna(overall).to_numpy(dtype=float)
+
+
+# ---------------------------------------------------------------- fitting
+
+def _held_out(estimator: Any, X: pd.DataFrame, y: np.ndarray) -> dict:
+    """The held-out rows for early stopping, in the form this LightGBM takes: eval_X and eval_y from 4.6."""
+    if "eval_X" in inspect.signature(estimator.fit).parameters:
+        return {"eval_X": X, "eval_y": y}
+    return {"eval_set": [(X, y)]}
+
+
+def _lightgbm(task: str, classes: int, metric: Metric, rows: int, seed: int):
+    import lightgbm as lgb  # noqa: PLC0415
+
+    small = rows < SMALL_TABLE
+    common = dict(
+        n_estimators=5000, learning_rate=0.02 if small else 0.05, num_leaves=15 if small else 63,
+        min_child_samples=10 if small else 40, subsample=0.8, subsample_freq=1, colsample_bytree=0.7,
+        reg_lambda=1.0, random_state=seed, verbose=-1, deterministic=True, force_row_wise=True, n_jobs=4,
+    )
+    if task == "regression":
+        objective = "regression_l1" if metric.name == "mae" else "regression"
+        return lgb.LGBMRegressor(objective=objective, **common)
+    return lgb.LGBMClassifier(**common)
+
+
+def _fold_matrix(X: pd.DataFrame, encode: list[str], fit_index: np.ndarray, y_fit: np.ndarray,
+                 others: list[pd.DataFrame]) -> tuple[pd.DataFrame, list[pd.DataFrame]]:
+    """The features for one fold: high-cardinality text replaced by its target encoding from the fit rows."""
+    if not encode:
+        return X.iloc[fit_index], [frame for frame in others]
+    fit = X.iloc[fit_index].copy()
+    done = [frame.copy() for frame in others]
+    for column in encode:
+        values = fit[column]
+        # Inside the fit rows, each row's encoding comes from the other fit rows (5 inner folds).
+        inner = np.zeros(len(fit))
+        order = np.arange(len(fit)) % 5
+        for part in range(5):
+            mask = order == part
+            inner[mask] = _target_encode(values[~mask], y_fit[~mask], values[mask])
+        for frame in done:
+            frame[column] = _target_encode(values, y_fit, frame[column])
+        fit[column] = inner
+    return fit, done
+
+
+def model(
+    train,
+    test=None,
+    *,
+    target: str | None = None,
+    metric: str | None = None,
+    id_column: str | None = None,
+    folds: int = 5,
+    seed: int = 0,
+):
+    """Cross-validate a model of ``target`` on ``train`` and predict it for ``test``.
+
+    ``train`` may be a folder holding train.csv, test.csv and a sample
+    submission, as Kaggle gives them; the target is then the column the sample
+    submission names. ``metric`` is one of ``METRICS`` or a Kaggle name for it
+    ("Categorization Accuracy"); by default accuracy for classes and RMSE for
+    numbers. Returns a ``ModelReport``, or a ``Refusal`` with the reason.
+    """
+    try:
+        import lightgbm  # noqa: F401, PLC0415
+        import sklearn  # noqa: F401, PLC0415
+    except ImportError:
+        return _refusal("missing_extra", 'Modelling needs scikit-learn and LightGBM: '
+                                         'pip install "automated-data-analyst[model]".')
+    sample = None
+    if not isinstance(train, pd.DataFrame) and Path(train).is_dir():
+        folder = Path(train)
+        found = _find(folder, "train")
+        if found is None:
+            return _refusal("no_target", f"{folder} holds no train file.")
+        train, test = found, test if test is not None else _find(folder, "test")
+        sample_path = next((path for path in sorted(folder.iterdir()) if "sample" in path.stem.lower()
+                            or path.stem.lower().endswith("submission")), None)
+        sample = _read(sample_path) if sample_path else None
+    train_frame = _read(train)
+    test_frame = _read(test) if test is not None else None
+    if test_frame is None:
+        return _refusal("no_target", "A test table is needed to predict for: pass test.csv or a folder "
+                                     "holding one.")
+    if target is None:
+        candidates = [str(column) for column in train_frame.columns if column not in test_frame.columns]
+        if sample is not None:
+            named = [column for column in sample.columns[1:] if column in train_frame.columns]
+            candidates = named or candidates
+        if len(candidates) != 1:
+            return _refusal("no_target", "Name the column to predict: "
+                            + (f"{', '.join(candidates)} are only in the training table." if candidates
+                               else "every training column is also in the test table."))
+        target = candidates[0]
+    if target not in train_frame.columns:
+        return _refusal("no_target", f"{target} is not a column of the training table.")
+    rows_missing = int(train_frame[target].isna().sum())
+    train_frame = train_frame[train_frame[target].notna()].reset_index(drop=True)
+    if len(train_frame) < MIN_MODEL_ROWS:
+        return _refusal("too_few_rows", f"{len(train_frame)} training rows have {target}; a cross-validated "
+                                        f"model needs at least {MIN_MODEL_ROWS}.")
+    y_raw = train_frame[target]
+    chosen = metric_named(metric) if metric else None
+    if metric and chosen is None:
+        return _refusal("unknown_metric",
+                        f"ADA has no metric called {metric!r}; it has {', '.join(METRICS)}.")
+    numeric_target = is_numeric_dtype(y_raw) and not is_bool_dtype(y_raw)
+    whole = numeric_target and bool((y_raw % 1 == 0).all())
+    task = chosen.task if chosen else (
+        "regression" if numeric_target and not (whole and y_raw.nunique() <= 20) else "classification"
+    )
+    chosen = chosen or (METRICS["accuracy"] if task == "classification" else METRICS["rmse"])
+    identifier = id_column or _identifier(train_frame, test_frame, sample)
+    skip = {target, *([identifier] if identifier else [])}
+    shared = [column for column in train_frame.columns if column in test_frame.columns and column not in skip]
+    only_train = [str(column) for column in train_frame.columns
+                  if column not in test_frame.columns and column != target]
+    both = pd.concat([train_frame[shared], test_frame[shared]], keys=["train", "test"])
+    features, made, dropped, encode = build_features(both, skip)
+    dropped = [(column, "not in the test table") for column in only_train] + dropped
+    if identifier:
+        dropped.insert(0, (identifier, "the row's id"))
+    X, X_test = features.loc["train"].reset_index(drop=True), features.loc["test"].reset_index(drop=True)
+
+    classes = None
+    if task == "classification":
+        counts = y_raw.value_counts()
+        if counts.min() < folds:
+            return _refusal("too_few_rows",
+                            f"{target} = {counts.idxmin()} has {counts.min()} rows; each class needs at "
+                            f"least {folds} to be cross-validated in {folds} folds.")
+        classes = np.array(sorted(counts.index, key=str), dtype=object)
+        y = pd.Categorical(y_raw, categories=classes).codes.astype(int)
+    else:
+        y = y_raw.to_numpy(dtype=float)
+        if chosen.name == "rmsle" and (y < 0).any():
+            return _refusal("unknown_metric", f"RMSLE needs {target} at 0 or above.")
+    fitted_y = np.log1p(y) if chosen.name == "rmsle" else y
+    if task == "classification" and len(classes) > 2 and encode:
+        # A mean target has no meaning across several classes, so such text keeps only its other features.
+        X, X_test = X.drop(columns=encode), X_test.drop(columns=encode)
+        made = [(name, how) for name, how in made if name not in encode]
+        dropped += [(column, "text with many values; not encoded for more than two classes")
+                    for column in encode]
+        encode = []
+    encoded_y = fitted_y if task == "regression" else (y == len(classes) - 1).astype(float)
+    priors = np.bincount(y, minlength=len(classes)) / len(y) if task == "classification" else None
+
+    from sklearn.model_selection import KFold, StratifiedKFold  # noqa: PLC0415
+
+    seeds = [seed, seed + 1, seed + 2] if len(X) < SMALL_TABLE else [seed]
+    width = len(classes) if classes is not None and len(classes) > 2 else 1
+    splits = []
+    for repeat in seeds:
+        splitter = (StratifiedKFold(folds, shuffle=True, random_state=repeat) if task == "classification"
+                    else KFold(folds, shuffle=True, random_state=repeat))
+        splits += [(repeat, index, fit_rows, held_rows)
+                   for index, (fit_rows, held_rows) in enumerate(splitter.split(X, y))]
+    gains = Counter()
+    learners = {}
+    for learner in ("lightgbm", "linear"):
+        learners[learner] = _cross_validate(learner, X, X_test, y, fitted_y, encoded_y, encode, splits, task,
+                                            width, chosen, gains if learner == "lightgbm" else None)
+    weights = _blend_weights({name: found[0] for name, found in learners.items()}, chosen, task, classes, y,
+                             priors)
+    oof = sum(weights[name] * learners[name][0] for name in learners)
+    predicted = sum(weights[name] * learners[name][1] for name in learners)
+    fold_scores = []
+    for repeat, _, _, held_rows in splits:
+        # Each repeat predicts every row once; a fold's score uses that repeat's predictions.
+        held = sum(weights[name] * learners[name][2][repeat][held_rows] for name in learners)
+        fold_scores.append(_score(chosen, task, classes, y, held_rows, held, priors))
+    out_of_fold = _score(chosen, task, classes, y, np.arange(len(X)), oof, priors)
+    oof_frame = pd.DataFrame(oof, columns=[f"p{index}" for index in range(oof.shape[1])])
+    oof_frame["target"] = fitted_y if task == "regression" and chosen.name != "rmsle" else y
+    total = sum(gains.values()) or 1.0
+    importances = tuple((name, gain / total) for name, gain in gains.most_common(10))
+
+    submission = _submission(test_frame, identifier, target, sample, chosen, task, classes, predicted, priors)
+    checks = _checks(submission, test_frame, identifier, task, classes, chosen, X, X_test, seed)
+    warnings = []
+    perfect = out_of_fold >= NEAR_PERFECT if chosen.higher else out_of_fold <= 1e-6
+    if perfect:
+        warnings.append(f"The out-of-fold {chosen.name} is {out_of_fold:.4f}, nearly perfect: check that no "
+                        f"column gives {target} away.")
+    if importances and importances[0][1] > 0.8:
+        warnings.append(f"{importances[0][0]} carries {importances[0][1]:.0%} of the model's gain; check "
+                        f"it is known before {target} is.")
+    if rows_missing:
+        warnings.append(f"Left out {rows_missing:,} training rows with {target} missing.")
+    kind = "stratified " if task == "classification" else ""
+    target_note = ""
+    if chosen.name == "rmsle":
+        target_note = f"log1p({target}) fitted, predictions turned back with expm1; "
+    linear = "ridge regression" if task == "regression" else "logistic regression"
+    blend = (f"{weights['lightgbm']:.2f} LightGBM gradient boosting and {weights['linear']:.2f} {linear} "
+             "(weights chosen on the out-of-fold predictions)")
+    calculation = (
+        f"{blend}, {folds}-fold {kind}cross-validation"
+        + (f" repeated with {len(seeds)} seeds" if len(seeds) > 1 else "")
+        + f", early stopping on each held-out fold; {target_note}test predictions averaged over the "
+        f"{folds * len(seeds)} fold models; scored with {chosen.name}"
+    )
+    return ModelReport(
+        target=target, task=task, metric=chosen, folds=tuple(fold_scores), score=float(np.mean(fold_scores)),
+        spread=float(np.std(fold_scores)), out_of_fold=out_of_fold, rows_train=len(X), rows_test=len(X_test),
+        calculation=calculation, features=tuple(made), dropped=tuple(dropped), checks=tuple(checks),
+        importances=importances, submission=submission, warnings=tuple(warnings),
+        out_of_fold_predictions=oof_frame,
+    )
+
+
+def _labels(predicted: np.ndarray, metric: Metric, priors: np.ndarray) -> np.ndarray:
+    """The class each row is given: the likeliest, or for balanced accuracy the likeliest against its share.
+
+    Balanced accuracy weighs each class equally, so a probability is divided
+    by the class's share of the training rows before the largest is taken.
+    """
+    table = np.column_stack([1 - predicted[:, 0], predicted[:, 0]]) if predicted.shape[1] == 1 else predicted
+    if metric.name == "balanced_accuracy":
+        table = table / priors
+    return table.argmax(axis=1)
+
+
+def _linear_design(fit: pd.DataFrame, others: list[pd.DataFrame]) -> tuple[np.ndarray, list[np.ndarray]]:
+    """The fold's features for a linear model: numbers filled, logged when skewed, scaled; categories one-hot.
+
+    Every step is learned from the fit rows only: the medians, the skew, the
+    scale and the categories (those with at least 5 fit rows).
+    """
+    blocks_fit, blocks_other = [], [[] for _ in others]
+    for column in fit.columns:
+        values = fit[column]
+        if isinstance(values.dtype, pd.CategoricalDtype) or values.dtype == object:
+            counts = values.astype("string").value_counts()
+            kept = list(counts[counts >= 5].index)
+            if not kept:
+                continue
+            text = values.astype("string")
+            blocks_fit.append(np.column_stack([(text == level).fillna(False).to_numpy(dtype=float)
+                                               for level in kept]))
+            for position, frame in enumerate(others):
+                other = frame[column].astype("string")
+                blocks_other[position].append(np.column_stack(
+                    [(other == level).fillna(False).to_numpy(dtype=float) for level in kept]))
+            continue
+        numbers = values.to_numpy(dtype=float)
+        median = float(np.nanmedian(numbers)) if np.isfinite(numbers).any() else 0.0
+        missing = ~np.isfinite(numbers)
+        filled = np.where(missing, median, numbers)
+        skewed = bool(filled.min() >= 0 and pd.Series(filled).skew() > 1)
+        transform = np.log1p if skewed else (lambda array: array)
+        shaped = transform(filled)
+        centre, scale = float(shaped.mean()), float(shaped.std()) or 1.0
+        blocks_fit.append(((shaped - centre) / scale)[:, None])
+        flag = missing.any()
+        if flag:
+            blocks_fit.append(missing.astype(float)[:, None])
+        for position, frame in enumerate(others):
+            other = frame[column].to_numpy(dtype=float)
+            other_missing = ~np.isfinite(other)
+            other_filled = np.where(other_missing, median, other)
+            if skewed:
+                other_filled = np.clip(other_filled, 0, None)
+            blocks_other[position].append(((transform(other_filled) - centre) / scale)[:, None])
+            if flag:
+                blocks_other[position].append(other_missing.astype(float)[:, None])
+    matrix = np.hstack(blocks_fit) if blocks_fit else np.zeros((len(fit), 0))
+    rest = [np.hstack(blocks) if blocks else np.zeros((len(frame), 0))
+            for blocks, frame in zip(blocks_other, others, strict=True)]
+    return matrix, rest
+
+
+def _cross_validate(learner: str, X: pd.DataFrame, X_test: pd.DataFrame, y: np.ndarray, fitted_y: np.ndarray,
+                    encoded_y: np.ndarray, encode: list[str], splits: list, task: str, width: int,
+                    metric: Metric, gains: Counter | None):
+    """One learner's out-of-fold predictions (averaged over repeats), test predictions and each repeat's."""
+    import lightgbm as lgb  # noqa: PLC0415
+    from sklearn.linear_model import LogisticRegression, RidgeCV  # noqa: PLC0415
+
+    by_repeat: dict[int, np.ndarray] = {}
+    predicted = np.zeros((len(X_test), width))
+    for repeat, index, fit_rows, held_rows in splits:
+        fit_X, (held_X, test_X) = _fold_matrix(X, encode, fit_rows, encoded_y[fit_rows],
+                                               [X.iloc[held_rows], X_test])
+        if learner == "lightgbm":
+            estimator = _lightgbm(task, width, metric, len(X), repeat * 100 + index)
+            estimator.fit(fit_X, fitted_y[fit_rows], **_held_out(estimator, held_X, fitted_y[held_rows]),
+                          callbacks=[lgb.early_stopping(200, verbose=False)])
+            if gains is not None:
+                shares = estimator.booster_.feature_importance("gain")
+                for name, gain in zip(fit_X.columns, shares, strict=True):
+                    gains[str(name)] += float(gain)
+            held_input, test_input = held_X, test_X
+        else:
+            fit_matrix, (held_input, test_input) = _linear_design(fit_X, [held_X, test_X])
+            if task == "regression":
+                estimator = RidgeCV(alphas=np.logspace(-2, 3, 12)).fit(fit_matrix, fitted_y[fit_rows])
+            else:
+                estimator = LogisticRegression(C=0.5, max_iter=2000).fit(fit_matrix, y[fit_rows])
+        if task == "regression":
+            held_pred = estimator.predict(held_input)[:, None]
+            test_pred = estimator.predict(test_input)[:, None]
+        else:
+            held_pred = estimator.predict_proba(held_input)
+            test_pred = estimator.predict_proba(test_input)
+            if width == 1:
+                held_pred, test_pred = held_pred[:, 1:], test_pred[:, 1:]
+        by_repeat.setdefault(repeat, np.zeros((len(X), width)))[held_rows] = held_pred
+        predicted += test_pred / len(splits)
+    oof = sum(by_repeat.values()) / len(by_repeat)
+    return oof, predicted, by_repeat
+
+
+def _blend_weights(oofs: dict[str, np.ndarray], metric: Metric, task: str, classes, y: np.ndarray,
+                   priors) -> dict[str, float]:
+    """The weights, 0 to 1 in steps of 0.05 and adding to 1, that give the best out-of-fold score.
+
+    For a metric of labels (accuracy, balanced accuracy, F1) the weights are
+    chosen by log loss instead: a count of right labels jumps between weights,
+    so it would pick a weight by chance.
+    """
+    names = list(oofs)
+    if metric.output == "label":
+        metric = METRICS["logloss"]
+    best_weight, best_score = 1.0, None
+    for weight in np.linspace(0, 1, 21):
+        mixed = weight * oofs[names[0]] + (1 - weight) * oofs[names[1]]
+        try:
+            score = _score(metric, task, classes, y, np.arange(len(y)), mixed, priors)
+        except ValueError:
+            continue
+        better = best_score is None or (score > best_score if metric.higher else score < best_score)
+        if better:
+            best_weight, best_score = float(weight), score
+    return {names[0]: best_weight, names[1]: 1 - best_weight}
+
+
+def _score(metric: Metric, task: str, classes, y: np.ndarray, rows: np.ndarray, predicted: np.ndarray,
+           priors: np.ndarray | None = None) -> float:
+    truth = y[rows]
+    if task == "regression":
+        values = predicted[:, 0]
+        if metric.name == "rmsle":
+            return metric.score(truth, np.expm1(values))
+        return metric.score(truth, values)
+    if metric.output == "probability" and predicted.shape[1] == 1:
+        return metric.score(truth, predicted[:, 0])
+    if metric.output in ("probability", "top3"):
+        return metric.score(truth, predicted, np.arange(len(classes)))
+    return metric.score(truth, _labels(predicted, metric, priors))
+
+
+def _submission(test: pd.DataFrame, identifier: str | None, target: str, sample: pd.DataFrame | None,
+                metric: Metric, task: str, classes, predicted: np.ndarray, priors: np.ndarray | None = None
+                ) -> pd.DataFrame:
+    """The predictions in the sample submission's layout, or as id and target."""
+    out = pd.DataFrame({identifier: test[identifier].to_numpy()}) if identifier else pd.DataFrame(
+        index=test.index)
+    if task == "regression":
+        values = predicted[:, 0]
+        out[target] = np.expm1(values) if metric.name == "rmsle" else values
+        return out
+    if predicted.shape[1] == 1:
+        positive = predicted[:, 0]
+        if metric.output == "probability":
+            out[target] = positive
+        else:
+            out[target] = classes[_labels(predicted, metric, priors)]
+        return _like_sample(out, sample, target)
+    if metric.output == "top3":
+        top = np.argsort(-predicted, axis=1)[:, :3]
+        out[target] = [" ".join(str(classes[index]) for index in row) for row in top]
+    elif metric.output == "probability":
+        columns = [f"{target}_{label}" for label in classes]
+        if sample is not None and len(sample.columns) == len(classes) + 1:
+            columns = list(sample.columns[1:])
+        for position, column in enumerate(columns):
+            out[column] = predicted[:, position]
+    else:
+        out[target] = classes[_labels(predicted, metric, priors)]
+    return _like_sample(out, sample, target)
+
+
+def _like_sample(out: pd.DataFrame, sample: pd.DataFrame | None, target: str) -> pd.DataFrame:
+    """Labels written as the sample submission writes them: True/False, 0/1 or text."""
+    if sample is None or target not in sample.columns or target not in out.columns:
+        return out
+    example = sample[target]
+    if is_bool_dtype(example) and not is_bool_dtype(out[target]):
+        out[target] = out[target].map(lambda value: str(value).lower() in ("true", "1", "1.0"))
+    elif is_numeric_dtype(example) and not is_bool_dtype(example):
+        converted = pd.to_numeric(out[target], errors="coerce")
+        if converted.notna().all():
+            out[target] = converted.astype(example.dtype) if (converted % 1 == 0).all() else converted
+    return out
+
+
+def _checks(submission: pd.DataFrame, test: pd.DataFrame, identifier: str | None, task: str, classes,
+            metric: Metric, X: pd.DataFrame, X_test: pd.DataFrame, seed: int) -> list[Check]:
+    checks = [Check("rows", len(submission) == len(test),
+                    f"{len(submission):,} predictions for {len(test):,} test rows")]
+    if identifier:
+        same = submission[identifier].tolist() == test[identifier].tolist()
+        said = "every test id once, in the test table's order" if same else "ids differ from the test table"
+        checks.append(Check("ids", same and submission[identifier].is_unique, said))
+    values = submission.drop(columns=[identifier] if identifier else [])
+    missing = int(values.isna().sum().sum())
+    checks.append(Check("complete", not missing, f"{missing} missing predictions"))
+    numeric = values.select_dtypes("number")
+    if metric.output == "probability" and not numeric.empty:
+        inside = bool(((numeric >= 0) & (numeric <= 1)).all().all())
+        checks.append(Check("probabilities", inside, "every probability between 0 and 1" if inside
+                            else "probabilities outside 0 to 1"))
+    if not numeric.empty:
+        varied = bool((numeric.nunique() > 1).any())
+        checks.append(Check("varied", varied, "the predictions differ between rows" if varied
+                            else "every row gets the same prediction"))
+    checks.append(_shift(X, X_test, seed))
+    return checks
+
+
+def _shift(X: pd.DataFrame, X_test: pd.DataFrame, seed: int) -> Check:
+    """Whether a model can tell training rows from test rows: AUC near 0.5 means they look alike."""
+    import lightgbm as lgb  # noqa: PLC0415
+    from sklearn.metrics import roc_auc_score  # noqa: PLC0415
+    from sklearn.model_selection import StratifiedKFold  # noqa: PLC0415
+
+    columns = [column for column in X.columns if not pd.api.types.is_string_dtype(X[column])]
+    left = X[columns].sample(min(len(X), SHIFT_SAMPLE), random_state=seed)
+    right = X_test[columns].sample(min(len(X_test), SHIFT_SAMPLE), random_state=seed)
+    joined = pd.concat([left, right], ignore_index=True)
+    side = np.r_[np.zeros(len(left)), np.ones(len(right))]
+    scores = np.zeros(len(joined))
+    for fit_rows, held_rows in StratifiedKFold(3, shuffle=True, random_state=seed).split(joined, side):
+        estimator = lgb.LGBMClassifier(n_estimators=200, learning_rate=0.1, num_leaves=31, verbose=-1,
+                                       random_state=seed, deterministic=True, force_row_wise=True, n_jobs=4)
+        estimator.fit(joined.iloc[fit_rows], side[fit_rows])
+        scores[held_rows] = estimator.predict_proba(joined.iloc[held_rows])[:, 1]
+    auc = float(roc_auc_score(side, scores))
+    return Check("test like training", auc <= SHIFT_AUC,
+                 f"a model tells training rows from test rows with AUC {auc:.3f} (0.5: alike)")
+
+
+__all__ = ["METRICS", "Metric", "ModelReport", "build_features", "metric_named", "model"]

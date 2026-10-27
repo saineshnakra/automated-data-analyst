@@ -8,7 +8,7 @@ Streamlit app (`app.py`, `ada/ui.py`, `ada/home.py`).
 ## Setup and checks
 
 ```bash
-pip install -e ".[app,ai,dev]"
+pip install -e ".[app,ai,dev,model]"
 ruff check .
 python -m unittest discover -s tests
 ```

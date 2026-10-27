@@ -80,6 +80,10 @@ REFUSAL_CODES = (
     "unsupported_phrasing",
     "unrepresentable_question",
     "unknown_segment_value",
+    "missing_extra",
+    "no_target",
+    "too_few_rows",
+    "unknown_metric",
     "unknown",
 )
 
