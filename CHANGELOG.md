@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.0 (unreleased)
+## 0.6.0 (2026-10-27)
 
 ADA now checks numbers as well as computing them. `ada claim` says whether a
 number stated about a table is verified or unverified, and why; `ada ask
