@@ -7,7 +7,7 @@ git clone https://github.com/saineshnakra/automated-data-analyst.git
 cd automated-data-analyst
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -e ".[app,ai,dev]"
+pip install -e ".[app,ai,dev,model]"
 streamlit run app.py
 ```
 

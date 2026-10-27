@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Predicting a column
+
+- `ada.model(train, test)` and `ada model` predict one column of a table from
+  the others, as a tabular Kaggle competition asks: features from rules on
+  the columns' shapes, LightGBM and a regularized linear model blended on
+  out-of-fold predictions, every score cross-validated, and the submission
+  checked (one row per test id, no gaps, probabilities in range, test rows
+  like the training rows) before it is written. Metrics: accuracy, balanced
+  accuracy, F1, AUC, log loss, MAP@3, RMSE, RMSLE and MAE. It needs the new
+  `model` extra (scikit-learn and LightGBM). See
+  [Predicting a column](docs/reference/modelling.md).
+- `results/kaggle` scores it on 21 tabular competitions split into train,
+  validation and locked test, against each leaderboard's top 10%, and
+  submits only when the score clears the bar by twice its uncertainty.
+
 ### Reading claims and questions
 
 - "6,657 metres high" reads a height, and "Customers paid R$16,008,872" a
