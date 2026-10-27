@@ -82,7 +82,8 @@ Two parsing rules apply to CSV and Excel alike:
   is often a region code (North America). Cleaning then reads it as missing
   in a text column whose other values are words (`male`, `female`, `NA`); see
   [Cleaning](cleaning.md#missing-value-codes). pandas' other missing-value
-  markers apply.
+  markers apply, and `\N`, the null MySQL and PostgreSQL write when they
+  export a table, is read as missing too.
 
 ## Excel parsing
 

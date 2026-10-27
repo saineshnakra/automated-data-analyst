@@ -119,6 +119,12 @@ class CellValueTests(unittest.TestCase):
         self.assertEqual(frame["Customer ID"].tolist(), ["00042", "00007"])
         self.assertEqual(frame["Revenue"].tolist(), [10, 20])
 
+    def test_a_database_null_is_missing(self):
+        frame = read_tabular_file(b"code,laps\n\\N,\\N\nHAM,52\nVER,\\N\n", "results.csv")
+
+        self.assertEqual(frame["code"].isna().tolist(), [True, False, False])
+        self.assertEqual(frame["laps"].dropna().tolist(), [52])
+
 
 class DelimiterRescueTests(unittest.TestCase):
     def test_a_semicolon_delimited_file_is_still_split(self):

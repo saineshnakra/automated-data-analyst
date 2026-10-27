@@ -78,8 +78,9 @@ def list_excel_sheets(contents: bytes, filename: str) -> list[str]:
 
 
 # pandas' default missing-value markers except "NA", which in business data is
-# usually a region code (North America).
-NA_VALUES = sorted(STR_NA_VALUES - {"NA"})
+# usually a region code (North America), plus "\N", the null that MySQL and
+# PostgreSQL write when they export a table.
+NA_VALUES = sorted(STR_NA_VALUES - {"NA"} | {"\\N"})
 def _kept_as_text(columns) -> dict[str, type]:
     """Read key columns (see ``schema.is_identifier_name``) as text, so "00042" keeps its zeros."""
     return {column: str for column in columns if is_identifier_name(str(column))}

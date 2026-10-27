@@ -71,6 +71,9 @@
 - `.data` and `.dat` files are read, as tab-separated text when the header
   splits on tabs and as comma-separated text otherwise (the UCI repository's
   `.data` files).
+- `\N`, the null MySQL and PostgreSQL write when they export a table, is read
+  as missing in every column. Formula 1's `fastestLap` and `fastestLapSpeed`,
+  three quarters `\N`, stayed text.
 - `NA` in a text column of words (`male`, `female`, `NA`) is read as missing,
   with a note; among codes (`EU`, `APAC`, `NA`) it stays a code. Penguins'
   `sex` had an "NA" group of 11.
