@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 from io import BytesIO
 from pathlib import Path
 
@@ -136,26 +137,34 @@ def _resplit_options(parsed: pd.DataFrame, contents: bytes, encoding: str) -> di
     return {}
 
 
-def _title_row_options(parsed: pd.DataFrame, contents: bytes, encoding: str) -> dict:
-    """Use the second line as the header when the first is a report title.
+# Lines above the header that an export may add (a title, a source, a date), at most.
+MAX_LINES_ABOVE_HEADER = 10
+# Rows below a candidate header that must be as wide as it.
+HEADER_CHECK_ROWS = 5
 
-    Exported reports often put a title above the table; read as the header, it
-    yields a single column in place of the real ones. Returns the read_csv
-    options, empty when the first line is the header.
+
+def _lines_above_header(contents: bytes, encoding: str) -> dict:
+    """Skip the lines a report or data portal writes above the header.
+
+    A report puts a title there; a portal adds lines such as "Data Source" and
+    "Last Updated Date". Read as the header, they give one column, or fail on
+    the first wider row. The header is the first line as wide as the rows
+    below it, with every line above it narrower. Returns the read_csv options,
+    empty when the first line is the header.
     """
-    if len(parsed.columns) > 1 or parsed.empty:
-        return {}
     # Decode before splitting: in UTF-16 the newline is two bytes.
-    lines = contents.decode(encoding, errors="replace").lstrip("\ufeff").split("\n")[:3]
-    if len(lines) < 3:
-        return {}
-    title, header, first_row = lines
+    lines = contents.decode(encoding, errors="replace").lstrip("\ufeff").splitlines()
+    lines = lines[: MAX_LINES_ABOVE_HEADER + HEADER_CHECK_ROWS + 1]
     # Only commas count as delimiters here, so a one-column file of sentences
     # containing semicolons is left as it is.
-    if "," in title or not header.count(",") or header.count(",") != first_row.count(","):
-        return {}
-    candidate = _read_csv(contents, encoding, header=1)
-    return {"header": 1} if len(candidate.columns) > 1 else {}
+    widths = [len(row) if any(cell.strip() for cell in row) else 0 for row in csv.reader(lines)]
+    for start in range(1, min(MAX_LINES_ABOVE_HEADER, len(widths) - 1) + 1):
+        width = widths[start]
+        below = [row for row in widths[start + 1 : start + 1 + HEADER_CHECK_ROWS] if row]
+        if width < 2 or not below or any(row != width for row in below):
+            continue
+        return {"skiprows": start} if max(widths[:start]) < width else {}
+    return {}
 
 
 # Bytes read to settle the separator and header line before the whole file is parsed.
@@ -193,13 +202,17 @@ def _parse_csv(contents: bytes, encoding: str, first: dict | None = None) -> pd.
     try:
         parsed = _read_csv(sample, encoding)
     except pd.errors.ParserError:
+        # Lines above the header fail on the first row wider than them.
+        options = _lines_above_header(sample, encoding)
+        if options:
+            return _read_csv(contents, encoding, **options)
         if sample is contents:
             raise
         sample = contents
         parsed = _read_csv(sample, encoding)
-    options = _resplit_options(parsed, sample, encoding) or _title_row_options(
-        parsed, sample, encoding
-    )
+    options = _resplit_options(parsed, sample, encoding)
+    if not options and len(parsed.columns) == 1 and not parsed.empty:
+        options = _lines_above_header(sample, encoding)
     if not options and sample is contents:
         return parsed
     return _read_csv(contents, encoding, **options)

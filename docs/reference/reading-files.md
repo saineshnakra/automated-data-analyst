@@ -66,9 +66,13 @@ analyzed ("a random sample of 1,000,000 of 3,108,545 rows", "the newest
 4. If that gives exactly one column and the header line contains `;`, a tab or
    `|`, use that separator. Only the header line is checked, so a one-column
    file of sentences is not split on their semicolons.
-5. If there is still one column, and the first line has no comma while the
-   second and third lines have the same number of commas, treat the first line
-   as a report title and use the second as the header.
+5. If there is still one column, or the parse fails on the first row wider
+   than the header, look for lines above the header: a report's title, or a
+   data portal's "Data Source" and "Last Updated Date" lines. The header is the
+   first of the opening 11 lines (`MAX_LINES_ABOVE_HEADER` plus one) that has
+   as many comma-separated fields as the five rows below it, with every line
+   above it narrower; those lines are skipped. A World Bank indicator file
+   has four such lines.
 
 If every encoding fails: "The file could not be parsed as CSV."
 
