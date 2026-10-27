@@ -322,7 +322,8 @@ NUMBER = r"(?:minus\s+)?\d+(?:\.\d+)?"
 COMPARISONS: tuple[tuple[Operator, str], ...] = (
     (">=", r"at least|no less than"),
     ("<=", r"at most|no more than"),
-    (">", r"(?:greater|more|higher|larger|bigger) than|above|over|exceeds|exceeding|exceed"),
+    (">", r"(?:greater|more|higher|larger|bigger) than|above|over|exceeds|exceeding|exceeded|exceed|topped|"
+          r"surpassed"),
     ("<", r"(?:less|lower|smaller|fewer) than|below|under"),
 )
 COMPARISON_PATTERN = "|".join(f"(?P<op{index}>{words})" for index, (_, words) in enumerate(COMPARISONS))
@@ -961,7 +962,8 @@ YEAR_RANGES: tuple[tuple[re.Pattern, str], ...] = (
     (re.compile(rf"\b(?P<year>{YEAR})\s+(?:onwards?|and\s+later|and\s+after)\b"), ">="),
     (re.compile(rf"\bafter\s+(?P<year>{YEAR})\b"), ">"),
     (re.compile(rf"\bbefore\s+(?P<year>{YEAR})\b"), "<"),
-    (re.compile(rf"\b(?:until|till|up\s+to|through)\s+(?P<year>{YEAR})\b"), "<="),
+    # "48 women had won by 2016": by a year is up to its end.
+    (re.compile(rf"\b(?:until|till|up\s+to|through|by(?:\s+the\s+end\s+of)?)\s+(?P<year>{YEAR})\b"), "<="),
 )
 # A day written out: "April 27, 2011", "27 April 2011", "2011-04-27".
 MONTH_WORD = (

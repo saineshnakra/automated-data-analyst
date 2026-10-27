@@ -34,6 +34,9 @@
 
 ### Reading claims and questions
 
+- "In 2016 the Democrats topped 60% in nine states" counts the states above
+  60%; "topped", "exceeded" and "surpassed" bound a value; "Just 48 women"
+  is 48; "by 2016" is up to 2016, not in 2016.
 - "rose by more than 60% between 1999 and 2017, to 47,173" and "halved in
   twenty years, from 51.5% in 1996 to 26.2% in 2016" check the change, then
   the values it went from and to.

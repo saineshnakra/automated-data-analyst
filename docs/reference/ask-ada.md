@@ -257,7 +257,8 @@ each word is claimed, in this order, by:
    month of the year, and the answer says so and that "monthly trend" gives
    the timeline; "per month", "monthly" and trend words keep the timeline.
 5. **Ranges of years** on the date column: "since 1978", "from 1978",
-   "1978 onwards", "after 1977", "before 1950", "until 2000", "between 1990
+   "1978 onwards", "after 1977", "before 1950", "until 2000", "by 2016" (up to
+   its end), "between 1990
    and 2000", "from 1990 to 2000", "the 2010s" (2010 to 2019), and "before
    and after 2000", which splits the rows in two. A day written out ("April
    27, 2011", "27 April 2011", "2011-04-27") keeps the rows of that day,

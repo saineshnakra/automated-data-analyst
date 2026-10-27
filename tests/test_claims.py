@@ -1177,6 +1177,35 @@ class ChangeEndsTests(unittest.TestCase):
         self.assertFalse(ada.check_claim(self.votes(), claim).verified)
 
 
+class StressAndDeadlineTests(unittest.TestCase):
+    def test_just_and_only_leave_the_number_as_written(self):
+        _, number, problem = read_claim("Just 48 women won.", ["gender"])
+        self.assertEqual(problem, "")
+        self.assertEqual((number.low, number.high), (47.5, 48.5))
+        _, number, _ = read_claim("Only 16 episodes showed the sea.", ["sea"])
+        self.assertEqual(number.value, 16)
+
+    def test_a_count_in_words_beside_a_bound_is_the_number_claimed(self):
+        votes = pd.DataFrame({"state": ["Hawaii", "Utah", "Ohio", "Iowa"] * 2,
+                              "year": [2012] * 4 + [2016] * 4,
+                              "demVote": [70.6, 24.7, 50.7, 52.0, 62.2, 27.5, 43.6, 41.7]})
+        check = ada.check_claim(votes, "In 2012 the Democrats topped 50% in three states.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("demVote above 50", check.message)
+        self.assertEqual(ada.check_claim(votes, "In 2016 the Democrats topped 60% in two states.").reason,
+                         "failed_check")
+        # Sales "topped $5 million" claims more than 5 million.
+        _, number, _ = read_claim("Sales topped $5 million.", ["sales"])
+        self.assertEqual((number.qualifier, number.low), ("more than", 5e6))
+
+    def test_by_a_year_is_up_to_its_end(self):
+        dates = pd.to_datetime(["2014-05-01", "2015-05-01", "2016-05-01", "2017-05-01"])
+        frame = pd.DataFrame({"date": dates, "gender": ["Female", "Female", "Male", "Female"]})
+        check = ada.check_claim(frame, "2 of the winners by 2016 were women.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("up to 2016", check.message)
+
+
 class RateClaimTests(unittest.TestCase):
     def test_a_rate_for_every_hundred_is_checked_as_totals(self):
         frame = pd.DataFrame({"District": [1, 1, 1, 1, 2, 2, 2, 2],

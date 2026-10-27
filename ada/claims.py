@@ -82,6 +82,7 @@ QUALIFIERS = (
     ("no more than", "at most"), ("not more than", "at most"), ("at most", "at most"), ("up to", "at most"),
     ("in excess of", "more than"), ("more than", "more than"), ("greater than", "more than"),
     ("higher than", "more than"), ("exceeding", "more than"), ("above", "more than"),
+    ("topped", "more than"), ("exceeded", "more than"), ("surpassed", "more than"),
     ("just over", "just over"), ("just under", "just under"), ("over", "more than"),
     ("fewer than", "less than"), ("less than", "less than"), ("lower than", "less than"),
     ("below", "less than"), ("under", "less than"),
@@ -89,6 +90,8 @@ QUALIFIERS = (
     ("around", "about"), ("roughly", "about"), ("about", "about"), ("some", "about"), ("circa", "about"),
     ("~", "about"), ("≈", "about"),
     ("nearly", "nearly"), ("almost", "nearly"), ("exactly", "exactly"), ("precisely", "exactly"),
+    # "Just 48 women", "only 16 episodes": the word stresses the number and leaves its interval as written.
+    ("just", None), ("only", None), ("barely", None),
 )
 # Words right before the number that link it to what it describes: "is 12.6", "averaged 12.6".
 PREDICATE_CUES = frozenset({
@@ -757,8 +760,10 @@ def _worded_number(claim: str) -> tuple[str, Any] | None:
             return replace(number, text=fraction.group(0), low=bounds[0], high=bounds[1], low_open=bounds[2],
                            high_open=bounds[3], qualifier=kind, decimals=1)
         return rewritten, back
-    if any(not (item.year_like or item.ordinal) for item in _candidates(claim, [])):
-        # A number in digits is the one claimed; a year ("in 2020") is not.
+    if any(not (item.year_like or item.ordinal or _bound_like(claim, item, percent=True))
+           for item in _candidates(claim, [])):
+        # A number in digits is the one claimed; a year ("in 2020") is not, nor a bound ("topped 60% in
+        # nine states").
         return None
     units = {"one": 1, **{word: NUMBER_WORDS[word] for word in list(NUMBER_WORDS)[:8]}}
     worded = re.search(rf"\b({'|'.join(NUMBER_WORDS)})(?:[- ]({'|'.join(units)}))?\b", claim, re.IGNORECASE)
@@ -783,9 +788,15 @@ OR_MORE = re.compile(
 BOUND_QUALIFIERS = frozenset({"more than", "less than", "at least", "at most"})
 
 
-def _bound_like(claim: str, item: _Candidate) -> bool:
-    """Whether a number bounds a condition ("under 25", "deeper than 50 cm", "25 or more days")."""
-    if item.match.group("percent") or item.year_like or item.ordinal:
+def _bound_like(claim: str, item: _Candidate, percent: bool = False) -> bool:
+    """Whether a number bounds a condition ("under 25", "deeper than 50 cm", "25 or more days").
+
+    A percentage is a bound only when ``percent`` allows it and a word of comparison comes before it
+    ("topped 60% in nine states"), since a percentage is most often the share claimed.
+    """
+    if item.match.group("percent"):
+        return percent and item.qualifier in BOUND_QUALIFIERS
+    if item.year_like or item.ordinal:
         return False
     return (item.qualifier in BOUND_QUALIFIERS or bool(COMPARATIVE_THAN.search(claim[:item.match.start()]))
             or bool(OR_MORE.match(claim[item.match.end():])))
@@ -795,9 +806,12 @@ def _past_bounds(claim: str, usable: list[_Candidate]) -> _Candidate | None:
     """The number claimed when every other number is a bound: 3.9 in "Films that scored under 50 still
     averaged 3.9 stars". None when more than one is left, or a number in words is ("Nine Munros rise above
     4,000 feet, led by Ben Nevis at 4,411 feet")."""
-    bounds = [item for item in usable if _bound_like(claim, item)]
+    bounds = [item for item in usable if _bound_like(claim, item, percent=True)]
     rest = [item for item in usable if item not in bounds]
     if not bounds or len(rest) != 1:
+        return None
+    if rest[0].match.group("percent") and any(item.match.group("percent") for item in bounds):
+        # "More than 60% of the states had more than 60% of the vote" bounds one share by another.
         return None
     if re.search(rf"\b(?:{'|'.join(NUMBER_WORDS)})\b", claim, re.IGNORECASE):
         return None
@@ -811,7 +825,7 @@ def _unused_bounds(asked: str, answer: QueryAnswer) -> list[str]:
             if isinstance(item, Condition) and item.value is not None]
     unused = []
     for item in _candidates(asked, []):
-        if not _bound_like(asked, item):
+        if not _bound_like(asked, item, percent=True):
             continue
         value, _, _, scale, _ = parse_number(item.match)
         if not any(math.isclose(value * scale, other, rel_tol=1e-9) for other in used):

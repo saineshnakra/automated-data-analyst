@@ -65,8 +65,13 @@ when the file can't be read, and 3 when it is unverified for any other reason.
    cm", "on 25 or more days") is part of the question when it is the only
    other number and no number is written in words; the check then holds only
    if the reading uses it as a condition on a column, and otherwise gives
-   `missing_context`. "Of every 100 birds taken in, about 25 were put down" is
-   a share of 25%. A clause that only says who
+   `missing_context`. A percentage after "topped", "exceeded", "more than"
+   and the like is such a bound too when the number claimed is a count, which
+   may then be written in words ("In 2016 the Democrats topped 60% in nine
+   states"). "Of every 100 birds taken in, about 25 were put down" is a share
+   of 25%. "just", "only" and "barely" before a number stress it and leave its
+   interval as written ("Just 48 women"); "topped $5 million" claims more
+   than 5 million. A clause that only says who
    reports the claim ("Owners estimated that", "The survey found that") is
    set aside. Some second numbers are part of the question: a day written
    out ("on May 22, 2011"), a rating scale ("6.5 out of 10"), and a base,
