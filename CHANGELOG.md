@@ -34,6 +34,23 @@
 
 ### Reading claims and questions
 
+- "Chorleywood had the best education score of any town, at 9.4" is checked
+  as a peak, and any other claim that ranks a group against all the others is
+  not verified on its value alone.
+- A bound beside the claimed number picks rows: "Drivers under 25 accounted
+  for 12% of all claims", "less than 1 km deep", "deeper than 50 cm" (with
+  its unit converted to the column's), "on 25 or more days". "Of every 100
+  birds, about 25 were put down" is a share.
+- "dogs" in lower case is a kind (`animal_type`), not a pet's name; "birds"
+  picks `animal_type` = bird; "were adopted" names "adoption"; "the", "other"
+  and "any" are no values unless typed as the data spell them; words of the
+  table's name found inside several columns' values name the table.
+- Fixed wrong verdicts: "Oxford got 984 mm of rain in 2012" failed against
+  the monthly average (82 mm) though the year's total agrees; a claim that
+  names no way to combine rows is now checked both ways, and gets
+  `ambiguous_intent` when only the other way agrees. "About 25% of the birds had outcome_type euthanasia"
+  failed against the share of all animals. A count or share of 0, where no row fits the
+  words as read, no longer fails a claim.
 - "TCD won about 23% of all the money" is the share of the money column's
   total; "Men made up 64% of the 53,182 suicides" checks its base; verbs of
   showing ("featured", "showed", "included", "appeared in") keep a yes/no

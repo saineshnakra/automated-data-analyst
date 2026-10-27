@@ -60,7 +60,13 @@ when the file can't be read, and 3 when it is unverified for any other reason.
    admitted") is set aside, and the base is checked: the share must be of
    4,526, or the claim gets `missing_context`. A claim with two numbers that
    could each be the one claimed is not split: it gets `unsupported_analysis`,
-   and each number should be sent on its own. A clause that only says who
+   and each number should be sent on its own. A bound beside the claimed
+   number ("Drivers under 25 accounted for 12% of all claims", "deeper than 50
+   cm", "on 25 or more days") is part of the question when it is the only
+   other number and no number is written in words; the check then holds only
+   if the reading uses it as a condition on a column, and otherwise gives
+   `missing_context`. "Of every 100 birds taken in, about 25 were put down" is
+   a share of 25%. A clause that only says who
    reports the claim ("Owners estimated that", "The survey found that") is
    set aside. Some second numbers are part of the question: a day written
    out ("on May 22, 2011"), a rating scale ("6.5 out of 10"), and a base,
@@ -164,7 +170,21 @@ capitalised name that "had more X than any other" group, or "the most X",
 followed by its number ("California had more traffic deaths than any other
 state in 1988, with 5,390") is read as the same peak, and "Vesuvius had its
 busiest year on record in 2024, with 1,315 earthquakes" as a peak of the rows
-counted in each year.
+counted in each year. So is "Chorleywood had the best education score of any
+town in England, at 9.4". A claim that ranks its group against all the others
+("the highest of any town", "more than in any other month", "on record") in
+any other words is not verified on its value alone: unless the answer itself
+ranks the groups, it gets `missing_context`.
+
+A claim that says neither "average" nor "total" ("Oxford got 984 mm of rain in
+2012", twelve monthly rows) that disagrees with the way its column combines
+by default is checked the other way too: if the total (or the average)
+agrees, the claim gets `ambiguous_intent` with both numbers, not
+`failed_check`.
+
+A count or a share that comes to 0 because no row fits the words as read
+("About 30% of the cats were gold" where no cat is) gives `missing_context`:
+a claim about rows that are not there more likely means other rows.
 
 A multiple is a change in percent: "doubled" is a rise of about 100%, "more
 than sixfold" one of more than 500%, "tripled" about 200% and "halved" a fall
@@ -205,8 +225,11 @@ Words that are all words of the table's file or folder name ("Marvel's" for
 `marvel-characters/marvel-wikia-data.csv`, "road" for
 `road-victims/Accident.csv`) name the whole table, so they pick no rows: they
 are not counted as left out, and the assumptions say they were read as the
-table's name. Generic folder words (data, raw, files and the like) are not
-used.
+table's name. This holds too for such a word found only inside values of
+several columns ("shelter" in `at shelter` and `shelter, neuter, return`, in
+`long-beach-shelter/longbeach.csv`), as long as it is no column's name and
+no value in full. Generic folder words (data, raw, files and the like) are
+not used.
 
 In a folder, a file read without some of the claim's words comes after the
 files and joins that read all of them.

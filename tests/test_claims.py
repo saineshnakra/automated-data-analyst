@@ -1015,6 +1015,78 @@ class ShareOfBaseTests(unittest.TestCase):
         self.assertEqual(wrong.reason, "missing_context")
 
 
+class KindsBoundsAndRanksTests(unittest.TestCase):
+    def test_a_verb_names_the_noun_it_comes_from(self):
+        pets = pd.DataFrame({"animal_type": ["dog"] * 6,
+                             "outcome_type": ["adoption", "adoption", "rescue"] * 2})
+        self.assertTrue(ada.check_claim(pets, "Two thirds of the dogs were adopted.").verified)
+        # "returned" is "return" in intake_type and part of "return to owner" in outcome_type: either.
+        both = pd.DataFrame({"intake_type": ["return", "return", "stray", "stray"],
+                             "outcome_type": ["return to owner", "adoption", "adoption", "rescue"]})
+        check = ada.check_claim(both, "Half of the animals were returned.")
+        self.assertFalse(check.verified)
+        self.assertNotEqual(check.reason, "failed_check")
+
+    def test_of_every_hundred_is_a_share(self):
+        birds = pd.DataFrame({"animal_type": ["bird"] * 4 + ["cat"] * 4,
+                              "outcome_type": ["euthanasia", "adoption", "adoption", "adoption"] * 2})
+        self.assertTrue(ada.check_claim(birds, "Of every 100 birds, about 25 were euthanasia.").verified)
+        wrong = ada.check_claim(birds, "Of every 100 birds, about 50 were euthanasia.")
+        self.assertEqual(wrong.reason, "failed_check")
+
+    def test_a_bound_beside_the_claimed_number_picks_rows(self):
+        quakes = pd.DataFrame({"depth_km": [0.2, 0.4, 0.6, 1.5], "magnitude": [1.0, 1.2, 2.0, 3.0]})
+        check = ada.check_claim(quakes, "Quakes with depth_km under 1 had an average magnitude of 1.4.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("depth_km below 1", check.message)
+        wrong = ada.check_claim(quakes, "Quakes with depth_km under 1 had an average magnitude of 2.4.")
+        self.assertEqual(wrong.reason, "failed_check")
+        # A bound that names no column is not read as one.
+        self.assertFalse(ada.check_claim(quakes, "The average magnitude of quakes under 1 was 1.4.").verified)
+
+    def test_a_claim_that_names_no_way_to_combine_rows_is_checked_both_ways(self):
+        months = pd.DataFrame({"station": ["oxford"] * 12, "year": [2012] * 12, "month": range(1, 13),
+                               "rain": [80.0] * 11 + [104.0]})
+        # Rain is a reading, averaged by default (82); the year's total, 984, is what the claim states.
+        check = ada.check_claim(months, "Oxford got 984 mm of rain in 2012.")
+        self.assertEqual(check.reason, "ambiguous_intent")
+        self.assertIn("the total is 984", check.message)
+        self.assertTrue(ada.check_claim(months, "Oxford got a total of 984 mm of rain in 2012.").verified)
+        # Neither the mean nor the total agrees: the claim fails either way.
+        self.assertEqual(ada.check_claim(months, "Oxford got 900 mm of rain in 2012.").reason, "failed_check")
+        # A claim that says how the rows combine is not second-guessed.
+        averaged = ada.check_claim(months, "Oxford averaged 984 mm of rain a month in 2012.")
+        self.assertFalse(averaged.verified)
+        self.assertNotEqual(averaged.reason, "ambiguous_intent")
+
+    def test_a_peak_said_with_of_any_is_checked_against_every_group(self):
+        towns = pd.DataFrame({"town": ["Chorleywood", "Northwood", "Harpenden"], "score": [9.4, 11.9, 11.0]})
+        wrong = ada.check_claim(towns, "Chorleywood had the best score of any town, at 9.4.")
+        self.assertEqual(wrong.reason, "failed_check")
+        self.assertIn("town = Northwood", wrong.message)
+        self.assertTrue(ada.check_claim(towns, "Northwood had the best score of any town, at 11.9.").verified)
+        unchecked = ada.check_claim(towns, "Chorleywood's score of 9.4 was the highest of any town.")
+        self.assertEqual(unchecked.reason, "missing_context")
+
+    def test_no_row_fitting_the_words_proves_nothing(self):
+        pets = pd.DataFrame({"animal_type": ["dog", "dog", "cat", "cat"],
+                             "color": ["gold", "black", "black", "white"]})
+        check = ada.check_claim(pets, "About 30% of the cats were gold.")
+        self.assertEqual(check.reason, "missing_context")
+
+    def test_words_of_the_table_s_name_inside_values_name_the_table(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "long-beach-shelter" / "intakes.csv"
+            path.parent.mkdir()
+            pd.DataFrame({"animal_type": ["cat", "cat", "dog", "dog"],
+                          "intake_subtype": ["at shelter", "field", "field", "field"],
+                          "outcome_type": ["shelter, neuter, return", "adoption", "adoption", "rescue"]}
+                         ).to_csv(path, index=False)
+            check = ada.check_claim(path, "Half of the shelter's animals were cats.")
+            self.assertTrue(check.verified, check.message)
+            self.assertIn("as the name of the table", " ".join(check.assumptions))
+
+
 class RateClaimTests(unittest.TestCase):
     def test_a_rate_for_every_hundred_is_checked_as_totals(self):
         frame = pd.DataFrame({"District": [1, 1, 1, 1, 2, 2, 2, 2],

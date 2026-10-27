@@ -3396,6 +3396,59 @@ class FlagVerbAndFreeTextTests(unittest.TestCase):
         self.assertIn("sum(commitment)", answer.calculation)
 
 
+class KindsAndBoundsTests(unittest.TestCase):
+    def pets(self, names: int = 60) -> pd.DataFrame:
+        half = names // 2
+        return pd.DataFrame({"animal_name": ["Dog"] + [f"Pet{index}" for index in range(names - 1)],
+                             "animal_type": ["dog"] * half + ["cat"] * (names - half)})
+
+    def test_a_word_in_lower_case_is_a_kind_not_a_name(self):
+        pets = self.pets()
+        answer = answer_question("how many dogs", pets, detect_roles(pets))
+        self.assertEqual(answer.value, 30)
+        self.assertIn("animal_type = dog", answer.calculation)
+        # With fewer than 50 names, animal_name is not a column of names, and "dogs" could mean either.
+        thin = self.pets(names=20)
+        self.assertIsNone(answer_question("how many dogs", thin, detect_roles(thin)))
+
+    def test_a_noun_for_rows_that_is_a_kind_picks_those_rows(self):
+        birds = pd.DataFrame({"animal_type": ["bird"] * 4 + ["cat"] * 4,
+                              "outcome_type": ["euthanasia", "adoption", "adoption", "adoption"] * 2})
+        answer = answer_question("share of the birds had outcome_type euthanasia", birds, detect_roles(birds))
+        self.assertEqual(dict(answer.figures)["share_percent"], 25.0)
+        self.assertIn("animal_type = bird", answer.calculation)
+
+    def test_a_determiner_is_no_value(self):
+        frame = pd.DataFrame({"citizenship": ["Other", "Mexico", "Mexico", "Other"],
+                              "encounters": [5.0, 10.0, 20.0, 1.0]})
+        roles = detect_roles(frame)
+        self.assertEqual(answer_question("total encounters for Other", frame, roles).value, 6)
+        answer = answer_question("total encounters for Mexico more than any other", frame, roles)
+        self.assertTrue(answer is None or "Other" not in answer.calculation)
+
+    def test_a_word_of_two_letters_has_no_plural(self):
+        frame = pd.DataFrame({"Year": [2015, 2015, 2016], "Name": ["Jack", "Ines", "Jack"],
+                              "babies": [565.0, 40.0, 500.0]})
+        answer = answer_question("total babies named Jack in 2015", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 565)
+        self.assertNotIn("Ines", answer.calculation)
+
+    def test_a_bound_reads_its_unit_and_its_adjective(self):
+        quakes = pd.DataFrame({"depth_km": [0.2, 0.4, 0.6, 1.5], "magnitude": [1.0, 1.2, 2.0, 3.0]})
+        roles = detect_roles(quakes)
+        questions = ("share of rows with depth less than 1 km", "share of the rows were less than 1 km deep")
+        for question in questions:
+            answer = answer_question(question, quakes, roles)
+            self.assertEqual(dict(answer.figures)["share_percent"], 75.0, question)
+            self.assertIn("depth_km below 1", answer.calculation)
+        deeper = answer_question("share of rows deeper than 500 metres", quakes, roles)
+        self.assertIn("depth_km above 0.5", deeper.calculation)
+        # A column whose name gives no unit cannot say what 1 km is in it.
+        plain = quakes.rename(columns={"depth_km": "depth"})
+        question = "share of rows with depth less than 1 km"
+        self.assertIsNone(answer_question(question, plain, detect_roles(plain)))
+
+
 class StateAndNounTests(unittest.TestCase):
     def test_the_most_of_a_value_counts_rows_by_period(self):
         days = ["2020-01-01", "2020-01-01", "2020-01-02"]

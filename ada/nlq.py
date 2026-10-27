@@ -334,6 +334,12 @@ SYMBOL_WORDS = (
 )
 # Words before a value that make it a filter even when it is also a query word:
 # "average Ca for Top" filters to the contour "Top", "top 2 contours" ranks.
+# Words that point at rows rather than name them; on their own they are a value only typed as the data
+# spell it.
+DETERMINERS = frozenset({
+    "the", "a", "an", "other", "others", "another", "any", "all", "some", "this", "that", "these", "those",
+    "same", "such", "each", "every",
+})
 VALUE_CUES = frozenset({"for", "in", "is", "at", "where", "when", "equals", "of", "from", "within", "among"})
 # Cue words that are grammar only when a filter or condition follows them.
 FILTER_CUES = frozenset({"within", "among", "amongst"})
@@ -571,11 +577,45 @@ def _norm(text: str) -> str:
     return " ".join(cleaned.split())
 
 
+# Adjectives that say which quantity a bound is on: "less than 1 km deep" is a depth.
+DIMENSION_ADJECTIVES = {
+    "deep": "depth", "long": "length", "tall": "height", "high": "height", "wide": "width",
+    "heavy": "weight", "old": "age", "thick": "thickness",
+}
+# Their comparatives, with the way each compares: "deeper than 50 cm" is a depth more than 50 cm.
+COMPARATIVE_ADJECTIVES = {
+    "deeper": ("depth", "more"), "shallower": ("depth", "less"), "longer": ("length", "more"),
+    "shorter": ("length", "less"), "taller": ("height", "more"), "wider": ("width", "more"),
+    "narrower": ("width", "less"), "heavier": ("weight", "more"), "lighter": ("weight", "less"),
+    "older": ("age", "more"), "younger": ("age", "less"), "thicker": ("thickness", "more"),
+    "thinner": ("thickness", "less"),
+}
+_BOUND_NUMBER = r"(?P<number>\d[\d,]*(?:\.\d+)?)"
+POSTPOSED_ADJECTIVE = re.compile(
+    rf"\b(?P<bound>{'|'.join(words for _, words in COMPARISONS)}|at least|at most)\s+{_BOUND_NUMBER}"
+    rf"(?P<unit>\s+[A-Za-z]+)?\s+(?P<adjective>{'|'.join(DIMENSION_ADJECTIVES)})\b",
+    re.IGNORECASE,
+)
+COMPARATIVE_BOUND = re.compile(
+    rf"\b(?P<adjective>{'|'.join(COMPARATIVE_ADJECTIVES)})\s+than\s+{_BOUND_NUMBER}", re.IGNORECASE
+)
+
+
 def _question_text(question: str) -> str:
-    """The question with comparison symbols as words and a minus sign kept as "minus"."""
+    """The question with comparison symbols as words and a minus sign kept as "minus".
+
+    A bound's adjective moves before it as the quantity it bounds: "less than 1 km deep" reads as "depth
+    less than 1 km", and "deeper than 50 cm" as "depth more than 50 cm".
+    """
     text = str(question)
     for symbol, words in SYMBOL_WORDS:
         text = text.replace(symbol, words)
+    text = POSTPOSED_ADJECTIVE.sub(
+        lambda match: f"{DIMENSION_ADJECTIVES[match.group('adjective').lower()]} {match.group('bound')} "
+        f"{match.group('number')}{match.group('unit') or ''}", text)
+    text = COMPARATIVE_BOUND.sub(
+        lambda match: "{} {} than {}".format(
+            *COMPARATIVE_ADJECTIVES[match.group("adjective").lower()], match.group("number")), text)
     return re.sub(r"(?<![\w.])-(?=\d)", " minus ", text)
 
 
@@ -601,6 +641,17 @@ def _word_variants(normalized_name: str) -> set[str]:
     return variants
 
 
+
+
+def _verb_nouns(word: str) -> set[str]:
+    """The nouns a past participle may stand for as a value: "adopted" for "adoption", "returned" for
+    "return", "transferred" for "transfer"."""
+    if len(word) <= 5 or not word.endswith("ed"):
+        return set()
+    stems = {word[:-2], word[:-1]}
+    if len(word) > 6 and word[-3] == word[-4]:
+        stems.add(word[:-3])
+    return stems | {f"{stem}ion" for stem in stems if stem.endswith("t")}
 
 
 def _core_name(column: str) -> str:
@@ -1322,11 +1373,23 @@ def _values_named(
     "Tartrazine" names "Tartrazine, FD&C Yellow 5 (US), E102 (EU)".
     """
     texts = {" ".join(run)}
-    if len(run) == 1:
+    if len(run) == 1 and len(run[0]) > 2:
+        # "in" is not "Ines": a word of two letters has no plural to match.
         texts |= _word_variants(run[0])
     exact = [vocabulary.values[index] for text in texts for index in vocabulary.by_text.get(text, ())]
     if column is not None:
         exact = [value for value in exact if value.column == column]
+    nouns = _verb_nouns(run[0]) if len(run) == 1 and not exact else set()
+    named = [vocabulary.values[index] for text in nouns for index in vocabulary.by_text.get(text, ())
+             if column is None or vocabulary.values[index].column == column]
+    if named:
+        # "were adopted" names "adoption"; when another column holds the noun inside a longer value
+        # ("return to owner" beside "return"), the words could mean either.
+        within = {index for noun in nouns for index in vocabulary.by_word.get(noun, ())}
+        others = [vocabulary.values[index] for index in sorted(within)
+                  if vocabulary.values[index].column not in {value.column for value in named}
+                  and (column is None or vocabulary.values[index].column == column)]
+        return [*named, *others], not others
     if exact or exact_only:
         return exact, True
     postings = [vocabulary.by_word.get(word) for word in run]
@@ -1377,6 +1440,13 @@ def _pick_values(
             return None, [], None
         found = [value for value in found if value.column in categories]
         columns = categories
+    if len(columns) > 1 and dataframe is not None and _common_noun(phrase, question):
+        # "dogs" is a kind in animal_type and one pet's name in animal_name: a word written in lower
+        # case is a common noun, and a column of names does not hold kinds.
+        kinds = [column for column in columns if not _names_column(dataframe[column])]
+        if kinds and len(kinds) < len(columns):
+            found = [value for value in found if value.column in kinds]
+            columns = kinds
     if len(columns) > 1:
         return None, [], (
             f'"{phrase}" is a value of {_and_listed(columns)}; name the column too, '
@@ -1390,6 +1460,24 @@ def _pick_values(
         return chosen[0], chosen, None
     shown = _leaders([value.raw for value in found])
     return None, [], f'"{phrase}" matches several {columns[0]} values: {shown}. Name one in full.'
+
+
+def _common_noun(phrase: str, question: str) -> bool:
+    """Whether the question writes a phrase in lower case, as a common noun ("dogs") and not a name."""
+    letters = re.sub(r"[^A-Za-z]", "", phrase)
+    if not letters:
+        return False
+    if letters.islower():
+        return True
+    # "Dogs made up..." opens the sentence with a capital.
+    return question.lstrip().startswith(phrase) and letters[1:].islower()
+
+
+def _names_column(series: pd.Series) -> bool:
+    """Whether a text column holds names: at least 50 different values, one for every ten rows or more."""
+    values = series.dropna().astype(str)
+    distinct = values.nunique()
+    return distinct >= 50 and distinct >= 0.1 * len(values)
 
 
 def _free_text(series: pd.Series) -> bool:
@@ -1514,7 +1602,14 @@ def _claim_values(
                 words = tuple(word for _, _, word in window)
                 ordinary = [word for word in words if word not in QUERY_GRAMMAR and word not in ENTITY_NOUNS]
                 cued = _cued(reading, window[0][0])
-                if size == 1 and words[0] in row_nouns:
+                if size == 1 and words[0] in DETERMINERS:
+                    # "any other month", "39 of the languages": a determiner is a value ("Other", the
+                    # language "The") only typed in the data's own capitals.
+                    found, exact = _values_named(words, vocabulary, exact_only=True)
+                    found = [value for value in found if _typed_in_case(value, reading.question)]
+                    if not found:
+                        continue
+                elif size == 1 and words[0] in row_nouns:
                     # The file's own noun for its rows ("members" in members.csv) names the rows; it is
                     # a value only typed as the data spell it ("Member").
                     found, exact = _values_named(words, vocabulary, exact_only=True)
@@ -1525,7 +1620,10 @@ def _claim_values(
                     # A value spelled like a query word is still a value when typed in its own
                     # capitals: "between AML and ALL".
                     found, exact = _values_named(words, vocabulary, exact_only=True)
-                    found = [value for value in found if _typed_in_case(value, reading.question)]
+                    kinds = [value for value in found if size == 1 and words[0] in ENTITY_NOUNS
+                             and not _names_column(dataframe[value.column])]
+                    # "birds" in a table whose animal_type holds "bird" picks those rows.
+                    found = kinds or [value for value in found if _typed_in_case(value, reading.question)]
                     if not found:
                         continue
                 elif not exact_only and sum(len(word) for word in ordinary) < 3:
@@ -1536,6 +1634,10 @@ def _claim_values(
                     continue
                 else:
                     found, exact = _values_named(words, vocabulary, exact_only=exact_only)
+                    if all(word in QUERY_GRAMMAR for word in words):
+                        # "is to", "for top": a query word after a cue names a value spelled just so,
+                        # not "tos".
+                        found = [value for value in found if value.words == words]
                 found = [value for value in found if _plain_match(value, reading.question, cued)]
                 adverb = not found and size == 1 and len(words[0]) > 4 and words[0].endswith("ly")
                 if adverb:
@@ -2251,7 +2353,12 @@ def _condition_words(
         operator = next(
             operator for index, (operator, _) in enumerate(COMPARISONS) if match.group(f"op{index}")
         )
-        return [Condition(column, operator, _number(match.group("number")))], match.end()
+        value, length = _number(match.group("number")), match.end()
+        unit = re.match(r"\s+([a-z]+)\b", after[length:])
+        if unit and (converted := _in_column_unit(column, unit.group(1), value)) is not None:
+            # "depth_km below 1 km", "depth_m above 50 cm": the bound's unit is the column's, or converts.
+            value, length = converted, length + unit.end()
+        return [Condition(column, operator, value)], length
     if (match := re.match(
         rf"\s+{LINKING_VERB}between\s+(?P<low>{NUMBER})\s+and\s+(?P<high>{NUMBER})(?![0-9a-z])", after
     )):
@@ -2269,6 +2376,23 @@ def _condition_words(
         if not year and bool((series == number).any()):
             return [Condition(column, "=", number)], match.end()
     return None
+
+
+def _in_column_unit(column: str, unit: str, value: float) -> float | None:
+    """``value`` in ``unit`` as a number in the column's own unit, or None when the column's name gives
+    no unit of that kind."""
+    from .claims import QUANTITY_NAMES, UNITS, column_unit  # noqa: PLC0415
+
+    if unit not in UNITS:
+        return None
+    own = column_unit(column)
+    parts = [part.lower() for part in re.split(r"[^A-Za-z]+", str(column)) if part]
+    if own is None and len(parts) >= 2 and parts[-1] == "m" and QUANTITY_NAMES["length"] & set(parts):
+        # "depth_m": a length whose name ends in m is in metres.
+        own = "metre"
+    if own is None or UNITS[own][0] != UNITS[unit][0]:
+        return None
+    return value * UNITS[unit][1] / UNITS[own][1]
 
 
 def _code_before(
@@ -2853,11 +2977,26 @@ def _claim_entity(
         cases = plural and counts and reading.entity is None
         if word not in ENTITY_NOUNS and not rows and not (counted and plural) and not described and not cases:
             continue
+        if not rows and _kind_value(word, dataframe):
+            # "birds" in a shelter's table whose animal_type holds "bird" picks those rows (_claim_values).
+            continue
         reading.claim(start, end)
         if reading.entity is None:
             reading.entity = word
             reading.entity_column = None if rows else _entity_column(word, dataframe, roles)
             reading.weight = None if reading.entity_column else _count_column(word, dataframe)
+
+
+def _kind_value(word: str, dataframe: pd.DataFrame) -> bool:
+    """Whether a noun for rows is also a kind a text column holds: "birds" where animal_type has "bird"."""
+    forms = _word_variants(word)
+    for column in dataframe.select_dtypes(exclude=["number", "bool", "datetime", "datetimetz"]).columns:
+        series = dataframe[column]
+        if _names_column(series):
+            continue
+        if forms & set(series.dropna().astype(str).str.lower().unique()):
+            return True
+    return False
 
 
 # Name words that say a column holds counts, so "encounter_count" counts encounters.
@@ -7044,7 +7183,10 @@ def _comparison_plan(question: str, dataframe: pd.DataFrame, roles: ColumnRoles)
     asking = _without_names(q, index)
     differ = any(re.search(rf"\b{word}\b", asking) for word in DIFFERENCE_WORDS)
     compare = bool(re.search(r"\bcompare\b", asking))
-    direction = re.search(rf"\b({'|'.join(DIRECTION_WORDS)})\b.*\bthan\b", asking)
+    # "less than 1" is a bound on a column, not "less in A than in B".
+    direction = re.search(
+        rf"\b({'|'.join(DIRECTION_WORDS)})\b(?!\s+than\s+(?:minus\s+)?\d).*\bthan\b", asking
+    )
     flag_direction = None if direction else re.search(
         rf"\b({'|'.join(DIRECTION_WORDS)})\b\s+(?:with|without|among|for|in|when)\b", asking
     )

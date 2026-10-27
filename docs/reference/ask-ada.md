@@ -402,12 +402,16 @@ weekly view and `Age of testing (day)` for no daily one.
 | "Pentanoic_acid 0", "VMA of 0" | `= 0`, for a numeric column that holds that value |
 | "sampleID containing Ivc", "Name starts with Ac", "ends with" | `contains`, `starts`, `ends` the text, in any case |
 | "where Condition is Open", "Detector is ON", "Region West" | the value of that text column |
+| "depth_km below 1 km", "depth_km above 500 metres" | `depth_km < 1`, `depth_km > 0.5`: a unit after the bound is the column's, or converts to it |
+| "less than 1 km deep", "deeper than 50 cm", "older than 30" | the adjective names the column: depth, length, height, width, weight, age, thickness |
 
 A column of codes is one listed among the segments (a status, a 0/1 flag) or
 one with whole numbers and at most 50 values. "with diabetes" after a
 correlation word ("correlated with diabetes") is a column to correlate, not a
 condition. A threshold that names no column ("over 50") leaves its number
-unclaimed, so the question is refused. A condition needs no "where": "average
+unclaimed, so the question is refused, and so does a unit the column's name
+does not give ("depth below 1 km" for a column called `depth`). "less than 1"
+is a bound, never "less in A than in B". A condition needs no "where": "average
 strength for mixes with superplasticizer above 0" filters the same way. A
 question made only of conditions ("revenue > 200", "West") counts the rows
 that meet them.
@@ -427,7 +431,21 @@ A long label matches by whole words when only one value holds them, or only
 one starts with them. Words several labels share ("Yellow") are refused with
 the candidates. A value found in several columns is refused with the columns,
 unless it picks the same rows in each (a label and its definition), when the
-first column is used.
+first column is used, or unless it is written in lower case and all but one
+of the columns hold names (50 or more values, one for every ten rows or
+more): "dogs" is a kind in `animal_type`, not a pet called Dog in
+`animal_name`.
+
+A determiner ("the", "other", "any", "all", "each") is a value only when
+typed as the data spells it ("Other"), so "more than in any other month"
+keeps every citizenship. A query word after a cue ("is to") matches only a
+value spelled the same, not its plural ("tos"), and a word of two letters
+has no plural to match ("in" is not "Ines"). A past participle names the
+noun it comes from: "were adopted" is `outcome_type` = adoption, and
+"returned" is `return`; when another column holds the noun inside a longer
+value ("return to owner"), the word could mean either and is refused with
+both columns. A noun for rows ("birds", "animals") that a column of kinds
+holds ("bird" in `animal_type`) picks those rows instead of naming every row.
 
 ### Partial column names
 
