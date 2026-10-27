@@ -371,7 +371,8 @@ class Condition:
     column: str
     operator: Operator
     value: float | None = None
-    #: "year" when ``value`` is a year compared with a date column: "since 1978".
+    #: "year" when ``value`` is a year compared with a date column: "since 1978"; "date" when it is a
+    #: day, as days since 1970: "on April 27, 2011".
     part: str | None = None
     text: str | None = None
 
@@ -888,6 +889,39 @@ YEAR_RANGES: tuple[tuple[re.Pattern, str], ...] = (
     (re.compile(rf"\bbefore\s+(?P<year>{YEAR})\b"), "<"),
     (re.compile(rf"\b(?:until|till|up\s+to|through)\s+(?P<year>{YEAR})\b"), "<="),
 )
+# A day written out: "April 27, 2011", "27 April 2011", "2011-04-27".
+MONTH_WORD = (
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|"
+    r"sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+)
+DAY_PATTERN = re.compile(
+    rf"\b(?:(?P<month>{MONTH_WORD})\.?\s+(?P<day>\d{{1,2}})(?:st|nd|rd|th)?,?\s+(?P<year>(?:1[89]|20)\d{{2}})"
+    rf"|(?P<day2>\d{{1,2}})(?:st|nd|rd|th)?\s+(?P<month2>{MONTH_WORD})\.?,?\s+(?P<year2>(?:1[89]|20)\d{{2}})"
+    # A question's dashes are read as spaces, so "2011-04-27" is also "2011 04 27".
+    r"|(?P<iso>(?:1[89]|20)\d{2}[-\s]\d{2}[-\s]\d{2}))\b",
+    re.IGNORECASE,
+)
+EPOCH = pd.Timestamp("1970-01-01")
+
+
+def day_named(match: re.Match) -> pd.Timestamp | None:
+    """The day a ``DAY_PATTERN`` match names, or None when it is no real date (April 31)."""
+    if match.group("iso"):
+        text = re.sub(r"\s", "-", match.group("iso"))
+    else:
+        month = match.group("month") or match.group("month2")
+        day = match.group("day") or match.group("day2")
+        year = match.group("year") or match.group("year2")
+        number = MONTH_NAMES.get(month.lower().rstrip("."), MONTH_NAMES.get(month.lower()[:3]))
+        if number is None:
+            return None
+        text = f"{year}-{number:02d}-{int(day):02d}"
+    try:
+        return pd.Timestamp(text)
+    except ValueError:
+        return None
+
+
 # A decade: "the 2010s" is 2010 to 2019.
 DECADE_PATTERN = re.compile(r"\b(?P<decade>(?:19|20)\d0)s\b")
 # Two groups split at a year: "before and after 2000".
@@ -2472,6 +2506,20 @@ def _holds_years(column: pd.Series) -> bool:
     return not values.empty and bool(((values % 1 == 0) & values.between(1000, 2100)).all())
 
 
+def _claim_days(reading: _Reading, roles: ColumnRoles) -> None:
+    """Read a day written out ("April 27, 2011", "2011-04-27") as the date column on that day."""
+    for match in list(DAY_PATTERN.finditer(reading.remaining)):
+        day = day_named(match)
+        if day is None:
+            continue
+        if not roles.date:
+            reading.flag("This table has no date column to pick a day from.")
+        else:
+            reading.conditions.append(Condition(roles.date, "=", float((day - EPOCH).days), part="date"))
+            reading.scoped.add(roles.date)
+        reading.claim(*match.span())
+
+
 def _claim_year_ranges(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
     """Read ranges of years as conditions on the date ("since 1978") and "before and after 2000" as a split.
 
@@ -2544,7 +2592,8 @@ EVENT_PATTERN = re.compile(
 # Phrases that say where the rows are, not which: "on board", "in the data".
 FILLER_PATTERN = re.compile(
     r"\b(?:on\s+board|aboard|in\s+the\s+(?:data|dataset|data\s+set|table|file|sample)|in\s+this\s+"
-    r"(?:data|dataset|table|file|sample)|all\s+told|altogether|at\s+an?\s+(?:\S+\s+)?rate(?:\s+of)?)\b"
+    r"(?:data|dataset|table|file|sample)|all\s+told|altogether|at\s+an?\s+(?:\S+\s+)?rate(?:\s+of)?|"
+    r"surveyed|interviewed|polled|questioned|came\s+from|comes?\s+from)\b"
 )
 # A passive verb after what is counted says how the rows came about, not which: "medals were won".
 PASSIVE_PATTERN = re.compile(
@@ -2768,6 +2817,32 @@ def _named_as_column(reading: _Reading, column: str, start: int, end: int) -> bo
     return bool(re.match(condition, after) or re.match(r"\s+(?:trend|over time|timeline)\b", after))
 
 
+def _unit_word_names_rows(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
+    """Read the word for the units ("rats" for a Rat column of codes) as the rows, not as a measure.
+
+    Only when the question names another column too and the word does not
+    follow a grouping word ("by Rat" still groups): "rats on diet 1 weighed",
+    "the heaviest rat's weight". A plural that names a column labelling each
+    row once ("the models" for Model) names the rows the same way. The word is
+    then claimed, as "patients" is.
+    """
+    if len(reading.spans) < 2:
+        return
+    coded = [column for column in reading.spans if column in roles.factors or column == roles.identifier]
+    unit = repeated_unit(dataframe, roles) if coded else None
+    labels = [
+        column for column, (start, end) in reading.spans.items()
+        if reading.original[start:end].endswith("s") and not is_numeric_dtype(dataframe[column])
+        and dataframe[column].is_unique
+    ]
+    named = unit if unit in coded else labels[0] if len(labels) == 1 else None
+    if named is None or _follows(reading.original, reading.spans[named][0]):
+        return
+    start, end = reading.spans.pop(named)
+    reading.entity, reading.entity_column = reading.original[start:end], named
+    reading.claim(start, end)
+
+
 def _read_question(
     question: str,
     dataframe: pd.DataFrame,
@@ -2797,6 +2872,7 @@ def _read_question(
         reading.spans = {
             column: span for column, span in reading.spans.items() if q[span[0]:span[1]] != roles.row_noun
         }
+    _unit_word_names_rows(reading, dataframe, roles)
     for start, end in reading.spans.values():
         reading.claim(start, end, keep_text=True)
     _reread_aggregation_names(reading)
@@ -2804,6 +2880,7 @@ def _read_question(
     _claim_adjustment(reading)
     _claim_time_part(reading, dataframe, roles)
     _claim_month_of_year(reading, dataframe, roles)
+    _claim_days(reading, roles)
     _claim_year_ranges(reading, dataframe, roles)
     _claim_fillers(reading)
     _claim_time_points(reading, dataframe, roles)
@@ -3982,10 +4059,21 @@ def _plan_columns(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) 
     return used
 
 
+# Aggregations that treat a column as a quantity, which a column numbering units is not.
+UNIT_AGGREGATIONS = frozenset({"mean", "sum", "median", "max", "min", "std", "var"})
+
+
 def _unused_part(
     plan: QueryPlan, reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles, rows_not_analyzed: int
 ) -> str | None:
     """Why the plan answers less than the question asks, or None when it uses every part."""
+    summarised = plan.intent in ("aggregate", "rank", "compare") and plan.aggregation in UNIT_AGGREGATIONS
+    if plan.measure and summarised and plan.measure == (unit := repeated_unit(dataframe, roles)):
+        # "the heaviest rat" with a Rat column of 16 codes: the codes number the rats and measure nothing.
+        return (
+            f"{unit} numbers the {int(dataframe[unit].nunique()):,} units the rows belong to, so it is "
+            "not a quantity to summarise; name the measure."
+        )
     used = _plan_columns(plan, dataframe, roles)
     for column in reading.spans:
         if column not in used:
@@ -4176,7 +4264,11 @@ def _condition_mask(series: pd.Series, condition: Condition) -> pd.Series:
             "ends": text.str.endswith(wanted),
         }[condition.operator]
         return found.fillna(False).astype(bool)
-    if is_datetime64_any_dtype(series):
+    if is_datetime64_any_dtype(series) and condition.part == "date":
+        # "on April 27, 2011": the day, as days since 1970, whatever the time of day.
+        days = series.dt.tz_localize(None) if series.dt.tz is not None else series
+        values = (days.dt.normalize() - EPOCH).dt.days.astype(float)
+    elif is_datetime64_any_dtype(series):
         # A condition on a date compares its year: "since 1978".
         values = series.dt.year.astype(float)
     else:
@@ -4209,6 +4301,9 @@ def _describe_condition(condition: Condition) -> str:
         return f'{condition.column} {TEXT_OPERATORS[condition.operator]} "{condition.text}"'
     if condition.part == "year":
         return f"{condition.column} {YEAR_OPERATOR_WORDS[condition.operator]} {_number_text(condition.value)}"
+    if condition.part == "date":
+        day = (EPOCH + pd.Timedelta(days=float(condition.value or 0))).date().isoformat()
+        return f"{condition.column} {OPERATOR_WORDS[condition.operator]} {day}"
     return f"{condition.column} {OPERATOR_WORDS[condition.operator]} {_number_text(condition.value)}"
 
 

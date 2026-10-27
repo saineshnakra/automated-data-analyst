@@ -747,6 +747,96 @@ class ShareOfThingsTests(unittest.TestCase):
         self.assertTrue(check.verified, check.message)
 
 
+class BaseAndScaleTests(unittest.TestCase):
+    def cars(self) -> pd.DataFrame:
+        return pd.DataFrame({"Model": [f"M{index}" for index in range(10)],
+                             "Manufacturer": ["Ford", "Ford", "Audi", "Audi", "BMW", "Kia", "Kia", "Fiat",
+                                              "Fiat", "Fiat"],
+                             "Type": ["Van"] * 3 + ["Small"] * 7,
+                             "Rating": [6.0, 7.0, 6.5, 6.5, 7.0, 6.0, 6.5, 6.5, 6.5, 6.5]})
+
+    def test_a_count_of_a_base_checks_both_numbers(self):
+        cars = self.cars()
+        self.assertTrue(ada.check_claim(cars, "3 of the 10 cars were Van.").verified)
+        self.assertEqual(ada.check_claim(cars, "3 of the 12 cars were Van.").reason, "missing_context")
+
+    def test_a_base_opening_the_claim_is_the_rows_in_scope(self):
+        cars = self.cars()
+        check = ada.check_claim(cars, "The 10 models came from 5 manufacturers.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("The claim's 10 models are the 10 rows in scope.", check.assumptions)
+        self.assertEqual(ada.check_claim(cars, "The 10 models came from 4 manufacturers.").reason,
+                         "failed_check")
+        self.assertEqual(ada.check_claim(cars, "The 9 models came from 5 manufacturers.").reason,
+                         "missing_context")
+
+    def test_a_lead_base_may_say_where_the_rows_come_from(self):
+        cars = self.cars()
+        check = ada.check_claim(cars, "Of the 10 cars in the survey, 30% were Van.")
+        self.assertTrue(check.verified, check.message)
+
+    def test_a_rating_scale_is_not_a_second_number(self):
+        cars = self.cars()
+        check = ada.check_claim(cars, "The average rating was 6.5 out of 10.")
+        self.assertTrue(check.verified, check.message)
+
+    def test_seven_in_ten_is_a_share(self):
+        cars = self.cars()
+        self.assertTrue(ada.check_claim(cars, "Seven in ten of the cars were Small.").verified)
+        self.assertEqual(ada.check_claim(cars, "Nine in ten of the cars were Small.").reason, "failed_check")
+        from ada.claims import _worded_number
+
+        self.assertIn("5%", _worded_number("1 in 20 cars were vans.")[0])
+
+
+class OtherSpellingTests(unittest.TestCase):
+    def test_a_value_written_another_way_too_is_not_a_verdict(self):
+        others = [f"Guest {index}" for index in range(60)]
+        names = ["John McCain"] * 5 + ["Sen. John McCain"] * 6 + ["Jon Hamm"] * 2 + others
+        guests = pd.DataFrame({"guest": names,
+                               "group": ["Politician"] * 11 + ["media", "Media"] + ["Actor"] * 60})
+        for claim in ("John McCain was a guest 11 times.", "John McCain was a guest 5 times."):
+            with self.subTest(claim=claim):
+                check = ada.check_claim(guests, claim)
+                self.assertEqual(check.reason, "missing_context")
+                self.assertIn('"Sen. John McCain"', check.message)
+        # A filter matches a value in any capitals, so "media" and "Media" are counted together.
+        self.assertEqual(ada.check_claim(guests, "There were 2 rows with group media.").status, "verified")
+
+    def test_a_category_holding_another_is_not_another_spelling(self):
+        races = pd.DataFrame({"Category": ["Men"] * 4 + ["Wheelchair Men"] * 3 + ["Women"] * 3,
+                              "Time": [130.0, 128, 129, 127, 90, 92, 91, 140, 141, 142]})
+        self.assertTrue(ada.check_claim(races, "There were 4 rows with Category Men.").verified)
+
+    def test_the_opposite_value_is_not_another_spelling(self):
+        cars = pd.DataFrame({"Origin": ["USA"] * 3 + ["non-USA"] * 2, "Price": [10.0, 20, 30, 40, 50]})
+        check = ada.check_claim(cars, "The average Price for USA was 20.")
+        self.assertTrue(check.verified, check.message)
+
+
+class UnitsAndDaysTests(unittest.TestCase):
+    def rats(self) -> pd.DataFrame:
+        rows = [{"Rat": rat, "Diet": 1 + rat // 3, "Time": day, "weight": 200.0 + 10 * rat + day}
+                for rat in range(6) for day in (1, 8, 15, 22)]
+        return pd.DataFrame(rows)
+
+    def test_the_word_for_the_units_names_the_rows_not_a_measure(self):
+        rats = self.rats()
+        check = ada.check_claim(rats, "The heaviest rat reached 272 grams.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("max(weight)", check.message)
+        self.assertNotEqual(ada.check_claim(rats, "The heaviest rat reached 5 grams.").status, "verified")
+
+    def test_a_day_written_out_picks_the_rows_of_that_day(self):
+        days = ["2011-04-27"] * 3 + ["2011-04-28"] * 2 + ["2012-01-01"]
+        storms = pd.DataFrame({"date": pd.to_datetime(days), "deaths": [10, 20, 30, 1, 2, 3]})
+        self.assertTrue(ada.check_claim(storms, "There were 3 storms on April 27, 2011.").verified)
+        self.assertTrue(ada.check_claim(storms, "Storms killed 60 deaths in total on 27 April 2011.").status
+                        in ("verified", "unverified"))
+        self.assertEqual(ada.check_claim(storms, "There were 5 storms on April 27, 2011.").reason,
+                         "failed_check")
+
+
 class CountOfThingsTests(unittest.TestCase):
     def test_n_of_the_things_counts_rows(self):
         cats = pd.DataFrame({"tag_id": [f"t{index}" for index in range(8)],

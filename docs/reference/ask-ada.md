@@ -259,7 +259,9 @@ each word is claimed, in this order, by:
 5. **Ranges of years** on the date column: "since 1978", "from 1978",
    "1978 onwards", "after 1977", "before 1950", "until 2000", "between 1990
    and 2000", "from 1990 to 2000", "the 2010s" (2010 to 2019), and "before
-   and after 2000", which splits the rows in two. "From 2019" right after the rows' own noun is that year
+   and after 2000", which splits the rows in two. A day written out ("April
+   27, 2011", "27 April 2011", "2011-04-27") keeps the rows of that day,
+   whatever their time; a date that does not exist (February 30) is not read. "From 2019" right after the rows' own noun is that year
    ("sets from 2019" in `sets.csv` are 2019's sets); "from 2019 onwards"
    stays a range. A verb that only dates an event before a year ("sets
    released in 2020"; also published, launched, founded, built, made,
@@ -576,7 +578,13 @@ counts the rows with `review_date` = 2019, and "what share have blue eyes"
 the share with `Eye` = Blue. "Readings", "records", "samples" and other nouns in
 `ROW_NOUNS` always count rows. The answer says which: "Counted the birds as
 distinct ID values." or "Each row counts as one of the patients." "How many
-participants per condition" counts distinct participants per condition. A
+participants per condition" counts distinct participants per condition.
+The word for the units, when the question names another column too, names
+the rows rather than a measure: in "the heaviest rat's weight" with a `Rat`
+column numbering 16 rats, "rat" is the rows, and "the models" names the rows
+when `Model` labels each row once. "By Rat" still groups. The column that
+numbers the units is never averaged, totalled or ranked: "max rat" is
+refused, as the codes measure nothing. A
 count of distinct values under a filter also gives its share of the distinct
 values among all rows with the filtered columns recorded: 1,434 squirrels
 seen foraging are 47.5% of the 3,018 in all.

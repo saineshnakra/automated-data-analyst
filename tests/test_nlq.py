@@ -3372,6 +3372,54 @@ class DistinctShareTests(unittest.TestCase):
         self.assertIn("50.0% of the 4 in all", answer.answer)
 
 
+class DayTests(unittest.TestCase):
+    def test_a_day_written_out_or_in_iso_form_is_a_condition_on_the_date(self):
+        times = ["2011-04-27 10:00", "2011-04-27 18:00", "2011-04-28 09:00"]
+        frame = pd.DataFrame({"date": pd.to_datetime(times), "deaths": [10.0, 20, 30]})
+        roles = detect_roles(frame)
+        for question in ("total deaths on April 27, 2011", "total deaths on 27 April 2011",
+                         "total deaths on 2011-04-27"):
+            with self.subTest(question=question):
+                answer = answer_question(question, frame, roles)
+                self.assertEqual(answer.value, 30)
+                self.assertIn("date = 2011-04-27", answer.calculation)
+
+    def test_no_such_day_is_not_read(self):
+        frame = pd.DataFrame({"date": pd.to_datetime(["2011-04-27", "2011-04-28"]), "deaths": [1.0, 2]})
+        self.assertIsNone(answer_question("total deaths on 2011-02-30", frame, detect_roles(frame)))
+
+    def test_a_day_needs_a_date_column(self):
+        frame = pd.DataFrame({"site": ["a", "b"], "deaths": [1.0, 2]})
+        roles = detect_roles(frame)
+        self.assertIsNone(answer_question("total deaths on April 27, 2011", frame, roles))
+        self.assertIn("no date column", rephrase_hint("total deaths on April 27, 2011", frame, roles))
+
+
+class UnitColumnTests(unittest.TestCase):
+    def rats(self) -> pd.DataFrame:
+        rows = [{"Rat": rat, "Diet": 1 + rat // 3, "Time": day, "weight": 200.0 + 10 * rat + day}
+                for rat in range(6) for day in (1, 8, 15, 22)]
+        return pd.DataFrame(rows)
+
+    def test_the_column_numbering_the_units_is_not_summarised(self):
+        rats = self.rats()
+        roles = detect_roles(rats)
+        self.assertIsNone(answer_question("max rat", rats, roles))
+        self.assertIn("numbers the 6 units", rephrase_hint("max rat", rats, roles))
+
+    def test_the_word_for_the_units_with_a_measure_names_the_rows(self):
+        rats = self.rats()
+        roles = detect_roles(rats)
+        self.assertEqual(answer_question("max rat weight", rats, roles).calculation, "max(weight)")
+        self.assertIn("by Rat", answer_question("average weight by Rat", rats, roles).calculation)
+        self.assertEqual(answer_question("how many rats", rats, roles).value, 6)
+
+    def test_a_plural_for_a_label_of_each_row_names_the_rows(self):
+        cars = pd.DataFrame({"Model": ["a", "b", "c", "d"], "Maker": ["X", "X", "Y", "Z"]})
+        answer = answer_question("how many distinct makers the models came from", cars, detect_roles(cars))
+        self.assertEqual(answer.value, 3)
+
+
 class DecadeTests(unittest.TestCase):
     def test_a_decade_is_its_ten_years(self):
         frame = pd.DataFrame({"year": range(1995, 2025), "distance": [float(value) for value in range(30)]})

@@ -62,7 +62,13 @@ when the file can't be read, and 3 when it is unverified for any other reason.
    could each be the one claimed is not split: it gets `unsupported_analysis`,
    and each number should be sent on its own. A clause that only says who
    reports the claim ("Owners estimated that", "The survey found that") is
-   set aside.
+   set aside. Some second numbers are part of the question: a day written
+   out ("on May 22, 2011"), a rating scale ("6.5 out of 10"), and a base,
+   which is checked as well: "34 of the 93 cars", "The 93 models came from 32
+   manufacturers" and a lead such as "Of the 5,144 Danes in the study,". The
+   base must be the share's denominator, or for any other answer the rows in
+   its scope; otherwise the claim gets `missing_context`. "Seven in ten", "one
+   in five" and "1 in 20" are shares, read as fractions are.
 2. **The question.** The rest of the sentence is read as a question to
    `Analysis.ask` (see [Ask ADA](ask-ada.md)). "averaged 5050" becomes
    "average ...", and "There are 344 penguins" becomes "how many penguins",
@@ -94,6 +100,7 @@ when the file can't be read, and 3 when it is unverified for any other reason.
 | `a quarter of` | 23.6% to 26.8%: the values nearer 1/4 than any other fraction with a denominator up to 10 |
 | `about half of` | 47.2% to 52.8%, the same way; "about" adds nothing to a fraction in words |
 | `more than half of` | above 50% |
+| `seven in ten` | 68.3% to 70.7%, as "seven tenths" is |
 
 `--value` with `--question` keeps its qualifier: `--value "about 25%"` stands
 for 24 to 26.
@@ -260,6 +267,14 @@ Besides the number, a check records what could make the answer misleading:
   instead, the message says so: the claim counted each payment row, not each
   order.
 
+- **Other spellings of a value.** When a column of more than 50 values (a
+  list of names) also holds a value of two words or more inside a longer one
+  ("Sen. John McCain" for "John McCain"), the claim may mean them all, and it
+  gets `missing_context` naming them. In a column of a few categories,
+  "Wheelchair Men" is a category of its own, not "Men" written another way.
+  (A filter already matches a value in any capitals.) A value with
+  "non", "not" or "no" before the words is the opposite, not another
+  spelling ("non-USA").
 - **A column of medians or means.** A column whose name says each row holds
   a group's median, mean or average (`median_weekly_earn`) is not combined
   over several rows: the average of 32 groups' medians is not the median of
