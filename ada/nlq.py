@@ -3327,6 +3327,9 @@ def _claim_part_of_year(reading: _Reading, roles: ColumnRoles) -> None:
     """Read part of a year ("the first half of 2021") as the days from its first to its last, before "quarter"
     can be read as a grain."""
     for match in list(PART_OF_YEAR.finditer(reading.remaining)):
+        if any(start < match.end() and end > match.start() for start, end in reading.spans.values()):
+            # A column called quarter holds the quarter: "the fourth quarter" is quarter = 4 there.
+            continue
         parts = 2 if match.group("part").lower() == "half" else 4
         which = match.group("which").lower()
         number = parts if which in ("last", "final") else PART_ORDER[which]
@@ -7921,22 +7924,36 @@ def _execute_crosstab(plan: QueryPlan, working: pd.DataFrame, scope: str, applie
         rows, columns, working = rows[keep], columns[keep], working[keep]
     row_name = rows.name
     if plan.aggregation == "count":
-        counts = pd.crosstab(rows, columns)
+        # In a table of counts each row stands for its frequency, as a plain count adds it up.
+        weight = plan.weight or frequency_column(working)
+        if weight:
+            counts = pd.crosstab(rows, columns, values=working[weight], aggfunc="sum").fillna(0)
+            if bool((counts % 1 == 0).all().all()):
+                counts = counts.astype(int)
+        else:
+            counts = pd.crosstab(rows, columns)
         if names:
             counts.index = [names.get(value, value) for value in counts.index]
             counts.index.name = row_name
+        what, counted = (f"Counts of {weight}", f"sum({weight})") if weight else ("Rows", "row count")
         answer = (
-            f"Rows by {_grouping_name(plan)} and {plan.second_dimension}{_phrase(applied)}: a "
+            f"{what} by {_grouping_name(plan)} and {plan.second_dimension}{_phrase(applied)}: a "
             f"{counts.shape[0]} × {counts.shape[1]} table of counts."
         )
-        answer += _association_line(counts)
-        table = counts.reset_index()
-        table.columns = [str(column) for column in table.columns]
+        shares = _yes_shares(counts)
+        if shares is not None:
+            table, line = shares
+            answer += line
+        else:
+            table = counts.reset_index()
+            table.columns = [str(column) for column in table.columns]
+        answer += _association_line(counts, "cases" if weight else "rows")
         return QueryAnswer(
             question="", plan=plan, answer=answer,
             calculation=(
-                f"row count for each {row_name} and {plan.second_dimension}; chi-square test of independence "
-                f"with Cramér's V{scope}"
+                f"{counted} for each {row_name} and {plan.second_dimension}"
+                + (", and the share of each group with the yes value" if shares is not None else "")
+                + f"; chi-square test of independence with Cramér's V{scope}"
             ),
             table=table,
         )
@@ -7991,7 +8008,49 @@ def _execute_crosstab(plan: QueryPlan, working: pd.DataFrame, scope: str, applie
     )
 
 
-def _association_line(counts: pd.DataFrame) -> str:
+def _yes_level(levels: list[object]) -> object | None:
+    """The yes of two levels that say yes and no: "B" of "B" and "NoB", "Yes" of "Yes" and "No"."""
+    if len(levels) != 2:
+        return None
+    first, second = (str(level).strip() for level in levels)
+    for yes, no in ((first, second), (second, first)):
+        if re.fullmatch(rf"(?:no|non|not)[\s_-]?{re.escape(yes)}", no, re.IGNORECASE) or (
+            yes.lower() in YES_NO_VALUES["yes"] and no.lower() in YES_NO_VALUES["no"]
+        ):
+            return levels[0] if yes == first else levels[1]
+    return None
+
+
+def _yes_shares(counts: pd.DataFrame) -> tuple[pd.DataFrame, str] | None:
+    """The share with the yes value in each group of the other column, when one column says yes and no.
+
+    "how does breathlessness change with age" over Breathlessness (B, NoB) and
+    Age gives the share with B in each age band, one row per band.
+    """
+    for grid, side in ((counts, "index"), (counts.T, "columns")):
+        yes = _yes_level(list(grid.index))
+        if yes is None:
+            continue
+        name = counts.index.name if side == "index" else counts.columns.name
+        other = counts.columns.name if side == "index" else counts.index.name
+        totals = grid.sum(axis=0)
+        kept = totals[totals > 0].index
+        share = grid.loc[yes, kept] / totals[kept]
+        table = pd.DataFrame({str(other): [str(level) for level in kept]})
+        for level in grid.index:
+            table[str(level)] = grid.loc[level, kept].to_numpy()
+        table["n"] = totals[kept].to_numpy()
+        table[f"share {yes}"] = share.round(4).to_numpy()
+        low, high = share.idxmin(), share.idxmax()
+        line = (
+            f" The share with {name} = {yes} is lowest for {group_label(str(other), low)}, at "
+            f"{share[low]:.1%}, and highest for {group_label(str(other), high)}, at {share[high]:.1%}."
+        )
+        return table, line
+    return None
+
+
+def _association_line(counts: pd.DataFrame, unit: str = "rows") -> str:
     """One sentence on whether two groupings are associated: a chi-square test and Cramér's V."""
     from scipy.stats import chi2_contingency
 
@@ -8003,7 +8062,7 @@ def _association_line(counts: pd.DataFrame) -> str:
     cramer = float(np.sqrt(chi2 / (total * (min(counts.shape) - 1)))) if total else 0.0
     evidence = f"chi-square = {chi2:.1f}, df = {dof}, {format_p(p_value)}; Cramér's V = {cramer:.2f}"
     rough = float((expected < 5).mean()) > 0.2
-    caution = " Many cells expect fewer than 5 rows, so the test is only a rough guide." if rough else ""
+    caution = f" Many cells expect fewer than 5 {unit}, so the test is only a rough guide." if rough else ""
     if p_value < 0.05:
         return f" The two are associated ({evidence}).{caution}"
     return f" There is no clear association ({evidence}).{caution}"

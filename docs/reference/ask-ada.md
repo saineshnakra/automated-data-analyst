@@ -265,7 +265,8 @@ each word is claimed, in this order, by:
    27, 2011", "27 April 2011", "2011-04-27") keeps the rows of that day,
    whatever their time; a date that does not exist (February 30) is not read.
    Part of a year ("the first half of 2021", "the third quarter of 2020", "the
-   last quarter of 2019") keeps the days from its first to its last.
+   last quarter of 2019") keeps the days from its first to its last, unless a
+   column is named for it ("the fourth quarter" is `quarter` = 4).
    Ages written out ("30- to 34-year-olds", "aged 50 and over", "people 65
    and older", "65+", "20-year-olds") keep the rows of those ages in the one
    column named for age: as conditions on a column of numbers, or as the
@@ -885,6 +886,11 @@ Other behaviour:
   the calculation notes this means something only when they share a unit.
 - `crosstab` of counts gives the table with a chi-square test and Cramér's V;
   of a measure, each cell's value and n, naming the highest and lowest cells.
+  In a table of counts the cells add up the frequency column, as a count
+  does. When one of the two columns says yes and no ("B" and "NoB", "Yes" and
+  "No"), the answer gives the share with the yes value in each group of the
+  other, one row per group: "how does breathlessness change with age" is the
+  share of breathless miners in each age band.
 - When every group is one row (a label on each row), the answer names the row
   and its own value: "Hungatella hathewayi has the highest A101, at 6,803."
 - A count of distinct values per group (`count_column`) gets no share column,

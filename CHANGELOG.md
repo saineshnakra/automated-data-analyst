@@ -34,6 +34,10 @@
 
 ### Reading claims and questions
 
+- Fixed a wrong answer: a cross-table of a table of counts counted its rows,
+  not the counts they hold, so "how does breathlessness change with age" in
+  CoalMiners found no association; it now adds up `Freq` and gives the share
+  with the yes value in each age band (0.8% at 20-24, 42.1% at 60-64).
 - Fixed a wrong answer: "how many senators were over 65" counted every
   member of Congress; a plural formed from a value ("senators" for senate) is
   now refused and names the value.

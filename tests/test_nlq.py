@@ -3589,6 +3589,32 @@ class TextPeriodsAndAgesTests(unittest.TestCase):
         self.assertIsNone(answer_question("how many senators were 65 or older", frame, detect_roles(frame)))
 
 
+class CountTableCrossTests(unittest.TestCase):
+    def miners(self) -> pd.DataFrame:
+        ages = ["20-24"] * 2 + ["40-44"] * 2 + ["60-64"] * 2
+        return pd.DataFrame({"Breathlessness": ["B", "NoB"] * 3, "Age": ages,
+                             "Freq": [16, 1936, 200, 1800, 600, 900]})
+
+    def test_a_cross_table_of_a_table_of_counts_adds_up_the_counts(self):
+        frame = self.miners()
+        answer = answer_question("how does breathlessness change with age", frame, detect_roles(frame))
+        self.assertIn("sum(Freq)", answer.calculation)
+        # Each band's rows tie at one each; the counts they hold do not.
+        self.assertIn("The two are associated", answer.answer)
+        shares = dict(zip(answer.table["Age"], answer.table["share B"], strict=True))
+        self.assertEqual(shares, {"20-24": round(16 / 1952, 4), "40-44": 0.1, "60-64": 0.4})
+        self.assertIn("highest for 60-64, at 40.0%", answer.answer)
+
+    def test_yes_and_no_levels(self):
+        from ada.nlq import _yes_level
+
+        self.assertEqual(_yes_level(["NoB", "B"]), "B")
+        self.assertEqual(_yes_level(["Yes", "No"]), "Yes")
+        self.assertEqual(_yes_level(["non smoker", "smoker"]), "smoker")
+        self.assertIsNone(_yes_level(["Male", "Female"]))
+        self.assertIsNone(_yes_level(["B", "NoB", "Other"]))
+
+
 class StateAndNounTests(unittest.TestCase):
     def test_the_most_of_a_value_counts_rows_by_period(self):
         days = ["2020-01-01", "2020-01-01", "2020-01-02"]
