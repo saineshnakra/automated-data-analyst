@@ -1,8 +1,8 @@
 ---
 name: ada
-description: Analyze a CSV or Excel table with ADA (the automated-data-analyst Python package), which computes every number in pandas, SciPy and statsmodels and prints the calculation behind it, or refuses with a reason instead of guessing. Use when someone wants to know what is in a data file, check its quality, compare groups (t-test, ANOVA, mixed model), test a relationship or a trend, or make a paper's Table 1, results tables (Word, LaTeX, CSV), publication figures with source data, data audit and methods draft from research data such as an experiment, trial, survey, field study or lab assay, with a rebuild that can be verified.
+description: Compute and check numbers from CSV or Excel tables with ADA (the automated-data-analyst Python package). It computes every number in pandas, SciPy and statsmodels with the calculation and rows behind it, checks a number stated about a table (verified, or unverified with a reason), maps a folder of related files and how they join, or refuses with a reason instead of guessing. Use when someone wants a number from a data file, wants a number in a report or an answer checked against the data, wants to know what is in a file or folder, compare groups, test a relationship or a trend, or make a paper's tables, figures and methods draft from research data with a rebuild that can be verified.
 license: MIT
-compatibility: Needs Python 3.11 or newer and `pip install automated-data-analyst` 0.5.0 or later.
+compatibility: Needs Python 3.11 or newer and `pip install automated-data-analyst` 0.6.0 or later (0.5.0 for the study workflow only).
 metadata:
   homepage: https://github.com/saineshnakra/automated-data-analyst
   docs: https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/research.md
@@ -23,6 +23,10 @@ against ADA's output and the data.
 
 Pick the mode from what the person wants:
 
+- **A number, or a check of one** ("what is the average delay?", "is it true
+  that 32% survived?", or any number you are about to write about a data
+  file): "Computing and checking numbers" below.
+- **A folder of related files**: `ada scan data/` first, then work file by file.
 - **A paper or report from a study** (groups, subjects, time points, planned
   analyses): the study workflow below.
 - **Just what is in a file**: `ada analyze data.csv`, or in Python
@@ -32,6 +36,51 @@ Pick the mode from what the person wants:
 pip install automated-data-analyst
 ada --version
 ```
+
+## Computing and checking numbers
+
+Compute with `ada ask`, and check every number you state about the data with
+`ada claim`, including numbers you computed yourself or read in a report.
+
+```bash
+ada ask flights.csv "average dep_delay by origin" --json
+ada claim flights.csv "The average departure delay was about 13 minutes."
+ada claim flights.csv --question "average dep_delay" --value 12.64 --json
+ada claim data/ "The average order_total is 154.10."     # a folder: checked against the file it fits
+```
+
+`ada claim` prints `verified` or `unverified` with one of six reasons, and
+exits 0 (verified), 1 (the data give a different number, or a check on the
+analysis failed), 2 (the file could not be read) or 3 (unverified for another
+reason). With `--json` it gives the claim's interval ("about 13" is 12 to 14),
+the plan that ran, the calculation, the rows read, used and left out with a
+reason for each, the file's sha256, the assumptions, the warnings, and a
+`clarification`: the one question that would let the check go ahead.
+
+When you report numbers:
+
+- Say which numbers ADA verified, and give each with its calculation and the
+  rows it used ("12.64, mean(dep_delay) over the 328,521 flights with a
+  departure delay recorded").
+- Say which are unverified and why, in ADA's words. Unverified is not false:
+  only `failed_check` with `agreement: "mismatch"` means the data give a
+  different number.
+- Never call a whole answer verified because one number in it was. A check
+  covers one number, as read; it says nothing about the wording around it.
+- When the reason is `missing_context` or `ambiguous_intent`, ask the person
+  ADA's `clarification` (for example "Which column is meant: dep_delay or
+  arr_delay?") instead of picking a reading yourself.
+- Pass on the assumptions and warnings that matter: rows left out, a scale
+  or unit that was not given, a correlation that runs the other way within
+  groups, repeated rows from one subject.
+
+For a folder, `ada scan data/` lists each file, the keys that join them (with
+the rows a join leaves unmatched or repeats) and questions grouped by topic:
+what a row stands for, units, repeated measurements, which links to trust,
+and what the person wants to find out. Ask the person those questions before
+combining files. `--template answers.yml` writes them with ADA's proposed
+answers; once the person has edited it, `--answers answers.yml` reads them
+back. ADA proposes joins but does not run them.
 
 ## The study workflow
 

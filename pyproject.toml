@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "automated-data-analyst"
-version = "0.5.0"
-description = "Research data analysis: a paper's tables, figures, data audit and methods draft from a study.yml, every number computed in code and traceable to the data, plus a first look at any table. A skill for Claude Code and Codex."
+version = "0.6.0"
+description = "Compute and check numbers from CSV and Excel tables: every number computed by pandas, SciPy and statsmodels with its calculation, claims about the data verified or unverified with a reason, a map of a folder of files, and a paper's tables and figures from research data. A skill for Claude Code and Codex."
 requires-python = ">=3.11"
 readme = "README.md"
 license = "MIT"
@@ -13,6 +13,8 @@ license-files = ["LICENSE"]
 authors = [{ name = "Sainesh Nakra" }]
 keywords = [
     "data-analysis",
+    "fact-checking",
+    "claim-verification",
     "ai-data-analyst",
     "research",
     "reproducible-research",

@@ -32,7 +32,7 @@ from .claims import ClaimCheck, check_claim
 from .folder import FolderScan, scan
 from .sources import Source
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 __all__ = [
     "DEFAULT_ROW_LIMIT",

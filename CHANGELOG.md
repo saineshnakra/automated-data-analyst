@@ -1,6 +1,27 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 (unreleased)
+
+ADA now checks numbers as well as computing them. `ada claim` says whether a
+number stated about a table is verified or unverified, and why; `ada ask
+--json` gives an answer's numbers and rows as data; `ada scan` maps a folder
+of related files and the keys that join them. Answers count each subject once
+when several rows come from one, and say when groups reverse a pooled
+correlation. Evaluated on 46 cases from 13 public datasets
+([results/verification](results/verification/README.md)).
+
+```bash
+pip install --upgrade automated-data-analyst
+ada skill      # the updated skill: check every number with ada claim
+```
+
+### The skill
+
+- The skill tells an assistant to compute with `ada ask`, check every number it
+  states with `ada claim`, say which numbers are verified (with their
+  calculation) and which are not and why, ask ADA's clarifying question
+  instead of picking a reading, and run `ada scan` before combining files.
+  Run `ada skill` again, or `ada skill --check`, after upgrading.
 
 ### Reading a folder of tables
 

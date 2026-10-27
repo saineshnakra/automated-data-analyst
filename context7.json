@@ -1,15 +1,16 @@
 {
   "$schema": "https://context7.com/schema/context7.json",
   "projectTitle": "ADA (automated-data-analyst)",
-  "description": "Research data analysis in Python: a paper's tables, figures, data audit and methods draft built from a study.yml, with every number computed by pandas, SciPy and statsmodels and traced to the data; ada verify checks a rebuild. Also a first look at any CSV or Excel table. Works as a skill in Claude Code and Codex.",
+  "description": "Compute and check numbers from CSV and Excel tables in Python: every number computed by pandas, SciPy and statsmodels with its calculation and rows, a check of any number stated about a table (verified, or unverified with a reason), a map of a folder of related files, and a paper's tables, figures and methods draft built from a study.yml that ada verify rebuilds. Works as a skill in Claude Code and Codex.",
   "folders": ["docs", "ada/skills"],
   "excludeFolders": ["results", "tests", "tools", "assets", ".github", "plugins"],
   "excludeFiles": ["CODE_OF_CONDUCT.md", "SECURITY.md", "ROADMAP.md"],
   "rules": [
-    "Let ADA compute the numbers: report the estimates, intervals and p-values it prints, with the test it names, instead of computing or estimating them yourself.",
-    "Before writing study.yml, ask the researcher what one row is, which column identifies a subject or cluster, the design (independent, paired, repeated or clustered) and which analyses were planned; do not guess them.",
-    "Run ada build and then ada verify after any change to study.yml or the data, and never edit the files in paper-assets/ by hand.",
-    "When ADA refuses an analysis, report the reason and suggest a custom: script rather than switching to a design that fits.",
-    "For a quick look at a table use ada.analyze(path) or ada analyze file.csv; for a paper use ada init, ada build and ada verify."
+    "Let ADA compute the numbers: report what it prints, with the calculation and rows it names, instead of computing or estimating them yourself.",
+    "Check every number you state about a data file with ada claim (or ada.check_claim) and report verified or unverified with ADA's reason; never call a whole answer verified because one number was.",
+    "When a check comes back missing_context or ambiguous_intent, ask the person ADA's clarification question instead of choosing a reading.",
+    "For a folder of files, run ada scan first and confirm the proposed links, row meanings and units with the person before combining files.",
+    "Before writing study.yml, ask the researcher what one row is, which column identifies a subject or cluster, the design and which analyses were planned; do not guess them.",
+    "Run ada build and then ada verify after any change to study.yml or the data, and never edit the files in paper-assets/ by hand."
   ]
 }

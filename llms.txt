@@ -1,8 +1,18 @@
 # ADA (automated-data-analyst)
 
-> ADA is a Python package and command-line tool that makes a paper's assets from research data: a data audit, a data dictionary, a record of every exclusion, descriptive and results tables (CSV, Word, LaTeX), figures with their source data and captions, a methods draft and a reproduction package. Every number traces back to the data through provenance.json, and `ada verify` rebuilds everything in a scratch folder and checks it matches. It also gives a quick first look at any CSV or Excel table. MIT licence, Python 3.11+.
+> ADA is a Python package and command-line tool that computes numbers from CSV, TSV and Excel tables with pandas, SciPy and statsmodels, shows the calculation and the rows behind each one, and checks a number stated about a table: verified, or unverified with one of six reasons (missing_context, ambiguous_intent, inaccessible_data, unsupported_analysis, conflicting_evidence, failed_check) and the one question that would let the check go ahead. It maps a folder of related files and the keys that join them, and makes a paper's assets from research data (audit, dictionary, tables, figures, methods draft) that `ada verify` rebuilds and checks. MIT licence, Python 3.11+.
 
-Install with `pip install automated-data-analyst`. In the folder that holds a study's data:
+Check a number, compute an answer, or map a folder:
+
+```
+ada claim flights.csv "The average departure delay was about 13 minutes."   # exit 0 verified, 1 failed check, 2 unreadable, 3 unverified
+ada ask flights.csv "average dep_delay by origin" --json
+ada scan data/                     # each file, how they join, what to confirm
+```
+
+From Python: `ada.check_claim(path, claim)`, `ada.analyze(path).ask(question)` (an answer with `.to_dict()`, or a falsy refusal with `code` and `message`), `ada.scan(folder)`. A check covers one number, as read; unverified is not false, and only `failed_check` with `agreement: "mismatch"` says the data give a different number.
+
+Install with `pip install automated-data-analyst`. For a paper, in the folder that holds a study's data:
 
 ```
 ada init data/measurements.csv   # asks about the study; writes study.yml
@@ -14,12 +24,14 @@ ada verify                       # rebuilds and checks every number
 
 From Python: `from ada import research; research.build("study.yml")`, or `import ada; ada.analyze("data.csv")` for the first look.
 
-For AI coding assistants: `ada skill` writes ADA's SKILL.md (Agent Skills format) into `.claude/skills/ada/` for Claude Code and `.agents/skills/ada/` for Codex. As a plugin (the folder `plugins/automated-data-analyst/`): `/plugin marketplace add saineshnakra/automated-data-analyst` then `/plugin install automated-data-analyst@automated-data-analyst` in Claude Code, or `codex plugin marketplace add saineshnakra/automated-data-analyst` then `codex plugin add automated-data-analyst@automated-data-analyst` in Codex. The arithmetic runs in ADA, not in the model: the assistant reports the numbers ADA computed, each with its calculation, and passes on refusals.
+For AI coding assistants: `ada skill` writes ADA's SKILL.md (Agent Skills format) into `.claude/skills/ada/` for Claude Code and `.agents/skills/ada/` for Codex. As a plugin (the folder `plugins/automated-data-analyst/`): `/plugin marketplace add saineshnakra/automated-data-analyst` then `/plugin install automated-data-analyst@automated-data-analyst` in Claude Code, or `codex plugin marketplace add saineshnakra/automated-data-analyst` then `codex plugin add automated-data-analyst@automated-data-analyst` in Codex. The arithmetic runs in ADA, not in the model: the assistant reports the numbers ADA computed, each with its calculation, checks the numbers it states with `ada claim`, says which are unverified and why, and asks the person ADA's clarifying question instead of guessing.
 
 ## Docs
 
 - [README](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/README.md): what ADA does, with examples
 - [Paper assets for a study](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/docs/research.md): `ada init`, `ada build` and `ada verify`, the study.yml format, the tests used and every file written
+- [Checking claims](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/docs/reference/claims.md): how a stated number is read, the interval it stands for, the six reasons and the JSON record
+- [Reading a folder of tables](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/docs/reference/folder.md): file profiles, proposed links and the questions to confirm
 - [Agent skill](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/ada/skills/ada/SKILL.md): how an AI assistant should use ADA on a researcher's data
 - [FAQ](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/docs/faq.md): short answers
 
