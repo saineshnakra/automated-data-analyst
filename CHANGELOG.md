@@ -34,6 +34,13 @@
 
 ### Reading claims and questions
 
+- "TCD won about 23% of all the money" is the share of the money column's
+  total; "Men made up 64% of the 53,182 suicides" checks its base; verbs of
+  showing ("featured", "showed", "included", "appeared in") keep a yes/no
+  column's yes rows.
+- Fixed silent drops: a word found only inside a column of titles filtered
+  on one title or was dropped without a note; it now picks no rows unless the
+  whole title is typed, and a category that holds the word too is meant.
 - "The average price of a gallon fell by about 11%" is checked: a unit left
   out of a change in percent does not change it.
 - "doubled", "more than sixfold", "tripled" and "halved" are changes in

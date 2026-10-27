@@ -192,7 +192,7 @@ AMONG_LEAD = re.compile(
 SUBJECT_SHARE = re.compile(
     r"^\s*(?P<part>[A-Za-z'-]+(?:\s+[A-Za-z'-]+){0,3}?)\s+(?P<verb>were|was|are|is|made\s+up|make\s+up|"
     r"makes\s+up|accounted\s+for|account\s+for|accounts\s+for|represented|represent|represents|"
-    r"comprised|comprise|comprises|formed|form|forms)\s+"
+    r"comprised|comprise|comprises|formed|form|forms|won|received|got|took|earned|captured)\s+"
     r"(?P<share>(?:(?:about|nearly|almost|roughly|around|only|just|over|under|more\s+than|less\s+than)\s+)?"
     r"\d[\d,]*(?:\.\d+)?\s*%)\s+of\s+(?P<rest>.+?)[.!?]?\s*$",
     re.IGNORECASE,
@@ -221,6 +221,12 @@ BASE_LEAD = re.compile(
 PART_OF_BASE = re.compile(
     r"^(?P<lead>\s*(?:(?:about|nearly|almost|only|just|over|more\s+than|fewer\s+than|less\s+than)\s+)?)"
     r"(?P<part>\d{1,3}(?:,\d{3})+|\d+)\s+(?:of|out\s+of)\s+(?:the\s+|all\s+)?"
+    r"(?P<count>\d{1,3}(?:,\d{3})+|\d+)\s+(?P<noun>[A-Za-z]+)\b",
+    re.IGNORECASE,
+)
+# A base a share is of: "64% of the 53,182 suicides", "about a third of the 86 departments".
+SHARE_BASE = re.compile(
+    r"(?:%|\b(?:half|third|thirds|quarter|quarters|fifth|fifths|tenth|tenths))\s+of\s+(?:the\s+|all\s+)?"
     r"(?P<count>\d{1,3}(?:,\d{3})+|\d+)\s+(?P<noun>[A-Za-z]+)\b",
     re.IGNORECASE,
 )
@@ -1417,6 +1423,12 @@ def _based(text: str) -> tuple[str, tuple[str, str] | None]:
     if opening and later and not year:
         body = f"{text[:opening.start('count')]}{text[opening.end('count'):].lstrip()}"
         return body, (opening.group("count"), opening.group("noun"))
+    shared = SHARE_BASE.search(text)
+    if shared and not (
+        "," not in shared.group("count") and YEAR_RANGE[0] <= int(shared.group("count")) <= YEAR_RANGE[1]
+    ):
+        body = f"{text[:shared.start('count')]}{text[shared.end('count'):].lstrip()}"
+        return body, (shared.group("count"), shared.group("noun"))
     spanned = SCOPE_BASE.search(text)
     if spanned and "," not in spanned.group("count") and YEAR_RANGE[0] <= int(spanned.group("count")) <= (
         YEAR_RANGE[1]

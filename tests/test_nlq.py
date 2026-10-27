@@ -3372,6 +3372,30 @@ class DistinctShareTests(unittest.TestCase):
         self.assertIn("50.0% of the 4 in all", answer.answer)
 
 
+class FlagVerbAndFreeTextTests(unittest.TestCase):
+    def test_a_verb_of_showing_keeps_a_flag_s_yes_rows(self):
+        frame = pd.DataFrame({"TREES": [1, 1, 0, 1], "LAKES": [0, 1, 0, 0]})
+        roles = detect_roles(frame)
+        answer = answer_question("share of episodes that featured a lake", frame, roles)
+        self.assertAlmostEqual(dict(answer.figures)["share_percent"], 25.0)
+
+    def test_a_word_inside_free_text_picks_no_rows(self):
+        titles = [f"A long study of {word} in the north of the country" for word in
+                  ("rivers", "lakes", "soil", "birds", "TCD data", "fish")]
+        frame = pd.DataFrame({"body": ["Trinity College Dublin (TCD)", "UCD", "UCD", "UCC", "UCC", "UCD"],
+                              "title": titles, "amount": [10.0, 20, 30, 40, 50, 60]})
+        roles = detect_roles(frame)
+        answer = answer_question("total amount for TCD", frame, roles)
+        self.assertEqual(answer.calculation, "sum(amount) · filtered to body = Trinity College Dublin (TCD)")
+        self.assertIsNone(answer_question("total amount for soil", frame, roles))
+
+    def test_a_share_of_all_the_money_weighs_by_the_money_column(self):
+        frame = pd.DataFrame({"body": ["TCD", "UCD", "UCD", "TCD"], "commitment": [10.0, 30, 50, -10]})
+        answer = answer_question("share of all the money for body TCD", frame, detect_roles(frame))
+        self.assertEqual(dict(answer.figures)["share_percent"], 0.0)
+        self.assertIn("sum(commitment)", answer.calculation)
+
+
 class StateAndNounTests(unittest.TestCase):
     def test_the_most_of_a_value_counts_rows_by_period(self):
         days = ["2020-01-01", "2020-01-01", "2020-01-02"]

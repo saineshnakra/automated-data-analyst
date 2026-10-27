@@ -343,7 +343,9 @@ FILTER_CUES = frozenset({"within", "among", "amongst"})
 # ("squirrels seen foraging").
 FLAG_CUES = (
     r"have|has|having|had|with|without|are|were|"
-    r"received|receive|receiving|given|got|took|taking|using|used|seen|spotted|observed|heard"
+    r"received|receive|receiving|given|got|took|taking|using|used|seen|spotted|observed|heard|"
+    r"featured|featuring|features|feature|showed|shows|showing|show|included|includes|including|"
+    r"depicted|depicting|appeared\s+in|appears\s+in"
 )
 # Grouping by a part of the date: "average PM2.5 by hour", "revenue by weekday",
 # "which month of the year is wettest", which pools each month across the years.
@@ -1367,6 +1369,14 @@ def _pick_values(
     if len(columns) > 1 and exact and dataframe is not None and _same_rows(dataframe, found, columns):
         found = [value for value in found if value.column == columns[0]]
         columns = columns[:1]
+    if not exact and dataframe is not None:
+        # "TCD" inside a research body's name and inside a grant's title: a title is free text, and a
+        # word within it does not pick a group the way a category's value does.
+        categories = [column for column in columns if not _free_text(dataframe[column])]
+        if not categories:
+            return None, [], None
+        found = [value for value in found if value.column in categories]
+        columns = categories
     if len(columns) > 1:
         return None, [], (
             f'"{phrase}" is a value of {_and_listed(columns)}; name the column too, '
@@ -1380,6 +1390,14 @@ def _pick_values(
         return chosen[0], chosen, None
     shown = _leaders([value.raw for value in found])
     return None, [], f'"{phrase}" matches several {columns[0]} values: {shown}. Name one in full.'
+
+
+def _free_text(series: pd.Series) -> bool:
+    """Whether a text column holds free text, such as titles: values mostly unique and five words or more."""
+    values = series.dropna().astype(str)
+    if values.empty or values.nunique() < 0.5 * len(values):
+        return False
+    return float(values.str.split().str.len().mean()) >= 5
 
 
 def _is_number(text: str) -> bool:
@@ -1535,6 +1553,9 @@ def _claim_values(
                     # which of the columns holding it is meant.
                     found = [value for value in found if value.column == beside[0]]
                 chosen, values, problem = _pick_values(words, found, exact, reading.question, dataframe)
+                if not problem and chosen is None:
+                    # Words found only inside free text pick nothing and stay unread.
+                    continue
                 if problem:
                     reading.flag(problem)
                 elif chosen is not None:
@@ -2843,6 +2864,30 @@ def _claim_entity(
 COUNT_NAME_WORDS = frozenset({"count", "counts", "number", "num", "n", "no", "total", "totals"})
 
 
+# Words for money as a whole, and words in the name of a column of money.
+MONEY_NOUNS = frozenset({
+    "money", "funding", "funds", "spending", "revenue", "income", "investment", "budget",
+})
+AMOUNT_NAME_WORDS = frozenset({
+    "amount", "value", "cost", "costs", "price", "commitment", "funding", "revenue", "spend", "spending",
+    "sales", "income", "budget", "award", "payment", "paid", "eur", "usd", "gbp", "euro", "euros", "dollar",
+    "dollars", "pounds",
+})
+
+
+def _amount_column(dataframe: pd.DataFrame) -> str | None:
+    """The one column of money, by its name: current_total_commitment, sale_amount.
+
+    Negative amounts (refunds, offsets) stay in, as they are part of the total.
+    """
+    found = [
+        column for column in dataframe.columns
+        if is_numeric_dtype(dataframe[column]) and not is_bool_dtype(dataframe[column])
+        and set(_norm(normalized_name(str(column))).split()) & AMOUNT_NAME_WORDS
+    ]
+    return found[0] if len(found) == 1 else None
+
+
 def _count_column(noun: str, dataframe: pd.DataFrame) -> str | None:
     """The one column of whole counts named for a plural: encounter_count for "encounters".
 
@@ -2878,15 +2923,23 @@ def _claim_count_column(reading: _Reading, dataframe: pd.DataFrame, roles: Colum
     counted as they are, so n_cats is a column like any other.
     """
     ids = dataframe[roles.identifier] if roles.identifier in dataframe.columns else None
-    if ids is not None and ids.notna().all() and ids.is_unique:
-        return
     for start, end, word in _tokens(reading.original):
-        if not word.endswith("s") or not re.search(
-            rf"{COUNT_PATTERN}\s+(?:of\s+)?(?:the\s+|all\s+)?$", reading.original[:start]
+        before = reading.original[:start]
+        if word in MONEY_NOUNS and re.search(
+            rf"\b(?:{'|'.join(SHARE_WORDS)})\s+of\s+(?:all\s+)?(?:the\s+)?$", before
         ):
+            # "share of all the money" weighs each row by the one column of money.
+            column = _amount_column(dataframe)
+        elif ids is not None and ids.notna().all() and ids.is_unique:
             continue
-        column = _count_column(word, dataframe)
-        if column is None or not set(_norm(normalized_name(str(column))).split()) & COUNT_NAME_WORDS:
+        elif word.endswith("s") and re.search(rf"{COUNT_PATTERN}\s+(?:of\s+)?(?:all\s+)?(?:the\s+)?$",
+                                              before):
+            column = _count_column(word, dataframe)
+            if column is not None and not set(_norm(normalized_name(str(column))).split()) & COUNT_NAME_WORDS:
+                column = None
+        else:
+            continue
+        if column is None:
             continue
         reading.spans = {named: span for named, span in reading.spans.items() if span != (start, end)}
         reading.claim(start, end)
@@ -4369,7 +4422,7 @@ def _count_plan(
         return None
     unit = repeated_unit(dataframe, roles) if reading.entity and not reading.entity_column else None
     if unit and reading.entity not in ROW_NOUNS and reading.entity != roles.row_noun and (
-        reading.entity not in reading.nouns
+        reading.entity not in reading.nouns and not reading.weight
     ):
         # Loblolly's 84 rows are 14 trees measured at 6 ages; Portal's rows are captures at 24 plots. The
         # data can't say which the noun means.

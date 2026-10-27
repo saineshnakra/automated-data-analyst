@@ -64,7 +64,8 @@ when the file can't be read, and 3 when it is unverified for any other reason.
    reports the claim ("Owners estimated that", "The survey found that") is
    set aside. Some second numbers are part of the question: a day written
    out ("on May 22, 2011"), a rating scale ("6.5 out of 10"), and a base,
-   which is checked as well: "34 of the 93 cars", "The 93 models came from 32
+   which is checked as well: "34 of the 93 cars", "64% of the 53,182 suicides",
+   "The 93 models came from 32
    manufacturers" and a lead such as "Of the 5,144 Danes in the study,". The
    base must be the share's denominator, or for any other answer the rows in
    its scope; otherwise the claim gets `missing_context`. "Seven in ten", "one
@@ -73,7 +74,7 @@ when the file can't be read, and 3 when it is unverified for any other reason.
    the share of that group, and a percent takes no unit: in "9.5% died" the
    verb says what is counted. A share stated after what it counts ("Men were
    79% of the victims who died"; also made up, accounted for, represented,
-   comprised, formed) is read as "79% of the victims who died were men",
+   comprised, formed, won, received) is read as "79% of the victims who died were men",
    unless the subject is a measure ("The tax rate was 45% of ..."). A base
    lead may run to eleven words ("Of the 186,730 people killed or injured on
    French roads in 1958,"); its words are set aside and its count is checked.

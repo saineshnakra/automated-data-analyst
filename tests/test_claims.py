@@ -1006,6 +1006,15 @@ class MultipleAndFractionTests(unittest.TestCase):
         self.assertIn("top third", question)
 
 
+class ShareOfBaseTests(unittest.TestCase):
+    def test_a_base_inside_a_share_is_checked(self):
+        frame = pd.DataFrame({"sex": ["male", "female", "male"], "age": ["young", "young", "old"],
+                              "Freq": [40, 30, 30]})
+        self.assertTrue(ada.check_claim(frame, "Men made up 70% of the 100 suicides.").verified)
+        wrong = ada.check_claim(frame, "Men made up 70% of the 90 suicides.")
+        self.assertEqual(wrong.reason, "missing_context")
+
+
 class RateClaimTests(unittest.TestCase):
     def test_a_rate_for_every_hundred_is_checked_as_totals(self):
         frame = pd.DataFrame({"District": [1, 1, 1, 1, 2, 2, 2, 2],
