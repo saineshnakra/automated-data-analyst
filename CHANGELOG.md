@@ -41,6 +41,18 @@
 
 ### Answers
 
+- A share of a group is of that group: "what percentage of Adelie are
+  female" gives 50% of the Adelie, not 21.9% of all penguins, and "what share
+  of women survived" 73.2% of the women. Before, the base was every row,
+  which made a claim such as "50% of Adelie penguins are female" fail.
+- "Men", "women", "boys" and "girls" name the values of a column of sexes,
+  "department" names `Dept` and "weight" `wgt`, and in a table of counts a
+  plural that names nothing else ("applicants") names the cases.
+- A claim's lead that names its base ("Of the 4,526 applicants,") is checked
+  against the share's base, "at a rate of" is grammar, "1,835 women" counts
+  women, a plural after the number that names no column counts rows ("1,950
+  captures in 2007"), and "rose to 20.9 tonnes per hectare" is a level, not a
+  slope.
 - Tables of counts weight shares and counts by group too: Titanic's "share of
   Survived = Yes by Class" gives 62.5% for 1st class (203 of 325), not 50% of
   rows, and its chi-squared test runs on the weighted table.

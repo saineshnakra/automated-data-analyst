@@ -988,6 +988,8 @@ class _Reading:
     #: Columns of filters and conditions introduced by "for", "where", "in" and the like,
     #: which narrow the rows rather than name what a share counts.
     scoped: set[str] = field(default_factory=set)
+    #: Where in the question each filtered column's value was read, for the base of a share.
+    starts: dict[str, int] = field(default_factory=dict)
     #: "rate of X", "X rate": the share of rows where X holds.
     rate: bool = False
     #: "before and after 2000": the column to split and where.
@@ -1233,8 +1235,10 @@ def _scope_cued(reading: _Reading, start: int) -> bool:
     return bool(before) and before[-1] in SCOPE_CUES
 
 
-def _add_filter(reading: _Reading, values: list[_Value]) -> None:
+def _add_filter(reading: _Reading, values: list[_Value], start: int | None = None) -> None:
     column = values[0].column
+    if start is not None:
+        reading.starts.setdefault(column, start)
     known = reading.filters.get(column, ())
     reading.filters[column] = tuple(dict.fromkeys((*known, *(value.raw for value in values))))
 
@@ -1276,6 +1280,8 @@ def _claim_person_names(reading: _Reading, dataframe: pd.DataFrame) -> None:
             continue
         reading.filters[first] = (found[0],)
         reading.filters[last] = (found[1],)
+        reading.starts.setdefault(first, start)
+        reading.starts.setdefault(last, start)
         reading.claim(start, stop)
         return
 
@@ -1330,7 +1336,7 @@ def _claim_values(
                 if problem:
                     reading.flag(problem)
                 elif chosen is not None:
-                    _add_filter(reading, values)
+                    _add_filter(reading, values, window[0][0])
                     if _scope_cued(reading, window[0][0]):
                         reading.scoped.add(chosen.column)
                 reading.claim(window[0][0], window[-1][1])
@@ -1365,8 +1371,48 @@ def _claim_codes(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles)
             if len(matched):
                 held.append(_Value(column=column, raw=str(matched.iloc[0]), words=(word,)))
         if len(held) == 1:
-            _add_filter(reading, held)
+            _add_filter(reading, held, start)
             reading.claim(start, end)
+
+
+# Words for the sexes, and the values a column of sexes spells them with: "men" is Male or M.
+SEX_WORDS = {
+    "men": "male", "man": "male", "males": "male", "boys": "male", "boy": "male",
+    "women": "female", "woman": "female", "females": "female", "girls": "female", "girl": "female",
+}
+SEX_VALUES = {
+    "male": frozenset({"male", "m", "man", "men"}), "female": frozenset({"female", "f", "woman", "women"}),
+}
+
+
+def _claim_sexes(reading: _Reading, vocabulary: _Vocabulary) -> None:
+    """Filter on a column of sexes for "men", "women", "boys" or "girls" ("Gender" with Male and Female).
+
+    The column must hold both sexes and nothing but sexes, besides values
+    such as "Other" or "Unknown", so "men" never picks a value of any other column.
+    """
+    columns: dict[str, list[_Value]] = defaultdict(list)
+    for value in vocabulary.values:
+        columns[value.column].append(value)
+    allowed = SEX_VALUES["male"] | SEX_VALUES["female"] | {"other", "unknown", "intersex", "not stated"}
+    sexed = [
+        column for column, values in columns.items()
+        if {" ".join(value.words) for value in values} <= allowed
+        and all(any(" ".join(value.words) in SEX_VALUES[side] for value in values) for side in SEX_VALUES)
+    ]
+    if len(sexed) != 1:
+        return
+    for start, end, word in _tokens(reading.remaining):
+        side = SEX_WORDS.get(word)
+        if side is None:
+            continue
+        values = [value for value in columns[sexed[0]] if " ".join(value.words) in SEX_VALUES[side]]
+        _add_filter(reading, values, start)
+        reading.claim(start, end)
+        reading.notes.append(
+            f'Read "{_raw_words(reading.question, [word])}" as {sexed[0]} = '
+            f"{_listed([value.raw for value in values])}."
+        )
 
 
 def _partial_words(columns: list[str]) -> dict[str, tuple[str, ...]]:
@@ -1482,7 +1528,8 @@ def _claim_partial_at(
             return 1
         candidates = _holding(words, phrase, reading.index or _name_index(dataframe.columns))
         if not candidates and size == 1:
-            candidates = _prefixed_columns(phrase[0], words) or _stemmed_columns(phrase[0], words)
+            candidates = (_prefixed_columns(phrase[0], words) or _stemmed_columns(phrase[0], words)
+                          or _skeleton_columns(phrase[0], words))
         if not candidates and 2 <= size <= 4:
             candidates = _abbreviated_columns(phrase, words) or _initialled_columns(phrase, words)
         if not candidates:
@@ -1644,6 +1691,27 @@ def _stemmed_columns(word: str, words: dict[str, tuple[str, ...]]) -> list[str]:
     ]
 
 
+def _skeleton_columns(word: str, words: dict[str, tuple[str, ...]]) -> list[str]:
+    """Columns with a name word that shortens ``word`` by dropping letters: "Dept" for "department".
+
+    The name word is an abbreviation of three letters or more with at most one
+    vowel, starts and ends as the word does, and keeps its letters in order;
+    the word is at least three letters longer.
+    """
+    if not word.isalpha():
+        return []
+
+    def shortens(name: str) -> bool:
+        if len(name) < 3 or len(word) < len(name) + 3 or sum(char in "aeiou" for char in name) > 1:
+            return False
+        if name[0] != word[0] or name[-1] != word[-1]:
+            return False
+        rest = iter(word)
+        return all(char in rest for char in name)
+
+    return [column for column, names in words.items() if any(shortens(name) for name in names)]
+
+
 def _number(text: str) -> float:
     words = text.split()
     return -float(words[-1]) if words[0] == "minus" else float(words[-1])
@@ -1798,7 +1866,7 @@ def _claim_conditions(
             claimed = (start, end + length)
         elif not numeric and (found_value := _attached_value(reading, column, end, vocabulary)):
             values, value_end = found_value
-            _add_filter(reading, values)
+            _add_filter(reading, values, start)
             claimed = (start, value_end)
         if claimed:
             reading.consumed.add(column)
@@ -2121,7 +2189,10 @@ def _claim_entity(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles
 
     A plural that names nothing else, right before "with" or "where" and a
     condition, names the rows too: "average strength for mixes with admixture above 0".
+    In a table of counts, any plural that names nothing else names the cases
+    the counts count: "female applicants" in UCBAdmissions.
     """
+    counts = frequency_column(dataframe) is not None
     for start, end, word in _tokens(reading.remaining):
         if word in QUERY_GRAMMAR:
             continue
@@ -2131,7 +2202,9 @@ def _claim_entity(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles
             r"\s+(?:with|where|whose|having|that\s+have|which\s+have)\s+\S", reading.original[end:]
         )
         rows = word == roles.row_noun
-        if word not in ENTITY_NOUNS and not rows and not (counted and plural) and not described:
+        # In a table of counts every plural noun left over names the cases counted: "female applicants".
+        cases = plural and counts
+        if word not in ENTITY_NOUNS and not rows and not (counted and plural) and not described and not cases:
             continue
         reading.claim(start, end)
         if reading.entity is None:
@@ -2279,7 +2352,7 @@ EVENT_PATTERN = re.compile(
 # Phrases that say where the rows are, not which: "on board", "in the data".
 FILLER_PATTERN = re.compile(
     r"\b(?:on\s+board|aboard|in\s+the\s+(?:data|dataset|data\s+set|table|file|sample)|in\s+this\s+"
-    r"(?:data|dataset|table|file|sample)|all\s+told|altogether)\b"
+    r"(?:data|dataset|table|file|sample)|all\s+told|altogether|at\s+an?\s+(?:\S+\s+)?rate(?:\s+of)?)\b"
 )
 # A passive verb after what is counted says how the rows came about, not which: "medals were won".
 PASSIVE_PATTERN = re.compile(
@@ -2544,6 +2617,7 @@ def _read_question(
     _claim_conditions(reading, list(reading.spans), dataframe, roles, vocabulary)
     _claim_person_names(reading, dataframe)
     _claim_values(reading, vocabulary, dataframe, exact_only=True, row_noun=roles.row_noun)
+    _claim_sexes(reading, vocabulary)
     _claim_analysis_words(reading, dataframe, roles)
     _claim_rate(reading)
     partial = _claim_partial_names(reading, dataframe, roles)
@@ -3506,8 +3580,11 @@ def _count_plan(
             )
         event = None if is_numeric_dtype(series) else outcome_event(series)
         if event is not None and not reading.distinct and column != roles.identifier:
-            # "what share survived" counts the rows where Survived is "Yes", as a 0/1 flag counts its 1s.
+            # "what share survived" counts the rows where Survived is "Yes", as a 0/1 flag counts its 1s;
+            # "what share of women survived" counts it among the women.
             answered = ValueFilter(column, (str(event),))
+            if _asks_share(reading) and (counting["filters"] or counting["conditions"]):
+                return QueryPlan(intent="count", aggregation="count", counted=(answered,), **counting)
             return QueryPlan(
                 intent="count", aggregation="count",
                 **{**counting, "filters": (*counting["filters"], answered)},
@@ -3528,15 +3605,59 @@ def _count_plan(
         return None
     unit = repeated_unit(dataframe, roles) if reading.entity and not reading.entity_column else None
     if unit and reading.entity not in ROW_NOUNS and reading.entity != roles.row_noun:
-        # Loblolly's 84 rows are 14 trees measured at 6 ages: its rows are not one tree each.
+        # Loblolly's 84 rows are 14 trees measured at 6 ages; Portal's rows are captures at 24 plots. The
+        # data can't say which the noun means.
         each = dataframe[unit].value_counts()
         rows = f"{each.min():,}" if each.min() == each.max() else f"{each.min():,} to {each.max():,}"
         reading.refusal = (
-            f"Each row is not one of the {reading.entity}: {unit} repeats ({rows} rows each), and no column "
-            f'names the {reading.entity}. Ask "how many distinct {unit}" or "how many rows".'
+            f"The {reading.entity} may be the rows or the {unit} values, which repeat ({rows} rows each), "
+            f'and no column names the {reading.entity}. Ask "how many rows" or "how many distinct {unit}".'
         )
         return None
+    based = _share_base(reading, counting) if not reading.entity_column else None
+    if based:
+        # "what share of Adelie are female": the Adelie are the base, female is counted.
+        base, counted = based
+        return QueryPlan(intent="count", aggregation="count", counted=counted, **{**counting, **base})
     return QueryPlan(intent="count", aggregation="count", count_column=reading.entity_column, **counting)
+
+
+SHARE_ANCHOR = re.compile(rf"\b(?:{'|'.join(SHARE_WORDS)}|rate)\s+of\b")
+# The verb that ends what a share is of: "share of Adelie | are female", "of passengers | who survived".
+LINK_VERB = re.compile(r"\b(?:are|is|were|was|have|has|had|got|did|do|does|who|that|which|whose)\b")
+
+
+def _asks_share(reading: _Reading) -> bool:
+    return bool(SHARE_ANCHOR.search(reading.original))
+
+
+def _share_base(reading: _Reading, counting: dict) -> tuple[dict, tuple] | None:
+    """Split a share's filters into the rows it is of and what it counts, at the verb after "share of".
+
+    Values and conditions before the verb make the base; those after are
+    counted. None when the question asks no share, or one side is empty.
+    """
+    anchor = SHARE_ANCHOR.search(reading.original)
+    verb = LINK_VERB.search(reading.original, anchor.end()) if anchor else None
+    if verb is None:
+        return None
+    items = [*counting["filters"], *counting["conditions"]]
+
+    def place(item: ValueFilter | Condition) -> int | None:
+        if isinstance(item, ValueFilter):
+            return reading.starts.get(item.column)
+        span = reading.spans.get(item.column)
+        return span[0] if span else None
+
+    places = {id(item): place(item) for item in items}
+    counted = tuple(item for item in items if (places[id(item)] or -1) >= verb.start())
+    if not counted or len(counted) == len(items):
+        return None
+    base = {
+        "filters": tuple(item for item in counting["filters"] if item not in counted),
+        "conditions": tuple(item for item in counting["conditions"] if item not in counted),
+    }
+    return base, counted
 
 
 # Words joining two groupings: "by A and B", "by A by B", "A x B".
@@ -4453,7 +4574,7 @@ def _run_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -> Q
         if not all(is_numeric_dtype(dataframe[column]) for column in pair):
             raise ValueError("A correlation needs two numeric columns")
 
-    if plan.aggregation == "share" or plan.counted:
+    if plan.aggregation == "share" or (plan.counted and plan.dimension):
         return _execute_shares(plan, dataframe, roles)
     try:
         working, applied = _apply_filters(dataframe, plan, roles)
@@ -4850,6 +4971,8 @@ def _execute_count(
         )
     weight = frequency_column(dataframe)
     each = f"; each row counts {weight} cases, the number its combination of values holds" if weight else ""
+    if plan.counted:
+        return _counted_share(plan, working, weight, each, scope)
     if not (plan.filters or plan.conditions):
         if weight:
             total = int(working[weight].sum())
@@ -4910,6 +5033,51 @@ def _execute_count(
         ),
         value=float(len(working)),
         figures=(("share_percent", share), ("denominator", float(len(base)))),
+    )
+
+
+def _counted_share(
+    plan: QueryPlan, working: pd.DataFrame, weight: str | None, each: str, scope: str
+) -> QueryAnswer:
+    """The rows meeting what the plan counts, as a share of the rows its filters keep.
+
+    "what share of women survived" is of the women; the base keeps the rows
+    where the counted columns are recorded, and says so when that leaves some out.
+    """
+    columns = list(dict.fromkeys(
+        item.column for item in plan.counted if getattr(item, "operator", None) != "missing"
+    ))
+    recorded = [column for column in columns if working[column].isna().any()]
+    base = working.loc[working[columns].notna().all(axis=1)] if columns else working
+    hits = _counted_mask(base, plan.counted)
+    described = " and ".join(_describe_counted(item) for item in plan.counted)
+    among = " and ".join(
+        [_describe_filter(item) for item in plan.filters] + _describe_conditions(plan.conditions)
+    )
+    when = f" in {_when_label(plan)}" if plan.year or plan.month else ""
+    kept = f", {_and_listed(recorded)} recorded" if recorded else ""
+    if weight:
+        count, total = int(base.loc[hits, weight].sum()), int(base[weight].sum())
+        unit = "cases"
+        calculation = (
+            f"sum({weight}) over the rows with {among} and {described}, divided by sum({weight}) over the "
+            f"{len(base):,} rows with {among}{kept}{scope}"
+        )
+    else:
+        count, total = int(hits.sum()), len(base)
+        unit = "rows"
+        calculation = f"rows with {described} among the {total:,} rows with {among}{kept}{scope}"
+    share = count / total * 100 if total else 0.0
+    return QueryAnswer(
+        question="",
+        plan=plan,
+        answer=(
+            f"{count:,} of the {total:,} {unit} with {among}{when}{kept} ({_share_text(share)}) have "
+            f"{described}{each}."
+        ),
+        calculation=calculation,
+        value=float(count),
+        figures=(("share_percent", share), ("denominator", float(total))),
     )
 
 

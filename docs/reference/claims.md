@@ -54,9 +54,11 @@ when the file can't be read, and 3 when it is unverified for any other reason.
    fraction in words before "of" ("about a quarter of", "more than half
    of", "two thirds of") and a whole number in words in a claim with no
    other number but a year ("Seventeen cases were decided in 2020") are read
-   as numbers. A claim with two numbers that could each be the one claimed is
-   not split: it gets `unsupported_analysis`, and each number should be sent
-   on its own.
+   as numbers. A lead that names the base ("Of the 4,526 applicants, 38.8%
+   were admitted") is set aside, and the base is checked: the share must be
+   of 4,526, or the claim gets `missing_context`. A claim with two numbers that
+   could each be the one claimed is not split: it gets `unsupported_analysis`,
+   and each number should be sent on its own.
 2. **The question.** The rest of the sentence is read as a question to
    `Analysis.ask` (see [Ask ADA](ask-ada.md)). "averaged 5050" becomes
    "average ...", and "There are 344 penguins" becomes "how many penguins",
@@ -97,7 +99,11 @@ for 24 to 26.
    percent, and a fraction such as 0.32 with 32%. A percent claim that names
    no column ("32.3% survived") is read as a share, and the assumptions say
    so; in a table of counts the share adds up the counts (see
-   [Ask ADA](ask-ada.md)). A number that counts things ("1,524 Kenyans",
+   [Ask ADA](ask-ada.md)). A percent claim read as a count over several values
+   is asked as a share, so its base is the group it names: "Men were admitted
+   at a rate of 44.5%" is of the men (see [Ask ADA](ask-ada.md)). A plural
+   after the number that names no column counts rows ("The survey recorded
+   1,950 captures in 2007"). A number that counts things ("1,524 Kenyans",
    "5,000 residents") is a total: when the plain reading is an average and
    the claim says nothing of averages, ADA checks the total instead and says
    so.
@@ -131,10 +137,10 @@ rest only when no subset could agree by chance:
 
 - a mismatch gives `missing_context`, never `failed_check`;
 - an agreement gives `verified` only for a lookup of one row, a total or a
-  count, or a slope whose left-out words only describe the column after
-  "per" ("day of sleep deprivation"); an average, a share or an extreme, and
-  any bound ("more than 1,000"), give `missing_context` with the agreement
-  shown.
+  count (not a percentage), or a slope whose left-out words only describe
+  the column after "per" ("day of sleep deprivation"); an average, a share or
+  an extreme, and any bound ("more than 1,000"), give `missing_context` with
+  the agreement shown.
 
 In a folder, a file read without some of the claim's words comes after the
 files and joins that read all of them.
