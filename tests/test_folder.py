@@ -103,6 +103,16 @@ class LinkTests(FolderTestCase):
         self.assertEqual([(link.label("from"), link.label("to")) for link in found.links],
                          [("results.driverId", "drivers.driverId")])
 
+    def test_an_id_column_links_to_the_bare_id_of_the_file_it_names(self):
+        rng = np.random.default_rng(64)
+        customers = pd.DataFrame({"id": np.arange(1, 61), "name": [f"n{n}" for n in range(60)]})
+        orders = pd.DataFrame({"order_id": np.arange(500), "customer_id": rng.integers(1, 61, 500),
+                               "total": rng.gamma(2, 40, 500).round(2)})
+        found = ada.scan(self.folder({"customers.csv": customers, "orders.csv": orders}))
+        link = found.links[0]
+        self.assertEqual((link.label("from"), link.label("to"), link.named),
+                         ("orders.customer_id", "customers.id", True))
+
     def test_a_shared_label_is_not_a_key(self):
         nations = [f"Nation {n}" for n in range(25)]
         teams = pd.DataFrame({"team_id": np.arange(75), "nationality": np.tile(nations, 3)})

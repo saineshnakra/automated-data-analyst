@@ -466,7 +466,8 @@ def _names_match(first: str, second: str, to_profile: FileProfile) -> bool:
     if len(a & b) >= 2 and len(a ^ b) <= 2:
         return True
     marks = {"id", "key", "code"}
-    return b <= marks and bool(a & _words(to_profile.stem)) and bool(a & marks)
+    named_for = {singular(word) for word in _words(to_profile.stem)} | _words(to_profile.stem)
+    return b <= marks and bool(a & named_for) and bool(a & marks)
 
 
 def _plain_numbers(values: set) -> bool:
