@@ -58,7 +58,11 @@ when the file can't be read, and 3 when it is unverified for any other reason.
    After a verb that adds things up (hit, scored, earned, collected,
    recorded), the words after the number name what is totalled: "Barry Bonds
    hit 73 home runs in 2001" becomes "total home runs Barry Bonds in 2001",
-   and "home runs" reads `HR` by its initials.
+   and "home runs" reads `HR` by its initials. Other words that name the
+   quantity are turned into the noun a column carries: an adjective after
+   the unit ("6,657 metres high" is a height; also tall, long, wide, deep,
+   heavy, old) and a verb before the number ("paid" is a payment; also
+   spent, earned, sold, charged, cost).
 3. **The interval.** The number stands for the values its writing implies,
    worked out in decimal arithmetic:
 
@@ -106,6 +110,22 @@ agrees only if the column were recorded in thousands or millions gets
 `missing_context`, with the question "What unit is co2 recorded in?". A claim
 whose scale word is part of the unit ("37,528 million tonnes" about a column
 recorded in million tonnes) agrees, and the assumption says how it was read.
+
+When the question still can't be read, two more readings are tried, each
+said in the assumptions:
+
+- A people noun as the subject that names no column or value ("Customers
+  paid R$16,008,872 in total") stands for every row: "Read "Customers" as
+  every row of the table, since no column names them."
+- A capitalised word before the rows' own noun that names nothing ("The
+  average Lego set has 161 parts" in `sets.csv`) only describes the rows,
+  and the phrase stands for every set. A word that is a value ("Gentoo
+  penguins") still filters.
+
+When the claim's words fit several columns and the number carries a currency
+symbol ("R$16,008,872"), the one column that holds money (a money word in its
+name, and values that are not small whole codes) is used, and the assumption
+says so.
 
 ## Statuses and reasons
 

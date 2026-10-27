@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Reading claims and questions
+
+- "6,657 metres high" reads a height, and "Customers paid R$16,008,872" a
+  payment: an adjective after the unit and a verb before the number name the
+  quantity (high, tall, long, wide, deep, heavy, old; paid, spent, earned,
+  sold, charged, cost).
+- A people noun as a claim's subject that names nothing in the table, and a
+  capitalised word before the rows' own noun ("the average Lego set"), stand
+  for every row, said in the assumptions; a word that is a value still
+  filters.
+- A number with a currency symbol picks the one money column among the
+  columns the words fit.
+- "Sets from 2019" means 2019's sets, while "from 2019 onwards" stays a
+  range; "released in 2020" and "on board" no longer name nothing.
+
 ### Decisions
 
 - Answers and claim checks list the choices they rest on: `decisions` in the
