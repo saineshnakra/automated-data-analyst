@@ -1196,6 +1196,15 @@ class NotDetectedTests(unittest.TestCase):
         self.assertNotIn("particle_number unit", cleaned.columns)
         self.assertTrue(any("Every one is in items/g" in note for note in report.notes))
 
+    def test_ordinals_are_labels_not_readings_in_a_unit(self):
+        # Titanic's classes: "st", "nd" and "rd" are not units, and Crew is a class.
+        frame = pd.DataFrame({"Class": ["1st", "2nd", "3rd", "Crew"] * 8, "Freq": range(32)})
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["Class"].tolist()[:4], ["1st", "2nd", "3rd", "Crew"])
+        self.assertNotIn("Class unit", cleaned.columns)
+
     def test_readings_in_several_units_get_a_unit_column(self):
         frame = pd.DataFrame({"Level": ["5 mg/L", "7 mg/L", "0.2 g/L", "0.3 g/L", "4.5 *10^(6) mg/L"]})
 

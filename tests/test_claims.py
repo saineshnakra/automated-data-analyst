@@ -314,6 +314,51 @@ class RepeatedUnitTests(unittest.TestCase):
         self.assertTrue(check.verified)
         self.assertTrue(any("weights each Subject" in warning for warning in check.warnings))
 
+    def test_one_repeated_id_is_not_repeated_measurement(self):
+        climbers = pd.DataFrame({"member_id": [f"M{index}" for index in range(30)] + ["M0"],
+                                 "age": [30.0 + index % 20 for index in range(31)]})
+        analysis = ada.analyze(climbers)
+        analysis = replace(analysis, roles=replace(analysis.roles, identifier="member_id"))
+        check = ada.check_claim(analysis, f"The average age is {climbers['age'].mean():.1f}.")
+        self.assertTrue(check.verified)
+        self.assertEqual(check.warnings, ())
+
+
+class GuessedColumnTests(unittest.TestCase):
+    def frame(self) -> pd.DataFrame:
+        return pd.DataFrame({
+            "member_id": [f"M{index}" for index in range(5)],
+            "expedition_role": ["Leader", "Member", "Member", "Member", "Guide"],
+            "death_height_metres": [math.nan, 8000.0, 7500.0, math.nan, math.nan],
+            "num_parts": [10, 20, 30, 40, 50],
+        })
+
+    def test_a_column_the_claim_does_not_name_by_its_last_word_does_not_fail_it(self):
+        # "deaths" is the first word of death_height_metres, a height; summing heights is a guess.
+        check = ada.check_claim(self.frame(), "Members recorded 3 member deaths in total.")
+        self.assertEqual(check.answer.plan.measure, "death_height_metres")
+        self.assertEqual((check.reason, check.agreement), ("missing_context", "mismatch"))
+        self.assertEqual(check.clarification,
+                         "Is the number about death_height_metres, or about another column?")
+
+    def test_counting_words_and_units_need_not_be_named(self):
+        check = ada.check_claim(self.frame(), "Rows have 40 parts on average.")
+        self.assertEqual(check.reason, "failed_check")
+        self.assertTrue(ada.check_claim(self.frame(), "Rows have 30 parts on average.").verified)
+
+
+class FrequencyTableClaimTests(unittest.TestCase):
+    def test_a_percentage_with_no_share_word_is_checked_as_a_weighted_share(self):
+        titanic = pd.DataFrame({
+            "Class": ["1st", "2nd", "3rd", "Crew"] * 2, "Survived": ["No"] * 4 + ["Yes"] * 4,
+            "Freq": [122, 167, 528, 673, 203, 118, 178, 212],
+        })
+        check = ada.check_claim(titanic, "32.3% survived.")
+        self.assertTrue(check.verified)
+        self.assertIn("sum(Freq)", check.answer.calculation)
+        # Half the rows, a third of the people.
+        self.assertEqual(ada.check_claim(titanic, "50% survived.").reason, "failed_check")
+
 
 class ThinDataClaimTests(unittest.TestCase):
     def test_one_row_and_an_empty_column(self):

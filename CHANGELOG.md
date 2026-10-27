@@ -49,6 +49,32 @@
 
 ### Fixes
 
+- A table of counts is counted by its counts. When each row is one
+  combination of categories with a column such as `Freq` holding how many
+  cases it stands for, a count or share adds up that column, and the answer
+  says so: Titanic's "what share survived" is 711 of 2,201 people (32.3%),
+  not half of its 32 rows. A share of a Yes/No column counts its Yes rows
+  ("what share survived" was answered with the number of distinct values),
+  and a percent claim that names no column ("32.3% survived") is checked as
+  a share.
+- Ordinals are labels. Titanic's `Class` ("1st", "2nd", "3rd", "Crew") was
+  read as numbers in units called "st", "nd" and "rd", with "Crew" missing; it
+  stays a column of classes.
+- A mismatch is a failed check only when the claim names what the column
+  measures. "Expeditions recorded 788 member deaths" read "deaths" as
+  `death_height_metres`, summed the heights at which climbers died (11,050)
+  and called the claim false; such a mismatch is now `missing_context`, with
+  the question "Is the number about death_height_metres, or about another
+  column?".
+- The file's own noun for its rows names the rows, not a value: "Expeditions"
+  in expeditions.csv no longer matches trekking agencies named "...
+  Expeditions", and "what share of members had success" in members.csv counts
+  all 76,519 members (38.2%), not the 9 whose role is "Member", which a
+  question still reaches by typing "Member". In a folder, the file whose column the claim names by
+  what it measures is chosen over one read from a lesser word, so the claim
+  above is verified against `expeditions.csv`'s `member_deaths` (788).
+- One repeated id is not repeated measurement: the warning that an average
+  weights each unit by its rows needs 1.5 rows per unit on average.
 - Words that a column's name shortens word by word name it: "life
   expectancy" names Gapminder's `lifeExp`, and the answer says so ('Read
   "life expectancy" as lifeExp'). The question was refused.

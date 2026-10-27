@@ -70,7 +70,10 @@ when the file can't be read, and 3 when it is unverified for any other reason.
 
 4. **The comparison.** The computed answer is compared with the interval, in
    the claim's terms: a percent claim is compared with a share or a change in
-   percent, and a fraction such as 0.32 with 32%.
+   percent, and a fraction such as 0.32 with 32%. A percent claim that names
+   no column ("32.3% survived") is read as a share, and the assumptions say
+   so; in a table of counts the share adds up the counts (see
+   [Ask ADA](ask-ada.md)).
 
 ## Units and scale
 
@@ -117,6 +120,14 @@ verified as read: the `reading`, `assumptions` and `warnings` say what was
 checked, and nothing beyond it. A check covers one number; an answer with
 several numbers in it needs a check for each.
 
+A mismatch is `failed_check` only when the claim names what the column
+measures: the last word of its name, leaving out a unit or a counting word
+("order value" for `payment_value`, "250 parts" for `num_parts`), or its
+initials ("home runs" for `HR`). When the column was read from a lesser word
+("deaths" for `death_height_metres`, a height), a mismatch says nothing about
+the claim, so it gets `missing_context` with `agreement: "mismatch"` and the
+question "Is the number about death_height_metres, or about another column?".
+
 When the claim is unverified for a reason a person can resolve,
 `clarification` holds the smallest question that would let the check go
 ahead, such as "Which column is meant: dep_delay or arr_delay?".
@@ -129,8 +140,9 @@ Besides the number, a check records what could make the answer misleading:
   with the measure missing, cells the data checks flag, exact repeats of
   other rows left out of a test.
 - **Repeated units.** When the table's identifier (a subject, a site) has
-  several rows, an average weights each unit by its number of rows, which the
-  warnings say; a test or correlation over such rows treats them as
+  several rows, 1.5 or more per unit on average, an average weights each unit
+  by its number of rows, which the warnings say (one repeated id among 76,519
+  climbers is not repeated measurement); a test or correlation over such rows treats them as
   independent, which fails the check.
 - **Cautions from the answer.** Whatever the answer itself says may sway it,
   such as a spread too wide for the mean to be typical, or a pooled
@@ -169,7 +181,10 @@ Besides the number, a check records what could make the answer misleading:
 ## Claims about a folder
 
 `check_claim` and `ada claim` also take a folder. The claim is checked against
-every table in it:
+every table in it. Files whose column the claim names by its last word come
+first: "788 member deaths" is checked against `expeditions.csv`'s
+`member_deaths`, and `members.csv`, where "deaths" would read
+`death_height_metres`, is left out with a note. Then:
 
 - one file gives a number for it: that file's check is the result, and the
   first assumption says it was the only file whose columns fit

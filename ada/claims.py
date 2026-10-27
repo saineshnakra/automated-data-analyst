@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .file_io import SUPPORTED_SUFFIXES as READABLE
-from .formatting import counted
+from .formatting import counted, list_names, normalized_name
 from .nlq import QueryAnswer
 from .sources import Source
 
@@ -549,6 +549,33 @@ def _named(question: str, column: str) -> bool:
     return any(_abbreviates(word, part) for word in words for part in parts if len(part) >= 2)
 
 
+# Name words that say a column counts or totals something; a claim need not repeat them ("250 parts"
+# for num_parts).
+COUNTING_WORDS = frozenset({"num", "number", "no", "n", "count", "total", "amount", "qty"})
+
+
+def _names_head(question: str, column: str) -> bool:
+    """Whether the question names the last word of ``column``'s name, the kind of quantity it holds.
+
+    The unit and counting words are set aside: "order value" names payment_value
+    and "250 parts" names num_parts, "home runs" names HR by its initials, while
+    "deaths" names only the first word of death_height_metres, a height.
+    """
+    if str(column).lower() in question.lower():
+        return True
+    words = re.findall(r"[a-z]+", question.lower())
+    if str(column).isalpha() and str(column).isupper():
+        size = len(str(column))
+        if str(column).lower() in {"".join(word[0] for word in words[start:start + size])
+                                   for start in range(len(words))}:
+            return True
+    parts = re.findall(r"[a-z]+", normalized_name(column))
+    if len(parts) > 1 and column_unit(column) == parts[-1]:
+        parts = parts[:-1]
+    parts = [part for part in parts if part not in COUNTING_WORDS] or parts
+    return not parts or any(_abbreviates(word, parts[-1]) for word in words)
+
+
 def _candidate_columns(message: str, columns: list[str]) -> list[str]:
     """Columns named in a refusal's "Did you mean A, B or C?"."""
     asked = re.search(r"Did you mean (.+?)\?", message)
@@ -652,6 +679,10 @@ def _unit_columns(analysis: Any, asked: str, number: ClaimedNumber) -> list[tupl
     return found
 
 
+# Rows per unit, on average, before a unit counts as measured repeatedly.
+MIN_ROWS_PER_UNIT = 1.5
+
+
 def _repeated_units(analysis: Any, answer: QueryAnswer) -> Check | None:
     """Whether the answer treats rows as independent when a unit (a subject, a site) has several rows."""
     roles = analysis.roles
@@ -662,7 +693,8 @@ def _repeated_units(analysis: Any, answer: QueryAnswer) -> Check | None:
     ):
         return None
     counts = analysis.frame[unit].dropna().value_counts()
-    if counts.empty or counts.max() < 2:
+    # A few repeated ids (one in 76,519 Himalayan climbers) are not repeated measurements.
+    if counts.empty or counts.sum() < MIN_ROWS_PER_UNIT * len(counts):
         return None
     per = plan.per or ()
     if unit in per:
@@ -760,9 +792,10 @@ def _check_folder(
 ) -> ClaimCheck:
     """Check a claim about a folder against each of its tables, and say which one fits.
 
-    The claim is checked against every readable file. When exactly one gives a
-    number for it, that file's check is the result, and its assumptions say the
-    file was chosen this way. When several do and they disagree, the claim is
+    The claim is checked against every readable file. Files whose column the
+    claim names by its last word, the kind of quantity it holds, come first.
+    When exactly one gives a number for it, that file's check is the result,
+    and its assumptions say the file was chosen this way. When several do and they disagree, the claim is
     ambiguous. When none does, the claim may need two files joined, and the
     links a scan proposes are named; ADA does not join files itself.
     """
@@ -780,9 +813,20 @@ def _check_folder(
         check = check_claim(item, claim, question=question, value=value)
         if check.answer is not None and check.compared is not None:
             fitted.append((item, check))
+    # A file whose column the claim names by what it measures fits better than one read from a lesser
+    # word: "member deaths" is member_deaths in expeditions.csv, not death_height_metres.
+    named = [(item, check) for item, check in fitted
+             if _names_head(check.question or "", check.answer.plan.measure or "")]
+    lesser = [item.name for item, _ in fitted if named and item not in {found for found, _ in named}]
+    fitted = named or fitted
     if len(fitted) == 1:
         item, check = fitted[0]
         chosen = f"Checked against {item.name}, the only file in {folder.name} whose columns fit the claim."
+        if lesser:
+            chosen = (
+                f"Checked against {item.name}, whose {check.answer.plan.measure} the claim names by what it "
+                f"measures; {list_names(lesser)} fit only by a lesser word."
+            )
         return replace(check, assumptions=(chosen, *check.assumptions))
     if fitted:
         values = {round(check.compared, 12) for _, check in fitted}
@@ -883,6 +927,12 @@ def _check(analysis: Any, text: str, asked: str, number: ClaimedNumber, source: 
         column for column in (answer.plan.measure, answer.plan.partner)
         if column and not _named(asked, column)
     ]
+    if unnamed and number.percent:
+        # "32.3% survived" gives a share even with no word for one.
+        share = analysis.ask(f"share of {asked}")
+        if not isinstance(share, Refusal) and "share_percent" in dict(share.figures):
+            answer, asked, unnamed = share, f"share of {asked}", []
+            assumptions.append("Read the percentage as a share, which the claim names no column for.")
     if unnamed:
         return ClaimCheck(
             text, "unverified", "missing_context",
@@ -965,6 +1015,18 @@ def _check(analysis: Any, text: str, asked: str, number: ClaimedNumber, source: 
     described = answer.calculation
     used = scope.rows_used if scope is not None else None
     rows = f" ({counted(used, 'row')})" if used is not None else ""
+    if agreement == "mismatch" and measure and not _names_head(asked, measure):
+        # A column read from a word that does not say what it measures may be the wrong one; a
+        # mismatch there proves nothing.
+        return ClaimCheck(
+            text, "unverified", "missing_context",
+            f"The data give {_plain(computed)}{rows} for {described}, outside {number.interval()}, but the "
+            f"claim does not name what {measure} measures, so it may be about another column.",
+            claimed=number, question=asked, answer=answer, compared=computed, agreement="mismatch",
+            assumptions=tuple(dict.fromkeys(assumptions)), warnings=tuple(dict.fromkeys(warnings)),
+            checks=tuple(checks), source=source,
+            clarification=f"Is the number about {measure}, or about another column?",
+        )
     if agreement == "mismatch":
         reason = "failed_check"
         message = (
