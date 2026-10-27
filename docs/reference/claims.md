@@ -137,8 +137,9 @@ Besides the number, a check records what could make the answer misleading:
   with the measure missing, cells the data checks flag, exact repeats of
   other rows left out of a test.
 - **Repeated units.** When the table's identifier (a subject, a site) has
-  several rows, an average weights each unit by its number of rows, which the
-  warnings say; a test or correlation over such rows treats them as
+  several rows, 1.5 or more per unit on average, an average weights each unit
+  by its number of rows, which the warnings say (one repeated id among 76,519
+  climbers is not repeated measurement); a test or correlation over such rows treats them as
   independent, which fails the check.
 - **Cautions from the answer.** Whatever the answer itself says may sway it,
   such as a spread too wide for the mean to be typical, or a pooled

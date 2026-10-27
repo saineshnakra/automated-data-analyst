@@ -679,6 +679,10 @@ def _unit_columns(analysis: Any, asked: str, number: ClaimedNumber) -> list[tupl
     return found
 
 
+# Rows per unit, on average, before a unit counts as measured repeatedly.
+MIN_ROWS_PER_UNIT = 1.5
+
+
 def _repeated_units(analysis: Any, answer: QueryAnswer) -> Check | None:
     """Whether the answer treats rows as independent when a unit (a subject, a site) has several rows."""
     roles = analysis.roles
@@ -689,7 +693,8 @@ def _repeated_units(analysis: Any, answer: QueryAnswer) -> Check | None:
     ):
         return None
     counts = analysis.frame[unit].dropna().value_counts()
-    if counts.empty or counts.max() < 2:
+    # A few repeated ids (one in 76,519 Himalayan climbers) are not repeated measurements.
+    if counts.empty or counts.sum() < MIN_ROWS_PER_UNIT * len(counts):
         return None
     per = plan.per or ()
     if unit in per:

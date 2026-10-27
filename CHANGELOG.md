@@ -55,6 +55,8 @@
   and called the claim false; such a mismatch is now `missing_context`, with
   the question "Is the number about death_height_metres, or about another
   column?".
+- One repeated id is not repeated measurement: the warning that an average
+  weights each unit by its rows needs 1.5 rows per unit on average.
 - Words that a column's name shortens word by word name it: "life
   expectancy" names Gapminder's `lifeExp`, and the answer says so ('Read
   "life expectancy" as lifeExp'). The question was refused.

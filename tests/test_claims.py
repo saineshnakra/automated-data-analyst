@@ -314,6 +314,16 @@ class RepeatedUnitTests(unittest.TestCase):
         self.assertTrue(check.verified)
         self.assertTrue(any("weights each Subject" in warning for warning in check.warnings))
 
+    def test_one_repeated_id_is_not_repeated_measurement(self):
+        climbers = pd.DataFrame({"member_id": [f"M{index}" for index in range(30)] + ["M0"],
+                                 "age": [30.0 + index % 20 for index in range(31)]})
+        analysis = ada.analyze(climbers)
+        analysis = replace(analysis, roles=replace(analysis.roles, identifier="member_id"))
+        check = ada.check_claim(analysis, f"The average age is {climbers['age'].mean():.1f}.")
+        self.assertTrue(check.verified)
+        self.assertEqual(check.warnings, ())
+
+
 class GuessedColumnTests(unittest.TestCase):
     def frame(self) -> pd.DataFrame:
         return pd.DataFrame({
