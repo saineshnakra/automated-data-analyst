@@ -49,6 +49,12 @@
 
 ### Fixes
 
+- A mismatch is a failed check only when the claim names what the column
+  measures. "Expeditions recorded 788 member deaths" read "deaths" as
+  `death_height_metres`, summed the heights at which climbers died (11,050)
+  and called the claim false; such a mismatch is now `missing_context`, with
+  the question "Is the number about death_height_metres, or about another
+  column?".
 - Words that a column's name shortens word by word name it: "life
   expectancy" names Gapminder's `lifeExp`, and the answer says so ('Read
   "life expectancy" as lifeExp'). The question was refused.

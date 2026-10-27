@@ -314,6 +314,28 @@ class RepeatedUnitTests(unittest.TestCase):
         self.assertTrue(check.verified)
         self.assertTrue(any("weights each Subject" in warning for warning in check.warnings))
 
+class GuessedColumnTests(unittest.TestCase):
+    def frame(self) -> pd.DataFrame:
+        return pd.DataFrame({
+            "member_id": [f"M{index}" for index in range(5)],
+            "expedition_role": ["Leader", "Member", "Member", "Member", "Guide"],
+            "death_height_metres": [math.nan, 8000.0, 7500.0, math.nan, math.nan],
+            "num_parts": [10, 20, 30, 40, 50],
+        })
+
+    def test_a_column_the_claim_does_not_name_by_its_last_word_does_not_fail_it(self):
+        # "deaths" is the first word of death_height_metres, a height; summing heights is a guess.
+        check = ada.check_claim(self.frame(), "Members recorded 3 member deaths in total.")
+        self.assertEqual(check.answer.plan.measure, "death_height_metres")
+        self.assertEqual((check.reason, check.agreement), ("missing_context", "mismatch"))
+        self.assertEqual(check.clarification,
+                         "Is the number about death_height_metres, or about another column?")
+
+    def test_counting_words_and_units_need_not_be_named(self):
+        check = ada.check_claim(self.frame(), "Rows have 40 parts on average.")
+        self.assertEqual(check.reason, "failed_check")
+        self.assertTrue(ada.check_claim(self.frame(), "Rows have 30 parts on average.").verified)
+
 
 class ThinDataClaimTests(unittest.TestCase):
     def test_one_row_and_an_empty_column(self):

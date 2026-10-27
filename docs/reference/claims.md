@@ -117,6 +117,14 @@ verified as read: the `reading`, `assumptions` and `warnings` say what was
 checked, and nothing beyond it. A check covers one number; an answer with
 several numbers in it needs a check for each.
 
+A mismatch is `failed_check` only when the claim names what the column
+measures: the last word of its name, leaving out a unit or a counting word
+("order value" for `payment_value`, "250 parts" for `num_parts`), or its
+initials ("home runs" for `HR`). When the column was read from a lesser word
+("deaths" for `death_height_metres`, a height), a mismatch says nothing about
+the claim, so it gets `missing_context` with `agreement: "mismatch"` and the
+question "Is the number about death_height_metres, or about another column?".
+
 When the claim is unverified for a reason a person can resolve,
 `clarification` holds the smallest question that would let the check go
 ahead, such as "Which column is meant: dep_delay or arr_delay?".

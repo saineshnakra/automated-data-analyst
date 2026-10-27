@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .file_io import SUPPORTED_SUFFIXES as READABLE
-from .formatting import counted
+from .formatting import counted, normalized_name
 from .nlq import QueryAnswer
 from .sources import Source
 
@@ -549,6 +549,33 @@ def _named(question: str, column: str) -> bool:
     return any(_abbreviates(word, part) for word in words for part in parts if len(part) >= 2)
 
 
+# Name words that say a column counts or totals something; a claim need not repeat them ("250 parts"
+# for num_parts).
+COUNTING_WORDS = frozenset({"num", "number", "no", "n", "count", "total", "amount", "qty"})
+
+
+def _names_head(question: str, column: str) -> bool:
+    """Whether the question names the last word of ``column``'s name, the kind of quantity it holds.
+
+    The unit and counting words are set aside: "order value" names payment_value
+    and "250 parts" names num_parts, "home runs" names HR by its initials, while
+    "deaths" names only the first word of death_height_metres, a height.
+    """
+    if str(column).lower() in question.lower():
+        return True
+    words = re.findall(r"[a-z]+", question.lower())
+    if str(column).isalpha() and str(column).isupper():
+        size = len(str(column))
+        if str(column).lower() in {"".join(word[0] for word in words[start:start + size])
+                                   for start in range(len(words))}:
+            return True
+    parts = re.findall(r"[a-z]+", normalized_name(column))
+    if len(parts) > 1 and column_unit(column) == parts[-1]:
+        parts = parts[:-1]
+    parts = [part for part in parts if part not in COUNTING_WORDS] or parts
+    return not parts or any(_abbreviates(word, parts[-1]) for word in words)
+
+
 def _candidate_columns(message: str, columns: list[str]) -> list[str]:
     """Columns named in a refusal's "Did you mean A, B or C?"."""
     asked = re.search(r"Did you mean (.+?)\?", message)
@@ -965,6 +992,18 @@ def _check(analysis: Any, text: str, asked: str, number: ClaimedNumber, source: 
     described = answer.calculation
     used = scope.rows_used if scope is not None else None
     rows = f" ({counted(used, 'row')})" if used is not None else ""
+    if agreement == "mismatch" and measure and not _names_head(asked, measure):
+        # A column read from a word that does not say what it measures may be the wrong one; a
+        # mismatch there proves nothing.
+        return ClaimCheck(
+            text, "unverified", "missing_context",
+            f"The data give {_plain(computed)}{rows} for {described}, outside {number.interval()}, but the "
+            f"claim does not name what {measure} measures, so it may be about another column.",
+            claimed=number, question=asked, answer=answer, compared=computed, agreement="mismatch",
+            assumptions=tuple(dict.fromkeys(assumptions)), warnings=tuple(dict.fromkeys(warnings)),
+            checks=tuple(checks), source=source,
+            clarification=f"Is the number about {measure}, or about another column?",
+        )
     if agreement == "mismatch":
         reason = "failed_check"
         message = (
