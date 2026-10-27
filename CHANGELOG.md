@@ -34,6 +34,11 @@
 
 ### Reading claims and questions
 
+- Fixed a wrong verdict: "Day 7 was the slowest for births" verified as
+  `day_of_week` = 7 in a table whose `date_of_month` also holds 7; a bare "day
+  N" that both day columns hold is now refused, naming both.
+- "which countries have the most large airports" lists the first five
+  countries; "which country has the most" still gives one.
 - "magnitude" names `mag` rather than every column starting with mag, and
   "capacity" names `capacity_mw`; "magnitude 7 or more" bounds it; a column
   named for a time or period that holds only years is the year; "more than

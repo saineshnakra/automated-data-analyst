@@ -285,6 +285,8 @@ QUERY_STOPWORDS = {
 # Words asking what share of the rows meet a condition: "what share have diabetes".
 SHARE_WORDS = ("share", "proportion", "percentage", "percent", "fraction")
 COUNT_PATTERN = rf"\b(?:how many|count|number of|{'|'.join(SHARE_WORDS)})\b"
+# Groups a superlative over a plural names ("which countries have the most"): the first few, not one.
+PLURAL_RANKED = 5
 # Words for the things a table's rows describe. In "how many patients are
 # positive" they name what is counted, not a column; when a column of IDs
 # numbers them, its distinct values are counted instead of rows.
@@ -2520,6 +2522,32 @@ def _condition_words(
     return None
 
 
+def _day_kind(column: str) -> str | None:
+    """Which day a column numbers: "week" for day_of_week, "month" for date_of_month, or None."""
+    words = set(_norm(normalized_name(str(column))).split())
+    if "week" in words and words & {"day", "dow", "weekday"}:
+        return "week"
+    if "month" in words and words & {"day", "date", "dom"}:
+        return "month"
+    return None
+
+
+def _other_day(written: str, column: str, conditions: list[Condition], dataframe: pd.DataFrame) -> str | None:
+    """The other day column a bare "day N" may mean: the day of the month for day_of_week, or the reverse,
+    when it holds N too."""
+    kind = _day_kind(column)
+    if kind is None or written.strip().lower() not in ("day", "days") or len(conditions) != 1:
+        return None
+    if conditions[0].operator != "=":
+        return None
+    for other in dataframe.columns:
+        if other == column or _day_kind(str(other)) in (None, kind) or not is_numeric_dtype(dataframe[other]):
+            continue
+        if bool((dataframe[other] == conditions[0].value).any()):
+            return str(other)
+    return None
+
+
 def _in_column_unit(column: str, unit: str, value: float) -> float | None:
     """``value`` in ``unit`` as a number in the column's own unit, or None when the column's name gives
     no unit of that kind."""
@@ -2595,6 +2623,11 @@ def _claim_conditions(
             claimed = (start, end + match.end())
         elif numeric and (found := _condition_after(column, after, series, roles)):
             conditions, length = found
+            if (other := _other_day(reading.original[start:end], column, conditions, dataframe)) is not None:
+                # "Day 7" where both the day of the week and the day of the month hold a 7.
+                reading.flag(f'"{reading.original[start:end + length].strip()}" may be {column} = '
+                             f"{_number_text(conditions[0].value)} or {other} = "
+                             f"{_number_text(conditions[0].value)}; name the column.")
             reading.conditions.extend(conditions)
             claimed = (start, end + length)
         elif numeric and (match := re.search(
@@ -2772,6 +2805,12 @@ def _claim_time_points(reading: _Reading, dataframe: pd.DataFrame, roles: Column
     for match in list(re.finditer(pattern, reading.remaining)):
         number = _number(match.group("number"))
         if number in values:
+            day = "day" if re.search(r"\bdays?\b", match.group(0)) else ""
+            other = _other_day(day, points[0], [Condition(points[0], "=", number)], dataframe)
+            if other is not None:
+                # "Day 7" where both the day of the week and the day of the month hold a 7.
+                reading.flag(f'"{match.group(0).strip()}" may be {points[0]} = {_number_text(number)} or '
+                             f"{other} = {_number_text(number)}; name the column.")
             reading.conditions.append(Condition(points[0], "=", number))
             reading.scoped.add(points[0])
             reading.claim(match.start(), match.end())
@@ -4383,7 +4422,10 @@ def _plan_from_reading(reading: _Reading, dataframe: pd.DataFrame, roles: Column
             top_n = int(top_match.group(2))
             ascending = top_match.group(1) == "bottom"
         else:
-            top_n = 1
+            # "which countries have the most" asks for several; "which country has the most" for one.
+            plural = re.search(r"\b(?:which|what)\s+(?:[a-z]+\s+)?[a-z]{3,}[^s\W]s\s+(?:have|had|are|were|"
+                               r"saw|got|recorded|made|scored|won)\b", reading.original)
+            top_n = PLURAL_RANKED if plural else 1
             ascending = bool(re.search(ASCENDING_PATTERN, intent_text))
         # "which boroughs have the most rescues": with no measure named, "most" counts each group's rows,
         # as it does for periods.
