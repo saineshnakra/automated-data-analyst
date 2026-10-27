@@ -165,6 +165,16 @@ state in 1988, with 5,390") is read as the same peak, and "Vesuvius had its
 busiest year on record in 2024, with 1,315 earthquakes" as a peak of the rows
 counted in each year.
 
+A multiple is a change in percent: "doubled" is a rise of about 100%, "more
+than sixfold" one of more than 500%, "tripled" about 200% and "halved" a fall
+of about 50%. A fraction before a verb needs no "of": "nearly half went on to
+college" is read as "nearly half of" is.
+
+A rate ("about 20 claims for every 100 policyholders", "16 Claims per 100
+Holders") is checked as the total of one column over the total of the other,
+times the number after "per" or "for every", which is part of the question
+and never the number claimed.
+
 ## Words that name nothing
 
 When the claim still can't be read, ADA leaves out the words its refusal
@@ -184,6 +194,11 @@ rest only when no subset could agree by chance:
   the column after "per" ("day of sleep deprivation"); an average, a share or
   an extreme, and any bound ("more than 1,000"), give `missing_context` with
   the agreement shown.
+
+A unit a price or an amount is given in ("a gallon", "per barrel") is left out
+of a change in percent without counting as a word that names nothing, since
+a change in percent is the same in any unit; an amount in such a unit is
+still checked only as other left-out words allow.
 
 Words that are all words of the table's file or folder name ("Marvel's" for
 `marvel-characters/marvel-wikia-data.csv`, "road" for

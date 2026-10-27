@@ -34,6 +34,22 @@
 
 ### Reading claims and questions
 
+- "The average price of a gallon fell by about 11%" is checked: a unit left
+  out of a change in percent does not change it.
+- "doubled", "more than sixfold", "tripled" and "halved" are changes in
+  percent; "nearly half went on to college" is a fraction without "of"; and
+  in a column of state names "NM" and "Calif." pick their states.
+- Fixed wrong answers: "how many encounters in 2023" counted rows when each
+  row holds a count (`encounter_count`), and "Mexican nationals accounted for
+  29% of encounters" was the share of rows. A plural that names a column of
+  whole counts now adds it up in counts, shares, groupings and trends.
+  "Venezuelans" and "Mexican nationals" read as their countries.
+- Rates: "Claims per 100 Holders" and "about 20 claims for every 100
+  holders" are the total of one column over the total of the other, times
+  the number they are per (`sum(Claims) ÷ sum(Holders) × 100`), with both
+  totals in the answer. A code after "per" ("per District") and an average
+  asked for keep their own readings.
+
 - "6,657 metres high" reads a height, and "Customers paid R$16,008,872" a
   payment: an adjective after the unit and a verb before the number name the
   quantity (high, tall, long, wide, deep, heavy, old; paid, spent, earned,

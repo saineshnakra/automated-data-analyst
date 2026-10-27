@@ -296,11 +296,13 @@ each word is claimed, in this order, by:
    the one yes/no column named for it (`Survived`: "survivors" is Yes, "died"
    is No; `OUTCOME_WORDS`). A US state's name picks its postal code in the one
    column that holds only postal codes, at least ten of them ("Texas" is
-   `state` = tx). A plural most values of two or more columns share
+   `state` = tx); in a column of state names, a postal code in capitals
+   ("NM") or a newspaper's abbreviation with its full stop ("Calif.") picks
+   the state. A plural most values of two or more columns share
    ("characters" in "Male Characters" and "Good Characters") names the rows
-   and is no value. An adjective
-   of nationality names its country ("Belgian" is Belgium, "Dutch" the
-   Netherlands; `DEMONYMS`) in the one column that holds it, or, when a
+   and is no value. An adjective of nationality, or its plural, names its
+   country ("Belgian" is Belgium, "Venezuelans" Venezuela, "Mexican
+   nationals" Mexico, "Dutch" the Netherlands; `DEMONYMS`) in the one column that holds it, or, when a
    country of birth holds it too, in the column named for nationality. A
    value that several columns hold is the one whose column is named right
    after it, with only words such as "level of" between: "high
@@ -350,6 +352,13 @@ each word is claimed, in this order, by:
     superplasticizer above 0"). In a table of counts, the first plural that
     names nothing else names the cases the counts count ("female
     applicants"); a second one ("people who were cyclists") names nothing.
+    A plural after "how many", "number of" or "share of" that names the one
+    column of whole counts named for it with a word such as count, number or
+    n ("encounters" for `encounter_count`) adds that column up: counts,
+    shares, groupings and trends use `sum(encounter_count)`, as each row
+    holds a count rather than one encounter. When an ID names each row once
+    (a tag per cat), the rows are the things, and `n_cats` is a column like
+    any other. With two such columns the question is refused.
 16. **"missing"**, "null", "blank" or "empty" not attached to a column: a
     question about missing values.
 17. **Column words** ("column", "variable") right after a column's name ("the
@@ -863,6 +872,14 @@ Other behaviour:
   the units' means.
 - Sum and count groupings get a `Share %` column when every group has the same
   sign.
+- A rate of one column per another ("Claims per Holders", "claims for every
+  100 Holders", "per 1,000 Holders") is the total of the first over the total
+  of the second, on the rows that hold both, times the number it is per:
+  `sum(Claims) ÷ sum(Holders) × 100`. It is not the average of the rows' own
+  rates, which weights a small row like a large one. Both columns must be
+  measurements that are never negative and are not rates themselves; a code
+  after "per" ("Claims per District") or an average asked for ("average
+  quantity per transect") keeps its own reading.
 - Changes are given in the measure's own terms: percent for an amount or
   count, percentage points for a rate, the plain difference for a level,
   whose percent change is in the figures too. A change between two years the

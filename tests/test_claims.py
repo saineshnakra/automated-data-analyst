@@ -976,6 +976,49 @@ class PeakTests(unittest.TestCase):
                 self.assertEqual(ada.check_claim(frame, claim).reason, "missing_context")
 
 
+class MultipleAndFractionTests(unittest.TestCase):
+    def counts(self) -> pd.DataFrame:
+        return pd.DataFrame({"year": [2021, 2022, 2023], "encounter_count": [100, 250, 640]})
+
+    def test_a_multiple_is_a_change_in_percent(self):
+        frame = self.counts()
+        for claim in ("Encounters rose more than sixfold between 2021 and 2023.",
+                      "Encounters more than doubled between 2021 and 2022."):
+            with self.subTest(claim=claim):
+                self.assertTrue(ada.check_claim(frame, claim).verified)
+        self.assertEqual(ada.check_claim(frame, "Encounters tripled between 2021 and 2023.").reason,
+                         "failed_check")
+
+    def test_the_unit_of_a_price_does_not_change_its_change_in_percent(self):
+        days = pd.date_range("2022-01-03", periods=104, freq="W-MON")
+        frame = pd.DataFrame({"date": days, "price": [4.0] * 52 + [3.56] * 52})
+        claim = "The average price of a gallon fell by about 11% between 2022 and 2023."
+        check = ada.check_claim(frame, claim)
+        self.assertTrue(check.verified, check.message)
+        # An amount in a unit the table may not use is still not checked without it.
+        amount = ada.check_claim(frame, "The average price of a gallon was 3.56 in 2023.")
+        self.assertNotEqual(amount.status, "verified")
+
+    def test_a_fraction_before_a_verb_needs_no_of(self):
+        claim = "Among the top third of their class, nearly half went on to college."
+        question, number, _ = read_claim(claim, ["Status"])
+        self.assertEqual(number.text, "nearly half")
+        self.assertIn("top third", question)
+
+
+class RateClaimTests(unittest.TestCase):
+    def test_a_rate_for_every_hundred_is_checked_as_totals(self):
+        frame = pd.DataFrame({"District": [1, 1, 1, 1, 2, 2, 2, 2],
+                              "Holders": [100, 300, 60, 40, 50, 50, 70, 30],
+                              "Claims": [10, 20, 6, 4, 15, 5, 8, 12]})
+        check = ada.check_claim(frame, "District 2 had about 20 Claims for every 100 Holders.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("sum(Claims) ÷ sum(Holders) × 100", check.message)
+        # The mean of the rows' own rates (23.2) is not the rate.
+        wrong = ada.check_claim(frame, "District 2 had about 23.2 Claims for every 100 Holders.")
+        self.assertEqual(wrong.reason, "failed_check")
+
+
 class UnitsAndDaysTests(unittest.TestCase):
     def rats(self) -> pd.DataFrame:
         rows = [{"Rat": rat, "Diet": 1 + rat // 3, "Time": day, "weight": 200.0 + 10 * rat + day}

@@ -3387,6 +3387,17 @@ class StateAndNounTests(unittest.TestCase):
         self.assertEqual(answer_question("deaths in Texas", frame, roles).value, 10)
         self.assertEqual(answer_question("deaths in West Virginia", frame, roles).value, 11)
 
+    def test_a_postal_code_or_a_press_abbreviation_picks_a_state_name(self):
+        names = ["Alabama", "Arizona", "California", "Colorado", "Florida", "Georgia", "Idaho", "Iowa",
+                 "New Mexico", "Texas", "Utah", "Oregon"]
+        frame = pd.DataFrame({"state": names, "colonies": [float(index) for index in range(len(names))]})
+        roles = detect_roles(frame)
+        self.assertEqual(answer_question("colonies in NM", frame, roles).value, 8)
+        self.assertEqual(answer_question("colonies in Calif.", frame, roles).value, 2)
+        # "OR" in capitals is a word, and "calif" without its full stop is no abbreviation.
+        self.assertIsNone(answer_question("colonies in OR", frame, roles))
+        self.assertIsNone(answer_question("colonies in calif", frame, roles))
+
     def test_few_codes_are_not_read_as_states(self):
         frame = pd.DataFrame({"state": ["tx", "ca"], "deaths": [1.0, 2.0]})
         reading = nlq._read_question("deaths in Texas", frame, detect_roles(frame))
@@ -3450,6 +3461,58 @@ class ShareSplitTests(unittest.TestCase):
         frame = self.frame()
         hint = rephrase_hint("how many people were dentists", frame, detect_roles(frame))
         self.assertIn("dentists", hint)
+
+
+class RateTests(unittest.TestCase):
+    def policies(self) -> pd.DataFrame:
+        return pd.DataFrame({"District": [1, 1, 1, 1, 2, 2, 2, 2],
+                             "Holders": [100, 300, 60, 40, 50, 50, 70, 30],
+                             "Claims": [10, 20, 6, 4, 15, 5, 8, 12]})
+
+    def test_a_rate_is_one_total_over_another(self):
+        frame = self.policies()
+        roles = detect_roles(frame)
+        answer = answer_question("Claims per Holders", frame, roles)
+        self.assertAlmostEqual(answer.value, 80 / 700)
+        self.assertEqual(answer.calculation, "sum(Claims) ÷ sum(Holders)")
+        scaled = answer_question("Claims per 1,000 Holders for District 2", frame, roles)
+        self.assertAlmostEqual(scaled.value, 40 / 200 * 1000)
+        self.assertEqual(dict(scaled.figures)["denominator"], 200)
+
+    def test_a_plural_that_names_a_column_of_counts_adds_it_up(self):
+        frame = pd.DataFrame({"year": [2022, 2022, 2023, 2023],
+                              "citizenship": ["MEXICO", "CUBA", "MEXICO", "CUBA"],
+                              "encounter_count": [30, 10, 50, 10]})
+        roles = detect_roles(frame)
+        self.assertEqual(answer_question("how many encounters in 2023", frame, roles).value, 60)
+        share = answer_question("share of encounters with citizenship MEXICO", frame, roles)
+        self.assertAlmostEqual(dict(share.figures)["share_percent"], 80 / 100 * 100)
+        self.assertEqual(answer_question("how many rows in 2023", frame, roles).value, 2)
+        grouped = answer_question("number of encounters by citizenship", frame, roles)
+        self.assertIn("sum(encounter_count)", grouped.calculation)
+
+    def test_a_column_named_for_one_thing_numbers_it_and_is_not_added_up(self):
+        rats = pd.DataFrame({"Rat": [1, 1, 2, 2, 3, 3], "Diet": [1, 1, 1, 1, 2, 2],
+                             "weight": [1.0, 2, 3, 4, 5, 6]})
+        answer = answer_question("how many rats were on each diet", rats, detect_roles(rats))
+        self.assertIn("count distinct Rat", answer.calculation)
+
+    def test_two_columns_of_counts_for_one_noun_are_not_guessed_between(self):
+        frame = pd.DataFrame({"year": [2022, 2023], "encounter_count": [3, 5], "encounters": [1, 2]})
+        self.assertIsNone(answer_question("how many encounters in 2023", frame, detect_roles(frame)))
+
+    def test_a_code_or_an_average_after_per_is_no_rate(self):
+        frame = self.policies()
+        roles = detect_roles(frame)
+        for question in ("Claims per District", "average Claims per District"):
+            with self.subTest(question=question):
+                answer = answer_question(question, frame, roles)
+                self.assertNotEqual(getattr(answer, "calculation", ""), "sum(Claims) ÷ sum(District)")
+
+    def test_a_rate_of_negative_numbers_is_not_read(self):
+        frame = pd.DataFrame({"profit": [-5.0, 10.0, 3.0], "staff": [2.0, 3.0, 4.0]})
+        answer = answer_question("profit per staff", frame, detect_roles(frame))
+        self.assertFalse(answer is not None and answer.plan.aggregation == "ratio")
 
 
 class AgeTests(unittest.TestCase):

@@ -91,7 +91,8 @@ Intent = Literal[
 #: Plans answered from the column profile or the data checks rather than by combining a measure.
 ProfileIntent = Literal["missing", "duplicates", "outliers"]
 Aggregation = Literal[
-    "sum", "mean", "median", "min", "max", "count", "std", "var", "iqr", "quantile", "mode", "share", "range"
+    "sum", "mean", "median", "min", "max", "count", "std", "var", "iqr", "quantile", "mode", "share", "range",
+    "ratio",
 ]
 Operator = Literal["=", "<", "<=", ">", ">=", "missing", "contains", "starts", "ends"]
 TimePart = Literal["hour", "weekday", "month", "quarter", "year", "season"]
@@ -154,6 +155,7 @@ AGGREGATION_LABELS: dict[Aggregation, str] = {
     "iqr": "Interquartile range of",
     "quantile": "Percentile of",
     "mode": "Most common",
+    "ratio": "Ratio of",
     "share": "Share of rows",
     "range": "Range of",
 }
@@ -427,6 +429,10 @@ class QueryPlan:
     per: tuple[str, ...] = ()
     #: Rows left out before the answer, by value: the World and region rows a decision leaves out.
     excluded: tuple[ValueFilter, ...] = ()
+    #: What a ratio is given per: 100 for "claims per 100 holders".
+    scale: float | None = None
+    #: The column of counts a count adds up: encounter_count for "how many encounters".
+    weight: str | None = None
 
 
 @dataclass(frozen=True)
@@ -540,6 +546,8 @@ def plan_reading(plan: QueryPlan) -> dict:
         "second_group_by": plan.second_dimension,
         "distinct_of": plan.count_column,
         "per": list(plan.per),
+        "scale": plan.scale,
+        "weight": plan.weight,
         "adjusted_for": list(plan.adjusted_for),
         "year": plan.year,
         "month": plan.month,
@@ -1126,6 +1134,10 @@ class _Reading:
     entity_column: str | None = None
     #: Plurals the values of several columns share, which name the rows ("characters").
     nouns: set[str] = field(default_factory=set)
+    #: The number a rate is given per: 100 in "claims per 100 holders".
+    scale: float | None = None
+    #: The column of counts the rows' noun names: encounter_count for "encounters".
+    weight: str | None = None
     asks_missing: bool = False
     #: A spread or percentile the question asks for ("standard deviation", "90th percentile").
     spread: Aggregation | None = None
@@ -1675,6 +1687,18 @@ US_STATES = {
 }
 # The fewest postal codes a column must hold, and nothing else, to be read as a column of states.
 STATE_CODES_MIN = 10
+# The abbreviations newspapers use for states, written with a full stop: "Calif." is California.
+PRESS_STATES = {
+    "ala": "alabama", "ariz": "arizona", "ark": "arkansas", "calif": "california", "colo": "colorado",
+    "conn": "connecticut", "del": "delaware", "fla": "florida", "ga": "georgia", "ill": "illinois",
+    "ind": "indiana", "kan": "kansas", "kans": "kansas", "ky": "kentucky", "la": "louisiana",
+    "md": "maryland", "mass": "massachusetts", "mich": "michigan", "minn": "minnesota", "miss": "mississippi",
+    "mo": "missouri", "mont": "montana", "neb": "nebraska", "nebr": "nebraska", "nev": "nevada",
+    "okla": "oklahoma", "ore": "oregon", "pa": "pennsylvania", "tenn": "tennessee", "tex": "texas",
+    "vt": "vermont", "va": "virginia", "wash": "washington", "wis": "wisconsin", "wyo": "wyoming",
+}
+# Postal codes that are also English words in capitals, never read as states.
+WORD_CODES = frozenset({"in", "or", "me", "ok", "hi", "oh"})
 
 
 def _claim_us_states(reading: _Reading, vocabulary: _Vocabulary) -> None:
@@ -1688,6 +1712,12 @@ def _claim_us_states(reading: _Reading, vocabulary: _Vocabulary) -> None:
     columns: dict[str, list[_Value]] = defaultdict(list)
     for value in vocabulary.values:
         columns[value.column].append(value)
+    named = [
+        column for column, values in columns.items()
+        if sum(" ".join(value.words) in US_STATES for value in values) >= STATE_CODES_MIN
+    ]
+    if len(named) == 1:
+        _claim_state_codes(reading, columns[named[0]])
     held = [
         column for column, values in columns.items()
         if len(values) >= STATE_CODES_MIN and all(" ".join(value.words) in codes for value in values)
@@ -1776,6 +1806,25 @@ def _claim_outcomes(reading: _Reading, vocabulary: _Vocabulary) -> None:
         )
 
 
+def _claim_state_codes(reading: _Reading, values: list[_Value]) -> None:
+    """Filter a column of state names on a postal code in capitals ("NM") or a newspaper's "Calif."."""
+    by_code = {code: name for name, code in US_STATES.items()}
+    raw = reading.question
+    for start, end, word in _tokens(reading.remaining):
+        spelled = _raw_words(raw, [word])
+        state = None
+        if len(word) == 2 and word in by_code and word not in WORD_CODES and spelled.isupper():
+            state = by_code[word]
+        elif word in PRESS_STATES and spelled[:1].isupper() and re.search(rf"\b{re.escape(spelled)}\.", raw):
+            state = PRESS_STATES[word]
+        found = [value for value in values if " ".join(value.words) == state] if state else []
+        if not found:
+            continue
+        _add_filter(reading, found, start)
+        reading.claim(start, end)
+        reading.notes.append(f'Read "{spelled}" as {found[0].column} = {found[0].raw}.')
+
+
 # Adjectives of nationality and the country names a column may spell them with: "Belgian" is Belgium.
 DEMONYMS = {
     "american": ("united states", "usa", "us", "united states of america"), "argentine": ("argentina",),
@@ -1807,7 +1856,8 @@ def _claim_demonyms(reading: _Reading, vocabulary: _Vocabulary) -> None:
     birth), one named for nationality is used; otherwise nothing is read.
     """
     for start, end, word in _tokens(reading.remaining):
-        countries = DEMONYMS.get(word)
+        # "Venezuelans" is the plural of an adjective of nationality.
+        countries = DEMONYMS.get(word) or (DEMONYMS.get(word[:-1]) if word.endswith("s") else None)
         if countries is None:
             continue
         found = [value for value in vocabulary.values if " ".join(value.words) in countries]
@@ -1822,6 +1872,10 @@ def _claim_demonyms(reading: _Reading, vocabulary: _Vocabulary) -> None:
         values = [value for value in found if value.column == columns[0]]
         _add_filter(reading, values, start)
         reading.claim(start, end)
+        # "Mexican nationals", "Belgian citizens": the noun says no more than the adjective.
+        following = re.match(r"\s+(?:nationals|citizens)\b", reading.remaining[end:])
+        if following:
+            reading.claim(end, end + following.end())
         reading.notes.append(
             f'Read "{_raw_words(reading.question, [word])}" as {columns[0]} = '
             f"{_listed([value.raw for value in values])}."
@@ -2585,6 +2639,16 @@ def _typed_values(
     return tuple(spans)
 
 
+def _claim_rate_scale(reading: _Reading) -> None:
+    """Claim the number a rate is given per, before a column: "claims per 100 holders"."""
+    per = RATE_SCALE.search(reading.original)
+    if per and reading.remaining[per.start("n"):per.end("n")].strip() and any(
+        start == per.end() for start, _ in reading.spans.values()
+    ):
+        reading.scale = float(re.sub(r"[ ,]", "", per.group("n")))
+        reading.claim(per.start("n"), per.end("n"), keep_text=True)
+
+
 def _claim_numbers(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
     """Claim the number of a "top N", a year, and numbers that are whole column names ("1001")."""
     if (top := re.search(r"\b(?:top|bottom)\s+(?P<n>\d{1,3})\b", reading.remaining)):
@@ -2601,6 +2665,81 @@ def _claim_numbers(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRole
         elif is_year and reading.year is None:
             reading.year = int(word)
             reading.claim(start, end, keep_text=True)
+
+
+# The number a rate is given per, before the column it is per: "per 100 holders", "for every 1,000 people".
+RATE_SCALE = re.compile(r"\b(?:per|for\s+every|for\s+each)\s+(?P<n>\d{1,3}(?:[ ,]\d{3})+|\d+)\s+(?=[a-z])")
+RATE_WORDS = r"(?:per|for\s+every|for\s+each)(?:\s+\d{1,3}(?:[ ,]\d{3})+|\s+\d+)?"
+
+
+def _ratio_plan(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> QueryPlan | None:
+    """Plan "Claims per Holders": the total of one column over the total of another.
+
+    Both must be measurements, never negative and not rates or shares
+    themselves (``metric_for``), so their totals mean something; the second
+    must come right after "per", "for every" or "for each", with the number
+    the rate is given per between them ("per 100 Holders"). None for other
+    questions: a code ("per District"), or an average or total asked for
+    ("average quantity per transect" averages within each unit).
+    """
+    mentioned = reading.mentioned
+    after = [column for column, start in mentioned.items() if _follows(reading.text, start, RATE_WORDS)]
+    if len(after) != 1:
+        return None
+    partner = after[0]
+    others = [column for column in mentioned if column != partner]
+    if len(others) != 1:
+        return None
+    measure = others[0]
+    if any(re.search(rf"\b{word}\b", reading.unnamed) for word in AGGREGATION_WORDS):
+        # "average quantity per transect" averages within each unit (_per_unit_plan).
+        return None
+    for column in (measure, partner):
+        coded = column == roles.identifier or column in roles.dimensions or _is_code(column, dataframe, roles)
+        if coded or not _is_measurement(dataframe[column]) or (
+            metric_for(column, roles).unit == "rate" or (dataframe[column].dropna() < 0).any()
+        ):
+            return None
+    return QueryPlan(
+        intent="aggregate", aggregation="ratio", measure=measure, partner=partner, scale=reading.scale,
+        **_scope(reading),
+    )
+
+
+def _execute_ratio(plan: QueryPlan, working: pd.DataFrame, scope: str, applied: list[str]) -> QueryAnswer:
+    """The total of ``measure`` over the total of ``partner``, on the rows that hold both, times ``scale``."""
+    assert plan.measure is not None and plan.partner is not None
+    both = working[[plan.measure, plan.partner]].dropna()
+    top, bottom = float(both[plan.measure].sum()), float(both[plan.partner].sum())
+    if both.empty or bottom == 0:
+        return QueryAnswer(
+            question="",
+            plan=plan,
+            answer=f"{plan.partner} adds up to zero{_phrase(applied)}, so there is no rate to give.",
+            calculation=f"sum({plan.partner}) is 0{scope}",
+        )
+    scale = plan.scale or 1.0
+    value = top / bottom * scale
+    per = f"per {scale:,g} {plan.partner}" if plan.scale else f"per {plan.partner}"
+    formula = f"sum({plan.measure}) ÷ sum({plan.partner})" + (f" × {scale:,g}" if plan.scale else "")
+    left = len(working) - len(both)
+    answer = (
+        f"{plan.measure} {per}{_phrase(applied)} is {value:,.6g}: {_plain_total(top)} {plan.measure} over "
+        f"{_plain_total(bottom)} {plan.partner}, from {counted(len(both), 'row')}"
+        + (f" ({counted(left, 'row')} missing one of them left out)" if left else "") + "."
+    )
+    return QueryAnswer(
+        question="",
+        plan=plan,
+        answer=answer,
+        calculation=f"{formula}{scope}",
+        value=_as_number(value),
+        figures=(("ratio", value), ("numerator", top), ("denominator", bottom), ("n", float(len(both)))),
+    )
+
+
+def _plain_total(value: float) -> str:
+    return f"{value:,.0f}" if float(value).is_integer() else f"{value:,.4g}"
 
 
 def _is_year(word: str, dataframe: pd.DataFrame, roles: ColumnRoles) -> bool:
@@ -2697,6 +2836,62 @@ def _claim_entity(
         if reading.entity is None:
             reading.entity = word
             reading.entity_column = None if rows else _entity_column(word, dataframe, roles)
+            reading.weight = None if reading.entity_column else _count_column(word, dataframe)
+
+
+# Name words that say a column holds counts, so "encounter_count" counts encounters.
+COUNT_NAME_WORDS = frozenset({"count", "counts", "number", "num", "n", "no", "total", "totals"})
+
+
+def _count_column(noun: str, dataframe: pd.DataFrame) -> str | None:
+    """The one column of whole counts named for a plural: encounter_count for "encounters".
+
+    Its name must be the plural itself ("deaths") or the noun with a word
+    such as count or number ("encounter_count"), and its values whole numbers
+    that are never negative. A column named with the singular alone ("Rat")
+    numbers the things rather than counting them.
+    """
+    from .folder import singular  # noqa: PLC0415
+
+    found = []
+    for column in dataframe.columns:
+        series = dataframe[column]
+        if not is_numeric_dtype(series) or is_bool_dtype(series):
+            continue
+        named = _norm(normalized_name(str(column))).split()
+        words = [word for word in named if word not in COUNT_NAME_WORDS]
+        forms = {noun, singular(noun)} if len(words) < len(named) else {noun}
+        values = series.dropna().to_numpy(dtype=float)
+        whole = len(values) and (values >= 0).all() and (values % 1 == 0).all()
+        if words and " ".join(words) in forms and whole:
+            found.append(column)
+    return found[0] if len(found) == 1 else None
+
+
+def _claim_count_column(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
+    """Read a plural naming a column of counts, after a word that counts, as what is counted.
+
+    "how many encounters" and "share of encounters" add up encounter_count.
+    The column's name must hold a word such as count, number or n; a column
+    named with the plural alone ("Units") keeps its own reading. When an ID
+    names each row once (a tag per cat), the rows are the things and are
+    counted as they are, so n_cats is a column like any other.
+    """
+    ids = dataframe[roles.identifier] if roles.identifier in dataframe.columns else None
+    if ids is not None and ids.notna().all() and ids.is_unique:
+        return
+    for start, end, word in _tokens(reading.original):
+        if not word.endswith("s") or not re.search(
+            rf"{COUNT_PATTERN}\s+(?:of\s+)?(?:the\s+|all\s+)?$", reading.original[:start]
+        ):
+            continue
+        column = _count_column(word, dataframe)
+        if column is None or not set(_norm(normalized_name(str(column))).split()) & COUNT_NAME_WORDS:
+            continue
+        reading.spans = {named: span for named, span in reading.spans.items() if span != (start, end)}
+        reading.claim(start, end)
+        reading.entity, reading.entity_column, reading.weight = word, None, column
+        return
 
 
 def _has_times(dates: pd.Series) -> bool:
@@ -3145,6 +3340,7 @@ def _read_question(
             column: span for column, span in reading.spans.items() if q[span[0]:span[1]] != roles.row_noun
         }
     _unit_word_names_rows(reading, dataframe, roles)
+    _claim_count_column(reading, dataframe, roles)
     _outcome_columns(reading, dataframe)
     for start, end in reading.spans.values():
         reading.claim(start, end, keep_text=True)
@@ -3157,6 +3353,7 @@ def _read_question(
     _claim_ages(reading, dataframe, roles)
     _claim_year_ranges(reading, dataframe, roles)
     _claim_fillers(reading)
+    _claim_rate_scale(reading)
     _claim_time_points(reading, dataframe, roles)
     _claim_ordinal_columns(reading, dataframe, roles)
     _claim_conditions(reading, list(reading.spans), dataframe, roles, vocabulary)
@@ -3405,9 +3602,17 @@ def _rule_plan(
     problem = _unused_part(plan, reading, dataframe, roles, rows_not_analyzed)
     if problem:
         return None, problem
+    weighted = ()
+    if reading.weight and plan.aggregation == "count" and not plan.measure and not plan.count_column:
+        # "how many encounters" adds up encounter_count: each row holds a count, not one encounter.
+        weighted = (f'Read "{reading.entity}" as the sum of {reading.weight}, since each row holds a count.',)
+        if plan.intent == "count" or plan.counted:
+            plan = replace(plan, weight=reading.weight)
+        else:
+            plan = replace(plan, measure=reading.weight, aggregation="sum")
     # In a table of counts each row stands for its count of cases, which the answer says itself.
-    entity = () if frequency_column(dataframe) else _entity_note(reading, plan)
-    notes = (*plan.notes, *reading.notes, *entity, *_weather_note(reading, plan))
+    entity = () if frequency_column(dataframe) or weighted else _entity_note(reading, plan)
+    notes = (*plan.notes, *reading.notes, *entity, *weighted, *_weather_note(reading, plan))
     return replace(plan, notes=notes), None
 
 
@@ -3557,6 +3762,8 @@ def _plan_from_reading(reading: _Reading, dataframe: pd.DataFrame, roles: Column
             {**_scope(reading), "filters": filters_including_dimension},
         )
 
+    if (ratio := _ratio_plan(reading, dataframe, roles)) is not None:
+        return ratio
     if (per_unit := _per_unit_plan(reading, dataframe, roles)) is not None:
         return per_unit
     pair = _grouping_pair(reading, dataframe, roles)
@@ -5212,6 +5419,9 @@ def _run_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -> Q
     if plan.intent == "aggregate" and plan.per:
         return _execute_unit_average(plan, working, roles, scope, applied)
 
+    if plan.intent == "aggregate" and plan.aggregation == "ratio":
+        return _execute_ratio(plan, working, scope, applied)
+
     if plan.intent == "aggregate":
         assert plan.measure is not None
         value = _aggregate_series(working[plan.measure], plan.aggregation, plan.quantile)
@@ -5285,7 +5495,8 @@ def _run_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -> Q
         return _execute_per_unit(plan, working, roles, scope, applied)
 
     if plan.intent in ("rank", "breakdown"):
-        return _execute_grouping(plan, working, roles, scope, applied, frequency_column(dataframe))
+        weight = plan.weight or frequency_column(dataframe)
+        return _execute_grouping(plan, working, roles, scope, applied, weight)
 
     if plan.intent == "trend":
         return _execute_trend(plan, working, roles, scope, applied)
@@ -5595,8 +5806,9 @@ def _execute_count(
             value=float(distinct),
             figures=figures,
         )
-    weight = frequency_column(dataframe)
-    each = f"; each row counts {weight} cases, the number its combination of values holds" if weight else ""
+    weight = plan.weight or frequency_column(dataframe)
+    each = (f"; each row counts {weight} cases, the number its combination of values holds"
+            if weight and not plan.weight else f"; each row counts its {weight}" if weight else "")
     if plan.counted:
         return _counted_share(plan, working, weight, each, scope)
     if not (plan.filters or plan.conditions):
@@ -7435,7 +7647,7 @@ def _execute_shares(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles
     missing_label = unlabelled_label(groups.dropna().unique())
     shown = groups.astype(object).where(~unlabelled, missing_label)
     # A table of counts (Titanic's Class, Sex, Age, Survived and Freq) counts its cases, not its rows.
-    weight = frequency_column(dataframe)
+    weight = plan.weight or frequency_column(dataframe)
     cases = recorded[weight].astype(float) if weight else pd.Series(1.0, index=recorded.index)
     unit = "cases" if weight else "rows"
     totals = cases.groupby(shown, sort=False).sum().round().astype(int)
