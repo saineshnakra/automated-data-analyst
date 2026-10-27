@@ -276,7 +276,10 @@ each word is claimed, in this order, by:
    by cp" asks for a share (see below).
 10. **Partial column names** (see below).
 11. **Values** of long labels, by whole words: "Tartrazine" names "Tartrazine,
-    FD&C Yellow 5 (US), E102 (EU)".
+    FD&C Yellow 5 (US), E102 (EU)". A person's first and last name, in a
+    column each (`nameFirst` and `nameLast`, `forename` and `surname`), is
+    looked up as a pair, even past the value index's 10,000 values: "Barry
+    Bonds".
 12. **Unit conditions**: "at 28 days" is `Age of testing (day)` = 28 when one
     numeric column has that unit in its name.
 13. **Numbers**: the N of "top N" and "bottom N", a year (1900 to 2099, or an
@@ -589,6 +592,10 @@ of 120 rows says "Based on the 110 rows with Crabs recorded, of 120 rows.",
 or "of the 42 in that scope" under a filter. An unfiltered aggregate says it
 once, in its own sentence ("calculated from 1,228 rows"), and a count states
 its rows.
+
+**A folder.** `ada.ask_folder(folder, question)` and `ada ask FOLDER
+"question"` answer from the one file the question fits, or from two files
+joined along a link; see [Answers across files](folder.md#answers-across-files).
 
 **Rows that add up others.** When the table lists World, regions or a Total
 beside the rows they add up, the answer leaves them out and says so, and a

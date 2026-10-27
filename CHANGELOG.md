@@ -14,6 +14,27 @@
   no one to ask, the defaults give the same answer every time. See
   [Decisions](docs/reference/decisions.md).
 
+### Questions first, and answers across files
+
+- `ada scan` asks what the analysis should find out first, and asks about the
+  decisions too: for each file with World or region rows, and for joining
+  files. It also scans a single file (`ada scan data.csv`). The answers file
+  `--template` writes is read by `ada ask` and `ada claim` with `--answers`
+  (`answers=` in Python): `decide:KEY` for every file, `decide:FILE:KEY` for
+  one, and `--decide` over both.
+- `ada ask` takes a folder (`ada.ask_folder` in Python), and a question or
+  claim about a folder that no single file answers is tried on two files
+  joined along a link: "Barry Bonds hit 73 home runs in 2001." is verified on
+  `Batting.csv` joined to `People.csv`. Only many-to-one and one-to-one links
+  are joined, by default only those that need no confirmation (`join_links`:
+  `sure`, `all`, `none`), and the answer says which join it used.
+- A person named by first and last name, in a column each, is found even
+  when there are more names than the value index keeps.
+- After a verb that adds things up (hit, scored, earned, collected,
+  recorded), the words after the number name the column that is totalled:
+  "scored 3,999.5 points", "hit 73 home runs". "home runs" reads `HR` by its
+  initials wherever a claim names a column.
+
 ### Rows that add up others
 
 - World, region and Total rows listed beside the rows they add up (OWID's

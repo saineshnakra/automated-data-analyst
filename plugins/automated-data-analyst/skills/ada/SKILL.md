@@ -26,7 +26,8 @@ Pick the mode from what the person wants:
 - **A number, or a check of one** ("what is the average delay?", "is it true
   that 32% survived?", or any number you are about to write about a data
   file): "Computing and checking numbers" below.
-- **A folder of related files**: `ada scan data/` first, then work file by file.
+- **A folder of related files**: `ada scan data/` first and ask its
+  questions, then `ada ask` and `ada claim` on the folder or a file.
 - **A paper or report from a study** (groups, subjects, time points, planned
   analyses): the study workflow below.
 - **Just what is in a file**: `ada analyze data.csv`, or in Python
@@ -82,13 +83,23 @@ When you report numbers:
   one to ask, keep the default and say which it was. (`--decide` needs a
   current ADA; upgrade if it is not recognised.)
 
-For a folder, `ada scan data/` lists each file, the keys that join them (with
-the rows a join leaves unmatched or repeats) and questions grouped by topic:
-what a row stands for, units, repeated measurements, which links to trust,
-and what the person wants to find out. Ask the person those questions before
-combining files. `--template answers.yml` writes them with ADA's proposed
-answers; once the person has edited it, `--answers answers.yml` reads them
-back. ADA proposes joins but does not run them.
+Start with `ada scan` on the file or the folder (`ada scan data.csv`, `ada
+scan data/`). It lists each file, the keys that join them (with the rows a
+join leaves unmatched or repeats) and the questions to ask before an
+analysis: what the person wants to find out, what a row stands for, units,
+repeated measurements, which links to trust, and the decisions ADA would
+otherwise take by default (leaving World and region rows out, which links to
+join on). Ask the person those questions; propose answers from what they
+already told you. `ada scan PATH --template answers.yml` writes the questions
+with ADA's proposed answers: put in what the person said and pass `--answers
+answers.yml` to every `ada ask` and `ada claim`. With no one to ask, keep
+ADA's defaults and say that you did.
+
+A question or claim about a folder (`ada ask data/ "..."`, `ada claim data/
+"..."`) is answered from the file it fits, or from two files joined along a
+link ADA is sure of, and the answer says which join it used. Confirm a link
+in the answers file, or pass `--decide join_links=all`, only when the person
+agrees the link is right.
 
 ## The study workflow
 

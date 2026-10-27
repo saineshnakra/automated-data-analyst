@@ -31,6 +31,7 @@ from .api import (
 from .claims import ClaimCheck, check_claim
 from .decisions import Decision, UnknownDecision
 from .folder import FolderScan, scan
+from .joins import ask_folder
 from .sources import Source
 
 __version__ = "0.6.0"
@@ -52,6 +53,7 @@ __all__ = [
     "UnreadableData",
     "__version__",
     "analyze",
+    "ask_folder",
     "check_claim",
     "read_file",
     "sample",

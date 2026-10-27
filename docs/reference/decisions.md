@@ -16,6 +16,7 @@ The code is in `ada/decisions.py`; the rows that add up others are found in
 |---|---|---|---|
 | `aggregate_rows` | `leave_out`, `keep` | The table has rows that add up other rows, and some are in the question's scope | Counting World or Africa with the countries counts some values twice |
 | `total_from` | `total_row`, `sum_of_parts` | A total (`sum`) over the scope, with `aggregate_rows` left out and one total row (World, Total) in the scope | The table gives that row as the total of the others, and it can hold what no other row does |
+| `join_links` | `sure`, `all`, `none` | A question or claim about a folder that no single file answers | A link that needs confirmation (names that differ, keys that do not all match) may join rows that do not belong together; see [Answers across files](folder.md#answers-across-files) |
 
 A decision that does not arise is not listed, and a choice passed for it
 changes nothing: a table with no World row gives the same answer with
@@ -82,6 +83,23 @@ ada claim forest.csv "The average net forest conversion was -76,931 hectares." -
 `--decide` can be repeated. An unknown key or option raises `UnknownDecision`
 in Python and exits with 2 on the command line, naming what is allowed.
 
+## The answers file
+
+The questions `ada scan PATH --template answers.yml` writes include the
+decisions, each with ADA's default as the proposed answer:
+
+```yaml
+# decisions
+"decide:owid-co2-data.csv:aggregate_rows": "leave_out"
+"decide:owid-co2-data.csv:total_from": "total_row"
+"decide:join_links": "sure"
+```
+
+`ada ask ... --answers answers.yml` and `ada claim ... --answers answers.yml`
+(`answers=` in Python) use them: `decide:KEY` for every file, `decide:FILE:KEY`
+for one file, which wins, and `--decide` over both. A wrong option in the file
+is refused the same way.
+
 ## In the record
 
 Each answer and claim check lists the decisions it took: `decisions` in the
@@ -111,12 +129,17 @@ not tried the other way.
 
 ## For coding agents
 
-The skill tells an agent to read `decisions` on every answer and check:
-when the person's goal settles one ("compare countries" leaves the World row
-out; "the file's own column average" keeps it), pass that option with
-`--decide` and say so; when it does not, ask the person the decision's
-`question`. Without an agent or a person, the defaults stand and the answer
-says which they were.
+The skill tells an agent to start with `ada scan PATH --template
+answers.yml` and ask the person its questions: what the analysis should find
+out, what a row is, and each decision. The agent writes the answers into the
+file and passes `--answers` to every `ada ask` and `ada claim`. ADA gives the
+skeleton (the questions, the options, a default for each); the agent's
+reasoning about the person's goal picks the options. On every answer the agent
+reads `decisions`: when the goal settles one ("compare countries" leaves the
+World row out; "the file's own column average" keeps it), it passes that
+option with `--decide` and says so; when it does not, it asks the person the
+decision's `question`. Without an agent or a person, the defaults stand and
+the answer says which they were.
 
 ## Years
 

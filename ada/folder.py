@@ -13,11 +13,15 @@ Names decide which columns are tried and how sure the link is, and whole
 numbers, which overlap by chance, link only under matching names. Every link
 reports its coverage both ways, its cardinality and the rows it leaves
 unmatched, and a link is marked ``needs_confirmation`` when its names differ,
-its keys don't all match, or the key side repeats. Nothing is joined: a scan
-proposes, and a person confirms.
+its keys don't all match, or the key side repeats. A scan joins nothing: it
+proposes, a person confirms, and ``ada.joins`` joins two files along a link
+when a question needs both.
 
 Answers a person gives are kept in a small YAML file (``answers``) and read
-back on the next scan, so a confirmed link or row meaning is asked once.
+back on the next scan, so a confirmed link or row meaning is asked once. The
+same file holds the decisions (``decide:`` keys) that ``ada ask`` and ``ada
+claim`` take with ``--answers``, and a single file can be scanned the same way
+to ask its questions before any answer.
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_dtype
 
+from .aggregates import aggregate_rows
 from .file_io import SUPPORTED_SUFFIXES
 from .formatting import counted, normalized_name
 from .schema import IDENTIFIER_NAME_WORDS, is_identifier_name, is_year_name
@@ -172,8 +177,8 @@ class Question:
                 "answer": self.answer}
 
 
-# Topics in the order a person is asked about them.
-TOPICS = ("rows", "units", "repeated", "links", "intent")
+# Topics in the order a person is asked about them: what the analysis is for first.
+TOPICS = ("intent", "rows", "units", "repeated", "links", "decisions")
 
 
 @dataclass(frozen=True)
@@ -208,8 +213,9 @@ class FolderScan:
 
     def answers_template(self) -> str:
         """A YAML file of every question with ADA's proposed answer, for a person to edit and keep."""
-        lines = ["# Answers to ADA's questions about this folder. Edit the answers, keep the keys,",
-                 "# and pass the file back with `ada scan FOLDER --answers FILE`.", ""]
+        lines = ["# Answers to ADA's questions about this data. Edit the answers, keep the keys, and pass",
+                 "# the file back with `ada scan PATH --answers FILE`. `ada ask` and `ada claim` take it",
+                 "# with --answers too, and use the decisions in it.", ""]
         for topic in TOPICS:
             asked = [question for question in self.questions if question.topic == topic]
             if not asked:
@@ -263,14 +269,15 @@ def _yaml_value(value: str) -> str:
 def scan(folder: str | Path, *, answers: str | Path | dict | None = None) -> FolderScan:
     """Profile every table in ``folder``, propose links between them and list the questions to confirm.
 
+    ``folder`` may also be one file, scanned alone for its questions.
     ``answers`` (a YAML file or a dict of question key to answer) records what a
     person already confirmed; a link answered "no" is dropped, "yes" confirms it.
     """
     root = Path(folder)
-    if not root.is_dir():
-        raise NotADirectoryError(f"{folder} is not a folder.")
-    given = _load_answers(answers)
-    paths = sorted(
+    if not root.is_dir() and not (root.is_file() and root.suffix.lower() in SUPPORTED_SUFFIXES):
+        raise NotADirectoryError(f"{folder} is not a folder or a table ADA can read.")
+    given = load_answers(answers)
+    paths = [root] if root.is_file() else sorted(
         path for path in root.iterdir()
         if path.is_file() and not path.name.startswith(".") and path.suffix.lower() in SUPPORTED_SUFFIXES
     )
@@ -297,7 +304,8 @@ def scan(folder: str | Path, *, answers: str | Path | dict | None = None) -> Fol
     return FolderScan(str(folder), tuple(profiles), tuple(links), tuple(questions), tuple(warnings))
 
 
-def _load_answers(answers: str | Path | dict | None) -> dict[str, str]:
+def load_answers(answers: str | Path | dict | None) -> dict[str, str]:
+    """The answers a person gave, as question key to answer, from a YAML file or a dict."""
     if answers is None:
         return {}
     if isinstance(answers, dict):
@@ -672,6 +680,8 @@ def _questions(profiles: list[FileProfile], links: list[Link], frames: dict[str,
     def ask(topic: str, key: str, text: str, proposed: str | None) -> None:
         asked.append(Question(topic, key, text, proposed, given.get(key)))
 
+    ask("intent", "intent", "What should the analysis find out, and about which rows?", None)
+
     for profile in profiles:
         if profile.problem or profile.describes:
             continue
@@ -702,7 +712,24 @@ def _questions(profiles: list[FileProfile], links: list[Link], frames: dict[str,
                 f"Join {link.label('from')} to {link.label('to')} ({link.kind})? "
                 + "; ".join(link.reasons) + ".",
                 "yes" if link.coverage >= MIN_COVERAGE and link.kind in KEYED else None)
-    ask("intent", "intent", "What should the analysis find out, and about which rows?", None)
+    for profile in profiles:
+        if profile.name not in frames or profile.describes:
+            continue
+        found = aggregate_rows(frames[profile.name])
+        if found is None:
+            continue
+        rows = int(found.mask(frames[profile.name]).sum())
+        ask("decisions", f"decide:{profile.name}:aggregate_rows",
+            f"{profile.name} lists {counted(rows, 'row')} that add up other rows of {found.column} "
+            f"({found.named()}). Leave them out of answers, or keep them? (leave_out or keep)", "leave_out")
+        if found.totals:
+            ask("decisions", f"decide:{profile.name}:total_from",
+                f"Read a total in {profile.name} from the {found.totals[0]} row, or add up the other rows? "
+                "(total_row or sum_of_parts)", "total_row")
+    if any(link.kind in KEYED for link in links):
+        ask("decisions", "decide:join_links",
+            "When a question needs two files, join them along the links ADA is sure of, along every link it "
+            "proposes, or not at all? (sure, all or none)", "sure")
     return asked
 
 
@@ -727,4 +754,7 @@ def _unit_named(column: str) -> bool:
     return column_unit(column) is not None or "%" in str(column) or bracketed
 
 
-__all__ = ["SCAN_SCHEMA_VERSION", "FileProfile", "FolderScan", "Link", "Question", "scan", "singular"]
+__all__ = [
+    "SCAN_SCHEMA_VERSION", "FileProfile", "FolderScan", "Link", "Question", "load_answers", "scan",
+    "singular",
+]

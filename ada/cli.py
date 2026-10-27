@@ -39,6 +39,12 @@ JSON), each with ADA's default and the other options; ``--decide KEY=OPTION``
 picks another, such as ``--decide aggregate_rows=keep`` to count a World row
 with the countries.
 
+``ada scan PATH --template answers.yml`` writes the questions to ask before an
+analysis (what it should find out, what a row is, units, links, decisions) with
+ADA's proposed answers; ``ada ask`` and ``ada claim`` take the edited file with
+``--answers answers.yml``. ``ada ask`` also takes a folder: the question is
+answered from the file it fits, or from two files joined along a link.
+
 ``ada scan FOLDER`` profiles each table in a folder, proposes the keys that join
 them (with the rows each join would leave unmatched) and lists what a person
 should confirm, grouped by topic. ``--template FILE`` writes those questions with
@@ -67,7 +73,8 @@ from . import __version__
 from .api import AdaError, Refusal, analyze, sample, samples
 from .claims import check_claim
 from .decisions import OPTIONS, UnknownDecision, parse_choices
-from .folder import scan
+from .folder import load_answers, scan
+from .joins import ask_folder, folder_choices
 from .metrics import AGGREGATION_CHOICES, metric_for
 from .nlq import ANSWER_SCHEMA_VERSION
 
@@ -80,6 +87,7 @@ DECIDE_HELP = (
     "pick another option for a choice the answer rests on, such as aggregate_rows=keep; "
     "repeat for more (" + "; ".join(f"{key}: {', '.join(options)}" for key, options in OPTIONS.items()) + ")"
 )
+ANSWERS_HELP = "the answers file `ada scan --template` writes; its decisions are used, and --decide wins"
 
 
 def _load(args: argparse.Namespace):
@@ -120,7 +128,11 @@ def _schema(args: argparse.Namespace) -> int:
 
 
 def _choices(args: argparse.Namespace) -> dict[str, str] | None:
-    """The --decide choices, checked; None after printing why one is wrong."""
+    """The --decide choices, checked; None after printing why one is wrong or the answers file is missing."""
+    if getattr(args, "answers", None) and not Path(args.answers).is_file():
+        print(f"error: the answers file {args.answers} does not exist; write it with ada scan --template.",
+              file=sys.stderr)
+        return None
     try:
         return parse_choices(args.decide or [])
     except UnknownDecision as error:
@@ -131,7 +143,17 @@ def _choices(args: argparse.Namespace) -> dict[str, str] | None:
 def _ask(args: argparse.Namespace) -> int:
     if (choices := _choices(args)) is None:
         return EXIT_ERROR
-    answer = _load(args).ask(args.question, decisions=choices)
+    try:
+        if Path(args.file).is_dir():
+            answer = ask_folder(args.file, args.question, decisions=choices, answers=args.answers)
+        else:
+            given = load_answers(args.answers)
+            if given:
+                choices = folder_choices(given, Path(args.file).name, choices)
+            answer = _load(args).ask(args.question, decisions=choices)
+    except UnknownDecision as error:
+        print(f"error: {error} (in {args.answers})", file=sys.stderr)
+        return EXIT_ERROR
     if isinstance(answer, Refusal):
         if args.json:
             print(json.dumps({
@@ -157,9 +179,14 @@ def _claim(args: argparse.Namespace) -> int:
         return EXIT_ERROR
     if (choices := _choices(args)) is None:
         return EXIT_ERROR
-    check = check_claim(
-        args.file, args.claim, question=args.question, value=args.value, sheet=args.sheet, decisions=choices
-    )
+    try:
+        check = check_claim(
+            args.file, args.claim, question=args.question, value=args.value, sheet=args.sheet,
+            decisions=choices, answers=args.answers,
+        )
+    except UnknownDecision as error:
+        print(f"error: {error} (in {args.answers})", file=sys.stderr)
+        return EXIT_ERROR
     print(json.dumps(check.to_dict(), indent=2) if args.json else check)
     if check.verified:
         return EXIT_QUIET
@@ -479,10 +506,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", help="machine-readable output"
     )
     with_source("schema", "print the columns ADA detected and what it cleaned")
-    asked = with_source("ask", "ask a question in plain English")
+    asked = with_source("ask", "ask a question in plain English, of a file or a folder")
     asked.add_argument("question")
     asked.add_argument("--json", action="store_true", help="machine-readable answer with its evidence")
     asked.add_argument("--decide", action="append", metavar="KEY=OPTION", help=DECIDE_HELP)
+    asked.add_argument("--answers", help=ANSWERS_HELP)
     claimed = subcommands.add_parser(
         "claim", help="check a number stated about a table: verified, or unverified with the reason"
     )
@@ -493,10 +521,11 @@ def build_parser() -> argparse.ArgumentParser:
     claimed.add_argument("--sheet", help="the worksheet to read from a workbook (default: the first)")
     claimed.add_argument("--json", action="store_true", help="machine-readable result")
     claimed.add_argument("--decide", action="append", metavar="KEY=OPTION", help=DECIDE_HELP)
+    claimed.add_argument("--answers", help=ANSWERS_HELP)
     scanned = subcommands.add_parser(
         "scan", help="profile every table in a folder, propose how they join, and list what to confirm"
     )
-    scanned.add_argument("folder", help="the folder of CSV, TSV or Excel files")
+    scanned.add_argument("folder", help="the folder of CSV, TSV or Excel files, or one such file")
     scanned.add_argument("--answers", help="a YAML file of answers given before (see --template)")
     scanned.add_argument("--template", help="write the questions and proposed answers to this YAML file")
     scanned.add_argument("--json", action="store_true", help="machine-readable result")
