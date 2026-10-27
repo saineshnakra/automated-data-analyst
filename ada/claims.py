@@ -48,7 +48,7 @@ from typing import Any, Literal
 from .decisions import Decision, checked_choices
 from .file_io import SUPPORTED_SUFFIXES as READABLE
 from .formatting import counted, list_names, normalized_name
-from .nlq import QueryAnswer
+from .nlq import DAY_PATTERN, QueryAnswer
 from .sources import Source
 
 #: Version of the ``ClaimCheck.to_dict`` layout. Bumped when a key changes meaning.
@@ -96,7 +96,7 @@ PREDICATE_CUES = frozenset({
     "averaging", "totalled", "totaled", "totals", "totalling", "totaling", "reached", "hit", "by",
     "at", "of", "stood", "came", "amounted", "numbered", "weighed", "weighs", "weigh", "measured",
     "rose", "fell", "grew", "dropped", "increased", "decreased", "paid", "made", "had", "has", "have",
-    "scored", "scores", "earned", "earns", "collected", "recorded",
+    "scored", "scores", "earned", "earns", "collected", "recorded", "reaches",
 })
 # Adjectives after a number that name the quantity: "6,657 metres high" is a height.
 ADJECTIVE_NOUNS = {
@@ -172,9 +172,30 @@ REPORTING_CLAUSE = re.compile(
 )
 # "55 of the cats": a count of things the table's rows may be.
 OF_THE = re.compile(r"\s*of\s+(?:the|these|those|all(?:\s+the)?)\s+([A-Za-z]+)\b", re.IGNORECASE)
-# A lead that names a claim's base: "Of the 4,526 applicants,".
+# A lead that names a claim's base: "Of the 4,526 applicants,", "Of the 5,144 Danes in the study,".
 BASE_LEAD = re.compile(
-    r"^\s*(?:of|out\s+of)\s+(?:the\s+|all\s+)?(?P<count>\d{1,3}(?:,\d{3})+|\d+)\s+(?P<noun>[A-Za-z]+(?:\s[A-Za-z]+)?),\s*",
+    r"^\s*(?:of|out\s+of)\s+(?:the\s+|all\s+)?(?P<count>\d{1,3}(?:,\d{3})+|\d+)\s+"
+    r"(?P<noun>[A-Za-z]+(?:\s[A-Za-z']+){0,6}),\s*",
+    re.IGNORECASE,
+)
+# A count of a base: "34 of the 93 cars had no airbags", read as "Of the 93 cars, 34 cars had ...".
+PART_OF_BASE = re.compile(
+    r"^(?P<lead>\s*(?:(?:about|nearly|almost|only|just|over|more\s+than|fewer\s+than|less\s+than)\s+)?)"
+    r"(?P<part>\d{1,3}(?:,\d{3})+|\d+)\s+(?:of|out\s+of)\s+(?:the\s+|all\s+)?"
+    r"(?P<count>\d{1,3}(?:,\d{3})+|\d+)\s+(?P<noun>[A-Za-z]+)\b",
+    re.IGNORECASE,
+)
+# A base opening the claim: "The 93 models came from 28 manufacturers".
+OPENING_BASE = re.compile(
+    r"^\s*(?:the|all|these|those)\s+(?P<count>\d{1,3}(?:,\d{3})+|\d+)\s+(?P<noun>[A-Za-z]+)\b",
+    re.IGNORECASE,
+)
+# "seven in ten", "one in five", "1 in 20": a share written as a count in a total.
+IN_FRACTION = re.compile(
+    r"\b(?:(?P<qualifier>about|roughly|around|approximately|nearly|almost|just\s+over|just\s+under|over|"
+    r"under|more\s+than|less\s+than|fewer\s+than|at\s+least|at\s+most)\s+)?"
+    r"(?P<top>one|two|three|four|five|six|seven|eight|nine|(?<![\d.,])\d{1,2})\s+in\s+"
+    r"(?P<bottom>two|three|four|five|six|seven|eight|nine|ten|\d{1,3})\b(?![.,]\d)",
     re.IGNORECASE,
 )
 # Plurals without an s, which count things as "344 penguins" does: "1,835 women applied".
@@ -492,6 +513,7 @@ def _candidates(claim: str, columns: list[str]) -> list[_Candidate]:
     """
     found = []
     column_words = _column_words(columns)
+    days = [day.span() for day in DAY_PATTERN.finditer(claim)]
     for match in NUMBER_PATTERN.finditer(claim):
         start = match.start()
         before = claim[:start].rstrip()
@@ -527,6 +549,10 @@ def _candidates(claim: str, columns: list[str]) -> list[_Candidate]:
             and any(_abbreviates(following.group(1).lower(), part) for part in column_words)
         )
         ordinal = plain and re.match(r"(?:st|nd|rd|th)\b", claim[match.end():], re.IGNORECASE) is not None
+        # "on May 22, 2011": the day and the year pick rows; "6.5 out of 10" gives the scale.
+        filter_like = filter_like or any(low <= start < high for low, high in days) or bool(
+            re.search(r"\bout\s+of\s*$", before, re.IGNORECASE)
+        )
         found.append(
             _Candidate(match, qualifier, qualifier_start, cue, cue_start, year_like, filter_like, ordinal)
         )
@@ -595,12 +621,24 @@ def _worded_number(claim: str) -> tuple[str, Any] | None:
     if fraction and (ordinal or not (fraction.group("count") or fraction.group("part").lower() == "half")):
         # "the fourth quarter of 2020" and "a third quarter" are periods; a fraction is "a quarter of".
         fraction = None
+    value = None
     if fraction:
         count = COUNT_WORDS.get((fraction.group("count") or "a").lower(), 1)
         bottom = FRACTION_PARTS[fraction.group("part").lower()]
-        if count >= bottom:
+        value = count / bottom if count < bottom else None
+    elif (fraction := IN_FRACTION.search(claim)):
+        # "seven in ten of the people surveyed": a share, as "seven tenths" would be.
+        words = {**NUMBER_WORDS, "one": 1}
+        top, bottom = (int(words.get(part.lower(), part)) if not part.isdigit() else int(part)
+                       for part in (fraction.group("top"), fraction.group("bottom")))
+        value = top / bottom if 0 < top < bottom else None
+        if value is not None and bottom > 10:
+            # "1 in 20" is 5%, read with a percent's own rounding.
+            return f"{claim[:fraction.start()]}{fraction.group('qualifier') or ''} {value * 100:g}%" \
+                   f"{claim[fraction.end():]}".replace("  ", " "), lambda number: number
+    if fraction:
+        if value is None:
             return None
-        value = count / bottom
         low, high = _fraction_interval(value)
         qualifier = re.sub(r"\s+", " ", (fraction.group("qualifier") or "").lower())
         kind = next((kind for phrase, kind in QUALIFIERS if phrase == qualifier), None)
@@ -647,6 +685,8 @@ def read_claim(
     check compares. A fraction or a whole number in words ("about a quarter
     of", "Seventeen cases") is read as its number.
     """
+    # "6.5 out of 10": the scale says what the number is out of, not a second number.
+    claim = re.sub(r"(\d)\s+out\s+of\s+(?:10|5|100)\b", r"\1", claim)
     reported = REPORTING_CLAUSE.match(claim)
     if reported:
         # "Owners estimated that their cats caught 3.7 prey": who said it is not part of what is checked.
@@ -715,6 +755,14 @@ def read_claim(
         written = claim[chosen.qualifier_start:chosen.match.end()]
         number = claimed_number(written, chosen.match, chosen.qualifier, None)
         return f"how many rows {rest}", number, ""
+    # "The models came from 28 manufacturers": a plural that names a column counts its distinct values.
+    plural = following.group(1).lower() if following else ""
+    singulars = {plural[:-1], plural[:-2] if plural.endswith("es") else "", f"{plural[:-3]}y"}
+    names = {normalized_name(str(column)) for column in columns}
+    if plural.endswith("s") and not chosen.match.group("percent") and singulars & names:
+        rest = f"{claim[:chosen.qualifier_start]} {claim[chosen.match.end() + following.end(1):]}"
+        rest = re.sub(r"\s+", " ", rest).strip(" .,;:!?")
+        return f"how many distinct {plural} {rest}", replace(number, unit=None), ""
     # "55 of the cats were neutered" counts the cats that were.
     of_the = OF_THE.match(claim[chosen.match.end():])
     noun = of_the.group(1).lower() if of_the else ""
@@ -730,7 +778,7 @@ def read_claim(
         return f"how many {rest}", number, ""
     start = chosen.cue_start if chosen.cue in AGGREGATION_CUES or chosen.cue in TALLY_VERBS or chosen.cue in {
         "is", "was", "were", "are", "be", "been", "equals", "equalled", "equaled", "stood", "amounted",
-        "came", "numbered", "at", "by", "of",
+        "came", "numbered", "at", "by", "of", "reached", "reaches",
     } else chosen.qualifier_start
     before, after = claim[:start], claim[unit_end:]
     adjective = re.match(r"\s*([A-Za-z]+)", after)
@@ -1096,9 +1144,8 @@ def check_claim(
         asked = question
     else:
         # "Of the 4,526 applicants, 38.8% were admitted": the lead names the base, checked below.
-        lead = BASE_LEAD.match(text)
-        asked, number, problem = read_claim(text[lead.end():] if lead else text, columns,
-                                            analysis.roles.row_noun)
+        body, base = _based(text)
+        asked, number, problem = read_claim(body, columns, analysis.roles.row_noun)
         if problem:
             reason = "unsupported_analysis" if "more than one number" in problem else "missing_context"
             return ClaimCheck(
@@ -1111,20 +1158,50 @@ def check_claim(
     without = next((item for item in check.assumptions if item.startswith(LEFT_OUT_NOTE)), None)
     if without:
         check = replace(check, words_left_out=tuple(re.findall(r'"([^"]+)"', without)))
-    if question is None and (lead := BASE_LEAD.match(text)) and check.answer is not None:
-        return _checked_base(check, lead)
+    if question is None and (base := _based(text)[1]) and check.answer is not None:
+        return _checked_base(check, *base)
     return check
 
 
-def _checked_base(check: ClaimCheck, lead: re.Match) -> ClaimCheck:
-    """A claim whose lead names its base ("Of the 4,526 applicants"), with the base checked too."""
-    stated = float(lead.group("count").replace(",", ""))
-    named = f"{lead.group('count')} {lead.group('noun')}"
-    base = dict(check.answer.figures).get("denominator") if check.answer is not None else None
+def _based(text: str) -> tuple[str, tuple[str, str] | None]:
+    """The claim without the base it names, and that base as (count, noun), or None.
+
+    "Of the 4,526 applicants, 38.8% were admitted" and "34 of the 93 cars had no
+    airbags" name 4,526 applicants and 93 cars; "The 93 models came from 28
+    makers" names 93 models when another number follows.
+    """
+    if (lead := BASE_LEAD.match(text)):
+        return text[lead.end():], (lead.group("count"), lead.group("noun"))
+    if (part := PART_OF_BASE.match(text)):
+        body = f"{part.group('lead')}{part.group('part')} {part.group('noun')}{text[part.end():]}"
+        return body, (part.group("count"), part.group("noun"))
+    opening = OPENING_BASE.match(text)
+    count = opening and float(opening.group("count").replace(",", ""))
+    later = opening and NUMBER_PATTERN.search(text, opening.end())
+    year = opening and YEAR_RANGE[0] <= count <= YEAR_RANGE[1] and "," not in opening.group("count")
+    if opening and later and not year:
+        body = f"{text[:opening.start('count')]}{text[opening.end('count'):].lstrip()}"
+        return body, (opening.group("count"), opening.group("noun"))
+    return text, None
+
+
+def _checked_base(check: ClaimCheck, count: str, noun: str) -> ClaimCheck:
+    """A claim that names its base ("Of the 4,526 applicants", "the 93 cars"), with the base checked too.
+
+    The base is the share's denominator, or, for any other answer, the rows in
+    the answer's scope.
+    """
+    stated = float(count.replace(",", ""))
+    named = f"{count} {noun}"
+    answer = check.answer
+    base = dict(answer.figures).get("denominator") if answer is not None else None
+    of, are = "the share is of", "the share is of"
+    if base is None and answer is not None and answer.scope is not None:
+        base, of, are = float(answer.scope.rows_in_scope), "the answer's scope holds", "rows in scope"
     if base is not None and abs(base - stated) < 0.5:
-        note = f"The claim's {named} are the {_plain(base)} the share is of."
+        note = f"The claim's {named} are the {_plain(base)} {are}."
         return replace(check, assumptions=(note, *check.assumptions))
-    found = f"the share is of {_plain(base)}" if base is not None else "the answer gives no base to compare"
+    found = f"{of} {_plain(base)}" if base is not None else "the answer gives no base to compare"
     return replace(
         check, status="unverified", reason="missing_context",
         message=f"The claim's base is {named}, but {found}; {check.message}",
