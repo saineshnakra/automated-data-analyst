@@ -9,7 +9,8 @@
 
 A link is proposed from the values, not the names alone: a column whose values
 are found among the values of a key in another file (one value per row there).
-Names decide which columns are tried and how sure the link is. Every link
+Names decide which columns are tried and how sure the link is, and whole
+numbers, which overlap by chance, link only under matching names. Every link
 reports its coverage both ways, its cardinality and the rows it leaves
 unmatched, and a link is marked ``needs_confirmation`` when its names differ,
 its keys don't all match, or the key side repeats. Nothing is joined: a scan
@@ -32,7 +33,7 @@ import pandas as pd
 from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_dtype
 
 from .file_io import SUPPORTED_SUFFIXES
-from .formatting import normalized_name
+from .formatting import counted, normalized_name
 from .schema import IDENTIFIER_NAME_WORDS, is_identifier_name, is_year_name
 from .sources import Source
 
@@ -222,7 +223,8 @@ class FolderScan:
         return "\n".join(lines)
 
     def __str__(self) -> str:
-        out = [f"{self.folder}: {len(self.files)} files, {len(self.links)} proposed links"]
+        files, links = counted(len(self.files), "file"), counted(len(self.links), "proposed link")
+        out = [f"{self.folder}: {files}, {links}"]
         for profile in self.files:
             if profile.problem:
                 out.append(f"  {profile.name}: not read ({profile.problem})")
@@ -234,15 +236,16 @@ class FolderScan:
             else:
                 what = "rows of unknown meaning"
             extra = f", describes {profile.describes}" if profile.describes else ""
-            size = f"{profile.rows:,} rows x {len(profile.columns)} columns"
+            size = f"{counted(profile.rows, 'row')} x {counted(len(profile.columns), 'column')}"
             out.append(f"  {profile.name}: {size}, {what}{extra}")
         for link in self.links:
             flag = " (confirm)" if link.needs_confirmation and link.confirmed is None else ""
+            unmatched = counted(link.unmatched_rows, "row")
             out.append(f"  link {link.label('from')} -> {link.label('to')}: {link.kind}, "
-                       f"{link.coverage:.1%} of keys found, {link.unmatched_rows:,} rows unmatched{flag}")
+                       f"{link.coverage:.1%} of keys found, {unmatched} unmatched{flag}")
         open_ones = self.open_questions()
         if open_ones:
-            out.append(f"  {len(open_ones)} questions to answer:")
+            out.append(f"  {counted(len(open_ones), 'question')} to answer:")
             out.extend(f"    [{question.topic}] {question.text}" for question in open_ones)
         out.extend(f"  warning: {warning}" for warning in self.warnings)
         return "\n".join(out)
@@ -463,7 +466,22 @@ def _names_match(first: str, second: str, to_profile: FileProfile) -> bool:
     if len(a & b) >= 2 and len(a ^ b) <= 2:
         return True
     marks = {"id", "key", "code"}
-    return b <= marks and bool(a & _words(to_profile.stem)) and bool(a & marks)
+    named_for = {singular(word) for word in _words(to_profile.stem)} | _words(to_profile.stem)
+    return b <= marks and bool(a & named_for) and bool(a & marks)
+
+
+def _plain_numbers(values: set) -> bool:
+    """Whether every key value is a whole number in digits, as row numbers, counters and positions are.
+
+    Such values overlap by chance (grid positions 1 to 34 sit inside any id
+    column counting past 34), so they link only under matching names.
+    """
+    return all(value.isdigit() for value in values)
+
+
+def _key_named(columns: tuple[str, ...]) -> bool:
+    """Whether a name holds a key word (id, code, zip, number), unlike a shared label such as nationality."""
+    return any(_words(str(column)) & IDENTIFIER_NAME_WORDS for column in columns)
 
 
 def _link(source: _Keys, from_columns: tuple[str, ...], target: _Keys, to_columns: tuple[str, ...],
@@ -473,14 +491,14 @@ def _link(source: _Keys, from_columns: tuple[str, ...], target: _Keys, to_column
     if left is None or right is None:
         return None
     (left_keys, left_values, left_counts), (_, right_values, right_counts) = left, right
-    if not named and len(right_values) < MIN_KEY_VALUES:
+    if not named and (len(right_values) < MIN_KEY_VALUES or _plain_numbers(left_values)):
         return None
     shared = left_values & right_values
     coverage = len(shared) / len(left_values)
     if coverage < (MIN_NAMED_COVERAGE if named else MIN_COVERAGE):
         return None
     right_unique = int(right_counts.max()) == 1
-    if not right_unique and (not named or len(right_values) < MIN_KEY_VALUES):
+    if not right_unique and (not named or len(right_values) < MIN_KEY_VALUES or not _key_named(from_columns)):
         return None
     left_unique = int(left_counts.max()) == 1
     kind = {(True, True): "one-to-one", (False, True): "many-to-one", (True, False): "one-to-many",
@@ -491,8 +509,10 @@ def _link(source: _Keys, from_columns: tuple[str, ...], target: _Keys, to_column
     if not named:
         reasons.append("the names differ; the link rests on the values alone")
     if coverage < 1:
-        reasons.append(f"{len(left_values) - len(shared):,} {_labelled(from_profile, from_columns)} values "
-                       f"({int(unmatched.sum()):,} rows) have no match in {to_profile.name}")
+        missed = len(left_values) - len(shared)
+        reasons.append(f"{missed:,} {_labelled(from_profile, from_columns)} "
+                       f"{'value' if missed == 1 else 'values'} ({counted(int(unmatched.sum()), 'row')}) "
+                       f"{'has' if missed == 1 else 'have'} no match in {to_profile.name}")
     fan_out = int(right_counts.max())
     if not right_unique:
         reasons.append(f"{_labelled(to_profile, to_columns)} repeats (up to {fan_out:,} rows for one value), "

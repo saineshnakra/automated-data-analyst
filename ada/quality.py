@@ -30,7 +30,7 @@ import pandas as pd
 from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_dtype
 from scipy import stats
 
-from .formatting import group_label, has_percent_unit, is_currency, normalized_name
+from .formatting import counted, group_label, has_percent_unit, is_currency, normalized_name
 from .schema import ColumnRoles, is_design_name, is_entity_name, is_identifier_name
 from .timeseries import MAD_SCALE
 
@@ -546,10 +546,6 @@ def _listed(items: list[str], limit: int = 4) -> str:
     return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
 
 
-def _plural(count: int, singular: str, plural: str | None = None) -> str:
-    return f"{count:,} {singular if count == 1 else (plural or singular + 's')}"
-
-
 def _percent(share: float) -> str:
     """A percentage for a sentence: "0.4%", "12%", and "under 0.1%" rather than "0.0%"."""
     if 0 < share < 0.1:
@@ -1026,13 +1022,13 @@ def _impossible(
             return None, nothing
         flagged = column.cells(outside)
         if high == float("inf"):
-            what = _plural(flagged.size, "negative value")
+            what = counted(flagged.size, "negative value")
         elif flagged.min() >= low:
-            what = f"{_plural(flagged.size, 'value')} above {show_value(high)}"
+            what = f"{counted(flagged.size, 'value')} above {show_value(high)}"
         elif flagged.max() <= high:
-            what = f"{_plural(flagged.size, 'value')} below {show_value(low)}"
+            what = f"{counted(flagged.size, 'value')} below {show_value(low)}"
         else:
-            what = f"{_plural(flagged.size, 'value')} outside {show_value(low)} to {show_value(high)}"
+            what = f"{counted(flagged.size, 'value')} outside {show_value(low)} to {show_value(high)}"
         detail = f"{column.name} has {what} ({_range_of(flagged)}), though {wording}."
         summary = f"{column.name}: {what} ({_range_of(flagged)})"
         return _issue("impossible", column, flagged, detail, summary, wording), outside
@@ -1055,10 +1051,10 @@ def _impossible(
     flagged = column.cells(negative)
     rule = "negative values the size of the usual positive ones, in a column otherwise never negative"
     detail = (
-        f"{column.name} has {_plural(count, 'negative value')} ({_range_of(flagged)}) while every "
+        f"{column.name} has {counted(count, 'negative value')} ({_range_of(flagged)}) while every "
         "other value is above zero and of the same size, so the minus sign is probably an entry error."
     )
-    summary = f"{column.name}: {_plural(count, 'negative value')} ({_range_of(flagged)})"
+    summary = f"{column.name}: {counted(count, 'negative value')} ({_range_of(flagged)})"
     return _issue("impossible", column, flagged, detail, summary, rule), negative
 
 
@@ -1123,7 +1119,7 @@ def _sentinels(column: _Column, ordered: np.ndarray) -> list[QualityIssue]:
     others = ordered[~np.isin(ordered, standing)]
     for value in standing:
         flagged = column.cells(column.array == value)
-        rows = _plural(flagged.size, "row")
+        rows = counted(flagged.size, "row")
         shorter = _mistyped(value, others)
         if shorter is not None:
             detail = (
@@ -1183,12 +1179,12 @@ def _spikes(column: _Column, taken: np.ndarray) -> list[QualityIssue]:
         if abs(value - _ZERO_FAHRENHEIT_C) < 0.01 and _name_words(column.name) & {"temp", "temperature"}:
             reason = "; it is 0 °F in °C, so probably a blank Fahrenheit reading converted"
         detail = (
-            f"{column.name} holds {show_value(value)} in {_plural(flagged.size, 'row')}, about "
+            f"{column.name} holds {show_value(value)} in {counted(flagged.size, 'row')}, about "
             f"{times:.0f}× as often as the values around it{reason}. A value standing out like this "
             "is usually a missing-value code."
         )
         summary = (
-            f"{column.name}: {show_value(value)} in {_plural(flagged.size, 'row')}, "
+            f"{column.name}: {show_value(value)} in {counted(flagged.size, 'row')}, "
             "probably a missing-value code"
         )
         rule = f"a value in the outer 1% occurring at least {SPIKE_RATIO}× as often as its neighbours"
@@ -1235,7 +1231,7 @@ def _edge_codes(column: _Column, taken: np.ndarray) -> list[QualityIssue]:
         if not cells.any():
             continue
         flagged = column.cells(cells)
-        rows = _plural(flagged.size, "row")
+        rows = counted(flagged.size, "row")
         end = "bottom" if position == 0 else "top"
         reason = "a code for a missing reading, not a measurement"
         if abs(value - _ZERO_FAHRENHEIT_C) < 0.01 and _name_words(column.name) & {"temp", "temperature"}:
@@ -1392,11 +1388,11 @@ def _caps(
         else:
             detail = (
                 f"{column.name} sits exactly at its {side}, {show_value(value)}, in "
-                f"{_plural(count, 'row')} ({share}), which looks like a {kind} (a limit of the "
+                f"{counted(count, 'row')} ({share}), which looks like a {kind} (a limit of the "
                 "instrument or the protocol); true values there may lie beyond it, which biases the "
                 f"mean {bias}."
             )
-        summary = f"{column.name}: {_plural(count, 'row')} ({share}) piled at its {side}, {show_value(value)}"
+        summary = f"{column.name}: {counted(count, 'row')} ({share}) piled at its {side}, {show_value(value)}"
         rule = (
             f"one value at the {side} in {CAP_SHARE:.0%} or more of rows, or the most frequent value, "
             "or a round maximum"
@@ -1421,7 +1417,7 @@ def _clipped_issue(column: _Column, low: float, high: float) -> QualityIssue:
     at_low, at_high = column.array == low, column.array == high
     flagged = column.cells(at_low | at_high)
     shares = f"{_percent(at_low.mean() * 100)} and {_percent(at_high.mean() * 100)}"
-    lows, highs = _plural(int(at_low.sum()), "row"), _plural(int(at_high.sum()), "row")
+    lows, highs = counted(int(at_low.sum()), "row"), counted(int(at_high.sum()), "row")
     detail = (
         f"{column.name} sits exactly at its minimum, {show_value(low)}, in {lows} and at its maximum, "
         f"{show_value(high)}, in {highs} ({shares}): it looks clipped at both ends (winsorised), so true "
@@ -1462,12 +1458,12 @@ def _squeezed(column: _Column) -> QualityIssue | None:
     flagged = column.cells(cells)
     share = _percent(top / column.size * 100)
     detail = (
-        f"{column.name} has {_plural(top, 'value')} ({share}) within {show_value(float(f'{width:.2g}'))} "
+        f"{column.name} has {counted(top, 'value')} ({share}) within {show_value(float(f'{width:.2g}'))} "
         f"of its maximum, {show_value(high)}, about {top / max(below, 1.0):.0f}× as many as in a stretch of "
         f"that width lower down, though only {exact:,} equal it exactly: values seem squeezed against a "
         f"limit at {show_value(high)}, so true values there may lie beyond it."
     )
-    summary = f"{column.name}: {_plural(top, 'value')} ({share}) bunched just under {show_value(high)}"
+    summary = f"{column.name}: {counted(top, 'value')} ({share}) bunched just under {show_value(high)}"
     rule = (
         f"values within 1% of the range below a round maximum, {SQUEEZE_RATIO}× a typical stretch of that "
         f"width and {CAP_SHARE:.0%} or more of the column"
@@ -1571,12 +1567,12 @@ def _group_caps(
             flagged = profile.cells(profile.array == value)
             share = _percent(count / profile.size * 100)
             detail = (
-                f"{column} holds exactly {show_value(value)} in {_plural(count, 'row')} ({share}), "
+                f"{column} holds exactly {show_value(value)} in {counted(count, 'row')} ({share}), "
                 f"{int(levels[top]):,} of them in {label}, and at least three times as often as any other "
                 f"value: probably a limit at which those measurements stopped, so true values there may lie "
                 "beyond it."
             )
-            summary = f"{column}: {show_value(value)} in {_plural(count, 'row')} ({share}), mostly {label}"
+            summary = f"{column}: {show_value(value)} in {counted(count, 'row')} ({share}), mostly {label}"
             rule = (
                 f"a round value inside the range in {GROUP_CAP_SHARE:.0%} or more of rows and 3× any other "
                 f"value, with {GROUP_CAP_CONCENTRATION:.0%} or more of them in one group"
@@ -1632,12 +1628,12 @@ def _imputed(column: _Column) -> tuple[QualityIssue | None, np.ndarray]:
         mean_note = f", close to the mean of the other values ({show_value(float(np.mean(others)))})"
     share = _percent(count / column.size * 100)
     detail = (
-        f"{column.name} holds {show_value(value)} in {_plural(count, 'row')} ({share}){mean_note}. "
+        f"{column.name} holds {show_value(value)} in {counted(count, 'row')} ({share}){mean_note}. "
         "A non-round value this common is usually a filled-in gap, so these rows are probably "
         "missing values reported as complete."
     )
     summary = (
-        f"{column.name}: {show_value(value)} in {_plural(count, 'row')} ({share}), probably filled-in gaps"
+        f"{column.name}: {show_value(value)} in {counted(count, 'row')} ({share}), probably filled-in gaps"
     )
     rule = f"one non-round value in {IMPUTED_SHARE:.0%} or more of rows"
     return _issue("imputed", column, flagged, detail, summary, rule, group=value), cells
@@ -1692,13 +1688,13 @@ def _extremes(column: _Column, scale: _Scale, taken: np.ndarray) -> QualityIssue
         share = _percent(far.mean() * 100)
         side = "above" if float(flagged.min()) > scale.median else "below"
         detail = (
-            f"{column.name} has {_plural(flagged.size, 'value')} ({share}) from {_range_of(flagged)}, "
+            f"{column.name} has {counted(flagged.size, 'value')} ({share}) from {_range_of(flagged)}, "
             f"cut off {side} the rest (median {show_value(scale.median)}{on_log}): a second cluster, "
             f"or a possible sensor or unit fault. They move its mean to {_rounded(column.array.mean())}, "
             f"against {_rounded(rest.mean())} without them."
         )
         summary = (
-            f"{column.name}: {_plural(flagged.size, 'value')} ({share}) in a second cluster "
+            f"{column.name}: {counted(flagged.size, 'value')} ({share}) in a second cluster "
             f"({_range_of(flagged)})"
         )
         rule += f", in more than {EXTREME_SHARE:.0%} of rows"
@@ -1722,11 +1718,11 @@ def _extremes(column: _Column, scale: _Scale, taken: np.ndarray) -> QualityIssue
             "means and correlations."
         )
     detail = (
-        f"{column.name} has {_plural(flagged.size, 'value')} more than {EXTREME_Z:.0f} robust "
+        f"{column.name} has {counted(flagged.size, 'value')} more than {EXTREME_Z:.0f} robust "
         f"standard deviations from its median of {show_value(scale.median)}{on_log} "
         f"({_range_of(flagged)}), cut off from the other values. {verdict}"
     )
-    summary = f"{column.name}: {_plural(flagged.size, 'extreme value')} ({_range_of(flagged)})"
+    summary = f"{column.name}: {counted(flagged.size, 'extreme value')} ({_range_of(flagged)})"
     return _issue("extreme", column, flagged, detail, summary, rule)
 
 
@@ -1752,11 +1748,11 @@ def _survey_codes(column: _Column) -> QualityIssue | None:
     flagged = column.cells(cells)
     shown = _listed([str(code) for code in codes])
     detail = (
-        f"{column.name} holds {shown} in {_plural(flagged.size, 'row')}, well above its other "
+        f"{column.name} holds {shown} in {counted(flagged.size, 'row')}, well above its other "
         f"codes ({_listed([str(level) for level in answers])}); in survey data these usually mean "
         "refused or don't know, and they are kept as values here."
     )
-    summary = f"{column.name}: {shown} in {_plural(flagged.size, 'row')}, probably refused or don't know"
+    summary = f"{column.name}: {shown} in {counted(flagged.size, 'row')}, probably refused or don't know"
     rule = "a 7/9/77/99-style code above the rest of a small set of integer codes"
     return _issue("survey_code", column, flagged, detail, summary, rule)
 
@@ -1777,7 +1773,7 @@ def _rare_zero_code(column: _Column) -> QualityIssue | None:
     if count / column.size >= RARE_CODE_SHARE or count * RARE_CODE_RATIO > int(column.counts[1:].min()):
         return None
     flagged = column.cells(column.array == 0)
-    rows = _plural(count, "row")
+    rows = counted(count, "row")
     detail = (
         f"{column.name} holds 0 in {rows} ({_percent(count / column.size * 100)}), below its other "
         f"codes (1 to {show_value(others[-1])}), each of which is far more common: a code set that "
@@ -1807,11 +1803,11 @@ def _implausible(column: _Column, taken: np.ndarray, bounds: _Bounds | None) -> 
         return None
     flagged = column.cells(beyond)
     if flagged.min() > high:
-        what = f"{_plural(count, 'value')} above {show_value(high)}"
+        what = f"{counted(count, 'value')} above {show_value(high)}"
     elif flagged.max() < low:
-        what = f"{_plural(count, 'value')} below {show_value(low)}"
+        what = f"{counted(count, 'value')} below {show_value(low)}"
     else:
-        what = f"{_plural(count, 'value')} outside {show_value(low)} to {show_value(high)}"
+        what = f"{counted(count, 'value')} outside {show_value(low)} to {show_value(high)}"
     share = _percent(count / column.size * 100)
     detail = (
         f"{column.name} has {what} ({share} of its values), beyond the critical limits of "
@@ -1985,30 +1981,30 @@ def _combined(check: str, alike: list[QualityIssue]) -> QualityIssue:
         rows, share = first.rows, first.share
         detail = (
             f"The columns {named} have values more than {EXTREME_Z:.0f} robust standard deviations "
-            f"from their medians on the same {_plural(rows, 'row')}, cut off from the other values; "
+            f"from their medians on the same {counted(rows, 'row')}, cut off from the other values; "
             "one record or one batch is probably wrong, or measured on another scale, across all of them."
         )
-        summary = f"Extreme values on the same {_plural(rows, 'row')} in columns {named}"
+        summary = f"Extreme values on the same {counted(rows, 'row')} in columns {named}"
     elif check == "cluster":
         rows, share = first.rows, first.share
         detail = (
-            f"The columns {named} have a second cluster of values on the same {_plural(rows, 'row')} "
+            f"The columns {named} have a second cluster of values on the same {counted(rows, 'row')} "
             f"({_percent(share)}), cut off from their other values: one batch of records measured "
             "differently, or a sensor or unit fault across all of them."
         )
         summary = (
-            f"A second cluster on the same {_plural(rows, 'row')} ({_percent(share)}) in columns {named}"
+            f"A second cluster on the same {counted(rows, 'row')} ({_percent(share)}) in columns {named}"
         )
     elif check == "imputed":
         values = _listed([f"{issue.column} {issue.examples[0]}" for issue in alike], limit=6)
         rows, share = first.rows, first.share
         detail = (
-            f"The same {_plural(rows, 'row')} ({_percent(share)}) hold one repeated non-round value "
+            f"The same {counted(rows, 'row')} ({_percent(share)}) hold one repeated non-round value "
             f"in {len(columns)} columns ({values}): probably gaps filled with each column's mean, so "
             "these rows are missing values reported as complete."
         )
         summary = (
-            f"{_plural(rows, 'row')} ({_percent(share)}) hold a fill value in {len(columns)} "
+            f"{counted(rows, 'row')} ({_percent(share)}) hold a fill value in {len(columns)} "
             f"columns ({named})"
         )
     elif check == "clipped":
@@ -2027,16 +2023,16 @@ def _combined(check: str, alike: list[QualityIssue]) -> QualityIssue:
         side, value = first.group
         kind = "cap" if side == "maximum" else "floor"
         detail = (
-            f"{named} sit exactly at their {side}, {show_value(value)}, in {_plural(cells, 'value')} "
+            f"{named} sit exactly at their {side}, {show_value(value)}, in {counted(cells, 'value')} "
             f"in all, which looks like a shared {kind}; true values there may lie beyond it."
         )
-        summary = f"{named}: {_plural(cells, 'value')} piled at their {side}, {show_value(value)}"
+        summary = f"{named}: {counted(cells, 'value')} piled at their {side}, {show_value(value)}"
         if side == "near maximum":
             detail = (
-                f"{named} bunch just under their maximum, {show_value(value)}, in {_plural(cells, 'value')} "
+                f"{named} bunch just under their maximum, {show_value(value)}, in {counted(cells, 'value')} "
                 "in all, as values squeezed against a shared limit do; true values there may lie beyond it."
             )
-            summary = f"{named}: {_plural(cells, 'value')} bunched just under {show_value(value)}"
+            summary = f"{named}: {counted(cells, 'value')} bunched just under {show_value(value)}"
     else:
         each = _listed([f"{issue.rows:,}" for issue in alike])
         reason = "; it is 0 °F in °C, so probably blank Fahrenheit readings" if "0 °F" in first.detail else ""
@@ -2044,7 +2040,7 @@ def _combined(check: str, alike: list[QualityIssue]) -> QualityIssue:
             f"{named} hold {first.examples[0]} in {each} rows, standing far out from their other "
             f"values{reason}: a missing-value code, not a measurement."
         )
-        summary = f"{named}: {first.examples[0]} in {_plural(cells, 'row')}, a missing-value code"
+        summary = f"{named}: {first.examples[0]} in {counted(cells, 'row')}, a missing-value code"
     return QualityIssue(
         check=check,
         columns=columns,
@@ -2142,7 +2138,7 @@ def _single_readings(issues: list[QualityIssue]) -> QualityIssue:
     leading = max(issues, key=lambda issue: issue.rows)
     shares = sorted(issue.share for issue in issues)
     spread = _percent(shares[0]) if len(issues) == 1 else f"{_percent(shares[0])} to {_percent(shares[-1])}"
-    pairs = _plural(len(issues), "pair")
+    pairs = counted(len(issues), "pair")
     detail = (
         f"In {pairs} of columns that hold the highest and lowest value of one reading, or the same reading "
         f"in two windows (such as {leading.columns[0]} and {leading.columns[1]}), the two are equal on "
@@ -2236,7 +2232,7 @@ def _bounded_pair(a: pd.Series, b: pd.Series, first: str, second: str) -> tuple[
 def _bounded_issue(low: str, high: str, count: int, share: float) -> QualityIssue:
     """A note that one column equals another where it reached its bound, rather than a copy."""
     detail = (
-        f"{low} never exceeds {high} and equals it on {_plural(count, 'row')} ({_percent(share * 100)} of "
+        f"{low} never exceeds {high} and equals it on {counted(count, 'row')} ({_percent(share * 100)} of "
         f"rows with both): it looks recorded up to {high}, as a time to an event is set to the follow-up "
         "time where the event did not happen (censored), so this is no sign of copying."
     )
@@ -2270,7 +2266,7 @@ def _equal_pair(frame: pd.DataFrame, first: str, second: str, dimension: str | N
     if share >= EQUAL_SHARE and agree >= EQUAL_SHARE:
         count = int(equal.sum())
         detail = (
-            f"{first} equals {second} in {_plural(count, 'row')} ({_percent(share * 100)} of rows "
+            f"{first} equals {second} in {counted(count, 'row')} ({_percent(share * 100)} of rows "
             "with both); check whether one was copied into the other."
         )
         summary = f"{first} equals {second} in {_percent(share * 100)} of rows"
@@ -2291,7 +2287,7 @@ def _equal_pair(frame: pd.DataFrame, first: str, second: str, dimension: str | N
     count = int(equal[inside].sum())
     within = _percent(float(shares.max()) * 100)
     detail = (
-        f"In {label}, {first} equals {second} in {_plural(count, 'row')} ({within} of its rows, "
+        f"In {label}, {first} equals {second} in {counted(count, 'row')} ({within} of its rows, "
         f"against {_percent(elsewhere * 100) if elsewhere else '0%'} elsewhere), which suggests one "
         "was copied into the other there."
     )
@@ -2351,10 +2347,10 @@ def _min_max(frame: pd.DataFrame, columns: list[str]) -> list[QualityIssue]:
             pairs = frame.loc[below, [high, low]].head(3).to_numpy()
             shown = tuple(f"{show_value(x)} < {show_value(y)}" for x, y in pairs)
             detail = (
-                f"{high} is below {low} in {_plural(count, 'row')} (for example {shown[0]}), which can't "
+                f"{high} is below {low} in {counted(count, 'row')} (for example {shown[0]}), which can't "
                 "happen; one of the two is wrong on those rows."
             )
-            summary = f"{high} below {low} in {_plural(count, 'row')}"
+            summary = f"{high} below {low} in {counted(count, 'row')}"
             rule = "a max-named column below its min-named or plain sibling"
             issues.append(QualityIssue("min_max", (high, low), count, count / both * 100, detail, summary,
                                        rule, shown))
@@ -2383,10 +2379,10 @@ def _outside_range(frame: pd.DataFrame, middle: str, low: str, high: str) -> Qua
     shown = tuple(f"{show_value(m)} outside {show_value(x)} to {show_value(y)}" for m, x, y in rows)
     both = max(int(frame[[middle, low, high]].notna().all(axis=1).sum()), 1)
     detail = (
-        f"{middle} lies outside {low} to {high} in {_plural(count, 'row')} (for example {shown[0]}), "
+        f"{middle} lies outside {low} to {high} in {counted(count, 'row')} (for example {shown[0]}), "
         "which can't happen for an average of the same readings; one of the three is wrong on those rows."
     )
-    summary = f"{middle} outside {low} to {high} in {_plural(count, 'row')}"
+    summary = f"{middle} outside {low} to {high} in {counted(count, 'row')}"
     rule = "an average-named column below its min-named sibling or above its max-named one"
     return QualityIssue("outside_range", (middle, low, high), count, count / both * 100, detail, summary,
                         rule, shown)
@@ -2445,11 +2441,11 @@ def _parts_of_wholes(frame: pd.DataFrame, columns: list[str]) -> list[QualityIss
             shown = tuple(f"{show_value(x)} > {show_value(y)}" for x, y in rows)
             within = f"{float((~over[both]).mean()) * 100:.1f}%"
             detail = (
-                f"{part} is greater than {whole} in {_plural(count, 'row')} (for example {shown[0]}), "
+                f"{part} is greater than {whole} in {counted(count, 'row')} (for example {shown[0]}), "
                 f"though it stays at or below it on {within} of the rows with both: a part can't exceed its "
                 "whole, so one of the two is wrong on those rows."
             )
-            summary = f"{part} above {whole} in {_plural(count, 'row')}"
+            summary = f"{part} above {whole} in {counted(count, 'row')}"
             rule = (
                 f"a part above the whole its name pairs it with, though at or below it on "
                 f"{PART_WHOLE_SHARE:.0%} or more of rows"
@@ -2593,9 +2589,9 @@ def _missing_issues(
         if when:
             in_time[block[0]] = when
             reason = when
-        on_rows = f"{_plural(count, 'row')} ({_percent(share)})"
+        on_rows = f"{counted(count, 'row')} ({_percent(share)})"
         detail = f"{_listed(block)} are missing on the same {on_rows}, {reason}."
-        summary = f"{len(block)} columns missing on the same {_plural(count, 'row')} ({_listed(block, 3)})"
+        summary = f"{len(block)} columns missing on the same {counted(count, 'row')} ({_listed(block, 3)})"
         rule = f"columns whose missing rows overlap by {BLOCK_OVERLAP:.0%} or more"
         issues.append(QualityIssue("missing_block", tuple(block), count, share, detail, summary, rule))
     for column in gappy:
@@ -2605,9 +2601,9 @@ def _missing_issues(
         if shares[column] > MISSING_SHARE and column not in in_block:
             count = int(missing[column].sum())
             share = _percent(shares[column] * 100)
-            detail = f"{column} is missing in {_plural(count, 'row')} ({share})."
+            detail = f"{column} is missing in {counted(count, 'row')} ({share})."
             if column in in_time:
-                detail = f"{column} is missing in {_plural(count, 'row')} ({share}), {in_time[column]}."
+                detail = f"{column} is missing in {counted(count, 'row')} ({share}), {in_time[column]}."
             issues.append(QualityIssue("missing", (column,), count, shares[column] * 100, detail,
                                        f"{column} {share} missing", f"more than {MISSING_SHARE:.0%} missing"))
     members = {block[0]: block for block in blocks}
@@ -2695,7 +2691,7 @@ class _TimeOrder:
             else:
                 when = f"every row from {self._at(start)} to {self._at(end)}: a gap in the record"
             rest = positions.size - int(lengths[longest])
-            return when + (f" (and {_plural(rest, 'other row')})" if rest else "")
+            return when + (f" (and {counted(rest, 'other row')})" if rest else "")
         if starts.size <= GAP_STRETCHES and lengths.mean() >= 2:
             spans = [self._span(int(start), int(end)) for start, end in zip(starts, ends, strict=True)]
             return (
@@ -2751,7 +2747,7 @@ def _log_coverage(frame: pd.DataFrame, date: str | None) -> QualityIssue | None:
     detail = (
         f"Readings come every {_duration(typical)} (the typical interval), but only {times.size:,} of the "
         f"{expected:,} expected from {first} to {last} are there ({_percent(share * 100)}): "
-        f"{_plural(long_gaps, 'gap')} run longer than {_duration(3 * typical)}, the longest {widest} (from "
+        f"{counted(long_gaps, 'gap')} run longer than {_duration(3 * typical)}, the longest {widest} (from "
         f"{gap_from} to {gap_to}). Totals and counts per period follow which stretches were logged."
     )
     summary = f"{date}: {_percent(share * 100)} of the expected readings logged (gaps up to {widest})"
@@ -3016,12 +3012,12 @@ def _swapped(
             shown_b = _range_of(pd.Series(arrays[b][block]))
             where = _stretch(frame, date, labels)
             detail = (
-                f"On {_plural(length, 'consecutive row')} ({where}), {names[0]} holds values in "
+                f"On {counted(length, 'consecutive row')} ({where}), {names[0]} holds values in "
                 f"{names[1]}'s usual range ({shown_a}) and {names[1]} values in {names[0]}'s ({shown_b}): "
                 "the two columns look swapped there, so neither is a reading of its own quantity on "
                 "those rows."
             )
-            summary = f"{names[0]} and {names[1]} swapped on {_plural(length, 'row')} ({where})"
+            summary = f"{names[0]} and {names[1]} swapped on {counted(length, 'row')} ({where})"
             rule = (
                 "a block of consecutive rows where each of two columns lies in the other's usual range "
                 "(1st to 99th percentile of the other rows, widened by half), the ranges apart"
@@ -3073,7 +3069,7 @@ def _cluster_runs(issues: list[QualityIssue], frame: pd.DataFrame, date: str | N
         where = _stretch(frame, date, labels)
         detail = issue.detail.replace(
             "a second cluster, or a possible sensor or unit fault",
-            f"one unbroken stretch of {_plural(length, 'row')} ({where}), so the unit, the scale or the "
+            f"one unbroken stretch of {counted(length, 'row')} ({where}), so the unit, the scale or the "
             "sensor probably changed for that stretch",
         )
         reworded.append(QualityIssue(
@@ -3224,12 +3220,12 @@ def _failed_records(
         code = issue.examples[0] if issue.examples else "a code"
         values = _listed([f"{column} {show_value(value)}" for column, value in held.items()])
         detail = (
-            f"On the {_plural(len(rows), 'row')} where {source} holds {code} (a missing-value code), "
+            f"On the {counted(len(rows), 'row')} where {source} holds {code} (a missing-value code), "
             f"{values}, values {'that column' if len(held) == 1 else 'those columns'} almost never "
             "hold elsewhere: the whole record failed there, so these cells are not readings either and are "
             "left out of relationships and comparisons."
         )
-        summary = f"{_listed([*issue.columns, *held], 3)}: one failed record on {_plural(len(rows), 'row')}"
+        summary = f"{_listed([*issue.columns, *held], 3)}: one failed record on {counted(len(rows), 'row')}"
         rule = (
             f"one value filling {FAILED_RECORD_SHARE:.0%} or more of the rows a missing-value code is on, "
             "and elsewhere on at most a tenth as many rows"
@@ -3264,11 +3260,11 @@ def _zero_rows(frame: pd.DataFrame, profiles: dict[str, _Column], columns: list[
     cells = {column: labels[zeros[hit, rare.index(column)]] for column in involved}
     named = _listed(involved)
     detail = (
-        f"{_plural(count, 'row')} hold exactly 0 in nearly every reading ({named}), though each of these "
+        f"{counted(count, 'row')} hold exactly 0 in nearly every reading ({named}), though each of these "
         "columns is otherwise rarely 0: probably missing values recorded as 0, so those cells are left "
         "out of relationships and comparisons."
     )
-    summary = f"{_plural(count, 'row')} of zeros in {len(involved)} readings ({_listed(involved, 3)})"
+    summary = f"{counted(count, 'row')} of zeros in {len(involved)} readings ({_listed(involved, 3)})"
     rule = (
         f"rows 0 in {ZERO_ROW_SHARE:.0%} or more of three or more readings that are each 0 on under "
         f"{ZERO_ROW_COLUMN_SHARE:.0%} of their values"
@@ -3348,12 +3344,12 @@ def _placeholder_blocks(frame: pd.DataFrame, identifier: str | None) -> list[Qua
         count = int(shared.sum())
         cells = {names[position]: frame.index[masks[position]] for position in members}
         detail = (
-            f"{_listed(block)} hold 0 or a dash on the same {_plural(count, 'row')} "
+            f"{_listed(block)} hold 0 or a dash on the same {counted(count, 'row')} "
             f"({_percent(count / rows * 100)}) and real values on the rest: on those rows nothing was "
             "recorded in them, so the zeros and dashes are left out of relationships and comparisons rather "
             "than read as values or a group."
         )
-        on_rows = _plural(count, "row")
+        on_rows = counted(count, "row")
         summary = f"{len(block)} columns not recorded on the same {on_rows} ({_listed(block, 3)})"
         rule = (
             f"three or more columns, one of them text, holding 0 or a dash on rows that agree by "
@@ -3864,20 +3860,20 @@ def _flatlines(
         if zeros.any() and not stalls.any():
             detail = (
                 f"{column} reads exactly 0 for {FLATLINE_RUN} or more readings in a row in "
-                f"{_plural(stuck.size, 'stretch', 'stretches')}, {_plural(rows, 'row')} ({share}) in all; "
+                f"{counted(stuck.size, 'stretch', 'stretches')}, {counted(rows, 'row')} ({share}) in all; "
                 f"the longest runs {lengths[longest]:,} readings ({_stretch(frame, date, span)}). A working "
                 "sensor rarely reads exactly zero for that long, so the instrument was probably off or below "
                 "its limit, and these zeros are not measurements."
             )
-            summary = f"{column}: exactly 0 for long stretches, {_plural(rows, 'row')} ({share})"
+            summary = f"{column}: exactly 0 for long stretches, {counted(rows, 'row')} ({share})"
         else:
             detail = (
-                f"{column} holds one unchanged value for long stretches, {_plural(rows, 'row')} ({share}) in "
+                f"{column} holds one unchanged value for long stretches, {counted(rows, 'row')} ({share}) in "
                 f"all; the longest holds {show_value(held[longest])} for {lengths[longest]:,} readings in a "
                 f"row ({_stretch(frame, date, span)}). Its values otherwise change from one reading to the "
                 "next, so the sensor probably stuck or stopped reporting there."
             )
-            summary = f"{column}: stuck on one value for {_plural(rows, 'row')} ({share})"
+            summary = f"{column}: stuck on one value for {counted(rows, 'row')} ({share})"
         rule = (
             f"in time order, runs of {FLATLINE_RUN} or more exact zeros, or one run holding "
             f"{FLATLINE_STALL:.0%} of the column, in a column that otherwise repeats on at most "
@@ -3905,11 +3901,11 @@ def _same_stretches(issues: list[QualityIssue]) -> list[QualityIssue]:
         named = _listed(list(columns))
         held = _listed([f"{issue.columns[0]} {issue.examples[0]}" for issue in alike])
         detail = (
-            f"{named} stop changing on the same {_plural(first.rows, 'row')} ({_percent(first.share)}), "
+            f"{named} stop changing on the same {counted(first.rows, 'row')} ({_percent(first.share)}), "
             f"holding {held}: the instrument behind them probably stopped reporting there, so these "
             "rows are not measurements."
         )
-        summary = f"{named} stuck on the same {_plural(first.rows, 'row')} ({_percent(first.share)})"
+        summary = f"{named} stuck on the same {counted(first.rows, 'row')} ({_percent(first.share)})"
         merged.append(QualityIssue(
             "flatline", columns, first.rows, first.share, detail, summary, first.rule, first.examples,
             cells={name: index for issue in alike for name, index in issue.cells.items()},
@@ -3941,12 +3937,12 @@ def _matrix_rows(frame: pd.DataFrame, columns: list[str], label: str | None) -> 
     names = [str(value) for value in labels]
     shown = _listed(names, limit=5)
     detail = (
-        f"{_plural(flagged.size, 'row')} ({shown}) sit far from the others as a whole: the median across "
+        f"{counted(flagged.size, 'row')} ({shown}) sit far from the others as a whole: the median across "
         f"the {len(columns):,} columns is {_range_of(flagged)} on {'it' if flagged.size == 1 else 'them'}, "
         f"against {show_value(scale.median)} for a typical row. Check whether they were measured on "
         "another scale or setting before comparing them with the rest."
     )
-    summary = f"{_plural(flagged.size, 'row')} off scale as a whole ({_listed(names, limit=3)})"
+    summary = f"{counted(flagged.size, 'row')} off scale as a whole ({_listed(names, limit=3)})"
     rule = (
         f"a row's median across the matrix columns more than {EXTREME_Z:.0f} robust standard deviations "
         "from the typical row's, cut off from the rest"
@@ -4237,10 +4233,10 @@ def _standing_issue(value: float, counts: dict[str, tuple[int, float, int]]) -> 
     if len(columns) == 1:
         count, centre, _ = counts[columns[0]]
         detail = (
-            f"{columns[0]} held {shown} in {_plural(count, 'row')}, far from its other values (median "
+            f"{columns[0]} held {shown} in {counted(count, 'row')}, far from its other values (median "
             f"{show_value(centre)}): a code for a missing reading. Cleaning set those cells to missing."
         )
-        summary = f"{columns[0]}: {shown} in {_plural(count, 'row')}, a missing-value code set to missing"
+        summary = f"{columns[0]}: {shown} in {counted(count, 'row')}, a missing-value code set to missing"
     else:
         sizes = sorted(count for count, _, _ in counts.values())
         spread = f"{sizes[0]:,}" if sizes[0] == sizes[-1] else f"{sizes[0]:,} to {sizes[-1]:,}"
@@ -4261,11 +4257,11 @@ def _shared_issue(value: float, columns: list[str], cells: int, rows: int, total
     shown = show_value(value)
     named = _listed(columns)
     detail = (
-        f"{named} held {shown} in {_cells(cells)} on {_plural(rows, 'row')}, each row holding it in "
+        f"{named} held {shown} in {_cells(cells)} on {counted(rows, 'row')}, each row holding it in "
         f"{SHARED_CODE_COLUMNS} or more of them, though none is otherwise negative: a code for no "
         "reading. Cleaning set those cells to missing."
     )
-    summary = f"{named}: {shown} on {_plural(rows, 'row')} at once, a missing-value code set to missing"
+    summary = f"{named}: {shown} on {counted(rows, 'row')} at once, a missing-value code set to missing"
     rule = (
         f"one negative value on the same rows in {SHARED_CODE_COLUMNS} or more columns that are "
         "otherwise never negative; set to missing"

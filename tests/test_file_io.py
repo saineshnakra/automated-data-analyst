@@ -119,6 +119,12 @@ class CellValueTests(unittest.TestCase):
         self.assertEqual(frame["Customer ID"].tolist(), ["00042", "00007"])
         self.assertEqual(frame["Revenue"].tolist(), [10, 20])
 
+    def test_a_database_null_is_missing(self):
+        frame = read_tabular_file(b"code,laps\n\\N,\\N\nHAM,52\nVER,\\N\n", "results.csv")
+
+        self.assertEqual(frame["code"].isna().tolist(), [True, False, False])
+        self.assertEqual(frame["laps"].dropna().tolist(), [52])
+
 
 class DelimiterRescueTests(unittest.TestCase):
     def test_a_semicolon_delimited_file_is_still_split(self):
@@ -211,6 +217,21 @@ class TitleRowEncodingTests(unittest.TestCase):
                 frame = read_tabular_file(text.encode(encoding), "report.csv")
                 self.assertEqual(list(frame.columns), ["Region", "Revenue"])
 
+
+    def test_lines_a_data_portal_writes_above_the_header_are_skipped(self):
+        text = (
+            '"Data Source","World Development Indicators",\n\n"Last Updated Date","2026-10-08",\n\n'
+            '"Country Name","Country Code","2020","2021",\n"Japan","JPN","84.6","84.4",\n'
+            '"Chad","TCD","52.8","52.5",\n'
+        )
+        frame = read_tabular_file(text.encode(), "API_life.csv")
+        self.assertEqual(list(frame.columns)[:4], ["Country Name", "Country Code", "2020", "2021"])
+        self.assertEqual(frame["2021"].tolist(), [84.4, 52.5])
+
+    def test_a_wider_row_further_down_is_not_taken_for_the_header(self):
+        text = "a,b\n1,2\n3,4\n5,6,7\n"
+        with self.assertRaises(ValueError):
+            read_tabular_file(text.encode(), "ragged.csv")
 
 class ArchiveSuffixTests(unittest.TestCase):
     def test_a_data_file_is_read_as_comma_separated_text(self) -> None:

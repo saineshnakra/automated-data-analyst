@@ -13,6 +13,10 @@
   question to answer. `--template FILE` writes the questions with ADA's
   proposed answers; `--answers FILE` reads the confirmed answers back.
   `--json` prints all of it. See [Reading a folder of tables](docs/reference/folder.md).
+  Whole numbers link only under matching names, since ids, positions and
+  counters overlap by chance, and a link where both sides repeat needs a key
+  word (`id`, `code`, `zip`, `number`) in its name. On the Formula 1 tables
+  this leaves the 7 links the schema documents and one to confirm.
 - `ada.check_claim` and `ada claim` take a folder and check the claim against
   the file it fits; when no single file does, the answer names the keys that
   would join two of them.
@@ -71,6 +75,12 @@
 - `.data` and `.dat` files are read, as tab-separated text when the header
   splits on tabs and as comma-separated text otherwise (the UCI repository's
   `.data` files).
+- Lines above the header are skipped: a data portal's "Data Source" and "Last
+  Updated Date" lines as well as a report's title. A World Bank indicator file
+  failed to read.
+- `\N`, the null MySQL and PostgreSQL write when they export a table, is read
+  as missing in every column. Formula 1's `fastestLap` and `fastestLapSpeed`,
+  three quarters `\N`, stayed text.
 - `NA` in a text column of words (`male`, `female`, `NA`) is read as missing,
   with a note; among codes (`EU`, `APAC`, `NA`) it stays a code. Penguins'
   `sex` had an "NA" group of 11.
