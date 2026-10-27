@@ -177,6 +177,14 @@ MULTIPLE = re.compile(
 MULTIPLE_WORDS = {"doubled": 2, "tripled": 3, "trebled": 3, "quadrupled": 4, "halved": 0.5}
 # A reporting year or a period written as two years: "2021-22", "2019/20", "1985-1999".
 YEAR_PAIR = re.compile(r"\b(?:1[5-9]|20)\d{2}\s*[-–/]\s*(?:\d{2}|(?:1[5-9]|20)\d{2})\b")
+# Numbers that name rather than count: a rank ("No. 1"), a chart or index ("the Hot 100"), a day with no
+# year ("September 11") and a time of day ("10 p.m.", "15:30").
+NAMING_NUMBER = re.compile(
+    r"\bNo\.\s*\d+\b|\b[Tt]he\s+(?:[A-Z][\w&]*\s+)+\d{2,4}\b|"
+    r"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+"
+    r"\d{1,2}(?:st|nd|rd|th)?\b(?!,?\s*\d)|"
+    r"\b\d{1,2}(?:[.:]\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)(?!\w)|\b\d{1,2}:\d{2}\b"
+)
 # Words before a year that make it the time of the claim: "rose in 2020", "since 2009".
 YEAR_PREPOSITION = re.compile(r"\b(?:in|since|until|till|before|after|during)\s*$", re.IGNORECASE)
 # Two years that bound a range: "from 2023 to 2024", "between 1982 and 1988".
@@ -589,7 +597,8 @@ def _candidates(claim: str, columns: list[str]) -> list[_Candidate]:
     days = [day.span() for day in DAY_PATTERN.finditer(claim)] + [
         age.span() for age in AGE_PHRASE.finditer(claim)] + [
         span.span() for span in YEAR_SPAN.finditer(claim)] + [
-        span.span() for span in YEAR_PAIR.finditer(claim)]
+        span.span() for span in YEAR_PAIR.finditer(claim)] + [
+        span.span() for span in NAMING_NUMBER.finditer(claim)]
     for match in NUMBER_PATTERN.finditer(claim):
         start = match.start()
         before = claim[:start].rstrip()
@@ -1466,9 +1475,14 @@ CHANGE_WORDS = re.compile(
 # "from 32 the year before to 61": the first end's year, given against the year of the change.
 YEAR_BEFORE = (r"(?:the|a)\s+(?:year|season)\s+(?:before|earlier)|the\s+(?:previous|prior)\s+(?:year|season)|"
                r"last\s+year")
+# The words between a value and its year: a unit ("8.4 weeks") and a month ("in December 2007").
+_UNIT = r"(?:\s+(?!in\b|to\b|the\b)[a-z]+)?"
+_MONTH = (r"(?:(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|"
+          r"sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+)?")
 FROM_TO = re.compile(
-    rf",?\s*\bfrom\s+(?P<first>{_END})(?:\s+(?:in\s+(?P<y1>\d{{4}})|{YEAR_BEFORE}))?\s+to\s+(?P<last>{_END})"
-    rf"(?:\s+in\s+(?P<y2>\d{{4}}))?",
+    rf",?\s*\bfrom\s+(?P<first>{_END}){_UNIT}(?:\s+(?:in\s+{_MONTH}(?P<y1>\d{{4}})|{YEAR_BEFORE}))?\s+to\s+"
+    rf"(?:a\s+(?:record|new\s+high|new\s+low|high|low|peak)\s+(?:of\s+)?)?(?P<last>{_END}){_UNIT}"
+    rf"(?:\s+in\s+{_MONTH}(?P<y2>\d{{4}}))?",
     re.IGNORECASE,
 )
 TO_ONLY = re.compile(rf",\s*to\s+(?P<last>{_END})(?=\s*[.!;]?\s*$)", re.IGNORECASE)

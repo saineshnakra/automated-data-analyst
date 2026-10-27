@@ -271,7 +271,9 @@ each word is claimed, in this order, by:
    and older", "65+", "20-year-olds") keep the rows of those ages in the one
    column named for age: as conditions on a column of numbers, or as the
    bands that make them up exactly on a column of bands ("50-64" and "65+"
-   for "50 and over"). Ages that cut a band in two ("40 and over" with a
+   for "50 and over"; up to the oldest band the table has, so "50 and over"
+   is 50-54, 55-59 and 60-64 in a table of working ages). "in their fifties"
+   is 50 to 59. Ages that cut a band in two ("40 and over" with a
    band 35-49) are refused, as no row says which side its people are on. A
    bound after a verb ("was under 40", "were over 65") is on a numeric age
    column too, below or above the number whatever the fraction of a year.
@@ -417,6 +419,7 @@ weekly view and `Age of testing (day)` for no daily one.
 | "Pentanoic_acid 0", "VMA of 0" | `= 0`, for a numeric column that holds that value |
 | "sampleID containing Ivc", "Name starts with Ac", "ends with" | `contains`, `starts`, `ends` the text, in any case |
 | "papers with COVID in the title", "had war in their name" | `title contains COVID`: the word before the text column it is part of |
+| "had a wheeze", "reported breathlessness", "without a wheeze" | the yes value of a text column that holds only a yes and a no (`Wheeze` = W of W and NoW), or the no after "without" |
 | "where Condition is Open", "Detector is ON", "Region West" | the value of that text column |
 | "depth_km below 1 km", "depth_km above 500 metres" | `depth_km < 1`, `depth_km > 0.5`: a unit after the bound is the column's, or converts to it |
 | "less than 1 km deep", "deeper than 50 cm", "older than 30" | the adjective names the column: depth, length, height, width, weight, age, thickness |

@@ -251,6 +251,14 @@ plural before the verb names what changed: "Fox rescues nearly doubled" is the
 number of rescues when no column is called rescues. A fraction before a verb needs no "of": "nearly half went on to
 college" is read as "nearly half of" is.
 
+A number that names rather than counts is part of the question: a rank ("No.
+1"), a chart or index ("the Hot 100", "the FTSE 100"), a day with no year
+("the September 11 attacks") and a time of day ("10 p.m.", "15:30"). The ends
+of a change may carry a unit, a month and "a record" ("from 8.4 weeks in
+December 2007 to a record 25.2 weeks in June 2010"). A share of the distinct
+values of a column that holds two values ("half had Wheeze", as a share of W
+and NoW) is not given, as it says nothing of the rows.
+
 A year is never the number claimed after "in", "since", "until", "before",
 "after" or "during" ("rose in 2020" states no number), and a reporting year
 or a span of years ("2021-22", "2019/20", "2000-2014") is one period, not a

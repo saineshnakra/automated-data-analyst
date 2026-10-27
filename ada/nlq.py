@@ -1018,9 +1018,13 @@ AGE_PHRASE = re.compile(
     rf"|{_AGE_CUE}(?P<over>\d{{1,3}})\s*(?:\+|\s+and\s+(?:over|up|above)\b|\s+or\s+(?:over|more|above)\b)"
     rf"|(?P<plus>\d{{1,3}})\+(?=\s|$|[,.;])"
     rf"|{_AGE_CUE}(?P<one>\d{{1,3}})\b(?!\s*(?:-|–|to\b|and\b|or\b|\+|%))"
-    rf"|(?P<olds>\d{{1,3}}){_YEAR_OLDS})",
+    rf"|(?P<olds>\d{{1,3}}){_YEAR_OLDS}"
+    # "in their fifties": the ten years from 50.
+    r"|in\s+(?:their|his|her)\s+(?P<decade>twenties|thirties|forties|fifties|sixties|seventies|eighties|nineties)\b)",
     re.IGNORECASE,
 )
+DECADE_AGES = {"twenties": 20, "thirties": 30, "forties": 40, "fifties": 50, "sixties": 60, "seventies": 70,
+               "eighties": 80, "nineties": 90}
 # An age bound after a linking verb, with no age column named: "was under 40", "were over 65".
 AGE_BOUND = re.compile(
     r"\b(?:was|were|is|are|be|been|aged)\s+(?P<side>under|below|over|above|younger\s+than|older\s+than)\s+"
@@ -1034,6 +1038,9 @@ BAND_VALUE = re.compile(r"^\s*(?:(?P<low>\d{1,3})\s*(?:-|–|to)\s*(?P<high>\d{1
 
 def age_range(match: re.Match) -> tuple[float, float]:
     """The ages an ``AGE_PHRASE`` match names, inclusive; an open top is infinity."""
+    if match.groupdict().get("decade"):
+        low = DECADE_AGES[match.group("decade").lower()]
+        return float(low), float(low + 9)
     found = {name: int(value) for name, value in match.groupdict().items() if value}
     if "low" in found or "low2" in found:
         return float(found.get("low", found.get("low2"))), float(found.get("high", found.get("high2")))
@@ -1106,7 +1113,11 @@ def _claim_ages(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) 
             inside = sorted((band, value) for value, band in bands.items() if value in within)
             cut = [value for value, band in bands.items()
                    if band[0] <= high and band[1] >= low and value not in within]
-            covered = bool(inside) and inside[0][0][0] == low and inside[-1][0][1] == high and all(
+            # "50 and over" reaches the oldest band the table has ("60-64" in a table of working ages).
+            top = max(band[1] for band in bands.values())
+            last = inside[-1][0][1] if inside else None
+            reaches = last is not None and (last == high or (high == float("inf") and last == top))
+            covered = bool(reaches) and inside[0][0][0] == low and all(
                 after[0][0] == before[0][1] + 1 for before, after in zip(inside, inside[1:], strict=False))
             if cut:
                 reading.flag(f'"{match.group().strip()}" cuts the {column} band {cut[0]} in two, and no row '
@@ -2570,6 +2581,16 @@ def _claim_conditions(
             if re.search(paired, before[:match.start()]):
                 continue
             reading.conditions.append(Condition(column, "=", 0.0 if match.group("cue") == "without" else 1.0))
+            claimed = (match.start(), end)
+        elif not numeric and (yes := _yes_value(series)) is not None and (
+            match := re.search(rf"\b(?P<cue>{FLAG_CUES}|reported|suffered\s+from)\s+(?:a\s+|an\s+)?$", before)
+        ):
+            # "had a wheeze" where Wheeze holds W and NoW: the rows with the yes value.
+            kept = yes if match.group("cue") != "without" else next(
+                value for value in series.dropna().unique() if value != yes)
+            _add_filter(reading, [_Value(column=column, raw=kept, words=())], match.start())
+            reading.notes.append(f'Read "{reading.original[match.start():end].strip()}" as {column} = '
+                                 f"{kept}.")
             claimed = (match.start(), end)
         elif not numeric and not is_datetime64_any_dtype(series) and (match := TEXT_IN.search(before)):
             # "papers with COVID in the title": a word written before the text it is part of.
@@ -6193,7 +6214,8 @@ def _execute_count(
             for column in dict.fromkeys(filtered):
                 base = base.loc[base[column].notna()]
             total = int(base[plan.count_column].nunique(dropna=True))
-            if total:
+            # A share of two values tells nothing of the rows: "half had a wheeze" is no share of W and NoW.
+            if total and dataframe[plan.count_column].nunique(dropna=True) > 2:
                 share = distinct / total * 100
                 figures = (("share_percent", share), ("denominator", float(total)))
                 share_text = f", {_share_text(share)} of the {total:,} in all"
@@ -8006,6 +8028,14 @@ def _execute_crosstab(plan: QueryPlan, working: pd.DataFrame, scope: str, applie
         ),
         table=table.round(4),
     )
+
+
+def _yes_value(series: pd.Series) -> object | None:
+    """The yes of a text column that holds only a yes and a no ("W" of W and NoW), or None."""
+    if is_numeric_dtype(series) or is_bool_dtype(series):
+        return None
+    values = series.dropna().unique()
+    return _yes_level(list(values)) if len(values) == 2 else None
 
 
 def _yes_level(levels: list[object]) -> object | None:
