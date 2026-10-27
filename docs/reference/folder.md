@@ -69,7 +69,10 @@ two (`customer_zip_code_prefix` and `geolocation_zip_code_prefix`), or when a
 bare `id` belongs to the file the other column is named for. Columns with
 different names are linked only when the second is a key (one row per value),
 holds 20 or more values, and 90% or more of the first column's values are
-found in it; with matching names, 50% is enough, flagged to confirm.
+found in it; with matching names, 50% is enough, flagged to confirm. Whole
+numbers written in digits (row numbers, counters, positions) overlap by
+chance, so they link only under matching names: the grid positions 1 to 34 in
+a Formula 1 results table sit inside every id column of the other tables.
 
 **Composite keys.** When no single column of a pair of files is a key of the
 second, ADA tries two or three columns named alike in both that together tell
@@ -81,10 +84,12 @@ the second file's rows apart: Lahman's `Batting.(yearID, teamID)` against
 the other side first, then matching names, then coverage. A one-to-many link
 is the many-to-one read backwards and is not listed twice. A many-to-many link
 is dropped when its columns already belong to a key link of either file
-(`teamID` repeats in Teams because the key is `(yearID, teamID)`) or when it
-holds fewer than 20 values; one that stays (customers' zip prefix against a
-table of locations listing each prefix up to 1,146 times) says how many rows a
-join would repeat.
+(`teamID` repeats in Teams because the key is `(yearID, teamID)`), when it
+holds fewer than 20 values, or when its name holds no key word (`id`, `code`,
+`zip`, `number` and the others in `IDENTIFIER_NAME_WORDS`): two tables that
+both list nationalities share values but are not joined by them. One that
+stays (customers' zip prefix against a table of locations listing each prefix
+up to 1,146 times) says how many rows a join would repeat.
 
 **Same length, no key.** Two tables with the same number of rows and no link
 between them get a warning: they may describe the same records, and joining

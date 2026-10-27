@@ -93,6 +93,35 @@ class LinkTests(FolderTestCase):
         self.assertEqual(link.unmatched_values, 2)
         self.assertIn("the names differ", link.reasons[0])
 
+    def test_whole_numbers_link_only_under_matching_names(self):
+        # Grid positions 1 to 30 sit inside the driver ids, and "grid" ends in "id".
+        rng = np.random.default_rng(62)
+        drivers = pd.DataFrame({"driverId": np.arange(1, 61), "born": rng.integers(1950, 2000, 60)})
+        results = pd.DataFrame({"driverId": rng.integers(1, 61, 400), "grid": rng.integers(1, 31, 400),
+                                "points": rng.integers(0, 26, 400)})
+        found = ada.scan(self.folder({"drivers.csv": drivers, "results.csv": results}))
+        self.assertEqual([(link.label("from"), link.label("to")) for link in found.links],
+                         [("results.driverId", "drivers.driverId")])
+
+    def test_a_shared_label_is_not_a_key(self):
+        nations = [f"Nation {n}" for n in range(25)]
+        teams = pd.DataFrame({"team_id": np.arange(75), "nationality": np.tile(nations, 3)})
+        drivers = pd.DataFrame({"driver_id": np.arange(200), "nationality": np.resize(nations, 200)})
+        found = ada.scan(self.folder({"teams.csv": teams, "drivers.csv": drivers}))
+        self.assertEqual(found.links, ())
+
+    def test_a_missing_value_written_as_backslash_n_is_not_a_key_value(self):
+        # MySQL exports write a missing value as \N. Read as text in a column that is mostly
+        # missing, it hid that the rest are numbers, which then linked to any id column.
+        rng = np.random.default_rng(63)
+        races = pd.DataFrame({"raceId": np.arange(1, 41), "round": np.tile(np.arange(1, 21), 2)})
+        laps = rng.integers(1, 41, 300).astype(object)
+        laps[np.arange(300) % 4 != 0] = "\\N"
+        results = pd.DataFrame({"raceId": rng.integers(1, 41, 300), "fastestLap": laps})
+        found = ada.scan(self.folder({"races.csv": races, "results.csv": results}))
+        self.assertEqual([(link.label("from"), link.label("to")) for link in found.links],
+                         [("results.raceId", "races.raceId")])
+
     def test_tables_of_the_same_length_with_no_key_get_a_warning(self):
         rng = np.random.default_rng(62)
         found = ada.scan(self.folder({

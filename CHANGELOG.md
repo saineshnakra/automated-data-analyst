@@ -13,6 +13,10 @@
   question to answer. `--template FILE` writes the questions with ADA's
   proposed answers; `--answers FILE` reads the confirmed answers back.
   `--json` prints all of it. See [Reading a folder of tables](docs/reference/folder.md).
+  Whole numbers link only under matching names, since ids, positions and
+  counters overlap by chance, and a link where both sides repeat needs a key
+  word (`id`, `code`, `zip`, `number`) in its name. On the Formula 1 tables
+  this leaves the 7 links the schema documents and one to confirm.
 - `ada.check_claim` and `ada claim` take a folder and check the claim against
   the file it fits; when no single file does, the answer names the keys that
   would join two of them.

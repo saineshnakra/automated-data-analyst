@@ -9,7 +9,8 @@
 
 A link is proposed from the values, not the names alone: a column whose values
 are found among the values of a key in another file (one value per row there).
-Names decide which columns are tried and how sure the link is. Every link
+Names decide which columns are tried and how sure the link is, and whole
+numbers, which overlap by chance, link only under matching names. Every link
 reports its coverage both ways, its cardinality and the rows it leaves
 unmatched, and a link is marked ``needs_confirmation`` when its names differ,
 its keys don't all match, or the key side repeats. Nothing is joined: a scan
@@ -466,6 +467,20 @@ def _names_match(first: str, second: str, to_profile: FileProfile) -> bool:
     return b <= marks and bool(a & _words(to_profile.stem)) and bool(a & marks)
 
 
+def _plain_numbers(values: set) -> bool:
+    """Whether every key value is a whole number in digits, as row numbers, counters and positions are.
+
+    Such values overlap by chance (grid positions 1 to 34 sit inside any id
+    column counting past 34), so they link only under matching names.
+    """
+    return all(value.isdigit() for value in values)
+
+
+def _key_named(columns: tuple[str, ...]) -> bool:
+    """Whether a name holds a key word (id, code, zip, number), unlike a shared label such as nationality."""
+    return any(_words(str(column)) & IDENTIFIER_NAME_WORDS for column in columns)
+
+
 def _link(source: _Keys, from_columns: tuple[str, ...], target: _Keys, to_columns: tuple[str, ...],
           named: bool) -> Link | None:
     """Measure one candidate link; None when too little of it matches."""
@@ -473,14 +488,14 @@ def _link(source: _Keys, from_columns: tuple[str, ...], target: _Keys, to_column
     if left is None or right is None:
         return None
     (left_keys, left_values, left_counts), (_, right_values, right_counts) = left, right
-    if not named and len(right_values) < MIN_KEY_VALUES:
+    if not named and (len(right_values) < MIN_KEY_VALUES or _plain_numbers(left_values)):
         return None
     shared = left_values & right_values
     coverage = len(shared) / len(left_values)
     if coverage < (MIN_NAMED_COVERAGE if named else MIN_COVERAGE):
         return None
     right_unique = int(right_counts.max()) == 1
-    if not right_unique and (not named or len(right_values) < MIN_KEY_VALUES):
+    if not right_unique and (not named or len(right_values) < MIN_KEY_VALUES or not _key_named(from_columns)):
         return None
     left_unique = int(left_counts.max()) == 1
     kind = {(True, True): "one-to-one", (False, True): "many-to-one", (True, False): "one-to-many",
