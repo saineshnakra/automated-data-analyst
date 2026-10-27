@@ -259,10 +259,15 @@ each word is claimed, in this order, by:
    ("sets from 2019" in `sets.csv` are 2019's sets); "from 2019 onwards"
    stays a range. A verb that only dates an event before a year ("sets
    released in 2020"; also published, launched, founded, built, made,
-   opened, held, sold) and a phrase that only says where the rows are ("on
-   board", "in the dataset", "in this table") name nothing and are passed over.
-   In a table whose year is a numeric column (`YEAR`), the
-   same words set a condition on that column, as does "YEAR > 1977". Numbers
+   opened, held, sold, decided, filed, signed, reported, recorded and
+   others in `EVENT_VERBS`), a passive verb after what is counted ("how many
+   Gold medals were won"; also awarded, given, earned, recorded, scored) and
+   a phrase that only says where the rows are ("on board", "aboard", "in the
+   dataset", "in this table") name nothing and are passed over.
+   In a table whose year is a numeric column (`YEAR`, or a column named as a
+   date or season that holds only whole years, such as chocolate ratings'
+   `review_date`), the same words set a condition on that column, as does
+   "YEAR > 1977". Numbers
    right after another numeric column's name that fall within its own values
    ("Elevation between 1900 and 2000") are a range of that column.
 6. **Conditions** written around a named column (see below).
@@ -285,9 +290,14 @@ each word is claimed, in this order, by:
     FD&C Yellow 5 (US), E102 (EU)". A person's first and last name, in a
     column each (`nameFirst` and `nameLast`, `forename` and `surname`), is
     looked up as a pair, even past the value index's 10,000 values: "Barry
-    Bonds".
+    Bonds". A code of letters and digits ("bondsba01") is looked up exactly
+    in the text columns too large to index, other than name columns, and
+    filters when one column holds it.
 12. **Unit conditions**: "at 28 days" is `Age of testing (day)` = 28 when one
-    numeric column has that unit in its name.
+    numeric column has that unit in its name. "On day 21" (also week, visit,
+    cycle, session, wave, round) is the one time-point column at 21, such as
+    ChickWeight's `Time`, when 21 is one of its values; this is read before
+    the conditions, so "On day 21, chicks" does not make 21 a chick.
 13. **Numbers**: the N of "top N" and "bottom N", a year (1900 to 2099, or an
     earlier year the date or year column holds), and a
     number that is a column's whole name ("correlation between 1001 and 1").
@@ -458,7 +468,10 @@ how many cases it stands for (`frequency_column`), a count or share adds up
 that column rather than counting rows, and the answer says so: on Titanic's
 32 rows, "what share survived" is 711 of 2,201 people (32.3%), not 16 of 32
 rows. A combination that repeats means the rows are not cells of a table, and
-the rows are counted as usual. Shares by group do not weight yet. "Rate of X by G" for a reading that is not yes/no is
+the rows are counted as usual. Shares and counts by group add up the counts
+too: "share of Survived = Yes by Class" gives 1st class 203 of 325 (62.5%),
+with the chi-squared test on the weighted table, and "how many people were
+in each Class" gives Crew 885. "Rate of X by G" for a reading that is not yes/no is
 refused with a reason that asks for a condition, as in "rate of X above 5 by
 G", since a rate is the share of rows that meet one.
 
@@ -531,7 +544,13 @@ temperature) is refused.
 A noun for the rows counts rows ("how many patients are positive"), or the
 distinct values of an entity column when one repeats across rows: the
 identifier, or the one column named with an ID word such as `ID`, `subject`
-or `participant`. "Readings", "records", "samples" and other nouns in
+or `participant`. When a column of codes repeats in runs and no column is
+named for the noun, the rows are not one each, and the question is refused
+with what to ask: Loblolly's 84 rows are 14 trees (`Seed`) at 6 ages, so
+"how many trees" is refused rather than answered 84. A column that picks the
+rows is not counted for its distinct values: "how many reviews in 2019"
+counts the rows with `review_date` = 2019, and "what share have blue eyes"
+the share with `Eye` = Blue. "Readings", "records", "samples" and other nouns in
 `ROW_NOUNS` always count rows. The answer says which: "Counted the birds as
 distinct ID values." or "Each row counts as one of the patients." "How many
 participants per condition" counts distinct participants per condition.

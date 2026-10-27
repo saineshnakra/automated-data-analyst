@@ -660,8 +660,10 @@ cases:
     kind: claim
     file: forest.csv
     claim: The average net forest conversion was -76,931 hectares.
-    expected: {status: verified, value: -76931.03, rows_used: 475}
-    must: "note that the 475 rows include the World row and regions"
+    # The number holds only with the World rows kept (decide aggregate_rows=keep); left out by default,
+    # the average is -28,994. Naming the choice is the right answer.
+    expected: {status: unverified, reason: ambiguous_intent}
+    must: "say that -76,931 holds only with the World rows kept"
     reference: reference_fresh2.py
     tests: evidence
   # ---------------------------------------------------------------- mtcars (holdout, fresh)

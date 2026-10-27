@@ -12,6 +12,7 @@ instead of a number. Input it cannot read at all raises :class:`AdaError`.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from functools import cached_property
@@ -259,6 +260,27 @@ def analyze(
         axis=axis,
         source=replace(source, name=name) if source_name else source,
     )
+
+
+# Analyses of whole files, kept while each file is unchanged: a claim about a folder reads each file
+# for the file it fits, the scan and the joins, and reading it once is enough.
+_FILES: dict[tuple[str, int, int], Analysis] = {}
+MAX_KEPT_FILES = 32
+
+
+def analyze_file(path: str | Path) -> Analysis:
+    """``analyze`` on every row of a file, read once while the file is unchanged.
+
+    The file's path as given, its modification time and its size name it, so
+    an edited file is read again. Raises as ``analyze`` does.
+    """
+    stat = Path(path).stat()
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    if key not in _FILES:
+        if len(_FILES) >= MAX_KEPT_FILES:
+            _FILES.pop(next(iter(_FILES)))
+        _FILES[key] = analyze(path, row_limit=sys.maxsize)
+    return _FILES[key]
 
 
 def read_file(contents: bytes, filename: str, *, sheet: str | None = None) -> pd.DataFrame:

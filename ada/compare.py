@@ -1032,7 +1032,8 @@ class RateComparison:
 
 
 def compare_rates(
-    dataframe: pd.DataFrame, outcome: str, grouping: str, *, entity: str | None = None
+    dataframe: pd.DataFrame, outcome: str, grouping: str, *, entity: str | None = None,
+    weight: str | None = None,
 ) -> RateComparison | None:
     """Compare how often the yes/no ``outcome`` is "yes" across the groups of ``grouping``.
 
@@ -1044,8 +1045,10 @@ def compare_rates(
     group (an attribute of the unit) counts each unit once, so n counts units
     and groups of fewer than MIN_NAMED_GROUP units are not named, as in
     ``compare_groups``; an outcome that differs between a unit's rows is
-    flagged as not independent. Returns None when ``outcome`` is not a yes/no
-    column or fewer than two groups have two rows.
+    flagged as not independent. With ``weight``, a column of counts in a table
+    whose rows are the cells of a cross-tabulation, each row counts that many
+    cases. Returns None when ``outcome`` is not a yes/no column or fewer than
+    two groups have two rows.
     """
     if outcome == grouping or outcome not in dataframe.columns or grouping not in dataframe.columns:
         return None
@@ -1053,7 +1056,8 @@ def compare_rates(
     if event is None:
         return None
     units = entity if entity in dataframe.columns and entity not in (outcome, grouping) else None
-    data = dataframe[[outcome, grouping, *([units] if units else [])]].dropna()
+    counts = [weight] if weight in dataframe.columns and weight not in (outcome, grouping) else []
+    data = dataframe[[outcome, grouping, *([units] if units else []), *counts]].dropna()
     counted, clustered, shared = None, None, False
     if units:
         owners = pd.factorize(data[units])[0].astype(np.int64)
@@ -1069,10 +1073,11 @@ def compare_rates(
     # Counted with integer codes rather than a groupby, since the brief tries every grouping.
     codes, levels = pd.factorize(data[grouping], sort=True)
     yes = (data[outcome] == event).to_numpy(dtype=float)
+    cases = data[counts[0]].to_numpy(dtype=float) if counts else np.ones(len(data))
     hits = pd.DataFrame(
         {
-            "size": np.bincount(codes, minlength=len(levels)),
-            "sum": np.bincount(codes, weights=yes, minlength=len(levels)).round().astype(int),
+            "size": np.bincount(codes, weights=cases, minlength=len(levels)).round().astype(int),
+            "sum": np.bincount(codes, weights=yes * cases, minlength=len(levels)).round().astype(int),
         },
         index=levels,
     )
@@ -2818,6 +2823,15 @@ AXIS_NAME_WORDS = frozenset({
     "time", "timepoint", "timept", "day", "days", "hour", "hours", "minute", "minutes", "min",
     "week", "weeks", "month", "months", "cycle", "cycles", "visit", "age", "dpi",
 })
+
+
+def repeated_unit(dataframe: pd.DataFrame, roles: ColumnRoles) -> str | None:
+    """The column naming a unit with several rows, for counting: ``entity_column``, or codes in runs.
+
+    A count does not use the measure, so the codes may be the column the roles
+    took as the measure (Loblolly's Seed, 14 trees in runs of 6 ages).
+    """
+    return entity_column(dataframe, roles) or _unit_in_runs(dataframe, (roles.date,) if roles.date else ())
 
 
 def entity_column(dataframe: pd.DataFrame, roles: ColumnRoles) -> str | None:
