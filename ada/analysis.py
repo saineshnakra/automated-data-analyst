@@ -2147,8 +2147,9 @@ def _restarts(dates: np.ndarray) -> list[int]:
     ends about a tenth of the way through it.
     """
     backward = np.flatnonzero(np.diff(dates) < 0) + 1
-    # Many steps back mean rows that are not in time order at all.
-    if len(backward) > max(10 * MAX_BLOCKS, 0.01 * len(dates)):
+    # Many steps back mean rows that are not in time order at all: Formula 1's races
+    # listed season by season from 2009 back to 1950, then onwards from 2010.
+    if len(backward) > max(2 * MAX_BLOCKS, 0.01 * len(dates)):
         return [0]
     starts = [0]
     for position in backward:

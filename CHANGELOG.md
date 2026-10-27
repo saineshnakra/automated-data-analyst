@@ -49,6 +49,10 @@
 
 ### Fixes
 
+- A table out of date order is no longer split into logs. Formula 1's races,
+  listed season by season from 2009 back to 1950, were read as 8 logs one
+  after another and given a Block column; a file with more steps back than 24
+  and 1% of its rows is now left as it is.
 - A year in a question is the year even when it also appears inside a longer
   text value. "how many races in 2020" on Formula 1's races table was refused
   because 2020 is part of 17 race web addresses; it now counts the 17 races

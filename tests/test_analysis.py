@@ -1420,6 +1420,17 @@ class StackedLogTests(unittest.TestCase):
         self.assertIsNone(block)
         self.assertEqual(note, "")
 
+    def test_seasons_listed_newest_first_are_not_logs(self):
+        # Formula 1's races: each season in date order, the seasons from 2009 back to 1950.
+        days = [pd.Timestamp(f"{year}-03-01") + pd.Timedelta(weeks=2 * race)
+                for year in range(2009, 1949, -1) for race in range(16)]
+        frame = pd.DataFrame({"date": days, "round": np.tile(np.arange(1, 17), 60)})
+
+        labelled, block, note = separate_stacked_logs(frame, "date")
+
+        self.assertIsNone(block)
+        self.assertNotIn("Block", labelled.columns)
+
     def test_readings_recorded_side_by_side_get_a_note(self):
         stamps = pd.date_range("2024-01-01", periods=500, freq="min")
         frame = pd.DataFrame({
