@@ -235,6 +235,36 @@ class FolderClaimTests(FolderTestCase):
         self.assertEqual(check.source.name, "orders.csv")
         self.assertIn("the only file", check.assumptions[0])
 
+    def test_the_files_row_noun_is_not_part_of_a_value(self):
+        # "Expeditions" names the rows of expeditions.csv, not the agencies called "... Expeditions".
+        rng = np.random.default_rng(65)
+        expeditions = pd.DataFrame({
+            "expedition_id": [f"E{n:03d}" for n in range(40)],
+            "trekking_agency": rng.choice(["Himalaya Expeditions", "Everest Expeditions", "Summit Club"], 40),
+            "member_deaths": rng.integers(0, 3, 40),
+        })
+        folder = self.folder({"expeditions.csv": expeditions})
+        deaths = int(expeditions["member_deaths"].sum())
+        check = ada.check_claim(folder / "expeditions.csv", f"Expeditions recorded {deaths} member deaths.")
+        self.assertTrue(check.verified)
+        self.assertEqual(check.answer.calculation, "sum(member_deaths)")
+
+    def test_the_file_whose_column_the_claim_names_wins_over_a_lesser_word(self):
+        # "deaths" is the last word of member_deaths and only the first of death_height_metres.
+        rng = np.random.default_rng(66)
+        events = pd.DataFrame({"event": [f"e{n}" for n in range(30)],
+                               "member_deaths": rng.integers(0, 3, 30)})
+        climbers = pd.DataFrame({
+            "climber": [f"c{n}" for n in range(90)],
+            "death_height_metres": np.where(np.arange(90) % 15 == 0, 7000.0, np.nan),
+        })
+        folder = self.folder({"events.csv": events, "climbers.csv": climbers})
+        deaths = int(events["member_deaths"].sum())
+        check = ada.check_claim(folder, f"Total deaths were {deaths}.")
+        self.assertTrue(check.verified)
+        self.assertEqual(check.answer.plan.measure, "member_deaths")
+        self.assertIn("climbers.csv fit only by a lesser word", check.assumptions[0])
+
     def test_a_claim_no_single_file_holds_names_the_joins(self):
         folder = self.folder(shop())
         check = ada.check_claim(folder, "Retail customers ordered 4,000 in total.")

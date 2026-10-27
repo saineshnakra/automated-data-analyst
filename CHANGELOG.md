@@ -55,6 +55,13 @@
   and called the claim false; such a mismatch is now `missing_context`, with
   the question "Is the number about death_height_metres, or about another
   column?".
+- The file's own noun for its rows names the rows, not a value: "Expeditions"
+  in expeditions.csv no longer matches trekking agencies named "...
+  Expeditions", and "what share of members had success" in members.csv counts
+  all 76,519 members (38.2%), not the 9 whose role is "Member", which a
+  question still reaches by typing "Member". In a folder, the file whose column the claim names by
+  what it measures is chosen over one read from a lesser word, so the claim
+  above is verified against `expeditions.csv`'s `member_deaths` (788).
 - One repeated id is not repeated measurement: the warning that an average
   weights each unit by its rows needs 1.5 rows per unit on average.
 - Words that a column's name shortens word by word name it: "life

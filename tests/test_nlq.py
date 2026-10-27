@@ -1861,6 +1861,24 @@ class NamedGroupTests(unittest.TestCase):
         )
 
 
+class RowNounTests(unittest.TestCase):
+    def test_the_files_noun_for_its_rows_names_the_rows_not_a_value(self):
+        # members.csv: "members" are all its rows; "Member" is a role held by a few of them.
+        frame = pd.DataFrame({
+            "member_id": [f"M{index}" for index in range(40)],
+            "expedition_role": ["Member"] * 4 + ["Climber"] * 36,
+            "success": [True] * 10 + [False] * 30,
+        })
+        roles = replace(detect_roles(frame), row_noun="members")
+
+        everyone = answer_question("what share of members had success", frame, roles)
+        role = answer_question("what share of Member rows had success", frame, roles)
+
+        self.assertNotIn("expedition_role", everyone.calculation)
+        self.assertIn("10 of the 40 rows", everyone.answer)
+        self.assertIn("expedition_role = Member", role.calculation)
+
+
 class YesNoOutcomeTests(unittest.TestCase):
     def setUp(self):
         self.frame = pd.DataFrame({

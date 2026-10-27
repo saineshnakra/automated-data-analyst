@@ -178,7 +178,10 @@ Besides the number, a check records what could make the answer misleading:
 ## Claims about a folder
 
 `check_claim` and `ada claim` also take a folder. The claim is checked against
-every table in it:
+every table in it. Files whose column the claim names by its last word come
+first: "788 member deaths" is checked against `expeditions.csv`'s
+`member_deaths`, and `members.csv`, where "deaths" would read
+`death_height_metres`, is left out with a note. Then:
 
 - one file gives a number for it: that file's check is the result, and the
   first assumption says it was the only file whose columns fit

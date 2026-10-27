@@ -1223,14 +1223,18 @@ def _add_filter(reading: _Reading, values: list[_Value]) -> None:
 
 
 def _claim_values(
-    reading: _Reading, vocabulary: _Vocabulary, dataframe: pd.DataFrame, *, exact_only: bool
+    reading: _Reading, vocabulary: _Vocabulary, dataframe: pd.DataFrame, *, exact_only: bool,
+    row_noun: str | None = None,
 ) -> None:
     """Filter on values of text columns found among the unclaimed words, longest first.
 
     A value made only of query words or nouns for rows ("Top", "Total",
     "Patients") needs a cue before it, so "top 2 contours" still ranks while
-    "average Ca for Top" filters.
+    "average Ca for Top" filters. The file's own noun for its rows ("members" in
+    members.csv) names the rows: it is neither part of a longer value ("Himalaya
+    Expeditions") nor a value at all unless typed as the data spell it ("Member").
     """
+    row_nouns = _word_variants(row_noun) if row_noun else set()
     for run in _runs(reading, content_only=False):
         index = 0
         while index < len(run):
@@ -1239,7 +1243,14 @@ def _claim_values(
                 words = tuple(word for _, _, word in window)
                 ordinary = [word for word in words if word not in QUERY_GRAMMAR and word not in ENTITY_NOUNS]
                 cued = _cued(reading, window[0][0])
-                if not ordinary and not cued:
+                if size == 1 and words[0] in row_nouns:
+                    # The file's own noun for its rows ("members" in members.csv) names the rows; it is
+                    # a value only typed as the data spell it ("Member").
+                    found, exact = _values_named(words, vocabulary, exact_only=True)
+                    found = [value for value in found if _typed_in_case(value, reading.question)]
+                    if not found:
+                        continue
+                elif not ordinary and not cued:
                     # A value spelled like a query word is still a value when typed in its own
                     # capitals: "between AML and ALL".
                     found, exact = _values_named(words, vocabulary, exact_only=True)
@@ -2349,12 +2360,12 @@ def _read_question(
     _claim_month_of_year(reading, dataframe, roles)
     _claim_year_ranges(reading, dataframe, roles)
     _claim_conditions(reading, list(reading.spans), dataframe, roles, vocabulary)
-    _claim_values(reading, vocabulary, dataframe, exact_only=True)
+    _claim_values(reading, vocabulary, dataframe, exact_only=True, row_noun=roles.row_noun)
     _claim_analysis_words(reading, dataframe, roles)
     _claim_rate(reading)
     partial = _claim_partial_names(reading, dataframe, roles)
     _claim_conditions(reading, partial, dataframe, roles, vocabulary)
-    _claim_values(reading, vocabulary, dataframe, exact_only=False)
+    _claim_values(reading, vocabulary, dataframe, exact_only=False, row_noun=roles.row_noun)
     _claim_unit_conditions(reading, dataframe, roles)
     _claim_numbers(reading, dataframe, roles)
     _claim_row_label(reading, roles)

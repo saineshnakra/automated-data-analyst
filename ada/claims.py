@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .file_io import SUPPORTED_SUFFIXES as READABLE
-from .formatting import counted, normalized_name
+from .formatting import counted, list_names, normalized_name
 from .nlq import QueryAnswer
 from .sources import Source
 
@@ -792,9 +792,10 @@ def _check_folder(
 ) -> ClaimCheck:
     """Check a claim about a folder against each of its tables, and say which one fits.
 
-    The claim is checked against every readable file. When exactly one gives a
-    number for it, that file's check is the result, and its assumptions say the
-    file was chosen this way. When several do and they disagree, the claim is
+    The claim is checked against every readable file. Files whose column the
+    claim names by its last word, the kind of quantity it holds, come first.
+    When exactly one gives a number for it, that file's check is the result,
+    and its assumptions say the file was chosen this way. When several do and they disagree, the claim is
     ambiguous. When none does, the claim may need two files joined, and the
     links a scan proposes are named; ADA does not join files itself.
     """
@@ -812,9 +813,20 @@ def _check_folder(
         check = check_claim(item, claim, question=question, value=value)
         if check.answer is not None and check.compared is not None:
             fitted.append((item, check))
+    # A file whose column the claim names by what it measures fits better than one read from a lesser
+    # word: "member deaths" is member_deaths in expeditions.csv, not death_height_metres.
+    named = [(item, check) for item, check in fitted
+             if _names_head(check.question or "", check.answer.plan.measure or "")]
+    lesser = [item.name for item, _ in fitted if named and item not in {found for found, _ in named}]
+    fitted = named or fitted
     if len(fitted) == 1:
         item, check = fitted[0]
         chosen = f"Checked against {item.name}, the only file in {folder.name} whose columns fit the claim."
+        if lesser:
+            chosen = (
+                f"Checked against {item.name}, whose {check.answer.plan.measure} the claim names by what it "
+                f"measures; {list_names(lesser)} fit only by a lesser word."
+            )
         return replace(check, assumptions=(chosen, *check.assumptions))
     if fitted:
         values = {round(check.compared, 12) for _, check in fitted}
