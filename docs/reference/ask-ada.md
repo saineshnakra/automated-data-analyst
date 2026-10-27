@@ -279,7 +279,8 @@ each word is claimed, in this order, by:
     FD&C Yellow 5 (US), E102 (EU)".
 12. **Unit conditions**: "at 28 days" is `Age of testing (day)` = 28 when one
     numeric column has that unit in its name.
-13. **Numbers**: the N of "top N" and "bottom N", a year (1900 to 2099), and a
+13. **Numbers**: the N of "top N" and "bottom N", a year (1900 to 2099, or an
+    earlier year the date or year column holds), and a
     number that is a column's whole name ("correlation between 1001 and 1").
     In a table with no date column, a number naming a column is the column.
 14. **An unnamed row label**: when the first column has no header
@@ -572,6 +573,7 @@ computes the answer. It returns a `QueryAnswer`:
 | `figures` | (name, number) for the rest: `n`, `share_percent` and `denominator`, `p_value`, `ci_low` and `ci_high`, `spearman` |
 | `scope` | An `AnswerScope`: rows read, rows in scope and rows used, the filters, each reason rows were left out with its count, and the readings and cautions the sentence states |
 | `source` | The `Source` the table was read from, set by `Analysis.ask`: name, path, the file's `sha256`, rows and columns |
+| `decisions` | The choices the answer rests on, each with its options, default and the option used (see [Decisions](decisions.md)) |
 
 `QueryAnswer.to_dict()` gives the same as JSON-safe data, and `ada ask FILE
 "question" --json` prints it. [Checking claims](claims.md) describes the
@@ -587,6 +589,13 @@ of 120 rows says "Based on the 110 rows with Crabs recorded, of 120 rows.",
 or "of the 42 in that scope" under a filter. An unfiltered aggregate says it
 once, in its own sentence ("calculated from 1,228 rows"), and a count states
 its rows.
+
+**Rows that add up others.** When the table lists World, regions or a Total
+beside the rows they add up, the answer leaves them out and says so, and a
+total over the scope is read from the World or Total row. Both are decisions
+a caller can take the other way with `Analysis.ask(question, decisions=...)`
+or `ada ask --decide`; see [Decisions](decisions.md). A question that names
+such a row ("co2 of World") is about it.
 
 **The brief's rows.** Ask uses the rows the brief tests on
 (`business_insights.tested_rows`): when most rows repeat other rows exactly,
@@ -778,7 +787,9 @@ the refusal message.
 | Empty question | `None` |
 | No column named, but an aggregation word ("total") | Uses the detected measure |
 | Growth question with no date column | Not treated as growth |
-| Year or month asked, no date column | Answer says the scope is unavailable |
+| Year asked, no date column | Scoped by the one numeric column named for years (`year = 2022`); with none, the answer says the scope is unavailable |
+| Month asked, no date column | Answer says the scope is unavailable |
+| World or region rows among countries | Left out by default, or the total read from the World row; see [Decisions](decisions.md) |
 | No rows match the filters | Answer says there is nothing to calculate; a count says 0 of N rows |
 | Plan names a column missing from the data | `execute_plan` raises `ValueError`; `answer_question` returns `None` |
 | "top 0" | `None` |

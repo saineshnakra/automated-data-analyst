@@ -33,6 +33,10 @@ ada claim flights.csv --question "average dep_delay" --value 12.64 --json
 row of the file: the row limit that `ada.analyze` applies by default does not
 apply.
 
+`decisions` (`--decide KEY=OPTION`) picks another option for a choice the
+answer rests on, such as `{"aggregate_rows": "keep"}` to count a World row with
+the countries; see [Decisions](decisions.md).
+
 When the reading is already known, pass `question` and `value` instead of a
 sentence. A `value` given as a string keeps its decimals (`"12.60"` stands for
 12.595 to 12.605); a float is taken at its shortest written form.
@@ -108,7 +112,7 @@ and `reason` is one of:
 | Reason | When | Example |
 |---|---|---|
 | `missing_context` | The claim leaves out something the check needs: a number, a column, a group, a date column, or the unit that decides the scale | "The average is 3.7" (which column?) |
-| `ambiguous_intent` | The words fit more than one column, and their answers differ | "The average delay was 13 minutes" with `dep_delay` and `arr_delay` |
+| `ambiguous_intent` | The words fit more than one column, and their answers differ; or the claim agrees only when a decision ADA took by default goes the other way | "The average delay was 13 minutes" with `dep_delay` and `arr_delay`; an average that counts the World row with the countries |
 | `inaccessible_data` | The data could not be read | A missing or empty file |
 | `unsupported_analysis` | ADA has no way to compute what the claim describes, or the claim states several numbers | "The average was 4457 g and 3700 g" |
 | `conflicting_evidence` | The claim's unit measures something other than the unit in the column's name | "44 minutes" about `bill_length_mm` |
@@ -172,9 +176,10 @@ Besides the number, a check records what could make the answer misleading:
 | `checks` | Each check run: `name`, `passed`, `detail` |
 | `alternatives` | For `ambiguous_intent`: each reading, its question, value, whether it agrees, and its calculation |
 | `clarification` | The question to ask, or `null` |
+| `decisions` | The choices the answer rests on, such as leaving out a World row, with their options (see [Decisions](decisions.md)) |
 
 `ada ask --json` gives the same `result`, `reading`, `calculation`,
-`evidence`, `assumptions` and `warnings` for a question, with `status`
+`evidence`, `assumptions`, `warnings` and `decisions` for a question, with `status`
 `answered`; a refused question gives `status: "refused"` with its `code` and
 `message`, and exit code 3.
 

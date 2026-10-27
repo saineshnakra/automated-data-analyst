@@ -29,6 +29,7 @@ from .api import (
     samples,
 )
 from .claims import ClaimCheck, check_claim
+from .decisions import Decision, UnknownDecision
 from .folder import FolderScan, scan
 from .sources import Source
 
@@ -42,10 +43,12 @@ __all__ = [
     "AdaError",
     "Analysis",
     "ClaimCheck",
+    "Decision",
     "FolderScan",
     "NothingToAnalyze",
     "Refusal",
     "Source",
+    "UnknownDecision",
     "UnreadableData",
     "__version__",
     "analyze",

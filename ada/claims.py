@@ -39,11 +39,13 @@ from __future__ import annotations
 import math
 import re
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
 
+from .decisions import Decision, checked_choices
 from .file_io import SUPPORTED_SUFFIXES as READABLE
 from .formatting import counted, list_names, normalized_name
 from .nlq import QueryAnswer
@@ -283,6 +285,7 @@ class ClaimCheck:
             "checks": [check.to_dict() for check in self.checks],
             "alternatives": [alternative.to_dict() for alternative in self.alternatives],
             "clarification": self.clarification,
+            "decisions": answer["decisions"] if answer else [],
         }
 
     def __str__(self) -> str:
@@ -291,6 +294,8 @@ class ClaimCheck:
             lines.append(f"  calc: {self.answer.calculation}")
         for label, items in (("assumes", self.assumptions), ("warning", self.warnings)):
             lines.extend(f"  {label}: {item}" for item in items)
+        if self.answer is not None:
+            lines.extend(f"  decides: {decision.describe()}" for decision in self.answer.decisions)
         if self.clarification:
             lines.append(f"  to check it: {self.clarification}")
         return "\n".join(lines)
@@ -739,6 +744,7 @@ def check_claim(
     question: str | None = None,
     value: str | float | None = None,
     sheet: str | None = None,
+    decisions: Mapping[str, str] | None = None,
 ) -> ClaimCheck:
     """Check a claim about ``data`` (a path, bytes, a DataFrame or an ``Analysis``).
 
@@ -746,8 +752,11 @@ def check_claim(
     when the reading is already known: ``question="average dep_delay",
     value="12.64"``. A string ``value`` keeps its decimals, which set the
     interval; a float is taken at its shortest written form. Every row of the
-    file is read: no row limit applies to a check.
+    file is read: no row limit applies to a check. ``decisions`` pick options
+    for the choices the answer rests on (see ``ada.decisions``); an unknown
+    key or option raises ``UnknownDecision``.
     """
+    choices = checked_choices(decisions)
     text = claim if claim is not None else f"{question} is {value}"
     if sheet is not None and isinstance(data, str | Path):
         from .api import analyze  # noqa: PLC0415
@@ -757,7 +766,7 @@ def check_claim(
         except Exception as error:  # noqa: BLE001 - reported as unreadable
             return ClaimCheck(text, "unverified", "inaccessible_data", f"The data could not be read: {error}")
     if isinstance(data, str | Path) and Path(data).is_dir():
-        return _check_folder(Path(data), text, claim, question=question, value=value)
+        return _check_folder(Path(data), text, claim, question=question, value=value, choices=choices)
     analysis, source, problem = _source_of(data)
     if analysis is None:
         reason = "missing_context" if problem and "is a folder" in problem else "inaccessible_data"
@@ -784,11 +793,12 @@ def check_claim(
                 if reason == "missing_context" else "Send each number as its own claim.",
             )
     assert number is not None and asked is not None
-    return _check(analysis, text, asked, number, source)
+    return _check(analysis, text, asked, number, source, choices)
 
 
 def _check_folder(
-    folder: Path, text: str, claim: str | None, *, question: str | None, value: str | float | None
+    folder: Path, text: str, claim: str | None, *, question: str | None, value: str | float | None,
+    choices: dict[str, str],
 ) -> ClaimCheck:
     """Check a claim about a folder against each of its tables, and say which one fits.
 
@@ -810,7 +820,7 @@ def _check_folder(
                           source=folder_source)
     fitted: list[tuple[Path, ClaimCheck]] = []
     for item in files:
-        check = check_claim(item, claim, question=question, value=value)
+        check = check_claim(item, claim, question=question, value=value, decisions=choices)
         if check.answer is not None and check.compared is not None:
             fitted.append((item, check))
     # A file whose column the claim names by what it measures fits better than one read from a lesser
@@ -869,10 +879,40 @@ def _check_folder(
     )
 
 
-def _check(analysis: Any, text: str, asked: str, number: ClaimedNumber, source: Source | None) -> ClaimCheck:
+def _otherwise(
+    analysis: Any, asked: str, number: ClaimedNumber, answer: QueryAnswer, choices: dict[str, str],
+    factor: float,
+) -> tuple[Decision, str, QueryAnswer, float] | None:
+    """Another option of a decision the answer took by default, when it gives a number the claim stands for.
+
+    ``factor`` turns the answer's number into the claim's unit, as it did for
+    the default. A decision the caller chose is not second-guessed.
+    """
     from .api import Refusal  # noqa: PLC0415
 
-    answer = analysis.ask(asked)
+    for decision in answer.decisions:
+        if decision.key in choices:
+            continue
+        for option in decision.options:
+            if option == decision.chosen:
+                continue
+            other = analysis.ask(asked, decisions={**choices, decision.key: option})
+            if isinstance(other, Refusal):
+                continue
+            computed, _ = _comparable(other, number)
+            if computed is not None and number.holds(computed * factor):
+                return decision, option, other, computed * factor
+    return None
+
+
+def _check(
+    analysis: Any, text: str, asked: str, number: ClaimedNumber, source: Source | None,
+    choices: dict[str, str] | None = None,
+) -> ClaimCheck:
+    from .api import Refusal  # noqa: PLC0415
+
+    choices = choices or {}
+    answer = analysis.ask(asked, decisions=choices)
     alternatives: list[Alternative] = []
     assumptions: list[str] = []
     if isinstance(answer, Refusal):
@@ -883,7 +923,7 @@ def _check(analysis: Any, text: str, asked: str, number: ClaimedNumber, source: 
         for column, rewritten in named or _unit_columns(analysis, asked, number):
             if not rewritten:
                 continue
-            other = analysis.ask(rewritten)
+            other = analysis.ask(rewritten, decisions=choices)
             if isinstance(other, Refusal):
                 continue
             computed, _ = _comparable(other, number)
@@ -929,7 +969,7 @@ def _check(analysis: Any, text: str, asked: str, number: ClaimedNumber, source: 
     ]
     if unnamed and number.percent:
         # "32.3% survived" gives a share even with no word for one.
-        share = analysis.ask(f"share of {asked}")
+        share = analysis.ask(f"share of {asked}", decisions=choices)
         if not isinstance(share, Refusal) and "share_percent" in dict(share.figures):
             answer, asked, unnamed = share, f"share of {asked}", []
             assumptions.append("Read the percentage as a share, which the claim names no column for.")
@@ -959,8 +999,10 @@ def _check(analysis: Any, text: str, asked: str, number: ClaimedNumber, source: 
             claimed=number, question=asked, answer=answer, assumptions=tuple(assumptions), source=source,
             clarification=f"Is the number about {measure}, or about another column?",
         )
+    factor = 1.0
     if claimed_unit and recorded_unit and computed is not None and claimed_unit != recorded_unit:
-        converted = computed * UNITS[recorded_unit][1] / UNITS[claimed_unit][1]
+        factor = UNITS[recorded_unit][1] / UNITS[claimed_unit][1]
+        converted = computed * factor
         assumptions.append(
             f"Converted {measure} from {recorded_unit}, the unit in its name, to {claimed_unit}: "
             f"{_plain(computed)} {recorded_unit} is {_plain(converted)} {claimed_unit}."
@@ -1026,6 +1068,26 @@ def _check(analysis: Any, text: str, asked: str, number: ClaimedNumber, source: 
             assumptions=tuple(dict.fromkeys(assumptions)), warnings=tuple(dict.fromkeys(warnings)),
             checks=tuple(checks), source=source,
             clarification=f"Is the number about {measure}, or about another column?",
+        )
+    otherwise = None
+    if agreement == "mismatch":
+        otherwise = _otherwise(analysis, asked, number, answer, choices, factor)
+    if otherwise:
+        # The claim agrees once a choice goes the other way; the data alone cannot say which way it should go.
+        decision, option, other, value = otherwise
+        alternatives = (
+            Alternative(f"{decision.key}={decision.chosen}", asked, computed, False, described),
+            Alternative(f"{decision.key}={option}", asked, value, True, other.calculation),
+        )
+        return ClaimCheck(
+            text, "unverified", "ambiguous_intent",
+            f"The answer rests on a choice: {decision.question} By default ({decision.chosen}) the data give "
+            f"{_plain(computed)}{rows}; with {option} they give {_plain(value)}, which {number.text} stands "
+            "for.",
+            claimed=number, question=asked, answer=answer, compared=computed, agreement="mismatch",
+            assumptions=tuple(dict.fromkeys(assumptions)), warnings=tuple(dict.fromkeys(warnings)),
+            checks=tuple(checks), alternatives=alternatives, source=source,
+            clarification=f"{decision.question} Choose {decision.key} {decision.chosen} or {option}.",
         )
     if agreement == "mismatch":
         reason = "failed_check"

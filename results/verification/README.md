@@ -63,20 +63,20 @@ scored with the same harness on the same cases.
 | dev | reading | 5 | 1 | 5 |
 | dev | interpretation | 11 | 1 | 9 |
 | dev | calculation | 6 | 2 | 5 |
-| dev | design | 6 | 2 | 4 |
+| dev | design | 6 | 2 | 5 |
 | dev | evidence (claims) | 21 | 0 | 11 |
 | dev | refusal | 2 | 0 | 2 |
-| dev | all | 51 | 6 | 36 |
+| dev | all | 51 | 6 | 37 |
 | holdout | reading | 1 | 0 | 1 |
 | holdout | interpretation | 6 | 0 | 2 |
 | holdout | calculation | 3 | 1 | 1 |
 | holdout | design | 2 | 2 | 2 |
-| holdout | evidence (claims) | 10 | 0 | 6 |
-| holdout | all | 22 | 3 | 12 |
+| holdout | evidence (claims) | 10 | 0 | 5 |
+| holdout | all | 22 | 3 | 11 |
 
 **Claims.** Of 35 claims, 26 are true and 7 false by the reference values (2
 expect a clarifying question). Now: no wrong verdicts, meaning no true claim
-comes back `failed_check` and no false claim comes back `verified`. 13 of the
+comes back `failed_check` and no false claim comes back `verified`. 12 of the
 26 true claims are verified, and 6 of the 7 false ones are caught as
 `failed_check`; the rest come back unverified with a reason. ADA 0.5.0 had
 no claim checking. During the work two wrong verdicts appeared and were
@@ -84,6 +84,16 @@ fixed. One read "member deaths" as the heights at which climbers died. The
 other compared "52.9% of the people are female" with the share of rows in a
 table of counts (50%). It was a fresh holdout case, and the fix for tables
 of counts, made on Titanic, verified it without looking at it.
+
+**Rows that add up others.** Since World and region rows are left out by
+default (see [Decisions](../../docs/reference/decisions.md)), OWID's "total
+co2 in 2022" gives the World row, 37,527.773, instead of 240,370.227. One
+holdout claim changed the other way: "The average net forest conversion was
+-76,931 hectares" is the average over all 475 rows of `forest.csv`, 4 of them
+World rows. It was verified; it now comes back `ambiguous_intent`, because
+leaving the World rows out gives -28,994.14 and the data cannot say which the
+claim meant. With `--decide aggregate_rows=keep` it is verified. The case
+still expects `verified` and is counted as a miss.
 
 **Links between files.** Over the 11 folder cases ADA proposes 56 links.
 Every link the cases expect is among them except three composite ones:
@@ -104,13 +114,11 @@ mostly whole-number ids that overlapped by chance.
   with several numbers ("4 cylinders ... 26.7 mpg").
 - **Joins**: a number that needs two files (Barry Bonds's home runs, Lewis
   Hamilton's points) is not computed.
-- **Aggregate rows**: World and region rows among countries (OWID's 2022
-  total).
 - **Columns**: a year column that is not read as a date (chocolate's
   `review_date`), and a value found in two columns ("U.S.A." as company
   location and bean origin), which is asked about rather than guessed.
 
-The holdout improves less than dev (3 to 12 of 22 against 6 to 36 of 51):
+The holdout improves less than dev (3 to 11 of 22 against 6 to 37 of 51):
 the fixes are general, but unseen phrasings and layouts still defeat the
 reader often. The misses come back unverified or refused with a reason
 rather than wrong.

@@ -2955,7 +2955,7 @@ class AnswerRecordTests(unittest.TestCase):
         import json
 
         keys = {"schema_version", "status", "question", "answer", "result", "reading", "calculation",
-                "evidence", "assumptions", "warnings"}
+                "evidence", "assumptions", "warnings", "decisions"}
         for question in ("average nitrate", "average nitrate by site", "compare nitrate between sites",
                          "describe nitrate", "correlation between depth and nitrate", "missing depth"):
             with self.subTest(question=question):

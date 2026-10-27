@@ -16,6 +16,7 @@ import re
 import unicodedata
 import weakref
 from collections import Counter, defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, replace
 from typing import Literal
 
@@ -23,6 +24,7 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_dtype
 
+from .aggregates import aggregate_rows
 from .aggregation import TrendSeries, build_trend, preferred_frequency, unlabelled_label
 from .business_insights import (
     MIN_CORRELATION_PAIRS,
@@ -59,7 +61,9 @@ from .compare import (
     scan_differences,
     scan_relationships,
 )
+from .decisions import Decision, decide
 from .formatting import (
+    counted,
     format_change,
     format_number,
     format_period,
@@ -404,6 +408,8 @@ class QueryPlan:
     #: The unit each value is first combined within before the groups are compared:
     #: "average quantity per transect by protection_status".
     per: tuple[str, ...] = ()
+    #: Rows left out before the answer, by value: the World and region rows a decision leaves out.
+    excluded: tuple[ValueFilter, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -459,6 +465,8 @@ class QueryAnswer:
     scope: AnswerScope | None = None
     #: The file the answer was computed from, filled in by ``Analysis.ask``.
     source: Source | None = None
+    #: The choices the answer rests on, each with its options and default (see ``ada.decisions``).
+    decisions: tuple[Decision, ...] = ()
 
     def to_dict(self) -> dict:
         """The answer as JSON-safe data: the result, how the question was read, the calculation and its rows.
@@ -467,7 +475,8 @@ class QueryAnswer:
         ``values`` per group, ``figures`` for the rest), ``reading`` the plan
         that ran, and ``evidence`` the source, the rows read, kept and used, and
         each reason rows were left out. ``assumptions`` say how the question was
-        read; ``warnings`` say what may sway the answer.
+        read; ``warnings`` say what may sway the answer. ``decisions`` list the
+        choices it rests on, with the options a caller may pick instead.
         """
         scope = self.scope
         return {
@@ -495,6 +504,7 @@ class QueryAnswer:
             },
             "assumptions": [] if scope is None else list(scope.readings),
             "warnings": [] if scope is None else list(scope.cautions),
+            "decisions": [decision.to_dict() for decision in self.decisions],
         }
 
 
@@ -517,6 +527,7 @@ def plan_reading(plan: QueryPlan) -> dict:
         "year": plan.year,
         "month": plan.month,
         "quantile": plan.quantile,
+        "left_out_values": [{"column": item.column, "values": list(item.values)} for item in plan.excluded],
         "source": plan.source,
     }
 
@@ -1932,13 +1943,25 @@ def _claim_numbers(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRole
     for start, end, word in _tokens(reading.remaining):
         if not _is_number(word):
             continue
-        is_year = bool(re.fullmatch(r"(?:19|20)\d{2}", word))
+        is_year = _is_year(word, dataframe, roles)
         if word in numbered and not (is_year and roles.date):
             reading.spans[numbered[word]] = (start, end)
             reading.claim(start, end, keep_text=True)
         elif is_year and reading.year is None:
             reading.year = int(word)
             reading.claim(start, end, keep_text=True)
+
+
+def _is_year(word: str, dataframe: pd.DataFrame, roles: ColumnRoles) -> bool:
+    """Whether a number in a question is a year: 1900 to 2099, or an earlier year the year column holds."""
+    if re.fullmatch(r"(?:19|20)\d{2}", word):
+        return True
+    column = _year_column(dataframe, roles)
+    if column is None or not re.fullmatch(r"1\d{3}", word):
+        return False
+    values = dataframe[column]
+    years = values.dt.year if is_datetime64_any_dtype(values) else to_numbers(values)
+    return bool((years == int(word)).any())
 
 
 def _entity_column(noun: str, dataframe: pd.DataFrame, roles: ColumnRoles) -> str | None:
@@ -3615,16 +3638,25 @@ def _apply_filters(
         working = working.loc[_condition_mask(working[condition.column], condition)]
     applied.extend(_describe_conditions(plan.conditions))
     if plan.year or plan.month:
-        if not roles.date or roles.date not in working.columns:
+        column = _year_column(working, roles)
+        if column is None or (column != roles.date and plan.month):
             # Report the scope as unavailable rather than answer with the all-time figure.
             raise TimeScopeUnavailable(_when_label(plan))
-        dates = working[roles.date]
-        if plan.year:
-            working = working.loc[dates.dt.year == plan.year]
+        if column != roles.date:
+            # A column of years, such as OWID's year from 1750 on, scopes a year as a date would.
+            working = working.loc[to_numbers(working[column]) == plan.year]
+            applied.append(f"{column} = {plan.year}")
+        else:
             dates = working[roles.date]
-        if plan.month:
-            working = working.loc[dates.dt.month == plan.month]
-        applied.append(f"{roles.date} in {_when_label(plan)}")
+            if plan.year:
+                working = working.loc[dates.dt.year == plan.year]
+                dates = working[roles.date]
+            if plan.month:
+                working = working.loc[dates.dt.month == plan.month]
+            applied.append(f"{roles.date} in {_when_label(plan)}")
+    for excluded in plan.excluded:
+        if excluded.column in working.columns:
+            working = working.loc[~_value_mask(working[excluded.column], excluded.values)]
     return working, applied
 
 
@@ -3959,6 +3991,15 @@ def _with_scope(
     left_out = [*(result.scope.left_out if result.scope else ())]
     if repeats:
         left_out.insert(0, ("exact repeats of other rows", repeats))
+    if plan.excluded and working is not None:
+        kept, _ = _apply_filters(dataframe, replace(plan, excluded=()), roles)
+        if (aggregates := len(kept) - len(working)):
+            named = [value for item in plan.excluded for value in item.values
+                     if value in set(kept[item.column].astype(str))]
+            left_out.append((f"rows that add up other rows ({list_names(named)})", aggregates))
+            sentences.append(
+                f"Left out {counted(aggregates, 'row')} that add up other rows ({list_names(named)})."
+            )
     if rows_not_analyzed:
         left_out.append(("rows beyond the row limit", rows_not_analyzed))
     used = None
@@ -4279,7 +4320,7 @@ def _run_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -> Q
         answer = (
             f"{with_aggregate(label, plan.measure)}{_phrase(applied)} is "
             f"{format_number(value, plan.measure, column_values=working[plan.measure].dropna())}, "
-            f"calculated from {rows:,} rows."
+            f"calculated from {counted(rows, 'row')}."
         )
         if plan.aggregation == "mode":
             answer += _mode_note(working[plan.measure])
@@ -7059,6 +7100,7 @@ def answer_question(
     rows_not_analyzed: int = 0,
     whole: WholeTable | None = None,
     checks: tuple[QualityIssue, ...] | None = None,
+    choices: Mapping[str, str] | None = None,
 ) -> QueryAnswer | None:
     """Parse and execute in one step; None means the rules could not read it.
 
@@ -7069,6 +7111,8 @@ def answer_question(
     from it, and every other answer says it covers the focus only. ``checks``
     is the data checks' scan of ``dataframe`` when the caller has it, so the
     answers use the very issues the brief reports instead of scanning again.
+    ``choices`` pick options for the decisions the answer takes (see
+    ``ada.decisions``); the answer's ``decisions`` list each one taken.
     """
     if checks is not None:
         _remember_checks(dataframe, roles, checks)
@@ -7079,6 +7123,7 @@ def answer_question(
     plan = parse_question(question, dataframe, roles)
     if plan is None:
         return None
+    plan, decisions = _decide_aggregates(plan, dataframe, roles, choices or {})
     try:
         result = execute_plan(plan, dataframe, roles, rows_not_analyzed=rows_not_analyzed)
     except ValueError:
@@ -7089,7 +7134,64 @@ def answer_question(
             f" This covers the {len(dataframe):,} rows with {whole.parameter} = {whole.focus}, which the "
             f"brief follows; name another {whole.parameter} to ask about it."
         )
-    return replace(result, question=question, answer=answer)
+    return replace(result, question=question, answer=answer, decisions=decisions)
+
+
+def _decide_aggregates(
+    plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles, choices: Mapping[str, str]
+) -> tuple[QueryPlan, tuple[Decision, ...]]:
+    """Leave out the rows that add up others (a World row, regions), or keep them, as ``choices`` say.
+
+    Nothing is decided when the table has no such rows (``ada.aggregates``),
+    when the question picks rows of their column itself ("co2 of World"), or
+    when none is in its scope. By default they are left out, and a total over
+    the whole scope is read from the table's one total row (World, Total) in
+    it, with what the other rows add up to beside it.
+    """
+    found = aggregate_rows(dataframe)
+    if found is None or plan.intent == "duplicates":
+        return plan, ()
+    if any(item.column == found.column for item in (*plan.filters, *plan.conditions, *plan.counted)):
+        return plan, ()
+    try:
+        working, _ = _apply_filters(dataframe, plan, roles)
+    except (TimeScopeUnavailable, ValueError):
+        return plan, ()
+    aggregates = found.mask(working)
+    seen = set(working.loc[aggregates, found.column].astype(str))
+    present = [label for label in found.labels if label in seen]
+    if not present:
+        return plan, ()
+    rows = int(aggregates.sum())
+    leave = decide(
+        "aggregate_rows", choices,
+        f"Leave out the {counted(rows, 'row')} that add up other rows ({found.named(present)})?",
+        f"They add up other values of {found.column}, so counting them with those values counts some twice.",
+    )
+    if leave.chosen == "keep":
+        return plan, (leave,)
+    totals = [label for label in present if label in found.totals]
+    labels = (*found.totals, *(label for label in found.labels if label not in found.totals))
+    left_out = replace(plan, excluded=(*plan.excluded, ValueFilter(found.column, labels)))
+    if not (plan.intent == "aggregate" and plan.aggregation == "sum" and plan.measure and not plan.per
+            and len(totals) == 1):
+        return left_out, (leave,)
+    total = totals[0]
+    source = decide(
+        "total_from", choices,
+        f"Read the total from the {total} row, or add up the other rows?",
+        f"The table gives {total} as the total of the other rows, which can hold what no other row does.",
+    )
+    if source.chosen == "sum_of_parts":
+        return left_out, (leave, source)
+    parts = float(to_numbers(working.loc[~aggregates, plan.measure]).sum())
+    note = (
+        f"Read the total from the {total} row; the other {found.column} values add up to "
+        f"{format_number(parts, plan.measure, compact=False)}."
+    )
+    return replace(
+        plan, filters=(*plan.filters, ValueFilter(found.column, (total,))), notes=(*plan.notes, note)
+    ), (leave, source)
 
 
 def _named_columns(question: str, frame: pd.DataFrame) -> list[str]:

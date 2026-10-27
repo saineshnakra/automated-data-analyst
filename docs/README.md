@@ -42,6 +42,7 @@ follows and its edge cases.
 | [Comparing groups and finding relationships](reference/compare.md) | `ada/compare.py` | Group comparisons with tests and effect sizes, the scan of every reading, and what relates to the measure |
 | [Ask ADA](reference/ask-ada.md) | `ada/nlq.py` | How a question becomes a pandas calculation |
 | [Checking claims](reference/claims.md) | `ada/claims.py` | How a stated number is checked against the table: verified, or unverified with a reason |
+| [Decisions](reference/decisions.md) | `ada/decisions.py`, `ada/aggregates.py` | The choices an answer rests on (World and region rows, a total row), ADA's defaults and how a caller picks another |
 | [Reading a folder of tables](reference/folder.md) | `ada/folder.py` | Profiles each table in a folder, proposes the keys that join them and lists what to confirm |
 | [Formatting](reference/formatting.md) | `ada/formatting.py` | How numbers and dates are displayed |
 | [Choosing the chart](reference/autovis.md) | `ada/autovis.py` | How Explore picks a chart form, and the colour rules |
