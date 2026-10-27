@@ -1600,6 +1600,10 @@ def _readings_with_units(
     labelled = matched & (parts["unit"].notna() | parts["spread"].notna()).to_numpy()
     if not readable or counts[matched].sum() < READINGS_SHARE * readable:
         return None
+    # Ordinals ("1st", "2nd", "3rd") are labels, not readings in a unit called "st"; "Crew" beside
+    # them is another class, not a reading that failed to parse.
+    if labelled.any() and text.str.fullmatch(r"\d+(?:st|nd|rd|th)", case=False).to_numpy()[labelled].all():
+        return None
     if counts[labelled].sum() < LABELLED_SHARE * counts[matched].sum():
         return None
     numbers = parts["number"].where(matched).map(

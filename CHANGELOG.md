@@ -49,6 +49,9 @@
 
 ### Fixes
 
+- Ordinals are labels. Titanic's `Class` ("1st", "2nd", "3rd", "Crew") was
+  read as numbers in units called "st", "nd" and "rd", with "Crew" missing; it
+  stays a column of classes.
 - A mismatch is a failed check only when the claim names what the column
   measures. "Expeditions recorded 788 member deaths" read "deaths" as
   `death_height_metres`, summed the heights at which climbers died (11,050)
