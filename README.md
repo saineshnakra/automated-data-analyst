@@ -54,17 +54,20 @@ says the data give a different number. `--json` gives the whole record, and
 ## Compute an answer, or map a folder
 
 ```bash
+ada scan lahman/ --template answers.yml      # the files, how they join, the questions to ask first
 ada ask flights.csv "average dep_delay by origin" --json   # the numbers, the calculation, the rows used
-ada scan nycflights13/                                     # the files, the keys that join them, what to confirm
+ada claim lahman/ "Barry Bonds hit 73 home runs in 2001." --answers answers.yml
 ```
 
-When an answer rests on a choice, such as leaving World and region rows out
-of an average, it says which, and `--decide` picks the other
-([Decisions](docs/reference/decisions.md)). A question ADA can't answer comes
-back refused, with the reason. `ada scan` proposes joins from the values and
-lists what a person should confirm; it does not run them. See
-[Ask ADA](docs/reference/ask-ada.md) and
-[Reading a folder of tables](docs/reference/folder.md).
+`ada scan` asks what the analysis should find out, what a row is, and each
+choice ADA would otherwise make by default, with its proposed answer; `ada
+ask` and `ada claim` take the edited file. When an answer rests on a choice,
+such as leaving World and region rows out of an average, it says which, and
+`--decide` picks the other ([Decisions](docs/reference/decisions.md)). A
+question or claim about a folder is answered from the file it fits, or from
+two files joined along a link ADA is sure of. A question ADA can't answer
+comes back refused, with the reason. See [Ask ADA](docs/reference/ask-ada.md)
+and [Reading a folder of tables](docs/reference/folder.md).
 
 Before it answers, ADA reports the rows it left out and why, counts each
 subject once when several rows come from one, says when groups reverse a
@@ -100,7 +103,7 @@ gives a first look at any table, and `ada app` opens the same in a browser
 
 ## What it doesn't do yet
 
-Numbers that need two files joined, many phrasings ("horsepower" for `hp`,
+Numbers that need three files joined, many phrasings ("horsepower" for `hp`,
 slopes, several numbers in one claim), and some year columns read as numbers
 rather than dates. These come back unverified or refused with a
 reason. See [Not covered yet](docs/reference/claims.md#not-covered-yet).
@@ -113,10 +116,10 @@ pandas, SciPy and statsmodels; holdout cases are only scored
 
 | | ADA 0.5.0 | Now |
 |---|---|---|
-| Dev cases | 6/51 | 37/51 |
+| Dev cases | 6/51 | 39/51 |
 | Holdout cases | 3/22 | 11/22 |
 | Wrong verdicts on claims | | 0/35 |
-| True claims verified | 0/26 | 12/26 |
+| True claims verified | 0/26 | 14/26 |
 | False claims caught | 0/7 | 6/7 |
 
 ## More

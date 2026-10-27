@@ -2,7 +2,9 @@
 
 `ada.scan(folder)` and `ada scan FOLDER` read every table in a folder, propose
 the keys that join them, and list what a person should confirm before any
-figure combines two files. Code: `ada/folder.py`.
+figure combines two files. Given one file, `ada scan data.csv` asks the same
+questions about it alone. Code: `ada/folder.py`, and `ada/joins.py` for
+answers that join two files.
 
 ```python
 import ada
@@ -21,9 +23,12 @@ ada scan data/ --template answers.yml     # questions with ADA's proposed answer
 ada scan data/ --answers answers.yml      # read the confirmed answers back
 ```
 
-A scan proposes; it does not join files. Every file is still analysed on its
-own (`ada.analyze`), and a claim about a folder is checked against the file it
-fits (see [Checking claims](claims.md#claims-about-a-folder)).
+The questions are the intake before an analysis: what it should find out,
+what a row is, units, which links to trust and the decisions ADA would
+otherwise take by default. The answers file they go into is read back by `ada
+scan`, `ada ask` and `ada claim` (`--answers`). A question or claim about a
+folder is answered from the file it fits, or from two files joined along a
+link (see [Answers across files](#answers-across-files)).
 
 ## Each file
 
@@ -106,11 +111,15 @@ the answer given, if any. They are grouped by topic:
 
 | Topic | Asked when | Proposed answer |
 |---|---|---|
+| `intent` | Always, first: what the analysis should find out, and about which rows | none |
 | `rows` | For each table: what one row stands for | The file name's noun ("one flight"), or the row key |
 | `units` | For the measure, when it holds decimals and neither its name nor a codebook gives its unit | none |
 | `repeated` | When a key with 20 or more values usually has several rows each | Each counts once in tests and correlations |
 | `links` | For each link that needs confirming | "yes" for a covered key link, none otherwise |
-| `intent` | Always | none |
+| `decisions` | For each table with World, region or Total rows (`decide:FILE:aggregate_rows`, and `decide:FILE:total_from` when it has a total row), and for the folder when files can be joined (`decide:join_links`) | ADA's default: `leave_out`, `total_row`, `sure` |
+
+The `intent` answer is kept for whoever reads the answers file: a person, or
+an agent that uses it to pick the decisions. ADA does not interpret it.
 
 Whole-number measures are not asked about: they are mostly counts, which have
 no unit.
@@ -120,7 +129,44 @@ question with its proposed or given answer to a YAML file, keyed by the
 question's `key`. Edit the answers and pass the file back (`answers=` or
 `--answers`): an answered question carries its answer and is no longer open
 (`open_questions()`), a link answered "yes" is `confirmed`, and one answered
-"no" is dropped.
+"no" is dropped. `ada ask` and `ada claim` take the same file with
+`--answers` (`answers=` in Python) and use its `decide:` answers; a
+`--decide` choice wins over them. See [Decisions](decisions.md).
+
+## Answers across files
+
+`ada.ask_folder(folder, question)`, `ada ask FOLDER "question"` and `ada
+claim FOLDER "claim"` first try each file. When exactly one gives an answer,
+it is used, and the first assumption names it ("Answered from Batting.csv,
+the only file in lahman whose columns fit the question."). When several
+give different answers, the question is refused, or the claim is
+`ambiguous_intent`, naming them.
+
+When no file answers it, two files are joined along a link and tried the
+same way: "Barry Bonds hit 73 home runs in 2001." needs the names in
+`People.csv` and the home runs in `Batting.csv`. The join:
+
+- runs only along a `many-to-one` or `one-to-one` link, so no row of the
+  first file is repeated, and only along links the decision `join_links`
+  allows: by default (`sure`) those that need no confirmation and those the
+  answers file confirms; `all` allows every such link, `none` none
+- keeps every row of the first file (a left join); a row with no match gets
+  empty columns from the second, and the note counts them
+- matches keys as text, as the scan compares them, so 7 and 7.0 match
+- leaves out the second file's dates and date parts (a birth date, a birth
+  year), so a year in the question still means the first file's
+- renames a column of the second file that the first also has: `name
+  (People)`
+
+The answer says which join it used ("Joined Batting.csv to People.csv on
+Batting.playerID = People.playerID (many-to-one; 100.0% of keys found, 0 rows
+unmatched).") and lists the `join_links` decision. Its source is the two files
+joined, with no single sha256.
+
+A person is found by first and last name in columns of their own
+(`nameFirst` and `nameLast`, `forename` and `surname`, `first_name` and
+`last_name`) even when there are too many names for the value index: "Barry
+Bonds" is the rows with `nameFirst` Barry and `nameLast` Bonds.
 
 ## The JSON record
 
@@ -130,8 +176,7 @@ question's `key`. Edit the answers and pass the file back (`answers=` or
 
 ## Not covered yet
 
-- ADA proposes joins but does not run them, so a figure that needs two files
-  (a player's name in one, their home runs in another) is not computed.
-- Rows that sum others (a World row among countries) are not set apart.
+- A join covers two files; a figure that needs three (results, drivers and
+  races) is not computed.
 - Links are looked for between two files at a time; a key that runs through a
   third file is reported as two links.

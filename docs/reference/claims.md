@@ -55,6 +55,10 @@ when the file can't be read, and 3 when it is unverified for any other reason.
    `Analysis.ask` (see [Ask ADA](ask-ada.md)). "averaged 5050" becomes
    "average ...", and "There are 344 penguins" becomes "how many penguins",
    where the noun comes from the file's name (`row_noun` in `ada/schema.py`).
+   After a verb that adds things up (hit, scored, earned, collected,
+   recorded), the words after the number name what is totalled: "Barry Bonds
+   hit 73 home runs in 2001" becomes "total home runs Barry Bonds in 2001",
+   and "home runs" reads `HR` by its initials.
 3. **The interval.** The number stands for the values its writing implies,
    worked out in decimal arithmetic:
 
@@ -197,9 +201,12 @@ first: "788 member deaths" is checked against `expeditions.csv`'s
   assumption names them all
 - several give different numbers: `ambiguous_intent`, with each file as an
   alternative and the question "Which file is the claim about?"
-- none does: `missing_context`, naming the key links a scan proposes (see
-  [Reading a folder of tables](folder.md)), since the claim may combine two
-  files. ADA does not join files, so such a claim stays unverified
+- none does: each pair of files a link joins is checked the same way (see
+  [Answers across files](folder.md#answers-across-files)); the one that fits
+  gives the result, with the join as the first assumption and the
+  `join_links` decision listed
+- no file and no join fits: `missing_context`, naming the joins tried and the
+  key links a scan proposes
 
 ## Edge cases
 
@@ -215,7 +222,7 @@ first: "788 member deaths" is checked against `expeditions.csv`'s
 
 ## Not covered yet
 
-- Joins across files: a claim that needs two files of a folder is not checked; the answer names the keys that would join them.
+- A claim that needs three files joined, or a link that needs confirmation and has not been confirmed (`join_links=all`, or confirm it in the answers file).
 - Verbs other than "weigh", "lasted" and "measure", or a verb whose column
   has no unit in its name ("Gentoo penguins weigh 5,076" about a `mass`
   column needs "mass" in the claim).

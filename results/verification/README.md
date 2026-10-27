@@ -64,9 +64,9 @@ scored with the same harness on the same cases.
 | dev | interpretation | 11 | 1 | 9 |
 | dev | calculation | 6 | 2 | 5 |
 | dev | design | 6 | 2 | 5 |
-| dev | evidence (claims) | 21 | 0 | 11 |
+| dev | evidence (claims) | 21 | 0 | 13 |
 | dev | refusal | 2 | 0 | 2 |
-| dev | all | 51 | 6 | 37 |
+| dev | all | 51 | 6 | 39 |
 | holdout | reading | 1 | 0 | 1 |
 | holdout | interpretation | 6 | 0 | 2 |
 | holdout | calculation | 3 | 1 | 1 |
@@ -76,7 +76,7 @@ scored with the same harness on the same cases.
 
 **Claims.** Of 35 claims, 26 are true and 7 false by the reference values (2
 expect a clarifying question). Now: no wrong verdicts, meaning no true claim
-comes back `failed_check` and no false claim comes back `verified`. 12 of the
+comes back `failed_check` and no false claim comes back `verified`. 14 of the
 26 true claims are verified, and 6 of the 7 false ones are caught as
 `failed_check`; the rest come back unverified with a reason. ADA 0.5.0 had
 no claim checking. During the work two wrong verdicts appeared and were
@@ -95,6 +95,12 @@ leaving the World rows out gives -28,994.14 and the data cannot say which the
 claim meant. With `--decide aggregate_rows=keep` it is verified. The case
 still expects `verified` and is counted as a miss.
 
+**Joins.** A claim about a folder that no single file answers is now tried on
+two files joined along a link the scan is sure of. "Barry Bonds hit 73 home
+runs in 2001." is verified on `Batting.csv` joined to `People.csv`, and "Lewis
+Hamilton scored 3,999.5 points." on `results.csv` joined to `drivers.csv`.
+Both name a person by first and last name, each in a column of its own.
+
 **Links between files.** Over the 11 folder cases ADA proposes 56 links.
 Every link the cases expect is among them except three composite ones:
 Formula 1's pit stops to results on race and driver (which repeats rows),
@@ -112,13 +118,11 @@ mostly whole-number ids that overlapped by chance.
   "released", "won", "lost ... to pasture", slopes ("rises by 10.5 per day"),
   "what share have blue eyes" (read as the Eye column, counted), and claims
   with several numbers ("4 cylinders ... 26.7 mpg").
-- **Joins**: a number that needs two files (Barry Bonds's home runs, Lewis
-  Hamilton's points) is not computed.
 - **Columns**: a year column that is not read as a date (chocolate's
   `review_date`), and a value found in two columns ("U.S.A." as company
   location and bean origin), which is asked about rather than guessed.
 
-The holdout improves less than dev (3 to 11 of 22 against 6 to 37 of 51):
+The holdout improves less than dev (3 to 11 of 22 against 6 to 39 of 51):
 the fixes are general, but unseen phrasings and layouts still defeat the
 reader often. The misses come back unverified or refused with a reason
 rather than wrong.
