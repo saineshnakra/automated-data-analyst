@@ -18,6 +18,7 @@ For a first look at any table:
     ada schema measurements.csv
     ada ask orders.csv "which category made the most revenue"       # --json for programs
     ada claim flights.csv "The average dep_delay was 12.64 minutes."   # check a stated number
+    ada scan data/                     # every table in a folder, how they join, what to confirm
     ada check metrics.csv --measure signups --frequency W
     ada check rainfall.csv --measure "Rainfall (mm)" --aggregation sum
     ada samples
@@ -32,6 +33,13 @@ a measure for unusual periods. It reports through its exit code too:
     1  unverified: the data give a different number, or a check on the analysis failed
     2  the data could not be read
     3  unverified for another reason: missing context, ambiguous wording, unsupported
+
+``ada scan FOLDER`` profiles each table in a folder, proposes the keys that join
+them (with the rows each join would leave unmatched) and lists what a person
+should confirm, grouped by topic. ``--template FILE`` writes those questions with
+ADA's proposed answers to a YAML file; edit it and pass it back with ``--answers
+FILE``, and confirmed answers are not asked again. ``ada claim`` also takes a
+folder and checks the claim against the file it fits.
 
 ``ada check`` is meant for scheduled jobs and reports through its exit code:
 
@@ -53,6 +61,7 @@ from pathlib import Path
 from . import __version__
 from .api import AdaError, Refusal, analyze, sample, samples
 from .claims import check_claim
+from .folder import scan
 from .metrics import AGGREGATION_CHOICES, metric_for
 from .nlq import ANSWER_SCHEMA_VERSION
 
@@ -129,6 +138,21 @@ def _claim(args: argparse.Namespace) -> int:
     if check.reason == "failed_check":
         return EXIT_FLAGGED
     return EXIT_ERROR if check.reason == "inaccessible_data" else EXIT_COULD_NOT_LOOK
+
+
+def _scan(args: argparse.Namespace) -> int:
+    try:
+        found = scan(args.folder, answers=args.answers)
+    except NotADirectoryError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_ERROR
+    if args.template:
+        Path(args.template).write_text(found.answers_template())
+    print(json.dumps(found.to_dict(), indent=2) if args.json else found)
+    if args.template and not args.json:
+        print(f"\nWrote the questions to {args.template}. Edit the answers, then run "
+              f"`ada scan {args.folder} --answers {args.template}`.")
+    return EXIT_QUIET
 
 
 def _check(args: argparse.Namespace) -> int:
@@ -433,12 +457,19 @@ def build_parser() -> argparse.ArgumentParser:
     claimed = subcommands.add_parser(
         "claim", help="check a number stated about a table: verified, or unverified with the reason"
     )
-    claimed.add_argument("file", help="the CSV, TSV or Excel file the claim is about")
+    claimed.add_argument("file", help="the CSV, TSV or Excel file the claim is about, or a folder of them")
     claimed.add_argument("claim", nargs="?", help='the claim, such as "The average delay was 12.6 minutes."')
     claimed.add_argument("--question", help="the calculation, when it is known: \"average dep_delay\"")
     claimed.add_argument("--value", help="the number claimed, with --question; its decimals set precision")
     claimed.add_argument("--sheet", help="the worksheet to read from a workbook (default: the first)")
     claimed.add_argument("--json", action="store_true", help="machine-readable result")
+    scanned = subcommands.add_parser(
+        "scan", help="profile every table in a folder, propose how they join, and list what to confirm"
+    )
+    scanned.add_argument("folder", help="the folder of CSV, TSV or Excel files")
+    scanned.add_argument("--answers", help="a YAML file of answers given before (see --template)")
+    scanned.add_argument("--template", help="write the questions and proposed answers to this YAML file")
+    scanned.add_argument("--json", action="store_true", help="machine-readable result")
     with_source("check", "flag periods outside the expected band; for cron")
 
     skill = subcommands.add_parser(
@@ -468,7 +499,7 @@ def main(argv: list[str] | None = None) -> int:
     handler = {
         "init": _init, "build": _build, "verify": _verify, "preview": _preview,
         "share": _share, "demo": _demo,
-        "analyze": _analyze, "schema": _schema, "ask": _ask, "claim": _claim,
+        "analyze": _analyze, "schema": _schema, "ask": _ask, "claim": _claim, "scan": _scan,
         "check": _check, "skill": _skill, "samples": _samples, "app": _app, None: _status,
     }[command]
     try:

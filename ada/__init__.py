@@ -29,6 +29,7 @@ from .api import (
     samples,
 )
 from .claims import ClaimCheck, check_claim
+from .folder import FolderScan, scan
 from .sources import Source
 
 __version__ = "0.5.0"
@@ -41,6 +42,7 @@ __all__ = [
     "AdaError",
     "Analysis",
     "ClaimCheck",
+    "FolderScan",
     "NothingToAnalyze",
     "Refusal",
     "Source",
@@ -51,4 +53,5 @@ __all__ = [
     "read_file",
     "sample",
     "samples",
+    "scan",
 ]

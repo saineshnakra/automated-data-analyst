@@ -1,0 +1,209 @@
+import json
+import re
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+import ada
+from ada.folder import singular
+
+
+def write(folder: Path, files: dict[str, pd.DataFrame]) -> Path:
+    for name, frame in files.items():
+        frame.to_csv(folder / name, index=False)
+    return folder
+
+
+def shop() -> dict[str, pd.DataFrame]:
+    """Customers, their orders and order lines, with two order lines naming an order that is not listed."""
+    rng = np.random.default_rng(60)
+    customers = pd.DataFrame({
+        "customer_id": [f"c{n:03d}" for n in range(40)],
+        "customer_zip_prefix": rng.integers(1000, 1060, 40),
+        "segment": rng.choice(["retail", "trade"], 40),
+    })
+    orders = pd.DataFrame({
+        "order_id": [f"o{n:03d}" for n in range(120)],
+        "customer_id": rng.choice(customers["customer_id"], 120),
+        "order_total": rng.gamma(2, 40, 120).round(2),
+    })
+    lines = pd.DataFrame({
+        "order_id": np.r_[rng.choice(orders["order_id"], 298), ["o999", "o998"]],
+        "quantity": rng.integers(1, 5, 300),
+        "unit_price": rng.gamma(2, 10, 300).round(2),
+    })
+    places = pd.DataFrame({
+        "geo_zip_prefix": np.repeat(np.arange(1000, 1060), 4),
+        "lat": rng.normal(-23, 1, 240).round(4),
+    })
+    return {"customers.csv": customers, "orders.csv": orders, "order_lines.csv": lines, "places.csv": places}
+
+
+class FolderTestCase(unittest.TestCase):
+    def folder(self, files: dict[str, pd.DataFrame]) -> Path:
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        return write(Path(holder.name), files)
+
+
+class LinkTests(FolderTestCase):
+    def test_keys_are_found_from_the_values_with_their_coverage(self):
+        found = ada.scan(self.folder(shop()))
+        links = {(link["from"], link["to"]): link for link in found.to_dict()["links"]}
+        orders = links[("orders.customer_id", "customers.customer_id")]
+        self.assertEqual((orders["kind"], orders["coverage"]), ("many-to-one", 1.0))
+        self.assertEqual(orders["unmatched_rows"], 0)
+        self.assertFalse(orders["needs_confirmation"])
+        lines = links[("order_lines.order_id", "orders.order_id")]
+        self.assertEqual((lines["unmatched_rows"], lines["unmatched_values"]), (2, 2))
+        self.assertTrue(lines["needs_confirmation"])
+        self.assertIn("have no match in orders.csv", lines["reasons"][0])
+
+    def test_a_key_that_repeats_on_the_other_side_warns_of_repeated_rows(self):
+        found = ada.scan(self.folder(shop()))
+        link = next(link for link in found.links if link.to_columns == ("geo_zip_prefix",))
+        self.assertEqual((link.kind, link.fan_out), ("many-to-many", 4))
+        self.assertTrue(any("joining on it repeats rows" in reason for reason in link.reasons))
+
+    def test_a_composite_key_and_no_link_on_one_of_its_parts(self):
+        rng = np.random.default_rng(61)
+        teams = pd.DataFrame({"yearID": np.repeat(np.arange(2001, 2011), 6),
+                              "teamID": np.tile(["BOS", "NYA", "CHN", "SFN", "LAN", "SEA"], 10),
+                              "wins": rng.integers(60, 100, 60)})
+        batting = teams.sample(400, replace=True, random_state=1)[["yearID", "teamID"]].assign(
+            playerID=[f"p{n}" for n in rng.integers(0, 150, 400)], HR=rng.integers(0, 40, 400))
+        found = ada.scan(self.folder({"Teams.csv": teams, "Batting.csv": batting}))
+        labels = {(link.label("from"), link.label("to"), link.kind) for link in found.links}
+        self.assertIn(("Batting.(yearID, teamID)", "Teams.(yearID, teamID)", "many-to-one"), labels)
+        self.assertFalse(any(link.from_columns == ("teamID",) for link in found.links))
+
+    def test_names_that_differ_need_confirming(self):
+        flights = pd.DataFrame({"dest": np.tile([f"A{n:02d}" for n in range(30)], 3),
+                                "delay": np.arange(90.0)})
+        airports = pd.DataFrame({"faa": [f"A{n:02d}" for n in range(28)] + ["ZZZ"], "alt": np.arange(29)})
+        found = ada.scan(self.folder({"flights.csv": flights, "airports.csv": airports}))
+        link = found.links[0]
+        self.assertEqual((link.label("from"), link.label("to")), ("flights.dest", "airports.faa"))
+        self.assertFalse(link.named)
+        self.assertEqual(link.unmatched_values, 2)
+        self.assertIn("the names differ", link.reasons[0])
+
+    def test_tables_of_the_same_length_with_no_key_get_a_warning(self):
+        rng = np.random.default_rng(62)
+        found = ada.scan(self.folder({
+            "a.csv": pd.DataFrame({"mass": rng.normal(4000, 500, 50)}),
+            "b.csv": pd.DataFrame({"depth": rng.normal(17, 2, 50)}),
+        }))
+        self.assertEqual(found.links, ())
+        self.assertIn("joining them by row order is only safe", found.warnings[0])
+
+
+class ProfileTests(FolderTestCase):
+    def test_a_codebook_gives_units_and_is_not_joined(self):
+        rng = np.random.default_rng(63)
+        data = pd.DataFrame({
+            "country": np.repeat(["A", "B", "C"], 30), "year": np.tile(np.arange(1990, 2020), 3),
+            "co2": rng.gamma(2, 10, 90).round(3),
+        })
+        book = pd.DataFrame({
+            "column": ["country", "year", "co2"], "description": ["Place", "Year", "Emissions"],
+            "unit": ["", "", "million tonnes"],
+        })
+        found = ada.scan(self.folder({"data.csv": data, "codebook.csv": book}))
+        self.assertEqual(found.file("codebook.csv").describes, "data.csv")
+        self.assertEqual(dict(found.file("data.csv").units)["co2"], "million tonnes")
+        self.assertFalse(any(question.topic == "units" for question in found.questions))
+        self.assertFalse(any("codebook" in f"{link.from_file} {link.to_file}" for link in found.links))
+
+    def test_rows_are_named_by_the_file_or_by_a_row_key(self):
+        found = ada.scan(self.folder(shop()))
+        rows = {question.key: question.proposed for question in found.questions if question.topic == "rows"}
+        self.assertEqual(rows["rows:customers.csv"], "one customer (from the file's name)")
+        self.assertEqual(found.file("orders.csv").row_key, ("order_id",))
+
+    def test_singulars(self):
+        for plural, one in (("people", "person"), ("salaries", "salary"), ("statuses", "status"),
+                            ("flights", "flight"), ("boxes", "box"), ("glass", "glass")):
+            with self.subTest(plural=plural):
+                self.assertEqual(singular(plural), one)
+
+
+class AnswerTests(FolderTestCase):
+    def test_answers_are_kept_and_read_back(self):
+        folder = self.folder(shop())
+        found = ada.scan(folder)
+        template = folder / "answers.yml"
+        template.write_text(found.answers_template())
+        key = next(question.key for question in found.questions if question.topic == "links")
+        given = re.sub(rf'"{re.escape(key)}": ".*"', f'"{key}": "no"', template.read_text())
+        given = given.replace('"intent": ""', '"intent": "which customers order most"')
+        template.write_text(given)
+        again = ada.scan(folder, answers=template)
+        self.assertNotIn(key, [link.key for link in again.links])
+        intent = next(question for question in again.questions if question.key == "intent")
+        self.assertEqual(intent.answer, "which customers order most")
+        self.assertLess(len(again.open_questions()), len(found.open_questions()))
+
+    def test_a_confirmed_link_is_no_longer_asked(self):
+        folder = self.folder(shop())
+        key = "link:order_lines.order_id->orders.order_id"
+        found = ada.scan(folder, answers={key: "yes"})
+        link = next(link for link in found.links if link.key == key)
+        self.assertTrue(link.confirmed)
+        self.assertNotIn(key, [question.key for question in found.questions])
+
+
+class ThinFolderTests(FolderTestCase):
+    def test_one_file_an_unreadable_file_and_an_empty_folder(self):
+        folder = self.folder({"only.csv": pd.DataFrame({"x": [1.5, 2.5]})})
+        (folder / "broken.csv").write_text("")
+        found = ada.scan(folder)
+        self.assertEqual(found.links, ())
+        self.assertIsNotNone(found.file("broken.csv").problem)
+        json.dumps(found.to_dict(), allow_nan=False)
+        empty = tempfile.TemporaryDirectory()
+        self.addCleanup(empty.cleanup)
+        self.assertEqual(ada.scan(empty.name).files, ())
+        with self.assertRaises(NotADirectoryError):
+            ada.scan(folder / "only.csv")
+
+
+class FolderClaimTests(FolderTestCase):
+    def test_a_claim_about_a_folder_is_checked_against_the_file_it_fits(self):
+        files = shop()
+        folder = self.folder(files)
+        total = files["orders.csv"]["order_total"].mean()
+        check = ada.check_claim(folder, f"The average order_total is {total:.2f}.")
+        self.assertTrue(check.verified)
+        self.assertEqual(check.source.name, "orders.csv")
+        self.assertIn("the only file", check.assumptions[0])
+
+    def test_a_claim_no_single_file_holds_names_the_joins(self):
+        folder = self.folder(shop())
+        check = ada.check_claim(folder, "Retail customers ordered 4,000 in total.")
+        self.assertEqual(check.status, "unverified")
+        self.assertIn(check.reason, ("missing_context", "unsupported_analysis", "ambiguous_intent"))
+
+
+class ScanCommandTests(FolderTestCase):
+    def test_json_and_template(self):
+        folder = self.folder(shop())
+        template = folder / "answers.yml"
+        result = subprocess.run(
+            [sys.executable, "-m", "ada.cli", "scan", str(folder), "--json", "--template", str(template)],
+            capture_output=True, text=True, timeout=300,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual(data["schema_version"], 1)
+        self.assertEqual(set(data["questions"]), {"rows", "units", "repeated", "links", "intent"})
+        self.assertIn('"intent":', template.read_text())
+
+
+if __name__ == "__main__":
+    unittest.main()

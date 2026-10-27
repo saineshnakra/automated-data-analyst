@@ -1,0 +1,128 @@
+# Reading a folder of tables
+
+`ada.scan(folder)` and `ada scan FOLDER` read every table in a folder, propose
+the keys that join them, and list what a person should confirm before any
+figure combines two files. Code: `ada/folder.py`.
+
+```python
+import ada
+
+folder = ada.scan("data/")
+folder.files        # one FileProfile per table
+folder.links        # proposed joins, with how well the keys match both ways
+folder.questions    # what to confirm, grouped by topic
+folder.to_dict()    # all of it as JSON-safe data
+```
+
+```bash
+ada scan data/
+ada scan data/ --json
+ada scan data/ --template answers.yml     # questions with ADA's proposed answers
+ada scan data/ --answers answers.yml      # read the confirmed answers back
+```
+
+A scan proposes; it does not join files. Every file is still analysed on its
+own (`ada.analyze`), and a claim about a folder is checked against the file it
+fits (see [Checking claims](claims.md#claims-about-a-folder)).
+
+## Each file
+
+Every file ADA can read (`.csv`, `.tsv`, `.txt`, `.data`, `.dat`, `.xlsx`,
+`.xlsm`; the first sheet of a workbook) is analysed in full, with no row limit.
+Its profile gives the rows and columns, the file's checksum, the measure, date,
+grouping and identifier ADA picked, the unit of repeated rows (a subject, a
+site; `compare.entity_column`), the first notes, and why a file could not be
+read. Two more fields:
+
+| Field | Meaning |
+|---|---|
+| `row_noun` | The plural the file's name gives its rows: "flights" for flights.csv |
+| `row_key` | The fewest key columns (up to three) that tell every row apart, when no column is missing: `(origin, time_hour)` in weather.csv |
+
+**Codebooks.** A file with a column of names (`column`, `variable`, `field`)
+and a column of descriptions or units, whose names cover half or more of
+another file's columns, describes that file (`describes`). The units it gives
+are added to the described file's profile (`units`), so ADA does not ask for
+them, and a codebook is never joined.
+
+## Links
+
+A link is proposed from the values. For each pair of files, ADA reads the
+columns that could be keys: text, dates, and whole numbers named like an
+identifier or a year (`playerID`, `customer_zip_code_prefix`, `yearID`).
+Decimal readings and row-index columns (`rownames`, `Unnamed: 0`) are never
+keys. Each candidate is measured both ways:
+
+| Field | Meaning |
+|---|---|
+| `coverage` | Share of the first column's distinct values found in the second |
+| `coverage_back` | Share of the second column's distinct values found in the first |
+| `unmatched_rows`, `unmatched_values` | Rows of the first file, and distinct values, with no match |
+| `kind` | `many-to-one`, `one-to-one` or `many-to-many`, from whether each side repeats |
+| `fan_out` | Most rows the second file holds for one value; above 1, a join repeats rows |
+| `named` | Whether the names say the columns hold the same key |
+| `needs_confirmation`, `reasons` | Set when the names differ, some keys don't match, or the second side repeats |
+
+Names match when they are the same once case, underscores and camelCase are
+set aside (`playerID`), when they share two or more words and differ by at most
+two (`customer_zip_code_prefix` and `geolocation_zip_code_prefix`), or when a
+bare `id` belongs to the file the other column is named for. Columns with
+different names are linked only when the second is a key (one row per value),
+holds 20 or more values, and 90% or more of the first column's values are
+found in it; with matching names, 50% is enough, flagged to confirm.
+
+**Composite keys.** When no single column of a pair of files is a key of the
+second, ADA tries two or three columns named alike in both that together tell
+the second file's rows apart: Lahman's `Batting.(yearID, teamID)` against
+`Teams.(yearID, teamID)`, nycflights13's `flights.(origin, time_hour)` against
+`weather`.
+
+**What is left out.** For each column, only the best link is kept: a key on
+the other side first, then matching names, then coverage. A one-to-many link
+is the many-to-one read backwards and is not listed twice. A many-to-many link
+is dropped when its columns already belong to a key link of either file
+(`teamID` repeats in Teams because the key is `(yearID, teamID)`) or when it
+holds fewer than 20 values; one that stays (customers' zip prefix against a
+table of locations listing each prefix up to 1,146 times) says how many rows a
+join would repeat.
+
+**Same length, no key.** Two tables with the same number of rows and no link
+between them get a warning: they may describe the same records, and joining
+them by row order is only safe once a person confirms the order.
+
+## Questions
+
+Each question has a stable `key`, ADA's proposed answer when it has one, and
+the answer given, if any. They are grouped by topic:
+
+| Topic | Asked when | Proposed answer |
+|---|---|---|
+| `rows` | For each table: what one row stands for | The file name's noun ("one flight"), or the row key |
+| `units` | For the measure, when it holds decimals and neither its name nor a codebook gives its unit | none |
+| `repeated` | When a key with 20 or more values usually has several rows each | Each counts once in tests and correlations |
+| `links` | For each link that needs confirming | "yes" for a covered key link, none otherwise |
+| `intent` | Always | none |
+
+Whole-number measures are not asked about: they are mostly counts, which have
+no unit.
+
+**Keeping answers.** `answers_template()` and `--template FILE` write every
+question with its proposed or given answer to a YAML file, keyed by the
+question's `key`. Edit the answers and pass the file back (`answers=` or
+`--answers`): an answered question carries its answer and is no longer open
+(`open_questions()`), a link answered "yes" is `confirmed`, and one answered
+"no" is dropped.
+
+## The JSON record
+
+`FolderScan.to_dict()` and `ada scan --json` give `schema_version` (1), the
+`folder`, `files` (each profile), `links` (each with `from` and `to` written as
+`file.column` or `file.(a, b)`), `questions` grouped by topic, and `warnings`.
+
+## Not covered yet
+
+- ADA proposes joins but does not run them, so a figure that needs two files
+  (a player's name in one, his home runs in another) is not computed.
+- Rows that sum others (a World row among countries) are not set apart.
+- Links are looked for between two files at a time; a key that runs through a
+  third file is reported as two links.

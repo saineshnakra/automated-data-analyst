@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Reading a folder of tables
+
+- `ada.scan(folder)` and `ada scan FOLDER` profile every table in a folder,
+  propose the keys that join them from their values (with the coverage both
+  ways, the cardinality, the rows a join leaves unmatched and how many rows
+  it repeats), find composite keys such as `(yearID, teamID)`, read a
+  codebook's units, and list what a person should confirm, grouped by topic:
+  what a row stands for, units, repeated measurements, links and the
+  question to answer. `--template FILE` writes the questions with ADA's
+  proposed answers; `--answers FILE` reads the confirmed answers back.
+  `--json` prints all of it. See [Reading a folder of tables](docs/reference/folder.md).
+- `ada.check_claim` and `ada claim` take a folder and check the claim against
+  the file it fits; when no single file does, the answer names the keys that
+  would join two of them.
+
 ### Checking numbers against the data
 
 - `ada.check_claim(data, claim)` and `ada claim FILE "claim"` check a number

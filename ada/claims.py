@@ -39,7 +39,7 @@ from __future__ import annotations
 import math
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
@@ -722,6 +722,8 @@ def check_claim(
             data = analyze(data, sheet=sheet, row_limit=sys.maxsize)
         except Exception as error:  # noqa: BLE001 - reported as unreadable
             return ClaimCheck(text, "unverified", "inaccessible_data", f"The data could not be read: {error}")
+    if isinstance(data, str | Path) and Path(data).is_dir():
+        return _check_folder(Path(data), text, claim, question=question, value=value)
     analysis, source, problem = _source_of(data)
     if analysis is None:
         reason = "missing_context" if problem and "is a folder" in problem else "inaccessible_data"
@@ -749,6 +751,76 @@ def check_claim(
             )
     assert number is not None and asked is not None
     return _check(analysis, text, asked, number, source)
+
+
+def _check_folder(
+    folder: Path, text: str, claim: str | None, *, question: str | None, value: str | float | None
+) -> ClaimCheck:
+    """Check a claim about a folder against each of its tables, and say which one fits.
+
+    The claim is checked against every readable file. When exactly one gives a
+    number for it, that file's check is the result, and its assumptions say the
+    file was chosen this way. When several do and they disagree, the claim is
+    ambiguous. When none does, the claim may need two files joined, and the
+    links a scan proposes are named; ADA does not join files itself.
+    """
+    files = sorted(
+        item for item in folder.iterdir()
+        if item.is_file() and not item.name.startswith(".") and item.suffix.lower() in READABLE
+    )
+    listed = ", ".join(item.name for item in files[:12]) + (" and more" if len(files) > 12 else "")
+    folder_source = Source(name=str(folder), path=str(folder))
+    if not files:
+        return ClaimCheck(text, "unverified", "inaccessible_data", f"{folder} holds no table ADA can read.",
+                          source=folder_source)
+    fitted: list[tuple[Path, ClaimCheck]] = []
+    for item in files:
+        check = check_claim(item, claim, question=question, value=value)
+        if check.answer is not None and check.compared is not None:
+            fitted.append((item, check))
+    if len(fitted) == 1:
+        item, check = fitted[0]
+        chosen = f"Checked against {item.name}, the only file in {folder.name} whose columns fit the claim."
+        return replace(check, assumptions=(chosen, *check.assumptions))
+    if fitted:
+        values = {round(check.compared, 12) for _, check in fitted}
+        if len(values) == 1 and all(check.verified for _, check in fitted):
+            item, check = fitted[0]
+            names = [found.name for found, _ in fitted]
+            each = (
+                f"{names[0]} and {names[1]} both give" if len(names) == 2 else f"{', '.join(names)} all give"
+            )
+            same = f"{each} {_plain(check.compared)}."
+            return replace(check, assumptions=(same, *check.assumptions))
+        alternatives = tuple(
+            Alternative(item.name, check.question or "", check.compared, check.agreement == "match",
+                        check.answer.calculation if check.answer else "")
+            for item, check in fitted
+        )
+        shown = "; ".join(f"{item.reading} gives {_plain(item.value)}" for item in alternatives
+                          if item.value is not None)
+        names = [item.reading for item in alternatives]
+        return ClaimCheck(
+            text, "unverified", "ambiguous_intent",
+            f"The claim fits more than one file in {folder.name}, and they give different answers: {shown}.",
+            claimed=fitted[0][1].claimed, question=fitted[0][1].question, alternatives=alternatives,
+            source=folder_source,
+            clarification=f"Which file is the claim about: {', '.join(names[:-1])} or {names[-1]}?",
+        )
+    from .folder import scan  # noqa: PLC0415
+
+    links = [link for link in scan(folder).links if link.kind in ("many-to-one", "one-to-one")]
+    joins = "; ".join(f"{link.label('from')} to {link.label('to')}" for link in links[:6])
+    message = f"No single file in {folder.name} holds what the claim names ({listed})."
+    if joins:
+        message += (
+            f" It may need two files joined; the keys that join them are {joins}. ADA does not join files."
+        )
+    return ClaimCheck(
+        text, "unverified", "missing_context" if joins else "unsupported_analysis", message,
+        source=folder_source,
+        clarification="Which file is the claim about, or which files hold the numbers it combines?",
+    )
 
 
 def _check(analysis: Any, text: str, asked: str, number: ClaimedNumber, source: Source | None) -> ClaimCheck:

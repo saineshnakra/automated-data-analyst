@@ -164,11 +164,26 @@ Besides the number, a check records what could make the answer misleading:
 `answered`; a refused question gives `status: "refused"` with its `code` and
 `message`, and exit code 3.
 
+## Claims about a folder
+
+`check_claim` and `ada claim` also take a folder. The claim is checked against
+every table in it:
+
+- one file gives a number for it: that file's check is the result, and the
+  first assumption says it was the only file whose columns fit
+- several give the same verified number: the first is used, and the
+  assumption names them all
+- several give different numbers: `ambiguous_intent`, with each file as an
+  alternative and the question "Which file is the claim about?"
+- none does: `missing_context`, naming the key links a scan proposes (see
+  [Reading a folder of tables](folder.md)), since the claim may combine two
+  files. ADA does not join files, so such a claim stays unverified
+
 ## Edge cases
 
 | Input | Result |
 |---|---|
-| A folder | `missing_context`, listing the files to choose from |
+| A folder | Checked against each file it holds (see [Claims about a folder](#claims-about-a-folder)) |
 | A claim with no number | `missing_context` |
 | A claim that names no column ("The average is 3.7") | `missing_context`; ADA does not fall back on the column it picks by default |
 | An answer with one number per group | `missing_context`: "Which group is the number about?" |
@@ -178,7 +193,7 @@ Besides the number, a check records what could make the answer misleading:
 
 ## Not covered yet
 
-- Joins across files: a claim about two files of a folder is not checked.
+- Joins across files: a claim that needs two files of a folder is not checked; the answer names the keys that would join them.
 - Verbs other than "weigh", "lasted" and "measure", or a verb whose column
   has no unit in its name ("Gentoo penguins weigh 5,076" about a `mass`
   column needs "mass" in the claim).
