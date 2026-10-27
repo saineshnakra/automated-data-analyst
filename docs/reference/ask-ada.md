@@ -288,8 +288,9 @@ each word is claimed, in this order, by:
    a phrase that only says where the rows are ("on board", "aboard", "in the
    dataset", "in this table") name nothing and are passed over.
    In a table whose year is a numeric column (`YEAR`, or a column named as a
-   date or season that holds only whole years, such as chocolate ratings'
-   `review_date`), the same words set a condition on that column, as does
+   date, season, time or period that holds only whole years, such as
+   chocolate ratings' `review_date` or Eurostat's `TIME_PERIOD`), the same
+   words set a condition on that column, as does
    "YEAR > 1977". Numbers
    right after another numeric column's name that fall within its own values
    ("Elevation between 1900 and 2000") are a range of that column.
@@ -408,6 +409,7 @@ weekly view and `Age of testing (day)` for no daily one.
 | Written | Reads as |
 |---|---|
 | "pH below 5.5", "pH < 5.5", "yield under 0" | `pH < 5.5` |
+| "magnitude 7 or more", "depth 12 or less" | `mag >= 7`, `depth <= 12` |
 | "at least 10", ">= 10", "at most", "more than", "greater than", "over", "above" | `>=`, `<=`, `>` |
 | "pH between 5 and 6" | `pH >= 5` and `pH <= 6` |
 | "negative yield", "yield is negative", "positive", "zero" | `< 0`, `> 0`, `= 0` |
@@ -507,7 +509,10 @@ rather than the rows or the serial `DRUG_ID`, "how many crops" counts
 `Current Crop` but not `Crop Rotation System`, and when `Plot Code` and `Plot
 Name` count different numbers the code is used and the answer gives the
 other's count. After "by" or "which", columns that pick the same groups of
-rows (a code and its label) stand for each other, and the label is used.
+rows (a code and its label) stand for each other, and the label is used. A
+word that every name word of one column starts, its units aside, names that
+column: "magnitude" is `mag` rather than `magType` or `magError`, and
+"capacity" is `capacity_mw` rather than `year_of_capacity_data`.
 Otherwise the question is refused with "Did you mean bill_length_mm or
 flipper_length_mm?", listing at most five columns ("or 995 others"). A noun
 for rows ("how many samples" in a table of `sample.*` columns) counts rows

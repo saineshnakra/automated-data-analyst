@@ -3615,6 +3615,34 @@ class CountTableCrossTests(unittest.TestCase):
         self.assertIsNone(_yes_level(["B", "NoB", "Other"]))
 
 
+class FullNamesAndBoundsTests(unittest.TestCase):
+    def quakes(self) -> pd.DataFrame:
+        return pd.DataFrame({"mag": [4.6, 5.0, 6.1, 7.2, 7.5], "magType": ["mb", "mb", "mww", "mww", "mww"],
+                             "magError": [0.1, 0.1, 0.05, 0.03, 0.02],
+                             "depth": [10.0, 35.0, 12.0, 20.0, 10.0]})
+
+    def test_a_word_names_the_one_column_it_spells_in_full(self):
+        frame = self.quakes()
+        answer = answer_question("average magnitude", frame, detect_roles(frame))
+        self.assertIn("mean(mag)", answer.calculation)
+        plants = pd.DataFrame({"capacity_mw": [10.0, 20.0, 30.0], "year_of_capacity_data": [2017, 2018, 2019],
+                               "fuel": ["Coal", "Gas", "Hydro"]})
+        answer = answer_question("total capacity", plants, detect_roles(plants))
+        self.assertEqual(answer.value, 60)
+
+    def test_a_number_or_more_after_a_column_bounds_it(self):
+        frame = self.quakes()
+        roles = detect_roles(frame)
+        self.assertEqual(answer_question("how many rows reached magnitude 7 or more", frame, roles).value, 2)
+        self.assertEqual(answer_question("how many rows with depth 12 or less", frame, roles).value, 3)
+
+    def test_a_time_period_column_of_years_is_the_year(self):
+        frame = pd.DataFrame({"TIME_PERIOD: Time": [2004, 2004, 2024, 2024], "geo": ["SE", "DE", "SE", "DE"],
+                              "OBS_VALUE": [38.7, 6.2, 66.4, 22.0]})
+        answer = answer_question("average OBS_VALUE in 2024", frame, detect_roles(frame))
+        self.assertAlmostEqual(answer.value, 44.2)
+
+
 class StateAndNounTests(unittest.TestCase):
     def test_the_most_of_a_value_counts_rows_by_period(self):
         days = ["2020-01-01", "2020-01-01", "2020-01-02"]

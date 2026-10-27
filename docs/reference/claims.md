@@ -259,6 +259,11 @@ December 2007 to a record 25.2 weeks in June 2010"). A share of the distinct
 values of a column that holds two values ("half had Wheeze", as a share of W
 and NoW) is not given, as it says nothing of the rows.
 
+When every number is a bound, the one that counts things is the number
+claimed and a bound written "or above" picks the rows: in "more than 1,000
+earthquakes of magnitude 4.5 or above", 1,000 is claimed and `mag` at least
+4.5 is the condition.
+
 A year is never the number claimed after "in", "since", "until", "before",
 "after" or "during" ("rose in 2020" states no number), and a reporting year
 or a span of years ("2021-22", "2019/20", "2000-2014") is one period, not a

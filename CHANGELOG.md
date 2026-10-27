@@ -34,6 +34,10 @@
 
 ### Reading claims and questions
 
+- "magnitude" names `mag` rather than every column starting with mag, and
+  "capacity" names `capacity_mw`; "magnitude 7 or more" bounds it; a column
+  named for a time or period that holds only years is the year; "more than
+  1,000 earthquakes of magnitude 4.5 or above" claims 1,000.
 - Fixed a wrong answer: a cross-table of a table of counts counted its rows,
   not the counts they hold, so "how does breathlessness change with age" in
   CoalMiners found no association; it now adds up `Freq` and gives the share
