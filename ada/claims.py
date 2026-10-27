@@ -48,7 +48,7 @@ from typing import Any, Literal
 from .decisions import Decision, checked_choices
 from .file_io import SUPPORTED_SUFFIXES as READABLE
 from .formatting import counted, list_names, normalized_name
-from .nlq import AGE_PHRASE, DAY_PATTERN, OUTCOME_WORDS, QueryAnswer
+from .nlq import AGE_PHRASE, DAY_PATTERN, OUTCOME_WORDS, Condition, QueryAnswer
 from .sources import Source
 
 #: Version of the ``ClaimCheck.to_dict`` layout. Bumped when a key changes meaning.
@@ -242,6 +242,13 @@ OPENING_BASE = re.compile(
     re.IGNORECASE,
 )
 # "seven in ten", "one in five", "1 in 20": a share written as a count in a total.
+# "Of every 100 birds taken in, about 25 were put down": a share said as so many of every hundred.
+EVERY_BASE = re.compile(
+    r"\s*(?:of|out\s+of)\s+every\s+(?P<bottom>[1-9]\d{0,2}(?:,\d{3})*)\s+(?P<base>[^,]+),\s*"
+    r"(?:(?P<qualifier>about|roughly|around|nearly|almost|just\s+over|just\s+under|more\s+than|less\s+than|"
+    r"fewer\s+than|at\s+least|at\s+most)\s+)?(?P<top>\d+(?:\.\d+)?)\s+(?P<rest>.+)",
+    re.IGNORECASE,
+)
 IN_FRACTION = re.compile(
     r"\b(?:(?P<qualifier>about|roughly|around|approximately|nearly|almost|just\s+over|just\s+under|over|"
     r"under|more\s+than|less\s+than|fewer\s+than|at\s+least|at\s+most)\s+)?"
@@ -756,6 +763,51 @@ def _worded_number(claim: str) -> tuple[str, Any] | None:
     return rewritten, lambda number: replace(number, text=worded.group(0))
 
 
+# A comparison that makes the number after it a bound on a column: "deeper than 50 cm", "25 or more days".
+COMPARATIVE_THAN = re.compile(r"\b[A-Za-z]+er\s+than\s*$", re.IGNORECASE)
+OR_MORE = re.compile(
+    r"\s*(?:[A-Za-z]+\s+)?or\s+(?:more|over|above|higher|greater|longer|less|fewer|under|below|lower)\b",
+    re.IGNORECASE,
+)
+BOUND_QUALIFIERS = frozenset({"more than", "less than", "at least", "at most"})
+
+
+def _bound_like(claim: str, item: _Candidate) -> bool:
+    """Whether a number bounds a condition ("under 25", "deeper than 50 cm", "25 or more days")."""
+    if item.match.group("percent") or item.year_like or item.ordinal:
+        return False
+    return (item.qualifier in BOUND_QUALIFIERS or bool(COMPARATIVE_THAN.search(claim[:item.match.start()]))
+            or bool(OR_MORE.match(claim[item.match.end():])))
+
+
+def _past_bounds(claim: str, usable: list[_Candidate]) -> _Candidate | None:
+    """The number claimed when every other number is a bound: 3.9 in "Films that scored under 50 still
+    averaged 3.9 stars". None when more than one is left, or a number in words is ("Nine Munros rise above
+    4,000 feet, led by Ben Nevis at 4,411 feet")."""
+    bounds = [item for item in usable if _bound_like(claim, item)]
+    rest = [item for item in usable if item not in bounds]
+    if not bounds or len(rest) != 1:
+        return None
+    if re.search(rf"\b(?:{'|'.join(NUMBER_WORDS)})\b", claim, re.IGNORECASE):
+        return None
+    return rest[0]
+
+
+def _unused_bounds(asked: str, answer: QueryAnswer) -> list[str]:
+    """The bounds left in a question ("under 25") that the reading did not use as a condition on a column."""
+    plan = answer.plan
+    used = [item.value for item in (*plan.conditions, *plan.counted)
+            if isinstance(item, Condition) and item.value is not None]
+    unused = []
+    for item in _candidates(asked, []):
+        if not _bound_like(asked, item):
+            continue
+        value, _, _, scale, _ = parse_number(item.match)
+        if not any(math.isclose(value * scale, other, rel_tol=1e-9) for other in used):
+            unused.append(asked[item.qualifier_start:item.match.end()].strip())
+    return unused
+
+
 def read_claim(
     claim: str, columns: list[str], row_noun: str | None = None
 ) -> tuple[str | None, ClaimedNumber | None, str]:
@@ -770,6 +822,13 @@ def read_claim(
     """
     # "6.5 out of 10": the scale says what the number is out of, not a second number.
     claim = re.sub(r"(\d)\s+out\s+of\s+(?:10|5|100)\b", r"\1", claim)
+    every = EVERY_BASE.match(claim)
+    if every:
+        # "Of every 100 birds taken in, about 25 were put down" is a share of the birds: 25%.
+        share = float(every.group("top")) / float(every.group("bottom").replace(",", "")) * 100
+        qualifier = f"{every.group('qualifier')} " if every.group("qualifier") else ""
+        rewritten = f"{qualifier}{share:g}% of {every.group('base')} {every.group('rest')}"
+        return read_claim(rewritten, columns, row_noun)
     among = AMONG_LEAD.match(claim)
     if among:
         # "Among victims aged 50 and over, 9.5% died" is a share of those victims, and so is "Among
@@ -822,6 +881,11 @@ def read_claim(
     # Any other number left in the question would be read as part of it ("... and 3700 g" as a filter).
     others = cued if len(cued) > 1 else plain
     rivals = [item for item in others if item.match.group(0) != chosen.match.group(0)]
+    claimed = _past_bounds(claim, usable) if rivals else None
+    if claimed is not None:
+        # "Drivers under 25 accounted for 12% of all claims": the bound picks rows and stays in the question,
+        # where the check makes sure it is read as a condition (_unused_bounds).
+        chosen, rivals = claimed, []
     if rivals:
         listed = ", ".join(dict.fromkeys(item.match.group(0).strip() for item in [chosen, *rivals]))
         return None, None, (
@@ -1277,6 +1341,19 @@ def check_claim(
             )
     assert number is not None and asked is not None
     check = _check(analysis, text, asked, number, source, choices)
+    decided = check.verified or check.reason == "failed_check"
+    if question is None and check.answer is not None and decided and (
+        unused := _unused_bounds(asked, check.answer)
+    ):
+        # "Drivers under 25" left in the question must pick rows; read any other way the verdict is not the
+        # claim's.
+        return ClaimCheck(
+            text, "unverified", "missing_context",
+            f"The claim's {_quoted(unused)} reads as a condition on the rows, but ADA's reading "
+            f"({check.answer.calculation}) does not use it as one.",
+            claimed=number, question=asked, answer=check.answer, assumptions=check.assumptions, source=source,
+            clarification=f"Which column does {_quoted(unused)} bound?",
+        )
     without = next((item for item in check.assumptions if item.startswith(LEFT_OUT_NOTE)), None)
     if without:
         check = replace(check, words_left_out=tuple(re.findall(r'"([^"]+)"', without)))
@@ -1286,6 +1363,17 @@ def check_claim(
         check.verified or check.reason == "failed_check"
     ):
         return _checked_peak(check, analysis)
+    if question is None and check.verified and check.answer is not None and SUPERLATIVE.search(text) and (
+        AGAINST_ALL.search(text) and not _ranked(check.answer)
+    ):
+        # "had the best score of any town, at 9.4" holds only if no other town scores more; the value alone
+        # does not say so.
+        return replace(
+            check, status="unverified", reason="missing_context",
+            message=f"The claim also ranks it against all the others, which ADA did not check: "
+            f"{check.message}",
+            clarification="Over which groups is it ranked, and by which column?",
+        )
     return check
 
 
@@ -1304,6 +1392,34 @@ MOST_LEAD = re.compile(
 )
 
 
+# "Chorleywood had the best education score of any town in England, at 9.4": a peak said with "of any".
+_PLACE = r"[A-Z][\w.'-]*(?:\s+[A-Z][\w.'-]*){0,2}"
+BEST_OF_ANY = re.compile(
+    rf"^\s*(?P<group>[A-Z][\w.'-]*(?:\s+[A-Z][\w.'-]*){{0,3}})(?:\s+(?:in|of)\s+{_PLACE})?"
+    r"\s+(?:had|has|recorded|saw|scored|got|won)\s+the\s+(?:most|highest|largest|biggest|greatest|best)\s+"
+    rf"(?P<what>.+?)\s+(?:of|among)\s+(?:any|all(?:\s+the)?)\s+[a-z]+(?:\s+in\s+{_PLACE})?"
+    r",\s*(?:with\s+|at\s+)?(?P<value>.+?)\s*[.!]?\s*$",
+)
+# Words that rank a group against all the others: "the best of any town", "more than in any other month".
+SUPERLATIVE = re.compile(
+    r"\b(?:most|highest|largest|biggest|greatest|best|lowest|smallest|fewest|least|worst|wettest|driest|"
+    r"hottest|coldest|warmest|sunniest|busiest|longest|shortest|tallest|deepest|fastest|slowest|oldest|"
+    r"youngest|strongest|weakest|more|fewer|less)\b",
+    re.IGNORECASE,
+)
+AGAINST_ALL = re.compile(
+    r"\b(?:of|among)\s+(?:any|all)\b|\bthan\s+(?:in\s+)?any\b|\bon\s+record\b|\bever\b", re.IGNORECASE
+)
+
+
+def _ranked(answer: QueryAnswer) -> bool:
+    """Whether the answer itself ranks the groups, so a claim that one leads them all is checked."""
+    plan = answer.plan
+    return plan.intent == "rank" or bool(plan.top_n) or (
+        plan.aggregation in ("max", "min") and not plan.filters and not plan.conditions
+    )
+
+
 # "Vesuvius had its busiest year on record in 2024, with 1,315 earthquakes": a period's count at its peak.
 BUSIEST_PERIOD = re.compile(
     r"^\s*(?P<subject>.+?)\s+had\s+(?:its|their|the)\s+busiest\s+(?:year|month|day|week)(?:\s+on\s+record|"
@@ -1320,10 +1436,13 @@ def _most_as_peak(text: str) -> str:
         subject, when, noun = busiest.group("subject"), busiest.group("when"), busiest.group("noun")
         return f"The number of {noun} at {subject} {when} peaked at {busiest.group('number').strip()}."
     found = MOST_LEAD.match(text)
-    if found is None or not NUMBER_PATTERN.search(found.group("value")):
-        return text
-    what = found.group("more") or found.group("most")
-    return f"{what} in {found.group('group')}{found.group('when') or ''} peaked at {found.group('value')}."
+    if found is not None and NUMBER_PATTERN.search(found.group("value")):
+        what, when = found.group("more") or found.group("most"), found.group("when") or ""
+        return f"{what} in {found.group('group')}{when} peaked at {found.group('value')}."
+    found = BEST_OF_ANY.match(text)
+    if found is not None and NUMBER_PATTERN.search(found.group("value")):
+        return f"{found.group('what')} in {found.group('group')} peaked at {found.group('value')}."
+    return text
 
 
 def _without_peak(text: str) -> str:
@@ -1625,6 +1744,38 @@ def _otherwise(
     return None
 
 
+# Words that say how a claim's rows combine: "averaged", "in total".
+AGGREGATION_SAID = re.compile(
+    r"\b(?:average|averages|averaged|averaging|mean|median|typical|typically|total|totals|totalled|totaled|"
+    r"sum|combined|altogether|in\s+all|per|each|a\s+year|a\s+month|a\s+day|annual|monthly|daily)\b",
+    re.IGNORECASE,
+)
+
+
+def _other_aggregation(
+    analysis: Any, text: str, asked: str, number: ClaimedNumber, answer: QueryAnswer, choices: dict[str, str],
+    factor: float, used: int | None,
+) -> tuple[str, QueryAnswer, float] | None:
+    """The total (or the mean) over the rows, when the claim says neither and that one agrees with it."""
+    from .api import Refusal  # noqa: PLC0415
+
+    plan = answer.plan
+    if AGGREGATION_SAID.search(text) or not plan.measure or plan.aggregation not in ("mean", "sum") or (
+        not used or used < 2
+    ):
+        return None
+    word = "total" if plan.aggregation == "mean" else "average"
+    other = analysis.ask(f"{word} {asked}", decisions=choices)
+    if isinstance(other, Refusal) or other.plan.measure != plan.measure or other.plan.aggregation == (
+        plan.aggregation
+    ):
+        return None
+    value, _ = _comparable(other, number)
+    if value is None or not number.holds(value * factor):
+        return None
+    return word, other, value * factor
+
+
 # Name words of a column that holds money, for a claim whose number carries a currency symbol.
 MONEY_WORDS = frozenset({
     "revenue", "turnover", "sales", "profit", "amount", "income", "spend", "spending", "cost", "expense",
@@ -1791,6 +1942,19 @@ def _check(
 
     choices = choices or {}
     answer = analysis.ask(asked, decisions=choices)
+    table_words = _table_name_words(source)
+    for _ in range(3):
+        spread = re.search(r'"([^"]+)" (?:is a value of|matches several)', answer.message) if isinstance(
+            answer, Refusal) else None
+        if not spread or not _names_table(spread.group(1), table_words) or any(
+            _names_anything(analysis.frame, word) for word in _words(re.sub(r"['’]s\b", "", spread.group(1)))
+        ):
+            break
+        # "the shelter" in long-beach-shelter/longbeach.csv is only part of "at shelter" and "shelter,
+        # neuter, return": words of the table's name that no value is name the table.
+        asked = re.sub(r"\s+", " ", re.sub(rf"(?<!\w){re.escape(spread.group(1))}(?!\w)", " ", asked)).strip()
+        left = (*left, spread.group(1))
+        answer = analysis.ask(asked, decisions=choices)
     alternatives: list[Alternative] = []
     assumptions: list[str] = [f"{LEFT_OUT_NOTE} {_quoted(left)}, which name no column or value in the table."
                               ] if left else []
@@ -2220,6 +2384,26 @@ def _check(
     otherwise = None
     if agreement == "mismatch":
         otherwise = _otherwise(analysis, asked, number, answer, choices, factor)
+    aggregated = _other_aggregation(analysis, text, asked, number, answer, choices, factor, used) if (
+        agreement == "mismatch" and not otherwise) else None
+    if aggregated:
+        # "Oxford got 984 mm of rain in 2012": twelve monthly rows give a mean of 82 and a total of 984,
+        # and the claim says neither.
+        word, other, value = aggregated
+        alternatives = (
+            Alternative(answer.plan.aggregation, asked, computed, False, described),
+            Alternative(word, f"{word} {asked}", value, True, other.calculation),
+        )
+        return ClaimCheck(
+            text, "unverified", "ambiguous_intent",
+            f"The claim does not say how the {used:,} rows combine: by default the data give "
+            f"{_plain(computed)} ({described}); the {word} is {_plain(value)}, which {number.text} stands "
+            "for.",
+            claimed=number, question=asked, answer=answer, compared=computed, agreement="mismatch",
+            assumptions=tuple(dict.fromkeys(assumptions)), warnings=tuple(dict.fromkeys(warnings)),
+            checks=tuple(checks), alternatives=alternatives, source=source,
+            clarification=f"Is the number the {word} over those rows, or the {answer.plan.aggregation}?",
+        )
     if otherwise:
         # The claim agrees once a choice goes the other way; the data alone cannot say which way it should go.
         decision, option, other, value = otherwise
@@ -2236,6 +2420,19 @@ def _check(
             assumptions=tuple(dict.fromkeys(assumptions)), warnings=tuple(dict.fromkeys(warnings)),
             checks=tuple(checks), alternatives=alternatives, source=source,
             clarification=f"{decision.question} Choose {decision.key} {decision.chosen} or {option}.",
+        )
+    counting = answer.plan.aggregation == "count" or "share_percent" in dict(answer.figures)
+    if agreement == "mismatch" and computed == 0 and number.low > 0 and counting:
+        # "24% of cats were adopted" read as intake_type = adopted animal return, which no cat has: no row
+        # fits the words as read, which says more about the reading than about the claim.
+        return ClaimCheck(
+            text, "unverified", "missing_context",
+            f"No row fits the claim as ADA read it ({described}), so the data give 0; a claim of "
+            f"{number.text} about rows that are not there more likely means other rows or another column.",
+            claimed=number, question=asked, answer=answer, compared=computed, agreement="mismatch",
+            assumptions=tuple(dict.fromkeys(assumptions)), warnings=tuple(dict.fromkeys(warnings)),
+            checks=tuple(checks), source=source,
+            clarification="Which rows does the claim count?",
         )
     if agreement == "mismatch":
         reason = "failed_check"
