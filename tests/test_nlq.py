@@ -478,6 +478,23 @@ class TimeScopeTests(unittest.TestCase):
 
         self.assertIn("Order Date in May 2025", answer.answer)
 
+    def test_a_year_inside_a_web_address_is_still_the_year(self):
+        dates = pd.to_datetime(["2019-03-17", "2019-07-14", "2020-07-05", "2020-07-12", "2020-08-02",
+                                "2021-03-28"])
+        frame = pd.DataFrame({
+            "date": dates,
+            "name": ["Australian", "British", "Austrian", "Styrian", "British", "Bahrain"],
+            "round": [1, 10, 1, 2, 4, 1],
+            "url": [f"https://en.wikipedia.org/wiki/{day.year}_{name}_Grand_Prix"
+                    for day, name in zip(dates, ["Australian", "British", "Austrian", "Styrian", "British",
+                                                 "Bahrain"], strict=True)],
+        })
+
+        answer = answer_question("how many races in 2020", frame, detect_roles(frame))
+
+        self.assertEqual(answer.plan.year, 2020)
+        self.assertEqual(answer.value, 3)
+
 
 class ShareOfTotalTests(unittest.TestCase):
     def _roles(self, frame):

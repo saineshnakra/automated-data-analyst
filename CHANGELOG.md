@@ -47,6 +47,10 @@
 
 ### Fixes
 
+- A year in a question is the year even when it also appears inside a longer
+  text value. "how many races in 2020" on Formula 1's races table was refused
+  because 2020 is part of 17 race web addresses; it now counts the 17 races
+  dated 2020.
 - A correlation over rows that come several to a subject counts each subject
   once. "does Reaction increase with Days" on the sleepstudy table (18
   people, 10 days each) used to be refused; it now gives the average of the

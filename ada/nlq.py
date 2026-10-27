@@ -1246,6 +1246,10 @@ def _claim_values(
                         continue
                 elif not exact_only and sum(len(word) for word in ordinary) < 3:
                     continue
+                elif not exact_only and all(map(_is_number, words)):
+                    # A number inside a longer value ("2020" in a race's web address) is left
+                    # for the year, a condition or a count.
+                    continue
                 else:
                     found, exact = _values_named(words, vocabulary, exact_only=exact_only)
                 found = [value for value in found if _plain_match(value, reading.question, cued)]
