@@ -287,7 +287,10 @@ each word is claimed, in this order, by:
 6. **Conditions** written around a named column (see below).
 7. **Values** of text columns, written in full (any case). A value in
    capitals that is also a query word ("ALL" as a diagnosis) is the value
-   when typed as the data spells it. "Men", "women", "boys" and "girls" name
+   when typed as the data spells it. A word found only inside free text (a
+   column of titles, mostly unique values of five words or more) picks no
+   rows unless the whole value is typed; beside a category that holds it
+   too ("TCD" in "Trinity College Dublin (TCD)"), the category is meant. "Men", "women", "boys" and "girls" name
    the values of the one column that holds only sexes (Male and Female, M and
    F, besides Other, Unknown or a gender such as Agender or Non-binary;
    `GENDER_VALUES`): "women" is `Gender` = Female. Words for dying ("deaths", "killed", "dead", "fatalities") and for
@@ -358,7 +361,11 @@ each word is claimed, in this order, by:
     shares, groupings and trends use `sum(encounter_count)`, as each row
     holds a count rather than one encounter. When an ID names each row once
     (a tag per cat), the rows are the things, and `n_cats` is a column like
-    any other. With two such columns the question is refused.
+    any other. With two such columns the question is refused. In the same
+    way, "share of all the money" (also funding, spending, revenue, income,
+    investment, budget) weighs each row by the one column of money, named
+    for an amount, cost, commitment, payment and the like; negative amounts
+    stay in the total.
 16. **"missing"**, "null", "blank" or "empty" not attached to a column: a
     question about missing values.
 17. **Column words** ("column", "variable") right after a column's name ("the
