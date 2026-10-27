@@ -111,12 +111,16 @@ AGGREGATION_WORDS: dict[str, Aggregation] = {
     "biggest": "max",
     "greatest": "max",
     "longest": "max",
+    "strongest": "max",
+    "deepest": "max",
     "peak": "max",
     "min": "min",
     "minimum": "min",
     "lowest": "min",
     "smallest": "min",
     "shortest": "min",
+    "weakest": "min",
+    "shallowest": "min",
 }
 
 # Words for the spread of a measure. "std" and "sd" name columns in exported
@@ -158,7 +162,10 @@ SPREAD_AGGREGATIONS = ("std", "var", "iqr", "quantile", "range")
 
 # Words asking for the bottom of a ranking. Each is also a superlative, so
 # SUPERLATIVE_WORDS includes this tuple rather than repeating it.
-ASCENDING_WORDS = ("worst", "bottom", "lowest", "smallest", "least", "fewest", "shortest")
+ASCENDING_WORDS = (
+    "worst", "bottom", "lowest", "smallest", "least", "fewest", "shortest", "quietest", "weakest",
+    "shallowest",
+)
 # Superlatives of temperature, read as the highest or lowest value of the
 # measure, and said so in the answer.
 WARM_WORDS = ("warmest", "hottest")
@@ -167,15 +174,15 @@ ASCENDING_WORDS = (*ASCENDING_WORDS, *COLD_WORDS)
 SUPERLATIVE_WORDS = (
     # "most" ranks from the top, like "highest"; "least" is in ASCENDING_WORDS.
     "best", "top", "leading", "highest", "largest", "biggest", "most", "greatest", "longest",
-    "tallest", "heaviest", *WARM_WORDS,
+    "tallest", "heaviest", "busiest", "strongest", "deepest", *WARM_WORDS,
     *ASCENDING_WORDS,
 )
 DECLINE_WORDS = ("slowest", "declined", "decreased", "dropped", "fell", "shrank")
 ASCENDING_PATTERN = rf"\b({'|'.join((*ASCENDING_WORDS, *DECLINE_WORDS))})\b"
 GROWTH_WORDS = (
     "grew", "grow", "growing", "growth", "changed", "change",
-    "increase", "increased", "decrease", "decreased",
-    "decline", "declined", "dropped", "drop", "shrank", "fell",
+    "increase", "increased", "decrease", "decreased", "rose", "risen", "climbed",
+    "decline", "declined", "dropped", "drop", "shrank", "fell", "fallen",
 )
 TREND_WORDS = ("over time", "trend", "timeline", "history", "trajectory")
 CORRELATION_WORDS = (
@@ -1117,6 +1124,8 @@ class _Reading:
     top_n: str | None = None
     entity: str | None = None
     entity_column: str | None = None
+    #: Plurals the values of several columns share, which name the rows ("characters").
+    nouns: set[str] = field(default_factory=set)
     asks_missing: bool = False
     #: A spread or percentile the question asks for ("standard deviation", "90th percentile").
     spread: Aggregation | None = None
@@ -1262,6 +1271,26 @@ def _vocabulary(dataframe: pd.DataFrame, roles: ColumnRoles) -> _Vocabulary:
             for word in set(words):
                 by_word[word].append(position)
     return _Vocabulary(values=values, by_text=by_text, by_word=by_word)
+
+
+def _value_nouns(vocabulary: _Vocabulary) -> set[str]:
+    """Plural words most values of two or more columns share: "characters" in "Male Characters".
+
+    Such a word names the rows the values describe ("Good Characters", "Living
+    Characters"), not a value of any one column.
+    """
+    columns: dict[str, list[tuple[str, ...]]] = defaultdict(list)
+    for value in vocabulary.values:
+        columns[value.column].append(value.words)
+    sharing: dict[str, int] = defaultdict(int)
+    for words in columns.values():
+        if len(words) < 2:
+            continue
+        counts = Counter(word for value in words for word in set(value))
+        for word, count in counts.items():
+            if len(word) > 3 and word.endswith("s") and count * 2 >= len(words):
+                sharing[word] += 1
+    return {word for word, count in sharing.items() if count >= 2}
 
 
 def _holds(words: tuple[str, ...], run: tuple[str, ...]) -> bool:
@@ -1436,7 +1465,7 @@ def _claim_person_names(reading: _Reading, dataframe: pd.DataFrame) -> None:
 
 def _claim_values(
     reading: _Reading, vocabulary: _Vocabulary, dataframe: pd.DataFrame, *, exact_only: bool,
-    row_noun: str | None = None,
+    row_noun: str | None = None, nouns: set[str] = frozenset(),
 ) -> None:
     """Filter on values of text columns found among the unclaimed words, longest first.
 
@@ -1446,7 +1475,7 @@ def _claim_values(
     members.csv) names the rows: it is neither part of a longer value ("Himalaya
     Expeditions") nor a value at all unless typed as the data spell it ("Member").
     """
-    row_nouns = _word_variants(row_noun) if row_noun else set()
+    row_nouns = (_word_variants(row_noun) if row_noun else set()) | set(nouns)
     for run in _runs(reading, content_only=False):
         index = 0
         while index < len(run):
@@ -1587,22 +1616,34 @@ SEX_WORDS = {
 SEX_VALUES = {
     "male": frozenset({"male", "m", "man", "men"}), "female": frozenset({"female", "f", "woman", "women"}),
 }
+# Values a column of genders may hold besides the sexes: "Agender", "Non-binary", "Prefer not to say".
+GENDER_VALUES = frozenset({
+    "other", "unknown", "intersex", "not stated", "agender", "genderfluid", "gender fluid", "non binary",
+    "nonbinary", "transgender", "bigender", "genderqueer", "prefer not to say", "not specified",
+    "unspecified", "not known",
+})
 
 
-def _claim_sexes(reading: _Reading, vocabulary: _Vocabulary) -> None:
+def _claim_sexes(reading: _Reading, vocabulary: _Vocabulary, nouns: set[str] = frozenset()) -> None:
     """Filter on a column of sexes for "men", "women", "boys" or "girls" ("Gender" with Male and Female).
 
     The column must hold both sexes and nothing but sexes, besides values
-    such as "Other" or "Unknown", so "men" never picks a value of any other column.
+    such as "Other", "Unknown" or "Agender" (GENDER_VALUES), so "men" never
+    picks a value of any other column. A plural every value shares ("Male
+    Characters") is left out of the comparison.
     """
     columns: dict[str, list[_Value]] = defaultdict(list)
     for value in vocabulary.values:
         columns[value.column].append(value)
-    allowed = SEX_VALUES["male"] | SEX_VALUES["female"] | {"other", "unknown", "intersex", "not stated"}
+
+    def spelled(value: _Value) -> str:
+        return " ".join(word for word in value.words if word not in nouns)
+
+    allowed = SEX_VALUES["male"] | SEX_VALUES["female"] | GENDER_VALUES
     sexed = [
         column for column, values in columns.items()
-        if {" ".join(value.words) for value in values} <= allowed
-        and all(any(" ".join(value.words) in SEX_VALUES[side] for value in values) for side in SEX_VALUES)
+        if {spelled(value) for value in values} <= allowed
+        and all(any(spelled(value) in SEX_VALUES[side] for value in values) for side in SEX_VALUES)
     ]
     if len(sexed) != 1:
         return
@@ -1610,13 +1651,59 @@ def _claim_sexes(reading: _Reading, vocabulary: _Vocabulary) -> None:
         side = SEX_WORDS.get(word)
         if side is None:
             continue
-        values = [value for value in columns[sexed[0]] if " ".join(value.words) in SEX_VALUES[side]]
+        values = [value for value in columns[sexed[0]] if spelled(value) in SEX_VALUES[side]]
         _add_filter(reading, values, start)
         reading.claim(start, end)
         reading.notes.append(
             f'Read "{_raw_words(reading.question, [word])}" as {sexed[0]} = '
             f"{_listed([value.raw for value in values])}."
         )
+
+
+# The US states and their postal codes, which a column of states may hold in place of the names.
+US_STATES = {
+    "alabama": "al", "alaska": "ak", "arizona": "az", "arkansas": "ar", "california": "ca",
+    "colorado": "co", "connecticut": "ct", "delaware": "de", "district of columbia": "dc", "florida": "fl",
+    "georgia": "ga", "hawaii": "hi", "idaho": "id", "illinois": "il", "indiana": "in", "iowa": "ia",
+    "kansas": "ks", "kentucky": "ky", "louisiana": "la", "maine": "me", "maryland": "md",
+    "massachusetts": "ma", "michigan": "mi", "minnesota": "mn", "mississippi": "ms", "missouri": "mo",
+    "montana": "mt", "nebraska": "ne", "nevada": "nv", "new hampshire": "nh", "new jersey": "nj",
+    "new mexico": "nm", "new york": "ny", "north carolina": "nc", "north dakota": "nd", "ohio": "oh",
+    "oklahoma": "ok", "oregon": "or", "pennsylvania": "pa", "rhode island": "ri", "south carolina": "sc",
+    "south dakota": "sd", "tennessee": "tn", "texas": "tx", "utah": "ut", "vermont": "vt",
+    "virginia": "va", "washington": "wa", "west virginia": "wv", "wisconsin": "wi", "wyoming": "wy",
+}
+# The fewest postal codes a column must hold, and nothing else, to be read as a column of states.
+STATE_CODES_MIN = 10
+
+
+def _claim_us_states(reading: _Reading, vocabulary: _Vocabulary) -> None:
+    """Filter on a state's postal code for its name: "Texas" keeps state = tx.
+
+    Only a column whose values are all postal codes, at least STATE_CODES_MIN
+    of them, is read this way; a column that spells the names out matches
+    them as values.
+    """
+    codes = set(US_STATES.values())
+    columns: dict[str, list[_Value]] = defaultdict(list)
+    for value in vocabulary.values:
+        columns[value.column].append(value)
+    held = [
+        column for column, values in columns.items()
+        if len(values) >= STATE_CODES_MIN and all(" ".join(value.words) in codes for value in values)
+    ]
+    if len(held) != 1:
+        return
+    names = sorted(US_STATES, key=len, reverse=True)
+    for name in names:
+        for match in re.finditer(rf"\b{name}\b", reading.remaining):
+            values = [value for value in columns[held[0]] if " ".join(value.words) == US_STATES[name]]
+            if not values:
+                continue
+            _add_filter(reading, values, match.start())
+            reading.claim(match.start(), match.end())
+            reading.notes.append(f'Read "{_raw_words(reading.question, name.split())}" as {held[0]} = '
+                                 f"{values[0].raw}.")
 
 
 # Words for dying and for surviving. A value spelled with one of them ("Died", "Deceased Characters")
@@ -1627,6 +1714,26 @@ OUTCOME_WORDS = {
     "survived": frozenset({"survived", "survive", "survivor", "survivors", "survival", "alive"}),
 }
 YES_NO_VALUES = {"yes": frozenset({"yes", "y", "true", "1"}), "no": frozenset({"no", "n", "false", "0"})}
+
+
+def _outcome_columns(reading: _Reading, dataframe: pd.DataFrame) -> None:
+    """Name a column of numbers called by a word for dying or surviving: "deaths" is fatal.
+
+    Only when exactly one column of numbers has such a word for its whole name,
+    and the question names no column with that word.
+    """
+    sides = {word: side for side, words in OUTCOME_WORDS.items() for word in words}
+    for start, end, word in _tokens(reading.original):
+        side = sides.get(word)
+        if side is None or any(low <= start < high for low, high in reading.spans.values()):
+            continue
+        named = [
+            column for column in dataframe.columns
+            if is_numeric_dtype(dataframe[column]) and sides.get(_norm(normalized_name(str(column)))) == side
+        ]
+        if len(named) == 1 and named[0] not in reading.spans:
+            reading.spans[named[0]] = (start, end)
+            reading.notes.append(f'Read "{_raw_words(reading.question, [word])}" as {named[0]}.')
 
 
 def _claim_outcomes(reading: _Reading, vocabulary: _Vocabulary) -> None:
@@ -2556,11 +2663,15 @@ def _claim_row_label(reading: _Reading, roles: ColumnRoles) -> None:
         return
 
 
-def _claim_entity(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
+def _claim_entity(
+    reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles, nouns: set[str] = frozenset()
+) -> None:
     """Read a noun for the rows ("patients", "birds") as what is counted.
 
     The file's own noun for its rows (``roles.row_noun``, "penguins" in
     penguins.csv) is one wherever it stands: "average body mass of Gentoo penguins".
+    So is a plural the values of several columns share (``nouns``, "characters"
+    in "Male Characters" and "Good Characters").
 
     A plural that names nothing else, right before "with" or "where" and a
     condition, names the rows too: "average strength for mixes with admixture above 0".
@@ -2576,7 +2687,7 @@ def _claim_entity(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles
         described = plural and re.match(
             r"\s+(?:with|where|whose|having|that\s+have|which\s+have)\s+\S", reading.original[end:]
         )
-        rows = word == roles.row_noun
+        rows = word == roles.row_noun or word in nouns
         # In a table of counts the first plural noun left over names the cases counted: "female
         # applicants". A second one ("people who were cyclists") is a word the table may not hold.
         cases = plural and counts and reading.entity is None
@@ -3034,6 +3145,7 @@ def _read_question(
             column: span for column, span in reading.spans.items() if q[span[0]:span[1]] != roles.row_noun
         }
     _unit_word_names_rows(reading, dataframe, roles)
+    _outcome_columns(reading, dataframe)
     for start, end in reading.spans.values():
         reading.claim(start, end, keep_text=True)
     _reread_aggregation_names(reading)
@@ -3049,20 +3161,22 @@ def _read_question(
     _claim_ordinal_columns(reading, dataframe, roles)
     _claim_conditions(reading, list(reading.spans), dataframe, roles, vocabulary)
     _claim_person_names(reading, dataframe)
-    _claim_values(reading, vocabulary, dataframe, exact_only=True, row_noun=roles.row_noun)
-    _claim_sexes(reading, vocabulary)
+    nouns = reading.nouns = _value_nouns(vocabulary)
+    _claim_values(reading, vocabulary, dataframe, exact_only=True, row_noun=roles.row_noun, nouns=nouns)
+    _claim_sexes(reading, vocabulary, nouns)
     _claim_outcomes(reading, vocabulary)
     _claim_demonyms(reading, vocabulary)
+    _claim_us_states(reading, vocabulary)
     _claim_analysis_words(reading, dataframe, roles)
     _claim_rate(reading)
     partial = _claim_partial_names(reading, dataframe, roles)
     _claim_conditions(reading, partial, dataframe, roles, vocabulary)
-    _claim_values(reading, vocabulary, dataframe, exact_only=False, row_noun=roles.row_noun)
+    _claim_values(reading, vocabulary, dataframe, exact_only=False, row_noun=roles.row_noun, nouns=nouns)
     _claim_codes(reading, dataframe, roles)
     _claim_unit_conditions(reading, dataframe, roles)
     _claim_numbers(reading, dataframe, roles)
     _claim_row_label(reading, roles)
-    _claim_entity(reading, dataframe, roles)
+    _claim_entity(reading, dataframe, roles, nouns)
     for start, end, word in _tokens(reading.remaining):
         if word in MISSING_WORDS:
             reading.asks_missing = True
@@ -3585,14 +3699,22 @@ def _plan_from_reading(reading: _Reading, dataframe: pd.DataFrame, roles: Column
         rank_dimension = dimension or (roles.dimension if wants_ranked_growth else None)
         ascending = bool(re.search(ASCENDING_PATTERN, intent_text))
         top_n = int(top_match.group(2)) if top_match else None
+        if wants_count and not measure:
+            # "the number of earthquakes rose": with no measure named, the change is in the row count.
+            return QueryPlan(
+                intent="growth", aggregation="count", dimension=rank_dimension, ascending=ascending,
+                top_n=top_n, **{**base, "measure": None},
+            )
         return QueryPlan(
             intent="growth", aggregation=default_aggregation, dimension=rank_dimension,
             ascending=ascending, top_n=top_n, **base,
         )
 
     if period and superlative:
-        # "which month had the most rows" ranks row counts.
-        period_measure = None if not measure and re.search(r"\brows\b", intent_text) else base["measure"]
+        # "which month had the most rows" and "which day had the most earthquakes" rank row counts: with
+        # no measure named, "most" counts the rows rather than ranking a measure the question never names.
+        counts = re.search(r"\b(?:rows|most|fewest|busiest|quietest)\b", intent_text)
+        period_measure = None if not measure and counts else base["measure"]
         per_period = metric_for(period_measure, roles).aggregation
         # Periods come from build_trend, which combines with the measure's default,
         # so "which month had the highest average revenue" is refused like a trend.
@@ -4039,7 +4161,9 @@ def _count_plan(
         )
         return None
     unit = repeated_unit(dataframe, roles) if reading.entity and not reading.entity_column else None
-    if unit and reading.entity not in ROW_NOUNS and reading.entity != roles.row_noun:
+    if unit and reading.entity not in ROW_NOUNS and reading.entity != roles.row_noun and (
+        reading.entity not in reading.nouns
+    ):
         # Loblolly's 84 rows are 14 trees measured at 6 ages; Portal's rows are captures at 24 plots. The
         # data can't say which the noun means.
         each = dataframe[unit].value_counts()
@@ -7792,7 +7916,9 @@ def _execute_growth(
     assert roles.date is not None
     measure = plan.measure
     scoped_roles = _scoped_roles(roles, measure, plan.dimension)
-    series = build_trend(working, scoped_roles, frequency=plan.grain)
+    # Two years named ("from 2023 to 2024") are compared as whole years.
+    grain = plan.grain or ("Y" if _named_years(plan) and not plan.dimension else None)
+    series = build_trend(working, scoped_roles, frequency=grain)
     trend = series.frame
     if len(trend) < 2:
         return QueryAnswer(
@@ -7896,6 +8022,12 @@ def _execute_growth(
         )
 
     previous, current = float(trend.iloc[-2]["Value"]), float(trend.iloc[-1]["Value"])
+    prior, latest = "previous period", "latest"
+    named = _named_years(plan)
+    if named and (trend.iloc[0]["Period"].year, trend.iloc[-1]["Period"].year) == named:
+        # "between 1982 and 1988" compares the two years named, not the last two in the range.
+        previous, current = float(trend.iloc[0]["Value"]), float(trend.iloc[-1]["Value"])
+        prior, latest = str(named[0]), str(named[1])
     unit = _unit(measure, scoped_roles)
     column = working[measure].dropna() if measure else None
     size = format_change(previous, current, measure, unit, column)
@@ -7908,16 +8040,22 @@ def _execute_growth(
         )
     direction = "up" if current >= previous else "down"
     start, end = format_values_apart(previous, current, column=measure)
+    versus = "the prior period" if prior == "previous period" else prior
     answer = (
-        f"{measure or 'Records'}{_phrase(applied)} is {direction} {size} versus the prior "
-        f"period ({start} → {end})."
+        f"{measure or 'Records'}{_phrase(applied)} is {direction} {size} versus {versus} "
+        f"({start} → {end})."
     )
+    # format_change gave a size, so the base is not zero.
+    relative = ("change_percent", (current - previous) / abs(previous) * 100)
     if unit in ("rate", "level"):
-        formula = f"latest − previous period average{scope}"
+        formula = f"{latest} − {prior} average{scope}"
         moved = ("change", current - previous)
+        # A level that rises by a percent ("deaths fell by 19%") is a relative change; a rate's is in points.
+        extra = (relative,) if unit == "level" else ()
     else:
-        formula = f"(latest − previous) ÷ |previous| on period {'totals' if measure else 'counts'}{scope}"
-        moved = ("change_percent", (current - previous) / abs(previous) * 100)
+        formula = f"({latest} − {prior}) ÷ |{prior}| on period {'totals' if measure else 'counts'}{scope}"
+        moved = relative
+        extra = ()
     return QueryAnswer(
         question="",
         plan=plan,
@@ -7926,8 +8064,18 @@ def _execute_growth(
         table=trend,
         chart="line",
         value=_as_number(moved[1]),
-        figures=(moved, ("previous", previous), ("latest", current)),
+        figures=(moved, *extra, ("previous", previous), ("latest", current)),
     )
+
+
+def _named_years(plan: QueryPlan) -> tuple[int, int] | None:
+    """The first and last year of a range the question names: (1982, 1988) for "between 1982 and 1988"."""
+    years = [item for item in plan.conditions if item.part == "year"]
+    low = next((item.value for item in years if item.operator == ">="), None)
+    high = next((item.value for item in years if item.operator == "<="), None)
+    if low is None or high is None or not float(low).is_integer() or not float(high).is_integer():
+        return None
+    return int(low), int(high)
 
 
 def _ranked_move(change: float, ascending: bool) -> str:

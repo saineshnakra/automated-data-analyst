@@ -112,7 +112,33 @@
   counted, and a share stated after what it counts is read the other way
   round.
 - Words for dying and surviving ("deaths", "killed", "survivors") name the
-  value or yes/no column that records the outcome.
+  value or yes/no column that records the outcome, or the one column of
+  numbers named for it ("deaths" is `fatal`).
+- Fixed wrong verdict: a change "between 1982 and 1988" compared the last
+  two years of the range (1987 and 1988); it now compares the two years
+  named. A level's change is given as a percent too, "fell by about 19%" is
+  compared with the size of the fall, and "rose", "risen" and "climbed" ask
+  for a change.
+- Peaks: "Cocaine use peaked at 4.9% among 20-year-olds", "California had
+  more traffic deaths than any other state in 1988, with 5,390" and "had its
+  busiest year on record in 2024, with 1,315 earthquakes" are verified only
+  when the group named gives the highest value; a peak elsewhere fails and
+  says where it is.
+- Fixed wrong answer: "which day had the most earthquakes" ranked days by the
+  average of a column the question never named; with no measure named,
+  "most", "fewest", "busiest" and "quietest" count rows. "strongest",
+  "deepest", "weakest" and "shallowest" ask for the highest or lowest value.
+- "rose by about half" and "fell by a third" are changes of 50% and 33%, a
+  change in "the number of" rows counts rows, two years named are compared as
+  whole years, and the years of a range ("from 2023 to 2024") are never the
+  number claimed.
+- Words of the table's file or folder name ("Marvel's" in
+  `marvel-characters/`) name the whole table and pick no rows; a base the
+  claim spans ("across the 48 states") is checked against the distinct
+  values of the column it names; US state names pick postal codes ("Texas"
+  is `tx`); a plural every value shares ("Male Characters", "Good
+  Characters") names the rows; and a column of genders that also holds
+  values such as Agender or Non-binary reads "men" and "women".
 - Fixed silent drop: in a table of counts every plural that named nothing
   was taken for the rows, so "Cyclists made up 15% of the people killed"
   ignored "Cyclists". Only the first one is now.
