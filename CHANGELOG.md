@@ -67,6 +67,66 @@
   had 5.2 million residents" on a table of counties) and a column guessed
   from part of a word ("seedlings" for `Seed`) are no longer compared with
   the claim; a bound is never read in thousands or millions.
+- More fixed wrong verdicts, found on data ADA had not seen: "55 of the cats
+  were neutered" counts the cats (the rows), not the mean of `n_cats`; "the
+  fourth quarter of 2020" is a period, not 25%; squirrel IDs such as
+  `37F-PM-1014-03` are no longer read as numbers in 42 units; and a claim
+  about a column of medians (`median_weekly_earn`) that matches several rows
+  gets `missing_context` instead of an average of medians.
+- "At 14, girls averaged 24.1 mm" reads "At 14" as `age` = 14, the one column
+  of few values that holds 14, and "the fourth quarter" as `quarter` = 4.
+- "high satisfaction", "a high level of contact" and "highly satisfied" pick
+  the one of several columns holding High that is named beside it; "Belgian"
+  and "French" pick Belgium and France in a nationality column; "the 2010s"
+  is 2010 to 2019; "won 20 times" counts rows; "their" and "its" are grammar.
+- "Almost half of the squirrels were seen foraging" is the share of distinct
+  squirrel IDs (a count of distinct values under a filter now gives its
+  share), "seen" before a yes/no column keeps its yes rows, and "Owners
+  estimated that" is set aside. Fixed wrong verdict: a percent claim read as
+  a count with no share was compared with the count and failed; it now gets
+  `missing_context`. Fixed wrong verdict: "Cars from USA averaged 18.6
+  dollars" was read as a count of rows, because a plural after the number
+  that names no column counts rows; an average or an amount of money no
+  longer does.
+- Claims with a second number that is part of the question are read: a day
+  written out ("207 tornadoes on April 27, 2011", which also filters
+  questions to that day), a rating scale ("6.5 out of 10") and a base,
+  which is checked too ("34 of the 93 cars", "The 93 models came from 32
+  manufacturers", "Of the 5,144 Danes in the study,"). "Seven in ten" and
+  "1 in 20" are shares; "came from 32 manufacturers" counts distinct
+  manufacturers; "reached", "surveyed" and "came from" are grammar.
+- Fixed wrong verdict: "John McCain was a guest on the show 11 times" failed
+  because the filter kept "John McCain" (5 rows) and not "Sen. John McCain"
+  (6 more). A claim whose filter value, a name in a long list, the column
+  also holds inside a longer value now gets `missing_context` naming the
+  other spellings.
+- Ages: "30- to 34-year-olds", "aged 50 and over", "people 65 and older" and
+  "20-year-olds" keep those ages, on a column of ages or of age bands ("50-64"
+  and "65+" make up "50 and over"); ages that cut a band in two are refused.
+  "Among victims aged 50 and over, 9.5% died" is the share of those victims.
+- Fixed wrong verdicts on shares of a group: "79% of the victims who died
+  were men" and "4.95% of male victims died" were divided by every victim,
+  and "Men were 79% of the victims who died" by the men. The base now ends
+  at the sentence's own verb, a past tense with no verb before it is what is
+  counted, and a share stated after what it counts is read the other way
+  round.
+- Words for dying and surviving ("deaths", "killed", "survivors") name the
+  value or yes/no column that records the outcome.
+- Fixed silent drop: in a table of counts every plural that named nothing
+  was taken for the rows, so "Cyclists made up 15% of the people killed"
+  ignored "Cyclists". Only the first one is now.
+- Fixed wrong answers: a table of counts with one category and an outcome
+  (age, result, Freq) was read as a long table and kept only its commonest
+  outcome; and the word after a percent was taken as its unit, so "9.5%
+  died" lost what it counts.
+- The column that numbers the units (a `Rat` column of 16 rats) is never
+  averaged or ranked, and the word for the units names the rows when the
+  question names a measure too: "The heaviest rat reached 628 grams" is the
+  largest weight, where before it was the largest rat number.
+- "The distance increased by about 0.66 mm per year of age" is the slope of
+  distance on age: a column named for a quantity (age, dose, time) at a few
+  levels still correlates, and with several rows per subject both slopes of
+  the subjects' own lines are given.
 
 ### Answers
 

@@ -48,7 +48,7 @@ from typing import Any, Literal
 from .decisions import Decision, checked_choices
 from .file_io import SUPPORTED_SUFFIXES as READABLE
 from .formatting import counted, list_names, normalized_name
-from .nlq import QueryAnswer
+from .nlq import AGE_PHRASE, DAY_PATTERN, QueryAnswer
 from .sources import Source
 
 #: Version of the ``ClaimCheck.to_dict`` layout. Bumped when a key changes meaning.
@@ -96,7 +96,7 @@ PREDICATE_CUES = frozenset({
     "averaging", "totalled", "totaled", "totals", "totalling", "totaling", "reached", "hit", "by",
     "at", "of", "stood", "came", "amounted", "numbered", "weighed", "weighs", "weigh", "measured",
     "rose", "fell", "grew", "dropped", "increased", "decreased", "paid", "made", "had", "has", "have",
-    "scored", "scores", "earned", "earns", "collected", "recorded",
+    "scored", "scores", "earned", "earns", "collected", "recorded", "reaches",
 })
 # Adjectives after a number that name the quantity: "6,657 metres high" is a height.
 ADJECTIVE_NOUNS = {
@@ -142,6 +142,8 @@ SLOPE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 FALLING_VERBS = ("fall", "fell", "drop", "decreas", "declin", "goes down", "went down")
+# Units of a slope's column besides those in UNITS: "per year of age", "per unit of dose".
+PER_UNIT_WORDS = frozenset({"year", "month", "week", "unit", "point", "level"})
 # Fractions in words: "about a quarter of", "more than half of", "two thirds of".
 FRACTION_PATTERN = re.compile(
     r"\b(?:(?P<qualifier>about|roughly|around|approximately|nearly|almost|just\s+over|just\s+under|over|"
@@ -161,11 +163,66 @@ NUMBER_WORDS = {
     "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
 }
 LEFT_OUT_NOTE = "Read the claim without"
-# A lead that names a claim's base: "Of the 4,526 applicants,".
-BASE_LEAD = re.compile(
-    r"^\s*(?:of|out\s+of)\s+(?:the\s+|all\s+)?(?P<count>\d{1,3}(?:,\d{3})+|\d+)\s+(?P<noun>[A-Za-z]+(?:\s[A-Za-z]+)?),\s*",
+# A lead naming the group a share is of, before the share: "Among victims aged 50 and over, 9.5% died".
+AMONG_LEAD = re.compile(
+    r"^\s*among\s+(?P<base>[^,]+?),\s*(?P<share>(?:(?:about|nearly|almost|roughly|around|only|just|over|"
+    r"under|more\s+than|less\s+than)\s+)?\d[\d,]*(?:\.\d+)?\s*%)\s+(?P<rest>.+)$",
     re.IGNORECASE,
 )
+# A share stated after what it counts: "Men were 79% of the victims who died", "Women made up 21% of
+# the riders". The share is of what follows "of".
+SUBJECT_SHARE = re.compile(
+    r"^\s*(?P<part>[A-Za-z'-]+(?:\s+[A-Za-z'-]+){0,3}?)\s+(?P<verb>were|was|are|is|made\s+up|make\s+up|"
+    r"makes\s+up|accounted\s+for|account\s+for|accounts\s+for|represented|represent|represents|"
+    r"comprised|comprise|comprises|formed|form|forms)\s+"
+    r"(?P<share>(?:(?:about|nearly|almost|roughly|around|only|just|over|under|more\s+than|less\s+than)\s+)?"
+    r"\d[\d,]*(?:\.\d+)?\s*%)\s+of\s+(?P<rest>.+?)[.!?]?\s*$",
+    re.IGNORECASE,
+)
+# Words in a subject that make it a measure rather than a group: "The tax rate was 45% of ...".
+MEASURE_SUBJECTS = frozenset({
+    "rate", "average", "mean", "median", "share", "percentage", "proportion", "growth", "increase",
+    "decrease", "change", "total", "sum", "income", "tax", "cost", "price", "value", "level", "number",
+})
+# A clause that says who reports the claim: "Owners estimated that", "The survey found that".
+REPORTING_CLAUSE = re.compile(
+    r"^\s*(?:[A-Za-z']+\s+){1,4}?(?:estimated|estimates|estimate|reported|reports|report|found|finds|find|"
+    r"said|says|say|showed|shows|show|stated|states|noted|notes|concluded|concludes|wrote|writes|"
+    r"claimed|claims)\s+that\s+",
+    re.IGNORECASE,
+)
+# "55 of the cats": a count of things the table's rows may be.
+OF_THE = re.compile(r"\s*of\s+(?:the|these|those|all(?:\s+the)?)\s+([A-Za-z]+)\b", re.IGNORECASE)
+# A lead that names a claim's base: "Of the 4,526 applicants,", "Of the 5,144 Danes in the study,".
+BASE_LEAD = re.compile(
+    r"^\s*(?:of|out\s+of)\s+(?:the\s+|all\s+)?(?P<count>\d{1,3}(?:,\d{3})+|\d+)\s+"
+    r"(?P<noun>[A-Za-z]+(?:\s[\w']+){0,10}),\s*",
+    re.IGNORECASE,
+)
+# A count of a base: "34 of the 93 cars had no airbags", read as "Of the 93 cars, 34 cars had ...".
+PART_OF_BASE = re.compile(
+    r"^(?P<lead>\s*(?:(?:about|nearly|almost|only|just|over|more\s+than|fewer\s+than|less\s+than)\s+)?)"
+    r"(?P<part>\d{1,3}(?:,\d{3})+|\d+)\s+(?:of|out\s+of)\s+(?:the\s+|all\s+)?"
+    r"(?P<count>\d{1,3}(?:,\d{3})+|\d+)\s+(?P<noun>[A-Za-z]+)\b",
+    re.IGNORECASE,
+)
+# A base opening the claim: "The 93 models came from 28 manufacturers".
+OPENING_BASE = re.compile(
+    r"^\s*(?:the|all|these|those)\s+(?P<count>\d{1,3}(?:,\d{3})+|\d+)\s+(?P<noun>[A-Za-z]+)\b",
+    re.IGNORECASE,
+)
+# "seven in ten", "one in five", "1 in 20": a share written as a count in a total.
+IN_FRACTION = re.compile(
+    r"\b(?:(?P<qualifier>about|roughly|around|approximately|nearly|almost|just\s+over|just\s+under|over|"
+    r"under|more\s+than|less\s+than|fewer\s+than|at\s+least|at\s+most)\s+)?"
+    r"(?P<top>one|two|three|four|five|six|seven|eight|nine|(?<![\d.,])\d{1,2})\s+in\s+"
+    r"(?P<bottom>two|three|four|five|six|seven|eight|nine|ten|\d{1,3})\b(?![.,]\d)",
+    re.IGNORECASE,
+)
+# Units of time a number measures in, never things it counts: "12.64 minutes" with a minute column.
+TIME_PLURALS = frozenset({"seconds", "minutes", "hours", "days", "weeks", "months", "years", "decades"})
+# Units of money, which a number measures rather than counts: "averaged 18.6 dollars".
+MONEY_WORDS = frozenset({"dollars", "euros", "pounds", "cents", "pence", "yen", "rupees", "francs", "reais"})
 # Plurals without an s, which count things as "344 penguins" does: "1,835 women applied".
 IRREGULAR_PLURALS = frozenset({"men", "women", "people", "children", "persons", "mice", "geese", "teeth"})
 # Words a claim is never read without, as leaving them out changes what it says.
@@ -481,6 +538,8 @@ def _candidates(claim: str, columns: list[str]) -> list[_Candidate]:
     """
     found = []
     column_words = _column_words(columns)
+    days = [day.span() for day in DAY_PATTERN.finditer(claim)] + [
+        age.span() for age in AGE_PHRASE.finditer(claim)]
     for match in NUMBER_PATTERN.finditer(claim):
         start = match.start()
         before = claim[:start].rstrip()
@@ -505,6 +564,10 @@ def _candidates(claim: str, columns: list[str]) -> list[_Candidate]:
         filter_like = bool(previous) and cue is None and (
             previous.group(1).lower() in column_words or previous.group(1).lower() in POINT_WORDS
         )
+        # "At 14, girls averaged 25.1 mm": a number opening the claim after "At" picks rows.
+        filter_like = filter_like or bool(
+            re.fullmatch(r"\s*at\s*", before, re.IGNORECASE) and re.match(r"\s*,", claim[match.end():])
+        )
         # "cars with 4 cylinders": a number between "with" and a column's name picks rows.
         following = re.match(r"\s*([A-Za-z]+)", claim[match.end():])
         filter_like = filter_like or bool(
@@ -512,6 +575,10 @@ def _candidates(claim: str, columns: list[str]) -> list[_Candidate]:
             and any(_abbreviates(following.group(1).lower(), part) for part in column_words)
         )
         ordinal = plain and re.match(r"(?:st|nd|rd|th)\b", claim[match.end():], re.IGNORECASE) is not None
+        # "on May 22, 2011" and "aged 50 and over" pick rows; "6.5 out of 10" gives the scale.
+        filter_like = filter_like or any(low <= start < high for low, high in days) or bool(
+            re.search(r"\bout\s+of\s*$", before, re.IGNORECASE)
+        )
         found.append(
             _Candidate(match, qualifier, qualifier_start, cue, cue_start, year_like, filter_like, ordinal)
         )
@@ -575,12 +642,29 @@ def _worded_number(claim: str) -> tuple[str, Any] | None:
     into the words' own interval), or None when the claim has none.
     """
     fraction = FRACTION_PATTERN.search(claim)
+    ordinal = fraction and re.search(r"\b(?:first|second|third|fourth|last|final|1st|2nd|3rd|4th)\s+$",
+                                     claim[:fraction.start("part")], re.IGNORECASE)
+    if fraction and (ordinal or not (fraction.group("count") or fraction.group("part").lower() == "half")):
+        # "the fourth quarter of 2020" and "a third quarter" are periods; a fraction is "a quarter of".
+        fraction = None
+    value = None
     if fraction:
         count = COUNT_WORDS.get((fraction.group("count") or "a").lower(), 1)
         bottom = FRACTION_PARTS[fraction.group("part").lower()]
-        if count >= bottom:
+        value = count / bottom if count < bottom else None
+    elif (fraction := IN_FRACTION.search(claim)):
+        # "seven in ten of the people surveyed": a share, as "seven tenths" would be.
+        words = {**NUMBER_WORDS, "one": 1}
+        top, bottom = (int(words.get(part.lower(), part)) if not part.isdigit() else int(part)
+                       for part in (fraction.group("top"), fraction.group("bottom")))
+        value = top / bottom if 0 < top < bottom else None
+        if value is not None and bottom > 10:
+            # "1 in 20" is 5%, read with a percent's own rounding.
+            return f"{claim[:fraction.start()]}{fraction.group('qualifier') or ''} {value * 100:g}%" \
+                   f"{claim[fraction.end():]}".replace("  ", " "), lambda number: number
+    if fraction:
+        if value is None:
             return None
-        value = count / bottom
         low, high = _fraction_interval(value)
         qualifier = re.sub(r"\s+", " ", (fraction.group("qualifier") or "").lower())
         kind = next((kind for phrase, kind in QUALIFIERS if phrase == qualifier), None)
@@ -627,6 +711,24 @@ def read_claim(
     check compares. A fraction or a whole number in words ("about a quarter
     of", "Seventeen cases") is read as its number.
     """
+    # "6.5 out of 10": the scale says what the number is out of, not a second number.
+    claim = re.sub(r"(\d)\s+out\s+of\s+(?:10|5|100)\b", r"\1", claim)
+    among = AMONG_LEAD.match(claim)
+    if among:
+        # "Among victims aged 50 and over, 9.5% died" is a share of those victims, and so is "Among
+        # victims who died, 79% were men".
+        joined = "" if re.match(r"(?:were|was|are|is|had|have|has)\b", among.group("rest"), re.I) else "who "
+        rewritten = f"{among.group('share')} of {among.group('base')} {joined}{among.group('rest')}"
+        return read_claim(rewritten, columns, row_noun)
+    subject = SUBJECT_SHARE.match(claim)
+    if subject and not MEASURE_SUBJECTS & {word.lower() for word in subject.group("part").split()}:
+        # "Men were 79% of the victims who died" is a share of those victims.
+        rewritten = f"{subject.group('share')} of {subject.group('rest')} were {subject.group('part')}"
+        return read_claim(rewritten, columns, row_noun)
+    reported = REPORTING_CLAUSE.match(claim)
+    if reported:
+        # "Owners estimated that their cats caught 3.7 prey": who said it is not part of what is checked.
+        return read_claim(claim[reported.end():], columns, row_noun)
     worded = _worded_number(claim)
     if worded:
         question, number, problem = read_claim(worded[0], columns, row_noun)
@@ -641,9 +743,10 @@ def read_claim(
             what = re.sub(r"^(?:the|a|an)\s+", "", what.strip(), flags=re.IGNORECASE)
             # "per mm of flipper length" is per unit of flipper length, when those words name a column.
             measured = re.match(r"([A-Za-z]+)\s+of\s+(.+)", per)
-            if measured and measured.group(1).lower() in UNITS and set(_words(measured.group(2))) & (
-                _column_words(columns)
-            ):
+            unit_word = measured.group(1).lower() if measured else ""
+            if measured and (unit_word in UNITS or unit_word in PER_UNIT_WORDS) and set(
+                _words(measured.group(2))
+            ) & _column_words(columns):
                 per = measured.group(2)
             return f"correlation between {per} and {what}", number, ""
     candidates = _candidates(claim, columns)
@@ -663,6 +766,9 @@ def read_claim(
             "check them one at a time."
         )
     unit, unit_end = _unit_after(claim, chosen.match.end(), columns, row_noun)
+    if chosen.match.group("percent"):
+        # A percent is its own unit: in "9.5% died" the verb says what is counted.
+        unit, unit_end = None, chosen.match.end()
     averaged = re.search(r"\b(?:average|averages|mean|per)\b", claim, re.IGNORECASE)
     if chosen.cue in TALLY_VERBS and not averaged and not (unit and unit.split()[0].lower() in UNITS):
         written = claim[chosen.qualifier_start:chosen.match.end()]
@@ -682,6 +788,32 @@ def read_claim(
             following.group(1).lower().endswith("s") or following.group(1).lower() in IRREGULAR_PLURALS
         ))
     )
+    # "won the Tour 20 times" counts the rows the rest of the claim picks.
+    times = re.match(r"\s*times\b", claim[chosen.match.end():], re.IGNORECASE)
+    if times and not chosen.match.group("percent"):
+        rest = f"{claim[:chosen.qualifier_start]} {claim[chosen.match.end() + times.end():]}"
+        rest = re.sub(r"\s+", " ", rest).strip(" .,;:!?")
+        written = claim[chosen.qualifier_start:chosen.match.end()]
+        number = claimed_number(written, chosen.match, chosen.qualifier, None)
+        return f"how many rows {rest}", number, ""
+    # "The models came from 28 manufacturers": a plural that names a column counts its distinct values.
+    plural = following.group(1).lower() if following else ""
+    singulars = {plural[:-1], plural[:-2] if plural.endswith("es") else "", f"{plural[:-3]}y"}
+    names = {normalized_name(str(column)) for column in columns}
+    measured = plural in UNITS or plural in TIME_PLURALS or re.search(
+        r"\b(?:average|averages|averaged|mean|median|total|per)\b", claim, re.IGNORECASE)
+    if plural.endswith("s") and not chosen.match.group("percent") and not measured and singulars & names:
+        rest = f"{claim[:chosen.qualifier_start]} {claim[chosen.match.end() + following.end(1):]}"
+        rest = re.sub(r"\s+", " ", rest).strip(" .,;:!?")
+        return f"how many distinct {plural} {rest}", replace(number, unit=None), ""
+    # "55 of the cats were neutered" counts the cats that were.
+    of_the = OF_THE.match(claim[chosen.match.end():])
+    noun = of_the.group(1).lower() if of_the else ""
+    if of_the and not lead and (noun.endswith("s") or noun in IRREGULAR_PLURALS):
+        rest = re.sub(r"\s+", " ", claim[chosen.match.end() + of_the.end():]).strip(" .,;:!?")
+        written = claim[chosen.qualifier_start:chosen.match.end()]
+        number = claimed_number(written, chosen.match, chosen.qualifier, None)
+        return f"how many {of_the.group(1)} {rest}", number, ""
     if counted and re.fullmatch(r"(?:there\s+(?:are|were|is|was))?", lead, flags=re.IGNORECASE):
         rest = re.sub(r"\s+", " ", claim[chosen.match.end():]).strip(" .,;:!?")
         written = claim[chosen.qualifier_start:chosen.match.end()]
@@ -689,7 +821,7 @@ def read_claim(
         return f"how many {rest}", number, ""
     start = chosen.cue_start if chosen.cue in AGGREGATION_CUES or chosen.cue in TALLY_VERBS or chosen.cue in {
         "is", "was", "were", "are", "be", "been", "equals", "equalled", "equaled", "stood", "amounted",
-        "came", "numbered", "at", "by", "of",
+        "came", "numbered", "at", "by", "of", "reached", "reaches",
     } else chosen.qualifier_start
     before, after = claim[:start], claim[unit_end:]
     adjective = re.match(r"\s*([A-Za-z]+)", after)
@@ -708,6 +840,9 @@ def read_claim(
     question = re.sub(r"\s+(?:is|was|were|are|of|at|by)$", "", question, flags=re.IGNORECASE)
     if not question:
         return None, number, "The claim says nothing about what the number measures."
+    if number.percent and re.match(r"of\s", question, re.IGNORECASE):
+        # "9.5% of victims aged 50 and over who died" asks for a share of those victims.
+        question = f"share {question}"
     return question, number, ""
 
 
@@ -829,7 +964,8 @@ def _comparable(answer: QueryAnswer, number: ClaimedNumber) -> tuple[float | Non
     notes: list[str] = []
     if number.percent:
         if "share_percent" in figures:
-            notes.append("compared with the share of rows, as a percentage")
+            of = f"distinct {answer.plan.count_column} values" if answer.plan.count_column else "rows"
+            notes.append(f"compared with the share of {of}, as a percentage")
             return figures["share_percent"], notes
         if "change_percent" in figures:
             return figures["change_percent"], notes
@@ -1054,9 +1190,8 @@ def check_claim(
         asked = question
     else:
         # "Of the 4,526 applicants, 38.8% were admitted": the lead names the base, checked below.
-        lead = BASE_LEAD.match(text)
-        asked, number, problem = read_claim(text[lead.end():] if lead else text, columns,
-                                            analysis.roles.row_noun)
+        body, base = _based(text)
+        asked, number, problem = read_claim(body, columns, analysis.roles.row_noun)
         if problem:
             reason = "unsupported_analysis" if "more than one number" in problem else "missing_context"
             return ClaimCheck(
@@ -1069,20 +1204,55 @@ def check_claim(
     without = next((item for item in check.assumptions if item.startswith(LEFT_OUT_NOTE)), None)
     if without:
         check = replace(check, words_left_out=tuple(re.findall(r'"([^"]+)"', without)))
-    if question is None and (lead := BASE_LEAD.match(text)) and check.answer is not None:
-        return _checked_base(check, lead)
+    if question is None and (base := _based(text)[1]) and check.answer is not None:
+        return _checked_base(check, *base)
     return check
 
 
-def _checked_base(check: ClaimCheck, lead: re.Match) -> ClaimCheck:
-    """A claim whose lead names its base ("Of the 4,526 applicants"), with the base checked too."""
-    stated = float(lead.group("count").replace(",", ""))
-    named = f"{lead.group('count')} {lead.group('noun')}"
-    base = dict(check.answer.figures).get("denominator") if check.answer is not None else None
+def _share_question(asked: str) -> str:
+    """The question asked as a share, with one "of": "share of victims ..." for "of victims ..."."""
+    return f"share {asked}" if re.match(r"of\s", asked, re.IGNORECASE) else f"share of {asked}"
+
+
+def _based(text: str) -> tuple[str, tuple[str, str] | None]:
+    """The claim without the base it names, and that base as (count, noun), or None.
+
+    "Of the 4,526 applicants, 38.8% were admitted" and "34 of the 93 cars had no
+    airbags" name 4,526 applicants and 93 cars; "The 93 models came from 28
+    makers" names 93 models when another number follows.
+    """
+    if (lead := BASE_LEAD.match(text)):
+        return text[lead.end():], (lead.group("count"), lead.group("noun"))
+    if (part := PART_OF_BASE.match(text)):
+        body = f"{part.group('lead')}{part.group('part')} {part.group('noun')}{text[part.end():]}"
+        return body, (part.group("count"), part.group("noun"))
+    opening = OPENING_BASE.match(text)
+    count = opening and float(opening.group("count").replace(",", ""))
+    later = opening and NUMBER_PATTERN.search(text, opening.end())
+    year = opening and YEAR_RANGE[0] <= count <= YEAR_RANGE[1] and "," not in opening.group("count")
+    if opening and later and not year:
+        body = f"{text[:opening.start('count')]}{text[opening.end('count'):].lstrip()}"
+        return body, (opening.group("count"), opening.group("noun"))
+    return text, None
+
+
+def _checked_base(check: ClaimCheck, count: str, noun: str) -> ClaimCheck:
+    """A claim that names its base ("Of the 4,526 applicants", "the 93 cars"), with the base checked too.
+
+    The base is the share's denominator, or, for any other answer, the rows in
+    the answer's scope.
+    """
+    stated = float(count.replace(",", ""))
+    named = f"{count} {noun}"
+    answer = check.answer
+    base = dict(answer.figures).get("denominator") if answer is not None else None
+    of, are = "the share is of", "the share is of"
+    if base is None and answer is not None and answer.scope is not None:
+        base, of, are = float(answer.scope.rows_in_scope), "the answer's scope holds", "rows in scope"
     if base is not None and abs(base - stated) < 0.5:
-        note = f"The claim's {named} are the {_plain(base)} the share is of."
+        note = f"The claim's {named} are the {_plain(base)} {are}."
         return replace(check, assumptions=(note, *check.assumptions))
-    found = f"the share is of {_plain(base)}" if base is not None else "the answer gives no base to compare"
+    found = f"{of} {_plain(base)}" if base is not None else "the answer gives no base to compare"
     return replace(
         check, status="unverified", reason="missing_context",
         message=f"The claim's base is {named}, but {found}; {check.message}",
@@ -1295,6 +1465,54 @@ def _key_filter(frame: Any, answer: QueryAnswer) -> str | None:
     return None
 
 
+# Words in a column's name that say each row holds a statistic of a group, which do not combine.
+SUMMARY_WORDS = {"median": "median", "mean": "mean", "average": "average", "avg": "average"}
+
+
+def _summary_word(column: str | None) -> str | None:
+    """The statistic a column's name says each row holds: "median" for median_weekly_earn."""
+    words = normalized_name(str(column)).split() if column else []
+    return next((SUMMARY_WORDS[word] for word in words if word in SUMMARY_WORDS), None)
+
+
+# Fewest and most distinct values of a column searched for other spellings of a value a filter picked.
+SPELLING_MIN_VALUES, MAX_SPELLING_VALUES = 50, 20_000
+
+
+def _other_spellings(frame: Any, answer: QueryAnswer) -> tuple[str, str, list[str]] | None:
+    """A value a filter picked that the same column also writes another way, with those ways.
+
+    Another way is a longer value holding all its words in order ("Sen. John
+    McCain" for "John McCain"); a filter already matches the value in any
+    capitals. Only a value of two words or more in a column of more than
+    SPELLING_MIN_VALUES values counts, as a name in a list of names does: in a
+    column of a few categories, "Wheelchair Men" is a category of its own, not
+    "Men" written another way. Returns (column, value, the other ways) for
+    the first such value.
+    """
+    for item in answer.plan.filters:
+        if item.column not in frame.columns:
+            continue
+        uniques = frame[item.column].dropna().astype(str).unique()
+        if not SPELLING_MIN_VALUES < len(uniques) <= MAX_SPELLING_VALUES:
+            continue
+        for value in item.values:
+            words = re.findall(r"[a-z0-9]+", value.lower())
+            if len(words) < 2:
+                continue
+            # "non-USA" is not another way to write "USA".
+            pattern = re.compile(r"(?<!non-)(?<!non )(?<!not )(?<!no )\b" + r"\W+".join(map(re.escape, words))
+                                 + r"\b")
+            lowered = value.lower()
+            others = [
+                other for other in uniques
+                if other.lower() != lowered and other not in item.values and pattern.search(other.lower())
+            ]
+            if others:
+                return str(item.column), value, sorted(others)
+    return None
+
+
 def _quoted(phrases: Sequence[str]) -> str:
     """"a", "a" and "b", or "a", "b" and "c", each in quotes."""
     quoted = [f'"{phrase}"' for phrase in phrases]
@@ -1318,6 +1536,26 @@ def _check(
     alternatives: list[Alternative] = []
     assumptions: list[str] = [f"{LEFT_OUT_NOTE} {_quoted(left)}, which name no column or value in the table."
                               ] if left else []
+    counted_rows = re.match(r"how many (\w+) (.+)$", asked)
+    if counted_rows and not number.percent and OF_THE.search(text) and (
+        isinstance(answer, Refusal) or answer.plan.measure or answer.plan.count_column
+    ):
+        # "55 of the cats were neutered" read "cats" as n_cats; the cats are the rows when no unit repeats.
+        from .compare import repeated_unit  # noqa: PLC0415
+
+        rows = analysis.ask(f"how many rows {counted_rows.group(2)}", decisions=choices)
+        if (repeated_unit(analysis.frame, analysis.roles) is None and not isinstance(rows, Refusal)
+                and rows.plan.intent == "count" and not rows.plan.measure and not rows.plan.count_column):
+            assumptions.append(f'Read "{counted_rows.group(1)}" as the rows of the table, one each.')
+            answer, asked = rows, f"how many rows {counted_rows.group(2)}"
+        elif not isinstance(answer, Refusal):
+            return ClaimCheck(
+                text, "unverified", "missing_context",
+                f'The claim counts {counted_rows.group(1)}, but ADA read the words as {answer.calculation}, '
+                f"and the rows are not one {counted_rows.group(1)} each.",
+                claimed=number, question=asked, answer=answer, assumptions=tuple(assumptions), source=source,
+                clarification=f"Which column or rows are the {counted_rows.group(1)}?",
+            )
     subject = re.match(r"\s*(?:(?:total|average|mean)\s+)?([A-Za-z]+)\s+", asked, re.IGNORECASE)
     if isinstance(answer, Refusal) and subject and subject.group(1).lower() in PEOPLE_NOUNS and (
         not _names_anything(analysis.frame, subject.group(1))
@@ -1424,9 +1662,9 @@ def _check(
     ]
     if unnamed and number.percent:
         # "32.3% survived" gives a share even with no word for one.
-        share = analysis.ask(f"share of {asked}", decisions=choices)
+        share = analysis.ask(_share_question(asked), decisions=choices)
         if not isinstance(share, Refusal) and "share_percent" in dict(share.figures):
-            answer, asked, unnamed = share, f"share of {asked}", []
+            answer, asked, unnamed = share, _share_question(asked), []
             assumptions.append("Read the percentage as a share, which the claim names no column for.")
     if unnamed and (unit_read := _one_unit_reading(analysis, asked, number, choices)):
         # "the pines averaged 60.3 feet": the one column of lengths is what the claim measures.
@@ -1436,10 +1674,13 @@ def _check(
                            f"that kind or named for it, as the number is in {number.unit}.")
     after = re.search(rf"{re.escape(number.text)}\s+([A-Za-z]+)\b", text)
     noun = (number.unit or "").split() or ([after.group(1)] if after else [])
-    if unnamed and len(noun) == 1 and not _claim_unit(number) and (
-        noun[0].lower().endswith("s") or noun[0].lower() in IRREGULAR_PLURALS
-    ):
-        # "The survey recorded 1,950 captures in 2007": a plural that names no column counts rows.
+    averaging = re.search(r"\b(?:average|averages|averaged|averaging|mean|median|typical|per|each)\b", text,
+                          re.IGNORECASE)
+    if unnamed and len(noun) == 1 and not _claim_unit(number) and not averaging and (
+        noun[0].lower() not in MONEY_WORDS
+    ) and (noun[0].lower().endswith("s") or noun[0].lower() in IRREGULAR_PLURALS):
+        # "The survey recorded 1,950 captures in 2007": a plural that names no column counts rows. An
+        # average ("averaged 18.6 dollars") or an amount of money is never a count of rows.
         rest = re.sub(r"^(?:total|average)\s+", "", asked, flags=re.IGNORECASE)
         tally = analysis.ask(f"how many {noun[0]} {rest}", decisions=choices)
         if not isinstance(tally, Refusal) and tally.plan.intent == "count" and not tally.plan.measure:
@@ -1462,11 +1703,14 @@ def _check(
             clarification="Which column is the number about?",
         )
     items = [*answer.plan.filters, *answer.plan.conditions]
-    if number.percent and answer.plan.intent == "count" and not answer.plan.counted and len(items) > 1:
-        # "Men were admitted at a rate of 44.5%": the share is of the men, so it is asked as a share.
-        share = analysis.ask(f"share of {asked}", decisions=choices)
+    if number.percent and answer.plan.intent == "count" and not answer.plan.counted and (
+        len(items) > 1 or answer.plan.count_column
+    ):
+        # "Men were admitted at a rate of 44.5%": the share is of the men, so it is asked as a share;
+        # so is "half of the squirrels", which counts distinct squirrels rather than giving a share.
+        share = analysis.ask(_share_question(asked), decisions=choices)
         if not isinstance(share, Refusal) and share.plan.counted:
-            answer, asked = share, f"share of {asked}"
+            answer, asked = share, _share_question(asked)
     averaged = re.search(r"\b(?:average|averages|averaged|averaging|mean|median|typical|per|each)\b", text,
                          re.IGNORECASE)
     noun = (number.unit or "").split()[-1:] or [""]
@@ -1485,6 +1729,42 @@ def _check(
             )
         assumptions.append(f'Read "{number.text}" as a total, since it counts {noun[0]}.')
         answer, asked = total, f"total {asked}"
+    summary = _summary_word(answer.plan.measure)
+    used_rows = answer.scope.rows_used if answer.scope is not None else None
+    if summary and answer.plan.intent == "aggregate" and used_rows is not None and used_rows > 1:
+        # "women's median weekly earnings were $894": each row holds a group's median; averaging the
+        # medians of 32 groups of women is not the median of the women.
+        return ClaimCheck(
+            text, "unverified", "missing_context",
+            f"{answer.plan.measure} holds a {summary} for each row's group, and {used_rows:,} rows match; "
+            f"combining their {summary}s ({answer.calculation}) does not give the {summary} of all of them, "
+            "so the claim is about one row the question does not pick out.",
+            claimed=number, question=asked, answer=answer, assumptions=tuple(assumptions), source=source,
+            clarification="Which single group (row) is the number about?",
+        )
+    spellings = _other_spellings(analysis.frame, answer)
+    if spellings:
+        # "John McCain" is 5 rows and "Sen. John McCain" 6 more: the claim may count both.
+        column, value, others = spellings
+        return ClaimCheck(
+            text, "unverified", "missing_context",
+            f"{column} also writes {value!r} as {_quoted(others[:3])}"
+            + (f" and {len(others) - 3} others" if len(others) > 3 else "")
+            + f"; the answer keeps only {value!r}, and the claim may mean them all: {answer.answer}",
+            claimed=number, question=asked, answer=answer, assumptions=tuple(assumptions), source=source,
+            clarification=f"Should {_quoted(others[:3])} count as {value!r}?",
+        )
+    if number.percent and answer.plan.intent == "count" and not (
+        {"share_percent", "change_percent"} & set(dict(answer.figures))
+    ):
+        # A percentage compared with a plain count fails a true claim ("half of the squirrels" with 1,434).
+        return ClaimCheck(
+            text, "unverified", "missing_context",
+            f"The claim gives a percentage, but ADA read the words as a count ({answer.calculation}), not as "
+            "a share of a base it could name.",
+            claimed=number, question=asked, answer=answer, assumptions=tuple(assumptions), source=source,
+            clarification="A percentage of which rows?",
+        )
     computed, notes = _comparable(answer, number)
     slope = _slope_claim(text) if answer.plan.intent == "correlation" else None
     measure, sloped = answer.plan.measure, ""

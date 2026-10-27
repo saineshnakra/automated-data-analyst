@@ -46,19 +46,37 @@ when the file can't be read, and 3 when it is unverified for any other reason.
 
 ## How a claim is read
 
-1. **The number.** ADA takes out the number being claimed. A year ("in
-   2013"), an ordinal ("25th percentile"), a value right after a column's
-   name ("bill length above 45 mm") and a number between "with" and a
-   column's name ("cars with 4 cylinders") stay part of the question.
-   Digits inside a word or a code ("CO2", "bondsba01") are not a number. A
-   fraction in words before "of" ("about a quarter of", "more than half
-   of", "two thirds of") and a whole number in words in a claim with no
-   other number but a year ("Seventeen cases were decided in 2020") are read
-   as numbers. A lead that names the base ("Of the 4,526 applicants, 38.8%
-   were admitted") is set aside, and the base is checked: the share must be
-   of 4,526, or the claim gets `missing_context`. A claim with two numbers that
+1. **The number.** ADA takes out the number being claimed. A year ("in 2013"),
+   an ordinal ("25th percentile"), a value right after a column's name ("bill
+   length above 45 mm") and a number between "with" and a column's name ("cars
+   with 4 cylinders") stay part of the question. Digits inside a word or a
+   code ("CO2", "bondsba01") are not a number, and a number after "At" that
+   opens the claim ("At 14, girls averaged 24.1 mm") picks rows. A fraction in
+   words before "of" ("about a quarter of", "more than half of", "two thirds
+   of") and a whole number in words in a claim with no other number but a year
+   ("Seventeen cases were decided in 2020") are read as numbers; after an
+   ordinal ("the fourth quarter of 2020") a fraction word is a period, not a
+   number. A lead that names the base ("Of the 4,526 applicants, 38.8% were
+   admitted") is set aside, and the base is checked: the share must be of
+   4,526, or the claim gets `missing_context`. A claim with two numbers that
    could each be the one claimed is not split: it gets `unsupported_analysis`,
-   and each number should be sent on its own.
+   and each number should be sent on its own. A clause that only says who
+   reports the claim ("Owners estimated that", "The survey found that") is
+   set aside. Some second numbers are part of the question: a day written
+   out ("on May 22, 2011"), a rating scale ("6.5 out of 10"), and a base,
+   which is checked as well: "34 of the 93 cars", "The 93 models came from 32
+   manufacturers" and a lead such as "Of the 5,144 Danes in the study,". The
+   base must be the share's denominator, or for any other answer the rows in
+   its scope; otherwise the claim gets `missing_context`. "Seven in ten", "one
+   in five" and "1 in 20" are shares, read as fractions are. A lead naming
+   a group before a share ("Among victims aged 50 and over, 9.5% died") makes
+   the share of that group, and a percent takes no unit: in "9.5% died" the
+   verb says what is counted. A share stated after what it counts ("Men were
+   79% of the victims who died"; also made up, accounted for, represented,
+   comprised, formed) is read as "79% of the victims who died were men",
+   unless the subject is a measure ("The tax rate was 45% of ..."). A base
+   lead may run to eleven words ("Of the 186,730 people killed or injured on
+   French roads in 1958,"); its words are set aside and its count is checked.
 2. **The question.** The rest of the sentence is read as a question to
    `Analysis.ask` (see [Ask ADA](ask-ada.md)). "averaged 5050" becomes
    "average ...", and "There are 344 penguins" becomes "how many penguins",
@@ -90,6 +108,7 @@ when the file can't be read, and 3 when it is unverified for any other reason.
 | `a quarter of` | 23.6% to 26.8%: the values nearer 1/4 than any other fraction with a denominator up to 10 |
 | `about half of` | 47.2% to 52.8%, the same way; "about" adds nothing to a fraction in words |
 | `more than half of` | above 50% |
+| `seven in ten` | 68.3% to 70.7%, as "seven tenths" is |
 
 `--value` with `--question` keeps its qualifier: `--value "about 25%"` stands
 for 24 to 26.
@@ -98,15 +117,24 @@ for 24 to 26.
    the claim's terms: a percent claim is compared with a share or a change in
    percent, and a fraction such as 0.32 with 32%. A percent claim that names
    no column ("32.3% survived") is read as a share, and the assumptions say
-   so; in a table of counts the share adds up the counts (see
-   [Ask ADA](ask-ada.md)). A percent claim read as a count over several values
-   is asked as a share, so its base is the group it names: "Men were admitted
-   at a rate of 44.5%" is of the men (see [Ask ADA](ask-ada.md)). A plural
-   after the number that names no column counts rows ("The survey recorded
-   1,950 captures in 2007"). A number that counts things ("1,524 Kenyans",
-   "5,000 residents") is a total: when the plain reading is an average and
-   the claim says nothing of averages, ADA checks the total instead and says
-   so.
+   so; in a table of counts the share adds up the counts (see [Ask
+   ADA](ask-ada.md)). A percent claim read as a count over several values is
+   asked as a share, so its base is the group it names: "Men were admitted at
+   a rate of 44.5%" is of the men (see [Ask ADA](ask-ada.md)). A plural after
+   the number that names no column counts rows ("The survey recorded 1,950
+   captures in 2007"), and so do "N times" ("won the Tour 20 times") and "N of
+   the" before a plural: "55 of the cats were neutered" counts the rows that
+   were, one cat each. When the plural also names a column (`n_cats`) and the
+   table's rows are not one each, because an id repeats, the claim gets
+   `missing_context`. A number that counts things ("1,524 Kenyans", "5,000
+   residents") is a total: when the plain reading is an average and the claim
+   says nothing of averages, ADA checks the total instead and says so. A
+   percent claim whose reading is a count with no share ("100% of the sites
+   were visited" read as the number of sites) gets `missing_context`; it is
+   never compared with the count. "Half of the squirrels" with a column of
+   squirrel IDs is a share of the distinct IDs. A plural after the number is
+   never counted when the claim speaks of an average or the plural is money:
+   "averaged 18.6 dollars" is not 18.6 rows.
 
 ## Slopes
 
@@ -118,8 +146,8 @@ it. ADA asks for the correlation of the two columns and compares the claim
 with the least-squares slope of the first on the second
 (`scipy.stats.linregress`), or, when each subject has several rows, the mean
 of the subjects' own slopes. A fall is compared with the slope's sign
-reversed. A unit before "of" after "per" ("per mm of flipper length") is the
-second column's unit. A percentage change per unit is not a slope, and too
+reversed. A unit before "of" after "per" ("per mm of flipper length", "per
+year of age") is the second column's unit. A percentage change per unit is not a slope, and too
 few rows for a correlation give `unsupported_analysis`.
 
 ## Words that name nothing
@@ -246,6 +274,20 @@ Besides the number, a check records what could make the answer misleading:
   over orders (160.99). When the claim matches the average taken row by row
   instead, the message says so: the claim counted each payment row, not each
   order.
+
+- **Other spellings of a value.** When a column of more than 50 values (a
+  list of names) also holds a value of two words or more inside a longer one
+  ("Sen. John McCain" for "John McCain"), the claim may mean them all, and it
+  gets `missing_context` naming them. In a column of a few categories,
+  "Wheelchair Men" is a category of its own, not "Men" written another way.
+  (A filter already matches a value in any capitals.) A value with
+  "non", "not" or "no" before the words is the opposite, not another
+  spelling ("non-USA").
+- **A column of medians or means.** A column whose name says each row holds
+  a group's median, mean or average (`median_weekly_earn`) is not combined
+  over several rows: the average of 32 groups' medians is not the median of
+  all of them. A claim about such a column must pick out one row, or it gets
+  `missing_context`.
 
 ## The JSON record
 

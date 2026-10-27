@@ -3306,3 +3306,247 @@ class AbbreviatedNameTests(unittest.TestCase):
         self.assertEqual(_skeleton_columns("weight", {"wgt": ("wgt",)}), ["wgt"])
         self.assertEqual(_skeleton_columns("route", {"rate": ("rate",)}), [])
         self.assertEqual(_skeleton_columns("depot", {"dept": ("dept",)}), [])
+
+
+class OrdinalColumnTests(unittest.TestCase):
+    def test_an_ordinal_before_a_columns_name_picks_its_value(self):
+        frame = pd.DataFrame({"year": [2020] * 4 + [2021] * 4, "quarter": [1, 2, 3, 4] * 2,
+                              "employed": [10.0, 11, 12, 13, 14, 15, 16, 17]})
+        answer = answer_question("total employed in the fourth quarter of 2020", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 13)
+        self.assertIn('Read "the fourth quarter" as quarter = 4.', answer.scope.readings)
+
+    def test_an_ordinal_the_column_does_not_hold_is_not_read(self):
+        frame = pd.DataFrame({"quarter": [1, 2, 3] * 2, "employed": [10.0, 11, 12, 13, 14, 15]})
+        answer = answer_question("total employed in the fourth quarter", frame, detect_roles(frame))
+        self.assertTrue(answer is None or "quarter = 4" not in answer.calculation)
+
+
+class ValueBesideColumnTests(unittest.TestCase):
+    def frame(self) -> pd.DataFrame:
+        levels = ["Low", "Medium", "High"]
+        return pd.DataFrame({"Sat": levels * 3, "Infl": sorted(levels * 3),
+                             "Cont": ["Low", "High", "High"] * 3, "Freq": [10, 20, 30, 5, 5, 40, 20, 10, 10]})
+
+    def test_the_word_after_a_value_names_which_column_holds_it(self):
+        frame = self.frame()
+        for question in ("share of residents with high satisfaction", "share of residents highly satisfied"):
+            with self.subTest(question=question):
+                answer = answer_question(question, frame, detect_roles(frame))
+                self.assertIn("Sat = High", answer.calculation)
+                self.assertIn("80 of the 150 cases (53.3%)", answer.answer)
+
+    def test_a_filler_may_stand_between_the_value_and_the_column(self):
+        frame = self.frame()
+        answer = answer_question("how many residents had a high level of contact", frame, detect_roles(frame))
+        self.assertIn("Cont = High", answer.calculation)
+        self.assertIn('Read "high level of contact" as Cont = High.', answer.scope.readings)
+
+    def test_a_value_of_several_columns_with_no_column_beside_it_is_refused(self):
+        frame = self.frame()
+        roles = detect_roles(frame)
+        self.assertIsNone(answer_question("share of residents with high", frame, roles))
+        self.assertIn('"high" is a value of', rephrase_hint("share of residents with high", frame, roles))
+
+    def test_an_adverb_with_no_column_after_it_is_not_a_value(self):
+        frame = self.frame()
+        self.assertIsNone(answer_question("share of residents highly", frame, detect_roles(frame)))
+
+
+class SeenFlagTests(unittest.TestCase):
+    def test_a_verb_of_seeing_before_a_yes_no_column_keeps_its_yes_rows(self):
+        frame = pd.DataFrame({"id": range(8), "Foraging": [True, False] * 4,
+                              "Eating": [True] * 2 + [False] * 6})
+        answer = answer_question("how many rows were seen foraging", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 4)
+        self.assertIn("Foraging = 1", answer.calculation)
+
+
+class DistinctShareTests(unittest.TestCase):
+    def test_a_distinct_count_with_a_filter_gives_its_share_of_all_distinct_values(self):
+        frame = pd.DataFrame({"tree": ["a", "a", "b", "c", "d"], "sick": ["yes", "yes", "no", "yes", "no"],
+                              "height": [1.0, 2, 3, 4, 5]})
+        answer = answer_question("how many distinct tree with sick yes", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 2)
+        self.assertEqual(dict(answer.figures)["share_percent"], 50)
+        self.assertIn("50.0% of the 4 in all", answer.answer)
+
+
+class OutcomeWordTests(unittest.TestCase):
+    def test_words_for_dying_pick_the_value_that_spells_it(self):
+        frame = pd.DataFrame({"result": ["Died", "Injured", "Died"], "mode": ["Car", "Car", "Bus"],
+                              "Freq": [5, 50, 2]})
+        roles = detect_roles(frame)
+        for question in ("how many deaths", "how many were killed", "how many dead"):
+            with self.subTest(question=question):
+                self.assertEqual(answer_question(question, frame, roles).value, 7)
+
+    def test_a_yes_no_column_named_for_surviving_reads_both_ways(self):
+        frame = pd.DataFrame({"Sex": ["Male", "Female", "Male", "Female"],
+                              "Survived": ["Yes", "Yes", "No", "No"], "Freq": [10, 30, 90, 10]})
+        roles = detect_roles(frame)
+        self.assertEqual(answer_question("how many survivors", frame, roles).value, 40)
+        self.assertEqual(answer_question("how many passengers died", frame, roles).value, 100)
+
+    def test_two_columns_that_spell_an_outcome_leave_the_word_unread(self):
+        frame = pd.DataFrame({"driver": ["Died", "Lived"], "passenger": ["Lived", "Died"], "n": [1, 2]})
+        reading = nlq._read_question("how many deaths", frame, detect_roles(frame))
+        self.assertFalse(reading.filters)
+
+
+class ShareSplitTests(unittest.TestCase):
+    def frame(self) -> pd.DataFrame:
+        return pd.DataFrame({"result": ["Died", "Died", "Injured", "Injured"],
+                             "gender": ["Male", "Female", "Male", "Female"], "Freq": [80, 20, 500, 400]})
+
+    def test_the_sentence_s_own_verb_ends_the_base(self):
+        frame = self.frame()
+        roles = detect_roles(frame)
+        for question, share in (("share of victims who died were men", 80.0),
+                                ("share of victims were men who died", 8.0),
+                                ("share of male victims died", 80 / 580 * 100),
+                                ("share of victims who were men and had died", 8.0)):
+            with self.subTest(question=question):
+                answer = answer_question(question, frame, roles)
+                self.assertAlmostEqual(dict(answer.figures)["share_percent"], share)
+
+    def test_a_second_plural_in_a_table_of_counts_is_not_the_rows(self):
+        frame = self.frame()
+        hint = rephrase_hint("how many people were dentists", frame, detect_roles(frame))
+        self.assertIn("dentists", hint)
+
+
+class AgeTests(unittest.TestCase):
+    def bands(self) -> pd.DataFrame:
+        return pd.DataFrame({"age": ["12", "13", "20", "22-23", "30-34", "35-49", "50-64", "65+"],
+                             "use": [1.0, 2, 30, 40, 35, 25, 20, 10]})
+
+    def test_ages_written_out_pick_the_bands_that_make_them_up(self):
+        frame = self.bands()
+        roles = detect_roles(frame)
+        for question, values in (("average use among 30- to 34-year-olds", "age = 30-34"),
+                                 ("average use among people 65 and older", "age = 65+"),
+                                 ("average use among 20-year-olds", "age = 20"),
+                                 ("average use for people aged 35 and over", "age in (35-49, 50-64, 65+)")):
+            with self.subTest(question=question):
+                self.assertIn(values, answer_question(question, frame, roles).calculation)
+
+    def test_ages_that_cut_a_band_in_two_are_refused(self):
+        frame = self.bands()
+        roles = detect_roles(frame)
+        self.assertIsNone(answer_question("average use for people aged 40 and over", frame, roles))
+        hint = rephrase_hint("average use for people aged 40 and over", frame, roles)
+        self.assertIn("cuts the age band 35-49", hint)
+
+    def test_ages_on_a_numeric_column_are_conditions(self):
+        frame = pd.DataFrame({"age": [10, 20, 30, 40, 50, 60], "income": [0.0, 10, 20, 30, 40, 50]})
+        answer = answer_question("average income for people aged 30 and over", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 35)
+
+    def test_numbers_without_an_age_word_are_not_ages(self):
+        frame = self.bands()
+        reading = nlq._read_question("average use rose from 12 to 20", frame, detect_roles(frame))
+        self.assertFalse(reading.filters)
+
+
+class DayTests(unittest.TestCase):
+    def test_a_day_written_out_or_in_iso_form_is_a_condition_on_the_date(self):
+        times = ["2011-04-27 10:00", "2011-04-27 18:00", "2011-04-28 09:00"]
+        frame = pd.DataFrame({"date": pd.to_datetime(times), "deaths": [10.0, 20, 30]})
+        roles = detect_roles(frame)
+        for question in ("total deaths on April 27, 2011", "total deaths on 27 April 2011",
+                         "total deaths on 2011-04-27"):
+            with self.subTest(question=question):
+                answer = answer_question(question, frame, roles)
+                self.assertEqual(answer.value, 30)
+                self.assertIn("date = 2011-04-27", answer.calculation)
+
+    def test_no_such_day_is_not_read(self):
+        frame = pd.DataFrame({"date": pd.to_datetime(["2011-04-27", "2011-04-28"]), "deaths": [1.0, 2]})
+        self.assertIsNone(answer_question("total deaths on 2011-02-30", frame, detect_roles(frame)))
+
+    def test_a_day_needs_a_date_column(self):
+        frame = pd.DataFrame({"site": ["a", "b"], "deaths": [1.0, 2]})
+        roles = detect_roles(frame)
+        self.assertIsNone(answer_question("total deaths on April 27, 2011", frame, roles))
+        self.assertIn("no date column", rephrase_hint("total deaths on April 27, 2011", frame, roles))
+
+
+class UnitColumnTests(unittest.TestCase):
+    def rats(self) -> pd.DataFrame:
+        rows = [{"Rat": rat, "Diet": 1 + rat // 3, "Time": day, "weight": 200.0 + 10 * rat + day}
+                for rat in range(6) for day in (1, 8, 15, 22)]
+        return pd.DataFrame(rows)
+
+    def test_the_column_numbering_the_units_is_not_summarised(self):
+        rats = self.rats()
+        roles = detect_roles(rats)
+        self.assertIsNone(answer_question("max rat", rats, roles))
+        self.assertIn("numbers the 6 units", rephrase_hint("max rat", rats, roles))
+
+    def test_the_word_for_the_units_with_a_measure_names_the_rows(self):
+        rats = self.rats()
+        roles = detect_roles(rats)
+        self.assertEqual(answer_question("max rat weight", rats, roles).calculation, "max(weight)")
+        self.assertIn("by Rat", answer_question("average weight by Rat", rats, roles).calculation)
+        self.assertEqual(answer_question("how many rats", rats, roles).value, 6)
+
+    def test_a_plural_for_a_label_of_each_row_names_the_rows(self):
+        cars = pd.DataFrame({"Model": ["a", "b", "c", "d"], "Maker": ["X", "X", "Y", "Z"]})
+        answer = answer_question("how many distinct makers the models came from", cars, detect_roles(cars))
+        self.assertEqual(answer.value, 3)
+
+
+class DecadeTests(unittest.TestCase):
+    def test_a_decade_is_its_ten_years(self):
+        frame = pd.DataFrame({"year": range(1995, 2025), "distance": [float(value) for value in range(30)]})
+        answer = answer_question("average distance in the 2010s", frame, detect_roles(frame))
+        self.assertEqual(answer.value, np.mean(range(15, 25)))
+        self.assertIn('Read "2010s" as 2010 to 2019.', answer.scope.readings)
+
+    def test_a_decade_needs_a_year_column(self):
+        frame = pd.DataFrame({"site": list("abcdef"), "distance": [1.0, 2, 3, 4, 5, 6]})
+        roles = detect_roles(frame)
+        self.assertIsNone(answer_question("average distance in the 2010s", frame, roles))
+        self.assertIn("no date or year column", rephrase_hint("average distance in the 2010s", frame, roles))
+
+
+class DemonymTests(unittest.TestCase):
+    def frame(self) -> pd.DataFrame:
+        return pd.DataFrame({"winner": list("abcdefgh"),
+                             "nationality": ["France", "France", "Belgium", "Italy", "Belgium", "Spain",
+                                             "France", "Italy"],
+                             "birth_country": ["France", "Belgium", "Belgium", "Italy", "France", "Spain",
+                                               "France", "Italy"],
+                             "distance": [1.0, 2, 3, 4, 5, 6, 7, 8]})
+
+    def test_an_adjective_of_nationality_picks_the_nationality_column(self):
+        frame = self.frame()
+        answer = answer_question("how many rows Belgian", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 2)
+        self.assertIn('Read "Belgian" as nationality = Belgium.', answer.scope.readings)
+
+    def test_two_columns_of_countries_without_a_nationality_column_are_not_read(self):
+        frame = self.frame().rename(columns={"nationality": "home_country"})
+        self.assertIsNone(answer_question("how many rows Belgian", frame, detect_roles(frame)))
+
+
+class LeadValueTests(unittest.TestCase):
+    def frame(self) -> pd.DataFrame:
+        return pd.DataFrame({"age": [8, 10, 12, 14] * 3, "Sex": ["Female"] * 8 + ["Male"] * 4,
+                             "distance": [20.0, 21, 22, 23, 21, 22, 23, 25, 22, 24, 26, 28]})
+
+    def test_at_a_number_before_a_comma_picks_the_one_column_of_few_values_that_holds_it(self):
+        answer = answer_question("average At 14, girls distance", self.frame(), detect_roles(self.frame()))
+        self.assertEqual(answer.value, 24)
+        self.assertIn("age = 14", answer.calculation)
+
+    def test_a_number_two_columns_hold_is_not_read(self):
+        frame = self.frame().assign(visit=[14, 1, 2, 3] * 3)
+        answer = answer_question("average At 14, girls distance", frame, detect_roles(frame))
+        self.assertTrue(answer is None or "= 14" not in answer.calculation)
+
+    def test_a_column_of_many_values_is_not_read(self):
+        frame = pd.DataFrame({"age": range(1, 41), "distance": [float(value) for value in range(40)]})
+        answer = answer_question("average At 14, distance", frame, detect_roles(frame))
+        self.assertTrue(answer is None or "age = 14" not in answer.calculation)

@@ -127,8 +127,10 @@ def run_compute(case):
         found = numbers_in(answer.answer) + [v for row in table_values(table).values() for v in row]
         checks["value"] = any(close(n, form) for n in found for form in share_forms(expected["value"]))
         if "wrong_value" in expected:
+            # The answer's own value when it has one: "1,681 cases in 72 rows" does not answer 72.
+            given = [answer.value] if getattr(answer, "value", None) is not None else found
             checks["avoids_wrong_value"] = not any(
-                close(n, form) for n in found for form in share_forms(expected["wrong_value"])
+                close(n, form) for n in given for form in share_forms(expected["wrong_value"])
             )
     return got, checks
 

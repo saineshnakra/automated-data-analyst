@@ -3598,7 +3598,8 @@ class RepeatedCorrelation:
     correlation, the correlation of the values once each unit's own mean is
     taken away (Bakdash and Marusich 2017), and ``slope`` is the average of the
     units' own slopes of ``second`` on ``first``, with a t interval and test
-    across those ``sloped`` units. Otherwise one column is fixed within each
+    across those ``sloped`` units; ``reverse`` is the average of their slopes
+    of ``first`` on ``second``. Otherwise one column is fixed within each
     unit, and ``r`` is Pearson's r over the units' means, one row per unit.
     """
 
@@ -3615,6 +3616,7 @@ class RepeatedCorrelation:
     slope: float | None = None
     sloped: int = 0
     positive: int = 0
+    reverse: float | None = None
 
 
 def repeated_correlation(
@@ -3646,11 +3648,13 @@ def repeated_correlation(
     value = float(centred[first].corr(centred[second]))
     if not np.isfinite(value):
         return None
-    slopes = []
+    slopes, reverse = [], []
     for _, rows in data.groupby(unit, observed=True):
         x, y = rows[first].to_numpy(dtype=float), rows[second].to_numpy(dtype=float)
         if len(rows) >= MIN_SLOPE_ROWS and np.ptp(x) > 0:
             slopes.append(float(np.polyfit(x, y, 1)[0]))
+        if len(rows) >= MIN_SLOPE_ROWS and np.ptp(y) > 0:
+            reverse.append(float(np.polyfit(y, x, 1)[0]))
     found = np.asarray(slopes)
     slope = float(found.mean()) if found.size else None
     low = high = p = float("nan")
@@ -3663,6 +3667,7 @@ def repeated_correlation(
     return RepeatedCorrelation(
         first, second, str(unit), int(data[unit].nunique()), len(data), True, value, p, low, high,
         slope=slope, sloped=int(found.size), positive=int((found > 0).sum()),
+        reverse=float(np.mean(reverse)) if reverse else None,
     )
 
 

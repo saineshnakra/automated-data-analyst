@@ -262,11 +262,12 @@ QUERY_STOPWORDS = {
     "a", "about", "across", "all", "also", "an", "and", "any", "are", "as", "at", "be", "been",
     "between", "by", "can", "data", "did", "do", "does", "done", "each",
     "every", "for", "from", "get", "give", "got", "have", "had", "has", "having", "he", "how",
-    "hows", "i", "if", "in", "is", "it", "just", "last", "least", "make", "made", "many", "me",
-    "measured", "most", "much", "my", "next", "of", "on", "only", "or", "our", "overall",
-    "please", "re", "recorded", "s", "she", "show", "tell", "tested", "than", "that", "the",
-    "then", "there", "this", "to", "they", "us", "value", "values", "ve", "was", "we", "were",
-    "what", "whats", "when", "where", "which", "whose", "with", "without", "you", "your",
+    "her", "his", "hows", "i", "if", "in", "is", "it", "its", "just", "last", "least", "make", "made",
+    "many", "me", "measured", "most", "much", "my", "next", "of", "on", "only", "or", "our", "overall",
+    "please", "re", "recorded", "s", "she", "show", "tell", "tested", "than", "that", "the", "their",
+    "then", "there", "these", "this", "those", "to", "they", "us", "value", "values", "ve", "was", "we",
+    "were", "what", "whats", "when", "where", "which", "who", "whom", "whose", "with", "without", "you",
+    "your",
 }
 # Words asking what share of the rows meet a condition: "what share have diabetes".
 SHARE_WORDS = ("share", "proportion", "percentage", "percent", "fraction")
@@ -329,9 +330,11 @@ VALUE_CUES = frozenset({"for", "in", "is", "at", "where", "when", "equals", "of"
 FILTER_CUES = frozenset({"within", "among", "amongst"})
 # Words before a 0/1 flag column that ask for the rows where it is set:
 # "how many have hypertension". "without" asks for the rows where it is not.
+# Words before a yes/no column that keep its yes rows; a verb of seeing says how it was noticed
+# ("squirrels seen foraging").
 FLAG_CUES = (
     r"have|has|having|had|with|without|are|were|"
-    r"received|receive|receiving|given|got|took|taking|using|used"
+    r"received|receive|receiving|given|got|took|taking|using|used|seen|spotted|observed|heard"
 )
 # Grouping by a part of the date: "average PM2.5 by hour", "revenue by weekday",
 # "which month of the year is wettest", which pools each month across the years.
@@ -369,7 +372,8 @@ class Condition:
     column: str
     operator: Operator
     value: float | None = None
-    #: "year" when ``value`` is a year compared with a date column: "since 1978".
+    #: "year" when ``value`` is a year compared with a date column: "since 1978"; "date" when it is a
+    #: day, as days since 1970: "on April 27, 2011".
     part: str | None = None
     text: str | None = None
 
@@ -886,6 +890,150 @@ YEAR_RANGES: tuple[tuple[re.Pattern, str], ...] = (
     (re.compile(rf"\bbefore\s+(?P<year>{YEAR})\b"), "<"),
     (re.compile(rf"\b(?:until|till|up\s+to|through)\s+(?P<year>{YEAR})\b"), "<="),
 )
+# A day written out: "April 27, 2011", "27 April 2011", "2011-04-27".
+MONTH_WORD = (
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|"
+    r"sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+)
+DAY_PATTERN = re.compile(
+    rf"\b(?:(?P<month>{MONTH_WORD})\.?\s+(?P<day>\d{{1,2}})(?:st|nd|rd|th)?,?\s+(?P<year>(?:1[89]|20)\d{{2}})"
+    rf"|(?P<day2>\d{{1,2}})(?:st|nd|rd|th)?\s+(?P<month2>{MONTH_WORD})\.?,?\s+(?P<year2>(?:1[89]|20)\d{{2}})"
+    # A question's dashes are read as spaces, so "2011-04-27" is also "2011 04 27".
+    r"|(?P<iso>(?:1[89]|20)\d{2}[-\s]\d{2}[-\s]\d{2}))\b",
+    re.IGNORECASE,
+)
+EPOCH = pd.Timestamp("1970-01-01")
+
+
+def day_named(match: re.Match) -> pd.Timestamp | None:
+    """The day a ``DAY_PATTERN`` match names, or None when it is no real date (April 31)."""
+    if match.group("iso"):
+        text = re.sub(r"\s", "-", match.group("iso"))
+    else:
+        month = match.group("month") or match.group("month2")
+        day = match.group("day") or match.group("day2")
+        year = match.group("year") or match.group("year2")
+        number = MONTH_NAMES.get(month.lower().rstrip("."), MONTH_NAMES.get(month.lower()[:3]))
+        if number is None:
+            return None
+        text = f"{year}-{number:02d}-{int(day):02d}"
+    try:
+        return pd.Timestamp(text)
+    except ValueError:
+        return None
+
+
+# Ages written out: "30- to 34-year-olds", "aged 50 and over", "people 65 and older", "20-year-olds".
+_AGE_CUE = r"(?:aged|ages|age)\s+"
+_YEAR_OLDS = r"\s*-?\s*years?\s*-?\s*olds?\b"
+AGE_PHRASE = re.compile(
+    rf"\b(?:{_AGE_CUE}(?P<low>\d{{1,3}})\s*-?\s*(?:to|-|–)\s*(?P<high>\d{{1,3}})(?:{_YEAR_OLDS})?"
+    rf"|(?P<low2>\d{{1,3}})\s*-?\s*(?:to|-|–)\s*(?P<high2>\d{{1,3}}){_YEAR_OLDS}"
+    rf"|(?:{_AGE_CUE})?(?P<older>\d{{1,3}})\s*(?:and|or)\s+older\b"
+    rf"|{_AGE_CUE}(?P<over>\d{{1,3}})\s*(?:\+|\s+and\s+(?:over|up|above)\b|\s+or\s+(?:over|more|above)\b)"
+    rf"|(?P<plus>\d{{1,3}})\+(?=\s|$|[,.;])"
+    rf"|{_AGE_CUE}(?P<one>\d{{1,3}})\b(?!\s*(?:-|–|to\b|and\b|or\b|\+|%))"
+    rf"|(?P<olds>\d{{1,3}}){_YEAR_OLDS})",
+    re.IGNORECASE,
+)
+# A band of ages as a table writes it: "30-34", "65+", ">50", "12".
+BAND_VALUE = re.compile(r"^\s*(?:(?P<low>\d{1,3})\s*(?:-|–|to)\s*(?P<high>\d{1,3})|(?P<plus>\d{1,3})\s*\+|"
+                        r">\s*(?P<above>\d{1,3})|(?P<one>\d{1,3}))\s*$")
+
+
+def age_range(match: re.Match) -> tuple[float, float]:
+    """The ages an ``AGE_PHRASE`` match names, inclusive; an open top is infinity."""
+    found = {name: int(value) for name, value in match.groupdict().items() if value}
+    if "low" in found or "low2" in found:
+        return float(found.get("low", found.get("low2"))), float(found.get("high", found.get("high2")))
+    start = next((found[name] for name in ("older", "over", "plus") if name in found), None)
+    if start is not None:
+        return float(start), float("inf")
+    single = found.get("one", found.get("olds"))
+    return float(single), float(single)
+
+
+def _band(value: str) -> tuple[float, float] | None:
+    """The ages a band value covers: "30-34" is 30 to 34, "65+" 65 and up, ">50" 51 and up."""
+    found = BAND_VALUE.match(value)
+    if not found:
+        return None
+    if found.group("low"):
+        return float(found.group("low")), float(found.group("high"))
+    if found.group("plus"):
+        return float(found.group("plus")), float("inf")
+    if found.group("above"):
+        return float(found.group("above")) + 1, float("inf")
+    return float(found.group("one")), float(found.group("one"))
+
+
+def _age_column(
+    dataframe: pd.DataFrame, roles: ColumnRoles
+) -> tuple[str, dict[str, tuple[float, float]]] | None:
+    """The column of ages, and its bands when it holds them as text ("30-34", "65+")."""
+    named = [column for column in dataframe.columns
+             if {"age", "ages", "agegroup"} & set(_norm(normalized_name(str(column))).split())]
+    if len(named) != 1:
+        return None
+    column = named[0]
+    series = dataframe[column]
+    if _is_measurement(series):
+        return column, {}
+    values = [str(value) for value in series.dropna().unique()]
+    bands = {value: band for value in values if (band := _band(value))}
+    return (column, bands) if values and len(bands) == len(values) else None
+
+
+def _claim_ages(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
+    """Read ages written out as the rows of those ages.
+
+    On a numeric age column, "aged 50 and over" is age >= 50. On a column of
+    bands ("30-34", "65+"), the bands that make up the ages exactly are kept:
+    "30- to 34-year-olds" is the band 30-34, "50 and over" is 50-64 and 65+.
+    Ages that cut a band in two are refused, as no row says which side it is.
+    """
+    found = _age_column(dataframe, roles)
+    if found is None:
+        return
+    column, bands = found
+    for match in AGE_PHRASE.finditer(reading.question):
+        low, high = age_range(match)
+        said = _norm(_question_text(match.group()))
+        start = reading.remaining.find(said)
+        span = slice(start, start + len(said))
+        if start < 0 or reading.remaining[span] != reading.original[span]:
+            continue
+        if not bands:
+            if low == high:
+                reading.conditions.append(Condition(column, "=", low))
+            else:
+                reading.conditions.append(Condition(column, ">=", low))
+                if high != float("inf"):
+                    reading.conditions.append(Condition(column, "<=", high))
+        else:
+            within = {value for value, band in bands.items() if band[0] >= low and band[1] <= high}
+            inside = sorted((band, value) for value, band in bands.items() if value in within)
+            cut = [value for value, band in bands.items()
+                   if band[0] <= high and band[1] >= low and value not in within]
+            covered = bool(inside) and inside[0][0][0] == low and inside[-1][0][1] == high and all(
+                after[0][0] == before[0][1] + 1 for before, after in zip(inside, inside[1:], strict=False))
+            if cut:
+                reading.flag(f'"{match.group().strip()}" cuts the {column} band {cut[0]} in two, and no row '
+                             "says which side its people are on.")
+            elif not covered:
+                continue
+            else:
+                picked = [_Value(column=column, raw=value, words=()) for _, value in inside]
+                _add_filter(reading, picked, start)
+                reading.notes.append(f'Read "{match.group().strip()}" as {column} in '
+                                     f"{_listed([value for _, value in inside])}.")
+        reading.consumed.add(column)
+        reading.scoped.add(column)
+        reading.claim(start, start + len(said))
+
+
+# A decade: "the 2010s" is 2010 to 2019.
+DECADE_PATTERN = re.compile(r"\b(?P<decade>(?:19|20)\d0)s\b")
 # Two groups split at a year: "before and after 2000".
 SPLIT_PATTERN = re.compile(
     rf"\b(?:before\s+(?:and|vs|versus)\s+after|pre\s+(?:and|vs|versus)\s+post)\s+(?P<year>{YEAR})\b"
@@ -1330,8 +1478,21 @@ def _claim_values(
                 else:
                     found, exact = _values_named(words, vocabulary, exact_only=exact_only)
                 found = [value for value in found if _plain_match(value, reading.question, cued)]
+                adverb = not found and size == 1 and len(words[0]) > 4 and words[0].endswith("ly")
+                if adverb:
+                    # "highly satisfied": the adverb of a value, kept when the next words name its column.
+                    found, exact = _values_named((words[0][:-2],), vocabulary, exact_only=True)
                 if not found:
                     continue
+                columns = list(dict.fromkeys(value.column for value in found))
+                beside = _column_beside(reading, columns, window[0][0], window[-1][1]) if (
+                    len(columns) > 1 or adverb) else None
+                if adverb and beside is None:
+                    continue
+                if beside is not None:
+                    # "high satisfaction", "a high level of contact": the word beside the value names
+                    # which of the columns holding it is meant.
+                    found = [value for value in found if value.column == beside[0]]
                 chosen, values, problem = _pick_values(words, found, exact, reading.question, dataframe)
                 if problem:
                     reading.flag(problem)
@@ -1339,11 +1500,54 @@ def _claim_values(
                     _add_filter(reading, values, window[0][0])
                     if _scope_cued(reading, window[0][0]):
                         reading.scoped.add(chosen.column)
+                    if beside is not None:
+                        reading.consumed.add(chosen.column)
+                        reading.claim(*beside[1])
+                        said = reading.original[window[0][0]:beside[1][1]]
+                        reading.notes.append(
+                            f'Read "{_raw_words(reading.question, said.split())}" as {chosen.column} = '
+                            f"{_listed([value.raw for value in values])}."
+                        )
                 reading.claim(window[0][0], window[-1][1])
                 index += size
                 break
             else:
                 index += 1
+
+
+# Words that may stand between a value and the column naming it: "a high level of contact".
+BESIDE_FILLERS = frozenset({"level", "levels", "degree", "amount", "of", "in", "with"})
+
+
+def _column_beside(
+    reading: _Reading, columns: list[str], start: int, end: int
+) -> tuple[str, tuple[int, int]] | None:
+    """The one of ``columns`` named right after a value, and the words from the value's end to the name's.
+
+    The name is a column already found there ("a high level of contact" with
+    Cont), or the next unclaimed word, which a name word of three letters or
+    more starts ("satisfaction" for Sat). Only filler words such as "level
+    of" may come between.
+    """
+    after = reading.original[end:]
+    gap = re.match(r"(?:\s+(?:" + "|".join(sorted(BESIDE_FILLERS)) + r"))*\s+", after)
+    if gap is None:
+        return None
+    position = end + gap.end()
+    spanned = [column for column in columns if reading.spans.get(column, (None,))[0] == position]
+    if len(spanned) == 1:
+        return spanned[0], (end, reading.spans[spanned[0]][1])
+    word = re.match(r"[a-z]+", reading.remaining[position:])
+    if word is None:
+        return None
+    names = _partial_words(columns)
+    prefixed = [
+        column for column in columns
+        if any(len(name) >= 3 and word.group().startswith(name) for name in names[column])
+    ]
+    if len(prefixed) != 1:
+        return None
+    return prefixed[0], (end, position + word.end())
 
 
 def _claim_codes(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
@@ -1411,6 +1615,108 @@ def _claim_sexes(reading: _Reading, vocabulary: _Vocabulary) -> None:
         reading.claim(start, end)
         reading.notes.append(
             f'Read "{_raw_words(reading.question, [word])}" as {sexed[0]} = '
+            f"{_listed([value.raw for value in values])}."
+        )
+
+
+# Words for dying and for surviving. A value spelled with one of them ("Died", "Deceased Characters")
+# or a yes/no column named with one ("Survived") is what the others mean: "deaths" keeps result = Died.
+OUTCOME_WORDS = {
+    "died": frozenset({"died", "die", "dead", "death", "deaths", "deceased", "killed", "fatal", "fatality",
+                       "fatalities"}),
+    "survived": frozenset({"survived", "survive", "survivor", "survivors", "survival", "alive"}),
+}
+YES_NO_VALUES = {"yes": frozenset({"yes", "y", "true", "1"}), "no": frozenset({"no", "n", "false", "0"})}
+
+
+def _claim_outcomes(reading: _Reading, vocabulary: _Vocabulary) -> None:
+    """Filter on dying or surviving for a word of the same meaning: "deaths", "killed", "survivors".
+
+    The table must spell the outcome in one column only, as a value ("Died")
+    or as a yes/no column named for it ("Survived" with Yes and No, where
+    "deaths" keeps No). Otherwise nothing is read.
+    """
+    sides = {word: side for side, words in OUTCOME_WORDS.items() for word in words}
+    columns: dict[str, list[_Value]] = defaultdict(list)
+    for value in vocabulary.values:
+        columns[value.column].append(value)
+    for start, end, word in _tokens(reading.remaining):
+        side = sides.get(word)
+        if side is None:
+            continue
+        spelled = [
+            value for value in vocabulary.values if any(sides.get(part) == side for part in value.words)
+        ]
+        if not spelled:
+            named = [
+                column for column, values in columns.items()
+                if set(_norm(normalized_name(str(column))).split()) & set(sides)
+                and {" ".join(value.words) for value in values} <= YES_NO_VALUES["yes"] | YES_NO_VALUES["no"]
+            ]
+            if len(named) != 1:
+                continue
+            name = _norm(normalized_name(str(named[0]))).split()
+            same = sides[next(part for part in name if part in sides)]
+            wanted = YES_NO_VALUES["yes" if same == side else "no"]
+            spelled = [value for value in columns[named[0]] if " ".join(value.words) in wanted]
+        if not spelled or len({value.column for value in spelled}) != 1:
+            continue
+        _add_filter(reading, spelled, start)
+        reading.claim(start, end)
+        reading.notes.append(
+            f'Read "{_raw_words(reading.question, [word])}" as {spelled[0].column} = '
+            f"{_listed([value.raw for value in spelled])}."
+        )
+
+
+# Adjectives of nationality and the country names a column may spell them with: "Belgian" is Belgium.
+DEMONYMS = {
+    "american": ("united states", "usa", "us", "united states of america"), "argentine": ("argentina",),
+    "argentinian": ("argentina",), "australian": ("australia",), "austrian": ("austria",),
+    "belgian": ("belgium",), "brazilian": ("brazil",), "british": ("united kingdom", "uk", "great britain"),
+    "canadian": ("canada",), "chilean": ("chile",), "chinese": ("china",), "colombian": ("colombia",),
+    "croatian": ("croatia",), "czech": ("czech republic", "czechia"), "danish": ("denmark",),
+    "dutch": ("netherlands", "the netherlands", "holland"), "egyptian": ("egypt",),
+    "english": ("england",), "ethiopian": ("ethiopia",), "finnish": ("finland",), "french": ("france",),
+    "german": ("germany",), "greek": ("greece",), "hungarian": ("hungary",), "indian": ("india",),
+    "indonesian": ("indonesia",), "iranian": ("iran",), "irish": ("ireland",), "israeli": ("israel",),
+    "italian": ("italy",), "jamaican": ("jamaica",), "japanese": ("japan",), "kenyan": ("kenya",),
+    "korean": ("south korea", "korea"), "luxembourgish": ("luxembourg",), "luxembourger": ("luxembourg",),
+    "mexican": ("mexico",), "moroccan": ("morocco",), "nigerian": ("nigeria",), "norwegian": ("norway",),
+    "pakistani": ("pakistan",), "peruvian": ("peru",), "polish": ("poland",), "portuguese": ("portugal",),
+    "romanian": ("romania",), "russian": ("russia",), "scottish": ("scotland",), "slovak": ("slovakia",),
+    "slovenian": ("slovenia",), "spanish": ("spain",), "swedish": ("sweden",), "swiss": ("switzerland",),
+    "turkish": ("turkey", "turkiye"), "ukrainian": ("ukraine",), "venezuelan": ("venezuela",),
+    "vietnamese": ("vietnam", "viet nam"), "welsh": ("wales",),
+}
+# Name words of a column of nationalities, preferred for a nationality adjective over a country of birth.
+NATIONALITY_WORDS = frozenset({"nationality", "citizenship", "nation"})
+
+
+def _claim_demonyms(reading: _Reading, vocabulary: _Vocabulary) -> None:
+    """Filter on a country for its adjective of nationality: "Belgian riders" keeps nationality Belgium.
+
+    When several columns hold the country (a nationality and a country of
+    birth), one named for nationality is used; otherwise nothing is read.
+    """
+    for start, end, word in _tokens(reading.remaining):
+        countries = DEMONYMS.get(word)
+        if countries is None:
+            continue
+        found = [value for value in vocabulary.values if " ".join(value.words) in countries]
+        columns = list(dict.fromkeys(value.column for value in found))
+        if len(columns) > 1:
+            columns = [
+                column for column in columns
+                if NATIONALITY_WORDS & set(_norm(normalized_name(str(column))).split())
+            ]
+        if len(columns) != 1:
+            continue
+        values = [value for value in found if value.column == columns[0]]
+        _add_filter(reading, values, start)
+        reading.claim(start, end)
+        reading.notes.append(
+            f'Read "{_raw_words(reading.question, [word])}" as {columns[0]} = '
             f"{_listed([value.raw for value in values])}."
         )
 
@@ -1985,6 +2291,7 @@ def _claim_time_points(reading: _Reading, dataframe: pd.DataFrame, roles: Column
 
     It runs before the conditions, so "On day 21, chicks" does not read 21 as a chick.
     """
+    _claim_lead_values(reading, dataframe, roles)
     points = [column for column in roles.numeric if column in dataframe.columns and is_timepoint_name(column)
               and column not in reading.spans]
     if len(points) != 1:
@@ -1999,6 +2306,74 @@ def _claim_time_points(reading: _Reading, dataframe: pd.DataFrame, roles: Column
             reading.claim(match.start(), match.end())
             reading.notes.append(f'Read "{_raw_words(reading.question, match.group(0).split())}" as '
                                  f"{points[0]} = {format_number(number)}.")
+
+
+ORDINAL_WORDS = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "seventh": 7, "eighth": 8,
+    "ninth": 9, "tenth": 10, "eleventh": 11, "twelfth": 12,
+}
+
+
+def _claim_ordinal_columns(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
+    """Read "the fourth quarter" as a numeric column named quarter at 4, when 4 is one of its values.
+
+    It runs before the conditions and the time parts, so the ordinal is not read as a rank.
+    """
+    names = {_norm(str(column)): column for column in roles.numeric if column in dataframe.columns}
+    words = "|".join(ORDINAL_WORDS)
+    pattern = rf"\b(?:the\s+)?(?P<ordinal>{words}|\d+(?:st|nd|rd|th))\s+(?P<name>[a-z]+)\b"
+    for match in list(re.finditer(pattern, reading.original)):
+        column = names.get(match.group("name"))
+        if column is None or reading.spans.get(column, (match.start("name"),))[0] != match.start("name"):
+            continue
+        if not reading.remaining[match.start("ordinal"):match.end("ordinal")].strip():
+            continue
+        ordinal = match.group("ordinal")
+        number = float(ORDINAL_WORDS.get(ordinal) or int(re.sub(r"\D", "", ordinal)))
+        if number not in set(to_numbers(dataframe[column]).dropna().tolist()):
+            continue
+        reading.conditions.append(Condition(column, "=", number))
+        reading.spans.pop(column, None)
+        reading.consumed.add(column)
+        reading.scoped.add(column)
+        reading.claim(match.start(), match.end())
+        reading.notes.append(f'Read "{_raw_words(reading.question, match.group(0).split())}" as {column} = '
+                             f"{format_number(number)}.")
+
+
+# Most values a column may hold for "At 14," to pick one of them.
+LEAD_VALUES = 12
+
+
+def _claim_lead_values(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
+    """Read "at 14," as the one column of few values that holds 14 (Orthodont's age).
+
+    Only a number after "at" that ends the clause, or is followed by years,
+    months, weeks or days, is read, and only when exactly one numeric column
+    of at most LEAD_VALUES values holds it.
+    """
+    pattern = rf"\bat\s+(?P<number>{NUMBER})(?:\s+(?:years?|months?|weeks?|days?)\b|(?=\s*$))"
+    match = re.search(pattern, reading.original)
+    comma = re.search(rf"\bat\s+({NUMBER})\s*,", reading.question, re.IGNORECASE)
+    if not match and comma:
+        match = re.search(rf"\bat\s+(?P<number>{re.escape(comma.group(1))})\b", reading.original)
+    span = slice(match.start(), match.end()) if match else slice(0, 0)
+    if not match or reading.remaining[span] != reading.original[span]:
+        return
+    number = _number(match.group("number"))
+    holding = [
+        column for column in roles.numeric
+        if column in dataframe.columns and column not in reading.spans
+        and (values := set(to_numbers(dataframe[column]).dropna().tolist()))
+        and len(values) <= LEAD_VALUES and number in values
+    ]
+    if len(holding) != 1:
+        return
+    reading.conditions.append(Condition(holding[0], "=", number))
+    reading.scoped.add(holding[0])
+    reading.claim(match.start(), match.end())
+    reading.notes.append(f'Read "{_raw_words(reading.question, match.group(0).split())}" as {holding[0]} = '
+                         f"{format_number(number)}, the one column of few values that holds it.")
 
 
 # Words before a number that name a time point: "day 21", "week 3", "visit 2".
@@ -2189,7 +2564,7 @@ def _claim_entity(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles
 
     A plural that names nothing else, right before "with" or "where" and a
     condition, names the rows too: "average strength for mixes with admixture above 0".
-    In a table of counts, any plural that names nothing else names the cases
+    In a table of counts, the first plural that names nothing else names the cases
     the counts count: "female applicants" in UCBAdmissions.
     """
     counts = frequency_column(dataframe) is not None
@@ -2202,8 +2577,9 @@ def _claim_entity(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles
             r"\s+(?:with|where|whose|having|that\s+have|which\s+have)\s+\S", reading.original[end:]
         )
         rows = word == roles.row_noun
-        # In a table of counts every plural noun left over names the cases counted: "female applicants".
-        cases = plural and counts
+        # In a table of counts the first plural noun left over names the cases counted: "female
+        # applicants". A second one ("people who were cyclists") is a word the table may not hold.
+        cases = plural and counts and reading.entity is None
         if word not in ENTITY_NOUNS and not rows and not (counted and plural) and not described and not cases:
             continue
         reading.claim(start, end)
@@ -2291,6 +2667,20 @@ def _holds_years(column: pd.Series) -> bool:
     return not values.empty and bool(((values % 1 == 0) & values.between(1000, 2100)).all())
 
 
+def _claim_days(reading: _Reading, roles: ColumnRoles) -> None:
+    """Read a day written out ("April 27, 2011", "2011-04-27") as the date column on that day."""
+    for match in list(DAY_PATTERN.finditer(reading.remaining)):
+        day = day_named(match)
+        if day is None:
+            continue
+        if not roles.date:
+            reading.flag("This table has no date column to pick a day from.")
+        else:
+            reading.conditions.append(Condition(roles.date, "=", float((day - EPOCH).days), part="date"))
+            reading.scoped.add(roles.date)
+        reading.claim(*match.span())
+
+
 def _claim_year_ranges(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
     """Read ranges of years as conditions on the date ("since 1978") and "before and after 2000" as a split.
 
@@ -2337,6 +2727,17 @@ def _claim_year_ranges(reading: _Reading, dataframe: pd.DataFrame, roles: Column
                 reading.conditions.append(Condition(column, operator, year, part="year"))
                 reading.scoped.add(column)
             reading.claim(*match.span())
+    for match in list(DECADE_PATTERN.finditer(reading.remaining)):
+        if column is None:
+            reading.flag("This table has no date or year column for a decade.")
+        else:
+            low = float(match.group("decade"))
+            reading.conditions.extend(
+                [Condition(column, ">=", low, part="year"), Condition(column, "<=", low + 9, part="year")]
+            )
+            reading.scoped.add(column)
+            reading.notes.append(f'Read "{match.group()}" as {low:.0f} to {low + 9:.0f}.')
+        reading.claim(*match.span())
 
 
 # Verbs that only date an event, right before a year: "sets released in 2020".
@@ -2352,7 +2753,8 @@ EVENT_PATTERN = re.compile(
 # Phrases that say where the rows are, not which: "on board", "in the data".
 FILLER_PATTERN = re.compile(
     r"\b(?:on\s+board|aboard|in\s+the\s+(?:data|dataset|data\s+set|table|file|sample)|in\s+this\s+"
-    r"(?:data|dataset|table|file|sample)|all\s+told|altogether|at\s+an?\s+(?:\S+\s+)?rate(?:\s+of)?)\b"
+    r"(?:data|dataset|table|file|sample)|all\s+told|altogether|at\s+an?\s+(?:\S+\s+)?rate(?:\s+of)?|"
+    r"surveyed|interviewed|polled|questioned|came\s+from|comes?\s+from)\b"
 )
 # A passive verb after what is counted says how the rows came about, not which: "medals were won".
 PASSIVE_PATTERN = re.compile(
@@ -2366,6 +2768,7 @@ def _claim_fillers(reading: _Reading) -> None:
     for pattern in (EVENT_PATTERN, FILLER_PATTERN, PASSIVE_PATTERN):
         for match in list(pattern.finditer(reading.remaining)):
             reading.claim(*match.span())
+
 
 
 def _items_of_a_year(reading: _Reading, match: re.Match, roles: ColumnRoles) -> bool:
@@ -2575,6 +2978,32 @@ def _named_as_column(reading: _Reading, column: str, start: int, end: int) -> bo
     return bool(re.match(condition, after) or re.match(r"\s+(?:trend|over time|timeline)\b", after))
 
 
+def _unit_word_names_rows(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
+    """Read the word for the units ("rats" for a Rat column of codes) as the rows, not as a measure.
+
+    Only when the question names another column too and the word does not
+    follow a grouping word ("by Rat" still groups): "rats on diet 1 weighed",
+    "the heaviest rat's weight". A plural that names a column labelling each
+    row once ("the models" for Model) names the rows the same way. The word is
+    then claimed, as "patients" is.
+    """
+    if len(reading.spans) < 2:
+        return
+    coded = [column for column in reading.spans if column in roles.factors or column == roles.identifier]
+    unit = repeated_unit(dataframe, roles) if coded else None
+    labels = [
+        column for column, (start, end) in reading.spans.items()
+        if reading.original[start:end].endswith("s") and not is_numeric_dtype(dataframe[column])
+        and dataframe[column].is_unique
+    ]
+    named = unit if unit in coded else labels[0] if len(labels) == 1 else None
+    if named is None or _follows(reading.original, reading.spans[named][0]):
+        return
+    start, end = reading.spans.pop(named)
+    reading.entity, reading.entity_column = reading.original[start:end], named
+    reading.claim(start, end)
+
+
 def _read_question(
     question: str,
     dataframe: pd.DataFrame,
@@ -2604,6 +3033,7 @@ def _read_question(
         reading.spans = {
             column: span for column, span in reading.spans.items() if q[span[0]:span[1]] != roles.row_noun
         }
+    _unit_word_names_rows(reading, dataframe, roles)
     for start, end in reading.spans.values():
         reading.claim(start, end, keep_text=True)
     _reread_aggregation_names(reading)
@@ -2611,13 +3041,18 @@ def _read_question(
     _claim_adjustment(reading)
     _claim_time_part(reading, dataframe, roles)
     _claim_month_of_year(reading, dataframe, roles)
+    _claim_days(reading, roles)
+    _claim_ages(reading, dataframe, roles)
     _claim_year_ranges(reading, dataframe, roles)
     _claim_fillers(reading)
     _claim_time_points(reading, dataframe, roles)
+    _claim_ordinal_columns(reading, dataframe, roles)
     _claim_conditions(reading, list(reading.spans), dataframe, roles, vocabulary)
     _claim_person_names(reading, dataframe)
     _claim_values(reading, vocabulary, dataframe, exact_only=True, row_noun=roles.row_noun)
     _claim_sexes(reading, vocabulary)
+    _claim_outcomes(reading, vocabulary)
+    _claim_demonyms(reading, vocabulary)
     _claim_analysis_words(reading, dataframe, roles)
     _claim_rate(reading)
     partial = _claim_partial_names(reading, dataframe, roles)
@@ -3625,6 +4060,12 @@ def _count_plan(
 SHARE_ANCHOR = re.compile(rf"\b(?:{'|'.join(SHARE_WORDS)}|rate)\s+of\b")
 # The verb that ends what a share is of: "share of Adelie | are female", "of passengers | who survived".
 LINK_VERB = re.compile(r"\b(?:are|is|were|was|have|has|had|got|did|do|does|who|that|which|whose)\b")
+# The words that open a clause on the base: "victims who died", "Adelie that are female".
+RELATIVE_WORDS = ("who", "that", "which", "whose")
+# Past tenses that do not end in "ed": "won", "lost".
+PAST_FORMS = frozenset({
+    "won", "lost", "left", "fell", "rose", "grew", "ran", "met", "got", "went", "came", "made",
+})
 
 
 def _asks_share(reading: _Reading) -> bool:
@@ -3632,15 +4073,29 @@ def _asks_share(reading: _Reading) -> bool:
 
 
 def _share_base(reading: _Reading, counting: dict) -> tuple[dict, tuple] | None:
-    """Split a share's filters into the rows it is of and what it counts, at the verb after "share of".
+    """Split a share's filters into the rows it is of and what it counts, at a verb after "share of".
 
     Values and conditions before the verb make the base; those after are
-    counted. None when the question asks no share, or one side is empty.
+    counted. The verb is the sentence's own one when a clause on the base
+    comes first: in "share of victims who died were men" the base is the
+    victims who died, while in "share of victims were men who died" the men
+    who died are counted. Otherwise it is the first verb, as in "share of
+    Adelie that are female". A verb after "and" or "or" joins what is counted
+    and never splits. None when the question asks no share, or one side is empty.
     """
     anchor = SHARE_ANCHOR.search(reading.original)
-    verb = LINK_VERB.search(reading.original, anchor.end()) if anchor else None
-    if verb is None:
+    if anchor is None:
         return None
+    text = reading.original
+    verbs = [
+        verb for verb in LINK_VERB.finditer(text, anchor.end())
+        if not re.search(r"\b(?:and|or)\s*$", text[:verb.start()])
+    ]
+    main = [
+        verb for verb in verbs
+        if verb.group() not in RELATIVE_WORDS and not re.search(rf"\b(?:{'|'.join(RELATIVE_WORDS)})\s+$",
+                                                                text[:verb.start()])
+    ]
     items = [*counting["filters"], *counting["conditions"]]
 
     def place(item: ValueFilter | Condition) -> int | None:
@@ -3650,14 +4105,24 @@ def _share_base(reading: _Reading, counting: dict) -> tuple[dict, tuple] | None:
         return span[0] if span else None
 
     places = {id(item): place(item) for item in items}
-    counted = tuple(item for item in items if (places[id(item)] or -1) >= verb.start())
-    if not counted or len(counted) == len(items):
-        return None
-    base = {
-        "filters": tuple(item for item in counting["filters"] if item not in counted),
-        "conditions": tuple(item for item in counting["conditions"] if item not in counted),
-    }
-    return base, counted
+    starts = [verb.start() for verb in [*main[:1], *verbs[:1]]]
+    if not verbs:
+        # "share of male victims died": with no verb to split at, a value written as a past tense
+        # ("died", "won") after the others is what is counted.
+        for item in sorted(items, key=lambda item: places[id(item)] or -1)[1:]:
+            word = re.match(r"[a-z]+", text[places[id(item)]:]) if places[id(item)] is not None else None
+            if word and (word.group().endswith("ed") or word.group() in PAST_FORMS):
+                starts.append(places[id(item)])
+                break
+    for start in starts:
+        counted = tuple(item for item in items if (places[id(item)] or -1) >= start)
+        if counted and len(counted) < len(items):
+            base = {
+                "filters": tuple(item for item in counting["filters"] if item not in counted),
+                "conditions": tuple(item for item in counting["conditions"] if item not in counted),
+            }
+            return base, counted
+    return None
 
 
 # Words joining two groupings: "by A and B", "by A by B", "A x B".
@@ -3787,10 +4252,21 @@ def _plan_columns(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) 
     return used
 
 
+# Aggregations that treat a column as a quantity, which a column numbering units is not.
+UNIT_AGGREGATIONS = frozenset({"mean", "sum", "median", "max", "min", "std", "var"})
+
+
 def _unused_part(
     plan: QueryPlan, reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles, rows_not_analyzed: int
 ) -> str | None:
     """Why the plan answers less than the question asks, or None when it uses every part."""
+    summarised = plan.intent in ("aggregate", "rank", "compare") and plan.aggregation in UNIT_AGGREGATIONS
+    if plan.measure and summarised and plan.measure == (unit := repeated_unit(dataframe, roles)):
+        # "the heaviest rat" with a Rat column of 16 codes: the codes number the rats and measure nothing.
+        return (
+            f"{unit} numbers the {int(dataframe[unit].nunique()):,} units the rows belong to, so it is "
+            "not a quantity to summarise; name the measure."
+        )
     used = _plan_columns(plan, dataframe, roles)
     for column in reading.spans:
         if column not in used:
@@ -3981,7 +4457,11 @@ def _condition_mask(series: pd.Series, condition: Condition) -> pd.Series:
             "ends": text.str.endswith(wanted),
         }[condition.operator]
         return found.fillna(False).astype(bool)
-    if is_datetime64_any_dtype(series):
+    if is_datetime64_any_dtype(series) and condition.part == "date":
+        # "on April 27, 2011": the day, as days since 1970, whatever the time of day.
+        days = series.dt.tz_localize(None) if series.dt.tz is not None else series
+        values = (days.dt.normalize() - EPOCH).dt.days.astype(float)
+    elif is_datetime64_any_dtype(series):
         # A condition on a date compares its year: "since 1978".
         values = series.dt.year.astype(float)
     else:
@@ -4014,6 +4494,9 @@ def _describe_condition(condition: Condition) -> str:
         return f'{condition.column} {TEXT_OPERATORS[condition.operator]} "{condition.text}"'
     if condition.part == "year":
         return f"{condition.column} {YEAR_OPERATOR_WORDS[condition.operator]} {_number_text(condition.value)}"
+    if condition.part == "date":
+        day = (EPOCH + pd.Timedelta(days=float(condition.value or 0))).date().isoformat()
+        return f"{condition.column} {OPERATOR_WORDS[condition.operator]} {day}"
     return f"{condition.column} {OPERATOR_WORDS[condition.operator]} {_number_text(condition.value)}"
 
 
@@ -4962,12 +5445,31 @@ def _execute_count(
     """
     if plan.count_column:
         distinct = int(working[plan.count_column].nunique(dropna=True))
+        figures: tuple = ()
+        share_text = ""
+        if plan.filters or plan.conditions:
+            # "half of the squirrels were foraging": the distinct values picked, of those with the
+            # filtered columns recorded.
+            base, _ = _apply_filters(dataframe, replace(plan, filters=(), conditions=()), roles)
+            filtered = [item.column for item in plan.filters] + [
+                item.column for item in plan.conditions if item.operator != "missing"
+            ]
+            for column in dict.fromkeys(filtered):
+                base = base.loc[base[column].notna()]
+            total = int(base[plan.count_column].nunique(dropna=True))
+            if total:
+                share = distinct / total * 100
+                figures = (("share_percent", share), ("denominator", float(total)))
+                share_text = f", {_share_text(share)} of the {total:,} in all"
         return QueryAnswer(
             question="",
             plan=plan,
-            answer=f"There are {distinct:,} distinct {plan.count_column} values{_phrase(applied)}.",
-            calculation=f"count distinct {plan.count_column}{scope}",
+            answer=(f"There are {distinct:,} distinct {plan.count_column} values{_phrase(applied)}"
+                    f"{share_text}."),
+            calculation=f"count distinct {plan.count_column}{scope}"
+            + (", divided by the count of distinct values over all rows" if figures else ""),
             value=float(distinct),
+            figures=figures,
         )
     weight = frequency_column(dataframe)
     each = f"; each row counts {weight} cases, the number its combination of values holds" if weight else ""
@@ -6033,16 +6535,20 @@ def _execute_repeated_correlation(plan: QueryPlan, found, scope: str, applied: l
             f" The {found.rows:,} rows come {each} to a {unit}, so they are not counted as independent: "
             f"each {unit} counts once."
         )
+        both = f" (and of {first} on {second})" if found.reverse is not None else ""
         calculation = (
-            f"least-squares slope of {second} on {first} within each {unit} with 3 or more rows, then their "
-            f"mean with a one-sample t-test; repeated-measures r: Pearson r of the values centred on each "
-            f"{_owner(unit)} means{scope}"
+            f"least-squares slope of {second} on {first}{both} within each {unit} with 3 or more rows, then "
+            f"their mean with a one-sample t-test; repeated-measures r: Pearson r of the values centred on "
+            f"each {_owner(unit)} means{scope}"
         )
         figures = [("r", found.r), ("units", float(found.units)), ("n", float(found.rows))]
         if found.slope is not None:
             figures += [("slope", found.slope), (f"slope of {second} on {first}", found.slope),
                         ("ci_low", found.low), ("ci_high", found.high),
                         ("p_value", found.p), ("positive_slopes", float(found.positive))]
+        if found.reverse is not None:
+            # A claim may state the change the other way round: "rises 0.66 mm per year of age".
+            figures.append((f"slope of {first} on {second}", found.reverse))
         return QueryAnswer(
             question="", plan=plan, answer=answer, calculation=calculation, value=_as_number(found.r),
             figures=tuple((name, value) for name, value in figures if _as_number(value) is not None),
@@ -6316,6 +6822,10 @@ def _predictors_plan(measure: str, scope: dict) -> QueryPlan:
     return QueryPlan(intent="correlates", measure=measure, notes=(note,), **scope)
 
 
+# Name words of a quantity, which a column set at a few levels still measures.
+QUANTITY_WORDS = frozenset({"age", "dose", "dosage", "time", "temperature", "temp", "concentration", "conc"})
+
+
 def _is_code(column: str, dataframe: pd.DataFrame, roles: ColumnRoles) -> bool:
     """Whether a column holds category codes to compare across rather than a quantity to correlate.
 
@@ -6327,9 +6837,10 @@ def _is_code(column: str, dataframe: pd.DataFrame, roles: ColumnRoles) -> bool:
     series = dataframe[column]
     if not _is_measurement(series) or _is_flag(series):
         return True
-    if column in roles.factors:
-        return not _unit_words(column)
     words = set(_norm(normalized_name(column)).split())
+    if column in roles.factors:
+        # Ages 8, 10, 12 and 14, or doses of 0.5, 1 and 2: a quantity set at a few levels correlates.
+        return not (_unit_words(column) or words & QUANTITY_WORDS)
     values = series.dropna()
     return bool(words & {"id", "ids", "code", "codes"}) and bool((values % 1 == 0).all()) and (
         values.nunique() < len(values)
