@@ -122,8 +122,12 @@ comparison: "Condition holds category codes, so CorrectTotal is compared
 across its groups rather than correlated with it." Codes are text, 0/1 flags,
 the numeric codes ADA declared (`roles.factors`) and whole numbers under an ID
 or code name. A declared code whose name carries a unit ("Location_m", "Age
-(day)") is a quantity set at a few levels and still correlates. This also
-applies to "correlation between X and Y" read by the steps below.
+(day)") or names a quantity (age, dose, time, temperature, concentration) is
+a quantity set at a few levels and still correlates: Orthodont's ages 8, 10,
+12 and 14. This also applies to "correlation between X and Y" read by the
+steps below. With several rows per subject, the answer gives the mean of the
+subjects' own slopes both ways, "slope of distance on age" and "slope of age
+on distance".
 
 The grouping column is the one named after "by", "across", "between",
 "among" or "in" (a segment, or a numeric column with 2 to 50 values), or the
@@ -254,8 +258,8 @@ each word is claimed, in this order, by:
    the timeline; "per month", "monthly" and trend words keep the timeline.
 5. **Ranges of years** on the date column: "since 1978", "from 1978",
    "1978 onwards", "after 1977", "before 1950", "until 2000", "between 1990
-   and 2000", "from 1990 to 2000", and "before and after 2000", which splits
-   the rows in two. "From 2019" right after the rows' own noun is that year
+   and 2000", "from 1990 to 2000", "the 2010s" (2010 to 2019), and "before
+   and after 2000", which splits the rows in two. "From 2019" right after the rows' own noun is that year
    ("sets from 2019" in `sets.csv` are 2019's sets); "from 2019 onwards"
    stays a range. A verb that only dates an event before a year ("sets
    released in 2020"; also published, launched, founded, built, made,
@@ -275,7 +279,15 @@ each word is claimed, in this order, by:
    capitals that is also a query word ("ALL" as a diagnosis) is the value
    when typed as the data spells it. "Men", "women", "boys" and "girls" name
    the values of the one column that holds only sexes (Male and Female, M and
-   F, besides Other or Unknown): "women" is `Gender` = Female.
+   F, besides Other or Unknown): "women" is `Gender` = Female. An adjective
+   of nationality names its country ("Belgian" is Belgium, "Dutch" the
+   Netherlands; `DEMONYMS`) in the one column that holds it, or, when a
+   country of birth holds it too, in the column named for nationality. A
+   value that several columns hold is the one whose column is named right
+   after it, with only words such as "level of" between: "high
+   satisfaction" and "a high level of contact" are `Sat` = High and `Cont` =
+   High, and an adverb of a value followed by its column, "highly
+   satisfied", is `Sat` = High.
 8. **Summary words**: "standard deviation", "interquartile range",
    "90th percentile", "upper quartile", "range", "most common",
    "distribution of", "describe", "outliers", "unusual", "impossible",
@@ -348,7 +360,7 @@ weekly view and `Age of testing (day)` for no daily one.
 | "negative yield", "yield is negative", "positive", "zero" | `< 0`, `> 0`, `= 0` |
 | "when OBJECT is 0", "OBJECT = 0", "OBJECT equals 0" | `OBJECT = 0` |
 | "for Status 2", "cars with 6 cyl" | `Status = 2`, for a column of codes holding that value |
-| "how many have hypertension", "with diabetes", "are healthy", "received antibiotics", "without diabetes" | a 0/1 flag `= 1`, or `= 0` after "without" |
+| "how many have hypertension", "with diabetes", "are healthy", "received antibiotics", "seen foraging", "without diabetes" | a 0/1 flag `= 1`, or `= 0` after "without" |
 | "how many AQC1cm values are 0", "how many zeros in AQC1cm", "negative values of X" | `AQC1cm = 0`, `X < 0` |
 | "missing eCO2", "eCO2 is missing" | `eCO2 missing` |
 | "Pentanoic_acid 0", "VMA of 0" | `= 0`, for a numeric column that holds that value |
@@ -564,7 +576,10 @@ counts the rows with `review_date` = 2019, and "what share have blue eyes"
 the share with `Eye` = Blue. "Readings", "records", "samples" and other nouns in
 `ROW_NOUNS` always count rows. The answer says which: "Counted the birds as
 distinct ID values." or "Each row counts as one of the patients." "How many
-participants per condition" counts distinct participants per condition.
+participants per condition" counts distinct participants per condition. A
+count of distinct values under a filter also gives its share of the distinct
+values among all rows with the filtered columns recorded: 1,434 squirrels
+seen foraging are 47.5% of the 3,018 in all.
 
 A count with conditions or values gives its share of the rows: "18 of the
 212,019 rows (under 0.1%) have Expected_Yield below 0." The base is the rows

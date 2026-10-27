@@ -61,6 +61,23 @@
   gets `missing_context` instead of an average of medians.
 - "At 14, girls averaged 24.1 mm" reads "At 14" as `age` = 14, the one column
   of few values that holds 14, and "the fourth quarter" as `quarter` = 4.
+- "high satisfaction", "a high level of contact" and "highly satisfied" pick
+  the one of several columns holding High that is named beside it; "Belgian"
+  and "French" pick Belgium and France in a nationality column; "the 2010s"
+  is 2010 to 2019; "won 20 times" counts rows; "their" and "its" are grammar.
+- "Almost half of the squirrels were seen foraging" is the share of distinct
+  squirrel IDs (a count of distinct values under a filter now gives its
+  share), "seen" before a yes/no column keeps its yes rows, and "Owners
+  estimated that" is set aside. Fixed wrong verdict: a percent claim read as
+  a count with no share was compared with the count and failed; it now gets
+  `missing_context`. Fixed wrong verdict: "Cars from USA averaged 18.6
+  dollars" was read as a count of rows, because a plural after the number
+  that names no column counts rows; an average or an amount of money no
+  longer does.
+- "The distance increased by about 0.66 mm per year of age" is the slope of
+  distance on age: a column named for a quantity (age, dose, time) at a few
+  levels still correlates, and with several rows per subject both slopes of
+  the subjects' own lines are given.
 
 ### Answers
 

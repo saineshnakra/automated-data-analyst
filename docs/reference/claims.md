@@ -60,7 +60,9 @@ when the file can't be read, and 3 when it is unverified for any other reason.
    admitted") is set aside, and the base is checked: the share must be of
    4,526, or the claim gets `missing_context`. A claim with two numbers that
    could each be the one claimed is not split: it gets `unsupported_analysis`,
-   and each number should be sent on its own.
+   and each number should be sent on its own. A clause that only says who
+   reports the claim ("Owners estimated that", "The survey found that") is
+   set aside.
 2. **The question.** The rest of the sentence is read as a question to
    `Analysis.ask` (see [Ask ADA](ask-ada.md)). "averaged 5050" becomes
    "average ...", and "There are 344 penguins" becomes "how many penguins",
@@ -105,13 +107,19 @@ for 24 to 26.
    asked as a share, so its base is the group it names: "Men were admitted at
    a rate of 44.5%" is of the men (see [Ask ADA](ask-ada.md)). A plural after
    the number that names no column counts rows ("The survey recorded 1,950
-   captures in 2007"), and so does "N of the" before a plural: "55 of the cats
-   were neutered" counts the rows that were, one cat each. When the plural
-   also names a column (`n_cats`) and the table's rows are not one each,
-   because an id repeats, the claim gets `missing_context`. A number that
-   counts things ("1,524 Kenyans", "5,000 residents") is a total: when the
-   plain reading is an average and the claim says nothing of averages, ADA
-   checks the total instead and says so.
+   captures in 2007"), and so do "N times" ("won the Tour 20 times") and "N of
+   the" before a plural: "55 of the cats were neutered" counts the rows that
+   were, one cat each. When the plural also names a column (`n_cats`) and the
+   table's rows are not one each, because an id repeats, the claim gets
+   `missing_context`. A number that counts things ("1,524 Kenyans", "5,000
+   residents") is a total: when the plain reading is an average and the claim
+   says nothing of averages, ADA checks the total instead and says so. A
+   percent claim whose reading is a count with no share ("100% of the sites
+   were visited" read as the number of sites) gets `missing_context`; it is
+   never compared with the count. "Half of the squirrels" with a column of
+   squirrel IDs is a share of the distinct IDs. A plural after the number is
+   never counted when the claim speaks of an average or the plural is money:
+   "averaged 18.6 dollars" is not 18.6 rows.
 
 ## Slopes
 
@@ -123,8 +131,8 @@ it. ADA asks for the correlation of the two columns and compares the claim
 with the least-squares slope of the first on the second
 (`scipy.stats.linregress`), or, when each subject has several rows, the mean
 of the subjects' own slopes. A fall is compared with the slope's sign
-reversed. A unit before "of" after "per" ("per mm of flipper length") is the
-second column's unit. A percentage change per unit is not a slope, and too
+reversed. A unit before "of" after "per" ("per mm of flipper length", "per
+year of age") is the second column's unit. A percentage change per unit is not a slope, and too
 few rows for a correlation give `unsupported_analysis`.
 
 ## Words that name nothing

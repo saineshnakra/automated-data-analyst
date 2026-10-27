@@ -3322,6 +3322,90 @@ class OrdinalColumnTests(unittest.TestCase):
         self.assertTrue(answer is None or "quarter = 4" not in answer.calculation)
 
 
+class ValueBesideColumnTests(unittest.TestCase):
+    def frame(self) -> pd.DataFrame:
+        levels = ["Low", "Medium", "High"]
+        return pd.DataFrame({"Sat": levels * 3, "Infl": sorted(levels * 3),
+                             "Cont": ["Low", "High", "High"] * 3, "Freq": [10, 20, 30, 5, 5, 40, 20, 10, 10]})
+
+    def test_the_word_after_a_value_names_which_column_holds_it(self):
+        frame = self.frame()
+        for question in ("share of residents with high satisfaction", "share of residents highly satisfied"):
+            with self.subTest(question=question):
+                answer = answer_question(question, frame, detect_roles(frame))
+                self.assertIn("Sat = High", answer.calculation)
+                self.assertIn("80 of the 150 cases (53.3%)", answer.answer)
+
+    def test_a_filler_may_stand_between_the_value_and_the_column(self):
+        frame = self.frame()
+        answer = answer_question("how many residents had a high level of contact", frame, detect_roles(frame))
+        self.assertIn("Cont = High", answer.calculation)
+        self.assertIn('Read "high level of contact" as Cont = High.', answer.scope.readings)
+
+    def test_a_value_of_several_columns_with_no_column_beside_it_is_refused(self):
+        frame = self.frame()
+        roles = detect_roles(frame)
+        self.assertIsNone(answer_question("share of residents with high", frame, roles))
+        self.assertIn('"high" is a value of', rephrase_hint("share of residents with high", frame, roles))
+
+    def test_an_adverb_with_no_column_after_it_is_not_a_value(self):
+        frame = self.frame()
+        self.assertIsNone(answer_question("share of residents highly", frame, detect_roles(frame)))
+
+
+class SeenFlagTests(unittest.TestCase):
+    def test_a_verb_of_seeing_before_a_yes_no_column_keeps_its_yes_rows(self):
+        frame = pd.DataFrame({"id": range(8), "Foraging": [True, False] * 4,
+                              "Eating": [True] * 2 + [False] * 6})
+        answer = answer_question("how many rows were seen foraging", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 4)
+        self.assertIn("Foraging = 1", answer.calculation)
+
+
+class DistinctShareTests(unittest.TestCase):
+    def test_a_distinct_count_with_a_filter_gives_its_share_of_all_distinct_values(self):
+        frame = pd.DataFrame({"tree": ["a", "a", "b", "c", "d"], "sick": ["yes", "yes", "no", "yes", "no"],
+                              "height": [1.0, 2, 3, 4, 5]})
+        answer = answer_question("how many distinct tree with sick yes", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 2)
+        self.assertEqual(dict(answer.figures)["share_percent"], 50)
+        self.assertIn("50.0% of the 4 in all", answer.answer)
+
+
+class DecadeTests(unittest.TestCase):
+    def test_a_decade_is_its_ten_years(self):
+        frame = pd.DataFrame({"year": range(1995, 2025), "distance": [float(value) for value in range(30)]})
+        answer = answer_question("average distance in the 2010s", frame, detect_roles(frame))
+        self.assertEqual(answer.value, np.mean(range(15, 25)))
+        self.assertIn('Read "2010s" as 2010 to 2019.', answer.scope.readings)
+
+    def test_a_decade_needs_a_year_column(self):
+        frame = pd.DataFrame({"site": list("abcdef"), "distance": [1.0, 2, 3, 4, 5, 6]})
+        roles = detect_roles(frame)
+        self.assertIsNone(answer_question("average distance in the 2010s", frame, roles))
+        self.assertIn("no date or year column", rephrase_hint("average distance in the 2010s", frame, roles))
+
+
+class DemonymTests(unittest.TestCase):
+    def frame(self) -> pd.DataFrame:
+        return pd.DataFrame({"winner": list("abcdefgh"),
+                             "nationality": ["France", "France", "Belgium", "Italy", "Belgium", "Spain",
+                                             "France", "Italy"],
+                             "birth_country": ["France", "Belgium", "Belgium", "Italy", "France", "Spain",
+                                               "France", "Italy"],
+                             "distance": [1.0, 2, 3, 4, 5, 6, 7, 8]})
+
+    def test_an_adjective_of_nationality_picks_the_nationality_column(self):
+        frame = self.frame()
+        answer = answer_question("how many rows Belgian", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 2)
+        self.assertIn('Read "Belgian" as nationality = Belgium.', answer.scope.readings)
+
+    def test_two_columns_of_countries_without_a_nationality_column_are_not_read(self):
+        frame = self.frame().rename(columns={"nationality": "home_country"})
+        self.assertIsNone(answer_question("how many rows Belgian", frame, detect_roles(frame)))
+
+
 class LeadValueTests(unittest.TestCase):
     def frame(self) -> pd.DataFrame:
         return pd.DataFrame({"age": [8, 10, 12, 14] * 3, "Sex": ["Female"] * 8 + ["Male"] * 4,

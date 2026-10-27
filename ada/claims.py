@@ -142,6 +142,8 @@ SLOPE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 FALLING_VERBS = ("fall", "fell", "drop", "decreas", "declin", "goes down", "went down")
+# Units of a slope's column besides those in UNITS: "per year of age", "per unit of dose".
+PER_UNIT_WORDS = frozenset({"year", "month", "week", "unit", "point", "level"})
 # Fractions in words: "about a quarter of", "more than half of", "two thirds of".
 FRACTION_PATTERN = re.compile(
     r"\b(?:(?P<qualifier>about|roughly|around|approximately|nearly|almost|just\s+over|just\s+under|over|"
@@ -161,6 +163,13 @@ NUMBER_WORDS = {
     "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
 }
 LEFT_OUT_NOTE = "Read the claim without"
+# A clause that says who reports the claim: "Owners estimated that", "The survey found that".
+REPORTING_CLAUSE = re.compile(
+    r"^\s*(?:[A-Za-z']+\s+){1,4}?(?:estimated|estimates|estimate|reported|reports|report|found|finds|find|"
+    r"said|says|say|showed|shows|show|stated|states|noted|notes|concluded|concludes|wrote|writes|"
+    r"claimed|claims)\s+that\s+",
+    re.IGNORECASE,
+)
 # "55 of the cats": a count of things the table's rows may be.
 OF_THE = re.compile(r"\s*of\s+(?:the|these|those|all(?:\s+the)?)\s+([A-Za-z]+)\b", re.IGNORECASE)
 # A lead that names a claim's base: "Of the 4,526 applicants,".
@@ -168,6 +177,8 @@ BASE_LEAD = re.compile(
     r"^\s*(?:of|out\s+of)\s+(?:the\s+|all\s+)?(?P<count>\d{1,3}(?:,\d{3})+|\d+)\s+(?P<noun>[A-Za-z]+(?:\s[A-Za-z]+)?),\s*",
     re.IGNORECASE,
 )
+# Units of money, which a number measures rather than counts: "averaged 18.6 dollars".
+MONEY_WORDS = frozenset({"dollars", "euros", "pounds", "cents", "pence", "yen", "rupees", "francs", "reais"})
 # Plurals without an s, which count things as "344 penguins" does: "1,835 women applied".
 IRREGULAR_PLURALS = frozenset({"men", "women", "people", "children", "persons", "mice", "geese", "teeth"})
 # Words a claim is never read without, as leaving them out changes what it says.
@@ -638,6 +649,10 @@ def read_claim(
     check compares. A fraction or a whole number in words ("about a quarter
     of", "Seventeen cases") is read as its number.
     """
+    reported = REPORTING_CLAUSE.match(claim)
+    if reported:
+        # "Owners estimated that their cats caught 3.7 prey": who said it is not part of what is checked.
+        return read_claim(claim[reported.end():], columns, row_noun)
     worded = _worded_number(claim)
     if worded:
         question, number, problem = read_claim(worded[0], columns, row_noun)
@@ -652,9 +667,10 @@ def read_claim(
             what = re.sub(r"^(?:the|a|an)\s+", "", what.strip(), flags=re.IGNORECASE)
             # "per mm of flipper length" is per unit of flipper length, when those words name a column.
             measured = re.match(r"([A-Za-z]+)\s+of\s+(.+)", per)
-            if measured and measured.group(1).lower() in UNITS and set(_words(measured.group(2))) & (
-                _column_words(columns)
-            ):
+            unit_word = measured.group(1).lower() if measured else ""
+            if measured and (unit_word in UNITS or unit_word in PER_UNIT_WORDS) and set(
+                _words(measured.group(2))
+            ) & _column_words(columns):
                 per = measured.group(2)
             return f"correlation between {per} and {what}", number, ""
     candidates = _candidates(claim, columns)
@@ -693,6 +709,14 @@ def read_claim(
             following.group(1).lower().endswith("s") or following.group(1).lower() in IRREGULAR_PLURALS
         ))
     )
+    # "won the Tour 20 times" counts the rows the rest of the claim picks.
+    times = re.match(r"\s*times\b", claim[chosen.match.end():], re.IGNORECASE)
+    if times and not chosen.match.group("percent"):
+        rest = f"{claim[:chosen.qualifier_start]} {claim[chosen.match.end() + times.end():]}"
+        rest = re.sub(r"\s+", " ", rest).strip(" .,;:!?")
+        written = claim[chosen.qualifier_start:chosen.match.end()]
+        number = claimed_number(written, chosen.match, chosen.qualifier, None)
+        return f"how many rows {rest}", number, ""
     # "55 of the cats were neutered" counts the cats that were.
     of_the = OF_THE.match(claim[chosen.match.end():])
     noun = of_the.group(1).lower() if of_the else ""
@@ -848,7 +872,8 @@ def _comparable(answer: QueryAnswer, number: ClaimedNumber) -> tuple[float | Non
     notes: list[str] = []
     if number.percent:
         if "share_percent" in figures:
-            notes.append("compared with the share of rows, as a percentage")
+            of = f"distinct {answer.plan.count_column} values" if answer.plan.count_column else "rows"
+            notes.append(f"compared with the share of {of}, as a percentage")
             return figures["share_percent"], notes
         if "change_percent" in figures:
             return figures["change_percent"], notes
@@ -1348,7 +1373,7 @@ def _check(
     assumptions: list[str] = [f"{LEFT_OUT_NOTE} {_quoted(left)}, which name no column or value in the table."
                               ] if left else []
     counted_rows = re.match(r"how many (\w+) (.+)$", asked)
-    if counted_rows and OF_THE.search(text) and (
+    if counted_rows and not number.percent and OF_THE.search(text) and (
         isinstance(answer, Refusal) or answer.plan.measure or answer.plan.count_column
     ):
         # "55 of the cats were neutered" read "cats" as n_cats; the cats are the rows when no unit repeats.
@@ -1485,10 +1510,13 @@ def _check(
                            f"that kind or named for it, as the number is in {number.unit}.")
     after = re.search(rf"{re.escape(number.text)}\s+([A-Za-z]+)\b", text)
     noun = (number.unit or "").split() or ([after.group(1)] if after else [])
-    if unnamed and len(noun) == 1 and not _claim_unit(number) and (
-        noun[0].lower().endswith("s") or noun[0].lower() in IRREGULAR_PLURALS
-    ):
-        # "The survey recorded 1,950 captures in 2007": a plural that names no column counts rows.
+    averaging = re.search(r"\b(?:average|averages|averaged|averaging|mean|median|typical|per|each)\b", text,
+                          re.IGNORECASE)
+    if unnamed and len(noun) == 1 and not _claim_unit(number) and not averaging and (
+        noun[0].lower() not in MONEY_WORDS
+    ) and (noun[0].lower().endswith("s") or noun[0].lower() in IRREGULAR_PLURALS):
+        # "The survey recorded 1,950 captures in 2007": a plural that names no column counts rows. An
+        # average ("averaged 18.6 dollars") or an amount of money is never a count of rows.
         rest = re.sub(r"^(?:total|average)\s+", "", asked, flags=re.IGNORECASE)
         tally = analysis.ask(f"how many {noun[0]} {rest}", decisions=choices)
         if not isinstance(tally, Refusal) and tally.plan.intent == "count" and not tally.plan.measure:
@@ -1511,8 +1539,11 @@ def _check(
             clarification="Which column is the number about?",
         )
     items = [*answer.plan.filters, *answer.plan.conditions]
-    if number.percent and answer.plan.intent == "count" and not answer.plan.counted and len(items) > 1:
-        # "Men were admitted at a rate of 44.5%": the share is of the men, so it is asked as a share.
+    if number.percent and answer.plan.intent == "count" and not answer.plan.counted and (
+        len(items) > 1 or answer.plan.count_column
+    ):
+        # "Men were admitted at a rate of 44.5%": the share is of the men, so it is asked as a share;
+        # so is "half of the squirrels", which counts distinct squirrels rather than giving a share.
         share = analysis.ask(f"share of {asked}", decisions=choices)
         if not isinstance(share, Refusal) and share.plan.counted:
             answer, asked = share, f"share of {asked}"
@@ -1546,6 +1577,17 @@ def _check(
             "so the claim is about one row the question does not pick out.",
             claimed=number, question=asked, answer=answer, assumptions=tuple(assumptions), source=source,
             clarification="Which single group (row) is the number about?",
+        )
+    if number.percent and answer.plan.intent == "count" and not (
+        {"share_percent", "change_percent"} & set(dict(answer.figures))
+    ):
+        # A percentage compared with a plain count fails a true claim ("half of the squirrels" with 1,434).
+        return ClaimCheck(
+            text, "unverified", "missing_context",
+            f"The claim gives a percentage, but ADA read the words as a count ({answer.calculation}), not as "
+            "a share of a base it could name.",
+            claimed=number, question=asked, answer=answer, assumptions=tuple(assumptions), source=source,
+            clarification="A percentage of which rows?",
         )
     computed, notes = _comparable(answer, number)
     slope = _slope_claim(text) if answer.plan.intent == "correlation" else None
