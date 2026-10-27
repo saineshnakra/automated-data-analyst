@@ -97,6 +97,22 @@ PREDICATE_CUES = frozenset({
     "rose", "fell", "grew", "dropped", "increased", "decreased", "paid", "made", "had", "has", "have",
     "scored", "scores", "earned", "earns", "collected", "recorded",
 })
+# Adjectives after a number that name the quantity: "6,657 metres high" is a height.
+ADJECTIVE_NOUNS = {
+    "high": "height", "tall": "height", "long": "length", "wide": "width", "deep": "depth", "heavy": "weight",
+    "old": "age", "thick": "thickness",
+}
+# Verbs before a number that name the quantity: "customers paid R$16M" is a payment.
+VERB_NOUNS = {
+    "paid": "payment", "pays": "payment", "spent": "spending", "spends": "spending", "earned": "earnings",
+    "earns": "earnings", "sold": "sales", "charged": "charge", "cost": "cost", "costs": "cost",
+}
+# Nouns for the people a table is about: a claim's subject, not a column ("Customers paid ...").
+PEOPLE_NOUNS = frozenset({
+    "customers", "clients", "users", "players", "passengers", "students", "members", "employees",
+    "visitors", "buyers", "shoppers", "people", "patients", "participants", "respondents", "athletes",
+    "drivers", "riders", "workers", "voters", "readers", "viewers", "guests", "travellers", "travelers",
+})
 # Verbs that add things up: in "hit 73 home runs" and "scored 3,999.5 points" the words after the
 # number name the column that is totalled, not a unit.
 TALLY_VERBS = frozenset({"hit", "hits", "scored", "scores", "earned", "earns", "collected", "recorded"})
@@ -447,6 +463,8 @@ def _unit_after(claim: str, end: int, columns: list[str], row_noun: str | None) 
         if match.start() != position - end:
             break
         word = match.group(1).rstrip(".")
+        if word.lower() in ADJECTIVE_NOUNS:
+            break
         known_unit = word.lower() in UNITS and not words
         if word.lower() in UNIT_STOPS or (word.lower() in column_words and not known_unit) or len(words) == 3:
             break
@@ -506,7 +524,13 @@ def read_claim(
         "is", "was", "were", "are", "be", "been", "equals", "equalled", "equaled", "stood", "amounted",
         "came", "numbered", "at", "by", "of",
     } else chosen.qualifier_start
-    question = f"{claim[:start]} {claim[unit_end:]}"
+    before, after = claim[:start], claim[unit_end:]
+    adjective = re.match(r"\s*([A-Za-z]+)", after)
+    if adjective and adjective.group(1).lower() in ADJECTIVE_NOUNS:
+        after = f" {ADJECTIVE_NOUNS[adjective.group(1).lower()]}{after[adjective.end():]}"
+    if chosen.cue in VERB_NOUNS:
+        before = re.sub(rf"\b{chosen.cue}\b", VERB_NOUNS[chosen.cue], before, flags=re.IGNORECASE)
+    question = f"{before} {after}"
     if chosen.cue in AGGREGATION_CUES:
         question = f"{AGGREGATION_CUES[chosen.cue]} {question}"
     question = re.sub(r"\bon average\b", "", question, flags=re.IGNORECASE)
@@ -961,6 +985,40 @@ def _otherwise(
     return None
 
 
+# Name words of a column that holds money, for a claim whose number carries a currency symbol.
+MONEY_WORDS = frozenset({
+    "revenue", "turnover", "sales", "profit", "amount", "income", "spend", "spending", "cost", "expense",
+    "price", "balance", "payment", "paid", "fare", "salary", "wage", "wages", "fee", "fees", "charge",
+    "value", "earnings", "budget", "tax", "usd", "eur", "gbp", "brl",
+})
+
+
+def _money_column(column: str, values: Any) -> bool:
+    """Whether a column holds money: a money word in its name, and values that are not small whole codes."""
+    if not MONEY_WORDS & set(normalized_name(str(column)).split()):
+        return False
+    numbers = values.dropna()
+    try:
+        whole = bool((numbers % 1 == 0).all())
+    except TypeError:
+        return False
+    return not (whole and numbers.max() <= 100)
+
+
+def _names_anything(frame: Any, word: str) -> bool:
+    """Whether ``word`` (or its singular) is part of a column's name or one of a text column's values."""
+    from .folder import singular  # noqa: PLC0415
+
+    forms = {word.lower(), singular(word.lower())}
+    if any(forms & set(normalized_name(str(column)).split()) for column in frame.columns):
+        return True
+    for column in frame.select_dtypes(exclude=["number", "bool", "datetime"]).columns:
+        values = frame[column].dropna().astype(str).str.lower().unique()
+        if any(value in forms for value in values):
+            return True
+    return False
+
+
 def _check(
     analysis: Any, text: str, asked: str, number: ClaimedNumber, source: Source | None,
     choices: dict[str, str] | None = None,
@@ -971,6 +1029,33 @@ def _check(
     answer = analysis.ask(asked, decisions=choices)
     alternatives: list[Alternative] = []
     assumptions: list[str] = []
+    subject = re.match(r"\s*(?:(?:total|average|mean)\s+)?([A-Za-z]+)\s+", asked, re.IGNORECASE)
+    if isinstance(answer, Refusal) and subject and subject.group(1).lower() in PEOPLE_NOUNS and (
+        not _names_anything(analysis.frame, subject.group(1))
+    ):
+        # "Customers paid R$16M": a subject that names nothing in the table is every row of it.
+        shorter = f"{asked[:subject.start(1)]}{asked[subject.end(1):]}"
+        retried = analysis.ask(shorter, decisions=choices)
+        assumptions.append(f'Read "{subject.group(1)}" as every row of the table, since no column names '
+                           "them.")
+        answer, asked = retried, shorter
+    from .folder import singular  # noqa: PLC0415
+
+    row_noun = analysis.roles.row_noun
+    if isinstance(answer, Refusal) and row_noun:
+        # "The average Lego set": a word before the rows' own noun that names nothing only describes them.
+        forms = {row_noun, singular(row_noun)}
+        modifier = next((match for match in re.finditer(r"\b([A-Za-z]+)\s+(?=([A-Za-z]+)\b)", asked)
+                         if match.group(2).lower() in forms and match.group(1)[0].isupper()
+                         and not _names_anything(analysis.frame, match.group(1))), None)
+        if modifier:
+            shorter = f"{asked[:modifier.start(1)]}{asked[modifier.end(2):]}"
+            retried = analysis.ask(shorter, decisions=choices)
+            if not isinstance(retried, Refusal):
+                assumptions.append(f'Read "{modifier.group(1)} {modifier.group(2)}" as every '
+                                   f"{singular(row_noun)} of the table, since no column or value holds "
+                                   f"{modifier.group(1)}.")
+                answer, asked = retried, shorter
     if isinstance(answer, Refusal):
         readings = []
         columns = _candidate_columns(answer.message, list(analysis.frame.columns))
@@ -984,7 +1069,14 @@ def _check(
                 continue
             computed, _ = _comparable(other, number)
             readings.append((column, rewritten, other, computed))
-        if len(readings) == 1:
+        written = NUMBER_PATTERN.search(number.text)
+        money = [reading for reading in readings
+                 if reading[3] is not None and _money_column(reading[0], analysis.frame[reading[0]])]
+        if written and written.group("currency") and len(readings) > 1 and len(money) == 1:
+            column, asked, answer, _ = money[0]
+            assumptions.append(f"Read the claim as being about {column}, the only money column it fits, as "
+                               f"the number is written in {written.group('currency').strip()}.")
+        elif len(readings) == 1:
             column, asked, answer, _ = readings[0]
             assumptions.append(
                 f"Read the claim as being about {column}, the only column recorded in a unit of that kind."

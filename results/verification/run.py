@@ -1,6 +1,7 @@
 """Run ADA on the evaluation cases and save what it returned, with automatic numeric checks.
 
     python -I run.py ADA_CHECKOUT DATA_ROOT HOLDOUT_ROOT OUT.json [--split dev|holdout|all] [--only ID,ID]
+                     [--cases CASES.yml]
 
 Numbers are compared with the expected values in cases.yml. Criteria written as `must:` are
 left for a written verdict, with ADA's full output saved beside them.
@@ -19,6 +20,7 @@ checkout, data_root, holdout_root, out_path = (Path(a) for a in sys.argv[1:5])
 args = sys.argv[5:]
 split = args[args.index("--split") + 1] if "--split" in args else "dev"
 only = set(args[args.index("--only") + 1].split(",")) if "--only" in args else None
+cases_path = Path(args[args.index("--cases") + 1]) if "--cases" in args else HERE / "cases.yml"
 sys.path.insert(0, str(checkout))
 
 import pandas as pd  # noqa: E402
@@ -26,7 +28,7 @@ import yaml  # noqa: E402
 
 import ada  # noqa: E402
 
-spec = yaml.safe_load((HERE / "cases.yml").read_text())
+spec = yaml.safe_load(cases_path.read_text())
 datasets = spec["datasets"]
 
 
