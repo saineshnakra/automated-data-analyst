@@ -255,7 +255,13 @@ each word is claimed, in this order, by:
 5. **Ranges of years** on the date column: "since 1978", "from 1978",
    "1978 onwards", "after 1977", "before 1950", "until 2000", "between 1990
    and 2000", "from 1990 to 2000", and "before and after 2000", which splits
-   the rows in two. In a table whose year is a numeric column (`YEAR`), the
+   the rows in two. "From 2019" right after the rows' own noun is that year
+   ("sets from 2019" in `sets.csv` are 2019's sets); "from 2019 onwards"
+   stays a range. A verb that only dates an event before a year ("sets
+   released in 2020"; also published, launched, founded, built, made,
+   opened, held, sold) and a phrase that only says where the rows are ("on
+   board", "in the dataset", "in this table") name nothing and are passed over.
+   In a table whose year is a numeric column (`YEAR`), the
    same words set a condition on that column, as does "YEAR > 1977". Numbers
    right after another numeric column's name that fall within its own values
    ("Elevation between 1900 and 2000") are a range of that column.
