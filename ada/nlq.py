@@ -1334,6 +1334,25 @@ def _holding(words: dict[str, tuple[str, ...]], phrase: tuple[str, ...], index: 
     return sorted(found, key=index.position.__getitem__)
 
 
+def _abbreviated_columns(phrase: tuple[str, ...], words: dict[str, tuple[str, ...]]) -> list[str]:
+    """Columns whose name shortens the phrase word by word: "life exp" for "life expectancy".
+
+    Each name word starts its word of the phrase, with three letters at least,
+    and one of them is whole, so a run of short words is not read as initials.
+    """
+    size = len(phrase)
+
+    def shortens(names: tuple[str, ...]) -> bool:
+        return len(names) >= size and any(
+            all(word.startswith(name) and (len(name) >= 3 or name == word) for name, word in pairs)
+            and any(name == word for name, word in pairs)
+            for start in range(len(names) - size + 1)
+            if (pairs := list(zip(names[start:start + size], phrase, strict=True)))
+        )
+
+    return [column for column, names in words.items() if shortens(names)]
+
+
 def _initialled_columns(phrase: tuple[str, ...], words: dict[str, tuple[str, ...]]) -> list[str]:
     """Columns named in capitals by the initials of the phrase: "home runs" for HR, "stolen bases" for SB."""
     if not all(word.isalpha() for word in phrase):
@@ -1367,7 +1386,7 @@ def _claim_partial_at(
         if not candidates and size == 1:
             candidates = _prefixed_columns(phrase[0], words) or _stemmed_columns(phrase[0], words)
         if not candidates and 2 <= size <= 4:
-            candidates = _initialled_columns(phrase, words)
+            candidates = _abbreviated_columns(phrase, words) or _initialled_columns(phrase, words)
         if not candidates:
             continue
         start, end = window[0][0], window[-1][1]

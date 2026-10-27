@@ -49,6 +49,9 @@
 
 ### Fixes
 
+- Words that a column's name shortens word by word name it: "life
+  expectancy" names Gapminder's `lifeExp`, and the answer says so ('Read
+  "life expectancy" as lifeExp'). The question was refused.
 - A camelCase column name reads as its words, and a claim's unit can hold a
   slash. "The average fastest lap speed is 202.6 km/h" about Formula 1's
   results was refused ("lap" named `laps`, and "/h" named nothing); it is now

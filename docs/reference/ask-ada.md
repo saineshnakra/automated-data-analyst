@@ -364,6 +364,9 @@ name word is at least three letters and a third of the word: "conductivity"
 names `Conduc`, "stations" names `STA`, "healthy" names `Crop_Health_Label`.
 A word that is a name word less a common ending ("-ing", "-ed", "-ity",
 "-ation" and a few more) names it too: "fast" names `fasting_ability`. Two to
+four words that a name shortens word by word name it, when each name word
+starts its word with three letters or more and one is whole: "life
+expectancy" names `lifeExp`, "departure delay" names `dep_delay`. Two to
 four words whose initials spell a column named in capitals name it: "home
 runs" names `HR`, "stolen bases" names `SB`. The answer says so ('Read "home
 runs" as HR.'). A name in mixed case (`Hr`) is never matched this way.

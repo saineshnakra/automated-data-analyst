@@ -725,6 +725,18 @@ class PluralAndWordMatchTests(unittest.TestCase):
         result = answer_question("top 2 categories by revenue", frame, detect_roles(frame))
         self.assertEqual(result.plan.dimension, "Category")
 
+    def test_a_name_that_shortens_the_words_names_its_column(self):
+        frame = pd.DataFrame({"continent": ["Africa", "Asia", "Europe"] * 4,
+                              "lifeExp": [52.0, 70.0, 77.0] * 4, "pop": [1e6, 5e6, 2e6] * 4})
+        roles = detect_roles(frame)
+
+        answer = answer_question("average life expectancy by continent", frame, roles)
+        unrelated = answer_question("average lift exposure by continent", frame, roles)
+
+        self.assertEqual(answer.plan.measure, "lifeExp")
+        self.assertIn('Read "life expectancy" as lifeExp', answer.answer)
+        self.assertNotEqual(getattr(unrelated, "plan", None) and unrelated.plan.measure, "lifeExp")
+
     def test_a_column_name_does_not_flip_the_ranking(self):
         frame = pd.DataFrame({"Store": ["A", "A", "B", "B"], "Lowest Price": [1.0, 2.0, 10.0, 20.0]})
         result = answer_question("which store has the highest lowest price", frame, detect_roles(frame))
