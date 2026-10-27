@@ -177,6 +177,8 @@ BASE_LEAD = re.compile(
     r"^\s*(?:of|out\s+of)\s+(?:the\s+|all\s+)?(?P<count>\d{1,3}(?:,\d{3})+|\d+)\s+(?P<noun>[A-Za-z]+(?:\s[A-Za-z]+)?),\s*",
     re.IGNORECASE,
 )
+# Units of money, which a number measures rather than counts: "averaged 18.6 dollars".
+MONEY_WORDS = frozenset({"dollars", "euros", "pounds", "cents", "pence", "yen", "rupees", "francs", "reais"})
 # Plurals without an s, which count things as "344 penguins" does: "1,835 women applied".
 IRREGULAR_PLURALS = frozenset({"men", "women", "people", "children", "persons", "mice", "geese", "teeth"})
 # Words a claim is never read without, as leaving them out changes what it says.
@@ -1508,10 +1510,13 @@ def _check(
                            f"that kind or named for it, as the number is in {number.unit}.")
     after = re.search(rf"{re.escape(number.text)}\s+([A-Za-z]+)\b", text)
     noun = (number.unit or "").split() or ([after.group(1)] if after else [])
-    if unnamed and len(noun) == 1 and not _claim_unit(number) and (
-        noun[0].lower().endswith("s") or noun[0].lower() in IRREGULAR_PLURALS
-    ):
-        # "The survey recorded 1,950 captures in 2007": a plural that names no column counts rows.
+    averaging = re.search(r"\b(?:average|averages|averaged|averaging|mean|median|typical|per|each)\b", text,
+                          re.IGNORECASE)
+    if unnamed and len(noun) == 1 and not _claim_unit(number) and not averaging and (
+        noun[0].lower() not in MONEY_WORDS
+    ) and (noun[0].lower().endswith("s") or noun[0].lower() in IRREGULAR_PLURALS):
+        # "The survey recorded 1,950 captures in 2007": a plural that names no column counts rows. An
+        # average ("averaged 18.6 dollars") or an amount of money is never a count of rows.
         rest = re.sub(r"^(?:total|average)\s+", "", asked, flags=re.IGNORECASE)
         tally = analysis.ask(f"how many {noun[0]} {rest}", decisions=choices)
         if not isinstance(tally, Refusal) and tally.plan.intent == "count" and not tally.plan.measure:
