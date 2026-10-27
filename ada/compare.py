@@ -3570,6 +3570,88 @@ def correlation_interval(value: float, pairs: int) -> tuple[float, float]:
     return float(np.tanh(centre - margin)), float(np.tanh(centre + margin))
 
 
+# A unit needs this many rows, with the first column changing, to have a slope of its own.
+MIN_SLOPE_ROWS = 3
+# Units with a slope needed before their average slope is tested.
+MIN_SLOPE_UNITS = 5
+
+
+@dataclass(frozen=True)
+class RepeatedCorrelation:
+    """How two columns move together when several rows come from each unit (a subject, a site).
+
+    When both change within units (``within``), ``r`` is the repeated-measures
+    correlation, the correlation of the values once each unit's own mean is
+    taken away (Bakdash and Marusich 2017), and ``slope`` is the average of the
+    units' own slopes of ``second`` on ``first``, with a t interval and test
+    across those ``sloped`` units. Otherwise one column is fixed within each
+    unit, and ``r`` is Pearson's r over the units' means, one row per unit.
+    """
+
+    first: str
+    second: str
+    unit: str
+    units: int
+    rows: int
+    within: bool
+    r: float
+    p: float
+    low: float
+    high: float
+    slope: float | None = None
+    sloped: int = 0
+    positive: int = 0
+
+
+def repeated_correlation(
+    dataframe: pd.DataFrame, first: str, second: str, unit: str
+) -> RepeatedCorrelation | None:
+    """The relation between ``first`` and ``second`` with ``unit`` as the unit of evidence.
+
+    None when no unit has two rows with both columns recorded, so the rows are
+    independent as they stand, or when the columns don't vary.
+    """
+    data = dataframe[[unit, first, second]].dropna()
+    sizes = data.groupby(unit, observed=True).size()
+    repeated = sizes[sizes >= 2].index
+    if repeated.empty or data[first].nunique() < 2 or data[second].nunique() < 2:
+        return None
+    within_data = data[data[unit].isin(repeated)]
+    changes = within_data.groupby(unit, observed=True)[[first, second]].nunique()
+    within = bool(((changes[first] >= 2) & (changes[second] >= 2)).mean() >= 0.5)
+    if not within:
+        means = data.groupby(unit, observed=True)[[first, second]].mean()
+        units = len(means)
+        value = float(means[first].corr(means[second])) if units >= 3 else float("nan")
+        if not np.isfinite(value):
+            return None
+        low, high = correlation_interval(value, units)
+        return RepeatedCorrelation(first, second, str(unit), units, len(data), False, value,
+                                   correlation_p(value, units), low, high)
+    centred = data[[first, second]] - data.groupby(unit, observed=True)[[first, second]].transform("mean")
+    value = float(centred[first].corr(centred[second]))
+    if not np.isfinite(value):
+        return None
+    slopes = []
+    for _, rows in data.groupby(unit, observed=True):
+        x, y = rows[first].to_numpy(dtype=float), rows[second].to_numpy(dtype=float)
+        if len(rows) >= MIN_SLOPE_ROWS and np.ptp(x) > 0:
+            slopes.append(float(np.polyfit(x, y, 1)[0]))
+    found = np.asarray(slopes)
+    slope = float(found.mean()) if found.size else None
+    low = high = p = float("nan")
+    if found.size >= MIN_SLOPE_UNITS:
+        spread = float(found.std(ddof=1))
+        error = spread / float(np.sqrt(found.size))
+        margin = float(stats.t.ppf(0.975, found.size - 1)) * error
+        low, high = slope - margin, slope + margin
+        p = float(stats.ttest_1samp(found, 0.0).pvalue) if spread > 0 else 0.0
+    return RepeatedCorrelation(
+        first, second, str(unit), int(data[unit].nunique()), len(data), True, value, p, low, high,
+        slope=slope, sloped=int(found.size), positive=int((found > 0).sum()),
+    )
+
+
 def correlation_p(value: float, pairs: int) -> float:
     """Two-sided p-value for a Pearson r of zero."""
     if pairs <= 2 or not np.isfinite(value):
