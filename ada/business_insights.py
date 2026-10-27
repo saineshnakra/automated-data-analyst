@@ -3015,7 +3015,8 @@ def _vanishes(pooled: float, within: float) -> bool:
 
 def _within_sentence(within: WithinGroups, pooled: float) -> str:
     group = sentence_case(within.grouping)
-    removed = f"{within.within:.2f} once each {group}'s own means are removed"
+    owner = f"{group}'" if group.endswith("s") else f"{group}'s"
+    removed = f"{within.within:.2f} once each {owner} own means are removed"
     if len(within.per_group) <= WITHIN_GROUPS_LISTED:
         listed = _joined_names(
             [f"{r:.2f} in {group_label(within.grouping, level)}" for level, r, _ in within.per_group]
@@ -3065,7 +3066,7 @@ def _strongest_label(dataframe: pd.DataFrame, roles: ColumnRoles, column: str) -
     return best[1] if best[0] >= STRATUM_EXPLAINED else None
 
 
-def _within_group_note(
+def within_group_note(
     dataframe: pd.DataFrame, roles: ColumnRoles, correlation: Correlation, skip: frozenset[str] = frozenset()
 ) -> str:
     """Sentences when r inside the groups differs from the pooled r, in sign or clearly in size, either way.
@@ -3134,7 +3135,7 @@ def _scanned_pair(
             for column in (pair.first, pair.second)
         )
     )
-    return correlation, _within_group_note(dataframe, roles, correlation, skip)
+    return correlation, within_group_note(dataframe, roles, correlation, skip)
 
 
 def _pair_numbers(dataframe: pd.DataFrame, pair: Pair, sampled: bool) -> tuple[float, float, int]:

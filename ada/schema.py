@@ -1147,10 +1147,14 @@ def _running_total(name: str, values: np.ndarray, groups: np.ndarray) -> bool:
     and neither does a day of the month. A name such as "Cumulative Cases" is
     enough without a reset, and so is counting up by one at most steps while
     almost never falling, as a packet or frame counter numbers the messages a
-    device sends. Money and named levels (an age) are never counted up that way.
+    device sends. Money and named levels (an age) are never counted up that way,
+    and neither is elapsed time ("Days", "time_since_start"): it climbs within
+    each subject because it is the time axis, which a trend is fitted against.
     """
+    from .timepoints import is_timepoint_name  # noqa: PLC0415 - timepoints imports this module
+
     words = _head_words(name)
-    if is_time_part(name, pd.Series(values)):
+    if is_time_part(name, pd.Series(values)) or is_timepoint_name(name):
         return False
     present = ~np.isnan(values)
     values, groups = values[present], groups[present]

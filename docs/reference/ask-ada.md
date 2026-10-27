@@ -722,7 +722,19 @@ Other behaviour:
   correlation alone is not evidence of cause. Fewer than 12 complete pairs
   (`MIN_CORRELATION_PAIRS`) gives an answer saying so instead of an r. The
   table holds the pairs for a scatter, sampled down to 2,000 when there are
-  more.
+  more. As in the brief, the answer says when r inside the groups of a
+  grouping column differs from the pooled r, in sign or clearly in size
+  (`business_insights.within_group_note`): bill length and depth fall
+  together over all penguins (r = -0.24) and rise together within each
+  species (0.39 to 0.65). The sentence is also one of the answer's cautions.
+- When several rows come from each unit (`compare.entity_column`: a subject,
+  a patient, a site), a correlation counts each unit once instead
+  (`compare.repeated_correlation`). With both columns changing within units
+  ("does Reaction increase with Days" over 18 subjects measured on 10 days),
+  the answer gives the average of the units' own slopes with a t interval
+  and test across units, how many slopes are positive, and the
+  repeated-measures r; with one column fixed within units, Pearson r over
+  the units' means.
 - Sum and count groupings get a `Share %` column when every group has the same
   sign.
 - Changes are given in the measure's own terms: percent for an amount or
@@ -759,6 +771,7 @@ the refusal message.
 | More than 20 breakdown groups | The 10 highest and the 10 lowest, with the number of groups |
 | A breakdown by a continuous column | Four equal-sized groups at its quartiles, said in the answer |
 | "average X per transect by status" | Each transect's total X, compared across the status groups; `None` when status changes within a transect |
+| "average payment_value per order_id", "average order value" | Each order's total (its mean, for a level), then the average over orders, beside the average taken row by row; only for a key (the identifier or a column named like one) with more than 50 values that repeats across rows. A shorter grouping after "per" is a breakdown |
 | A partial column name one column fits ("average body by island") | Uses `body_mass_g` and says so |
 | A partial name several columns fit ("average length by island") | `None`, with "Did you mean bill_length_mm or flipper_length_mm?" |
 | "Which year ..." with no date column | Not a period ranking; a numeric `year` column can still group if it has at most 50 values |

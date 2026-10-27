@@ -28,6 +28,25 @@
 
 ### Fixes
 
+- A correlation over rows that come several to a subject counts each subject
+  once. "does Reaction increase with Days" on the sleepstudy table (18
+  people, 10 days each) used to be refused; it now gives the average of the
+  18 people's own slopes, 10.47 per day (95% CI 7.21 to 13.73, the same
+  standard error as a random-slope mixed model), with the repeated-measures
+  r of 0.72. A column fixed within each subject is correlated over the
+  subjects' means.
+- A correlation answer says when the relation inside the groups of a
+  grouping differs from the pooled one, as the brief does: over all penguins
+  bill length and depth fall together (r = -0.24), within each species they
+  rise together (0.39 to 0.65). The sentence also reaches a claim check's
+  warnings.
+- "average order value" and "average payment value per order" total each
+  order first and average over orders (160.99 on the Olist payments table),
+  and give the row-by-row average beside it (154.10). A claim that matches
+  the row average is told so.
+- Elapsed time counted within each subject (`Days`) is a time axis, not a
+  running total to set aside.
+
 - A comparison counts each subject once when the subject column is numbered
   with a sign (`subject#`, `Patient #`): `#` is now a word of its own, so such
   a column is read as the unit. On the UCI Parkinson's telemonitoring table,

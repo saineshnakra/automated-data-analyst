@@ -896,6 +896,12 @@ def _check(analysis: Any, text: str, asked: str, number: ClaimedNumber, source: 
             f"The data give {_plain(computed)}{rows} for {described}; the claim's {number.text} stands for "
             f"{number.interval()}."
         )
+        per_row = dict(answer.figures).get("per_row")
+        if per_row is not None and number.holds(per_row) and answer.plan.per:
+            message += (
+                f" The claim matches the average taken row by row ({_plain(per_row)}), which counts each row "
+                f"rather than each {answer.plan.per[0]}."
+            )
     elif failed:
         reason = "failed_check"
         message = (
