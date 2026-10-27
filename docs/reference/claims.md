@@ -47,10 +47,16 @@ when the file can't be read, and 3 when it is unverified for any other reason.
 ## How a claim is read
 
 1. **The number.** ADA takes out the number being claimed. A year ("in
-   2013"), an ordinal ("25th percentile") and a value right after a column's
-   name ("bill length above 45 mm") stay part of the question. A claim with
-   two numbers that could each be the one claimed is not split: it gets
-   `unsupported_analysis`, and each number should be sent on its own.
+   2013"), an ordinal ("25th percentile"), a value right after a column's
+   name ("bill length above 45 mm") and a number between "with" and a
+   column's name ("cars with 4 cylinders") stay part of the question.
+   Digits inside a word or a code ("CO2", "bondsba01") are not a number. A
+   fraction in words before "of" ("about a quarter of", "more than half
+   of", "two thirds of") and a whole number in words in a claim with no
+   other number but a year ("Seventeen cases were decided in 2020") are read
+   as numbers. A claim with two numbers that could each be the one claimed is
+   not split: it gets `unsupported_analysis`, and each number should be sent
+   on its own.
 2. **The question.** The rest of the sentence is read as a question to
    `Analysis.ask` (see [Ask ADA](ask-ada.md)). "averaged 5050" becomes
    "average ...", and "There are 344 penguins" becomes "how many penguins",
@@ -79,13 +85,59 @@ when the file can't be read, and 3 when it is unverified for any other reason.
 | `at least 30` | 30 or more |
 | `exactly 3` | 3 |
 | `37.5 billion` | 37.45 billion to 37.55 billion |
+| `a quarter of` | 23.6% to 26.8%: the values nearer 1/4 than any other fraction with a denominator up to 10 |
+| `about half of` | 47.2% to 52.8%, the same way; "about" adds nothing to a fraction in words |
+| `more than half of` | above 50% |
+
+`--value` with `--question` keeps its qualifier: `--value "about 25%"` stands
+for 24 to 26.
 
 4. **The comparison.** The computed answer is compared with the interval, in
    the claim's terms: a percent claim is compared with a share or a change in
    percent, and a fraction such as 0.32 with 32%. A percent claim that names
    no column ("32.3% survived") is read as a share, and the assumptions say
    so; in a table of counts the share adds up the counts (see
-   [Ask ADA](ask-ada.md)).
+   [Ask ADA](ask-ada.md)). A number that counts things ("1,524 Kenyans",
+   "5,000 residents") is a total: when the plain reading is an average and
+   the claim says nothing of averages, ADA checks the total instead and says
+   so.
+
+## Slopes
+
+A change for each unit of another column is a slope: "Reaction time rises
+by about 10.5 ms per day", "Body mass rises by about 50 g per mm of flipper
+length". The verb (rises, increases, grows, climbs, goes up; falls, drops,
+decreases, declines, goes down) and "per", "for each" or "with each" mark
+it. ADA asks for the correlation of the two columns and compares the claim
+with the least-squares slope of the first on the second
+(`scipy.stats.linregress`), or, when each subject has several rows, the mean
+of the subjects' own slopes. A fall is compared with the slope's sign
+reversed. A unit before "of" after "per" ("per mm of flipper length") is the
+second column's unit. A percentage change per unit is not a slope, and too
+few rows for a correlation give `unsupported_analysis`.
+
+## Words that name nothing
+
+When the claim still can't be read, ADA leaves out the words its refusal
+says name nothing in the table, and asks again: "Brazil lost 2,564,000
+hectares of forest to pasture in 2004" is checked as "Brazil of to pasture
+in 2004". The assumptions say which words were left out, and so does
+`words_left_out` in the JSON. A word that negates or bounds ("not",
+"without", "except", "more", "than", "only", "per" and the like) is never
+left out.
+
+Left-out words may pick rows the table cannot, so the check rests on the
+rest only when no subset could agree by chance:
+
+- a mismatch gives `missing_context`, never `failed_check`;
+- an agreement gives `verified` only for a lookup of one row, a total or a
+  count, or a slope whose left-out words only describe the column after
+  "per" ("day of sleep deprivation"); an average, a share or an extreme, and
+  any bound ("more than 1,000"), give `missing_context` with the agreement
+  shown.
+
+In a folder, a file read without some of the claim's words comes after the
+files and joins that read all of them.
 
 ## Units and scale
 
@@ -93,17 +145,25 @@ A unit in the column's name is used. `body_mass_g` is in grams, so "5.08 kg"
 is compared with the mean divided by 1,000, and the assumption says so. A
 claim in a unit that measures something else ("44 minutes" about
 `bill_length_mm`) gets `conflicting_evidence`. Units are read only from
-plain forms (`g`, `kg`, `mm`, `cm`, `km`, `minutes`, `hours`, `days`, and
-their full names); short forms that also mean something else, such as `m`
-and `t`, are not read. A unit with a slash ("202.6 km/h") is read as the
+plain forms (`g`, `kg`, `tonnes`, `lb`, `oz`, `mm`, `cm`, `km`, `ft`, `feet`,
+`inches`, `yards`, `miles`, `minutes`, `hours`, `days`, and their full
+names); short forms that also mean something else, such as `m`, `t` and
+`in`, are not read, and neither is a word that is a column's whole name
+("73 HR" names the `HR` column, not hours). A unit with a slash ("202.6 km/h") is read as the
 claim's unit; one ADA does not convert is noted, and only the numbers are
 compared.
 
 A claim that names no column can still name its kind of quantity: by its
 unit ("4000 g" is a mass) or by a verb ("weigh", "lasted", or "measure" with
-a unit). ADA then tries each column recorded in a unit of that kind. One such
-column is used, and the assumptions say so; several give `ambiguous_intent`
-with each column's number.
+a unit). ADA then tries each column recorded in a unit of that kind, and
+each column whose name gives no unit but names the kind: `height`, `length`,
+`width`, `depth`, `distance` and the like for a length, `weight`, `mass`,
+`wgt` and `wt` for a mass. One such column is used, and the assumptions say
+so; several give `ambiguous_intent` with each column's number. A column
+guessed from the start of a longer word ("seedlings" for `Seed`) that
+disagrees gives way to the one column the unit points to ("4.2 feet" to
+`height`), with the guessed word left out (see
+[Words that name nothing](#words-that-name-nothing)).
 
 When the column's name gives no unit, ADA does not assume one. A claim that
 agrees only if the column were recorded in thousands or millions gets
@@ -201,6 +261,7 @@ Besides the number, a check records what could make the answer misleading:
 | `alternatives` | For `ambiguous_intent`: each reading, its question, value, whether it agrees, and its calculation |
 | `clarification` | The question to ask, or `null` |
 | `decisions` | The choices the answer rests on, such as leaving out a World row, with their options (see [Decisions](decisions.md)) |
+| `words_left_out` | Words of the claim that name nothing in the table, which the check read it without (see [Words that name nothing](#words-that-name-nothing)) |
 
 `ada ask --json` gives the same `result`, `reading`, `calculation`,
 `evidence`, `assumptions`, `warnings` and `decisions` for a question, with `status`
@@ -222,9 +283,13 @@ first: "788 member deaths" is checked against `expeditions.csv`'s
 - several give different numbers: `ambiguous_intent`, with each file as an
   alternative and the question "Which file is the claim about?"
 - none does: each pair of files a link joins is checked the same way (see
-  [Answers across files](folder.md#answers-across-files)); the one that fits
-  gives the result, with the join as the first assumption and the
-  `join_links` decision listed
+  [Answers across files](folder.md#answers-across-files)), then each file
+  joined to every file it links to and the files those link to ("Lewis
+  Hamilton scored 413 points in 2019" needs results, drivers and races); the
+  one that fits gives the result, with the join as the first assumption and
+  the `join_links` decision listed
+- only one file fits, and only with some of the claim's words left out: that
+  file's check, under the rules for [words that name nothing](#words-that-name-nothing)
 - no file and no join fits: `missing_context`, naming the joins tried and the
   key links a scan proposes
 
@@ -237,12 +302,14 @@ first: "788 member deaths" is checked against `expeditions.csv`'s
 | A claim that names no column ("The average is 3.7") | `missing_context`; ADA does not fall back on the column it picks by default |
 | An answer with one number per group | `missing_context`: "Which group is the number about?" |
 | A year on a table with no date column | `missing_context`: "Which column holds the date or year?" |
+| A count of rows pinned to one row by a key ("Nairobi had 5.2 million residents" on a table of counties) | `missing_context`: the count is 1 whatever the claim says |
+| A number in a unit compared with a count of rows | `missing_context`: a count has no unit |
 | Too few rows for the calculation (a correlation on fewer than 12 pairs) | `unsupported_analysis`, with the answer's reason |
 | A DataFrame | Checked like a file; `source.sha256` and `source.path` are `null` |
 
 ## Not covered yet
 
-- A claim that needs three files joined, or a link that needs confirmation and has not been confirmed (`join_links=all`, or confirm it in the answers file).
+- A link that needs confirmation and has not been confirmed (`join_links=all`, or confirm it in the answers file).
 - Verbs other than "weigh", "lasted" and "measure", or a verb whose column
   has no unit in its name ("Gentoo penguins weigh 5,076" about a `mass`
   column needs "mass" in the claim).

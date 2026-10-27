@@ -3840,7 +3840,8 @@ def _flatlines(
         if not long.any():
             continue
         in_long = np.repeat(long, lengths)
-        if float(repeat[~in_long].mean()) > FLATLINE_REPEATS:
+        outside = repeat[~in_long]
+        if outside.size and float(outside.mean()) > FLATLINE_REPEATS:
             continue
         step = np.r_[np.nan, np.diff(x)][same_group & present]
         step = step[np.isfinite(step) & (step != 0)]

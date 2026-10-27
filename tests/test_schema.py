@@ -1312,5 +1312,18 @@ class NumberSignTests(unittest.TestCase):
         self.assertFalse(is_entity_name("Jitter(%)"))
 
 
+
+class ClockTimeTests(unittest.TestCase):
+    def test_times_on_one_day_give_way_to_dates(self):
+        frame = pd.DataFrame({
+            "fastestLapTime": pd.to_datetime(["2024-01-01 00:01:27", "2024-01-01 00:01:29",
+                                              "2024-01-01 00:01:26", "2024-01-01 00:01:30"]),
+            "date": pd.to_datetime(["2019-03-17", "2019-03-31", "2019-04-14", "2020-07-05"]),
+            "points": [25.0, 18.0, 25.0, 10.0],
+        })
+        self.assertEqual(detect_roles(frame).date, "date")
+        self.assertEqual(detect_roles(frame.drop(columns="date")).date, "fastestLapTime")
+
+
 if __name__ == "__main__":
     unittest.main()

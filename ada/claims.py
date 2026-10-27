@@ -39,7 +39,7 @@ from __future__ import annotations
 import math
 import re
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
@@ -66,7 +66,8 @@ REASONS = (
 _CURRENCY = r"(?:R\$|US\$|A\$|C\$|\$|€|£|¥|₹)"
 _DIGITS = r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][-+]?\d+)?|\.\d+"
 NUMBER_PATTERN = re.compile(
-    rf"(?P<currency>{_CURRENCY})?\s?(?P<sign>[-−])?(?P<number>{_DIGITS})"
+    # Digits right after a letter are part of a word or a code ("CO2", "bondsba01"), not a number.
+    rf"(?<![A-Za-z0-9_])(?P<currency>{_CURRENCY})?\s?(?P<sign>[-−])?(?P<number>{_DIGITS})"
     r"(?:\s?(?P<scale>thousand|million|billion|trillion|bn|mn)\b|(?P<suffix>[kKM])\b)?"
     r"(?:\s?(?P<percent>%|percent\b|per\s?cent\b))?",
     re.IGNORECASE,
@@ -128,6 +129,44 @@ UNIT_STOPS = frozenset({
     "each", "every", "over", "under", "as", "if", "is", "was", "were", "are",
 })
 YEAR_RANGE = (1500, 2100)
+# Words before a number that name a time point, so the number picks rows: "on day 21".
+POINT_WORDS = frozenset({"day", "week", "visit", "cycle", "session", "wave", "round"})
+# Words before a number that make it a filter when a column's name follows: "cars with 4 cylinders".
+FILTER_WORDS = frozenset({"with", "having"})
+# "Reaction time rises by about 10.5 ms per day": a change for each unit of another column is a slope.
+SLOPE_PATTERN = re.compile(
+    r"^\s*(?P<what>.+?)\s+(?P<verb>rises|rose|risen|increases|increased|grows|grew|climbs|climbed|"
+    r"goes\s+up|went\s+up|falls|fell|fallen|drops|dropped|decreases|decreased|declines|declined|"
+    r"goes\s+down|went\s+down)\s+(?:by\s+)?(?P<number>.+?)\s+(?:per|for\s+each|for\s+every|with\s+each|"
+    r"with\s+every)\s+(?:additional\s+|extra\s+|more\s+|further\s+)?(?P<per>.+?)\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+FALLING_VERBS = ("fall", "fell", "drop", "decreas", "declin", "goes down", "went down")
+# Fractions in words: "about a quarter of", "more than half of", "two thirds of".
+FRACTION_PATTERN = re.compile(
+    r"\b(?:(?P<qualifier>about|roughly|around|approximately|nearly|almost|just\s+over|just\s+under|over|"
+    r"under|more\s+than|less\s+than|fewer\s+than|at\s+least|at\s+most)\s+)?"
+    r"(?P<count>a|an|one|two|three|four|nine)?\s*(?P<part>half|halves|thirds?|quarters?|fifths?|tenths?)"
+    r"(?=\s+of\b)",
+    re.IGNORECASE,
+)
+FRACTION_PARTS = {"half": 2, "halves": 2, "third": 3, "thirds": 3, "quarter": 4, "quarters": 4, "fifth": 5,
+                  "fifths": 5, "tenth": 10, "tenths": 10}
+COUNT_WORDS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "nine": 9}
+# Whole numbers in words, read only in a claim with no number in digits: "Seventeen cases".
+NUMBER_WORDS = {
+    "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16,
+    "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
+    "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+}
+LEFT_OUT_NOTE = "Read the claim without"
+# Words a claim is never read without, as leaving them out changes what it says.
+KEPT_WORDS = frozenset({
+    "not", "no", "never", "without", "except", "excluding", "besides", "other", "non", "only", "neither",
+    "nor", "less", "more", "fewer", "than", "under", "over", "above", "below", "before", "after", "per",
+    "each", "every", "first", "last", "top", "bottom", "most", "least", "highest", "lowest",
+})
 # Verbs that stand for a column when a claim names none: "weigh 4000 g" is a mass. "measure" takes
 # its kind from the claim's unit.
 UNIT_VERBS = {
@@ -151,6 +190,18 @@ UNITS = {
     "min": ("time", 60.0), "mins": ("time", 60.0), "minute": ("time", 60.0), "minutes": ("time", 60.0),
     "hr": ("time", 3600.0), "hrs": ("time", 3600.0), "hour": ("time", 3600.0), "hours": ("time", 3600.0),
     "day": ("time", 86400.0), "days": ("time", 86400.0),
+    "tonne": ("mass", 1e6), "tonnes": ("mass", 1e6), "lb": ("mass", 453.59237), "lbs": ("mass", 453.59237),
+    "ounce": ("mass", 28.349523125), "ounces": ("mass", 28.349523125), "oz": ("mass", 28.349523125),
+    "ft": ("length", 0.3048), "foot": ("length", 0.3048), "feet": ("length", 0.3048),
+    "inch": ("length", 0.0254), "inches": ("length", 0.0254), "yard": ("length", 0.9144),
+    "yards": ("length", 0.9144), "mile": ("length", 1609.344), "miles": ("length", 1609.344),
+}
+# Name words for a kind of quantity, for a column whose name gives no unit: "height" holds a length.
+QUANTITY_NAMES = {
+    "length": frozenset({"height", "length", "width", "depth", "distance", "elevation", "altitude",
+                         "diameter", "girth", "circumference", "thickness"}),
+    "mass": frozenset({"weight", "mass", "wgt", "wt"}),
+    "time": frozenset({"duration"}),
 }
 
 
@@ -274,6 +325,8 @@ class ClaimCheck:
     #: The smallest question that would let the check go ahead, for the person who made the claim.
     clarification: str | None = None
     source: Source | None = None
+    #: Words of the claim that name nothing in the table, which the check read it without.
+    words_left_out: tuple[str, ...] = ()
 
     @property
     def verified(self) -> bool:
@@ -306,6 +359,7 @@ class ClaimCheck:
             "alternatives": [alternative.to_dict() for alternative in self.alternatives],
             "clarification": self.clarification,
             "decisions": answer["decisions"] if answer else [],
+            "words_left_out": list(self.words_left_out),
         }
 
     def __str__(self) -> str:
@@ -441,7 +495,15 @@ def _candidates(claim: str, columns: list[str]) -> list[_Candidate]:
         plain = not marked and "," not in match.group("number") and "." not in match.group("number")
         number = float(match.group("number").replace(",", ""))
         year_like = plain and YEAR_RANGE[0] <= number <= YEAR_RANGE[1] and number == int(number)
-        filter_like = bool(previous) and previous.group(1).lower() in column_words and cue is None
+        filter_like = bool(previous) and cue is None and (
+            previous.group(1).lower() in column_words or previous.group(1).lower() in POINT_WORDS
+        )
+        # "cars with 4 cylinders": a number between "with" and a column's name picks rows.
+        following = re.match(r"\s*([A-Za-z]+)", claim[match.end():])
+        filter_like = filter_like or bool(
+            previous and previous.group(1).lower() in FILTER_WORDS and following
+            and any(_abbreviates(following.group(1).lower(), part) for part in column_words)
+        )
         ordinal = plain and re.match(r"(?:st|nd|rd|th)\b", claim[match.end():], re.IGNORECASE) is not None
         found.append(
             _Candidate(match, qualifier, qualifier_start, cue, cue_start, year_like, filter_like, ordinal)
@@ -456,6 +518,7 @@ def _unit_after(claim: str, end: int, columns: list[str], row_noun: str | None) 
     unless the first word is a unit of its own ("43.9 mm" for bill_length_mm).
     """
     column_words = _column_words(columns) | ({row_noun} if row_noun else set())
+    exact = {str(column).lower() for column in columns}
     words = []
     position = end
     # A unit may hold a slash: "km/h", "mg/dL".
@@ -465,7 +528,8 @@ def _unit_after(claim: str, end: int, columns: list[str], row_noun: str | None) 
         word = match.group(1).rstrip(".")
         if word.lower() in ADJECTIVE_NOUNS:
             break
-        known_unit = word.lower() in UNITS and not words
+        # "73 HR" names the HR column, not hours: a column's own name is no unit.
+        known_unit = word.lower() in UNITS and not words and word.lower() not in exact
         if word.lower() in UNIT_STOPS or (word.lower() in column_words and not known_unit) or len(words) == 3:
             break
         words.append(word)
@@ -477,6 +541,73 @@ def _unit_after(claim: str, end: int, columns: list[str], row_noun: str | None) 
     return (" ".join(words) or None), position
 
 
+def _slope_claim(claim: str) -> tuple[str, str, str, bool] | None:
+    """In a slope claim: what changes, the column it changes with, the number's text, whether it falls."""
+    found = SLOPE_PATTERN.match(claim)
+    if not found or len(list(NUMBER_PATTERN.finditer(found.group("number")))) != 1:
+        return None
+    falling = found.group("verb").lower().startswith(FALLING_VERBS)
+    return found.group("what"), found.group("per"), found.group("number"), falling
+
+
+def _fraction_interval(value: float) -> tuple[float, float]:
+    """The values nearer ``value`` than any other fraction with a denominator up to 10, as percentages.
+
+    "a quarter" stands for 23.6% to 26.8%: between the midpoints to 2/9 and 2/7.
+    """
+    fractions = sorted({top / bottom for bottom in range(2, 11) for top in range(1, bottom)})
+    below = max((item for item in fractions if item < value - 1e-12), default=0.0)
+    above = min((item for item in fractions if item > value + 1e-12), default=1.0)
+    return (value + below) / 2 * 100, (value + above) / 2 * 100
+
+
+def _worded_number(claim: str) -> tuple[str, Any] | None:
+    """The claim with a fraction or a whole number in words written in digits, and how to read it back.
+
+    Returns (rewritten claim, function that turns the number read from it back
+    into the words' own interval), or None when the claim has none.
+    """
+    fraction = FRACTION_PATTERN.search(claim)
+    if fraction:
+        count = COUNT_WORDS.get((fraction.group("count") or "a").lower(), 1)
+        bottom = FRACTION_PARTS[fraction.group("part").lower()]
+        if count >= bottom:
+            return None
+        value = count / bottom
+        low, high = _fraction_interval(value)
+        qualifier = re.sub(r"\s+", " ", (fraction.group("qualifier") or "").lower())
+        kind = next((kind for phrase, kind in QUALIFIERS if phrase == qualifier), None)
+        rewritten = f"{claim[:fraction.start()]}{value * 100:g}%{claim[fraction.end():]}"
+
+        share = value * 100
+
+        def back(number: ClaimedNumber) -> ClaimedNumber:
+            bounds = {
+                "more than": (share, math.inf, True, False), "at least": (share, math.inf, False, False),
+                "less than": (-math.inf, share, False, True), "at most": (-math.inf, share, False, False),
+                "just over": (share, high, True, False), "just under": (low, share, False, True),
+                "nearly": (low, share, False, False),
+            }.get(kind or "", (low, high, False, False))
+            return replace(number, text=fraction.group(0), low=bounds[0], high=bounds[1], low_open=bounds[2],
+                           high_open=bounds[3], qualifier=kind, decimals=1)
+        return rewritten, back
+    if any(not (item.year_like or item.ordinal) for item in _candidates(claim, [])):
+        # A number in digits is the one claimed; a year ("in 2020") is not.
+        return None
+    units = {"one": 1, **{word: NUMBER_WORDS[word] for word in list(NUMBER_WORDS)[:8]}}
+    worded = re.search(rf"\b({'|'.join(NUMBER_WORDS)})(?:[- ]({'|'.join(units)}))?\b", claim, re.IGNORECASE)
+    if not worded:
+        return None
+    total = NUMBER_WORDS[worded.group(1).lower()]
+    if worded.group(2) and total >= 20 and total % 10 == 0:
+        total += units[worded.group(2).lower()]
+    else:
+        worded = re.search(rf"\b{worded.group(1)}\b", claim)
+        assert worded is not None
+    rewritten = f"{claim[:worded.start()]}{total}{claim[worded.end():]}"
+    return rewritten, lambda number: replace(number, text=worded.group(0))
+
+
 def read_claim(
     claim: str, columns: list[str], row_noun: str | None = None
 ) -> tuple[str | None, ClaimedNumber | None, str]:
@@ -484,8 +615,30 @@ def read_claim(
 
     Returns (question, number, problem). ``problem`` is "" when the split
     worked, or why it didn't: no number, or several numbers that each look
-    like the one being claimed.
+    like the one being claimed. A change per unit of another column ("rises
+    by 10.5 ms per day") asks for the correlation of the two, whose slope the
+    check compares. A fraction or a whole number in words ("about a quarter
+    of", "Seventeen cases") is read as its number.
     """
+    worded = _worded_number(claim)
+    if worded:
+        question, number, problem = read_claim(worded[0], columns, row_noun)
+        return question, (worded[1](number) if number is not None else None), problem
+    slope = _slope_claim(claim)
+    if slope:
+        what, per, written, _ = slope
+        item = _candidates(written, columns)[0]
+        if not item.match.group("percent"):
+            unit, unit_end = _unit_after(written, item.match.end(), columns, row_noun)
+            number = claimed_number(written[item.qualifier_start:unit_end], item.match, item.qualifier, unit)
+            what = re.sub(r"^(?:the|a|an)\s+", "", what.strip(), flags=re.IGNORECASE)
+            # "per mm of flipper length" is per unit of flipper length, when those words name a column.
+            measured = re.match(r"([A-Za-z]+)\s+of\s+(.+)", per)
+            if measured and measured.group(1).lower() in UNITS and set(_words(measured.group(2))) & (
+                _column_words(columns)
+            ):
+                per = measured.group(2)
+            return f"correlation between {per} and {what}", number, ""
     candidates = _candidates(claim, columns)
     if not candidates:
         return None, None, "The claim states no number to check."
@@ -513,12 +666,17 @@ def read_claim(
     number = claimed_number(claim[chosen.qualifier_start:unit_end], chosen.match, chosen.qualifier, unit)
     # "There are 344 penguins", "152 penguins are Adelie": a number before the rows' noun counts them.
     lead = claim[:chosen.qualifier_start].strip()
-    following = re.match(r"\s*([A-Za-z]+)", claim[chosen.match.end():])
-    counted = following is not None and unit is None and (
-        following.group(1).lower() == row_noun or following.group(1).lower().endswith("s")
+    following = re.match(r"\s*([A-Za-z]+)(?:\s+([A-Za-z]+))?(?:\s+([A-Za-z]+))?", claim[chosen.match.end():])
+    # "68 Chinstrap penguins": the rows' noun may follow a value that names which.
+    counted = following is not None and (
+        (row_noun in [word.lower() for word in following.groups() if word]
+         and not (unit and unit.split()[0].lower() in UNITS))
+        or (unit is None and following.group(1).lower().endswith("s"))
     )
     if counted and re.fullmatch(r"(?:there\s+(?:are|were|is|was))?", lead, flags=re.IGNORECASE):
         rest = re.sub(r"\s+", " ", claim[chosen.match.end():]).strip(" .,;:!?")
+        written = claim[chosen.qualifier_start:chosen.match.end()]
+        number = claimed_number(written, chosen.match, chosen.qualifier, None)
         return f"how many {rest}", number, ""
     start = chosen.cue_start if chosen.cue in AGGREGATION_CUES or chosen.cue in TALLY_VERBS or chosen.cue in {
         "is", "was", "were", "are", "be", "been", "equals", "equalled", "equaled", "stood", "amounted",
@@ -612,21 +770,38 @@ def _named(question: str, column: str) -> bool:
 COUNTING_WORDS = frozenset({"num", "number", "no", "n", "count", "total", "amount", "qty"})
 
 
-def _names_head(question: str, column: str) -> bool:
+def _names_head(question: str, column: str, strict: bool = False) -> bool:
     """Whether the question names the last word of ``column``'s name, the kind of quantity it holds.
 
     The unit and counting words are set aside: "order value" names payment_value
     and "250 parts" names num_parts, "home runs" names HR by its initials, while
-    "deaths" names only the first word of death_height_metres, a height.
+    "deaths" names only the first word of death_height_metres, a height. With
+    ``strict``, a longer word that only starts with the name word does not
+    name it: "seedlings" starts with Seed but is another word.
     """
-    if str(column).lower() in question.lower() or _initials(question, column):
+    lowered = str(column).lower()
+    whole = re.search(rf"(?<![a-z0-9]){re.escape(lowered)}(?![a-z0-9])", question.lower())
+    if (whole if strict else lowered in question.lower()) or _initials(question, column):
         return True
     words = re.findall(r"[a-z]+", question.lower())
     parts = re.findall(r"[a-z]+", normalized_name(column))
     if len(parts) > 1 and column_unit(column) == parts[-1]:
         parts = parts[:-1]
     parts = [part for part in parts if part not in COUNTING_WORDS] or parts
+    if strict:
+        return not parts or any(_same_word(word, parts[-1]) for word in words)
     return not parts or any(_abbreviates(word, parts[-1]) for word in words)
+
+
+# Endings that leave a word the same word: "runs" is run, "weighed" is weigh.
+INFLECTIONS = ("s", "es", "ed", "d", "ing", "er", "ers")
+
+
+def _same_word(word: str, part: str) -> bool:
+    """Whether a question word is a column-name word, a shortening of it, or it with an inflection."""
+    if word == part or (len(word) >= 3 and part.startswith(word)):
+        return True
+    return word.startswith(part) and word[len(part):] in INFLECTIONS
 
 
 def _candidate_columns(message: str, columns: list[str]) -> list[str]:
@@ -674,6 +849,9 @@ def _scale_note(number: ClaimedNumber, computed: float, column: str | None) -> t
             f'Read "{unit}" as the unit {name} is recorded in, so {_plain(number.value / number.scale)} '
             f"is compared with {name} as recorded."
         )
+    if number.percent or math.isinf(number.low) or math.isinf(number.high):
+        # A share has no unit to scale, and a bound holds for nearly any number scaled far enough.
+        return None
     for factor, word in ((1e3, "thousands"), (1e6, "millions"), (1e9, "billions")):
         readings = ((computed * factor, f"in {word}"), (computed / factor, f"in units {word} smaller"))
         for scaled, recorded in readings:
@@ -712,8 +890,9 @@ def _unit_columns(analysis: Any, asked: str, number: ClaimedNumber) -> list[tupl
     """Columns whose unit is the kind of quantity the claim states, with the question naming each.
 
     The kind comes from the claim's unit ("4000 g" is a mass) or from a verb
-    ("weigh"). The verb, if any, is replaced by the column's name; otherwise
-    the name is added to the question.
+    ("weigh"). A column whose name gives no unit counts when its name says
+    the kind (QUANTITY_NAMES: "height" for "60.3 feet"). The verb, if any, is
+    replaced by the column's name; otherwise the name is added to the question.
     """
     verbs = [word for word in re.findall(r"[A-Za-z]+", asked) if word.lower() in UNIT_VERBS]
     claimed = _claim_unit(number)
@@ -723,13 +902,31 @@ def _unit_columns(analysis: Any, asked: str, number: ClaimedNumber) -> list[tupl
     found = []
     for column in analysis.roles.numeric:
         unit = column_unit(str(column))
-        if unit and UNITS[unit][0] == kind:
+        words = set(normalized_name(str(column)).split())
+        named = not unit and bool(QUANTITY_NAMES.get(kind, frozenset()) & words)
+        if (unit and UNITS[unit][0] == kind) or named:
             rewritten = (
                 re.sub(rf"\b{re.escape(verbs[0])}\b", str(column), asked, count=1) if verbs
                 else f"{asked} {column}"
             )
             found.append((str(column), rewritten))
     return found
+
+
+def _one_unit_reading(
+    analysis: Any, asked: str, number: ClaimedNumber, choices: dict[str, str]
+) -> tuple[str, str, QueryAnswer] | None:
+    """The column, question and answer when exactly one column fits the claim's unit and answers it."""
+    from .api import Refusal  # noqa: PLC0415
+
+    if not _claim_unit(number):
+        return None
+    readings = []
+    for column, rewritten in _unit_columns(analysis, asked, number):
+        other = analysis.ask(rewritten, decisions=choices)
+        if not isinstance(other, Refusal) and other.plan.measure == column:
+            readings.append((column, rewritten, other))
+    return readings[0] if len(readings) == 1 else None
 
 
 # Rows per unit, on average, before a unit counts as measured repeatedly.
@@ -768,7 +965,7 @@ def _repeated_units(analysis: Any, answer: QueryAnswer) -> Check | None:
 
 def _source_of(data: Any) -> tuple[Any | None, Source | None, str | None]:
     """An Analysis for ``data``, its Source, and why it could not be read."""
-    from .api import AdaError, Analysis, analyze  # noqa: PLC0415
+    from .api import AdaError, Analysis, analyze, analyze_file  # noqa: PLC0415
 
     if isinstance(data, Analysis):
         return data, data.source, None
@@ -779,6 +976,8 @@ def _source_of(data: Any) -> tuple[Any | None, Source | None, str | None]:
             f"{data} is a folder. Name the file the claim is about" + (f": {listed}." if files else ".")
         )
     try:
+        if isinstance(data, str | Path) and Path(data).is_file():
+            return analyze_file(data), None, None
         return analyze(data, row_limit=sys.maxsize), None, None
     except AdaError as error:
         name = str(data) if isinstance(data, str | Path) else type(data).__name__
@@ -836,11 +1035,13 @@ def check_claim(
     columns = [str(column) for column in analysis.frame.columns]
     if question is not None and value is not None:
         written = value if isinstance(value, str) else repr(float(value)).removesuffix(".0")
-        match = NUMBER_PATTERN.search(str(written))
-        if not match:
+        found = _candidates(str(written), [])
+        if not found:
             problem = f"{written!r} is not a number."
             return ClaimCheck(text, "unverified", "missing_context", problem, source=source)
-        number = claimed_number(str(written), match, None, None)
+        # "about 25%" keeps its qualifier.
+        item = found[0]
+        number = claimed_number(str(written)[item.qualifier_start:], item.match, item.qualifier, None)
         asked = question
     else:
         asked, number, problem = read_claim(text, columns, analysis.roles.row_noun)
@@ -852,7 +1053,9 @@ def check_claim(
                 if reason == "missing_context" else "Send each number as its own claim.",
             )
     assert number is not None and asked is not None
-    return _check(analysis, text, asked, number, source, choices)
+    check = _check(analysis, text, asked, number, source, choices)
+    without = next((item for item in check.assumptions if item.startswith(LEFT_OUT_NOTE)), None)
+    return replace(check, words_left_out=tuple(re.findall(r'"([^"]+)"', without))) if without else check
 
 
 def _check_folder(
@@ -879,25 +1082,35 @@ def _check_folder(
         return ClaimCheck(text, "unverified", "inaccessible_data", f"{folder} holds no table ADA can read.",
                           source=folder_source)
     fitted: list[tuple[str, ClaimCheck]] = []
+    partial: list[tuple[str, ClaimCheck]] = []
     for item in files:
         check = check_claim(item, claim, question=question, value=value,
                             decisions=folder_choices(given, item.name, choices))
         if check.answer is not None and check.compared is not None:
-            fitted.append((item.name, check))
+            # A file read without some of the claim's words may lack what another file holds.
+            (partial if check.words_left_out else fitted).append((item.name, check))
     if fitted:
         return _pick_fit(fitted, folder, text, folder_source, "file")
     found = scan(folder, answers=given)
     decision = join_decision(folder_choices(given, None, choices))
-    joined = joined_tables(folder, found, decision.chosen)
-    for table in joined:
-        check = check_claim(table.frame, claim, question=question, value=value,
-                            decisions=folder_choices(given, table.link.from_file, choices))
-        if check.answer is not None and check.compared is not None:
-            answer = replace(check.answer, decisions=(decision, *check.answer.decisions))
-            fitted.append((table.name, replace(check, answer=answer, source=table.source(folder),
-                                               assumptions=(table.describe(), *check.assumptions))))
-    if fitted:
-        return _pick_fit(fitted, folder, text, folder_source, "join")
+    joined = []
+    for wide in (False, True):
+        # Two files first; three or more only when no pair holds what the claim names.
+        tables = joined_tables(folder, found, decision.chosen, wide=wide)
+        joined += tables
+        for table in tables:
+            check = check_claim(table.frame, claim, question=question, value=value,
+                                decisions=folder_choices(given, table.from_file, choices))
+            if check.answer is not None and check.compared is not None and not check.words_left_out:
+                answer = replace(check.answer, decisions=(decision, *check.answer.decisions))
+                fitted.append((table.name, replace(check, answer=answer, source=table.source(folder),
+                                                   assumptions=(table.describe(), *check.assumptions))))
+        if fitted:
+            return _pick_fit(fitted, folder, text, folder_source, "join")
+    if len(partial) == 1:
+        # Only one file fits, and only without some of the claim's words; a join read that way adds
+        # nothing, and several such files are no evidence of which the claim is about.
+        return _pick_fit(partial, folder, text, folder_source, "file")
     links = [link for link in found.links if link.kind in ("many-to-one", "one-to-one")]
     joins = "; ".join(f"{link.label('from')} to {link.label('to')}" for link in links[:6])
     message = f"No single file in {folder.name} holds what the claim names ({listed})."
@@ -1019,16 +1232,57 @@ def _names_anything(frame: Any, word: str) -> bool:
     return False
 
 
+def _safe_without(
+    left_out: list[str], answer: QueryAnswer, number: ClaimedNumber, used: int | None,
+    slope: tuple[str, str, str, bool] | None,
+) -> bool:
+    """Whether a claim read without words that name nothing can still be verified.
+
+    A bound ("more than 50") holds for far more rows than the claim means, and
+    an average, a share or an extreme over every row can be near the one over
+    the rows the words pick, so only a lookup of one row, a total or a count,
+    or a slope whose left-out words only describe the column after "per" ("day
+    of sleep deprivation") may verify.
+    """
+    if math.isinf(number.low) or math.isinf(number.high):
+        return False
+    if slope:
+        return all(phrase.lower() in slope[1].lower() for phrase in left_out)
+    return used == 1 or answer.plan.aggregation in ("sum", "count")
+
+
+def _key_filter(frame: Any, answer: QueryAnswer) -> str | None:
+    """A filter column of the answer whose values are each on one row only: a key, such as County."""
+    for item in answer.plan.filters:
+        values = frame[item.column].dropna() if item.column in frame.columns else None
+        if values is not None and len(values) > 1 and values.is_unique:
+            return item.column
+    return None
+
+
+def _quoted(phrases: Sequence[str]) -> str:
+    """"a", "a" and "b", or "a", "b" and "c", each in quotes."""
+    quoted = [f'"{phrase}"' for phrase in phrases]
+    return quoted[0] if len(quoted) == 1 else f"{', '.join(quoted[:-1])} and {quoted[-1]}"
+
+
+def _unknown_phrases(message: str) -> list[str]:
+    """The words a refusal says name nothing in the table: "lost" and "forest"."""
+    found = re.search(r"found no column or value called (.+?) in this table", message)
+    return re.findall(r'"([^"]+)"', found.group(1)) if found else []
+
+
 def _check(
     analysis: Any, text: str, asked: str, number: ClaimedNumber, source: Source | None,
-    choices: dict[str, str] | None = None,
+    choices: dict[str, str] | None = None, left: tuple[str, ...] = (),
 ) -> ClaimCheck:
     from .api import Refusal  # noqa: PLC0415
 
     choices = choices or {}
     answer = analysis.ask(asked, decisions=choices)
     alternatives: list[Alternative] = []
-    assumptions: list[str] = []
+    assumptions: list[str] = [f"{LEFT_OUT_NOTE} {_quoted(left)}, which name no column or value in the table."
+                              ] if left else []
     subject = re.match(r"\s*(?:(?:total|average|mean)\s+)?([A-Za-z]+)\s+", asked, re.IGNORECASE)
     if isinstance(answer, Refusal) and subject and subject.group(1).lower() in PEOPLE_NOUNS and (
         not _names_anything(analysis.frame, subject.group(1))
@@ -1056,6 +1310,7 @@ def _check(
                                    f"{singular(row_noun)} of the table, since no column or value holds "
                                    f"{modifier.group(1)}.")
                 answer, asked = retried, shorter
+    left_out: list[str] = list(left)
     if isinstance(answer, Refusal):
         readings = []
         columns = _candidate_columns(answer.message, list(analysis.frame.columns))
@@ -1104,13 +1359,30 @@ def _check(
                 clarification=f"Which column is meant: {listed}?",
             )
         else:
-            reason = "unsupported_analysis" if answer.code == "unsupported_phrasing" else "missing_context"
-            return ClaimCheck(
-                text, "unverified", reason,
-                f"ADA could not read the claim as a calculation on this table: {answer.message}",
-                claimed=number, question=asked, source=source,
-                clarification="Say which column the number is about, and over which rows (a group, a year).",
+            # "Brazil lost 2,564,000 hectares of forest to pasture": words that name nothing in the table
+            # are left out. The claim is verified only when the rest agrees and the reading is one a
+            # left-out word could not change (_safe_without); a mismatch proves nothing.
+            unknown = _unknown_phrases(answer.message)
+            retried, shorter = None, asked
+            if unknown and not any(KEPT_WORDS & set(_words(phrase)) for phrase in unknown):
+                for phrase in unknown:
+                    shorter = re.sub(rf"(?<!\w){re.escape(phrase)}(?!\w)", " ", shorter, flags=re.IGNORECASE)
+                shorter = re.sub(r"\s+", " ", shorter).strip(" .,;:!?")
+                retried = analysis.ask(shorter, decisions=choices) if shorter else None
+            if retried is None or isinstance(retried, Refusal):
+                unsupported = answer.code == "unsupported_phrasing"
+                return ClaimCheck(
+                    text, "unverified", "unsupported_analysis" if unsupported else "missing_context",
+                    f"ADA could not read the claim as a calculation on this table: {answer.message}",
+                    claimed=number, question=asked, source=source,
+                    clarification="Say which column the number is about, and over which rows (a group, a "
+                    "year).",
+                )
+            left_out = [*left_out, *unknown]
+            assumptions.append(
+                f"{LEFT_OUT_NOTE} {_quoted(unknown)}, which name no column or value in the table."
             )
+            answer, asked = retried, shorter
     unnamed = [
         column for column in (answer.plan.measure, answer.plan.partner)
         if column and not _named(asked, column)
@@ -1121,6 +1393,12 @@ def _check(
         if not isinstance(share, Refusal) and "share_percent" in dict(share.figures):
             answer, asked, unnamed = share, f"share of {asked}", []
             assumptions.append("Read the percentage as a share, which the claim names no column for.")
+    if unnamed and (unit_read := _one_unit_reading(analysis, asked, number, choices)):
+        # "the pines averaged 60.3 feet": the one column of lengths is what the claim measures.
+        column, asked, answer = unit_read
+        unnamed = []
+        assumptions.append(f"Read the claim as being about {column}, the only column recorded in a unit of "
+                           f"that kind or named for it, as the number is in {number.unit}.")
     if unnamed:
         return ClaimCheck(
             text, "unverified", "missing_context",
@@ -1129,7 +1407,45 @@ def _check(
             claimed=number, question=asked, source=source,
             clarification="Which column is the number about?",
         )
+    averaged = re.search(r"\b(?:average|averages|averaged|averaging|mean|median|typical|per|each)\b", text,
+                         re.IGNORECASE)
+    noun = (number.unit or "").split()[-1:] or [""]
+    if answer.plan.aggregation in ("mean", "median") and not averaged and not _claim_unit(number) and (
+        noun[0].lower().endswith("s") and not number.percent
+    ):
+        # "1,524 Kenyans were recorded as intersex" counts people: a total, never an average.
+        total = analysis.ask(f"total {asked}", decisions=choices)
+        if isinstance(total, Refusal) or total.plan.aggregation != "sum" or total.value is None:
+            return ClaimCheck(
+                text, "unverified", "missing_context",
+                f'"{number.text}" counts {noun[0]}, but ADA read the claim as an average '
+                f"({answer.calculation}), and found no total to check it against.",
+                claimed=number, question=asked, answer=answer, assumptions=tuple(assumptions), source=source,
+                clarification="Which column holds the number?",
+            )
+        assumptions.append(f'Read "{number.text}" as a total, since it counts {noun[0]}.')
+        answer, asked = total, f"total {asked}"
     computed, notes = _comparable(answer, number)
+    slope = _slope_claim(text) if answer.plan.intent == "correlation" else None
+    measure, sloped = answer.plan.measure, ""
+    if slope:
+        # The change for each unit of the column after "per" is the slope of the other column on it.
+        x = next((column for column in (answer.plan.measure, answer.plan.partner)
+                  if column and _named(slope[1], column)), None)
+        y = next((column for column in (answer.plan.measure, answer.plan.partner) if column and column != x),
+                 None)
+        fitted = dict(answer.figures).get(f"slope of {y} on {x}")
+        if fitted is None:
+            return ClaimCheck(
+                text, "unverified", "unsupported_analysis",
+                f"The claim states a change per unit of another column, and ADA found no slope for it: "
+                f"{answer.answer}",
+                claimed=number, question=asked, answer=answer, assumptions=tuple(assumptions), source=source,
+                clarification="Which column changes, and per unit of which column?",
+            )
+        computed, measure, sloped = (-fitted if slope[3] else fitted), y, f"the slope of {y} on {x}, from "
+        notes = [f"Compared with the slope of {y} on {x}, {_plain(fitted)} {y} per {x}"
+                 + ("; the claim says it falls, so the slope's sign is reversed." if slope[3] else ".")]
     assumptions.extend(notes)
     scope = answer.scope
     if scope is not None:
@@ -1137,8 +1453,28 @@ def _check(
         assumptions.extend(f"Left out {_counted(reason, count)}." for reason, count in scope.left_out)
     if number.qualifier:
         assumptions.append(f'Read "{number.qualifier}" as {number.interval()}.')
-    measure = answer.plan.measure
     claimed_unit, recorded_unit = _claim_unit(number), column_unit(measure)
+    key = _key_filter(analysis.frame, answer)
+    if key and answer.plan.aggregation == "count" and not measure and not answer.plan.count_column:
+        # "Nairobi has 5.2 million residents": County = Nairobi City is one row, and counting it says
+        # nothing about the number, which is one of that row's values.
+        return ClaimCheck(
+            text, "unverified", "missing_context",
+            f"ADA read the claim as a count of rows, but {key} names one row each, so the count is 1 "
+            "whatever the claim says; the number is likely one of that row's columns, and the claim names "
+            "none of them.",
+            claimed=number, question=asked, answer=answer, assumptions=tuple(assumptions), source=source,
+            clarification="Which column holds the number?",
+        )
+    if claimed_unit and answer.plan.aggregation == "count" and not measure:
+        # A count of rows has no unit; a number in hours or grams is about some column the reading missed.
+        return ClaimCheck(
+            text, "unverified", "missing_context",
+            f"The claim gives the number in {number.unit}, but ADA read it as a count of rows "
+            f"({answer.calculation}), which has no unit.",
+            claimed=number, question=asked, answer=answer, assumptions=tuple(assumptions), source=source,
+            clarification="Which column is the number about?",
+        )
     if claimed_unit and recorded_unit and UNITS[claimed_unit][0] != UNITS[recorded_unit][0]:
         return ClaimCheck(
             text, "unverified", "conflicting_evidence",
@@ -1202,10 +1538,47 @@ def _check(
         f"computed {_plain(computed)}; the claim stands for {number.interval()}",
     ))
     failed = [check for check in checks if not check.passed]
-    described = answer.calculation
+    described = f"{sloped}{answer.calculation}"
     used = scope.rows_used if scope is not None else None
     rows = f" ({counted(used, 'row')})" if used is not None else ""
-    if agreement == "mismatch" and measure and not _names_head(asked, measure):
+    if left_out and agreement == "match" and not _safe_without(left_out, answer, number, used, slope):
+        # An average or a bound over every row may agree by chance when the words left out pick some.
+        words = " and ".join(f'"{phrase}"' for phrase in left_out)
+        return ClaimCheck(
+            text, "unverified", "missing_context",
+            f"Without {words}, which name nothing in the table, the data give {_plain(computed)}{rows} for "
+            f"{described}, which agrees with {number.interval()}; but the words left out may pick out rows "
+            "the table cannot, and over a subset the number could differ, so the check does not rest on it.",
+            claimed=number, question=asked, answer=answer, compared=computed, agreement="match",
+            assumptions=tuple(dict.fromkeys(assumptions)), warnings=tuple(dict.fromkeys(warnings)),
+            checks=tuple(checks), source=source,
+            clarification=f"What do {words} stand for in the table?",
+        )
+    if agreement == "mismatch" and left_out:
+        words = " and ".join(f'"{phrase}"' for phrase in left_out)
+        return ClaimCheck(
+            text, "unverified", "missing_context",
+            f"Without {words}, which name nothing in the table, the data give {_plain(computed)}{rows} for "
+            f"{described}, outside {number.interval()}; the words left out may pick other rows or another "
+            "column.",
+            claimed=number, question=asked, answer=answer, compared=computed, agreement="mismatch",
+            assumptions=tuple(dict.fromkeys(assumptions)), warnings=tuple(dict.fromkeys(warnings)),
+            checks=tuple(checks), source=source,
+            clarification=f"What do {words} stand for in the table?",
+        )
+    guessed = next((match.group(1) for item in assumptions
+                    if (match := re.fullmatch(rf'Read "(.+)" as {re.escape(str(measure))}\.', item))), None)
+    if agreement == "mismatch" and guessed and not _names_head(asked, measure, strict=True):
+        # "the seedlings averaged 4.2 feet": Seed was guessed from "seedlings"; the one column of lengths
+        # may be what the claim measures.
+        swapped = re.sub(rf"(?<!\w){re.escape(guessed)}(?!\w)", "", asked, count=1, flags=re.IGNORECASE)
+        unit_read = _one_unit_reading(analysis, re.sub(r"\s+", " ", swapped).strip(), number, choices)
+        if unit_read and unit_read[0] != measure:
+            check = _check(analysis, text, unit_read[1], number, source, choices, left=(*left_out, guessed))
+            note = (f"Read the claim as being about {unit_read[0]}, the only column of the kind its unit "
+                    f'gives, rather than {measure}, which "{guessed}" only resembles.')
+            return replace(check, assumptions=(note, *check.assumptions))
+    if agreement == "mismatch" and measure and not _names_head(asked, measure, strict=True):
         # A column read from a word that does not say what it measures may be the wrong one; a
         # mismatch there proves nothing.
         return ClaimCheck(

@@ -149,7 +149,7 @@ def run_claim(case):
         checks["reason"] = got.get("reason") == expected["reason"]
     if "value" in expected:
         computed = (got.get("result") or {}).get("value")
-        checks["value"] = close(computed, expected["value"])
+        checks["value"] = any(close(computed, form) for form in share_forms(expected["value"]))
     evidence = got.get("evidence") or {}
     if "rows_used" in expected:
         checks["rows_used"] = evidence.get("rows_used") == expected["rows_used"]

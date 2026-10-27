@@ -16,6 +16,45 @@
   columns the words fit.
 - "Sets from 2019" means 2019's sets, while "from 2019 onwards" stays a
   range; "released in 2020" and "on board" no longer name nothing.
+- Words a claim uses that name nothing in the table are left out, and the
+  rest is checked: "Brazil lost 2,564,000 hectares of forest to pasture in
+  2004". Such a check verifies only a lookup of one row, a total, a count or
+  a slope; a mismatch, an average and a bound give `missing_context`, so a
+  left-out word that picks rows can never give a wrong verdict.
+  `words_left_out` in the JSON lists them.
+- Slopes: "Reaction time rises by about 10.5 ms per day" is compared with
+  the slope (`scipy.stats.linregress`, or the mean of each subject's own
+  slope), and a fall with the slope reversed. Correlation answers carry
+  `slope of Y on X` figures.
+- Fractions and numbers in words ("about a quarter of", "more than half
+  of", "Seventeen cases"), "with 4 cylinders" as a filter, `--value "about
+  25%"` keeping its qualifier, feet, inches, miles, pounds and tonnes as
+  units, and columns named for a length or a mass (`height`, `wgt`) for a
+  number in that unit.
+- A number that counts things ("1,524 Kenyans") is checked as a total, not an
+  average. "73 HR" names the `HR` column, not hours, and digits inside a code
+  ("bondsba01") are not a number.
+- Fixed wrong verdicts: a count of rows pinned to one row by a key ("Nairobi
+  had 5.2 million residents" on a table of counties) and a column guessed
+  from part of a word ("seedlings" for `Seed`) are no longer compared with
+  the claim; a bound is never read in thousands or millions.
+
+### Answers
+
+- Tables of counts weight shares and counts by group too: Titanic's "share of
+  Survived = Yes by Class" gives 62.5% for 1st class (203 of 325), not 50% of
+  rows, and its chi-squared test runs on the weighted table.
+- "how many trees" is refused, not answered with the row count, when each
+  tree has several rows; "how many reviews in 2019" counts rows, not
+  distinct years; "how many Gold medals were won" reads "were won" as
+  grammar.
+- A column named as a date that holds only years (`review_date`) scopes "in
+  2019", a code in a column too large to index ("bondsba01") filters, and "on
+  day 21" picks the time-point column's value.
+- A clock time read onto one day ("1:27.452") is no longer the table's date,
+  and joins leave out birth and death dates, so "in 2019" in a join of F1
+  results, drivers and races is the race year: "Lewis Hamilton scored 413
+  points in 2019" checks across the three files.
 
 ### Decisions
 
