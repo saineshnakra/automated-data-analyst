@@ -673,7 +673,13 @@ def _slope_claim(claim: str) -> tuple[str, str, str, bool] | None:
 
 
 def _says_fall(text: str, number: ClaimedNumber) -> bool:
-    """Whether a falling verb comes before the claim's number: "fell by about 19%", "dropped 5 points"."""
+    """Whether a falling verb comes before the claim's number: "fell by about 19%", "dropped 5 points".
+
+    "halved" says it fell, though the number the check compares (50%) is not written in the claim.
+    """
+    multiple = MULTIPLE.search(text)
+    if multiple and multiple.group("word").lower() == "halved":
+        return True
     before = text[:text.find(number.text)] if number.text in text else text
     return bool(re.search(rf"\b(?:{'|'.join(FALLING_VERBS)})\w*(?:\s+\w+){{0,3}}\s*$", before, re.IGNORECASE))
 
@@ -1040,7 +1046,8 @@ def _initials(question: str, column: str) -> bool:
 def _named(question: str, column: str) -> bool:
     """Whether the question names ``column``: one of its words, a word that shortens or lengthens one,
     or its initials."""
-    parts = re.findall(r"[a-z]+", str(column).lower())
+    # "demVote" is "dem" and "vote", as everywhere else names are read.
+    parts = re.findall(r"[a-z]+", normalized_name(str(column)).lower())
     words = re.findall(r"[a-z]+", question.lower())
     if str(column).lower() in question.lower() or _initials(question, column):
         return True
@@ -1339,18 +1346,33 @@ def check_claim(
         item = found[0]
         number = claimed_number(str(written)[item.qualifier_start:], item.match, item.qualifier, None)
         asked = question
-    else:
+    said, ends = text, ()
+    if question is None:
+        # "rose by more than 60%, from 29,199 in 1999 to 47,173 in 2017": the change is read without its ends,
+        # which are checked after it.
+        text, ends = _without_ends(text)
         # "Of the 4,526 applicants, 38.8% were admitted": the lead names the base, checked below.
         body, base = _based(_without_peak(text))
         asked, number, problem = read_claim(body, columns, analysis.roles.row_noun)
         if problem:
             reason = "unsupported_analysis" if "more than one number" in problem else "missing_context"
             return ClaimCheck(
-                text, "unverified", reason, problem, claimed=number, question=asked, source=source,
+                said, "unverified", reason, problem, claimed=number, question=asked, source=source,
                 clarification="Restate the claim with one number, what it measures and over what rows."
                 if reason == "missing_context" else "Send each number as its own claim.",
             )
     assert number is not None and asked is not None
+    check = _checked_table(analysis, text, asked, number, source, choices, question)
+    if ends:
+        check = _checked_ends(check, ends)
+    return replace(check, claim=said)
+
+
+def _checked_table(
+    analysis: Any, text: str, asked: str, number: ClaimedNumber, source: Source | None,
+    choices: dict[str, str], question: str | None,
+) -> ClaimCheck:
+    """The check of a claim read as ``asked`` on one table, with its bounds, base, peak and ranking."""
     check = _check(analysis, text, asked, number, source, choices)
     decided = check.verified or check.reason == "failed_check"
     if question is None and check.answer is not None and decided and (
@@ -1386,6 +1408,123 @@ def check_claim(
             clarification="Over which groups is it ranked, and by which column?",
         )
     return check
+
+
+# A change and the values it went between: "rose by more than 60%, from 29,199 in 1999 to 47,173 in 2017".
+_END = (
+    r"(?:(?:about|nearly|almost|around|roughly|some|just\s+over|just\s+under|more\s+than|less\s+than|over|"
+    r"under)\s+)?[$€£]?\d[\d,]*(?:\.\d+)?(?:\s*(?:%|per\s?cent|percent))?(?:\s*(?:million|billion|thousand|bn|m|k)\b)?"
+)
+CHANGE_WORDS = re.compile(
+    r"\b(?:rose|risen|rising|fell|fallen|falling|grew|grown|climbed|dropped|declined|decreased|increased|"
+    r"jumped|soared|surged|slumped|plunged|tumbled|went\s+up|went\s+down|doubled|tripled|trebled|"
+    r"quadrupled|halved|\w+fold)\b",
+    re.IGNORECASE,
+)
+FROM_TO = re.compile(
+    rf",?\s*\bfrom\s+(?P<first>{_END})(?:\s+in\s+(?P<y1>\d{{4}}))?\s+to\s+(?P<last>{_END})"
+    rf"(?:\s+in\s+(?P<y2>\d{{4}}))?",
+    re.IGNORECASE,
+)
+TO_ONLY = re.compile(rf",\s*to\s+(?P<last>{_END})(?=\s*[.!;]?\s*$)", re.IGNORECASE)
+
+
+DURATION = re.compile(
+    rf"\b(?:in|over|within)\s+(?:the\s+)?(?:(?P<count>a|an|one|{'|'.join(NUMBER_WORDS)}|\d{{1,3}})\s+)?"
+    r"(?P<unit>years?|decades?)(?:\s+to\s+(?P<to>\d{4}))?\b",
+    re.IGNORECASE,
+)
+
+
+def _span_years(lasted: re.Match) -> int | None:
+    """The years a length of time names: 20 for "twenty years", 10 for "a decade"."""
+    count = (lasted.group("count") or "a").lower()
+    number = 1 if count in ("a", "an", "one") else NUMBER_WORDS.get(count)
+    if number is None and count.isdigit():
+        number = int(count)
+    if number is None:
+        return None
+    return number * (10 if lasted.group("unit").lower().startswith("decade") else 1)
+
+
+def _without_ends(text: str) -> tuple[str, tuple[tuple[str, str], ...]]:
+    """A change claim without the values it went from and to, and those values as ("previous", "about
+    31,500") pairs. The years of the ends name the period when the rest of the claim does not."""
+    if not CHANGE_WORDS.search(text):
+        return text, ()
+
+    def stated(rest: str) -> bool:
+        # "Sales rose from $1.2 million to $2.5 million" states no change besides its ends, which are then
+        # the numbers claimed.
+        return bool(re.search(r"\d", rest) or MULTIPLE.search(rest) or BY_FRACTION.search(rest))
+
+    # "from 2023 to 2024" is a span of years, not the values the change went between.
+    found = next((match for match in FROM_TO.finditer(text) if not all(
+        re.fullmatch(r"(?:1[5-9]|20)\d{2}", match.group(side).strip()) for side in ("first", "last"))), None)
+    if found:
+        ends = (("previous", found.group("first").strip()), ("latest", found.group("last").strip()))
+        rest = f"{text[:found.start()]}{text[found.end():]}"
+        years = found.group("y1"), found.group("y2")
+        lasted = DURATION.search(rest)
+        if lasted:
+            # "in twenty years", "in the twenty years to 2021": the length of the change, which the years
+            # of its ends give too.
+            span = _span_years(lasted)
+            if not all(years) and lasted.group("to") and span:
+                years = str(int(lasted.group("to")) - span), lasted.group("to")
+            if all(years) and span == int(years[1]) - int(years[0]):
+                rest = f"{rest[:lasted.start()]}{rest[lasted.end():]}"
+        if not stated(rest):
+            return text, ()
+        if all(years) and not YEAR_SPAN.search(rest) and not re.search(r"\b(?:1[89]|20)\d{2}\b", rest):
+            rest = re.sub(r"\s*([.!]?)\s*$", rf" between {years[0]} and {years[1]}\1", rest, count=1)
+        return re.sub(r"\s+", " ", rest).strip(" ,"), ends
+    found = TO_ONLY.search(text)
+    if found and stated(rest := f"{text[:found.start()]}{text[found.end():]}"):
+        return re.sub(r"\s+", " ", rest).strip(), (("latest", found.group("last").strip()),)
+    return text, ()
+
+
+def _checked_ends(check: ClaimCheck, ends: tuple[tuple[str, str], ...]) -> ClaimCheck:
+    """A change checked, then the values the claim says it went from and to.
+
+    Each end must agree with the answer's first or last value. A change that
+    agrees with ends that do not fails; a change with no first and last value
+    in its answer cannot show its ends, so it is not verified.
+    """
+    if not (check.verified or check.reason == "failed_check"):
+        return check
+    figures = dict(check.answer.figures) if check.answer is not None else {}
+    notes, wrong = [], []
+    for name, written in ends:
+        value = figures.get(name)
+        found = _candidates(written, [])
+        if value is None or not found:
+            if check.verified:
+                return replace(
+                    check, status="unverified", reason="missing_context",
+                    message=f"The change agrees, but ADA cannot show the values the claim gives for its ends "
+                    f"({_quoted([end for _, end in ends])}): {check.message}",
+                    clarification="Check each value as its own claim.",
+                )
+            return check
+        item = found[0]
+        stated = claimed_number(written[item.qualifier_start:], item.match, item.qualifier, None)
+        side, given = ("first" if name == "previous" else "last"), _plain(float(value))
+        if stated.holds(float(value)):
+            notes.append(f"The claim's {side} value, {written}, agrees with the data's {given}.")
+        else:
+            wrong.append(f"the claim's {side} value is {written}, and the data give {given}")
+    if wrong and check.verified:
+        return replace(
+            check, status="unverified", reason="failed_check",
+            message=f"The change agrees ({check.message}), but {'; '.join(wrong)}.",
+            assumptions=(*check.assumptions, *notes), clarification=None,
+        )
+    if wrong:
+        return replace(check, message=f"{check.message} Also, {'; '.join(wrong)}.",
+                       assumptions=(*check.assumptions, *notes))
+    return replace(check, assumptions=(*check.assumptions, *notes))
 
 
 # A claim that a measure was at its highest for a group: "Cocaine use peaked at 4.9% among 20-year-olds".

@@ -217,7 +217,18 @@ a claim about rows that are not there more likely means other rows.
 
 A multiple is a change in percent: "doubled" is a rise of about 100%, "more
 than sixfold" one of more than 500%, "tripled" about 200% and "halved" a fall
-of about 50%. A fraction before a verb needs no "of": "nearly half went on to
+of about 50%, compared by its size as "fell by" is.
+
+The values a change went from and to are checked after the change: in "West
+Virginia's Democratic vote halved in twenty years, from 51.5% in 1996 to
+26.2% in 2016" the fall is checked between 1996 and 2016, and then 51.5% and
+26.2% against the first and last values of the answer. A change that agrees
+with an end that does not fails, naming the end and what the data give. The
+years of the ends name the period when the rest of the claim names none, and
+a length of time they agree with ("in twenty years", "in a decade") is set
+aside; "in the twenty years to 2021" gives the years itself. ", to 47,173" is
+a last value alone. A claim whose only numbers are its ends ("rose from 33.3%
+to 27.5%") keeps them as the numbers claimed. A fraction before a verb needs no "of": "nearly half went on to
 college" is read as "nearly half of" is.
 
 A rate ("about 20 claims for every 100 policyholders", "16 Claims per 100

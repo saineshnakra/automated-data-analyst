@@ -34,6 +34,13 @@
 
 ### Reading claims and questions
 
+- "rose by more than 60% between 1999 and 2017, to 47,173" and "halved in
+  twenty years, from 51.5% in 1996 to 26.2% in 2016" check the change, then
+  the values it went from and to.
+- Fixed a wrong verdict: "the vote halved between 1996 and 2016" failed
+  against a fall of 49%, as "halved" was not read as a fall when the sizes
+  were compared. "Democratic vote" names `demVote` in a claim, as in a
+  question.
 - "In 2015, 565 boys were named Jack" in a table of names with a `Number` of
   babies each is checked against the rows and against the total of `Number`,
   with Sex = Boy and Name = Jack: it gets `ambiguous_intent` when only the

@@ -1144,6 +1144,39 @@ class CountsAndPeaksOverTimeTests(unittest.TestCase):
         self.assertEqual(unclear.reason, "missing_context")
 
 
+class ChangeEndsTests(unittest.TestCase):
+    def votes(self) -> pd.DataFrame:
+        years = [1996, 2000, 2004, 2008, 2012, 2016]
+        shares = [51.5, 45.6, 43.2, 42.6, 35.5, 26.2, 33.3, 26.3, 26.0, 34.4, 24.7, 27.5]
+        return pd.DataFrame({"state": ["West Virginia"] * 6 + ["Utah"] * 6, "year": years * 2,
+                             "demVote": shares})
+
+    def test_the_ends_of_a_change_are_checked_too(self):
+        votes = self.votes()
+        said = "West Virginia's Democratic vote halved in twenty years, from 51.5% in 1996 to {} in 2016."
+        check = ada.check_claim(votes, said.format("26.2%"))
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("last value, 26.2%, agrees", " ".join(check.assumptions))
+        self.assertEqual(check.claim, said.format("26.2%"))
+        wrong = ada.check_claim(votes, said.format("30%"))
+        self.assertEqual(wrong.reason, "failed_check")
+        self.assertIn("the data give 26.2", wrong.message)
+        last = "West Virginia's Democratic vote halved between 1996 and 2016, to 26.2%."
+        self.assertTrue(ada.check_claim(votes, last).verified)
+
+    def test_halved_is_a_fall(self):
+        votes = self.votes()
+        check = ada.check_claim(votes, "West Virginia's Democratic vote halved between 1996 and 2016.")
+        self.assertTrue(check.verified, check.message)
+        doubled = ada.check_claim(votes, "West Virginia's Democratic vote doubled between 1996 and 2016.")
+        self.assertEqual(doubled.reason, "failed_check")
+
+    def test_ends_alone_are_the_numbers_claimed(self):
+        # With no change stated besides its ends, the ends are not set aside, and two numbers are claimed.
+        claim = "Utah's Democratic vote rose from 33.3% to 27.5% between 1996 and 2016."
+        self.assertFalse(ada.check_claim(self.votes(), claim).verified)
+
+
 class RateClaimTests(unittest.TestCase):
     def test_a_rate_for_every_hundred_is_checked_as_totals(self):
         frame = pd.DataFrame({"District": [1, 1, 1, 1, 2, 2, 2, 2],
