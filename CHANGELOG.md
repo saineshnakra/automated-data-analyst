@@ -70,7 +70,10 @@
   share), "seen" before a yes/no column keeps its yes rows, and "Owners
   estimated that" is set aside. Fixed wrong verdict: a percent claim read as
   a count with no share was compared with the count and failed; it now gets
-  `missing_context`.
+  `missing_context`. Fixed wrong verdict: "Cars from USA averaged 18.6
+  dollars" was read as a count of rows, because a plural after the number
+  that names no column counts rows; an average or an amount of money no
+  longer does.
 - "The distance increased by about 0.66 mm per year of age" is the slope of
   distance on age: a column named for a quantity (age, dose, time) at a few
   levels still correlates, and with several rows per subject both slopes of

@@ -117,7 +117,9 @@ for 24 to 26.
    percent claim whose reading is a count with no share ("100% of the sites
    were visited" read as the number of sites) gets `missing_context`; it is
    never compared with the count. "Half of the squirrels" with a column of
-   squirrel IDs is a share of the distinct IDs.
+   squirrel IDs is a share of the distinct IDs. A plural after the number is
+   never counted when the claim speaks of an average or the plural is money:
+   "averaged 18.6 dollars" is not 18.6 rows.
 
 ## Slopes
 

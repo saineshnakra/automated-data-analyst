@@ -734,6 +734,13 @@ class ShareOfThingsTests(unittest.TestCase):
         self.assertEqual(check.reason, "missing_context")
         self.assertIn("The claim gives a percentage, but ADA read the words as a count", check.message)
 
+    def test_an_average_of_money_is_never_a_count_of_rows(self):
+        cars = pd.DataFrame({"Origin": ["USA"] * 5 + ["non-USA"] * 3,
+                             "Price": [18.0, 19.0, 18.5, 18.7, 18.8, 25.0, 30.0, 20.0]})
+        check = ada.check_claim(cars, "Cars from USA averaged 18.6 dollars.")
+        self.assertNotEqual(check.reason, "failed_check")
+        self.assertTrue(check.answer is None or check.answer.plan.intent != "count")
+
     def test_who_reports_a_claim_is_not_part_of_it(self):
         frame = self.sightings().assign(minutes=[10.0, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110])
         check = ada.check_claim(frame, "Volunteers reported that the average minutes was 60.")
