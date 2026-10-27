@@ -22,6 +22,7 @@ from dataclasses import dataclass
 OPTIONS: dict[str, tuple[str, ...]] = {
     "aggregate_rows": ("leave_out", "keep"),
     "total_from": ("total_row", "sum_of_parts"),
+    "join_links": ("sure", "all", "none"),
 }
 
 

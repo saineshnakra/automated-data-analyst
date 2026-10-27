@@ -221,8 +221,9 @@ class ThinFolderTests(FolderTestCase):
         empty = tempfile.TemporaryDirectory()
         self.addCleanup(empty.cleanup)
         self.assertEqual(ada.scan(empty.name).files, ())
+        self.assertEqual([profile.name for profile in ada.scan(folder / "only.csv").files], ["only.csv"])
         with self.assertRaises(NotADirectoryError):
-            ada.scan(folder / "only.csv")
+            ada.scan(folder / "missing.csv")
 
 
 class FolderClaimTests(FolderTestCase):
@@ -283,7 +284,8 @@ class ScanCommandTests(FolderTestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         data = json.loads(result.stdout)
         self.assertEqual(data["schema_version"], 1)
-        self.assertEqual(set(data["questions"]), {"rows", "units", "repeated", "links", "intent"})
+        topics = ["intent", "rows", "units", "repeated", "links", "decisions"]
+        self.assertEqual(list(data["questions"]), topics)
         self.assertIn('"intent":', template.read_text())
 
 

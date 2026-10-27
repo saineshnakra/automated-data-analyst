@@ -95,7 +95,11 @@ PREDICATE_CUES = frozenset({
     "averaging", "totalled", "totaled", "totals", "totalling", "totaling", "reached", "hit", "by",
     "at", "of", "stood", "came", "amounted", "numbered", "weighed", "weighs", "weigh", "measured",
     "rose", "fell", "grew", "dropped", "increased", "decreased", "paid", "made", "had", "has", "have",
+    "scored", "scores", "earned", "earns", "collected", "recorded",
 })
+# Verbs that add things up: in "hit 73 home runs" and "scored 3,999.5 points" the words after the
+# number name the column that is totalled, not a unit.
+TALLY_VERBS = frozenset({"hit", "hits", "scored", "scores", "earned", "earns", "collected", "recorded"})
 # Cue words that say how rows combine, put back into the question as the aggregation.
 AGGREGATION_CUES = {
     "averaged": "average", "averages": "average", "averaging": "average",
@@ -481,6 +485,13 @@ def read_claim(
             "check them one at a time."
         )
     unit, unit_end = _unit_after(claim, chosen.match.end(), columns, row_noun)
+    averaged = re.search(r"\b(?:average|averages|mean|per)\b", claim, re.IGNORECASE)
+    if chosen.cue in TALLY_VERBS and not averaged and not (unit and unit.split()[0].lower() in UNITS):
+        written = claim[chosen.qualifier_start:chosen.match.end()]
+        number = claimed_number(written, chosen.match, chosen.qualifier, None)
+        named = f"{unit} " if unit else ""
+        question = re.sub(r"\s+", " ", f"total {named}{claim[:chosen.cue_start]} {claim[unit_end:]}")
+        return question.strip(" .,;:!?"), number, ""
     number = claimed_number(claim[chosen.qualifier_start:unit_end], chosen.match, chosen.qualifier, unit)
     # "There are 344 penguins", "152 penguins are Adelie": a number before the rows' noun counts them.
     lead = claim[:chosen.qualifier_start].strip()
@@ -491,7 +502,7 @@ def read_claim(
     if counted and re.fullmatch(r"(?:there\s+(?:are|were|is|was))?", lead, flags=re.IGNORECASE):
         rest = re.sub(r"\s+", " ", claim[chosen.match.end():]).strip(" .,;:!?")
         return f"how many {rest}", number, ""
-    start = chosen.cue_start if chosen.cue in AGGREGATION_CUES or chosen.cue in {
+    start = chosen.cue_start if chosen.cue in AGGREGATION_CUES or chosen.cue in TALLY_VERBS or chosen.cue in {
         "is", "was", "were", "are", "be", "been", "equals", "equalled", "equaled", "stood", "amounted",
         "came", "numbered", "at", "by", "of",
     } else chosen.qualifier_start
@@ -545,11 +556,29 @@ def _counted(reason: str, count: int) -> str:
     return f"{count:,} {reason}"
 
 
+# Words left out of initials, so "in December" is not ID.
+INITIALS_SKIP = frozenset({
+    "in", "on", "of", "the", "a", "an", "by", "for", "to", "and", "or", "at", "per", "is", "was", "were",
+    "are",
+})
+
+
+def _initials(question: str, column: str) -> bool:
+    """Whether an all-capitals ``column`` is the initials of words in a row: "home runs" for HR."""
+    if not (str(column).isalpha() and str(column).isupper()):
+        return False
+    words = [word for word in re.findall(r"[a-z]+", question.lower()) if word not in INITIALS_SKIP]
+    size = len(str(column))
+    return str(column).lower() in {"".join(word[0] for word in words[start:start + size])
+                                   for start in range(len(words))}
+
+
 def _named(question: str, column: str) -> bool:
-    """Whether the question names ``column``: one of its words, or a word that shortens or lengthens one."""
+    """Whether the question names ``column``: one of its words, a word that shortens or lengthens one,
+    or its initials."""
     parts = re.findall(r"[a-z]+", str(column).lower())
     words = re.findall(r"[a-z]+", question.lower())
-    if str(column).lower() in question.lower():
+    if str(column).lower() in question.lower() or _initials(question, column):
         return True
     return any(_abbreviates(word, part) for word in words for part in parts if len(part) >= 2)
 
@@ -566,14 +595,9 @@ def _names_head(question: str, column: str) -> bool:
     and "250 parts" names num_parts, "home runs" names HR by its initials, while
     "deaths" names only the first word of death_height_metres, a height.
     """
-    if str(column).lower() in question.lower():
+    if str(column).lower() in question.lower() or _initials(question, column):
         return True
     words = re.findall(r"[a-z]+", question.lower())
-    if str(column).isalpha() and str(column).isupper():
-        size = len(str(column))
-        if str(column).lower() in {"".join(word[0] for word in words[start:start + size])
-                                   for start in range(len(words))}:
-            return True
     parts = re.findall(r"[a-z]+", normalized_name(column))
     if len(parts) > 1 and column_unit(column) == parts[-1]:
         parts = parts[:-1]
@@ -745,6 +769,7 @@ def check_claim(
     value: str | float | None = None,
     sheet: str | None = None,
     decisions: Mapping[str, str] | None = None,
+    answers: str | Path | Mapping[str, str] | None = None,
 ) -> ClaimCheck:
     """Check a claim about ``data`` (a path, bytes, a DataFrame or an ``Analysis``).
 
@@ -754,9 +779,18 @@ def check_claim(
     interval; a float is taken at its shortest written form. Every row of the
     file is read: no row limit applies to a check. ``decisions`` pick options
     for the choices the answer rests on (see ``ada.decisions``); an unknown
-    key or option raises ``UnknownDecision``.
+    key or option raises ``UnknownDecision``. ``answers`` is the answers file
+    ``ada scan --template`` writes (or its dict): its ``decide:`` answers are
+    used, and ``decisions`` win over them.
     """
+    from .folder import load_answers  # noqa: PLC0415
+    from .joins import folder_choices  # noqa: PLC0415
+
+    given = load_answers(dict(answers) if isinstance(answers, Mapping) else answers)
     choices = checked_choices(decisions)
+    if given and not (isinstance(data, str | Path) and Path(data).is_dir()):
+        named = Path(data).name if isinstance(data, str | Path) else None
+        choices = folder_choices(given, named, choices)
     text = claim if claim is not None else f"{question} is {value}"
     if sheet is not None and isinstance(data, str | Path):
         from .api import analyze  # noqa: PLC0415
@@ -766,7 +800,8 @@ def check_claim(
         except Exception as error:  # noqa: BLE001 - reported as unreadable
             return ClaimCheck(text, "unverified", "inaccessible_data", f"The data could not be read: {error}")
     if isinstance(data, str | Path) and Path(data).is_dir():
-        return _check_folder(Path(data), text, claim, question=question, value=value, choices=choices)
+        return _check_folder(Path(data), text, claim, question=question, value=value, choices=choices,
+                             given=given)
     analysis, source, problem = _source_of(data)
     if analysis is None:
         reason = "missing_context" if problem and "is a folder" in problem else "inaccessible_data"
@@ -798,7 +833,7 @@ def check_claim(
 
 def _check_folder(
     folder: Path, text: str, claim: str | None, *, question: str | None, value: str | float | None,
-    choices: dict[str, str],
+    choices: dict[str, str], given: dict[str, str],
 ) -> ClaimCheck:
     """Check a claim about a folder against each of its tables, and say which one fits.
 
@@ -806,76 +841,97 @@ def _check_folder(
     claim names by its last word, the kind of quantity it holds, come first.
     When exactly one gives a number for it, that file's check is the result,
     and its assumptions say the file was chosen this way. When several do and they disagree, the claim is
-    ambiguous. When none does, the claim may need two files joined, and the
-    links a scan proposes are named; ADA does not join files itself.
+    ambiguous. When none does, the claim may need two files joined: each pair
+    of files a link joins (see ``ada.joins``) is checked the same way, and the
+    result says which join it used.
     """
-    files = sorted(
-        item for item in folder.iterdir()
-        if item.is_file() and not item.name.startswith(".") and item.suffix.lower() in READABLE
-    )
+    from .folder import scan  # noqa: PLC0415
+    from .joins import files_in, folder_choices, join_decision, joined_tables  # noqa: PLC0415
+
+    files = files_in(folder)
     listed = ", ".join(item.name for item in files[:12]) + (" and more" if len(files) > 12 else "")
     folder_source = Source(name=str(folder), path=str(folder))
     if not files:
         return ClaimCheck(text, "unverified", "inaccessible_data", f"{folder} holds no table ADA can read.",
                           source=folder_source)
-    fitted: list[tuple[Path, ClaimCheck]] = []
+    fitted: list[tuple[str, ClaimCheck]] = []
     for item in files:
-        check = check_claim(item, claim, question=question, value=value, decisions=choices)
+        check = check_claim(item, claim, question=question, value=value,
+                            decisions=folder_choices(given, item.name, choices))
         if check.answer is not None and check.compared is not None:
-            fitted.append((item, check))
-    # A file whose column the claim names by what it measures fits better than one read from a lesser
-    # word: "member deaths" is member_deaths in expeditions.csv, not death_height_metres.
-    named = [(item, check) for item, check in fitted
-             if _names_head(check.question or "", check.answer.plan.measure or "")]
-    lesser = [item.name for item, _ in fitted if named and item not in {found for found, _ in named}]
-    fitted = named or fitted
-    if len(fitted) == 1:
-        item, check = fitted[0]
-        chosen = f"Checked against {item.name}, the only file in {folder.name} whose columns fit the claim."
-        if lesser:
-            chosen = (
-                f"Checked against {item.name}, whose {check.answer.plan.measure} the claim names by what it "
-                f"measures; {list_names(lesser)} fit only by a lesser word."
-            )
-        return replace(check, assumptions=(chosen, *check.assumptions))
+            fitted.append((item.name, check))
     if fitted:
-        values = {round(check.compared, 12) for _, check in fitted}
-        if len(values) == 1 and all(check.verified for _, check in fitted):
-            item, check = fitted[0]
-            names = [found.name for found, _ in fitted]
-            each = (
-                f"{names[0]} and {names[1]} both give" if len(names) == 2 else f"{', '.join(names)} all give"
-            )
-            same = f"{each} {_plain(check.compared)}."
-            return replace(check, assumptions=(same, *check.assumptions))
-        alternatives = tuple(
-            Alternative(item.name, check.question or "", check.compared, check.agreement == "match",
-                        check.answer.calculation if check.answer else "")
-            for item, check in fitted
-        )
-        shown = "; ".join(f"{item.reading} gives {_plain(item.value)}" for item in alternatives
-                          if item.value is not None)
-        names = [item.reading for item in alternatives]
-        return ClaimCheck(
-            text, "unverified", "ambiguous_intent",
-            f"The claim fits more than one file in {folder.name}, and they give different answers: {shown}.",
-            claimed=fitted[0][1].claimed, question=fitted[0][1].question, alternatives=alternatives,
-            source=folder_source,
-            clarification=f"Which file is the claim about: {', '.join(names[:-1])} or {names[-1]}?",
-        )
-    from .folder import scan  # noqa: PLC0415
-
-    links = [link for link in scan(folder).links if link.kind in ("many-to-one", "one-to-one")]
+        return _pick_fit(fitted, folder, text, folder_source, "file")
+    found = scan(folder, answers=given)
+    decision = join_decision(folder_choices(given, None, choices))
+    joined = joined_tables(folder, found, decision.chosen)
+    for table in joined:
+        check = check_claim(table.frame, claim, question=question, value=value,
+                            decisions=folder_choices(given, table.link.from_file, choices))
+        if check.answer is not None and check.compared is not None:
+            answer = replace(check.answer, decisions=(decision, *check.answer.decisions))
+            fitted.append((table.name, replace(check, answer=answer, source=table.source(folder),
+                                               assumptions=(table.describe(), *check.assumptions))))
+    if fitted:
+        return _pick_fit(fitted, folder, text, folder_source, "join")
+    links = [link for link in found.links if link.kind in ("many-to-one", "one-to-one")]
     joins = "; ".join(f"{link.label('from')} to {link.label('to')}" for link in links[:6])
     message = f"No single file in {folder.name} holds what the claim names ({listed})."
     if joins:
-        message += (
-            f" It may need two files joined; the keys that join them are {joins}. ADA does not join files."
-        )
+        tried = f"the {counted(len(joined), 'join')} ADA tried ({decision.key}={decision.chosen})"
+        message += f" Nor does {tried}; the keys that could join the files are {joins}."
     return ClaimCheck(
         text, "unverified", "missing_context" if joins else "unsupported_analysis", message,
         source=folder_source,
         clarification="Which file is the claim about, or which files hold the numbers it combines?",
+    )
+
+
+def _pick_fit(
+    fitted: list[tuple[str, ClaimCheck]], folder: Path, text: str, folder_source: Source, kind: str
+) -> ClaimCheck:
+    """The check of the one file or join that fits the claim, or ``ambiguous_intent`` when several disagree.
+
+    One whose column the claim names by its last word, the kind of quantity it
+    holds, wins over one read from a lesser word: "member deaths" is
+    member_deaths in expeditions.csv, not death_height_metres.
+    """
+    named = [(name, check) for name, check in fitted
+             if _names_head(check.question or "", check.answer.plan.measure or "")]
+    lesser = [name for name, _ in fitted if named and name not in {found for found, _ in named}]
+    fitted = named or fitted
+    if len(fitted) == 1:
+        name, check = fitted[0]
+        if kind == "join":
+            return check
+        chosen = f"Checked against {name}, the only file in {folder.name} whose columns fit the claim."
+        if lesser:
+            chosen = (
+                f"Checked against {name}, whose {check.answer.plan.measure} the claim names by what it "
+                f"measures; {list_names(lesser)} fit only by a lesser word."
+            )
+        return replace(check, assumptions=(chosen, *check.assumptions))
+    values = {round(check.compared, 12) for _, check in fitted}
+    if len(values) == 1 and all(check.verified for _, check in fitted):
+        name, check = fitted[0]
+        names = [found for found, _ in fitted]
+        each = f"{names[0]} and {names[1]} both give" if len(names) == 2 else f"{', '.join(names)} all give"
+        same = f"{each} {_plain(check.compared)}."
+        return replace(check, assumptions=(same, *check.assumptions))
+    alternatives = tuple(
+        Alternative(name, check.question or "", check.compared, check.agreement == "match",
+                    check.answer.calculation if check.answer else "")
+        for name, check in fitted
+    )
+    shown = "; ".join(f"{item.reading} gives {_plain(item.value)}" for item in alternatives
+                      if item.value is not None)
+    names = [item.reading for item in alternatives]
+    return ClaimCheck(
+        text, "unverified", "ambiguous_intent",
+        f"The claim fits more than one {kind} in {folder.name}, and they give different answers: {shown}.",
+        claimed=fitted[0][1].claimed, question=fitted[0][1].question, alternatives=alternatives,
+        source=folder_source,
+        clarification=f"Which {kind} is the claim about: {', '.join(names[:-1])} or {names[-1]}?",
     )
 
 

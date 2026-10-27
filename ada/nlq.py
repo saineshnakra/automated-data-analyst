@@ -222,6 +222,11 @@ MONTH_NAMES = {
 # A text column with at most this many distinct values offers them as filters
 # ("for West"); beyond that it holds free text or one label per row.
 MAX_FILTER_CANDIDATES = 10_000
+#: Words in a column's name that mark first names (nameFirst, forename) and last names (nameLast, surname).
+FIRST_NAME_WORDS = frozenset({"first", "forename", "firstname"})
+LAST_NAME_WORDS = frozenset({"last", "surname", "lastname", "family"})
+#: A name column also needs one of these words, so "first_flight" is not a name.
+NAME_WORDS = frozenset({"name", "forename", "surname", "firstname", "lastname"})
 # Longest value, in words, the parser looks for in a question.
 MAX_VALUE_WORDS = 12
 BREAKDOWN_LIMIT = 12
@@ -1231,6 +1236,47 @@ def _add_filter(reading: _Reading, values: list[_Value]) -> None:
     column = values[0].column
     known = reading.filters.get(column, ())
     reading.filters[column] = tuple(dict.fromkeys((*known, *(value.raw for value in values))))
+
+
+def _person_name_columns(dataframe: pd.DataFrame) -> tuple[str, str] | None:
+    """The table's one column of first names and one of last names, when it has both."""
+
+    def named(marks: frozenset[str]) -> list[str]:
+        found = []
+        for column in dataframe.columns:
+            words = set(normalized_name(str(column)).split())
+            if words & marks and words & NAME_WORDS and not is_numeric_dtype(dataframe[column]):
+                found.append(column)
+        return found
+
+    firsts, lasts = named(FIRST_NAME_WORDS), named(LAST_NAME_WORDS)
+    return (firsts[0], lasts[0]) if len(firsts) == 1 and len(lasts) == 1 else None
+
+
+def _claim_person_names(reading: _Reading, dataframe: pd.DataFrame) -> None:
+    """Filter on a person named by first and last name, each in a column of its own: "Barry Bonds".
+
+    Two words in a row name a person when some row holds the first as its
+    first name and the second as its last name. Name columns can hold more
+    values than the value index keeps, so the pairs are looked up directly.
+    """
+    columns = _person_name_columns(dataframe)
+    if columns is None:
+        return
+    first, last = columns
+    pairs = dataframe[[first, last]].dropna().drop_duplicates()
+    people: dict[tuple[str, str], tuple[str, str]] = {}
+    for given, family in zip(pairs[first].astype(str), pairs[last].astype(str), strict=True):
+        people.setdefault((_norm(given), _norm(family)), (given, family))
+    tokens = list(_tokens(reading.remaining))
+    for (start, end, word), (after, stop, following) in zip(tokens, tokens[1:], strict=False):
+        found = people.get((word, following))
+        if found is None or reading.original[end:after] != " ":
+            continue
+        reading.filters[first] = (found[0],)
+        reading.filters[last] = (found[1],)
+        reading.claim(start, stop)
+        return
 
 
 def _claim_values(
@@ -2383,6 +2429,7 @@ def _read_question(
     _claim_month_of_year(reading, dataframe, roles)
     _claim_year_ranges(reading, dataframe, roles)
     _claim_conditions(reading, list(reading.spans), dataframe, roles, vocabulary)
+    _claim_person_names(reading, dataframe)
     _claim_values(reading, vocabulary, dataframe, exact_only=True, row_noun=roles.row_noun)
     _claim_analysis_words(reading, dataframe, roles)
     _claim_rate(reading)
