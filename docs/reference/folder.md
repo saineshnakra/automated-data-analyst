@@ -66,7 +66,11 @@ keys. Each candidate is measured both ways:
 Names match when they are the same once case, underscores and camelCase are
 set aside (`playerID`), when they share two or more words and differ by at most
 two (`customer_zip_code_prefix` and `geolocation_zip_code_prefix`), or when a
-bare `id` belongs to the file the other column is named for. Columns with
+bare `id` belongs to the file the other column is named for. Two bare `id`
+columns (or `key`, `uuid`) are each their own file's row id, so they link only
+when each holds 90% or more of the other's values, as two halves of one table
+do: Lego's `colors.id` (1 to 217) sits inside `inventories.id` (1 to 33,000)
+and is not a link. Columns with
 different names are linked only when the second is a key (one row per value),
 holds 20 or more values, and 90% or more of the first column's values are
 found in it; with matching names, 50% is enough, flagged to confirm. Whole

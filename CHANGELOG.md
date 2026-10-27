@@ -16,7 +16,9 @@
   Whole numbers link only under matching names, since ids, positions and
   counters overlap by chance, and a link where both sides repeat needs a key
   word (`id`, `code`, `zip`, `number`) in its name. On the Formula 1 tables
-  this leaves the 7 links the schema documents and one to confirm.
+  this leaves the 7 links the schema documents and one to confirm. Two bare
+  `id` columns, each its own file's row id, link only when each holds 90% of
+  the other's values.
 - `ada.check_claim` and `ada claim` take a folder and check the claim against
   the file it fits; when no single file does, the answer names the keys that
   would join two of them.
