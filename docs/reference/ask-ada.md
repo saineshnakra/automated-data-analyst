@@ -257,7 +257,8 @@ each word is claimed, in this order, by:
    month of the year, and the answer says so and that "monthly trend" gives
    the timeline; "per month", "monthly" and trend words keep the timeline.
 5. **Ranges of years** on the date column: "since 1978", "from 1978",
-   "1978 onwards", "after 1977", "before 1950", "until 2000", "between 1990
+   "1978 onwards", "after 1977", "before 1950", "until 2000", "by 2016" (up to
+   its end), "between 1990
    and 2000", "from 1990 to 2000", "the 2010s" (2010 to 2019), and "before
    and after 2000", which splits the rows in two. A day written out ("April
    27, 2011", "27 April 2011", "2011-04-27") keeps the rows of that day,
@@ -301,7 +302,9 @@ each word is claimed, in this order, by:
    column that holds only postal codes, at least ten of them ("Texas" is
    `state` = tx); in a column of state names, a postal code in capitals
    ("NM") or a newspaper's abbreviation with its full stop ("Calif.") picks
-   the state. A plural most values of two or more columns share
+   the state. In a table of the states with no row for the country as a whole,
+   "in the United States", "in the US", "across the country" and "nationwide"
+   mean all the rows, and "States" there is not the `state` column. A plural most values of two or more columns share
    ("characters" in "Male Characters" and "Good Characters") names the rows
    and is no value. An adjective of nationality, or its plural, names its
    country ("Belgian" is Belgium, "Venezuelans" Venezuela, "Mexican
@@ -449,6 +452,11 @@ noun it comes from: "were adopted" is `outcome_type` = adoption, and
 value ("return to owner"), the word could mean either and is refused with
 both columns. A noun for rows ("birds", "animals") that a column of kinds
 holds ("bird" in `animal_type`) picks those rows instead of naming every row.
+A word found only inside a value, right before the plural of that value's own
+column's name, says which ones and picks no rows: "London boroughs" is not the
+borough City of London. Before the name in the singular it is that value ("the
+southwest border" is Southwest Land Border), and a value written in full picks
+its rows too ("City of London borough").
 A word in lower case that is the capitalised word of several longer names is
 none of them: "new cases" does not pick New Zealand or Papua New Guinea,
 while "the southwest border" still picks the one value Southwest Land Border. "named" and "called"
@@ -881,7 +889,10 @@ Other behaviour:
   the most rows" ranks row counts, and so does "most", "fewest", "busiest"
   or "quietest" when no measure is named: "which day had the most
   earthquakes" counts the rows of each day rather than ranking a measure the
-  question never names. "strongest" and "deepest" ask for the highest value,
+  question never names. Groups rank the same way: "which boroughs have the
+  most rescues" counts each borough's rows, unless a verb of selling or
+  spending ("which product sells the fewest") is about the measure.
+  "strongest" and "deepest" ask for the highest value,
   "weakest" and "shallowest" for the lowest.
 - A correlation reports Pearson r with its 95% interval (Fisher transform), the
   number of complete pairs and the Spearman rank correlation, in the same
@@ -919,9 +930,11 @@ Other behaviour:
   count, percentage points for a rate, the plain difference for a level,
   whose percent change is in the figures too. A change between two years the
   question names ("between 1982 and 1988", "from 1982 to 1988") compares
-  those two years as whole years, not the last two periods in the range. A
-  change in "the number of" rows with no measure named is a change in the
-  row count. "rose", "risen" and
+  those two years as whole years, not the last two periods in the range, and
+  segments ranked by their change do the same. A change in one year ("how did
+  rescues change in 2020") is that year against the year before, not the last
+  two months of the year. A change in "the number of" rows with no measure
+  named is a change in the row count. "rose", "risen" and
   "climbed" ask for a change as "grew" and "fell" do.
 - Growth by segment ranks amounts by percent change. It leaves out segments
   that started from zero and names them separately, since a growth rate from

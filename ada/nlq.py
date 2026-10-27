@@ -322,7 +322,8 @@ NUMBER = r"(?:minus\s+)?\d+(?:\.\d+)?"
 COMPARISONS: tuple[tuple[Operator, str], ...] = (
     (">=", r"at least|no less than"),
     ("<=", r"at most|no more than"),
-    (">", r"(?:greater|more|higher|larger|bigger) than|above|over|exceeds|exceeding|exceed"),
+    (">", r"(?:greater|more|higher|larger|bigger) than|above|over|exceeds|exceeding|exceeded|exceed|topped|"
+          r"surpassed"),
     ("<", r"(?:less|lower|smaller|fewer) than|below|under"),
 )
 COMPARISON_PATTERN = "|".join(f"(?P<op{index}>{words})" for index, (_, words) in enumerate(COMPARISONS))
@@ -961,7 +962,8 @@ YEAR_RANGES: tuple[tuple[re.Pattern, str], ...] = (
     (re.compile(rf"\b(?P<year>{YEAR})\s+(?:onwards?|and\s+later|and\s+after)\b"), ">="),
     (re.compile(rf"\bafter\s+(?P<year>{YEAR})\b"), ">"),
     (re.compile(rf"\bbefore\s+(?P<year>{YEAR})\b"), "<"),
-    (re.compile(rf"\b(?:until|till|up\s+to|through)\s+(?P<year>{YEAR})\b"), "<="),
+    # "48 women had won by 2016": by a year is up to its end.
+    (re.compile(rf"\b(?:until|till|up\s+to|through|by(?:\s+the\s+end\s+of)?)\s+(?P<year>{YEAR})\b"), "<="),
 )
 # A day written out: "April 27, 2011", "27 April 2011", "2011-04-27".
 MONTH_WORD = (
@@ -1671,7 +1673,13 @@ def _claim_values(
                     continue
                 columns = list(dict.fromkeys(value.column for value in found))
                 beside = _column_beside(reading, columns, window[0][0], window[-1][1]) if (
-                    len(columns) > 1 or adverb) else None
+                    len(columns) > 1 or adverb or not exact) else None
+                named = reading.original[beside[1][0]:beside[1][1]].split() if beside else []
+                if not exact and not adverb and named and re.fullmatch(r"[a-z]+[^s]s", named[-1]):
+                    # "London boroughs": a word only inside a value ("City of London"), before the plural of
+                    # that value's own column, says which ones, not one of them. "the southwest border"
+                    # still names Southwest Land Border.
+                    continue
                 if adverb and beside is None:
                     continue
                 if beside is not None:
@@ -1846,6 +1854,45 @@ PRESS_STATES = {
 }
 # Postal codes that are also English words in capitals, never read as states.
 WORD_CODES = frozenset({"in", "or", "me", "ok", "hi", "oh"})
+
+
+# Words for the whole of the United States, and the values of a row that stands for it.
+COUNTRY_WIDE = re.compile(
+    r"\b(?:in|across|throughout)\s+(?:(?:the\s+)?(?:united\s+states(?:\s+of\s+america)?|usa)|"
+    r"the\s+(?:u\.?s\.?(?:a\.?)?|country|nation))(?!\w)|\bnation(?:wide|ally)\b",
+    re.IGNORECASE,
+)
+COUNTRY_WORDS = frozenset({
+    "united states", "usa", "us", "united states of america", "total", "national", "all",
+})
+
+
+def _claim_country(reading: _Reading, vocabulary: _Vocabulary) -> None:
+    """Read "in the United States" or "nationwide" as all the rows of a table of the states.
+
+    Only a table with one column of state names or postal codes, and no row
+    for the country as a whole, is read this way; the words then name no
+    column ("States" is not the state column).
+    """
+    codes = set(US_STATES.values())
+    columns: dict[str, list[str]] = defaultdict(list)
+    for value in vocabulary.values:
+        columns[value.column].append(" ".join(value.words))
+    whole = [
+        column for column, values in columns.items()
+        if sum(value in US_STATES or value in codes for value in values) >= STATE_CODES_MIN
+        and not any(value in COUNTRY_WORDS for value in values)
+    ]
+    if len(whole) != 1:
+        return
+    for match in list(COUNTRY_WIDE.finditer(reading.remaining)):
+        reading.spans = {
+            column: span for column, span in reading.spans.items()
+            if span[1] <= match.start() or span[0] >= match.end()
+        }
+        reading.claim(match.start(), match.end())
+        reading.notes.append(f'Read "{match.group().strip()}" as all the rows: {whole[0]} holds the states, '
+                             "and no row is the country as a whole.")
 
 
 def _claim_us_states(reading: _Reading, vocabulary: _Vocabulary) -> None:
@@ -3576,6 +3623,7 @@ def _read_question(
         reading.spans = {
             column: span for column, span in reading.spans.items() if q[span[0]:span[1]] != roles.row_noun
         }
+    _claim_country(reading, vocabulary)
     _unit_word_names_rows(reading, dataframe, roles)
     _claim_count_column(reading, dataframe, roles)
     _outcome_columns(reading, dataframe)
@@ -4145,6 +4193,12 @@ def _plan_from_reading(reading: _Reading, dataframe: pd.DataFrame, roles: Column
         rank_dimension = dimension or (roles.dimension if wants_ranked_growth else None)
         ascending = bool(re.search(ASCENDING_PATTERN, intent_text))
         top_n = int(top_match.group(2)) if top_match else None
+        if year and not month and not grain and (column := _year_column(dataframe, roles)):
+            # "rose in 2020" compares 2020 with the year before, not the last two periods inside 2020.
+            years = (Condition(column, ">=", float(year - 1), part="year"),
+                     Condition(column, "<=", float(year), part="year"))
+            base = {**base, "year": None, "conditions": (*base["conditions"], *years)}
+            reading.notes.append(f"Read a change in {year} as {year} against {year - 1}.")
         if wants_count and not measure:
             # "the number of earthquakes rose": with no measure named, the change is in the row count.
             return QueryPlan(
@@ -4184,7 +4238,16 @@ def _plan_from_reading(reading: _Reading, dataframe: pd.DataFrame, roles: Column
         else:
             top_n = 1
             ascending = bool(re.search(ASCENDING_PATTERN, intent_text))
-        grouped = _grouped_aggregation(aggregation, explicit_extreme, default_aggregation)
+        # "which boroughs have the most rescues": with no measure named, "most" counts each group's rows,
+        # as it does for periods.
+        # A verb of selling or spending ("which product sells the fewest") is about the measure.
+        selling = re.search(r"\b(?:sells?|sold|earns?|earned|spends?|spent|costs?|pays?|paid)\b", intent_text)
+        counted = not measure and not selling and bool(
+            re.search(r"\b(?:most|fewest|busiest|quietest)\b", intent_text)
+        )
+        ranked = {**base, "measure": None} if counted else base
+        usual = "count" if counted else default_aggregation
+        grouped = _grouped_aggregation(aggregation, explicit_extreme, usual)
         if grouped == "mean" and (share := _flag_share(
             reading, dataframe, dimension, base, intent="rank", top_n=top_n, ascending=ascending,
             time_part=time_part,
@@ -4197,7 +4260,7 @@ def _plan_from_reading(reading: _Reading, dataframe: pd.DataFrame, roles: Column
             top_n=top_n,
             ascending=ascending,
             time_part=time_part,
-            **base,
+            **ranked,
         )
 
     if wants_trend and roles.date:
@@ -8372,8 +8435,9 @@ def _execute_growth(
     assert roles.date is not None
     measure = plan.measure
     scoped_roles = _scoped_roles(roles, measure, plan.dimension)
-    # Two years named ("from 2023 to 2024") are compared as whole years.
-    grain = plan.grain or ("Y" if _named_years(plan) and not plan.dimension else None)
+    # Two years named ("from 2023 to 2024") are compared as whole years, for each group too.
+    named = _named_years(plan)
+    grain = plan.grain or ("Y" if named else None)
     series = build_trend(working, scoped_roles, frequency=grain)
     trend = series.frame
     if len(trend) < 2:
@@ -8384,9 +8448,14 @@ def _execute_growth(
             calculation=f"growth needs at least 2 periods{scope}",
         )
     previous_period, current_period = trend.iloc[-2]["Period"], trend.iloc[-1]["Period"]
+    spanned = bool(named) and (trend.iloc[0]["Period"].year, trend.iloc[-1]["Period"].year) == named
+    if spanned:
+        previous_period = trend.iloc[0]["Period"]
 
     if plan.dimension:
-        grain = plan.grain or preferred_frequency(working[roles.date])
+        grain = grain or preferred_frequency(working[roles.date])
+        when = f"from {named[0]} to {named[1]}" if spanned else "in the latest period"
+        versus = f"{named[1]} vs {named[0]}" if spanned else "latest vs previous period"
         frame = working[[roles.date, plan.dimension] + ([measure] if measure else [])].dropna(
             subset=[roles.date, plan.dimension]
         )
@@ -8416,7 +8485,7 @@ def _execute_growth(
             }
         )
         if not relative:
-            return _rank_level_changes(plan, result, working, scoped_roles, scope, applied)
+            return _rank_level_changes(plan, result, working, scoped_roles, scope, applied, when)
         # Growth from zero is undefined, so those segments leave the ranking but
         # are still named in the answer.
         from_nothing = result[(result["Previous"] == 0) & (result["Latest"] != 0)]
@@ -8454,7 +8523,7 @@ def _execute_growth(
         answer = (
             f"{group_label(plan.dimension, leader[plan.dimension])} "
             f"{_ranked_move(leader['Change %'], plan.ascending)}{_phrase(applied)}: "
-            f"{leader['Change %']:+.1f}% ({start} → {end}) in the latest period."
+            f"{leader['Change %']:+.1f}% ({start} → {end}) {when}."
         )
         if not from_nothing.empty:
             newest = from_nothing.loc[from_nothing["Latest"].abs().idxmax()]
@@ -8470,8 +8539,7 @@ def _execute_growth(
             plan=plan,
             answer=answer,
             calculation=(
-                f"per-{plan.dimension} {measure or 'row count'}: latest vs previous period, "
-                f"ranked by % change{scope}"
+                f"per-{plan.dimension} {measure or 'row count'}: {versus}, ranked by % change{scope}"
             ),
             table=result.head(BREAKDOWN_LIMIT),
             chart="bar",
@@ -8479,8 +8547,7 @@ def _execute_growth(
 
     previous, current = float(trend.iloc[-2]["Value"]), float(trend.iloc[-1]["Value"])
     prior, latest = "previous period", "latest"
-    named = _named_years(plan)
-    if named and (trend.iloc[0]["Period"].year, trend.iloc[-1]["Period"].year) == named:
+    if spanned:
         # "between 1982 and 1988" compares the two years named, not the last two in the range.
         previous, current = float(trend.iloc[0]["Value"]), float(trend.iloc[-1]["Value"])
         prior, latest = str(named[0]), str(named[1])
@@ -8548,6 +8615,7 @@ def _rank_level_changes(
     roles: ColumnRoles,
     scope: str,
     applied: list[str],
+    when: str = "in the latest period",
 ) -> QueryAnswer:
     """Rank segments of a rate or level measure by the change in their average."""
     measure = plan.measure
@@ -8571,7 +8639,7 @@ def _rank_level_changes(
     answer = (
         f"{group_label(plan.dimension, leader[plan.dimension])} "
         f"{_ranked_move(latest - previous, plan.ascending)}{_phrase(applied)}: "
-        f"{size} ({start} → {end}) in the latest period."
+        f"{size} ({start} → {end}) {when}."
     )
     unit_label = "percentage points" if unit == "rate" else "difference"
     return QueryAnswer(
@@ -8579,7 +8647,8 @@ def _rank_level_changes(
         plan=plan,
         answer=answer,
         calculation=(
-            f"per-{plan.dimension} average {measure}: latest − previous period, "
+            f"per-{plan.dimension} average {measure}: "
+            f"{'latest − previous period' if when == 'in the latest period' else when}, "
             f"ranked by {unit_label}{scope}"
         ),
         table=result.head(BREAKDOWN_LIMIT),

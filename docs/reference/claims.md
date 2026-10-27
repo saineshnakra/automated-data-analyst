@@ -65,8 +65,13 @@ when the file can't be read, and 3 when it is unverified for any other reason.
    cm", "on 25 or more days") is part of the question when it is the only
    other number and no number is written in words; the check then holds only
    if the reading uses it as a condition on a column, and otherwise gives
-   `missing_context`. "Of every 100 birds taken in, about 25 were put down" is
-   a share of 25%. A clause that only says who
+   `missing_context`. A percentage after "topped", "exceeded", "more than"
+   and the like is such a bound too when the number claimed is a count, which
+   may then be written in words ("In 2016 the Democrats topped 60% in nine
+   states"). "Of every 100 birds taken in, about 25 were put down" is a share
+   of 25%. "just", "only" and "barely" before a number stress it and leave its
+   interval as written ("Just 48 women"); "topped $5 million" claims more
+   than 5 million. A clause that only says who
    reports the claim ("Owners estimated that", "The survey found that") is
    set aside. Some second numbers are part of the question: a day written
    out ("on May 22, 2011"), a rating scale ("6.5 out of 10"), and a base,
@@ -176,7 +181,8 @@ capitalised name that "had more X than any other" group, or "the most X",
 followed by its number ("California had more traffic deaths than any other
 state in 1988, with 5,390") is read as the same peak, and "Vesuvius had its
 busiest year on record in 2024, with 1,315 earthquakes" as a peak of the rows
-counted in each year. So is "Chorleywood had the best education score of any
+counted in each year. A count is made the answer's way for every year: the
+distinct values, or the counts a frequency column holds, rather than the rows. So is "Chorleywood had the best education score of any
 town in England, at 9.4". A claim that ranks its group against all the others
 ("the highest of any town", "more than in any other month", "on record") in
 any other words is not verified on its value alone: unless the answer itself
@@ -226,10 +232,29 @@ Virginia's Democratic vote halved in twenty years, from 51.5% in 1996 to
 with an end that does not fails, naming the end and what the data give. The
 years of the ends name the period when the rest of the claim names none, and
 a length of time they agree with ("in twenty years", "in a decade") is set
-aside; "in the twenty years to 2021" gives the years itself. ", to 47,173" is
-a last value alone. A claim whose only numbers are its ends ("rose from 33.3%
-to 27.5%") keeps them as the numbers claimed. A fraction before a verb needs no "of": "nearly half went on to
+aside; "in the twenty years to 2021" gives the years itself. "from 32 the
+year before to 61" gives no year for its first value. ", to 47,173" is a last
+value alone, and so is "to 61" after a change that states its size ("rose 91%
+to 61 in 2020"). A claim whose only numbers are its ends ("rose from 33.3%
+to 27.5%") keeps them as the numbers claimed.
+
+A change in one year ("doubled in 2020") is that year against the year before.
+When the only number is the level a change reached ("rose to 61 in 2020",
+"fell below 40 in 2020", "climbed above 50 in 2020"), the level is checked as
+the value that year, and then the change against the year before: it fails
+when the value did not move the way the verb says. Without one year to set
+against the year before ("rose to 61"), neither is shown and the claim gives
+`missing_context`. "rose over 30%" is the size of the rise, not a level. The
+plural before the verb names what changed: "Fox rescues nearly doubled" is the
+number of rescues when no column is called rescues. A fraction before a verb needs no "of": "nearly half went on to
 college" is read as "nearly half of" is.
+
+A year is never the number claimed after "in", "since", "until", "before",
+"after" or "during" ("rose in 2020" states no number), and a reporting year
+or a span of years ("2021-22", "2019/20", "2000-2014") is one period, not a
+second number. "cases" names the one column that holds a count on each row
+(`count`, `n`, `number` and the like): "polio cases peaked in 1952, at almost
+50,000" adds up `count` rather than counting the rows.
 
 A rate ("about 20 claims for every 100 policyholders", "16 Claims per 100
 Holders") is checked as the total of one column over the total of the other,

@@ -82,6 +82,7 @@ QUALIFIERS = (
     ("no more than", "at most"), ("not more than", "at most"), ("at most", "at most"), ("up to", "at most"),
     ("in excess of", "more than"), ("more than", "more than"), ("greater than", "more than"),
     ("higher than", "more than"), ("exceeding", "more than"), ("above", "more than"),
+    ("topped", "more than"), ("exceeded", "more than"), ("surpassed", "more than"),
     ("just over", "just over"), ("just under", "just under"), ("over", "more than"),
     ("fewer than", "less than"), ("less than", "less than"), ("lower than", "less than"),
     ("below", "less than"), ("under", "less than"),
@@ -89,6 +90,8 @@ QUALIFIERS = (
     ("around", "about"), ("roughly", "about"), ("about", "about"), ("some", "about"), ("circa", "about"),
     ("~", "about"), ("≈", "about"),
     ("nearly", "nearly"), ("almost", "nearly"), ("exactly", "exactly"), ("precisely", "exactly"),
+    # "Just 48 women", "only 16 episodes": the word stresses the number and leaves its interval as written.
+    ("just", None), ("only", None), ("barely", None),
 )
 # Words right before the number that link it to what it describes: "is 12.6", "averaged 12.6".
 PREDICATE_CUES = frozenset({
@@ -168,6 +171,10 @@ MULTIPLE = re.compile(
     re.IGNORECASE,
 )
 MULTIPLE_WORDS = {"doubled": 2, "tripled": 3, "trebled": 3, "quadrupled": 4, "halved": 0.5}
+# A reporting year or a period written as two years: "2021-22", "2019/20", "1985-1999".
+YEAR_PAIR = re.compile(r"\b(?:1[5-9]|20)\d{2}\s*[-–/]\s*(?:\d{2}|(?:1[5-9]|20)\d{2})\b")
+# Words before a year that make it the time of the claim: "rose in 2020", "since 2009".
+YEAR_PREPOSITION = re.compile(r"\b(?:in|since|until|till|before|after|during)\s*$", re.IGNORECASE)
 # Two years that bound a range: "from 2023 to 2024", "between 1982 and 1988".
 YEAR_SPAN = re.compile(r"\b(?:from|between)\s+\d{4}\s*(?:to|and|until|through|-|–)\s*\d{4}\b", re.IGNORECASE)
 FRACTION_PARTS = {"half": 2, "halves": 2, "third": 3, "thirds": 3, "quarter": 4, "quarters": 4, "fifth": 5,
@@ -577,7 +584,8 @@ def _candidates(claim: str, columns: list[str]) -> list[_Candidate]:
     column_words = _column_words(columns)
     days = [day.span() for day in DAY_PATTERN.finditer(claim)] + [
         age.span() for age in AGE_PHRASE.finditer(claim)] + [
-        span.span() for span in YEAR_SPAN.finditer(claim)]
+        span.span() for span in YEAR_SPAN.finditer(claim)] + [
+        span.span() for span in YEAR_PAIR.finditer(claim)]
     for match in NUMBER_PATTERN.finditer(claim):
         start = match.start()
         before = claim[:start].rstrip()
@@ -757,8 +765,10 @@ def _worded_number(claim: str) -> tuple[str, Any] | None:
             return replace(number, text=fraction.group(0), low=bounds[0], high=bounds[1], low_open=bounds[2],
                            high_open=bounds[3], qualifier=kind, decimals=1)
         return rewritten, back
-    if any(not (item.year_like or item.ordinal) for item in _candidates(claim, [])):
-        # A number in digits is the one claimed; a year ("in 2020") is not.
+    if any(not (item.year_like or item.ordinal or _bound_like(claim, item, percent=True))
+           for item in _candidates(claim, [])):
+        # A number in digits is the one claimed; a year ("in 2020") is not, nor a bound ("topped 60% in
+        # nine states").
         return None
     units = {"one": 1, **{word: NUMBER_WORDS[word] for word in list(NUMBER_WORDS)[:8]}}
     worded = re.search(rf"\b({'|'.join(NUMBER_WORDS)})(?:[- ]({'|'.join(units)}))?\b", claim, re.IGNORECASE)
@@ -783,9 +793,15 @@ OR_MORE = re.compile(
 BOUND_QUALIFIERS = frozenset({"more than", "less than", "at least", "at most"})
 
 
-def _bound_like(claim: str, item: _Candidate) -> bool:
-    """Whether a number bounds a condition ("under 25", "deeper than 50 cm", "25 or more days")."""
-    if item.match.group("percent") or item.year_like or item.ordinal:
+def _bound_like(claim: str, item: _Candidate, percent: bool = False) -> bool:
+    """Whether a number bounds a condition ("under 25", "deeper than 50 cm", "25 or more days").
+
+    A percentage is a bound only when ``percent`` allows it and a word of comparison comes before it
+    ("topped 60% in nine states"), since a percentage is most often the share claimed.
+    """
+    if item.match.group("percent"):
+        return percent and item.qualifier in BOUND_QUALIFIERS
+    if item.year_like or item.ordinal:
         return False
     return (item.qualifier in BOUND_QUALIFIERS or bool(COMPARATIVE_THAN.search(claim[:item.match.start()]))
             or bool(OR_MORE.match(claim[item.match.end():])))
@@ -795,9 +811,12 @@ def _past_bounds(claim: str, usable: list[_Candidate]) -> _Candidate | None:
     """The number claimed when every other number is a bound: 3.9 in "Films that scored under 50 still
     averaged 3.9 stars". None when more than one is left, or a number in words is ("Nine Munros rise above
     4,000 feet, led by Ben Nevis at 4,411 feet")."""
-    bounds = [item for item in usable if _bound_like(claim, item)]
+    bounds = [item for item in usable if _bound_like(claim, item, percent=True)]
     rest = [item for item in usable if item not in bounds]
     if not bounds or len(rest) != 1:
+        return None
+    if rest[0].match.group("percent") and any(item.match.group("percent") for item in bounds):
+        # "More than 60% of the states had more than 60% of the vote" bounds one share by another.
         return None
     if re.search(rf"\b(?:{'|'.join(NUMBER_WORDS)})\b", claim, re.IGNORECASE):
         return None
@@ -811,7 +830,7 @@ def _unused_bounds(asked: str, answer: QueryAnswer) -> list[str]:
             if isinstance(item, Condition) and item.value is not None]
     unused = []
     for item in _candidates(asked, []):
-        if not _bound_like(asked, item):
+        if not _bound_like(asked, item, percent=True):
             continue
         value, _, _, scale, _ = parse_number(item.match)
         if not any(math.isclose(value * scale, other, rel_tol=1e-9) for other in used):
@@ -880,10 +899,13 @@ def read_claim(
     if not candidates:
         return None, None, "The claim states no number to check."
     plain = [item for item in candidates if not (item.year_like or item.filter_like or item.ordinal)]
-    # The years of a range ("from 2023 to 2024") pick rows and are never the number claimed.
+    # The years of a range ("from 2023 to 2024") pick rows and are never the number claimed; nor is a year
+    # after "in" or "since" ("rose in 2020").
     spans = [span.span() for span in YEAR_SPAN.finditer(claim)]
     usable = plain or [item for item in candidates if not (item.year_like or item.ordinal)] or [
-        item for item in candidates if not any(low <= item.match.start() < high for low, high in spans)
+        item for item in candidates
+        if not any(low <= item.match.start() < high for low, high in spans)
+        and not (item.year_like and YEAR_PREPOSITION.search(claim[:item.match.start()]))
     ]
     if not usable:
         return None, None, "The claim states no number to check."
@@ -1346,11 +1368,13 @@ def check_claim(
         item = found[0]
         number = claimed_number(str(written)[item.qualifier_start:], item.match, item.qualifier, None)
         asked = question
-    said, ends = text, ()
+    said, ends, direction = text, (), None
     if question is None:
         # "rose by more than 60%, from 29,199 in 1999 to 47,173 in 2017": the change is read without its ends,
         # which are checked after it.
         text, ends = _without_ends(text)
+        if not ends:
+            text, direction = _as_level(text)
         # "Of the 4,526 applicants, 38.8% were admitted": the lead names the base, checked below.
         body, base = _based(_without_peak(text))
         asked, number, problem = read_claim(body, columns, analysis.roles.row_noun)
@@ -1365,6 +1389,8 @@ def check_claim(
     check = _checked_table(analysis, text, asked, number, source, choices, question)
     if ends:
         check = _checked_ends(check, ends)
+    if direction:
+        check = _checked_direction(check, analysis, direction)
     return replace(check, claim=said)
 
 
@@ -1421,12 +1447,26 @@ CHANGE_WORDS = re.compile(
     r"quadrupled|halved|\w+fold)\b",
     re.IGNORECASE,
 )
+# "from 32 the year before to 61": the first end's year, given against the year of the change.
+YEAR_BEFORE = (r"(?:the|a)\s+(?:year|season)\s+(?:before|earlier)|the\s+(?:previous|prior)\s+(?:year|season)|"
+               r"last\s+year")
 FROM_TO = re.compile(
-    rf",?\s*\bfrom\s+(?P<first>{_END})(?:\s+in\s+(?P<y1>\d{{4}}))?\s+to\s+(?P<last>{_END})"
+    rf",?\s*\bfrom\s+(?P<first>{_END})(?:\s+(?:in\s+(?P<y1>\d{{4}})|{YEAR_BEFORE}))?\s+to\s+(?P<last>{_END})"
     rf"(?:\s+in\s+(?P<y2>\d{{4}}))?",
     re.IGNORECASE,
 )
 TO_ONLY = re.compile(rf",\s*to\s+(?P<last>{_END})(?=\s*[.!;]?\s*$)", re.IGNORECASE)
+# "rose to 61", "fell below 40": the level a change reached, not its size. "rose over 30%" is a size.
+LEVEL_REACHED = re.compile(
+    r"\b(?:(?P<rise>rose|risen|grew|grown|climbed|increased|jumped|soared|surged|went\s+up)|"
+    r"(?P<fall>fell|fallen|dropped|declined|decreased|slumped|plunged|tumbled|sank|went\s+down))"
+    rf"(?P<size>\s+(?:by\s+)?{_END})?(?P<side>\s+(?:to|below|beneath|above|past|beyond|over|under)\s+)"
+    rf"(?=(?P<level>{_END}))",
+    re.IGNORECASE,
+)
+# The qualifier each word before a level stands for.
+LEVEL_SIDES = {"to": "", "below": "below ", "beneath": "below ", "under": "under ", "above": "above ",
+               "over": "over ", "past": "more than ", "beyond": "more than "}
 
 
 DURATION = re.compile(
@@ -1482,7 +1522,48 @@ def _without_ends(text: str) -> tuple[str, tuple[tuple[str, str], ...]]:
     found = TO_ONLY.search(text)
     if found and stated(rest := f"{text[:found.start()]}{text[found.end():]}"):
         return re.sub(r"\s+", " ", rest).strip(), (("latest", found.group("last").strip()),)
+    found = _level_reached(text)
+    if found:
+        # "rose 10% to 61 in 2020": the change is checked, then 61 as its last value.
+        end = found.end() + len(found.group("level"))
+        rest = f"{text[:found.end('side') - len(found.group('side'))]}{text[end:]}"
+        if stated(_without_years(rest)):
+            side = LEVEL_SIDES[found.group("side").strip().lower()]
+            return re.sub(r"\s+", " ", rest).strip(), (("latest", f"{side}{found.group('level').strip()}"),)
     return text, ()
+
+
+def _without_years(text: str) -> str:
+    """The text without its years, which date a claim rather than state its number."""
+    return re.sub(r"\b(?:1[5-9]|20)\d{2}\b", "", text)
+
+
+def _level_reached(text: str) -> re.Match | None:
+    """The first level a change is said to reach ("rose to 61", "fell below 40"), or None."""
+    for found in LEVEL_REACHED.finditer(text):
+        side = found.group("side").strip().lower()
+        if side in ("over", "under") and re.search(r"%|per\s?cent", found.group("level"), re.IGNORECASE):
+            continue
+        if re.fullmatch(r"(?:1[5-9]|20)\d{2}", found.group("level").strip()):
+            # "rose to 2020 levels" is no level of its own.
+            continue
+        return found
+    return None
+
+
+def _as_level(text: str) -> tuple[str, str | None]:
+    """A claim whose only number is the level a change reached, read as that level, and the direction of the
+    change ("rise" or "fall") to check after it: "rose to 61 in 2020" is "were 61 in 2020", having risen."""
+    found = _level_reached(text)
+    if found is None or found.group("size"):
+        return text, None
+    end = found.end() + len(found.group("level"))
+    others = _without_years(f"{text[:found.start()]}{text[end:]}")
+    if re.search(r"\d", others) or MULTIPLE.search(others) or BY_FRACTION.search(others):
+        return text, None
+    side = LEVEL_SIDES[found.group("side").strip().lower()]
+    level = f"{text[:found.start()]}was {side}{text[found.end():]}"
+    return level, "rise" if found.group("rise") else "fall"
 
 
 def _checked_ends(check: ClaimCheck, ends: tuple[tuple[str, str], ...]) -> ClaimCheck:
@@ -1525,6 +1606,64 @@ def _checked_ends(check: ClaimCheck, ends: tuple[tuple[str, str], ...]) -> Claim
         return replace(check, message=f"{check.message} Also, {'; '.join(wrong)}.",
                        assumptions=(*check.assumptions, *notes))
     return replace(check, assumptions=(*check.assumptions, *notes))
+
+
+def _yearly(analysis: Any, plan: Any) -> tuple[Any, str] | None:
+    """The answer's calculation made for each year, with the plan's other filters, as values by year ("2012"),
+    and what each value is ("row count", "sum(count)"); None without a date or year to group by, or for a
+    count of a share of the rows."""
+    from .nlq import _apply_filters, frequency_column  # noqa: PLC0415
+
+    if analysis.roles.date is None or plan.counted or (plan.measure is None and plan.aggregation != "count"):
+        return None
+    rows, _ = _apply_filters(analysis.frame, replace(plan, year=None), analysis.roles)
+    dates = rows[analysis.roles.date]
+    years = dates.dt.year if hasattr(dates, "dt") else dates
+    grouped = rows.groupby(years.astype("Int64").astype(str))
+    if plan.measure is None:
+        # The same count the answer makes: distinct values, the rows' frequencies, or the rows.
+        weight = plan.weight or frequency_column(analysis.frame)
+        if plan.count_column:
+            return grouped[plan.count_column].nunique(), f"count distinct {plan.count_column}"
+        if weight:
+            return grouped[weight].sum(), f"sum({weight})"
+        return grouped.size(), "row count"
+    return grouped[plan.measure].agg(plan.aggregation).dropna(), f"{plan.aggregation}({plan.measure})"
+
+
+def _checked_direction(check: ClaimCheck, analysis: Any, direction: str) -> ClaimCheck:
+    """A level a change reached, checked, then the change itself against the year before.
+
+    "Fox rescues rose to 61 in 2020" holds when 2020 gives 61 and 2019 gives
+    less. Without one year to compare with the year before, the change cannot
+    be shown, so the claim is not verified.
+    """
+    if not (check.verified or check.reason == "failed_check") or check.answer is None:
+        return check
+    plan = check.answer.plan
+    one_year = plan.year is not None and plan.month is None and not plan.dimension
+    yearly = _yearly(analysis, plan) if one_year and plan.intent in ("aggregate", "count") else None
+    year, before = (str(plan.year), str(plan.year - 1)) if one_year else ("", "")
+    if yearly is None or year not in yearly[0].index or before not in yearly[0].index:
+        # A level with no year to set against the one before is not the level the claim means either.
+        return replace(
+            check, status="unverified", reason="missing_context",
+            message=f"The claim gives the level a {direction} reached, and ADA cannot set it against the "
+            f"year before, so neither is shown: {check.message}",
+            clarification="In which year did it reach that level, and from what?",
+        )
+    by_year, how = yearly
+    latest, previous = float(by_year[year]), float(by_year[before])
+    moved = latest > previous if direction == "rise" else latest < previous
+    said = "rose" if direction == "rise" else "fell"
+    note = f"{how} was {_plain(previous)} in {before} and {_plain(latest)} in {year}."
+    if moved:
+        return replace(check, assumptions=(*check.assumptions, f"The claim says it {said} to it: {note}"))
+    wrong = f"the claim says it {said}, and {note.rstrip('.')}"
+    if check.verified:
+        return replace(check, status="unverified", reason="failed_check",
+                       message=f"The level agrees ({check.message}), but {wrong}.", clarification=None)
+    return replace(check, message=f"{check.message} Also, {wrong}.")
 
 
 # A claim that a measure was at its highest for a group: "Cocaine use peaked at 4.9% among 20-year-olds".
@@ -1670,15 +1809,15 @@ def _checked_peak(check: ClaimCheck, analysis: Any, text: str = "") -> ClaimChec
         return check
     if yearly:
         # "its busiest year in 2024": the rows of each year are counted.
-        rows, _ = _apply_filters(analysis.frame, replace(plan, year=None), analysis.roles)
-        dates = rows[analysis.roles.date]
-        years = dates.dt.year if hasattr(dates, "dt") else dates
-        grouped = rows.groupby(years.astype("Int64").astype(str))
-        if plan.measure is None:
-            by_group, how = grouped.size(), "row count"
-        else:
-            by_group = grouped[plan.measure].agg(plan.aggregation).dropna()
-            how = f"{plan.aggregation}({plan.measure})"
+        found = _yearly(analysis, plan)
+        if found is None:
+            return replace(
+                check, status="unverified", reason="missing_context",
+                message=f"The claim names a peak, and ADA could not make the same count for every year: "
+                f"{check.message}",
+                clarification="Which value peaks: a count of rows, or a share of them?",
+            )
+        by_group, how = found
         column, named = "year", str(plan.year)
     else:
         group = groups[0]
@@ -1995,7 +2134,18 @@ def _tallied(analysis: Any, answer: QueryAnswer, number: ClaimedNumber) -> tuple
     plan = answer.plan
     if plan.aggregation != "count" or plan.measure or plan.count_column or plan.weight or number.percent:
         return None
-    frame = analysis.frame
+    column = _tally_column(analysis.frame)
+    if column is None:
+        return None
+    rows, _ = _apply_filters(analysis.frame, plan, analysis.roles)
+    value = float(rows[column].sum())
+    if not number.holds(value):
+        return None
+    return column, value, f"sum({column}) over the {len(rows):,} rows kept"
+
+
+def _tally_column(frame: Any) -> str | None:
+    """The one column named for a count ("count", "n", "cases") that holds whole numbers of zero or more."""
     found = []
     for column in frame.columns:
         values = frame[column]
@@ -2003,14 +2153,8 @@ def _tallied(analysis: Any, answer: QueryAnswer, number: ClaimedNumber) -> tuple
             continue
         numbers = values.dropna()
         if len(numbers) and bool((numbers >= 0).all()) and bool((numbers % 1 == 0).all()):
-            found.append(column)
-    if len(found) != 1:
-        return None
-    rows, _ = _apply_filters(frame, plan, analysis.roles)
-    value = float(rows[found[0]].sum())
-    if not number.holds(value):
-        return None
-    return str(found[0]), value, f"sum({found[0]}) over the {len(rows):,} rows kept"
+            found.append(str(column))
+    return found[0] if len(found) == 1 else None
 
 
 # Name words of a column that holds money, for a claim whose number carries a currency symbol.
@@ -2325,6 +2469,19 @@ def _check(
         column for column in (answer.plan.measure, answer.plan.partner)
         if column and not _named(asked, column)
     ]
+    tally = _tally_column(analysis.frame) if re.search(r"\bcases\b", asked, re.IGNORECASE) else None
+    if tally and unnamed == [tally]:
+        # "polio cases peaked at almost 50,000" in a table with a count on each row: the cases are the count.
+        unnamed = []
+        assumptions.append(f'Read "cases" as {tally}, the one column that holds a count on each row.')
+    elif tally and not (_named(asked, tally) or number.percent) and answer.plan.aggregation == "count" and (
+        not (answer.plan.measure or answer.plan.count_column or answer.plan.weight)
+    ):
+        totalled = analysis.ask(f"total {tally} {asked}", decisions=choices)
+        if not isinstance(totalled, Refusal) and totalled.plan.measure == tally:
+            answer, asked = totalled, f"total {tally} {asked}"
+            assumptions.append(f'Read "cases" as {tally}, the one column that holds a count on each row, '
+                               "rather than as the rows.")
     if unnamed and number.percent:
         # "32.3% survived" gives a share even with no word for one.
         share = analysis.ask(_share_question(asked), decisions=choices)
@@ -2359,6 +2516,19 @@ def _check(
                         f"{LEFT_OUT_NOTE} {_quoted(left_out)}, which name no column or value in the table."
                     )
             assumptions.append(f'Read "{number.text}" as a count of rows, as no column names {noun[0]}.')
+    changed = CHANGE_WORDS.search(asked) if unnamed and answer.plan.intent == "growth" else None
+    subject = re.search(r"([A-Za-z]+)\s*$", asked[:changed.start()]) if changed else None
+    row_noun = (analysis.roles.row_noun or "").lower()
+    if subject and not averaging and row_noun and subject.group(1).lower() in (row_noun, f"{row_noun}s"):
+        # "Fox rescues nearly doubled" in animal_rescues.csv: the file's noun for its rows, before the change,
+        # counts them.
+        rows_changed = analysis.ask(f"number of {asked}", decisions=choices)
+        if not isinstance(rows_changed, Refusal) and rows_changed.plan.intent == "growth" and (
+            not rows_changed.plan.measure
+        ):
+            answer, asked, unnamed = rows_changed, f"number of {asked}", []
+            assumptions.append(f"Read the change as one in the number of {subject.group(1)}, the file's "
+                               "rows.")
     if unnamed:
         return ClaimCheck(
             text, "unverified", "missing_context",

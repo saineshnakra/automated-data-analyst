@@ -3478,6 +3478,72 @@ class CountColumnsAndNamesTests(unittest.TestCase):
         self.assertTrue(answer is None or "New" not in answer.calculation)
 
 
+class GroupsAndModifiersTests(unittest.TestCase):
+    def rescues(self) -> pd.DataFrame:
+        boroughs = ["Enfield"] * 5 + ["Croydon"] * 4 + ["City of London"] * 2 + ["Barnet"] * 3
+        costs = [100.0] * 5 + [900.0] * 4 + [50.0] * 2 + [10.0] * 3
+        return pd.DataFrame({"borough": boroughs, "cost": costs})
+
+    def test_the_most_with_no_measure_counts_each_group_s_rows(self):
+        frame = self.rescues()
+        answer = answer_question("which borough has the most cases", frame, detect_roles(frame))
+        # Croydon has the most cost; Enfield the most rows.
+        self.assertIn("Enfield", answer.answer)
+        self.assertIsNone(answer.plan.measure)
+
+    def test_part_of_a_value_before_its_column_s_name_is_no_filter(self):
+        frame = self.rescues()
+        answer = answer_question("which London boroughs have the most cases", frame, detect_roles(frame))
+        self.assertTrue(answer is None or "City of London" not in answer.calculation)
+        # A value written in full still picks its rows.
+        whole = answer_question("how many rows for City of London borough", frame, detect_roles(frame))
+        self.assertEqual(whole.value, 2)
+
+    def test_part_of_a_value_before_its_column_s_name_in_the_singular_is_that_value(self):
+        regions = ["Southwest Land Border"] * 3 + ["Northern Land Border"] * 2 + ["Other"]
+        frame = pd.DataFrame({"land_border_region": regions, "encounters": [5.0, 6.0, 7.0, 1.0, 2.0, 3.0]})
+        answer = answer_question("total encounters at the southwest border", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 18)
+
+
+class OneYearChangeAndCountryTests(unittest.TestCase):
+    def rescues(self) -> pd.DataFrame:
+        dates = [f"2019-{month:02d}-10" for month in (1, 3, 6, 11)] + [
+            f"2020-{month:02d}-10" for month in (1, 2, 3, 4, 5, 6, 11, 12)]
+        dates += ["2019-05-10", "2019-12-10", "2020-05-10", "2020-12-10"]
+        animals = ["Fox"] * 12 + ["Cat"] * 4
+        costs = [100.0] * 4 + [150.0] * 8 + [500.0, 500.0, 600.0, 500.0]
+        return pd.DataFrame({"date": pd.to_datetime(dates), "animal": animals, "cost": costs})
+
+    def test_a_change_in_a_year_is_against_the_year_before(self):
+        frame = self.rescues()
+        answer = answer_question("how did the number of Fox change in 2020", frame, detect_roles(frame))
+        figures = dict(answer.figures)
+        self.assertEqual((figures["previous"], figures["latest"]), (4.0, 8.0))
+        self.assertIn("Read a change in 2020 as 2020 against 2019.", answer.answer)
+
+    def test_groups_ranked_by_a_change_between_two_years_compare_whole_years(self):
+        frame = self.rescues()
+        answer = answer_question("which animal rose most from 2019 to 2020", frame, detect_roles(frame))
+        # Fox: 400 to 1,200; Cat: 1,000 to 1,100. The last two months alone would rank them otherwise.
+        self.assertIn("Fox", answer.answer.split(":")[0])
+        self.assertIn("+200.0%", answer.answer)
+        self.assertIn("from 2019 to 2020", answer.answer)
+        self.assertIn("2020 vs 2019", answer.calculation)
+
+    def test_the_united_states_is_all_the_rows_of_a_table_of_its_states(self):
+        names = ["Alabama", "Arizona", "California", "Colorado", "Florida", "Georgia", "Idaho", "Iowa",
+                 "New Mexico", "Texas", "Utah", "Oregon"]
+        frame = pd.DataFrame({"state": names, "cases": [float(index) for index in range(1, 13)]})
+        answer = answer_question("total cases in the United States", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 78)
+        self.assertIn("as all the rows", answer.answer)
+        # With a row for the country, that row is what the words pick.
+        national = pd.concat([frame, pd.DataFrame({"state": ["United States"], "cases": [78.0]})])
+        answer = answer_question("total cases in the United States", national, detect_roles(national))
+        self.assertNotIn("as all the rows", answer.answer)
+
+
 class StateAndNounTests(unittest.TestCase):
     def test_the_most_of_a_value_counts_rows_by_period(self):
         days = ["2020-01-01", "2020-01-01", "2020-01-02"]
