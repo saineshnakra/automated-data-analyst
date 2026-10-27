@@ -431,3 +431,44 @@ class UnitOfAnalysisClaimTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PhrasingClaimTests(unittest.TestCase):
+    def test_an_adjective_after_the_unit_names_the_quantity(self):
+        peaks = pd.DataFrame({"peak_name": [f"P{index}" for index in range(6)],
+                              "height_metres": [6000.0, 7000.0, 8000.0, 6500.0, 7500.0, 7000.0],
+                              "first_ascent_year": [1950, 1960, 1970, 1980, 1990, 2000]})
+        check = ada.check_claim(peaks, "The average peak is 7,000 metres high.")
+        self.assertTrue(check.verified)
+        self.assertEqual(check.answer.plan.measure, "height_metres")
+
+    def test_a_subject_that_names_nothing_and_a_currency_pick_the_money_column(self):
+        payments = pd.DataFrame({"order_id": [f"o{index}" for index in range(8)],
+                                 "payment_sequential": [1, 1, 2, 1, 1, 1, 3, 1],
+                                 "payment_installments": [1, 3, 2, 10, 1, 4, 1, 2],
+                                 "payment_value": [10.5, 20.0, 5.25, 100.0, 7.75, 12.5, 3.0, 41.0]})
+        check = ada.check_claim(payments, "Customers paid R$200 in total.")
+        self.assertTrue(check.verified)
+        self.assertIn('Read "Customers" as every row of the table', check.assumptions[0])
+        self.assertIn("the only money column it fits", check.assumptions[1])
+        # Without a currency the payment columns stay ambiguous.
+        self.assertEqual(ada.check_claim(payments, "Customers paid 200 in total.").reason, "ambiguous_intent")
+
+    def test_a_brand_before_the_rows_noun_describes_every_row(self):
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        path = Path(holder.name) / "sets.csv"
+        pd.DataFrame({"set_num": [f"s{index}" for index in range(6)], "name": list("abcdef"),
+                      "num_parts": [100, 200, 300, 150, 250, 50]}).to_csv(path, index=False)
+        check = ada.check_claim(path, "The average Lego set has 175 parts.")
+        self.assertTrue(check.verified)
+        self.assertIn('Read "Lego set" as every set', check.assumptions[0])
+
+    def test_a_value_before_the_rows_noun_still_filters(self):
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        path = Path(holder.name) / "penguins.csv"
+        birds().to_csv(path, index=False)
+        check = ada.check_claim(path, "Gentoo penguins weigh 5,050 g on average.")
+        self.assertTrue(check.verified)
+        self.assertIn("species = Gentoo", check.answer.calculation)

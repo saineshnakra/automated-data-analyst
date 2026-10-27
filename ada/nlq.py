@@ -2180,7 +2180,7 @@ def _claim_year_ranges(reading: _Reading, dataframe: pd.DataFrame, roles: Column
         reading.claim(*match.span())
     for pattern, operator in YEAR_RANGES:
         for match in list(pattern.finditer(reading.remaining)):
-            if own_range(match):
+            if own_range(match) or _items_of_a_year(reading, match, roles):
                 continue
             if column is None:
                 reading.flag("This table has no date or year column for a range of years.")
@@ -2195,6 +2195,41 @@ def _claim_year_ranges(reading: _Reading, dataframe: pd.DataFrame, roles: Column
                 reading.conditions.append(Condition(column, operator, year, part="year"))
                 reading.scoped.add(column)
             reading.claim(*match.span())
+
+
+# Verbs that only date an event, right before a year: "sets released in 2020".
+EVENT_VERBS = (
+    "released", "published", "launched", "founded", "built", "produced", "issued", "introduced", "opened",
+    "made", "created", "established", "registered", "reviewed", "held", "started", "sold",
+)
+EVENT_PATTERN = re.compile(
+    rf"\b(?:{'|'.join(EVENT_VERBS)})\b(?=\s+(?:in|during|since|before|after|from|between|by)\s+{YEAR}\b)"
+)
+# Phrases that say where the rows are, not which: "on board", "in the data".
+FILLER_PATTERN = re.compile(
+    r"\b(?:on\s+board|in\s+the\s+(?:data|dataset|data\s+set|table|file|sample)|in\s+this\s+"
+    r"(?:data|dataset|table|file|sample)|all\s+told|altogether)\b"
+)
+
+
+def _claim_fillers(reading: _Reading) -> None:
+    """Claim the words that date an event or say where the rows are, so they name nothing by mistake."""
+    for pattern in (EVENT_PATTERN, FILLER_PATTERN):
+        for match in list(pattern.finditer(reading.remaining)):
+            reading.claim(*match.span())
+
+
+def _items_of_a_year(reading: _Reading, match: re.Match, roles: ColumnRoles) -> bool:
+    """Whether "from 2019" right after the rows' own noun means that year: "sets from 2019" are 2019's sets.
+
+    The year is then left for the plain year reading; "from 2019 on" and
+    "since 2019" stay ranges.
+    """
+    text = match.group(0)
+    if not text.startswith("from ") or re.search(r"\bonwards?$", text) or not roles.row_noun:
+        return False
+    before = reading.original[:match.start()].split()
+    return bool(before) and before[-1] in _word_variants(roles.row_noun)
 
 
 def _reread_aggregation_names(reading: _Reading) -> None:
@@ -2428,6 +2463,7 @@ def _read_question(
     _claim_time_part(reading, dataframe, roles)
     _claim_month_of_year(reading, dataframe, roles)
     _claim_year_ranges(reading, dataframe, roles)
+    _claim_fillers(reading)
     _claim_conditions(reading, list(reading.spans), dataframe, roles, vocabulary)
     _claim_person_names(reading, dataframe)
     _claim_values(reading, vocabulary, dataframe, exact_only=True, row_noun=roles.row_noun)

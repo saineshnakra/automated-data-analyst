@@ -1,9 +1,12 @@
+import tempfile
 import unittest
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+import ada
 from ada import nlq, ui
 from ada.business_insights import describe_correlation, measure_correlation
 from ada.demo_data import make_demo_data
@@ -3108,3 +3111,32 @@ class UnitAverageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EventAndFillerTests(unittest.TestCase):
+    def setUp(self):
+        frame = pd.DataFrame({"set_num": [f"s{index}" for index in range(12)],
+                              "year": [2018, 2019, 2019, 2020, 2020, 2020, 2021, 2021, 2018, 2019, 2020,
+                                       2021],
+                              "num_parts": [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120]})
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        path = Path(holder.name) / "sets.csv"
+        frame.to_csv(path, index=False)
+        self.analysis = ada.analyze(path)
+
+    def test_a_verb_that_dates_an_event_is_grammar(self):
+        answer = self.analysis.ask("how many sets were released in 2020")
+        self.assertEqual(answer.value, 4)
+
+    def test_from_a_year_after_the_rows_noun_is_that_year(self):
+        answer = self.analysis.ask("average num_parts of sets from 2019")
+        self.assertAlmostEqual(answer.value, 50.0)
+        onwards = self.analysis.ask("average num_parts from 2019 onwards")
+        self.assertAlmostEqual(onwards.value, float(np.mean([20, 30, 40, 50, 60, 70, 80, 100, 110, 120])))
+        ranged = self.analysis.ask("average num_parts from 2020")
+        self.assertAlmostEqual(ranged.value, float(np.mean([40, 50, 60, 70, 80, 110, 120])))
+
+    def test_where_the_rows_are_names_nothing(self):
+        answer = self.analysis.ask("how many sets in the dataset")
+        self.assertEqual(answer.value, 12)
