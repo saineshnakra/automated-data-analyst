@@ -132,6 +132,12 @@ reach, so a held-out stretch uses only targets from before it, and the last
 test day has them all. The date's own parts are left out of the shift check,
 as a forecast's test rows are later by design.
 
+A series whose target was 0 on every day of the 28 before a fold's held-out
+stretch predicts 0 for that stretch, and one whose target was 0 on every day of
+the last 28 training days predicts 0 for the test, when that gives a better
+out-of-fold score than the model's own predictions. Each fold decides from the
+time before it only, and the calculation says how many test rows were set so.
+
 ## Blending
 
 Their out-of-fold predictions are blended with the weight, in steps of 0.05,

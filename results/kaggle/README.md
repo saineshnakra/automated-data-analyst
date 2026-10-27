@@ -55,7 +55,7 @@ when:
 | Competition | Split | Metric | Cross-validated | Top-10% bar | About | Gate |
 |---|---|---|---|---|---|---|
 | Titanic | train | accuracy | 0.8358 (sd 0.022) | 0.7943 | top 3.4% | held: the public leaderboard's 209 rows leave a wobble of about 0.025, and the margin is under twice it |
-| Housing Prices (Kaggle Learn) | train | MAE | 14,012 (sd 1,325) | 15,010 | top 7.1% | not yet run through the gate |
+| Housing Prices (Kaggle Learn) | train | MAE | 14,012 (sd 1,325) | 15,010 | top 7.1% | held: the margin of 998 is under twice the test wobble of 848 on half the 1,459 test rows (1,696) |
 | Store Sales | train | RMSLE | 0.3914 (sd 0.008, 5 time-ordered folds) | 0.3872 | top 13.6% | held: not past the bar |
 | Stocks Predict challenge | train | Spearman | 0.0506 (sd 0.015) | 0.0533 | top 27% | held: not past the bar |
 

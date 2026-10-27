@@ -224,6 +224,21 @@ class ForecastTests(unittest.TestCase):
         self.assertLess(report.score, 0.2)
         self.assertTrue(all(check.passed for check in report.checks), report.checks)
 
+    def test_a_series_that_sold_nothing_lately_predicts_zero(self):
+        frame = daily_sales(300)
+        # Store 3's bread stops selling after day 200.
+        stopped = (frame["store_nbr"] == 3) & (frame["family"] == "BREAD") & (
+            pd.to_datetime(frame["date"]) > pd.Timestamp("2020-01-01") + pd.Timedelta(days=200))
+        frame.loc[stopped, "sales"] = 0.0
+        cut = pd.to_datetime(frame["date"]) <= pd.Timestamp("2020-01-01") + pd.Timedelta(days=285)
+        train, test = frame[cut], frame[~cut].drop(columns="sales")
+        report = ada.model(train, test, target="sales", metric="rmsle", id_column="id")
+        self.assertIn("predict 0", report.calculation)
+        quiet = test.loc[(test["store_nbr"] == 3) & (test["family"] == "BREAD"), "id"]
+        predicted = report.submission.set_index("id")["sales"]
+        self.assertTrue((predicted.loc[quiet] == 0).all())
+        self.assertTrue((predicted.drop(quiet) > 0).all())
+
     def test_a_lag_is_never_nearer_than_the_horizon(self):
         from ada.modelling import _lag_features
 

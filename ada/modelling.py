@@ -67,6 +67,8 @@ SERIES_CANDIDATES, SERIES_SIZE = 6, 3
 SERIES_COVER = 0.5
 #: Widths in days of the target's past means offered to a daily forecast.
 LAG_WINDOWS = (7, 14, 28, 56, 112)
+# A series whose target was 0 on every day of this many before a forecast predicts 0, when that scores better.
+QUIET_DAYS = 28
 
 
 @dataclass(frozen=True)
@@ -449,6 +451,21 @@ def _lag_features(train: pd.DataFrame, test: pd.DataFrame, date: str, keys: list
     return fit.reset_index(drop=True), ahead.reset_index(drop=True), made
 
 
+def _series_ids(train: pd.DataFrame, test: pd.DataFrame, keys: list[str]) -> tuple[np.ndarray, np.ndarray]:
+    """A number for each series, the same in the training and the test rows."""
+    both = pd.concat([train[keys], test[keys]], ignore_index=True).astype(str).agg("\x1f".join, axis=1)
+    codes = pd.factorize(both)[0]
+    return codes[:len(train)], codes[len(train):]
+
+
+def _quiet(ids: np.ndarray, dates: np.ndarray, y: np.ndarray, fit_rows: np.ndarray, size: int) -> np.ndarray:
+    """Which series had a target of 0 on every row of the QUIET_DAYS before the fit rows end."""
+    fit_dates = dates[fit_rows]
+    recent = fit_rows[fit_dates > fit_dates.max() - np.timedelta64(QUIET_DAYS, "D")]
+    totals = np.bincount(ids[recent], weights=np.abs(y[recent].astype(float)), minlength=size)
+    return (np.bincount(ids[recent], minlength=size) > 0) & (totals == 0)
+
+
 def _new_groups(train: pd.DataFrame, test: pd.DataFrame, columns: list[str], folds: int) -> str | None:
     """A column whose test values never appear in training: the test rows are new stocks, stores or people.
 
@@ -773,7 +790,7 @@ def model(
         encode = []
     encoded_y = fitted_y if task == "regression" else (y == len(classes) - 1).astype(float)
     priors = np.bincount(y, minlength=len(classes)) / len(y) if task == "classification" else None
-    time_pairs, lagged = [], ""
+    time_pairs, lagged, keys = [], "", None
     if forecast:
         date, horizon = forecast
         time_pairs = _time_folds(train_frame[date], folds, horizon)
@@ -821,10 +838,31 @@ def model(
                              classes, y[scored], priors, logged)
     oof = sum(weights[name] * learners[name][0] for name in learners)
     predicted = sum(weights[name] * learners[name][1] for name in learners)
+    quiet_held, quiet_note = [np.zeros(0, dtype=int) for _ in splits], ""
+    if forecast and keys and task == "regression" and (y >= 0).all():
+        # A series that sold nothing for QUIET_DAYS predicts 0, judged in each fold on the time before it.
+        train_ids, test_ids = _series_ids(train_frame, test_frame, keys)
+        dates, size = train_frame[forecast[0]].to_numpy(), int(max(train_ids.max(), test_ids.max())) + 1
+        quiet_held = [held_rows[_quiet(train_ids, dates, y, fit_rows, size)[train_ids[held_rows]]]
+                      for _, _, fit_rows, held_rows in splits]
+        trial = oof.copy()
+        trial[np.concatenate(quiet_held)] = 0.0
+        before = _score(chosen, task, classes, y, scored, oof[scored], priors, logged)
+        after = _score(chosen, task, classes, y, scored, trial[scored], priors, logged)
+        if after > before if chosen.higher else after < before:
+            oof = trial
+            quiet_test = _quiet(train_ids, dates, y, np.arange(len(y)), size)[test_ids]
+            predicted = predicted.copy()
+            predicted[quiet_test] = 0.0
+            quiet_note = (f"; series whose {target} was 0 on every day of the {QUIET_DAYS} before predict 0 "
+                          f"({int(quiet_test.sum()):,} test rows), as it scored better out of fold")
+        else:
+            quiet_held = [np.zeros(0, dtype=int) for _ in splits]
     fold_scores = []
-    for repeat, _, _, held_rows in splits:
+    for (repeat, _, _, held_rows), quiet_rows in zip(splits, quiet_held, strict=True):
         # Each repeat predicts every row once; a fold's score uses that repeat's predictions.
         held = sum(weights[name] * learners[name][2][repeat][held_rows] for name in learners)
+        held[np.isin(held_rows, quiet_rows)] = 0.0
         fold_scores.append(_score(chosen, task, classes, y, held_rows, held, priors, logged))
     out_of_fold = _score(chosen, task, classes, y, scored, oof[scored], priors, logged)
     oof_frame = pd.DataFrame(oof[scored], columns=[f"p{index}" for index in range(oof.shape[1])])
@@ -863,7 +901,7 @@ def model(
             "before the last training date (the test's reach) and fitted on the time before it"
             + (f"; {lagged}" if lagged else "")
             + f"; early stopping on each held-out stretch; {target_note}the test predictions refitted on "
-            f"every training row; scored with {chosen.name} on the {len(scored):,} rows held out"
+            f"every training row{quiet_note}; scored with {chosen.name} on the {len(scored):,} rows held out"
         )
     else:
         calculation = (

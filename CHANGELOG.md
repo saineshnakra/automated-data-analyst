@@ -26,7 +26,8 @@
   out the latest stretches of time as long as the test's reach, each fitted on
   the time before it, and a daily target gets its own past per series (lags
   and means from the reach back) as features. The test predictions are
-  refitted on every training row.
+  refitted on every training row. A series whose target was 0 for the 28 days
+  before predicts 0 when that scores better out of fold.
 - A column read as numbers in one table and as text in the other ("NA" among
   House Prices' test counts) is read as numbers in both, and a linear model's
   predictions stay within the targets it saw.
