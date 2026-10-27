@@ -13,9 +13,24 @@
   accuracy, F1, AUC, log loss, MAP@3, RMSE, RMSLE and MAE. It needs the new
   `model` extra (scikit-learn and LightGBM). See
   [Predicting a column](docs/reference/modelling.md).
-- `results/kaggle` scores it on 21 tabular competitions split into train,
+- `results/kaggle` scores it on 22 tabular competitions split into train,
   validation and locked test, against each leaderboard's top 10%, and
   submits only when the score clears the bar by twice its uncertainty.
+- When the test rows are groups the training rows never hold (stocks, stores
+  or people that are all new), the folds are grouped by the column that names
+  them, so the score is for unseen groups as the test set's is; the column is
+  left out of the features.
+- `spearman` (Kaggle's RankIC) scores ranked predictions, and MAE on a skewed
+  target at 0 or above is fitted on log(1 + y), which keeps the median.
+- Forecasts: when every test date is after the training dates, the folds hold
+  out the latest stretches of time as long as the test's reach, each fitted on
+  the time before it, and a daily target gets its own past per series (lags
+  and means from the reach back) as features. The test predictions are
+  refitted on every training row. A series whose target was 0 for the 28 days
+  before predicts 0 when that scores better out of fold.
+- A column read as numbers in one table and as text in the other ("NA" among
+  House Prices' test counts) is read as numbers in both, and a linear model's
+  predictions stay within the targets it saw.
 
 ### Reading claims and questions
 
