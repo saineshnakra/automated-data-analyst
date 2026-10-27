@@ -198,6 +198,8 @@ IN_FRACTION = re.compile(
     r"(?P<bottom>two|three|four|five|six|seven|eight|nine|ten|\d{1,3})\b(?![.,]\d)",
     re.IGNORECASE,
 )
+# Units of time a number measures in, never things it counts: "12.64 minutes" with a minute column.
+TIME_PLURALS = frozenset({"seconds", "minutes", "hours", "days", "weeks", "months", "years", "decades"})
 # Units of money, which a number measures rather than counts: "averaged 18.6 dollars".
 MONEY_WORDS = frozenset({"dollars", "euros", "pounds", "cents", "pence", "yen", "rupees", "francs", "reais"})
 # Plurals without an s, which count things as "344 penguins" does: "1,835 women applied".
@@ -761,7 +763,9 @@ def read_claim(
     plural = following.group(1).lower() if following else ""
     singulars = {plural[:-1], plural[:-2] if plural.endswith("es") else "", f"{plural[:-3]}y"}
     names = {normalized_name(str(column)) for column in columns}
-    if plural.endswith("s") and not chosen.match.group("percent") and singulars & names:
+    measured = plural in UNITS or plural in TIME_PLURALS or re.search(
+        r"\b(?:average|averages|averaged|mean|median|total|per)\b", claim, re.IGNORECASE)
+    if plural.endswith("s") and not chosen.match.group("percent") and not measured and singulars & names:
         rest = f"{claim[:chosen.qualifier_start]} {claim[chosen.match.end() + following.end(1):]}"
         rest = re.sub(r"\s+", " ", rest).strip(" .,;:!?")
         return f"how many distinct {plural} {rest}", replace(number, unit=None), ""
@@ -1426,6 +1430,40 @@ def _summary_word(column: str | None) -> str | None:
     return next((SUMMARY_WORDS[word] for word in words if word in SUMMARY_WORDS), None)
 
 
+# Most distinct values of a column searched for other spellings of a value a filter picked.
+MAX_SPELLING_VALUES = 20_000
+
+
+def _other_spellings(frame: Any, answer: QueryAnswer) -> tuple[str, str, list[str]] | None:
+    """A value a filter picked that the same column also writes another way, with those ways.
+
+    Another way is a longer value holding all its words in order ("Sen. John
+    McCain" for "John McCain"); a filter already matches the value in any
+    capitals. Returns (column, value, the other ways) for the first such value.
+    """
+    for item in answer.plan.filters:
+        if item.column not in frame.columns:
+            continue
+        uniques = frame[item.column].dropna().astype(str).unique()
+        if len(uniques) > MAX_SPELLING_VALUES:
+            continue
+        for value in item.values:
+            words = re.findall(r"[a-z0-9]+", value.lower())
+            if not words:
+                continue
+            # "non-USA" is not another way to write "USA".
+            pattern = re.compile(r"(?<!non-)(?<!non )(?<!not )(?<!no )\b" + r"\W+".join(map(re.escape, words))
+                                 + r"\b")
+            lowered = value.lower()
+            others = [
+                other for other in uniques
+                if other.lower() != lowered and other not in item.values and pattern.search(other.lower())
+            ]
+            if others:
+                return str(item.column), value, sorted(others)
+    return None
+
+
 def _quoted(phrases: Sequence[str]) -> str:
     """"a", "a" and "b", or "a", "b" and "c", each in quotes."""
     quoted = [f'"{phrase}"' for phrase in phrases]
@@ -1654,6 +1692,18 @@ def _check(
             "so the claim is about one row the question does not pick out.",
             claimed=number, question=asked, answer=answer, assumptions=tuple(assumptions), source=source,
             clarification="Which single group (row) is the number about?",
+        )
+    spellings = _other_spellings(analysis.frame, answer)
+    if spellings:
+        # "John McCain" is 5 rows and "Sen. John McCain" 6 more: the claim may count both.
+        column, value, others = spellings
+        return ClaimCheck(
+            text, "unverified", "missing_context",
+            f"{column} also writes {value!r} as {_quoted(others[:3])}"
+            + (f" and {len(others) - 3} others" if len(others) > 3 else "")
+            + f"; the answer keeps only {value!r}, and the claim may mean them all: {answer.answer}",
+            claimed=number, question=asked, answer=answer, assumptions=tuple(assumptions), source=source,
+            clarification=f"Should {_quoted(others[:3])} count as {value!r}?",
         )
     if number.percent and answer.plan.intent == "count" and not (
         {"share_percent", "change_percent"} & set(dict(answer.figures))

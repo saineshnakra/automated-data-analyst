@@ -74,6 +74,21 @@
   dollars" was read as a count of rows, because a plural after the number
   that names no column counts rows; an average or an amount of money no
   longer does.
+- Claims with a second number that is part of the question are read: a day
+  written out ("207 tornadoes on April 27, 2011", which also filters
+  questions to that day), a rating scale ("6.5 out of 10") and a base,
+  which is checked too ("34 of the 93 cars", "The 93 models came from 32
+  manufacturers", "Of the 5,144 Danes in the study,"). "Seven in ten" and
+  "1 in 20" are shares; "came from 32 manufacturers" counts distinct
+  manufacturers; "reached", "surveyed" and "came from" are grammar.
+- Fixed wrong verdict: "John McCain was a guest on the show 11 times" failed
+  because the filter kept "John McCain" (5 rows) and not "Sen. John McCain"
+  (6 more). A claim whose filter value the column also holds inside a longer
+  value now gets `missing_context` naming the other spellings.
+- The column that numbers the units (a `Rat` column of 16 rats) is never
+  averaged or ranked, and the word for the units names the rows when the
+  question names a measure too: "The heaviest rat reached 628 grams" is the
+  largest weight, where before it was the largest rat number.
 - "The distance increased by about 0.66 mm per year of age" is the slope of
   distance on age: a column named for a quantity (age, dose, time) at a few
   levels still correlates, and with several rows per subject both slopes of
