@@ -1,0 +1,28 @@
+# Tabular Kaggle competitions ADA's modelling mode is scored on. The split works as for the
+# claim cases: train competitions may be used to find and fix problems; validation ones are
+# scored each round, and one whose failure leads to a fix moves to train; test ones are locked
+# and scored once. "metric" is the competition's own; the bar is the leaderboard score at the
+# top 10% (the 90th percentile when higher is better, the 10th when lower is). Kaggle names
+# the metric of S5E9 and S5E10 "Mean Squared Error", but their leaderboards hold its root.
+competitions:
+  - {slug: titanic, split: train, metric: accuracy}
+  - {slug: house-prices-advanced-regression-techniques, split: train, metric: rmsle}
+  - {slug: spaceship-titanic, split: train, metric: accuracy}
+  - {slug: playground-series-s6e7, split: train, metric: balanced_accuracy}
+  - {slug: playground-series-s6e8, split: train, metric: auc}
+  - {slug: playground-series-s6e9, split: train, metric: auc}
+  - {slug: home-data-for-ml-course, split: validation, metric: mae}
+  - {slug: store-sales-time-series-forecasting, split: validation, metric: rmsle}
+  - {slug: playground-series-s5e10, split: validation, metric: rmse}
+  - {slug: playground-series-s5e11, split: validation, metric: auc}
+  - {slug: playground-series-s5e12, split: validation, metric: auc}
+  - {slug: playground-series-s6e1, split: validation, metric: rmse}
+  - {slug: playground-series-s6e2, split: validation, metric: auc}
+  - {slug: playground-series-s6e3, split: validation, metric: auc}
+  - {slug: playground-series-s6e10, split: test, metric: auc}
+  - {slug: playground-series-s6e4, split: test, metric: balanced_accuracy}
+  - {slug: playground-series-s6e5, split: test, metric: auc}
+  - {slug: playground-series-s6e6, split: test, metric: balanced_accuracy}
+  - {slug: playground-series-s5e7, split: test, metric: accuracy}
+  - {slug: playground-series-s5e8, split: test, metric: auc}
+  - {slug: playground-series-s5e9, split: test, metric: rmse}

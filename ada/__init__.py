@@ -32,6 +32,7 @@ from .claims import ClaimCheck, check_claim
 from .decisions import Decision, UnknownDecision
 from .folder import FolderScan, scan
 from .joins import ask_folder
+from .modelling import ModelReport, model
 from .sources import Source
 
 __version__ = "0.6.0"
@@ -46,6 +47,7 @@ __all__ = [
     "ClaimCheck",
     "Decision",
     "FolderScan",
+    "ModelReport",
     "NothingToAnalyze",
     "Refusal",
     "Source",
@@ -55,6 +57,7 @@ __all__ = [
     "analyze",
     "ask_folder",
     "check_claim",
+    "model",
     "read_file",
     "sample",
     "samples",

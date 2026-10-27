@@ -18,13 +18,14 @@ git clone https://github.com/saineshnakra/automated-data-analyst.git
 cd automated-data-analyst
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -e ".[app,ai,dev]"
+pip install -e ".[app,ai,dev,model]"
 streamlit run app.py
 ```
 
 The extras: `app` adds Streamlit and Plotly, `ai` adds the OpenAI client and
-Pydantic, `dev` adds Ruff. The engine alone needs only `pip install -e .`. No
-API key is needed; the app opens on the bundled lab sample.
+Pydantic, `dev` adds Ruff, and `model` adds scikit-learn and LightGBM for `ada
+model`. The engine alone needs only `pip install -e .`. No API key is needed;
+the app opens on the bundled lab sample.
 
 ## Tests and lint
 

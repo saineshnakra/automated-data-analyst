@@ -195,6 +195,26 @@ def _claim(args: argparse.Namespace) -> int:
     return EXIT_ERROR if check.reason == "inaccessible_data" else EXIT_COULD_NOT_LOOK
 
 
+def _model(args: argparse.Namespace) -> int:
+    from .modelling import model  # noqa: PLC0415
+
+    report = model(args.train, args.test, target=args.target, metric=args.metric, id_column=args.id,
+                   folds=args.folds, seed=args.seed)
+    if isinstance(report, Refusal):
+        if args.json:
+            print(json.dumps({"schema_version": 1, "status": "refused", "code": report.code,
+                              "message": report.message}, indent=2))
+        else:
+            print(f"refused ({report.code}): {report.message}", file=sys.stderr)
+        return EXIT_COULD_NOT_LOOK
+    if args.out:
+        report.write(args.out)
+    print(json.dumps(report.to_dict(), indent=2) if args.json else report)
+    if args.out and not args.json:
+        print(f"\nWrote {report.rows_test:,} predictions to {args.out}.")
+    return EXIT_QUIET
+
+
 def _scan(args: argparse.Namespace) -> int:
     try:
         found = scan(args.folder, answers=args.answers)
@@ -529,6 +549,19 @@ def build_parser() -> argparse.ArgumentParser:
     scanned.add_argument("--answers", help="a YAML file of answers given before (see --template)")
     scanned.add_argument("--template", help="write the questions and proposed answers to this YAML file")
     scanned.add_argument("--json", action="store_true", help="machine-readable result")
+    modelled = subcommands.add_parser(
+        "model", help="cross-validate a model of one column and predict it for a test table (Kaggle style)"
+    )
+    modelled.add_argument("train", help="the training table, or a folder with train.csv, test.csv and a "
+                                        "sample submission")
+    modelled.add_argument("test", nargs="?", help="the test table, when train is a file")
+    modelled.add_argument("--target", help="the column to predict (default: the one the test table lacks)")
+    modelled.add_argument("--metric", help="accuracy, f1, auc, logloss, map@3, rmse, rmsle or mae")
+    modelled.add_argument("--id", help="the column that names each row (default: found)")
+    modelled.add_argument("--folds", type=int, default=5, help="cross-validation folds (default: 5)")
+    modelled.add_argument("--seed", type=int, default=0, help="the random seed (default: 0)")
+    modelled.add_argument("--out", help="write the submission to this CSV file")
+    modelled.add_argument("--json", action="store_true", help="machine-readable result")
     with_source("check", "flag periods outside the expected band; for cron")
 
     skill = subcommands.add_parser(
@@ -558,7 +591,7 @@ def main(argv: list[str] | None = None) -> int:
     handler = {
         "init": _init, "build": _build, "verify": _verify, "preview": _preview,
         "share": _share, "demo": _demo,
-        "analyze": _analyze, "schema": _schema, "ask": _ask, "claim": _claim, "scan": _scan,
+        "analyze": _analyze, "schema": _schema, "ask": _ask, "claim": _claim, "scan": _scan, "model": _model,
         "check": _check, "skill": _skill, "samples": _samples, "app": _app, None: _status,
     }[command]
     try:
