@@ -12,6 +12,7 @@ instead of a number. Input it cannot read at all raises :class:`AdaError`.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from functools import cached_property
 from pathlib import Path
@@ -34,6 +35,7 @@ from .analysis import column_profile
 from .anomalies import MIN_PERIODS as ANOMALY_MIN_PERIODS
 from .anomalies import Anomaly, detect_anomalies, finer_trend
 from .business_insights import BusinessBrief, analyze_business, build_business_report
+from .decisions import checked_choices
 from .file_io import list_sample_datasets as _list_sample_datasets
 from .file_io import read_tabular_file
 from .forecasting import Forecast, build_forecast
@@ -509,22 +511,26 @@ class Analysis:
             frame = frame.join(show_undated(group_coverage(self.frame, self.roles)), on="Segment")
         return frame
 
-    def ask(self, question: str) -> QueryAnswer | Refusal:
+    def ask(self, question: str, *, decisions: Mapping[str, str] | None = None) -> QueryAnswer | Refusal:
         """Answer a plain-English question with pandas, locally.
 
         Returns a :class:`Refusal` with code ``unsupported_phrasing`` when the
         question uses a form the parser doesn't support (e.g. "revenue > 200"),
         or ``unrepresentable_question`` when it can't be mapped onto this table.
         The second names the column the question may have meant, when there is one.
+        ``decisions`` pick options for the choices the answer rests on, such as
+        ``{"aggregate_rows": "keep"}``; the answer's ``decisions`` list each one
+        taken, and an unknown key or option raises ``UnknownDecision``.
         """
         if unsupported_phrasing(question, self.frame.columns):
             return Refusal(
                 "unsupported_phrasing",
                 "ADA has no way to represent that question, so it will not guess at a near one.",
             )
+        choices = checked_choices(decisions)
         answer = answer_question(
             question, self.frame, self.roles, rows_not_analyzed=self.rows_not_analyzed, whole=self.whole,
-            checks=self._issues,
+            checks=self._issues, choices=choices,
         )
         if answer is None:
             message = "ADA could not build a plan for that question against this table."

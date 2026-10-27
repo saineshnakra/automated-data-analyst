@@ -374,7 +374,7 @@ class ClaimJsonTests(ClaimFileTestCase):
         keys = {
             "schema_version", "claim", "status", "reason", "message", "claimed", "question", "agreement",
             "result", "reading", "calculation", "evidence", "assumptions", "warnings", "checks",
-            "alternatives", "clarification",
+            "alternatives", "clarification", "decisions",
         }
         for claim in (
             "The average body mass is 4457 g.", "The average body mass is 4,600 g.", "The average is 4457.",

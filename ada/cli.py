@@ -34,6 +34,11 @@ a measure for unusual periods. It reports through its exit code too:
     2  the data could not be read
     3  unverified for another reason: missing context, ambiguous wording, unsupported
 
+An answer lists the choices it rests on (``decides:``, or ``decisions`` in the
+JSON), each with ADA's default and the other options; ``--decide KEY=OPTION``
+picks another, such as ``--decide aggregate_rows=keep`` to count a World row
+with the countries.
+
 ``ada scan FOLDER`` profiles each table in a folder, proposes the keys that join
 them (with the rows each join would leave unmatched) and lists what a person
 should confirm, grouped by topic. ``--template FILE`` writes those questions with
@@ -61,6 +66,7 @@ from pathlib import Path
 from . import __version__
 from .api import AdaError, Refusal, analyze, sample, samples
 from .claims import check_claim
+from .decisions import OPTIONS, UnknownDecision, parse_choices
 from .folder import scan
 from .metrics import AGGREGATION_CHOICES, metric_for
 from .nlq import ANSWER_SCHEMA_VERSION
@@ -69,6 +75,11 @@ EXIT_QUIET = 0
 EXIT_FLAGGED = 1
 EXIT_ERROR = 2
 EXIT_COULD_NOT_LOOK = 3
+
+DECIDE_HELP = (
+    "pick another option for a choice the answer rests on, such as aggregate_rows=keep; "
+    "repeat for more (" + "; ".join(f"{key}: {', '.join(options)}" for key, options in OPTIONS.items()) + ")"
+)
 
 
 def _load(args: argparse.Namespace):
@@ -108,8 +119,19 @@ def _schema(args: argparse.Namespace) -> int:
     return EXIT_QUIET
 
 
+def _choices(args: argparse.Namespace) -> dict[str, str] | None:
+    """The --decide choices, checked; None after printing why one is wrong."""
+    try:
+        return parse_choices(args.decide or [])
+    except UnknownDecision as error:
+        print(f"error: {error}", file=sys.stderr)
+        return None
+
+
 def _ask(args: argparse.Namespace) -> int:
-    answer = _load(args).ask(args.question)
+    if (choices := _choices(args)) is None:
+        return EXIT_ERROR
+    answer = _load(args).ask(args.question, decisions=choices)
     if isinstance(answer, Refusal):
         if args.json:
             print(json.dumps({
@@ -124,6 +146,8 @@ def _ask(args: argparse.Namespace) -> int:
         return EXIT_QUIET
     print(answer.answer)
     print(f"  calc: {answer.calculation}")
+    for decision in answer.decisions:
+        print(f"  decides: {decision.describe()}")
     return EXIT_QUIET
 
 
@@ -131,7 +155,11 @@ def _claim(args: argparse.Namespace) -> int:
     if args.claim is None and (args.question is None or args.value is None):
         print("error: give the claim as a sentence, or both --question and --value.", file=sys.stderr)
         return EXIT_ERROR
-    check = check_claim(args.file, args.claim, question=args.question, value=args.value, sheet=args.sheet)
+    if (choices := _choices(args)) is None:
+        return EXIT_ERROR
+    check = check_claim(
+        args.file, args.claim, question=args.question, value=args.value, sheet=args.sheet, decisions=choices
+    )
     print(json.dumps(check.to_dict(), indent=2) if args.json else check)
     if check.verified:
         return EXIT_QUIET
@@ -454,6 +482,7 @@ def build_parser() -> argparse.ArgumentParser:
     asked = with_source("ask", "ask a question in plain English")
     asked.add_argument("question")
     asked.add_argument("--json", action="store_true", help="machine-readable answer with its evidence")
+    asked.add_argument("--decide", action="append", metavar="KEY=OPTION", help=DECIDE_HELP)
     claimed = subcommands.add_parser(
         "claim", help="check a number stated about a table: verified, or unverified with the reason"
     )
@@ -463,6 +492,7 @@ def build_parser() -> argparse.ArgumentParser:
     claimed.add_argument("--value", help="the number claimed, with --question; its decimals set precision")
     claimed.add_argument("--sheet", help="the worksheet to read from a workbook (default: the first)")
     claimed.add_argument("--json", action="store_true", help="machine-readable result")
+    claimed.add_argument("--decide", action="append", metavar="KEY=OPTION", help=DECIDE_HELP)
     scanned = subcommands.add_parser(
         "scan", help="profile every table in a folder, propose how they join, and list what to confirm"
     )
