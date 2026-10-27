@@ -131,7 +131,7 @@ question's `key`. Edit the answers and pass the file back (`answers=` or
 ## Not covered yet
 
 - ADA proposes joins but does not run them, so a figure that needs two files
-  (a player's name in one, his home runs in another) is not computed.
+  (a player's name in one, their home runs in another) is not computed.
 - Rows that sum others (a World row among countries) are not set apart.
 - Links are looked for between two files at a time; a key that runs through a
   third file is reported as two links.

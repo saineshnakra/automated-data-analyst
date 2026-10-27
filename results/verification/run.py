@@ -52,16 +52,32 @@ def numbers_in(text):
     return [float(m.replace(",", "")) for m in re.findall(r"-?\d[\d,]*\.?\d*(?:e-?\d+)?", str(text))]
 
 
+def label_key(label):
+    """A group label as text, with a whole number written without its ".0": 4.0 is "4"."""
+    try:
+        number = float(label)
+    except (TypeError, ValueError):
+        return str(label)
+    return str(int(number)) if number.is_integer() else str(label)
+
+
+def share_forms(want):
+    """The forms an expected share may take in an answer: 0.323, or 32.3 as a percentage."""
+    return [want, want * 100] if isinstance(want, int | float) and 0 < want < 1 else [want]
+
+
 def table_values(table):
     """Label -> every number on that label's row of an answer table."""
     if table is None or not isinstance(table, pd.DataFrame) or table.empty:
         return {}
     numeric = [c for c in table.columns if pd.api.types.is_numeric_dtype(table[c])]
-    labels = [c for c in table.columns if c not in numeric]
+    # The groups are the first text column, or the first column when they are numbers (cyl 4, 6, 8).
+    labels = [c for c in table.columns if c not in numeric] or list(table.columns[:1])
     if not numeric:
         return {}
-    keys = table[labels[0]] if labels else table.index
-    return {str(k): [row[c] for c in numeric] for k, (_, row) in zip(keys, table.iterrows(), strict=True)}
+    keys = table[labels[0]]
+    rows = zip(keys, table.iterrows(), strict=True)
+    return {label_key(k): [row[c] for c in numeric] for k, (_, row) in rows}
 
 
 def run_profile(case):
@@ -104,12 +120,14 @@ def run_compute(case):
     if "values" in expected:
         values = table_values(table)
         for label, want in expected["values"].items():
-            checks[f"value:{label}"] = any(close(v, want) for v in values.get(str(label), []))
+            checks[f"value:{label}"] = any(close(v, want) for v in values.get(label_key(label), []))
     if "value" in expected:
         found = numbers_in(answer.answer) + [v for row in table_values(table).values() for v in row]
-        checks["value"] = any(close(n, expected["value"]) for n in found)
+        checks["value"] = any(close(n, form) for n in found for form in share_forms(expected["value"]))
         if "wrong_value" in expected:
-            checks["avoids_wrong_value"] = not any(close(n, expected["wrong_value"]) for n in found)
+            checks["avoids_wrong_value"] = not any(
+                close(n, form) for n in found for form in share_forms(expected["wrong_value"])
+            )
     return got, checks
 
 
@@ -159,13 +177,19 @@ def run_folder(case):
         return parts(first) == parts(second)
 
     wanted = case["expected"].get("links", [])
+    matched = []
     for want in wanted:
         def found(start, end):
             return [link for link in links if same(link.get("from"), start) and same(link.get("to"), end)]
         hit = found(want["from"], want["to"]) or found(want["to"], want["from"])
+        matched.extend(hit)
         checks[f"link:{want['from']}->{want['to']}"] = bool(hit)
     if not wanted:
         checks["no_links_proposed"] = not links
+    # Links nobody expected are listed for review, not scored: an expected list
+    # names the links the dataset's documentation gives, which may not be all.
+    got["extra_links"] = [f"{link['from']} -> {link['to']} ({link['kind']})" for link in links
+                          if link not in matched]
     return got, checks
 
 
@@ -193,6 +217,8 @@ for case in spec["cases"]:
     mark = "ok  " if results[-1]["passed_automatic"] else "FAIL"
     print(f"{mark} {case['id']:40s} {json.dumps(checks)[:150]}{'  ERROR ' + error[:120] if error else ''}",
           flush=True)
+    for extra in got.get("extra_links", []) if isinstance(got, dict) else []:
+        print(f"       extra link {extra}", flush=True)
 
 out_path.write_text(json.dumps({"ada": ada.__version__, "split": split, "results": results}, indent=1,
                                default=str))

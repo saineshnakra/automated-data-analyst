@@ -7,7 +7,7 @@ number stated about a table is verified or unverified, and why; `ada ask
 --json` gives an answer's numbers and rows as data; `ada scan` maps a folder
 of related files and the keys that join them. Answers count each subject once
 when several rows come from one, and say when groups reverse a pooled
-correlation. Evaluated on 46 cases from 13 public datasets
+correlation. Evaluated on 73 cases from 20 public datasets
 ([results/verification](results/verification/README.md)).
 
 ```bash

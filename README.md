@@ -27,9 +27,10 @@ $ ada claim flights.csv "The average departure delay was about 13 minutes."
 verified: The average departure delay was about 13 minutes.
   12.63907026 (328,521 rows) from mean(dep_delay) lies in 12 to 14, which about 13 minutes stands for.
   calc: mean(dep_delay)
-  assumes: Read the claim's words as dep_delay, the only column the question fits.
+  assumes: Read "departure delay" as dep_delay.
   assumes: Left out 8,255 rows with dep_delay missing.
   assumes: Read "about" as 12 to 14.
+  assumes: The unit "minutes" comes from the claim; the check compares numbers only.
 
 $ ada claim flights.csv "The average delay was 13 minutes."
 unverified: The average delay was 13 minutes.
@@ -47,7 +48,7 @@ the data don't state is asked about, not assumed.
 | Status | Reason | Meaning |
 |---|---|---|
 | `verified` | | The computed number lies in the claim's interval and no check on the analysis failed |
-| `unverified` | `failed_check` | The data give a different number (`agreement: "mismatch"`), or a check on the analysis failed |
+| `unverified` | `failed_check` | The data give a different number for a column the claim names (`agreement: "mismatch"`), or a check on the analysis failed |
 | `unverified` | `missing_context` | The claim leaves out something the check needs: a column, a group, a unit, a date column |
 | `unverified` | `ambiguous_intent` | The words fit several calculations with different answers; each is listed |
 | `unverified` | `unsupported_analysis` | ADA can't compute what the claim describes, or the claim holds several numbers |
@@ -119,6 +120,13 @@ file it fits. See [Reading a folder of tables](docs/reference/folder.md).
 - **Groups that reverse a pooled figure.** Bill length and depth fall together
   over all penguins (r = -0.24) and rise together within each species; the
   answer says so.
+- **Tables of counts.** When each row is one combination of categories with a
+  count column (Titanic's `Freq`), counts and shares add up the counts: "what
+  share survived" is 711 of 2,201 people (32.3%), not half of the 32 rows.
+- **What a claim names.** A mismatch is a failed check only when the claim
+  names what the column measures. "788 member deaths" read as the heights at
+  which climbers died is not called false; it comes back with the question
+  "Is the number about death_height_metres, or about another column?".
 - **Thin data.** Too few rows or units for a test gives a reason, not a number.
 - **The data themselves**: impossible values, missing-value codes, caps,
   copied rows and columns, before any figure is computed.
@@ -178,30 +186,34 @@ machine ([Privacy](docs/privacy.md)).
 ## What it doesn't do yet
 
 - **Joins.** `ada scan` proposes joins; a number that needs two files (a
-  player's name in one, his home runs in another) is not computed.
+  player's name in one, their home runs in another) is not computed.
 - **Aggregate rows.** A World or Total row among countries is not set apart,
   so a total over every row can double count.
-- **Many phrasings.** A claim is read with ADA's question parser: column names
-  in other words ("life expectancy" for `lifeExp`), slopes ("rises by 10.5
-  per day"), and claims with several numbers come back unverified.
-- **Some files**: metadata lines above the header, frequency-weighted tables
-  (one row per combination with a count column).
+- **Many phrasings.** A claim is read with ADA's question parser: a column
+  named in other words ("horsepower" for `hp`, "rentals" for `cnt`), slopes
+  ("rises by 10.5 per day"), and claims with several numbers come back
+  unverified. Words that shorten to a name do work ("life expectancy" for
+  `lifeExp`, "fastest lap speed" for `fastestLapSpeed`).
+- **Some tables**: shares by group in a table of counts are not weighted, and
+  a year column is sometimes read as a number rather than a date.
 
 ## Progress
 
-Measured on 46 cases from 13 public datasets, each expected value computed
-separately with pandas, SciPy and statsmodels; dev cases were used to find
-problems, holdout cases only to score them
+Measured on 73 cases from 20 public datasets, each expected value computed
+separately with pandas, SciPy and statsmodels. Dev cases were used to find
+problems and holdout cases only to score them; whenever a holdout failure
+led to a fix, its dataset moved to dev and fresh data took its place
 ([details](results/verification/README.md)):
 
 | | ADA 0.5.0 | Now |
 |---|---|---|
-| Dev cases | 4/26 | 20/26 |
-| Holdout cases | 3/20 | 5/20 |
-| Wrong verdicts on claims (verified when not supported, or failed when true) | | 0/20 |
-| True claims verified | 0/14 | 3/14 |
+| Dev cases | 6/51 | 36/51 |
+| Holdout cases | 3/22 | 12/22 |
+| Wrong verdicts on claims (verified when not supported, or failed when true) | | 0/35 |
+| True claims verified | 0/26 | 13/26 |
+| False claims caught | 0/7 | 6/7 |
 
-Unseen data still defeats the reader more often than not; the misses come
+Unseen data still defeats the reader about half the time; the misses come
 back unverified with a reason rather than wrong. The first look was also
 tested on [60 research datasets](results/README.md).
 

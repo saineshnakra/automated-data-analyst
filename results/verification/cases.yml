@@ -48,7 +48,7 @@ datasets:
     licence: CC BY 4.0
     docs: parkinsons_updrs.names (42 people, 5,875 recordings)
   gapminder:
-    split: holdout
+    split: dev   # moved from holdout: its "life expectancy" question drove a fix
     files: [gapminder.csv]
     source: https://vincentarelbundock.github.io/Rdatasets/csv/gapminder/gapminder.csv
     licence: CC BY 3.0 (Gapminder)
@@ -58,7 +58,7 @@ datasets:
     source: https://vincentarelbundock.github.io/Rdatasets/csv/datasets/ChickWeight.csv
     licence: public domain (R datasets; Crowder and Hand 1990)
   titanic:
-    split: holdout
+    split: dev   # moved from holdout: its share and Class columns drove fixes
     files: [Titanic.csv]
     source: https://vincentarelbundock.github.io/Rdatasets/csv/datasets/Titanic.csv
     licence: public domain (R datasets)
@@ -70,7 +70,7 @@ datasets:
     source: https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce
     licence: CC BY-NC-SA 4.0
   worldbank-lifeexp:
-    split: holdout
+    split: dev   # moved from holdout: its unreadable header drove a fix
     files: [API_SP.DYN.LE00.IN_DS2_en_csv_v2_1528.csv, Metadata_Country_API_SP.DYN.LE00.IN_DS2_en_csv_v2_1528.csv,
             Metadata_Indicator_API_SP.DYN.LE00.IN_DS2_en_csv_v2_1528.csv]
     source: https://api.worldbank.org/v2/en/indicator/SP.DYN.LE00.IN?downloadformat=csv
@@ -82,10 +82,45 @@ datasets:
     licence: CC BY 4.0
 
   f1:
-    split: holdout   # fresh, added 2026-10-26 to replace olist after olist moved to dev
+    split: dev   # fresh holdout on 2026-10-26; moved to dev when its spurious links drove a fix
     files: [results.csv, races.csv, drivers.csv, constructors.csv, circuits.csv, status.csv, pit_stops.csv]
     source: https://github.com/rfordatascience/tidytuesday/tree/main/data/2021/2021-09-07 (Ergast database)
     licence: CC BY-NC-SA 3.0 (Ergast); sha256 results.csv 8d74abc3..., races.csv 2d7f7c23...; no subsetting
+  himalaya:
+    split: dev   # fresh holdout on 2026-10-27; moved to dev when its wrong verdict on deaths drove a fix
+    files: [members.csv, expeditions.csv, peaks.csv]
+    source: https://github.com/rfordatascience/tidytuesday/tree/main/data/2020/2020-09-22 (The Himalayan Database)
+    licence: as published by TidyTuesday; the Himalayan Database's terms apply; no subsetting
+  lego:
+    split: dev   # fresh holdout on 2026-10-27; moved to dev when its bare-id links drove a fix
+    files: [sets.csv, themes.csv, inventories.csv, inventory_parts.csv, parts.csv, colors.csv, part_categories.csv]
+    source: https://github.com/rfordatascience/tidytuesday/tree/main/data/2022/2022-09-06 (Rebrickable)
+    licence: Rebrickable database downloads, free to use; the .csv.gz files are decompressed, contents unchanged
+  deforestation:
+    split: holdout   # fresh, added 2026-10-27 to replace lego and gapminder; cases written before ADA read it
+    files: [forest.csv, forest_area.csv, brazil_loss.csv, soybean_use.csv, vegetable_oil.csv]
+    source: https://github.com/rfordatascience/tidytuesday/tree/main/data/2021/2021-04-06 (Our World in Data)
+    licence: CC BY 4.0 (Our World in Data); no subsetting
+  mtcars:
+    split: holdout   # fresh, added 2026-10-27; cases written before ADA read it
+    files: [mtcars.csv]
+    source: https://vincentarelbundock.github.io/Rdatasets/csv/datasets/mtcars.csv
+    licence: public domain (R datasets; Henderson and Velleman 1981)
+  chocolate:
+    split: holdout   # fresh, added 2026-10-27 to replace himalaya and titanic; cases written before ADA read it
+    files: [chocolate.csv]
+    source: https://github.com/rfordatascience/tidytuesday/tree/main/data/2022/2022-01-18 (Flavors of Cacao)
+    licence: as published by TidyTuesday; Flavors of Cacao's terms apply; no subsetting
+  haireyecolor:
+    split: holdout   # fresh, added 2026-10-27; cases written before ADA read it
+    files: [HairEyeColor.csv]
+    source: https://vincentarelbundock.github.io/Rdatasets/csv/datasets/HairEyeColor.csv
+    licence: public domain (R datasets; Snee 1974)
+  olympics:
+    split: holdout   # fresh, added 2026-10-27; cases written before ADA read it
+    files: [olympics.csv, regions.csv]
+    source: https://github.com/rfordatascience/tidytuesday/tree/main/data/2021/2021-07-27 (Kaggle, 120 years of Olympic history)
+    licence: CC0 (Kaggle dataset by rgriffin); no subsetting
 
 cases:
   # ---------------------------------------------------------------- penguins (dev)
@@ -510,3 +545,240 @@ cases:
       must: "a driver can have up to 3 results rows in one race (shared drives), so (raceId, driverId) is not a key of results"
     reference: reference_f1.py
     tests: interpretation
+  # ---------------------------------------------------------------- himalaya (holdout, fresh)
+  - id: himalaya-folder
+    dataset: himalaya
+    kind: folder
+    expected:
+      links:
+        - {from: "members.(expedition_id, year)", to: "expeditions.(expedition_id, year)", kind: many-to-one, unmatched_rows: 0}
+        - {from: expeditions.peak_id, to: peaks.peak_id, kind: many-to-one, unmatched_rows: 1}
+        - {from: members.peak_id, to: peaks.peak_id, kind: many-to-one, unmatched_rows: 15}
+      must: "say expedition_id alone is not a key of expeditions: KANG10101 names a 1910 and a 2010 expedition"
+    reference: reference_fresh.py
+    tests: interpretation
+  - id: himalaya-height-claim
+    dataset: himalaya
+    kind: claim
+    file: peaks.csv
+    claim: The average peak is 6,657 metres high.
+    expected: {status: verified, value: 6656.637, rows_used: 468}
+    reference: reference_fresh.py
+    tests: evidence
+  - id: himalaya-age-false-claim
+    dataset: himalaya
+    kind: claim
+    file: members.csv
+    claim: The average member age was 35 years.
+    expected: {status: unverified, reason: failed_check, value: 37.334}
+    reference: reference_fresh.py
+    tests: evidence
+  - id: himalaya-success-share
+    dataset: himalaya
+    kind: compute
+    file: members.csv
+    question: what share of members had success
+    expected: {value: 0.3816}
+    reference: reference_fresh.py
+    tests: interpretation
+  - id: himalaya-expeditions-2019
+    dataset: himalaya
+    kind: compute
+    file: expeditions.csv
+    question: how many expeditions were there in 2019
+    expected: {value: 172}
+    reference: reference_fresh.py
+    tests: calculation
+  - id: himalaya-deaths-claim
+    dataset: himalaya
+    kind: claim
+    folder: true
+    claim: Expeditions recorded 788 member deaths in total.
+    expected: {status: verified, value: 788}
+    reference: reference_fresh.py
+    tests: evidence
+  # ---------------------------------------------------------------- lego (holdout, fresh)
+  - id: lego-folder
+    dataset: lego
+    kind: folder
+    expected:
+      links:
+        - {from: sets.theme_id, to: themes.id, kind: many-to-one, unmatched_rows: 0}
+        - {from: inventories.set_num, to: sets.set_num, kind: many-to-one, unmatched_rows: 12550}
+        - {from: inventory_parts.inventory_id, to: inventories.id, kind: many-to-one, unmatched_rows: 0}
+        - {from: inventory_parts.part_num, to: parts.part_num, kind: many-to-one, unmatched_rows: 0}
+        - {from: inventory_parts.color_id, to: colors.id, kind: many-to-one, unmatched_rows: 0}
+        - {from: parts.part_cat_id, to: part_categories.id, kind: many-to-one, unmatched_rows: 0}
+      must: "say 12,550 inventories name a set_num missing from sets.csv (minifigures, fig-...)"
+    reference: reference_fresh.py
+    tests: interpretation
+  - id: lego-parts-claim
+    dataset: lego
+    kind: claim
+    file: sets.csv
+    claim: The average Lego set has 161 parts.
+    expected: {status: verified, value: 161.058, rows_used: 19798}
+    reference: reference_fresh.py
+    tests: evidence
+  - id: lego-sets-2020
+    dataset: lego
+    kind: compute
+    file: sets.csv
+    question: how many sets were released in 2020
+    expected: {value: 967}
+    reference: reference_fresh.py
+    tests: calculation
+  - id: lego-2019-false-claim
+    dataset: lego
+    kind: claim
+    file: sets.csv
+    claim: Sets from 2019 have 250 parts on average.
+    expected: {status: unverified, reason: failed_check, value: 202.372}
+    reference: reference_fresh.py
+    tests: evidence
+  # ---------------------------------------------------------------- deforestation (holdout, fresh)
+  - id: deforestation-folder
+    dataset: deforestation
+    kind: folder
+    expected:
+      links:
+        - {from: "forest.(entity, year)", to: "forest_area.(entity, year)", kind: one-to-one, unmatched_rows: 0}
+        - {from: "brazil_loss.(entity, year)", to: "forest_area.(entity, year)", kind: one-to-one, unmatched_rows: 0}
+      must: "say that most soybean_use years (1961 to 1989) have no forest_area row, and that rows with no code are regions"
+    reference: reference_fresh2.py
+    tests: interpretation
+  - id: deforestation-pasture-claim
+    dataset: deforestation
+    kind: claim
+    file: brazil_loss.csv
+    claim: Brazil lost 2,564,000 hectares of forest to pasture in 2004.
+    expected: {status: verified, value: 2564000, rows_used: 1}
+    reference: reference_fresh2.py
+    tests: evidence
+  - id: deforestation-conversion-claim
+    dataset: deforestation
+    kind: claim
+    file: forest.csv
+    claim: The average net forest conversion was -76,931 hectares.
+    expected: {status: verified, value: -76931.03, rows_used: 475}
+    must: "note that the 475 rows include the World row and regions"
+    reference: reference_fresh2.py
+    tests: evidence
+  # ---------------------------------------------------------------- mtcars (holdout, fresh)
+  - id: mtcars-mpg-claim
+    dataset: mtcars
+    kind: claim
+    file: mtcars.csv
+    claim: The average mpg is 20.09.
+    expected: {status: verified, value: 20.0906, rows_used: 32}
+    reference: reference_fresh2.py
+    tests: evidence
+  - id: mtcars-horsepower-claim
+    dataset: mtcars
+    kind: claim
+    file: mtcars.csv
+    claim: The cars average 146.7 horsepower.
+    expected: {status: verified, value: 146.6875}
+    reference: reference_fresh2.py
+    tests: interpretation
+  - id: mtcars-mpg-by-cyl
+    dataset: mtcars
+    kind: compute
+    file: mtcars.csv
+    question: average mpg by cyl
+    expected: {values: {"4": 26.664, "6": 19.743, "8": 15.1}}
+    reference: reference_fresh2.py
+    tests: calculation
+  - id: mtcars-weight-false-claim
+    dataset: mtcars
+    kind: claim
+    file: mtcars.csv
+    claim: The average wt is 3.5.
+    expected: {status: unverified, reason: failed_check, value: 3.217}
+    reference: reference_fresh2.py
+    tests: evidence
+  - id: mtcars-four-cylinder-claim
+    dataset: mtcars
+    kind: claim
+    file: mtcars.csv
+    claim: Cars with 4 cylinders average 26.7 mpg.
+    expected: {status: verified, value: 26.664, rows_used: 11}
+    reference: reference_fresh2.py
+    tests: evidence
+  # ---------------------------------------------------------------- chocolate (holdout, fresh)
+  - id: chocolate-rating-claim
+    dataset: chocolate
+    kind: claim
+    file: chocolate.csv
+    claim: The average rating is 3.2.
+    expected: {status: verified, value: 3.1963, rows_used: 2530}
+    reference: reference_fresh3.py
+    tests: evidence
+  - id: chocolate-cocoa-claim
+    dataset: chocolate
+    kind: claim
+    file: chocolate.csv
+    claim: The average cocoa percent is 71.6%.
+    expected: {status: verified, value: 71.64}
+    reference: reference_fresh3.py
+    tests: reading
+  - id: chocolate-usa-compute
+    dataset: chocolate
+    kind: compute
+    file: chocolate.csv
+    question: average rating for U.S.A.
+    expected: {value: 3.1908}
+    reference: reference_fresh3.py
+    tests: interpretation
+  - id: chocolate-2019-count
+    dataset: chocolate
+    kind: compute
+    file: chocolate.csv
+    question: how many reviews in 2019
+    expected: {value: 193}
+    reference: reference_fresh3.py
+    tests: calculation
+  # ---------------------------------------------------------------- haireyecolor (holdout, fresh)
+  - id: hair-blue-share
+    dataset: haireyecolor
+    kind: compute
+    file: HairEyeColor.csv
+    question: what share have blue eyes
+    expected: {value: 0.3632, wrong_value: 0.25, must: "weight rows by Freq (592 people in 32 rows)"}
+    reference: reference_fresh3.py
+    tests: interpretation
+  - id: hair-female-claim
+    dataset: haireyecolor
+    kind: claim
+    file: HairEyeColor.csv
+    claim: 52.9% of the people are female.
+    expected: {status: verified, value: 52.87}
+    reference: reference_fresh3.py
+    tests: evidence
+  # ---------------------------------------------------------------- olympics (holdout, fresh)
+  - id: olympics-folder
+    dataset: olympics
+    kind: folder
+    expected:
+      links:
+        - {from: olympics.noc, to: regions.NOC, kind: many-to-one, unmatched_rows: 349}
+      must: "say that SGP (349 rows) has no row in regions.csv"
+    reference: reference_fresh3.py
+    tests: interpretation
+  - id: olympics-age-claim
+    dataset: olympics
+    kind: claim
+    file: olympics.csv
+    claim: The average age was 25.6.
+    expected: {status: verified, value: 25.557, rows_used: 261642}
+    must: "say that athletes repeat (135,571 athletes over 271,116 rows), so the average weights each by their rows"
+    reference: reference_fresh3.py
+    tests: evidence
+  - id: olympics-gold-count
+    dataset: olympics
+    kind: compute
+    file: olympics.csv
+    question: how many Gold medals were won
+    expected: {value: 13372}
+    reference: reference_fresh3.py
+    tests: calculation
