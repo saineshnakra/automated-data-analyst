@@ -32,11 +32,13 @@ from .business_insights import (
     numeric_readings,
     set_aside_note,
     tested_rows,
+    within_group_note,
 )
 from .compare import (
     ADJUSTED,
     ADJUSTED_BY,
     MIN_NAMED_GROUP,
+    MIN_SLOPE_UNITS,
     NOTABLE_CORRELATION,
     SCAN_ROWS,
     GroupComparison,
@@ -53,6 +55,7 @@ from .compare import (
     grouping_rules,
     outcome_event,
     rate_calculation,
+    repeated_correlation,
     scan_differences,
     scan_relationships,
 )
@@ -71,7 +74,7 @@ from .metrics import metric_for
 from .numeric import to_numbers
 from .quality import MASKED_CHECKS, VALUE_CHECKS, QualityIssue, prefers_log_scale, show_value
 from .quality import scan as scan_quality
-from .schema import ColumnRoles, detect_roles, row_summary_columns, running_total_columns
+from .schema import ColumnRoles, detect_roles, is_identifier_name, row_summary_columns, running_total_columns
 from .sources import Source
 from .timepoints import is_timepoint_name
 from .timeseries import TREND_CONFIDENCE, period_positions, theil_sen, trend_test
@@ -2942,11 +2945,14 @@ def _per_unit_plan(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRole
     q, mentioned = reading.text, reading.mentioned
     unit = next((column for column, start in mentioned.items() if _follows(q, start, "per")), None)
     if unit is None:
-        return None
+        unit = _compound_unit(reading, dataframe, roles)
+        return _unit_average_plan(reading, dataframe, roles, unit) if unit else None
     groupings = [
         column for column, start in mentioned.items()
         if column != unit and _follows(q, start, r"(?:by|across|among|between)")
     ]
+    if not groupings:
+        return _unit_average_plan(reading, dataframe, roles, unit)
     if len(groupings) != 1 or not _groups_rows(groupings[0], dataframe, roles):
         return None
     grouping = groupings[0]
@@ -2969,6 +2975,106 @@ def _per_unit_plan(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRole
     return QueryPlan(
         intent="breakdown", aggregation=_grouped_aggregation(aggregation, False, "mean"), measure=measure,
         dimension=grouping, per=(unit,), **_scope(reading),
+    )
+
+
+# A key after "per" with more values than a grouping may have is a unit to combine within ("per
+# order", 99,440 orders), not a grouping to list ("per site").
+MIN_PER_UNITS = GROUPING_LIMIT + 1
+# Words asking for one figure over the units: "average order value", not each order's.
+UNIT_AVERAGE_WORDS = ("average", "mean", "median", "typical")
+
+
+def _compound_unit(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> str | None:
+    """The key named right before a measure, as in "average order value": order_id, then payment_value.
+
+    Only a key (the identifier, or a column named like one) with MIN_PER_UNITS
+    or more values counts; its name and the measure's must be next to each other.
+    """
+    spans = reading.spans
+    for column, (_, end) in spans.items():
+        if column != roles.identifier and not is_identifier_name(str(column)):
+            continue
+        following = [
+            other for other, (start, _) in spans.items()
+            if other != column and start == end + 1 and _is_measurement(dataframe[other])
+        ]
+        word = re.match(r"\s([a-z]+)\b", reading.original[end:])
+        generic = word is not None and word.group(1) in MEASURE_WORDS and roles.measure is not None
+        if following or generic:
+            return column
+    return None
+
+
+# Words that stand for the table's measure after a key: "order value", "order amount".
+MEASURE_WORDS = frozenset({"value", "values", "amount", "amounts", "total", "totals", "size", "spend"})
+
+
+def _unit_average_plan(
+    reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles, unit: str
+) -> QueryPlan | None:
+    """Plan "average payment_value per order_id": each order's total, then the average over orders.
+
+    Only for a key (the identifier, or a column named like one) with more values
+    than a grouping may have (MIN_PER_UNITS) that repeats across rows, so listing
+    it would make no sense, and an aggregation word that asks for one figure.
+    None otherwise, and the question is read as a breakdown.
+    """
+    values = dataframe[unit].dropna()
+    keyed = unit == roles.identifier or is_identifier_name(str(unit))
+    if not keyed or values.nunique() < MIN_PER_UNITS or not values.duplicated().any():
+        return None
+    asked = next(
+        (word for word in UNIT_AVERAGE_WORDS if re.search(rf"\b{word}\b", reading.unnamed)), None
+    )
+    if asked is None:
+        return None
+    measures = [column for column in reading.mentioned if column != unit]
+    if len(measures) > 1 or (measures and not _is_measurement(dataframe[measures[0]])):
+        return None
+    measure = measures[0] if measures else roles.measure
+    if measure is None or measure == unit:
+        return None
+    aggregation = "median" if asked == "median" else "mean"
+    return QueryPlan(
+        intent="aggregate", aggregation=aggregation, measure=measure, per=(unit,), **_scope(reading)
+    )
+
+
+def _execute_unit_average(plan: QueryPlan, working: pd.DataFrame, roles: ColumnRoles, scope: str,
+                          applied: list[str]) -> QueryAnswer:
+    """Combine the measure within each unit (a total, or a mean for a level), then average the units."""
+    assert plan.measure is not None
+    unit = plan.per[0]
+    data = working.dropna(subset=[unit, plan.measure])
+    additive = metric_for(plan.measure, roles).additive
+    grouped = data.groupby(unit, observed=True)[plan.measure]
+    per_unit = grouped.sum() if additive else grouped.mean()
+    if per_unit.empty:
+        return QueryAnswer(
+            question="", plan=plan, answer=f"No {unit} has {plan.measure} recorded{_phrase(applied)}.",
+            calculation=f"0 {unit} values with {plan.measure}{scope}",
+        )
+    value = float(per_unit.median() if plan.aggregation == "median" else per_unit.mean())
+    measured = data[plan.measure]
+    per_row = float(measured.median() if plan.aggregation == "median" else measured.mean())
+    combined, combine = ("total", "sum") if additive else ("average", "mean")
+    label = "median" if plan.aggregation == "median" else "average"
+    shown = format_number(value, plan.measure, column_values=data[plan.measure])
+    row_shown = format_number(per_row, plan.measure, column_values=data[plan.measure])
+    answer = (
+        f"The {label} {plan.measure} per {unit}{_phrase(applied)} is {shown}: each {unit}'s {combined} "
+        f"{plan.measure} ({len(per_unit):,} {unit} values, from {len(data):,} rows), then the {label} of "
+        "those. "
+        f"Taken row by row instead, the {label} is {row_shown}, because one {unit} can have several rows."
+    )
+    calculation = (
+        f"{combine}({plan.measure}) per {unit}, then {plan.aggregation} over the {len(per_unit):,} {unit} "
+        f"values{scope}"
+    )
+    return QueryAnswer(
+        question="", plan=plan, answer=answer, calculation=calculation, value=_as_number(value),
+        figures=(("units", float(len(per_unit))), ("n", float(len(data))), ("per_row", per_row)),
     )
 
 
@@ -3801,6 +3907,8 @@ def _with_scope(
         cautions.extend(_flag_cautions(plan, dataframe, working, roles))
         cautions.extend(_condition_cautions(plan, dataframe, working, roles))
     cautions.extend(_blanked_notes(plan, dataframe, roles))
+    if result.scope is not None:
+        cautions[:0] = result.scope.cautions
     sentences.extend(cautions)
     left_out = [*(result.scope.left_out if result.scope else ())]
     if repeats:
@@ -4010,7 +4118,7 @@ def _run_related(
     plan: QueryPlan, working: pd.DataFrame, roles: ColumnRoles, scope: str, applied: list[str]
 ) -> QueryAnswer:
     if plan.intent == "correlation":
-        return _execute_correlation(plan, working, scope, applied)
+        return _execute_correlation(plan, working, roles, scope, applied)
     if plan.intent == "correlates":
         return _execute_correlates(plan, working, roles, scope, applied)
     if plan.columns:
@@ -4102,6 +4210,9 @@ def _run_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -> Q
     if plan.intent == "missing":
         return _execute_missing(plan, working, scope, applied)
 
+    if plan.intent == "aggregate" and plan.per:
+        return _execute_unit_average(plan, working, roles, scope, applied)
+
     if plan.intent == "aggregate":
         assert plan.measure is not None
         value = _aggregate_series(working[plan.measure], plan.aggregation, plan.quantile)
@@ -4164,6 +4275,7 @@ def _run_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -> Q
             rows_read=len(dataframe),
             rows_used=int(working[needed].notna().all(axis=1).sum()) if needed else None,
             left_out=(("values the data checks flag", cells),),
+            cautions=result.scope.cautions if result.scope is not None else (),
         )
         return replace(result, answer=f"{result.answer} {left_out}", scope=flagged)
 
@@ -5277,12 +5389,16 @@ def _skew_note(plan: QueryPlan, working: pd.DataFrame, leaders: list, groups: pd
 
 
 def _execute_correlation(
-    plan: QueryPlan, working: pd.DataFrame, scope: str, applied: list[str]
+    plan: QueryPlan, working: pd.DataFrame, roles: ColumnRoles, scope: str, applied: list[str]
 ) -> QueryAnswer:
     """Correlate the plan's two columns over the rows where both are recorded.
 
     Worded like the brief's relationship card, except that the pair was chosen by
-    the reader, so nothing is said about picking it from several.
+    the reader, so nothing is said about picking it from several. When several
+    rows come from each unit (``compare.entity_column``), the units are the
+    evidence instead (``_execute_repeated_correlation``). A pooled r is set
+    against the r within the groups of a grouping column, and the answer says
+    when the two disagree (Simpson's paradox).
     """
     assert plan.measure is not None and plan.partner is not None
     paired = working[[plan.measure, plan.partner]].dropna()
@@ -5297,6 +5413,17 @@ def _execute_correlation(
             ),
             calculation=f"{pairs:,} complete pairs, fewer than {MIN_CORRELATION_PAIRS}{scope}",
         )
+    unit = entity_column(working, roles)
+    if unit is not None and unit not in (plan.measure, plan.partner):
+        first, second = (
+            (plan.measure, plan.partner)
+            if is_timepoint_name(plan.measure) and not is_timepoint_name(plan.partner)
+            else (plan.partner, plan.measure)
+        )
+        repeated = repeated_correlation(working, first, second, unit)
+        # Within units, a few units leave the pooled r and the within-group note to say what can be said.
+        if repeated is not None and (not repeated.within or repeated.sloped >= MIN_SLOPE_UNITS):
+            return _execute_repeated_correlation(plan, repeated, scope, applied)
     correlation = measure_correlation(paired)
     if correlation is None:
         flat = next((column for column in paired.columns if paired[column].nunique() < 2), None)
@@ -5322,6 +5449,8 @@ def _execute_correlation(
     if pairs > SCATTER_LIMIT:
         points = paired.sample(SCATTER_LIMIT, random_state=0).sort_index()
         calculation += f"; the chart shows {SCATTER_LIMIT:,} of the {pairs:,} pairs, sampled"
+    # The brief's own check: r inside the groups of a grouping, when it differs from the pooled r.
+    caution = within_group_note(working, roles, correlation).strip()
     return QueryAnswer(
         question="",
         plan=plan,
@@ -5334,6 +5463,90 @@ def _execute_correlation(
             ("ci_low", correlation.low), ("ci_high", correlation.high),
             ("spearman", correlation.spearman), ("n", float(pairs)),
         ),
+        scope=AnswerScope(rows_read=len(working), cautions=(caution,)) if caution else None,
+    )
+
+
+# Plural time words that name a column of elapsed time, said in the singular after "per".
+_TIME_PLURALS = frozenset({"seconds", "minutes", "hours", "days", "weeks", "months", "years", "visits"})
+
+
+def _owner(name: str) -> str:
+    """The possessive of a name: "Subject's", "species'"."""
+    return f"{name}'" if name.endswith("s") else f"{name}'s"
+
+
+def _one(name: str) -> str:
+    """"Day" for a column named "Days", so a slope reads "per Day"; any other name as it is."""
+    return name[:-1] if name.lower() in _TIME_PLURALS else name
+
+
+def _execute_repeated_correlation(plan: QueryPlan, found, scope: str, applied: list[str]) -> QueryAnswer:
+    """Word a correlation computed with the units, not the rows, as the evidence."""
+    unit, first, second = found.unit, found.first, found.second
+    each = f"{found.rows / found.units:.0f}" if found.rows % found.units == 0 else "several"
+    if found.within:
+        if found.slope is None or not np.isfinite(found.p):
+            answer = (
+                f"Only {found.sloped:,} {unit} values have three or more rows with {first} changing, too "
+                f"few to test the slope across {unit}s. The correlation within {unit}s, once each "
+                f"{_owner(unit)} own means are taken away, is r = {found.r:.2f}{_phrase(applied)}."
+            )
+        else:
+            direction = "rises with" if found.slope > 0 else "falls as"
+            if found.p >= 0.05:
+                lead = f"Within {unit}s, {second} shows no clear trend with {first}"
+            else:
+                lead = f"Within each {unit}, {second} {direction} {first}"
+            answer = (
+                f"{lead}{_phrase(applied)}: the {found.sloped:,} {unit}s' own slopes average "
+                f"{format_number(found.slope, second)} {second} per {_one(first)} (95% CI "
+                f"{format_number(found.low, second)} to {format_number(found.high, second)}; t-test across "
+                f"the {found.sloped:,} slopes, {format_p(found.p)}), and {found.positive:,} of them are "
+                f"positive. Once each {_owner(unit)} own means are taken away, the correlation is "
+                f"r = {found.r:.2f}."
+            )
+        answer += (
+            f" The {found.rows:,} rows come {each} to a {unit}, so they are not counted as independent: "
+            f"each {unit} counts once."
+        )
+        calculation = (
+            f"least-squares slope of {second} on {first} within each {unit} with 3 or more rows, then their "
+            f"mean with a one-sample t-test; repeated-measures r: Pearson r of the values centred on each "
+            f"{_owner(unit)} means{scope}"
+        )
+        figures = [("r", found.r), ("units", float(found.units)), ("n", float(found.rows))]
+        if found.slope is not None:
+            figures += [("slope", found.slope), ("ci_low", found.low), ("ci_high", found.high),
+                        ("p_value", found.p), ("positive_slopes", float(found.positive))]
+        return QueryAnswer(
+            question="", plan=plan, answer=answer, calculation=calculation, value=_as_number(found.r),
+            figures=tuple((name, value) for name, value in figures if _as_number(value) is not None),
+        )
+    if found.units < MIN_CORRELATION_PAIRS:
+        return QueryAnswer(
+            question="", plan=plan,
+            answer=(
+                f"At least one of {first} and {second} stays fixed within a {unit}, so the evidence is one "
+                f"value per {unit}, and only {found.units:,} {unit}s have both{_phrase(applied)}; a "
+                f"correlation needs at least {MIN_CORRELATION_PAIRS}."
+            ),
+            calculation=f"{found.units:,} {unit} means, fewer than {MIN_CORRELATION_PAIRS}{scope}",
+        )
+    answer = (
+        f"Across {unit}s{_phrase(applied)}, Pearson r = {found.r:.2f} (95% CI {found.low:.2f} to "
+        f"{found.high:.2f}, {format_p(found.p)}, n = {found.units:,} {unit}s). At least one of {first} and "
+        f"{second} stays fixed within a {unit}, so each {unit} counts once, with the mean of its "
+        f"{found.rows:,} rows' values, rather than its rows counting as separate evidence."
+    )
+    calculation = (
+        f"Pearson r over the {found.units:,} {unit} means of {first} and {second}, 95% CI by Fisher "
+        f"transform{scope}"
+    )
+    return QueryAnswer(
+        question="", plan=plan, answer=answer, calculation=calculation, value=_as_number(found.r),
+        figures=(("ci_low", found.low), ("ci_high", found.high), ("p_value", found.p),
+                 ("units", float(found.units)), ("n", float(found.rows))),
     )
 
 

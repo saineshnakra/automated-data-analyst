@@ -23,6 +23,7 @@ from ada.schema import (
     looks_like_subject,
     row_noun,
     row_summary_columns,
+    running_total_columns,
 )
 
 
@@ -967,6 +968,19 @@ class RunningTotalTests(unittest.TestCase):
         self.assertEqual(roles.measure, "Sound Level (dBA)")
         self.assertIn("Packet Count", roles.non_readings)
         self.assertTrue(any(note.startswith("Packet Count keeps climbing") for note in roles.notes))
+
+    def test_days_counted_within_each_subject_are_a_time_axis_not_a_counter(self):
+        rng = np.random.default_rng(6)
+        frame = pd.DataFrame({
+            "Subject": np.repeat(np.arange(308, 326), 10),
+            "Days": np.tile(np.arange(10), 18),
+            "Reaction": 250 + 10 * np.tile(np.arange(10), 18) + rng.normal(0, 25, 180),
+        })
+
+        roles = detect_roles(frame)
+
+        self.assertNotIn("Days", running_total_columns(roles))
+        self.assertFalse(any(note.startswith("Days keeps climbing") for note in roles.notes))
 
 
 class LongTableTests(unittest.TestCase):

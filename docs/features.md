@@ -35,7 +35,8 @@ hold the exact rules and thresholds.
   (`RDB1` to `RDB3` on 0 to 10) and readings in a unit (`O content (wppm)`)
   stay quantities; a column of unique row numbers is an ID; a running total
   such as a rain gauge's, a packet counter, a constant, a p-value or a date
-  stored as a number is never the measure.
+  stored as a number is never the measure. Elapsed time counted within each
+  subject (`Days`, `time_since_start`) is a time axis, not a running total.
   Coordinates, compass directions and quality flags are never compared as
   readings. A long table (one column naming the parameter, one holding the
   result) is analyzed one parameter at a time, a file stacking several tables

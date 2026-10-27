@@ -131,7 +131,13 @@ Besides the number, a check records what could make the answer misleading:
   warnings say; a test or correlation over such rows treats them as
   independent, which fails the check.
 - **Cautions from the answer.** Whatever the answer itself says may sway it,
-  such as a spread too wide for the mean to be typical.
+  such as a spread too wide for the mean to be typical, or a pooled
+  correlation that runs the other way within the groups of a grouping.
+- **The unit of the average.** A claim about a key's average ("The average
+  order value is R$154.10") is checked against each order's total averaged
+  over orders (160.99). When the claim matches the average taken row by row
+  instead, the message says so: the claim counted each payment row, not each
+  order.
 
 ## The JSON record
 

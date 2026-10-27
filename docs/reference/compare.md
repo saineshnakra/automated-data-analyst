@@ -552,6 +552,7 @@ the items it was made from.
 | `without_extremes(x, y)` | r after dropping records more than 5 robust SDs out in either column (`EXTREME_Z`), when there are between 1 and 5% of them |
 | `far_out(x, y)`, `longest_stretch(marked)` | Which records lie more than 5 robust SDs out, and the longest unbroken run of them: a phase of a run rather than a few stray values |
 | `within_group_correlation(frame, x, y, grouping)` | r after removing each group's means, with each group's own r and rows and their range. Groups that differ in both columns can produce a pooled r of the opposite sign, or hide a stronger one |
+| `repeated_correlation(frame, first, second, unit)` | The relation with the unit as the evidence when several rows come from each unit. When both columns change within units: each unit's least-squares slope of `second` on `first` (units with 3 or more rows), their mean with a t interval and a one-sample t-test across units (needs 5 units), how many are positive, and the repeated-measures r, the correlation of the values centred on each unit's means (Bakdash and Marusich 2017). When one column stays fixed within units: Pearson r over the units' means, one row per unit. `None` when no unit has two rows |
 | `correlation_interval(r, n)` | The 95% interval by the Fisher transform |
 
 ## Changing this

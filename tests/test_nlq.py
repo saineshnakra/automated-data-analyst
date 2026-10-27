@@ -2935,5 +2935,93 @@ class InitialsTests(unittest.TestCase):
         self.assertIsNone(answer_question("total home runs", frame, detect_roles(frame)))
 
 
+def days_frame() -> pd.DataFrame:
+    """Eighteen subjects measured on ten days each, each rising by a slope of their own."""
+    rng = np.random.default_rng(45)
+    day = np.tile(np.arange(10), 18)
+    return pd.DataFrame({
+        "Subject": np.repeat(np.arange(308, 326), 10), "Days": day,
+        "Reaction": np.repeat(rng.normal(250, 30, 18), 10) + np.repeat(rng.normal(10, 6, 18), 10) * day
+        + rng.normal(0, 20, 180),
+    })
+
+
+def orders_frame() -> pd.DataFrame:
+    """Sixty orders paid in one or more instalments, so an order's value is the sum of its rows."""
+    rng = np.random.default_rng(46)
+    counts = rng.integers(1, 4, 60)
+    return pd.DataFrame({
+        "order_id": np.repeat([f"o{n:03d}" for n in range(60)], counts),
+        "payment_type": rng.choice(["card", "voucher"], counts.sum()),
+        "payment_value": rng.gamma(2, 50, counts.sum()).round(2),
+    })
+
+
+class RepeatedUnitRelationshipTests(unittest.TestCase):
+    def test_a_correlation_over_repeated_subjects_counts_each_subject_once(self):
+        frame = days_frame()
+        answer = answer_question("does Reaction increase with Days", frame, detect_roles(frame))
+        slopes = frame.groupby("Subject").apply(
+            lambda rows: np.polyfit(rows["Days"], rows["Reaction"], 1)[0], include_groups=False)
+        figures = dict(answer.figures)
+        self.assertAlmostEqual(figures["slope"], slopes.mean())
+        self.assertEqual(figures["units"], 18)
+        self.assertIn("each Subject counts once", answer.answer)
+        self.assertIn("per Day", answer.answer)
+        self.assertNotIn("n = 180", answer.answer)
+
+    def test_few_subjects_on_thin_data(self):
+        frame = days_frame()
+        few = frame[frame["Subject"] < 311]
+        answer = answer_question("does Reaction increase with Days", few, detect_roles(few))
+        self.assertNotIn("counts once", answer.answer)
+        self.assertIsNotNone(answer.value)
+        from ada.compare import RepeatedCorrelation
+
+        few_units = RepeatedCorrelation("Baseline", "Reaction", "Subject", 8, 80, False, 0.5, 0.2, -0.3, 0.9)
+        plan = QueryPlan(intent="correlation", measure="Reaction", partner="Baseline")
+        answer = nlq._execute_repeated_correlation(plan, few_units, "", [])
+        self.assertIsNone(answer.value)
+        self.assertIn("the evidence is one value per Subject, and only 8 Subjects", answer.answer)
+
+    def test_a_pooled_correlation_that_reverses_within_groups_says_so(self):
+        rng = np.random.default_rng(47)
+        parts = []
+        for index, label in enumerate(("Adelie", "Gentoo", "Chinstrap")):
+            x = rng.normal(40 + 5 * index, 2, 60)
+            parts.append(pd.DataFrame({"species": label, "bill_length": x,
+                                       "bill_depth": 0.4 * x - 4 * index + rng.normal(0, 0.5, 60)}))
+        frame = pd.concat(parts, ignore_index=True)
+        answer = answer_question("correlation between bill_length and bill_depth", frame, detect_roles(frame))
+        self.assertLess(answer.value, 0)
+        self.assertIn("Within each species the relationship runs the other way", answer.answer)
+        self.assertTrue(any("runs the other way" in caution for caution in answer.scope.cautions))
+
+
+class UnitAverageTests(unittest.TestCase):
+    def test_an_average_per_key_combines_each_key_first(self):
+        frame = orders_frame()
+        expected = frame.groupby("order_id")["payment_value"].sum().mean()
+        for question in ("average payment_value per order_id", "average payment value per order",
+                         "average order value"):
+            with self.subTest(question=question):
+                answer = answer_question(question, frame, detect_roles(frame))
+                self.assertAlmostEqual(answer.value, expected)
+                self.assertEqual(dict(answer.figures)["units"], 60)
+                self.assertAlmostEqual(dict(answer.figures)["per_row"], frame["payment_value"].mean())
+        self.assertIn("then mean over the 60 order_id values", answer.calculation)
+
+    def test_a_short_grouping_after_per_is_still_a_breakdown(self):
+        frame = orders_frame()
+        answer = answer_question("average payment_value per payment_type", frame, detect_roles(frame))
+        self.assertEqual(answer.plan.intent, "breakdown")
+
+    def test_a_key_with_few_values_is_listed(self):
+        frame = orders_frame()
+        frame = frame[frame["order_id"].isin(frame["order_id"].unique()[:10])]
+        answer = answer_question("average payment_value per order_id", frame, detect_roles(frame))
+        self.assertNotEqual(answer.plan.intent, "aggregate")
+
+
 if __name__ == "__main__":
     unittest.main()

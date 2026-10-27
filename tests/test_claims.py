@@ -6,6 +6,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 import ada
@@ -338,6 +339,34 @@ class ClaimJsonTests(ClaimFileTestCase):
         text = str(self.check("The average body mass is 4,600 g."))
         self.assertTrue(text.startswith("unverified: The average body mass is 4,600 g."))
         self.assertIn("calc: mean(body_mass_g)", text)
+
+
+class UnitOfAnalysisClaimTests(unittest.TestCase):
+    def test_a_claim_that_matches_the_row_average_is_told_so(self):
+        rng = np.random.default_rng(48)
+        counts = rng.integers(1, 4, 60)
+        frame = pd.DataFrame({
+            "order_id": np.repeat([f"o{n:03d}" for n in range(60)], counts),
+            "payment_value": rng.gamma(2, 50, counts.sum()).round(2),
+        })
+        per_row = frame["payment_value"].mean()
+        check = ada.check_claim(frame, f"The average order value is {per_row:.2f}.")
+        self.assertEqual((check.reason, check.agreement), ("failed_check", "mismatch"))
+        self.assertAlmostEqual(check.compared, frame.groupby("order_id")["payment_value"].sum().mean())
+        self.assertIn("matches the average taken row by row", check.message)
+
+    def test_a_pooled_correlation_claim_carries_the_reversal_warning(self):
+        rng = np.random.default_rng(49)
+        parts = []
+        for index, label in enumerate(("A", "B", "C")):
+            x = rng.normal(40 + 5 * index, 2, 60)
+            parts.append(pd.DataFrame({"kind": label, "length": x,
+                                       "depth": 0.4 * x - 4 * index + rng.normal(0, 0.5, 60)}))
+        frame = pd.concat(parts, ignore_index=True)
+        pooled = frame["length"].corr(frame["depth"])
+        check = ada.check_claim(frame, question="correlation between length and depth", value=f"{pooled:.2f}")
+        self.assertTrue(check.verified)
+        self.assertTrue(any("runs the other way" in warning for warning in check.warnings))
 
 
 if __name__ == "__main__":

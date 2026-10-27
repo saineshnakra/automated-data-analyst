@@ -49,6 +49,7 @@ from ada.compare import (
     pairwise_correlations,
     rate_calculation,
     reading_key,
+    repeated_correlation,
     same_stem,
     scan_differences,
     scan_relationships,
@@ -1823,6 +1824,55 @@ class GainWithinTests(unittest.TestCase):
 
         self.assertGreater(alone, 0.8)
         self.assertLess(together - alone, 0.01)
+
+
+def subjects_over_days(subjects: int = 12, days: int = 6, seed: int = 31) -> pd.DataFrame:
+    """Each subject measured on several days, rising by their own slope from their own level."""
+    rng = np.random.default_rng(seed)
+    level = np.repeat(rng.normal(250, 30, subjects), days)
+    slope = np.repeat(rng.normal(10, 5, subjects), days)
+    day = np.tile(np.arange(days), subjects)
+    return pd.DataFrame({
+        "Subject": np.repeat(np.arange(1, subjects + 1), days), "Days": day,
+        "Reaction": level + slope * day + rng.normal(0, 5, subjects * days),
+        "Age": np.repeat(rng.integers(20, 60, subjects), days),
+    })
+
+
+class RepeatedCorrelationTests(unittest.TestCase):
+    def test_within_units_the_slopes_are_averaged_across_units(self):
+        frame = subjects_over_days()
+        found = repeated_correlation(frame, "Days", "Reaction", "Subject")
+        slopes = frame.groupby("Subject").apply(
+            lambda rows: np.polyfit(rows["Days"], rows["Reaction"], 1)[0], include_groups=False)
+        self.assertTrue(found.within)
+        self.assertEqual((found.units, found.sloped, found.rows), (12, 12, 72))
+        self.assertAlmostEqual(found.slope, slopes.mean())
+        self.assertAlmostEqual(found.p, stats.ttest_1samp(slopes, 0).pvalue)
+        margin = stats.t.ppf(0.975, 11) * slopes.std(ddof=1) / np.sqrt(12)
+        self.assertAlmostEqual(found.low, slopes.mean() - margin)
+        means = frame.groupby("Subject")[["Days", "Reaction"]].transform("mean")
+        centred = frame[["Days", "Reaction"]] - means
+        self.assertAlmostEqual(found.r, centred["Days"].corr(centred["Reaction"]))
+        self.assertEqual(found.positive, int((slopes > 0).sum()))
+
+    def test_a_column_fixed_within_units_is_correlated_over_the_units(self):
+        frame = subjects_over_days()
+        found = repeated_correlation(frame, "Age", "Reaction", "Subject")
+        means = frame.groupby("Subject")[["Age", "Reaction"]].mean()
+        self.assertFalse(found.within)
+        self.assertEqual(found.units, 12)
+        self.assertAlmostEqual(found.r, means["Age"].corr(means["Reaction"]))
+        self.assertAlmostEqual(found.p, stats.pearsonr(means["Age"], means["Reaction"]).pvalue)
+
+    def test_rows_that_are_already_one_per_unit_need_nothing(self):
+        frame = subjects_over_days().drop_duplicates("Subject")
+        self.assertIsNone(repeated_correlation(frame, "Days", "Reaction", "Subject"))
+
+    def test_too_few_units_for_a_test_give_no_p_value(self):
+        found = repeated_correlation(subjects_over_days(subjects=3), "Days", "Reaction", "Subject")
+        self.assertEqual(found.sloped, 3)
+        self.assertTrue(np.isnan(found.p))
 
 
 if __name__ == "__main__":
