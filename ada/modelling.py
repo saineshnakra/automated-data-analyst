@@ -35,6 +35,7 @@ import pandas as pd
 from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_dtype
 
 from .formatting import normalized_name
+from .numeric import to_numbers
 
 #: Fewest training rows a model is cross-validated on.
 MIN_MODEL_ROWS = 100
@@ -271,7 +272,7 @@ def _structured_parts(text: pd.Series) -> tuple[str, int] | None:
 
 
 def _as_number_or_category(values: pd.Series) -> pd.Series:
-    numbers = pd.to_numeric(values, errors="coerce")
+    numbers = to_numbers(values)
     if numbers.notna().sum() >= 0.95 * values.notna().sum():
         return numbers
     return values.astype("category")
@@ -769,7 +770,7 @@ def _like_sample(out: pd.DataFrame, sample: pd.DataFrame | None, target: str) ->
     if is_bool_dtype(example) and not is_bool_dtype(out[target]):
         out[target] = out[target].map(lambda value: str(value).lower() in ("true", "1", "1.0"))
     elif is_numeric_dtype(example) and not is_bool_dtype(example):
-        converted = pd.to_numeric(out[target], errors="coerce")
+        converted = to_numbers(out[target])
         if converted.notna().all():
             out[target] = converted.astype(example.dtype) if (converted % 1 == 0).all() else converted
     return out
