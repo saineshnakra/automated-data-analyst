@@ -34,6 +34,11 @@
 
 ### Reading claims and questions
 
+- Fixed wrong answers: "how many encounters in 2023" counted rows when each
+  row holds a count (`encounter_count`), and "Mexican nationals accounted for
+  29% of encounters" was the share of rows. A plural that names a column of
+  whole counts now adds it up in counts, shares, groupings and trends.
+  "Venezuelans" and "Mexican nationals" read as their countries.
 - Rates: "Claims per 100 Holders" and "about 20 claims for every 100
   holders" are the total of one column over the total of the other, times
   the number they are per (`sum(Claims) ÷ sum(Holders) × 100`), with both

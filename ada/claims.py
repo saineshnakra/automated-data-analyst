@@ -1008,7 +1008,9 @@ def _comparable(answer: QueryAnswer, number: ClaimedNumber) -> tuple[float | Non
     notes: list[str] = []
     if number.percent:
         if "share_percent" in figures:
-            of = f"distinct {answer.plan.count_column} values" if answer.plan.count_column else "rows"
+            plan = answer.plan
+            of = (f"distinct {plan.count_column} values" if plan.count_column
+                  else f"the total of {plan.weight}" if plan.weight else "rows")
             notes.append(f"compared with the share of {of}, as a percentage")
             return figures["share_percent"], notes
         if "change_percent" in figures:

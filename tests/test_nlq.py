@@ -3468,6 +3468,28 @@ class RateTests(unittest.TestCase):
         self.assertAlmostEqual(scaled.value, 40 / 200 * 1000)
         self.assertEqual(dict(scaled.figures)["denominator"], 200)
 
+    def test_a_plural_that_names_a_column_of_counts_adds_it_up(self):
+        frame = pd.DataFrame({"year": [2022, 2022, 2023, 2023],
+                              "citizenship": ["MEXICO", "CUBA", "MEXICO", "CUBA"],
+                              "encounter_count": [30, 10, 50, 10]})
+        roles = detect_roles(frame)
+        self.assertEqual(answer_question("how many encounters in 2023", frame, roles).value, 60)
+        share = answer_question("share of encounters with citizenship MEXICO", frame, roles)
+        self.assertAlmostEqual(dict(share.figures)["share_percent"], 80 / 100 * 100)
+        self.assertEqual(answer_question("how many rows in 2023", frame, roles).value, 2)
+        grouped = answer_question("number of encounters by citizenship", frame, roles)
+        self.assertIn("sum(encounter_count)", grouped.calculation)
+
+    def test_a_column_named_for_one_thing_numbers_it_and_is_not_added_up(self):
+        rats = pd.DataFrame({"Rat": [1, 1, 2, 2, 3, 3], "Diet": [1, 1, 1, 1, 2, 2],
+                             "weight": [1.0, 2, 3, 4, 5, 6]})
+        answer = answer_question("how many rats were on each diet", rats, detect_roles(rats))
+        self.assertIn("count distinct Rat", answer.calculation)
+
+    def test_two_columns_of_counts_for_one_noun_are_not_guessed_between(self):
+        frame = pd.DataFrame({"year": [2022, 2023], "encounter_count": [3, 5], "encounters": [1, 2]})
+        self.assertIsNone(answer_question("how many encounters in 2023", frame, detect_roles(frame)))
+
     def test_a_code_or_an_average_after_per_is_no_rate(self):
         frame = self.policies()
         roles = detect_roles(frame)

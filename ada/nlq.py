@@ -431,6 +431,8 @@ class QueryPlan:
     excluded: tuple[ValueFilter, ...] = ()
     #: What a ratio is given per: 100 for "claims per 100 holders".
     scale: float | None = None
+    #: The column of counts a count adds up: encounter_count for "how many encounters".
+    weight: str | None = None
 
 
 @dataclass(frozen=True)
@@ -545,6 +547,7 @@ def plan_reading(plan: QueryPlan) -> dict:
         "distinct_of": plan.count_column,
         "per": list(plan.per),
         "scale": plan.scale,
+        "weight": plan.weight,
         "adjusted_for": list(plan.adjusted_for),
         "year": plan.year,
         "month": plan.month,
@@ -1133,6 +1136,8 @@ class _Reading:
     nouns: set[str] = field(default_factory=set)
     #: The number a rate is given per: 100 in "claims per 100 holders".
     scale: float | None = None
+    #: The column of counts the rows' noun names: encounter_count for "encounters".
+    weight: str | None = None
     asks_missing: bool = False
     #: A spread or percentile the question asks for ("standard deviation", "90th percentile").
     spread: Aggregation | None = None
@@ -1814,7 +1819,8 @@ def _claim_demonyms(reading: _Reading, vocabulary: _Vocabulary) -> None:
     birth), one named for nationality is used; otherwise nothing is read.
     """
     for start, end, word in _tokens(reading.remaining):
-        countries = DEMONYMS.get(word)
+        # "Venezuelans" is the plural of an adjective of nationality.
+        countries = DEMONYMS.get(word) or (DEMONYMS.get(word[:-1]) if word.endswith("s") else None)
         if countries is None:
             continue
         found = [value for value in vocabulary.values if " ".join(value.words) in countries]
@@ -1829,6 +1835,10 @@ def _claim_demonyms(reading: _Reading, vocabulary: _Vocabulary) -> None:
         values = [value for value in found if value.column == columns[0]]
         _add_filter(reading, values, start)
         reading.claim(start, end)
+        # "Mexican nationals", "Belgian citizens": the noun says no more than the adjective.
+        following = re.match(r"\s+(?:nationals|citizens)\b", reading.remaining[end:])
+        if following:
+            reading.claim(end, end + following.end())
         reading.notes.append(
             f'Read "{_raw_words(reading.question, [word])}" as {columns[0]} = '
             f"{_listed([value.raw for value in values])}."
@@ -2789,6 +2799,62 @@ def _claim_entity(
         if reading.entity is None:
             reading.entity = word
             reading.entity_column = None if rows else _entity_column(word, dataframe, roles)
+            reading.weight = None if reading.entity_column else _count_column(word, dataframe)
+
+
+# Name words that say a column holds counts, so "encounter_count" counts encounters.
+COUNT_NAME_WORDS = frozenset({"count", "counts", "number", "num", "n", "no", "total", "totals"})
+
+
+def _count_column(noun: str, dataframe: pd.DataFrame) -> str | None:
+    """The one column of whole counts named for a plural: encounter_count for "encounters".
+
+    Its name must be the plural itself ("deaths") or the noun with a word
+    such as count or number ("encounter_count"), and its values whole numbers
+    that are never negative. A column named with the singular alone ("Rat")
+    numbers the things rather than counting them.
+    """
+    from .folder import singular  # noqa: PLC0415
+
+    found = []
+    for column in dataframe.columns:
+        series = dataframe[column]
+        if not is_numeric_dtype(series) or is_bool_dtype(series):
+            continue
+        named = _norm(normalized_name(str(column))).split()
+        words = [word for word in named if word not in COUNT_NAME_WORDS]
+        forms = {noun, singular(noun)} if len(words) < len(named) else {noun}
+        values = series.dropna().to_numpy(dtype=float)
+        whole = len(values) and (values >= 0).all() and (values % 1 == 0).all()
+        if words and " ".join(words) in forms and whole:
+            found.append(column)
+    return found[0] if len(found) == 1 else None
+
+
+def _claim_count_column(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
+    """Read a plural naming a column of counts, after a word that counts, as what is counted.
+
+    "how many encounters" and "share of encounters" add up encounter_count.
+    The column's name must hold a word such as count, number or n; a column
+    named with the plural alone ("Units") keeps its own reading. When an ID
+    names each row once (a tag per cat), the rows are the things and are
+    counted as they are, so n_cats is a column like any other.
+    """
+    ids = dataframe[roles.identifier] if roles.identifier in dataframe.columns else None
+    if ids is not None and ids.notna().all() and ids.is_unique:
+        return
+    for start, end, word in _tokens(reading.original):
+        if not word.endswith("s") or not re.search(
+            rf"{COUNT_PATTERN}\s+(?:of\s+)?(?:the\s+|all\s+)?$", reading.original[:start]
+        ):
+            continue
+        column = _count_column(word, dataframe)
+        if column is None or not set(_norm(normalized_name(str(column))).split()) & COUNT_NAME_WORDS:
+            continue
+        reading.spans = {named: span for named, span in reading.spans.items() if span != (start, end)}
+        reading.claim(start, end)
+        reading.entity, reading.entity_column, reading.weight = word, None, column
+        return
 
 
 def _has_times(dates: pd.Series) -> bool:
@@ -3237,6 +3303,7 @@ def _read_question(
             column: span for column, span in reading.spans.items() if q[span[0]:span[1]] != roles.row_noun
         }
     _unit_word_names_rows(reading, dataframe, roles)
+    _claim_count_column(reading, dataframe, roles)
     _outcome_columns(reading, dataframe)
     for start, end in reading.spans.values():
         reading.claim(start, end, keep_text=True)
@@ -3498,9 +3565,17 @@ def _rule_plan(
     problem = _unused_part(plan, reading, dataframe, roles, rows_not_analyzed)
     if problem:
         return None, problem
+    weighted = ()
+    if reading.weight and plan.aggregation == "count" and not plan.measure and not plan.count_column:
+        # "how many encounters" adds up encounter_count: each row holds a count, not one encounter.
+        weighted = (f'Read "{reading.entity}" as the sum of {reading.weight}, since each row holds a count.',)
+        if plan.intent == "count" or plan.counted:
+            plan = replace(plan, weight=reading.weight)
+        else:
+            plan = replace(plan, measure=reading.weight, aggregation="sum")
     # In a table of counts each row stands for its count of cases, which the answer says itself.
-    entity = () if frequency_column(dataframe) else _entity_note(reading, plan)
-    notes = (*plan.notes, *reading.notes, *entity, *_weather_note(reading, plan))
+    entity = () if frequency_column(dataframe) or weighted else _entity_note(reading, plan)
+    notes = (*plan.notes, *reading.notes, *entity, *weighted, *_weather_note(reading, plan))
     return replace(plan, notes=notes), None
 
 
@@ -5383,7 +5458,8 @@ def _run_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -> Q
         return _execute_per_unit(plan, working, roles, scope, applied)
 
     if plan.intent in ("rank", "breakdown"):
-        return _execute_grouping(plan, working, roles, scope, applied, frequency_column(dataframe))
+        weight = plan.weight or frequency_column(dataframe)
+        return _execute_grouping(plan, working, roles, scope, applied, weight)
 
     if plan.intent == "trend":
         return _execute_trend(plan, working, roles, scope, applied)
@@ -5693,8 +5769,9 @@ def _execute_count(
             value=float(distinct),
             figures=figures,
         )
-    weight = frequency_column(dataframe)
-    each = f"; each row counts {weight} cases, the number its combination of values holds" if weight else ""
+    weight = plan.weight or frequency_column(dataframe)
+    each = (f"; each row counts {weight} cases, the number its combination of values holds"
+            if weight and not plan.weight else f"; each row counts its {weight}" if weight else "")
     if plan.counted:
         return _counted_share(plan, working, weight, each, scope)
     if not (plan.filters or plan.conditions):
@@ -7533,7 +7610,7 @@ def _execute_shares(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles
     missing_label = unlabelled_label(groups.dropna().unique())
     shown = groups.astype(object).where(~unlabelled, missing_label)
     # A table of counts (Titanic's Class, Sex, Age, Survived and Freq) counts its cases, not its rows.
-    weight = frequency_column(dataframe)
+    weight = plan.weight or frequency_column(dataframe)
     cases = recorded[weight].astype(float) if weight else pd.Series(1.0, index=recorded.index)
     unit = "cases" if weight else "rows"
     totals = cases.groupby(shown, sort=False).sum().round().astype(int)
