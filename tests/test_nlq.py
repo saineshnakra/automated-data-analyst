@@ -1904,6 +1904,40 @@ class FrequencyTableTests(unittest.TestCase):
         self.assertEqual(total.value, 2201)
         self.assertNotIn("one of the people", total.answer)
 
+    def test_shares_within_each_group_weight_each_row_by_its_count(self):
+        frame = self.frame()
+
+        shares = answer_question("share of Survived = Yes by Class", frame, detect_roles(frame))
+
+        self.assertIn("1st 62.5% (203 of 325)", shares.answer)
+        self.assertIn("Crew 24.0% (212 of 885)", shares.answer)
+        self.assertIn("Each row counts Freq cases", shares.answer)
+        self.assertIn("sum(Freq)", shares.calculation)
+        self.assertIn("chi-squared", shares.calculation)
+        self.assertNotIn("50.0%", shares.answer)
+
+    def test_counts_by_group_sum_the_counts(self):
+        frame = self.frame()
+
+        counts = answer_question("how many people were in each Class", frame, detect_roles(frame))
+
+        self.assertIn("Crew has the most cases of any Class, at 885", counts.answer)
+        self.assertEqual(counts.calculation.split(" by ")[0], "sum(Freq)")
+        self.assertEqual(dict(counts.values)["1st"], 325)
+
+    def test_shares_of_a_small_table_of_counts_use_the_exact_test(self):
+        frame = pd.DataFrame({
+            "Group": ["A", "A", "B", "B"],
+            "Outcome": ["No", "Yes", "No", "Yes"],
+            "Freq": [6, 1, 2, 5],
+        })
+
+        shares = answer_question("share of Outcome = Yes by Group", frame, detect_roles(frame))
+
+        self.assertIn("B 71.4% (5 of 7)", shares.answer)
+        self.assertIn("A 14.3% (1 of 7)", shares.answer)
+        self.assertIn("Fisher", shares.calculation)
+
     def test_a_count_column_with_repeated_combinations_is_not_a_table_of_counts(self):
         frame = pd.concat([self.frame(), self.frame()], ignore_index=True)
         frame["rownames"] = range(1, 17)
@@ -3140,3 +3174,70 @@ class EventAndFillerTests(unittest.TestCase):
     def test_where_the_rows_are_names_nothing(self):
         answer = self.analysis.ask("how many sets in the dataset")
         self.assertEqual(answer.value, 12)
+
+
+class CountedFilterTests(unittest.TestCase):
+    def test_a_passive_verb_after_what_is_counted_is_grammar(self):
+        frame = pd.DataFrame({"athlete": list("abcdef"),
+                              "medal": ["Gold", "Silver", "Gold", None, "Bronze", "Gold"]})
+        answer = answer_question("how many Gold medals were won", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 3)
+        self.assertIn("medal = Gold", answer.calculation)
+
+    def test_a_column_of_years_named_as_a_date_scopes_a_year(self):
+        frame = pd.DataFrame({"ref": range(6), "review_date": [2019, 2019, 2020, 2021, 2019, 2020],
+                              "rating": [3.0, 3.5, 2.75, 4.0, 3.25, 3.0]})
+        roles = detect_roles(frame)
+        counted = answer_question("how many reviews in 2019", frame, roles)
+        average = answer_question("average rating in 2019", frame, roles)
+        self.assertEqual(counted.value, 3)
+        self.assertNotIn("distinct", counted.calculation)
+        self.assertAlmostEqual(average.value, 3.25)
+
+    def test_a_column_of_dates_that_are_not_years_is_not_a_year_column(self):
+        frame = pd.DataFrame({"review_date": [20190101, 20190102, 20200101], "rating": [3.0, 3.5, 4.0]})
+        self.assertIsNone(nlq._year_column(frame, detect_roles(frame)))
+
+    def test_a_share_of_the_value_a_column_is_filtered_to_counts_rows(self):
+        frame = pd.DataFrame({"Hair": ["Black", "Black", "Blond", "Blond"],
+                              "Eye": ["Brown", "Blue", "Brown", "Blue"], "Freq": [30, 10, 5, 55]})
+        answer = answer_question("what share have blue eyes", frame, detect_roles(frame))
+        self.assertIn("65 of the 100 cases (65.0%) have Eye = Blue", answer.answer)
+
+    def test_a_code_in_a_column_too_large_to_index_is_found(self):
+        rows = nlq.MAX_FILTER_CANDIDATES + 1
+        frame = pd.DataFrame({"playerID": [f"pl{index:05d}x" for index in range(rows)],
+                              "HR": np.arange(rows) * 7919 % 61})
+        answer = answer_question("total HR for pl00123x", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 123 * 7919 % 61)
+        self.assertIn("playerID = pl00123x", answer.calculation)
+        self.assertIsNone(answer_question("total HR for zz99999q", frame, detect_roles(frame)))
+
+
+class RepeatedUnitCountTests(unittest.TestCase):
+    def test_rows_are_not_counted_as_units_that_repeat(self):
+        # Six trees measured at six ages, listed tree by tree, as Loblolly lists 14.
+        ages = [3, 5, 10, 15, 20, 25]
+        frame = pd.DataFrame({"height": [age * 2.5 + tree / 10 for tree in range(6) for age in ages],
+                              "age": ages * 6, "Seed": [301 + tree for tree in range(6) for _ in ages]})
+        roles = detect_roles(frame)
+        self.assertIsNone(answer_question("how many trees were measured", frame, roles))
+        self.assertEqual(answer_question("how many rows", frame, roles).value, 36)
+
+
+class TimePointTests(unittest.TestCase):
+    def setUp(self):
+        # Two chicks on each of two diets, weighed on days 0 and 21.
+        self.frame = pd.DataFrame({"weight": [42.0, 41.0, 300.0, 240.0, 40.0, 43.0, 260.0, 280.0],
+                                   "Time": [0, 0, 21, 21] * 2, "Chick": [1, 2, 1, 2, 3, 4, 3, 4],
+                                   "Diet": [1] * 4 + [3] * 4})
+
+    def test_day_and_a_number_pick_the_time_point(self):
+        answer = answer_question("average weight on day 21, diet 3", self.frame, detect_roles(self.frame))
+        self.assertAlmostEqual(answer.value, 270.0)
+        self.assertIn("Time = 21", answer.calculation)
+        self.assertIn('Read "on day 21" as Time = 21.', answer.scope.readings)
+
+    def test_a_day_the_column_does_not_hold_is_not_read(self):
+        answer = answer_question("average weight on day 22", self.frame, detect_roles(self.frame))
+        self.assertTrue(answer is None or "Time" not in answer.calculation)

@@ -374,7 +374,7 @@ class ClaimJsonTests(ClaimFileTestCase):
         keys = {
             "schema_version", "claim", "status", "reason", "message", "claimed", "question", "agreement",
             "result", "reading", "calculation", "evidence", "assumptions", "warnings", "checks",
-            "alternatives", "clarification", "decisions",
+            "alternatives", "clarification", "decisions", "words_left_out",
         }
         for claim in (
             "The average body mass is 4457 g.", "The average body mass is 4,600 g.", "The average is 4457.",
@@ -472,3 +472,151 @@ class PhrasingClaimTests(unittest.TestCase):
         check = ada.check_claim(path, "Gentoo penguins weigh 5,050 g on average.")
         self.assertTrue(check.verified)
         self.assertIn("species = Gentoo", check.answer.calculation)
+
+
+def losses() -> pd.DataFrame:
+    """Forest lost to each cause, by country and year. By hand: mean pasture 1,500."""
+    return pd.DataFrame({
+        "entity": ["Brazil", "Brazil", "Peru", "Peru"],
+        "year": [2004, 2005, 2004, 2005],
+        "pasture": [2000.0, 1000.0, 1800.0, 1200.0],
+        "fire": [10.0, 20.0, 30.0, 40.0],
+    })
+
+
+def masses(rows: int = 12) -> pd.DataFrame:
+    """Body mass rising 50 g per mm of flipper, give or take 10 g.
+
+    By hand, for 12 rows (flippers 180 to 235 mm): the deviations from the line
+    move the slope by -300 / 3,575, so it is 49.916.
+    """
+    flipper = np.arange(180.0, 180.0 + 5 * rows, 5)
+    return pd.DataFrame({"flipper_length_mm": flipper,
+                         "body_mass_g": 50 * flipper - 5000 + np.resize([10.0, -10.0], rows)})
+
+
+class LeftOutWordTests(unittest.TestCase):
+    def test_words_that_name_nothing_are_left_out_of_a_one_row_lookup(self):
+        check = ada.check_claim(losses(), "Brazil lost 2,000 hectares of forest to pasture in 2004.")
+        self.assertTrue(check.verified)
+        self.assertIn('without "lost" and "forest"', check.assumptions[0])
+
+    def test_a_mismatch_without_them_proves_nothing(self):
+        check = ada.check_claim(losses(), "Brazil lost 2,500 hectares of forest to pasture in 2004.")
+        self.assertEqual(check.reason, "missing_context")
+        self.assertIn("may pick other rows", check.message)
+
+    def test_an_average_or_a_bound_that_agrees_without_them_is_not_verified(self):
+        average = ada.check_claim(losses(), "The average forest pasture was 1,500.")
+        bound = ada.check_claim(losses(), "Brazil lost more than 1,000 hectares to pasture in 2004.")
+        self.assertEqual((average.reason, average.agreement), ("missing_context", "match"))
+        self.assertEqual(bound.reason, "missing_context")
+
+    def test_words_that_negate_are_never_left_out(self):
+        check = ada.check_claim(losses(), "Pasture not lost to forest in 2004 was 3,800.")
+        self.assertFalse(check.verified)
+
+
+class SlopeClaimTests(unittest.TestCase):
+    def test_a_change_per_unit_of_another_column_is_its_slope(self):
+        check = ada.check_claim(masses(), "Body mass rises by about 50 g per mm of flipper length.")
+        self.assertTrue(check.verified)
+        self.assertAlmostEqual(check.compared, 50 - 300 / 3575)
+        self.assertIn("slope of body_mass_g on flipper_length_mm", check.message)
+
+    def test_the_wrong_size_or_direction_fails(self):
+        smaller = ada.check_claim(masses(), "Body mass rises by 30 g per mm of flipper length.")
+        falling = ada.check_claim(masses(), "Body mass falls by about 50 g per mm of flipper length.")
+        heavier = ada.check_claim(masses(), "Body mass rises by about 50 kg per mm of flipper length.")
+        self.assertEqual([smaller.reason, falling.reason, heavier.reason], ["failed_check"] * 3)
+        self.assertLess(falling.compared, 0)
+
+    def test_too_few_rows_give_no_slope(self):
+        check = ada.check_claim(masses(11), "Body mass rises by about 50 g per mm of flipper length.")
+        self.assertEqual(check.reason, "unsupported_analysis")
+
+
+class WordedNumberTests(ClaimFileTestCase):
+    def test_a_fraction_in_words_stands_for_the_values_nearest_it(self):
+        from ada.claims import _fraction_interval
+
+        low, high = _fraction_interval(0.25)
+        self.assertAlmostEqual(low, (0.25 + 2 / 9) / 2 * 100)
+        self.assertAlmostEqual(high, (0.25 + 2 / 7) / 2 * 100)
+        self.assertTrue(self.check("About half of the birds are Gentoo.").verified)
+        self.assertEqual(self.check("More than half of the birds are Gentoo.").reason, "failed_check")
+        self.assertEqual(self.check("Nearly a third of the birds are Gentoo.").reason, "failed_check")
+
+    def test_a_whole_number_in_words(self):
+        self.assertTrue(self.check("There are eight birds.").verified)
+        self.assertTrue(self.check("Four birds are Gentoo.").verified)
+        self.assertEqual(self.check("There are nine birds.").reason, "failed_check")
+
+    def test_a_value_keeps_its_qualifier(self):
+        check = self.check(None, question="what share are Gentoo", value="about 50%")
+        self.assertTrue(check.verified)
+        self.assertEqual(check.claimed.qualifier, "about")
+        self.assertEqual(self.check(None, question="what share are Gentoo", value="about 40%").reason,
+                         "failed_check")
+
+    def test_a_bound_is_never_read_in_thousands(self):
+        self.assertEqual(self.check("More than 60% of the birds are Gentoo.").reason, "failed_check")
+
+    def test_a_value_before_the_rows_noun_counts_them(self):
+        check = self.check("There are 4 Gentoo birds.")
+        self.assertTrue(check.verified)
+        self.assertEqual(check.claimed.text, "4")
+
+
+class FilterNumberTests(unittest.TestCase):
+    def test_a_number_after_with_and_before_a_column_picks_rows(self):
+        cars = pd.DataFrame({"cyl": [4, 4, 6, 6, 8, 8], "mpg": [30.0, 24.0, 20.0, 18.0, 15.0, 13.0]})
+        check = ada.check_claim(cars, "Cars with 4 cylinders average 27 mpg.")
+        self.assertTrue(check.verified)
+        self.assertIn("cyl = 4", check.answer.calculation)
+
+    def test_digits_inside_a_code_are_not_a_number_and_a_column_name_is_not_a_unit(self):
+        batting = pd.DataFrame({"playerID": ["bondsba01", "bondsba01", "smithjo01"],
+                                "yearID": [2000, 2001, 2001], "HR": [49, 73, 10]})
+        check = ada.check_claim(batting, "bondsba01 hit 73 HR in 2001")
+        self.assertTrue(check.verified)
+        self.assertEqual(check.claimed.unit, None)
+        self.assertEqual(ada.check_claim(batting, "bondsba01 hit 80 HR in 2001").reason, "failed_check")
+        self.assertEqual(ada.check_claim(batting, "bondsba01 hit a total of 122 HR").compared, 122)
+
+
+def pines() -> pd.DataFrame:
+    """Four trees measured at ages 3 and 5, listed tree by tree; Seed names the tree.
+
+    By hand: mean height at age 3 is (4.0 + 4.4 + 4.2 + 4.3) / 4 = 4.225 feet.
+    """
+    return pd.DataFrame({"height": [4.0, 10.0, 4.4, 11.0, 4.2, 10.5, 4.3, 10.8],
+                         "age": [3, 5] * 4, "Seed": [301, 301, 302, 302, 303, 303, 304, 304]})
+
+
+class ReadingGuardTests(unittest.TestCase):
+    def test_a_count_pinned_to_one_row_by_a_key_is_not_compared(self):
+        counties = pd.DataFrame({"County": ["Nairobi", "Mombasa", "Kisumu"],
+                                 "Total": [4397073, 1208333, 1155574]})
+        check = ada.check_claim(counties, "Nairobi had 5.2 million residents.")
+        self.assertEqual(check.reason, "missing_context")
+        self.assertIn("names one row each", check.message)
+
+    def test_a_number_that_counts_people_is_a_total(self):
+        counties = pd.DataFrame({"County": ["Nairobi", "Mombasa", "Kisumu"], "Intersex": [245, 30, 40]})
+        check = ada.check_claim(counties, "315 Kenyans were recorded as intersex.")
+        self.assertTrue(check.verified)
+        self.assertIn('as a total, since it counts Kenyans', check.assumptions[0])
+        self.assertEqual(ada.check_claim(counties, "400 Kenyans were recorded as intersex.").reason,
+                         "failed_check")
+
+    def test_a_column_guessed_from_part_of_a_word_gives_way_to_the_unit(self):
+        check = ada.check_claim(pines(), "At age 3 the seedlings averaged 6.2 feet.")
+        self.assertEqual(check.reason, "missing_context")
+        self.assertIn("height", check.answer.calculation)
+        self.assertIn('rather than Seed, which "seedlings" only resembles', check.assumptions[0])
+
+    def test_a_number_in_feet_reads_the_one_column_named_for_a_length(self):
+        check = ada.check_claim(pines(), "The mean at age 3 was 4.2 feet.")
+        self.assertTrue(check.verified)
+        self.assertAlmostEqual(check.compared, 4.225)
