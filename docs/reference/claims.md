@@ -60,7 +60,9 @@ when the file can't be read, and 3 when it is unverified for any other reason.
    admitted") is set aside, and the base is checked: the share must be of
    4,526, or the claim gets `missing_context`. A claim with two numbers that
    could each be the one claimed is not split: it gets `unsupported_analysis`,
-   and each number should be sent on its own.
+   and each number should be sent on its own. A clause that only says who
+   reports the claim ("Owners estimated that", "The survey found that") is
+   set aside.
 2. **The question.** The rest of the sentence is read as a question to
    `Analysis.ask` (see [Ask ADA](ask-ada.md)). "averaged 5050" becomes
    "average ...", and "There are 344 penguins" becomes "how many penguins",
@@ -111,7 +113,11 @@ for 24 to 26.
    table's rows are not one each, because an id repeats, the claim gets
    `missing_context`. A number that counts things ("1,524 Kenyans", "5,000
    residents") is a total: when the plain reading is an average and the claim
-   says nothing of averages, ADA checks the total instead and says so.
+   says nothing of averages, ADA checks the total instead and says so. A
+   percent claim whose reading is a count with no share ("100% of the sites
+   were visited" read as the number of sites) gets `missing_context`; it is
+   never compared with the count. "Half of the squirrels" with a column of
+   squirrel IDs is a share of the distinct IDs.
 
 ## Slopes
 

@@ -3353,6 +3353,25 @@ class ValueBesideColumnTests(unittest.TestCase):
         self.assertIsNone(answer_question("share of residents highly", frame, detect_roles(frame)))
 
 
+class SeenFlagTests(unittest.TestCase):
+    def test_a_verb_of_seeing_before_a_yes_no_column_keeps_its_yes_rows(self):
+        frame = pd.DataFrame({"id": range(8), "Foraging": [True, False] * 4,
+                              "Eating": [True] * 2 + [False] * 6})
+        answer = answer_question("how many rows were seen foraging", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 4)
+        self.assertIn("Foraging = 1", answer.calculation)
+
+
+class DistinctShareTests(unittest.TestCase):
+    def test_a_distinct_count_with_a_filter_gives_its_share_of_all_distinct_values(self):
+        frame = pd.DataFrame({"tree": ["a", "a", "b", "c", "d"], "sick": ["yes", "yes", "no", "yes", "no"],
+                              "height": [1.0, 2, 3, 4, 5]})
+        answer = answer_question("how many distinct tree with sick yes", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 2)
+        self.assertEqual(dict(answer.figures)["share_percent"], 50)
+        self.assertIn("50.0% of the 4 in all", answer.answer)
+
+
 class DecadeTests(unittest.TestCase):
     def test_a_decade_is_its_ten_years(self):
         frame = pd.DataFrame({"year": range(1995, 2025), "distance": [float(value) for value in range(30)]})

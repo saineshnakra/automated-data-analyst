@@ -360,7 +360,7 @@ weekly view and `Age of testing (day)` for no daily one.
 | "negative yield", "yield is negative", "positive", "zero" | `< 0`, `> 0`, `= 0` |
 | "when OBJECT is 0", "OBJECT = 0", "OBJECT equals 0" | `OBJECT = 0` |
 | "for Status 2", "cars with 6 cyl" | `Status = 2`, for a column of codes holding that value |
-| "how many have hypertension", "with diabetes", "are healthy", "received antibiotics", "without diabetes" | a 0/1 flag `= 1`, or `= 0` after "without" |
+| "how many have hypertension", "with diabetes", "are healthy", "received antibiotics", "seen foraging", "without diabetes" | a 0/1 flag `= 1`, or `= 0` after "without" |
 | "how many AQC1cm values are 0", "how many zeros in AQC1cm", "negative values of X" | `AQC1cm = 0`, `X < 0` |
 | "missing eCO2", "eCO2 is missing" | `eCO2 missing` |
 | "Pentanoic_acid 0", "VMA of 0" | `= 0`, for a numeric column that holds that value |
@@ -576,7 +576,10 @@ counts the rows with `review_date` = 2019, and "what share have blue eyes"
 the share with `Eye` = Blue. "Readings", "records", "samples" and other nouns in
 `ROW_NOUNS` always count rows. The answer says which: "Counted the birds as
 distinct ID values." or "Each row counts as one of the patients." "How many
-participants per condition" counts distinct participants per condition.
+participants per condition" counts distinct participants per condition. A
+count of distinct values under a filter also gives its share of the distinct
+values among all rows with the filtered columns recorded: 1,434 squirrels
+seen foraging are 47.5% of the 3,018 in all.
 
 A count with conditions or values gives its share of the rows: "18 of the
 212,019 rows (under 0.1%) have Expected_Yield below 0." The base is the rows

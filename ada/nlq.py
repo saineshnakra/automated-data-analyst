@@ -329,9 +329,11 @@ VALUE_CUES = frozenset({"for", "in", "is", "at", "where", "when", "equals", "of"
 FILTER_CUES = frozenset({"within", "among", "amongst"})
 # Words before a 0/1 flag column that ask for the rows where it is set:
 # "how many have hypertension". "without" asks for the rows where it is not.
+# Words before a yes/no column that keep its yes rows; a verb of seeing says how it was noticed
+# ("squirrels seen foraging").
 FLAG_CUES = (
     r"have|has|having|had|with|without|are|were|"
-    r"received|receive|receiving|given|got|took|taking|using|used"
+    r"received|receive|receiving|given|got|took|taking|using|used|seen|spotted|observed|heard"
 )
 # Grouping by a part of the date: "average PM2.5 by hour", "revenue by weekday",
 # "which month of the year is wettest", which pools each month across the years.
@@ -2556,6 +2558,7 @@ def _claim_fillers(reading: _Reading) -> None:
     for pattern in (EVENT_PATTERN, FILLER_PATTERN, PASSIVE_PATTERN):
         for match in list(pattern.finditer(reading.remaining)):
             reading.claim(*match.span())
+
 
 
 def _items_of_a_year(reading: _Reading, match: re.Match, roles: ColumnRoles) -> bool:
@@ -5154,12 +5157,31 @@ def _execute_count(
     """
     if plan.count_column:
         distinct = int(working[plan.count_column].nunique(dropna=True))
+        figures: tuple = ()
+        share_text = ""
+        if plan.filters or plan.conditions:
+            # "half of the squirrels were foraging": the distinct values picked, of those with the
+            # filtered columns recorded.
+            base, _ = _apply_filters(dataframe, replace(plan, filters=(), conditions=()), roles)
+            filtered = [item.column for item in plan.filters] + [
+                item.column for item in plan.conditions if item.operator != "missing"
+            ]
+            for column in dict.fromkeys(filtered):
+                base = base.loc[base[column].notna()]
+            total = int(base[plan.count_column].nunique(dropna=True))
+            if total:
+                share = distinct / total * 100
+                figures = (("share_percent", share), ("denominator", float(total)))
+                share_text = f", {_share_text(share)} of the {total:,} in all"
         return QueryAnswer(
             question="",
             plan=plan,
-            answer=f"There are {distinct:,} distinct {plan.count_column} values{_phrase(applied)}.",
-            calculation=f"count distinct {plan.count_column}{scope}",
+            answer=(f"There are {distinct:,} distinct {plan.count_column} values{_phrase(applied)}"
+                    f"{share_text}."),
+            calculation=f"count distinct {plan.count_column}{scope}"
+            + (", divided by the count of distinct values over all rows" if figures else ""),
             value=float(distinct),
+            figures=figures,
         )
     weight = frequency_column(dataframe)
     each = f"; each row counts {weight} cases, the number its combination of values holds" if weight else ""

@@ -713,6 +713,33 @@ class NewDataReadingTests(unittest.TestCase):
         self.assertTrue(ada.check_claim(tours, "The average distance in the 2010s was 3,145 km.").verified)
 
 
+class ShareOfThingsTests(unittest.TestCase):
+    def sightings(self) -> pd.DataFrame:
+        # 10 squirrels, one seen twice; 5 of the 10 were seen foraging.
+        ids = [f"S{index}" for index in range(10)] + ["S0"]
+        return pd.DataFrame({"Unique Squirrel ID": ids, "Foraging": [True] * 5 + [False] * 5 + [True],
+                             "Shift": ["AM", "PM"] * 5 + ["AM"]})
+
+    def test_a_share_of_things_with_an_id_is_a_share_of_distinct_ids(self):
+        frame = self.sightings()
+        check = ada.check_claim(frame, "Half of the squirrels were seen foraging.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("share of distinct Unique Squirrel ID values", " ".join(check.assumptions))
+        self.assertEqual(ada.check_claim(frame, "About a third of the squirrels were seen foraging.").reason,
+                         "failed_check")
+
+    def test_a_percentage_is_never_compared_with_a_plain_count(self):
+        frame = pd.DataFrame({"site": list("abcdefgh"), "visits": [3, 1, 4, 1, 5, 9, 2, 6]})
+        check = ada.check_claim(frame, "100% of the sites were visited.")
+        self.assertEqual(check.reason, "missing_context")
+        self.assertIn("The claim gives a percentage, but ADA read the words as a count", check.message)
+
+    def test_who_reports_a_claim_is_not_part_of_it(self):
+        frame = self.sightings().assign(minutes=[10.0, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110])
+        check = ada.check_claim(frame, "Volunteers reported that the average minutes was 60.")
+        self.assertTrue(check.verified, check.message)
+
+
 class CountOfThingsTests(unittest.TestCase):
     def test_n_of_the_things_counts_rows(self):
         cats = pd.DataFrame({"tag_id": [f"t{index}" for index in range(8)],
