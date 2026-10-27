@@ -49,6 +49,14 @@
 
 ### Fixes
 
+- A table of counts is counted by its counts. When each row is one
+  combination of categories with a column such as `Freq` holding how many
+  cases it stands for, a count or share adds up that column, and the answer
+  says so: Titanic's "what share survived" is 711 of 2,201 people (32.3%),
+  not half of its 32 rows. A share of a Yes/No column counts its Yes rows
+  ("what share survived" was answered with the number of distinct values),
+  and a percent claim that names no column ("32.3% survived") is checked as
+  a share.
 - Ordinals are labels. Titanic's `Class` ("1st", "2nd", "3rd", "Crew") was
   read as numbers in units called "st", "nd" and "rd", with "Crew" missing; it
   stays a column of classes.

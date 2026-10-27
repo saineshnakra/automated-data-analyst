@@ -347,6 +347,19 @@ class GuessedColumnTests(unittest.TestCase):
         self.assertTrue(ada.check_claim(self.frame(), "Rows have 30 parts on average.").verified)
 
 
+class FrequencyTableClaimTests(unittest.TestCase):
+    def test_a_percentage_with_no_share_word_is_checked_as_a_weighted_share(self):
+        titanic = pd.DataFrame({
+            "Class": ["1st", "2nd", "3rd", "Crew"] * 2, "Survived": ["No"] * 4 + ["Yes"] * 4,
+            "Freq": [122, 167, 528, 673, 203, 118, 178, 212],
+        })
+        check = ada.check_claim(titanic, "32.3% survived.")
+        self.assertTrue(check.verified)
+        self.assertIn("sum(Freq)", check.answer.calculation)
+        # Half the rows, a third of the people.
+        self.assertEqual(ada.check_claim(titanic, "50% survived.").reason, "failed_check")
+
+
 class ThinDataClaimTests(unittest.TestCase):
     def test_one_row_and_an_empty_column(self):
         one = pd.DataFrame({"site": ["A"], "depth_m": [3.0], "reading": [math.nan]})

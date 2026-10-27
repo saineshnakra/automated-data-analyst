@@ -439,7 +439,16 @@ Result by Gender" and "does Result differ by Gender" when Result holds only
 0 and 1, and the answer says why it gives rates. Rows with no group are
 listed last and not compared. A share by a part of the date or by month
 works the same way. "Share of Antibiotics" for a 0/1 flag is the share of
-rows where it is set. "Rate of X by G" for a reading that is not yes/no is
+rows where it is set, and "what share survived" for a column of Yes and No
+the share where it is Yes.
+
+**Tables of counts.** When each row is one combination of categories and a
+whole-number column named `Freq`, `Frequency`, `Count`, `n` or `cases` holds
+how many cases it stands for (`frequency_column`), a count or share adds up
+that column rather than counting rows, and the answer says so: on Titanic's
+32 rows, "what share survived" is 711 of 2,201 people (32.3%), not 16 of 32
+rows. A combination that repeats means the rows are not cells of a table, and
+the rows are counted as usual. Shares by group do not weight yet. "Rate of X by G" for a reading that is not yes/no is
 refused with a reason that asks for a condition, as in "rate of X above 5 by
 G", since a rate is the share of rows that meet one.
 

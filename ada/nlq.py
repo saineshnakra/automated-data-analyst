@@ -2598,7 +2598,9 @@ def _rule_plan(
     problem = _unused_part(plan, reading, dataframe, roles, rows_not_analyzed)
     if problem:
         return None, problem
-    notes = (*plan.notes, *reading.notes, *_entity_note(reading, plan), *_weather_note(reading, plan))
+    # In a table of counts each row stands for its count of cases, which the answer says itself.
+    entity = () if frequency_column(dataframe) else _entity_note(reading, plan)
+    notes = (*plan.notes, *reading.notes, *entity, *_weather_note(reading, plan))
     return replace(plan, notes=notes), None
 
 
@@ -3310,6 +3312,14 @@ def _count_plan(
             return QueryPlan(
                 intent="count", aggregation="count",
                 **{**counting, "conditions": (*counting["conditions"], flagged)},
+            )
+        event = None if is_numeric_dtype(series) else outcome_event(series)
+        if event is not None and not reading.distinct and column != roles.identifier:
+            # "what share survived" counts the rows where Survived is "Yes", as a 0/1 flag counts its 1s.
+            answered = ValueFilter(column, (str(event),))
+            return QueryPlan(
+                intent="count", aggregation="count",
+                **{**counting, "filters": (*counting["filters"], answered)},
             )
         if not _is_measurement(series) or column == roles.identifier or reading.distinct:
             return QueryPlan(intent="count", aggregation="count", count_column=column, **counting)
@@ -4557,6 +4567,40 @@ def _signed(value: float, measure: str | None, column: pd.Series | None) -> str:
     return f"{'-' if value < 0 else '+'}{shown}"
 
 
+# Names of the column that says how many cases each row of a table of counts stands for.
+FREQUENCY_NAMES = frozenset({"freq", "frequency", "count", "counts", "n", "cases"})
+
+
+def frequency_column(dataframe: pd.DataFrame) -> str | None:
+    """The column of counts in a table whose rows are the cells of a cross-tabulation, or None.
+
+    Titanic's 32 rows are the combinations of Class, Sex, Age and Survived,
+    each with Freq, the number of people in it. The counts must be whole and
+    not negative, every other column a category (text or a few whole numbers,
+    besides a label on every row), and no combination may repeat.
+    """
+    named = [column for column in dataframe.columns if _norm(str(column)) in FREQUENCY_NAMES]
+    if len(named) != 1 or len(dataframe) < 2:
+        return None
+    counts = dataframe[named[0]]
+    if not is_numeric_dtype(counts) or is_bool_dtype(counts) or counts.isna().any():
+        return None
+    values = counts.to_numpy(dtype=float)
+    if (values < 0).any() or (values % 1 != 0).any():
+        return None
+    others = [
+        column for column in dataframe.columns
+        if column != named[0] and dataframe[column].nunique(dropna=False) < len(dataframe)
+    ]
+    for column in others:
+        series = dataframe[column].dropna()
+        if series.nunique() > GROUPING_LIMIT or (is_numeric_dtype(series) and bool((series % 1 != 0).any())):
+            return None
+    if not others or dataframe.duplicated(others).any():
+        return None
+    return named[0]
+
+
 def _execute_count(
     plan: QueryPlan,
     dataframe: pd.DataFrame,
@@ -4579,7 +4623,18 @@ def _execute_count(
             calculation=f"count distinct {plan.count_column}{scope}",
             value=float(distinct),
         )
+    weight = frequency_column(dataframe)
+    each = f"; each row counts {weight} cases, the number its combination of values holds" if weight else ""
     if not (plan.filters or plan.conditions):
+        if weight:
+            total = int(working[weight].sum())
+            return QueryAnswer(
+                question="",
+                plan=plan,
+                answer=f"{total:,} cases in {len(working):,} rows{_phrase(applied)}{each}.",
+                calculation=f"sum({weight}){scope}",
+                value=float(total),
+            )
         return QueryAnswer(
             question="",
             plan=plan,
@@ -4598,6 +4653,24 @@ def _execute_count(
         [_describe_filter(item) for item in plan.filters] + _describe_conditions(plan.conditions)
     )
     when = f" in {_when_label(plan)}" if plan.year or plan.month else ""
+    if weight:
+        count, total = int(working[weight].sum()), int(base[weight].sum())
+        share = count / total * 100 if total else 0.0
+        recorded_text = f" with {_and_listed(recorded)} recorded" if recorded else ""
+        return QueryAnswer(
+            question="",
+            plan=plan,
+            answer=(
+                f"{count:,} of the {total:,} cases{when}{recorded_text} ({_share_text(share)}) have "
+                f"{described}{each}."
+            ),
+            calculation=(
+                f"sum({weight}) over the {len(working):,} rows with {described}, divided by "
+                f"sum({weight}) over the {len(base):,} rows{recorded_text}{scope}"
+            ),
+            value=float(count),
+            figures=(("share_percent", share), ("denominator", float(total))),
+        )
     of = f"of the {len(base):,} rows{when}"
     if recorded:
         of += f" with {_and_listed(recorded)} recorded"

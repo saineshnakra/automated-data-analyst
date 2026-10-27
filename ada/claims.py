@@ -927,6 +927,12 @@ def _check(analysis: Any, text: str, asked: str, number: ClaimedNumber, source: 
         column for column in (answer.plan.measure, answer.plan.partner)
         if column and not _named(asked, column)
     ]
+    if unnamed and number.percent:
+        # "32.3% survived" gives a share even with no word for one.
+        share = analysis.ask(f"share of {asked}")
+        if not isinstance(share, Refusal) and "share_percent" in dict(share.figures):
+            answer, asked, unnamed = share, f"share of {asked}", []
+            assumptions.append("Read the percentage as a share, which the claim names no column for.")
     if unnamed:
         return ClaimCheck(
             text, "unverified", "missing_context",

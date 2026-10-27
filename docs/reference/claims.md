@@ -70,7 +70,10 @@ when the file can't be read, and 3 when it is unverified for any other reason.
 
 4. **The comparison.** The computed answer is compared with the interval, in
    the claim's terms: a percent claim is compared with a share or a change in
-   percent, and a fraction such as 0.32 with 32%.
+   percent, and a fraction such as 0.32 with 32%. A percent claim that names
+   no column ("32.3% survived") is read as a share, and the assumptions say
+   so; in a table of counts the share adds up the counts (see
+   [Ask ADA](ask-ada.md)).
 
 ## Units and scale
 

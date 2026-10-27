@@ -1879,6 +1879,42 @@ class RowNounTests(unittest.TestCase):
         self.assertIn("expedition_role = Member", role.calculation)
 
 
+class FrequencyTableTests(unittest.TestCase):
+    def frame(self) -> pd.DataFrame:
+        # Titanic's layout: one row per combination of class and outcome, with the people in it.
+        return pd.DataFrame({
+            "rownames": range(1, 9),
+            "Class": ["1st", "2nd", "3rd", "Crew"] * 2,
+            "Survived": ["No"] * 4 + ["Yes"] * 4,
+            "Freq": [122, 167, 528, 673, 203, 118, 178, 212],
+        })
+
+    def test_shares_and_counts_weight_each_row_by_its_count(self):
+        frame = self.frame()
+        roles = detect_roles(frame)
+
+        share = answer_question("what share survived", frame, roles)
+        total = answer_question("how many people", frame, roles)
+
+        self.assertEqual(nlq.frequency_column(frame), "Freq")
+        self.assertIn("711 of the 2,201 cases (32.3%) have Survived = Yes", share.answer)
+        self.assertEqual(total.value, 2201)
+        self.assertNotIn("one of the people", total.answer)
+
+    def test_a_count_column_with_repeated_combinations_is_not_a_table_of_counts(self):
+        frame = pd.concat([self.frame(), self.frame()], ignore_index=True)
+        frame["rownames"] = range(1, 17)
+        self.assertIsNone(nlq.frequency_column(frame))
+        self.assertIsNone(nlq.frequency_column(self.frame().iloc[:1]))
+
+    def test_a_yes_no_column_without_counts_gives_the_share_of_rows(self):
+        frame = self.frame().drop(columns="Freq")
+
+        share = answer_question("what share survived", frame, detect_roles(frame))
+
+        self.assertIn("4 of the 8 rows (50.0%) have Survived = Yes", share.answer)
+
+
 class YesNoOutcomeTests(unittest.TestCase):
     def setUp(self):
         self.frame = pd.DataFrame({
