@@ -167,7 +167,11 @@ MULTIPLE = re.compile(
     r"(?P<verb>\b(?:rose|grew|increased|jumped|climbed|fell|dropped|declined|decreased)\s+)?"
     r"(?P<qualifier>\b(?:more\s+than|nearly|almost|about|roughly|over|less\s+than)\s+)?"
     r"\b(?P<word>doubled|tripled|trebled|quadrupled|halved|(?P<n>two|three|four|five|six|seven|eight|nine|ten|"
-    r"\d{1,3})[- ]?fold)\b",
+    r"\d{1,3})[- ]?fold|"
+    # "two hundred times as many": the number of times, in digits or words.
+    r"(?P<times>\d[\d,]*(?:\.\d+)?|a\s+hundred|(?:two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+    r"fifteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:[\s-]+hundred)?)\s+times\s+as\s+"
+    r"(?:many|much|large|high|big|great))\b",
     re.IGNORECASE,
 )
 MULTIPLE_WORDS = {"doubled": 2, "tripled": 3, "trebled": 3, "quadrupled": 4, "halved": 0.5}
@@ -703,6 +707,15 @@ def _fraction_interval(value: float) -> tuple[float, float]:
     return (value + below) / 2 * 100, (value + above) / 2 * 100
 
 
+def _times(written: str) -> float:
+    """The number of times written in digits or words: 200 for "two hundred", 100 for "a hundred"."""
+    words = written.lower().replace("-", " ").split()
+    if words[0][0].isdigit():
+        return float(words[0].replace(",", ""))
+    number = 1 if words[0] == "a" else NUMBER_WORDS.get(words[0], 1)
+    return float(number * (100 if words[-1] == "hundred" else 1))
+
+
 def _worded_number(claim: str) -> tuple[str, Any] | None:
     """The claim with a fraction or a whole number in words written in digits, and how to read it back.
 
@@ -713,8 +726,11 @@ def _worded_number(claim: str) -> tuple[str, Any] | None:
     if multiple:
         # "more than doubled" is a rise of more than 100%, "halved" a fall of about 50%.
         word = multiple.group("word").lower()
-        times = MULTIPLE_WORDS.get(word) or float(NUMBER_WORDS.get((multiple.group("n") or "").lower())
-                                                  or multiple.group("n"))
+        if multiple.group("times"):
+            times = _times(multiple.group("times"))
+        else:
+            times = MULTIPLE_WORDS.get(word) or float(NUMBER_WORDS.get((multiple.group("n") or "").lower())
+                                                      or multiple.group("n"))
         change = (times - 1) * 100
         qualifier = (multiple.group("qualifier") or "about ").strip()
         verb = "fell" if change < 0 else "rose"
@@ -1444,7 +1460,7 @@ _END = (
 CHANGE_WORDS = re.compile(
     r"\b(?:rose|risen|rising|fell|fallen|falling|grew|grown|climbed|dropped|declined|decreased|increased|"
     r"jumped|soared|surged|slumped|plunged|tumbled|went\s+up|went\s+down|doubled|tripled|trebled|"
-    r"quadrupled|halved|\w+fold)\b",
+    r"quadrupled|halved|\w+fold|went(?=\s+from\b))\b",
     re.IGNORECASE,
 )
 # "from 32 the year before to 61": the first end's year, given against the year of the change.
@@ -1503,7 +1519,8 @@ def _without_ends(text: str) -> tuple[str, tuple[tuple[str, str], ...]]:
         re.fullmatch(r"(?:1[5-9]|20)\d{2}", match.group(side).strip()) for side in ("first", "last"))), None)
     if found:
         ends = (("previous", found.group("first").strip()), ("latest", found.group("last").strip()))
-        rest = f"{text[:found.start()]}{text[found.end():]}"
+        # "went from 28,000 to 5.7 million" says no more than its ends.
+        rest = re.sub(r"\s*\bwent\s*$", "", text[:found.start()]) + text[found.end():]
         years = found.group("y1"), found.group("y2")
         lasted = DURATION.search(rest)
         if lasted:

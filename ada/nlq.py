@@ -12,6 +12,7 @@ reason, rather than answer a simpler question under the original wording.
 from __future__ import annotations
 
 import calendar
+import os
 import re
 import unicodedata
 import weakref
@@ -945,8 +946,10 @@ UNSUPPORTED_PHRASES = re.compile(
     # december" is refused rather than read as every December in the file.
     rf"(?:last|next|previous|this) (?:{'|'.join(MONTH_NAMES)})|"
     r"year to date|ytd|today|yesterday|past \d+|"
-    r"or"
-    r")\b"
+    # "65 or older" and "5 or more" bound one number; "Texas or Ohio" is refused.
+    r"or(?!\s+(?:older|over|more|above|younger|under|less|fewer|below)\b)"
+    # "the last quarter of 2019" names its year.
+    r")\b(?!\s+of\s+(?:19|20)\d{2})"
 )
 
 
@@ -978,6 +981,13 @@ DAY_PATTERN = re.compile(
     re.IGNORECASE,
 )
 EPOCH = pd.Timestamp("1970-01-01")
+# Part of a year: "the first half of 2021", "the last quarter of 2019".
+PART_OF_YEAR = re.compile(
+    rf"\bthe\s+(?P<which>first|second|third|fourth|last|final|1st|2nd|3rd|4th)\s+(?P<part>half|quarter)\s+of\s+"
+    rf"(?P<year>{YEAR})\b",
+    re.IGNORECASE,
+)
+PART_ORDER = {"first": 1, "1st": 1, "second": 2, "2nd": 2, "third": 3, "3rd": 3, "fourth": 4, "4th": 4}
 
 
 def day_named(match: re.Match) -> pd.Timestamp | None:
@@ -1009,6 +1019,12 @@ AGE_PHRASE = re.compile(
     rf"|(?P<plus>\d{{1,3}})\+(?=\s|$|[,.;])"
     rf"|{_AGE_CUE}(?P<one>\d{{1,3}})\b(?!\s*(?:-|–|to\b|and\b|or\b|\+|%))"
     rf"|(?P<olds>\d{{1,3}}){_YEAR_OLDS})",
+    re.IGNORECASE,
+)
+# An age bound after a linking verb, with no age column named: "was under 40", "were over 65".
+AGE_BOUND = re.compile(
+    r"\b(?:was|were|is|are|be|been|aged)\s+(?P<side>under|below|over|above|younger\s+than|older\s+than)\s+"
+    r"(?P<age>\d{1,3})\b(?!\s*(?:%|per\s?cent|[.,]\d))",
     re.IGNORECASE,
 )
 # A band of ages as a table writes it: "30-34", "65+", ">50", "12".
@@ -1105,6 +1121,18 @@ def _claim_ages(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) 
         reading.consumed.add(column)
         reading.scoped.add(column)
         reading.claim(start, start + len(said))
+    if bands:
+        return
+    for match in list(AGE_BOUND.finditer(reading.remaining)):
+        # "was under 40" on a numeric age column: below 40, whatever the fraction of a year.
+        side = match.group("side").lower()
+        operator = "<" if side in ("under", "below") or side.startswith("younger") else ">"
+        reading.conditions.append(Condition(column, operator, float(match.group("age"))))
+        reading.notes.append(f'Read "{match.group("side")} {match.group("age")}" as {column} '
+                             f'{OPERATOR_WORDS[operator]} {match.group("age")}.')
+        reading.consumed.add(column)
+        reading.scoped.add(column)
+        reading.claim(match.start("side"), match.end())
 
 
 # A decade: "the 2010s" is 2010 to 2019.
@@ -2543,6 +2571,12 @@ def _claim_conditions(
                 continue
             reading.conditions.append(Condition(column, "=", 0.0 if match.group("cue") == "without" else 1.0))
             claimed = (match.start(), end)
+        elif not numeric and not is_datetime64_any_dtype(series) and (match := TEXT_IN.search(before)):
+            # "papers with COVID in the title": a word written before the text it is part of.
+            chunks = _raw_chunks(reading.question, [match.group("word")])
+            text = chunks[-1] if chunks else match.group("word")
+            reading.conditions.append(Condition(column, "contains", text=text))
+            claimed = (match.start(), end)
         elif not numeric and (found_text := _text_condition(reading, column, after)):
             condition, length = found_text
             reading.conditions.append(condition)
@@ -2561,6 +2595,13 @@ def _claim_conditions(
 TEXT_MATCH = re.compile(
     r"\s+(?:(?:that|which)\s+)?(?P<how>contains?|containing|includes?|including|"
     r"(?:starts?|starting|begins?|beginning)\s+with|(?:ends?|ending)\s+with)\s+(?P<word>\S+)"
+)
+
+
+# A word before a text column it is part of: "had COVID in the title", 'with "war" in their name'.
+TEXT_IN = re.compile(
+    r"\b(?:with|had|has|have|having|mentions?|mentioned|mentioning|uses?|used|using)\s+"
+    r"(?:the\s+(?:word|term)\s+)?[\"'“]?(?P<word>[^\s\"'”#]+)[\"'”]?\s+in\s+(?:the|its|their|his|her)\s+$"
 )
 
 
@@ -3051,6 +3092,12 @@ def _claim_entity(
         if not rows and _kind_value(word, dataframe):
             # "birds" in a shelter's table whose animal_type holds "bird" picks those rows (_claim_values).
             continue
+        if not rows and (kin := _value_kin(word, dataframe)):
+            # "senators" where chamber holds "senate" may mean those rows, not every row.
+            reading.flag(f'"{word}" may mean the rows with {kin[0]} = {kin[1]}; name the value, as in '
+                         f'"{kin[0]} {kin[1]}".')
+            reading.claim(start, end)
+            continue
         reading.claim(start, end)
         if reading.entity is None:
             reading.entity = word
@@ -3068,6 +3115,25 @@ def _kind_value(word: str, dataframe: pd.DataFrame) -> bool:
         if forms & set(series.dropna().astype(str).str.lower().unique()):
             return True
     return False
+
+
+def _value_kin(word: str, dataframe: pd.DataFrame) -> tuple[str, str] | None:
+    """A one-word value a plural is formed from, as (column, value): "senators" from "senate", "democrats"
+    from "democratic". The two share their first five letters or more and differ only in a short ending."""
+    for column in dataframe.select_dtypes(exclude=["number", "bool", "datetime", "datetimetz"]).columns:
+        series = dataframe[column]
+        if _names_column(series) or series.nunique(dropna=True) > MAX_KIN_VALUES:
+            continue
+        for value in series.dropna().astype(str).unique():
+            lowered = value.lower()
+            shared = len(os.path.commonprefix([word, lowered]))
+            if lowered.isalpha() and shared >= 5 and len(word) - shared <= 3 and len(lowered) - shared <= 2:
+                return str(column), value
+    return None
+
+
+# Values a column may hold for a plural to be formed from one of them.
+MAX_KIN_VALUES = 50
 
 
 # Verbs whose noun names a column of counts: "how many homes were sold" adds up sales.
@@ -3255,6 +3321,29 @@ def _holds_years(column: pd.Series) -> bool:
     """Whether every value of a column is a whole year from 1000 to 2100."""
     values = to_numbers(column).dropna()
     return not values.empty and bool(((values % 1 == 0) & values.between(1000, 2100)).all())
+
+
+def _claim_part_of_year(reading: _Reading, roles: ColumnRoles) -> None:
+    """Read part of a year ("the first half of 2021") as the days from its first to its last, before "quarter"
+    can be read as a grain."""
+    for match in list(PART_OF_YEAR.finditer(reading.remaining)):
+        parts = 2 if match.group("part").lower() == "half" else 4
+        which = match.group("which").lower()
+        number = parts if which in ("last", "final") else PART_ORDER[which]
+        if number > parts:
+            continue
+        if not roles.date:
+            reading.flag("This table has no date column to pick part of a year from.")
+        else:
+            months = 12 // parts
+            first = pd.Timestamp(int(match.group("year")), (number - 1) * months + 1, 1)
+            last = first + pd.DateOffset(months=months) - pd.Timedelta(days=1)
+            reading.conditions.extend([
+                Condition(roles.date, ">=", float((first - EPOCH).days), part="date"),
+                Condition(roles.date, "<=", float((last - EPOCH).days), part="date"),
+            ])
+            reading.scoped.add(roles.date)
+        reading.claim(*match.span())
 
 
 def _claim_days(reading: _Reading, roles: ColumnRoles) -> None:
@@ -3624,6 +3713,7 @@ def _read_question(
             column: span for column, span in reading.spans.items() if q[span[0]:span[1]] != roles.row_noun
         }
     _claim_country(reading, vocabulary)
+    _claim_part_of_year(reading, roles)
     _unit_word_names_rows(reading, dataframe, roles)
     _claim_count_column(reading, dataframe, roles)
     _outcome_columns(reading, dataframe)
@@ -5120,6 +5210,13 @@ TEXT_OPERATORS = {"contains": "containing", "starts": "starting with", "ends": "
 YEAR_OPERATOR_WORDS = {"=": "in", "<": "before", "<=": "up to", ">": "after", ">=": "from"}
 
 
+def _condition_value(condition: Condition) -> str:
+    """A condition's value as written: a day for a condition on the day ("2021-06-30"), else the number."""
+    if condition.part == "date":
+        return (EPOCH + pd.Timedelta(days=float(condition.value or 0))).date().isoformat()
+    return _number_text(condition.value)
+
+
 def _describe_condition(condition: Condition) -> str:
     if condition.operator == "missing":
         return f"{condition.column} missing"
@@ -5127,10 +5224,7 @@ def _describe_condition(condition: Condition) -> str:
         return f'{condition.column} {TEXT_OPERATORS[condition.operator]} "{condition.text}"'
     if condition.part == "year":
         return f"{condition.column} {YEAR_OPERATOR_WORDS[condition.operator]} {_number_text(condition.value)}"
-    if condition.part == "date":
-        day = (EPOCH + pd.Timedelta(days=float(condition.value or 0))).date().isoformat()
-        return f"{condition.column} {OPERATOR_WORDS[condition.operator]} {day}"
-    return f"{condition.column} {OPERATOR_WORDS[condition.operator]} {_number_text(condition.value)}"
+    return f"{condition.column} {OPERATOR_WORDS[condition.operator]} {_condition_value(condition)}"
 
 
 def _describe_conditions(conditions: tuple[Condition, ...]) -> list[str]:
@@ -5142,7 +5236,7 @@ def _describe_conditions(conditions: tuple[Condition, ...]) -> list[str]:
         if following and condition.operator == ">=" and following[0].operator == "<=" and (
             following[0].column == condition.column
         ):
-            low, high = _number_text(condition.value), _number_text(following[0].value)
+            low, high = _condition_value(condition), _condition_value(following[0])
             described.append(f"{condition.column} between {low} and {high}")
             index += 2
             continue

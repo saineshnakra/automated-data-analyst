@@ -3544,6 +3544,51 @@ class OneYearChangeAndCountryTests(unittest.TestCase):
         self.assertNotIn("as all the rows", answer.answer)
 
 
+class TextPeriodsAndAgesTests(unittest.TestCase):
+    def papers(self) -> pd.DataFrame:
+        dates = pd.to_datetime(["2019-11-01", "2019-12-01", "2021-02-01", "2021-06-01", "2021-07-01",
+                                "2021-12-01"])
+        titles = ["COVID and jobs", "Taxes", "covid-19 schools", "Trade", "COVID again", "Banks"]
+        return pd.DataFrame({"date": dates, "title": titles, "pages": [10.0, 20.0, 30.0, 40.0, 50.0, 60.0]})
+
+    def members(self) -> pd.DataFrame:
+        return pd.DataFrame({"chamber": ["house"] * 4 + ["senate"] * 3, "state": ["TX"] * 7,
+                             "age": [39.5, 40.0, 52.0, 70.0, 64.9, 65.0, 80.0]})
+
+    def test_a_word_before_a_text_column_is_part_of_it(self):
+        frame = self.papers()
+        answer = answer_question("how many papers had COVID in the title", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 3)
+        self.assertIn('title containing "COVID"', answer.calculation)
+
+    def test_part_of_a_year_is_its_days(self):
+        frame = self.papers()
+        roles = detect_roles(frame)
+        answer = answer_question("how many papers in the first half of 2021", frame, roles)
+        self.assertEqual(answer.value, 2)
+        self.assertIn("between 2021-01-01 and 2021-06-30", answer.calculation)
+        last = answer_question("how many papers in the last quarter of 2019", frame, roles)
+        self.assertEqual(last.value, 2)
+        # A quarter relative to today is still refused.
+        self.assertIsNone(answer_question("how many papers last quarter", frame, roles))
+
+    def test_an_age_bound_after_a_verb_is_on_the_age_column(self):
+        frame = self.members()
+        roles = detect_roles(frame)
+        answer = answer_question("how many rows were under 40", frame, roles)
+        self.assertEqual(answer.value, 1)
+        self.assertIn("age below 40", answer.calculation)
+        self.assertEqual(answer_question("how many rows were 65 or older", frame, roles).value, 3)
+        # "or" between two values is still refused.
+        self.assertIsNone(answer_question("how many rows for house or senate", frame, roles))
+
+    def test_a_plural_formed_from_a_value_is_not_every_row(self):
+        frame = self.members()
+        reading = nlq._read_question("how many senators were 65 or older", frame, detect_roles(frame))
+        self.assertIn("chamber = senate", reading.problem or "")
+        self.assertIsNone(answer_question("how many senators were 65 or older", frame, detect_roles(frame)))
+
+
 class StateAndNounTests(unittest.TestCase):
     def test_the_most_of_a_value_counts_rows_by_period(self):
         days = ["2020-01-01", "2020-01-01", "2020-01-02"]

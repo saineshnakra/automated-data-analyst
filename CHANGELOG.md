@@ -34,6 +34,13 @@
 
 ### Reading claims and questions
 
+- Fixed a wrong answer: "how many senators were over 65" counted every
+  member of Congress; a plural formed from a value ("senators" for senate) is
+  now refused and names the value.
+- "papers with COVID in the title", "the first half of 2021", "the last
+  quarter of 2019", "was under 40" and "65 or older" are read; "went from
+  28,000 to 5.7 million, more than two hundred times as many" checks the
+  change and both ends.
 - Fixed wrong verdicts: "The number of fox rescues rose in 2020" took 2020 as
   the number claimed; "rose to 61 in 2020" failed and "fell below 40 in 2020"
   passed because the level was compared with the size of the change. A level

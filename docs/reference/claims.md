@@ -222,8 +222,10 @@ A count or a share that comes to 0 because no row fits the words as read
 a claim about rows that are not there more likely means other rows.
 
 A multiple is a change in percent: "doubled" is a rise of about 100%, "more
-than sixfold" one of more than 500%, "tripled" about 200% and "halved" a fall
-of about 50%, compared by its size as "fell by" is.
+than sixfold" one of more than 500%, "tripled" about 200%, "more than two
+hundred times as many" one of more than 19,900%, and "halved" a fall of about
+50%, compared by its size as "fell by" is. "went from about 28,000 in 2021 to
+5.7 million in 2022" names a change by its ends alone.
 
 The values a change went from and to are checked after the change: in "West
 Virginia's Democratic vote halved in twenty years, from 51.5% in 1996 to

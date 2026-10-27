@@ -204,7 +204,8 @@ with its adjusted p-value when none does.
 
 Refused before parsing: dates relative to today ("last 30 days", "this year",
 "year to date", "last December"), "or", `!=` and `≠`, and questions naming two
-or more months or years.
+or more months or years. "the last quarter of 2019" names its year and is read;
+"65 or older" and "5 or more" bound one number and are read too.
 
 ### 2. Every word is claimed
 
@@ -263,12 +264,16 @@ each word is claimed, in this order, by:
    and after 2000", which splits the rows in two. A day written out ("April
    27, 2011", "27 April 2011", "2011-04-27") keeps the rows of that day,
    whatever their time; a date that does not exist (February 30) is not read.
+   Part of a year ("the first half of 2021", "the third quarter of 2020", "the
+   last quarter of 2019") keeps the days from its first to its last.
    Ages written out ("30- to 34-year-olds", "aged 50 and over", "people 65
    and older", "65+", "20-year-olds") keep the rows of those ages in the one
    column named for age: as conditions on a column of numbers, or as the
    bands that make them up exactly on a column of bands ("50-64" and "65+"
    for "50 and over"). Ages that cut a band in two ("40 and over" with a
-   band 35-49) are refused, as no row says which side its people are on.
+   band 35-49) are refused, as no row says which side its people are on. A
+   bound after a verb ("was under 40", "were over 65") is on a numeric age
+   column too, below or above the number whatever the fraction of a year.
    Numbers with no age word ("rose from 12 to 20") are not ages. "From 2019"
    right after the rows' own noun is that year
    ("sets from 2019" in `sets.csv` are 2019's sets); "from 2019 onwards"
@@ -358,6 +363,9 @@ each word is claimed, in this order, by:
     superplasticizer above 0"). In a table of counts, the first plural that
     names nothing else names the cases the counts count ("female
     applicants"); a second one ("people who were cyclists") names nothing.
+    A plural formed from a one-word value ("senators" where `chamber` holds
+    senate, "democrats" for Democratic) is not every row: the question is
+    refused and names the value to write instead.
     A plural after "how many", "number of" or "share of" that names the one
     column of whole counts named for it with a word such as count, number or
     n ("encounters" for `encounter_count`) adds that column up: counts,
@@ -407,6 +415,7 @@ weekly view and `Age of testing (day)` for no daily one.
 | "missing eCO2", "eCO2 is missing" | `eCO2 missing` |
 | "Pentanoic_acid 0", "VMA of 0" | `= 0`, for a numeric column that holds that value |
 | "sampleID containing Ivc", "Name starts with Ac", "ends with" | `contains`, `starts`, `ends` the text, in any case |
+| "papers with COVID in the title", "had war in their name" | `title contains COVID`: the word before the text column it is part of |
 | "where Condition is Open", "Detector is ON", "Region West" | the value of that text column |
 | "depth_km below 1 km", "depth_km above 500 metres" | `depth_km < 1`, `depth_km > 0.5`: a unit after the bound is the column's, or converts to it |
 | "less than 1 km deep", "deeper than 50 cm", "older than 30" | the adjective names the column: depth, length, height, width, weight, age, thickness |

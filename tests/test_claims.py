@@ -1282,6 +1282,31 @@ class LevelsAndYearsTests(unittest.TestCase):
         self.assertEqual(late.reason, "failed_check", late.message)
 
 
+class WentFromAndTimesTests(unittest.TestCase):
+    def refugees(self) -> pd.DataFrame:
+        return pd.DataFrame({"country": ["Ukraine", "Ukraine", "Syria", "Syria"],
+                             "year": [2021, 2022, 2021, 2022],
+                             "refugees": [28000, 5700000, 6800000, 6500000]})
+
+    def test_times_as_many_is_a_multiple(self):
+        _, number, problem = read_claim("Exports were three times as large.", ["exports"])
+        self.assertEqual((problem, number.value, number.percent), ("", 200, True))
+        _, number, _ = read_claim("Claims were more than two hundred times as many.", ["claims"])
+        self.assertEqual((number.qualifier, number.value), ("more than", 19900))
+
+    def test_went_from_one_value_to_another_checks_the_change_and_its_ends(self):
+        frame = self.refugees()
+        claim = ("Refugees from Ukraine went from about 28,000 in 2021 to 5.7 million in 2022, {} times as "
+                 "many.")
+        check = ada.check_claim(frame, claim.format("more than two hundred"))
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("5.7 million, agrees", " ".join(check.assumptions))
+        more = ada.check_claim(frame, claim.format("more than three hundred"))
+        self.assertEqual(more.reason, "failed_check")
+        wrong = ada.check_claim(frame, claim.format("more than two hundred").replace("28,000", "50,000"))
+        self.assertEqual(wrong.reason, "failed_check")
+
+
 class RateClaimTests(unittest.TestCase):
     def test_a_rate_for_every_hundred_is_checked_as_totals(self):
         frame = pd.DataFrame({"District": [1, 1, 1, 1, 2, 2, 2, 2],
