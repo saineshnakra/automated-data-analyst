@@ -1985,6 +1985,7 @@ def _claim_time_points(reading: _Reading, dataframe: pd.DataFrame, roles: Column
 
     It runs before the conditions, so "On day 21, chicks" does not read 21 as a chick.
     """
+    _claim_lead_values(reading, dataframe, roles)
     points = [column for column in roles.numeric if column in dataframe.columns and is_timepoint_name(column)
               and column not in reading.spans]
     if len(points) != 1:
@@ -1999,6 +2000,74 @@ def _claim_time_points(reading: _Reading, dataframe: pd.DataFrame, roles: Column
             reading.claim(match.start(), match.end())
             reading.notes.append(f'Read "{_raw_words(reading.question, match.group(0).split())}" as '
                                  f"{points[0]} = {format_number(number)}.")
+
+
+ORDINAL_WORDS = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "seventh": 7, "eighth": 8,
+    "ninth": 9, "tenth": 10, "eleventh": 11, "twelfth": 12,
+}
+
+
+def _claim_ordinal_columns(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
+    """Read "the fourth quarter" as a numeric column named quarter at 4, when 4 is one of its values.
+
+    It runs before the conditions and the time parts, so the ordinal is not read as a rank.
+    """
+    names = {_norm(str(column)): column for column in roles.numeric if column in dataframe.columns}
+    words = "|".join(ORDINAL_WORDS)
+    pattern = rf"\b(?:the\s+)?(?P<ordinal>{words}|\d+(?:st|nd|rd|th))\s+(?P<name>[a-z]+)\b"
+    for match in list(re.finditer(pattern, reading.original)):
+        column = names.get(match.group("name"))
+        if column is None or reading.spans.get(column, (match.start("name"),))[0] != match.start("name"):
+            continue
+        if not reading.remaining[match.start("ordinal"):match.end("ordinal")].strip():
+            continue
+        ordinal = match.group("ordinal")
+        number = float(ORDINAL_WORDS.get(ordinal) or int(re.sub(r"\D", "", ordinal)))
+        if number not in set(to_numbers(dataframe[column]).dropna().tolist()):
+            continue
+        reading.conditions.append(Condition(column, "=", number))
+        reading.spans.pop(column, None)
+        reading.consumed.add(column)
+        reading.scoped.add(column)
+        reading.claim(match.start(), match.end())
+        reading.notes.append(f'Read "{_raw_words(reading.question, match.group(0).split())}" as {column} = '
+                             f"{format_number(number)}.")
+
+
+# Most values a column may hold for "At 14," to pick one of them.
+LEAD_VALUES = 12
+
+
+def _claim_lead_values(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
+    """Read "at 14," as the one column of few values that holds 14 (Orthodont's age).
+
+    Only a number after "at" that ends the clause, or is followed by years,
+    months, weeks or days, is read, and only when exactly one numeric column
+    of at most LEAD_VALUES values holds it.
+    """
+    pattern = rf"\bat\s+(?P<number>{NUMBER})(?:\s+(?:years?|months?|weeks?|days?)\b|(?=\s*$))"
+    match = re.search(pattern, reading.original)
+    comma = re.search(rf"\bat\s+({NUMBER})\s*,", reading.question, re.IGNORECASE)
+    if not match and comma:
+        match = re.search(rf"\bat\s+(?P<number>{re.escape(comma.group(1))})\b", reading.original)
+    span = slice(match.start(), match.end()) if match else slice(0, 0)
+    if not match or reading.remaining[span] != reading.original[span]:
+        return
+    number = _number(match.group("number"))
+    holding = [
+        column for column in roles.numeric
+        if column in dataframe.columns and column not in reading.spans
+        and (values := set(to_numbers(dataframe[column]).dropna().tolist()))
+        and len(values) <= LEAD_VALUES and number in values
+    ]
+    if len(holding) != 1:
+        return
+    reading.conditions.append(Condition(holding[0], "=", number))
+    reading.scoped.add(holding[0])
+    reading.claim(match.start(), match.end())
+    reading.notes.append(f'Read "{_raw_words(reading.question, match.group(0).split())}" as {holding[0]} = '
+                         f"{format_number(number)}, the one column of few values that holds it.")
 
 
 # Words before a number that name a time point: "day 21", "week 3", "visit 2".
@@ -2614,6 +2683,7 @@ def _read_question(
     _claim_year_ranges(reading, dataframe, roles)
     _claim_fillers(reading)
     _claim_time_points(reading, dataframe, roles)
+    _claim_ordinal_columns(reading, dataframe, roles)
     _claim_conditions(reading, list(reading.spans), dataframe, roles, vocabulary)
     _claim_person_names(reading, dataframe)
     _claim_values(reading, vocabulary, dataframe, exact_only=True, row_noun=roles.row_noun)

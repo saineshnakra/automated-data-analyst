@@ -46,17 +46,19 @@ when the file can't be read, and 3 when it is unverified for any other reason.
 
 ## How a claim is read
 
-1. **The number.** ADA takes out the number being claimed. A year ("in
-   2013"), an ordinal ("25th percentile"), a value right after a column's
-   name ("bill length above 45 mm") and a number between "with" and a
-   column's name ("cars with 4 cylinders") stay part of the question.
-   Digits inside a word or a code ("CO2", "bondsba01") are not a number. A
-   fraction in words before "of" ("about a quarter of", "more than half
-   of", "two thirds of") and a whole number in words in a claim with no
-   other number but a year ("Seventeen cases were decided in 2020") are read
-   as numbers. A lead that names the base ("Of the 4,526 applicants, 38.8%
-   were admitted") is set aside, and the base is checked: the share must be
-   of 4,526, or the claim gets `missing_context`. A claim with two numbers that
+1. **The number.** ADA takes out the number being claimed. A year ("in 2013"),
+   an ordinal ("25th percentile"), a value right after a column's name ("bill
+   length above 45 mm") and a number between "with" and a column's name ("cars
+   with 4 cylinders") stay part of the question. Digits inside a word or a
+   code ("CO2", "bondsba01") are not a number, and a number after "At" that
+   opens the claim ("At 14, girls averaged 24.1 mm") picks rows. A fraction in
+   words before "of" ("about a quarter of", "more than half of", "two thirds
+   of") and a whole number in words in a claim with no other number but a year
+   ("Seventeen cases were decided in 2020") are read as numbers; after an
+   ordinal ("the fourth quarter of 2020") a fraction word is a period, not a
+   number. A lead that names the base ("Of the 4,526 applicants, 38.8% were
+   admitted") is set aside, and the base is checked: the share must be of
+   4,526, or the claim gets `missing_context`. A claim with two numbers that
    could each be the one claimed is not split: it gets `unsupported_analysis`,
    and each number should be sent on its own.
 2. **The question.** The rest of the sentence is read as a question to
@@ -98,15 +100,18 @@ for 24 to 26.
    the claim's terms: a percent claim is compared with a share or a change in
    percent, and a fraction such as 0.32 with 32%. A percent claim that names
    no column ("32.3% survived") is read as a share, and the assumptions say
-   so; in a table of counts the share adds up the counts (see
-   [Ask ADA](ask-ada.md)). A percent claim read as a count over several values
-   is asked as a share, so its base is the group it names: "Men were admitted
-   at a rate of 44.5%" is of the men (see [Ask ADA](ask-ada.md)). A plural
-   after the number that names no column counts rows ("The survey recorded
-   1,950 captures in 2007"). A number that counts things ("1,524 Kenyans",
-   "5,000 residents") is a total: when the plain reading is an average and
-   the claim says nothing of averages, ADA checks the total instead and says
-   so.
+   so; in a table of counts the share adds up the counts (see [Ask
+   ADA](ask-ada.md)). A percent claim read as a count over several values is
+   asked as a share, so its base is the group it names: "Men were admitted at
+   a rate of 44.5%" is of the men (see [Ask ADA](ask-ada.md)). A plural after
+   the number that names no column counts rows ("The survey recorded 1,950
+   captures in 2007"), and so does "N of the" before a plural: "55 of the cats
+   were neutered" counts the rows that were, one cat each. When the plural
+   also names a column (`n_cats`) and the table's rows are not one each,
+   because an id repeats, the claim gets `missing_context`. A number that
+   counts things ("1,524 Kenyans", "5,000 residents") is a total: when the
+   plain reading is an average and the claim says nothing of averages, ADA
+   checks the total instead and says so.
 
 ## Slopes
 
@@ -246,6 +251,12 @@ Besides the number, a check records what could make the answer misleading:
   over orders (160.99). When the claim matches the average taken row by row
   instead, the message says so: the claim counted each payment row, not each
   order.
+
+- **A column of medians or means.** A column whose name says each row holds
+  a group's median, mean or average (`median_weekly_earn`) is not combined
+  over several rows: the average of 32 groups' medians is not the median of
+  all of them. A claim about such a column must pick out one row, or it gets
+  `missing_context`.
 
 ## The JSON record
 

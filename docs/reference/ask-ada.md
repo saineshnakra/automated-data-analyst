@@ -299,7 +299,12 @@ each word is claimed, in this order, by:
     numeric column has that unit in its name. "On day 21" (also week, visit,
     cycle, session, wave, round) is the one time-point column at 21, such as
     ChickWeight's `Time`, when 21 is one of its values; this is read before
-    the conditions, so "On day 21, chicks" does not make 21 a chick.
+    the conditions, so "On day 21, chicks" does not make 21 a chick. "At 14,"
+    opening a clause, or "at 14" ending the question or followed by years,
+    months, weeks or days, is the one numeric column of at most 12 values
+    that holds 14, such as Orthodont's `age`; when two such columns hold it,
+    neither is read. An ordinal before a column's name ("the fourth quarter")
+    is that column's value (`quarter` = 4) when the column holds it.
 13. **Numbers**: the N of "top N" and "bottom N", a year (1900 to 2099, or an
     earlier year the date or year column holds), and a
     number that is a column's whole name ("correlation between 1001 and 1").

@@ -1570,6 +1570,9 @@ _READING_WITH_UNIT = re.compile(
 # share that must carry a unit or a spread, so plain numbers keep their own path.
 READINGS_SHARE = 0.5
 LABELLED_SHARE = 0.5
+# Most units a column of readings is written in. More are codes that start with a number
+# ("37F-PM-1014-03", a squirrel's ID), not readings in units.
+MAX_READING_UNITS = 12
 
 
 def _unit_text(unit: str) -> str:
@@ -1610,6 +1613,8 @@ def _readings_with_units(
         lambda value: _read_formatted_number(value) if isinstance(value, str) else None
     ).astype("float64")
     units = parts["unit"].where(matched).map(lambda unit: _unit_text(unit) if isinstance(unit, str) else None)
+    if units.dropna().nunique() > MAX_READING_UNITS:
+        return None
     cells = len(distinct.cells)
     if cells > len(distinct.values):
         numbers = pd.concat([numbers, pd.Series([np.nan])], ignore_index=True)
