@@ -287,6 +287,17 @@ class AmbiguousClaimTests(unittest.TestCase):
         self.assertEqual((check.reason, check.agreement), ("missing_context", "mismatch"))
         self.assertEqual(check.clarification, "What unit is co2 recorded in?")
 
+    def test_a_camelcase_name_in_words_and_a_unit_with_a_slash(self):
+        # "lap" alone would name laps; "fastest lap speed" names fastestLapSpeed.
+        results = pd.DataFrame({
+            "laps": [58, 58, 57, 50], "fastestLap": [44, 51, 39, 12],
+            "fastestLapSpeed": [201.2, 203.0, 202.4, 203.8],
+        })
+        check = ada.check_claim(results, "The average fastest lap speed is 202.6 km/h.")
+        self.assertTrue(check.verified)
+        self.assertEqual(check.answer.plan.measure, "fastestLapSpeed")
+        self.assertIn('The unit "km/h" comes from the claim', " ".join(check.assumptions))
+
 
 class RepeatedUnitTests(unittest.TestCase):
     def frame(self) -> pd.DataFrame:

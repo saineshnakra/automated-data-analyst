@@ -49,6 +49,11 @@
 
 ### Fixes
 
+- A camelCase column name reads as its words, and a claim's unit can hold a
+  slash. "The average fastest lap speed is 202.6 km/h" about Formula 1's
+  results was refused ("lap" named `laps`, and "/h" named nothing); it is now
+  verified against `fastestLapSpeed` (202.59 over 6,777 rows), with the note
+  that only the numbers are compared.
 - A table out of date order is no longer split into logs. Formula 1's races,
   listed season by season from 2009 back to 1950, were read as 8 logs one
   after another and given a Block column; a file with more steps back than 24

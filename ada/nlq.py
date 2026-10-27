@@ -617,7 +617,7 @@ LATEX_MARKUP = re.compile(r"\$|\\[A-Za-z]+|[\^{}]")
 
 
 def _spellings(columns: list[str]) -> dict[str, list[str]]:
-    """Each column's name as written, then without a prefix most names share, then without LaTeX markup."""
+    """Each column's name as written, without a shared prefix, without LaTeX markup and camelCase split."""
     prefixes = Counter(
         match.group(1).strip().casefold() for column in columns if (match := NAME_PREFIX.match(str(column)))
     )
@@ -629,6 +629,8 @@ def _spellings(columns: list[str]) -> dict[str, list[str]]:
         if match and match.group(1).strip().casefold() in shared:
             forms.append(forms[0][match.end():])
         forms += [LATEX_MARKUP.sub("", form) for form in forms if LATEX_MARKUP.search(form)]
+        # camelCase split, so "fastest lap speed" names fastestLapSpeed.
+        forms += [split for form in forms if _norm(split := normalized_name(form)) != _norm(form)]
         spellings[column] = forms
     return spellings
 
