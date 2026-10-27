@@ -531,6 +531,12 @@ class SlopeClaimTests(unittest.TestCase):
         self.assertEqual([smaller.reason, falling.reason, heavier.reason], ["failed_check"] * 3)
         self.assertLess(falling.compared, 0)
 
+    def test_rising_to_a_level_is_no_slope(self):
+        from ada.claims import _slope_claim
+
+        self.assertIsNone(_slope_claim("Global potato yields rose to 20.9 tonnes per hectare by 2018."))
+        self.assertIsNotNone(_slope_claim("Body mass rises by 50 g per mm of flipper length."))
+
     def test_too_few_rows_give_no_slope(self):
         check = ada.check_claim(masses(11), "Body mass rises by about 50 g per mm of flipper length.")
         self.assertEqual(check.reason, "unsupported_analysis")
@@ -620,3 +626,38 @@ class ReadingGuardTests(unittest.TestCase):
         check = ada.check_claim(pines(), "The mean at age 3 was 4.2 feet.")
         self.assertTrue(check.verified)
         self.assertAlmostEqual(check.compared, 4.225)
+
+
+def admissions() -> pd.DataFrame:
+    """A table of counts. By hand: men 60 of 100 admitted (60%), women 30 of 100 (30%), 45% of all 200."""
+    return pd.DataFrame({"Admit": ["Admitted", "Rejected"] * 4, "Gender": ["Male"] * 4 + ["Female"] * 4,
+                         "Dept": ["A", "A", "B", "B"] * 2, "Freq": [50, 20, 10, 20, 25, 25, 5, 45]})
+
+
+class ShareClaimTests(unittest.TestCase):
+    def test_a_rate_among_a_group_is_of_that_group(self):
+        self.assertTrue(ada.check_claim(admissions(), "Men were admitted at a rate of 60%.").verified)
+        self.assertEqual(ada.check_claim(admissions(), "Men were admitted at a rate of 30%.").reason,
+                         "failed_check")
+        self.assertTrue(ada.check_claim(admissions(), "Women were admitted at a 30% rate.").verified)
+
+    def test_a_lead_that_names_the_base_is_checked(self):
+        check = ada.check_claim(admissions(), "Of the 200 applicants, 45% were admitted.")
+        self.assertTrue(check.verified)
+        self.assertIn("The claim's 200 applicants are the 200 the share is of.", check.assumptions)
+        other = ada.check_claim(admissions(), "Of the 150 applicants, 45% were admitted.")
+        self.assertEqual(other.reason, "missing_context")
+
+    def test_a_plural_that_names_no_column_counts_rows(self):
+        surveys = pd.DataFrame({"year": [2006, 2007, 2007, 2007], "wgt": [30.0, 41.0, 28.0, 35.0]})
+        check = ada.check_claim(surveys, "The survey recorded 3 captures in 2007.")
+        self.assertTrue(check.verified)
+        self.assertEqual(check.words_left_out, ("survey",))
+        # "survey" is left out, so a mismatch proves nothing.
+        self.assertEqual(ada.check_claim(surveys, "The survey recorded 5 captures in 2007.").reason,
+                         "missing_context")
+
+    def test_a_plural_without_an_s_counts_things(self):
+        self.assertTrue(ada.check_claim(admissions(), "100 women applied.").verified)
+        self.assertEqual(ada.check_claim(admissions(), "More than 70 men applied to department A.").reason,
+                         "missing_context")

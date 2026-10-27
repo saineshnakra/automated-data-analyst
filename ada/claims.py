@@ -137,7 +137,7 @@ FILTER_WORDS = frozenset({"with", "having"})
 SLOPE_PATTERN = re.compile(
     r"^\s*(?P<what>.+?)\s+(?P<verb>rises|rose|risen|increases|increased|grows|grew|climbs|climbed|"
     r"goes\s+up|went\s+up|falls|fell|fallen|drops|dropped|decreases|decreased|declines|declined|"
-    r"goes\s+down|went\s+down)\s+(?:by\s+)?(?P<number>.+?)\s+(?:per|for\s+each|for\s+every|with\s+each|"
+    r"goes\s+down|went\s+down)\s+(?:by\s+)?(?!to\b)(?P<number>.+?)\s+(?:per|for\s+each|for\s+every|with\s+each|"
     r"with\s+every)\s+(?:additional\s+|extra\s+|more\s+|further\s+)?(?P<per>.+?)\s*[.!]?\s*$",
     re.IGNORECASE,
 )
@@ -161,6 +161,13 @@ NUMBER_WORDS = {
     "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
 }
 LEFT_OUT_NOTE = "Read the claim without"
+# A lead that names a claim's base: "Of the 4,526 applicants,".
+BASE_LEAD = re.compile(
+    r"^\s*(?:of|out\s+of)\s+(?:the\s+|all\s+)?(?P<count>\d{1,3}(?:,\d{3})+|\d+)\s+(?P<noun>[A-Za-z]+(?:\s[A-Za-z]+)?),\s*",
+    re.IGNORECASE,
+)
+# Plurals without an s, which count things as "344 penguins" does: "1,835 women applied".
+IRREGULAR_PLURALS = frozenset({"men", "women", "people", "children", "persons", "mice", "geese", "teeth"})
 # Words a claim is never read without, as leaving them out changes what it says.
 KEPT_WORDS = frozenset({
     "not", "no", "never", "without", "except", "excluding", "besides", "other", "non", "only", "neither",
@@ -671,7 +678,9 @@ def read_claim(
     counted = following is not None and (
         (row_noun in [word.lower() for word in following.groups() if word]
          and not (unit and unit.split()[0].lower() in UNITS))
-        or (unit is None and following.group(1).lower().endswith("s"))
+        or ((unit is None or unit.split()[0].lower() in IRREGULAR_PLURALS) and (
+            following.group(1).lower().endswith("s") or following.group(1).lower() in IRREGULAR_PLURALS
+        ))
     )
     if counted and re.fullmatch(r"(?:there\s+(?:are|were|is|was))?", lead, flags=re.IGNORECASE):
         rest = re.sub(r"\s+", " ", claim[chosen.match.end():]).strip(" .,;:!?")
@@ -1044,7 +1053,10 @@ def check_claim(
         number = claimed_number(str(written)[item.qualifier_start:], item.match, item.qualifier, None)
         asked = question
     else:
-        asked, number, problem = read_claim(text, columns, analysis.roles.row_noun)
+        # "Of the 4,526 applicants, 38.8% were admitted": the lead names the base, checked below.
+        lead = BASE_LEAD.match(text)
+        asked, number, problem = read_claim(text[lead.end():] if lead else text, columns,
+                                            analysis.roles.row_noun)
         if problem:
             reason = "unsupported_analysis" if "more than one number" in problem else "missing_context"
             return ClaimCheck(
@@ -1055,7 +1067,27 @@ def check_claim(
     assert number is not None and asked is not None
     check = _check(analysis, text, asked, number, source, choices)
     without = next((item for item in check.assumptions if item.startswith(LEFT_OUT_NOTE)), None)
-    return replace(check, words_left_out=tuple(re.findall(r'"([^"]+)"', without))) if without else check
+    if without:
+        check = replace(check, words_left_out=tuple(re.findall(r'"([^"]+)"', without)))
+    if question is None and (lead := BASE_LEAD.match(text)) and check.answer is not None:
+        return _checked_base(check, lead)
+    return check
+
+
+def _checked_base(check: ClaimCheck, lead: re.Match) -> ClaimCheck:
+    """A claim whose lead names its base ("Of the 4,526 applicants"), with the base checked too."""
+    stated = float(lead.group("count").replace(",", ""))
+    named = f"{lead.group('count')} {lead.group('noun')}"
+    base = dict(check.answer.figures).get("denominator") if check.answer is not None else None
+    if base is not None and abs(base - stated) < 0.5:
+        note = f"The claim's {named} are the {_plain(base)} the share is of."
+        return replace(check, assumptions=(note, *check.assumptions))
+    found = f"the share is of {_plain(base)}" if base is not None else "the answer gives no base to compare"
+    return replace(
+        check, status="unverified", reason="missing_context",
+        message=f"The claim's base is {named}, but {found}; {check.message}",
+        clarification=f"Which rows are the {named}?",
+    )
 
 
 def _check_folder(
@@ -1246,6 +1278,9 @@ def _safe_without(
     """
     if math.isinf(number.low) or math.isinf(number.high):
         return False
+    if number.percent:
+        # A share of every row can be near the share of the rows the words pick.
+        return used == 1
     if slope:
         return all(phrase.lower() in slope[1].lower() for phrase in left_out)
     return used == 1 or answer.plan.aggregation in ("sum", "count")
@@ -1399,6 +1434,25 @@ def _check(
         unnamed = []
         assumptions.append(f"Read the claim as being about {column}, the only column recorded in a unit of "
                            f"that kind or named for it, as the number is in {number.unit}.")
+    after = re.search(rf"{re.escape(number.text)}\s+([A-Za-z]+)\b", text)
+    noun = (number.unit or "").split() or ([after.group(1)] if after else [])
+    if unnamed and len(noun) == 1 and not _claim_unit(number) and (
+        noun[0].lower().endswith("s") or noun[0].lower() in IRREGULAR_PLURALS
+    ):
+        # "The survey recorded 1,950 captures in 2007": a plural that names no column counts rows.
+        rest = re.sub(r"^(?:total|average)\s+", "", asked, flags=re.IGNORECASE)
+        tally = analysis.ask(f"how many {noun[0]} {rest}", decisions=choices)
+        if not isinstance(tally, Refusal) and tally.plan.intent == "count" and not tally.plan.measure:
+            answer, asked, unnamed = tally, f"how many {noun[0]} {rest}", []
+            if any(phrase.lower() == noun[0].lower() for phrase in left_out):
+                # The noun is what is counted now, not a word left out.
+                left_out = [phrase for phrase in left_out if phrase.lower() != noun[0].lower()]
+                assumptions = [item for item in assumptions if not item.startswith(LEFT_OUT_NOTE)]
+                if left_out:
+                    assumptions.append(
+                        f"{LEFT_OUT_NOTE} {_quoted(left_out)}, which name no column or value in the table."
+                    )
+            assumptions.append(f'Read "{number.text}" as a count of rows, as no column names {noun[0]}.')
     if unnamed:
         return ClaimCheck(
             text, "unverified", "missing_context",
@@ -1407,6 +1461,12 @@ def _check(
             claimed=number, question=asked, source=source,
             clarification="Which column is the number about?",
         )
+    items = [*answer.plan.filters, *answer.plan.conditions]
+    if number.percent and answer.plan.intent == "count" and not answer.plan.counted and len(items) > 1:
+        # "Men were admitted at a rate of 44.5%": the share is of the men, so it is asked as a share.
+        share = analysis.ask(f"share of {asked}", decisions=choices)
+        if not isinstance(share, Refusal) and share.plan.counted:
+            answer, asked = share, f"share of {asked}"
     averaged = re.search(r"\b(?:average|averages|averaged|averaging|mean|median|typical|per|each)\b", text,
                          re.IGNORECASE)
     noun = (number.unit or "").split()[-1:] or [""]

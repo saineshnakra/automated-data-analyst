@@ -3241,3 +3241,68 @@ class TimePointTests(unittest.TestCase):
     def test_a_day_the_column_does_not_hold_is_not_read(self):
         answer = answer_question("average weight on day 22", self.frame, detect_roles(self.frame))
         self.assertTrue(answer is None or "Time" not in answer.calculation)
+
+
+class ShareBaseTests(unittest.TestCase):
+    def setUp(self):
+        # Adelie: 4 female of 6; Gentoo: 1 female of 4. By hand: 40% of all, 66.7% of Adelie.
+        self.frame = pd.DataFrame({"species": ["Adelie"] * 6 + ["Gentoo"] * 4,
+                                   "sex": ["female"] * 4 + ["male"] * 2 + ["female"] + ["male"] * 3,
+                                   "body_mass_g": [3500.0, 3600, 3400, 3700, 3900, 4000, 5000, 5200, 5400,
+                                                   5600]})
+        self.roles = detect_roles(self.frame)
+
+    def test_a_share_of_a_group_is_of_that_group(self):
+        answer = answer_question("what percentage of Adelie are female", self.frame, self.roles)
+        self.assertIn("4 of the 6 rows with species = Adelie (66.7%) have sex = female", answer.answer)
+        self.assertAlmostEqual(dict(answer.figures)["share_percent"], 400 / 6)
+
+    def test_a_condition_after_the_verb_is_counted(self):
+        answer = answer_question("what share of Gentoo have body_mass_g above 5100", self.frame, self.roles)
+        self.assertIn("3 of the 4 rows with species = Gentoo", answer.answer)
+
+    def test_values_side_by_side_are_both_counted(self):
+        answer = answer_question("share of female Adelie", self.frame, self.roles)
+        self.assertIn("4 of the 10 rows", answer.answer)
+
+    def test_a_yes_no_outcome_is_counted_among_the_rest(self):
+        frame = pd.DataFrame({"Sex": ["Male", "Male", "Female", "Female"],
+                              "Survived": ["No", "Yes", "No", "Yes"], "Freq": [1364, 367, 126, 344]})
+        answer = answer_question("what share of women survived", frame, detect_roles(frame))
+        self.assertIn("344 of the 470 cases with Sex = Female (73.2%) have Survived = Yes", answer.answer)
+        everyone = answer_question("what share survived", frame, detect_roles(frame))
+        self.assertIn("711 of the 2,201 cases", everyone.answer)
+
+
+class SexWordTests(unittest.TestCase):
+    def test_men_and_women_name_a_column_of_sexes(self):
+        frame = pd.DataFrame({"Gender": ["Male", "Female", "Female", "Male"], "score": [1.0, 2.0, 3.0, 4.0]})
+        answer = answer_question("average score for women", frame, detect_roles(frame))
+        self.assertAlmostEqual(answer.value, 2.5)
+        self.assertIn('Read "women" as Gender = Female.', answer.scope.readings)
+
+    def test_single_letter_codes_count_too(self):
+        frame = pd.DataFrame({"sex": ["M", "F", "F", "M", "F"], "score": [1.0, 2.0, 3.0, 4.0, 5.0]})
+        answer = answer_question("average score for men", frame, detect_roles(frame))
+        self.assertAlmostEqual(answer.value, 2.5)
+
+    def test_a_column_that_is_not_only_sexes_is_not_read(self):
+        frame = pd.DataFrame({"team": ["Male", "Female", "Mixed", "Youth"], "score": [1.0, 2.0, 3.0, 4.0]})
+        self.assertIsNone(answer_question("average score for women", frame, detect_roles(frame)))
+
+
+class AbbreviatedNameTests(unittest.TestCase):
+    def test_a_word_reads_the_column_that_abbreviates_it(self):
+        frame = pd.DataFrame({"Dept": ["A", "A", "B", "B"], "Freq": [10, 20, 30, 40],
+                              "Admit": ["Yes", "No", "Yes", "No"]})
+        answer = answer_question("how many cases in department A", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 30)
+        self.assertIn('Read "department" as Dept.', answer.scope.readings)
+
+    def test_an_abbreviation_with_two_vowels_or_too_close_a_word_is_not_read(self):
+        from ada.nlq import _skeleton_columns
+
+        self.assertEqual(_skeleton_columns("department", {"Dept": ("dept",)}), ["Dept"])
+        self.assertEqual(_skeleton_columns("weight", {"wgt": ("wgt",)}), ["wgt"])
+        self.assertEqual(_skeleton_columns("route", {"rate": ("rate",)}), [])
+        self.assertEqual(_skeleton_columns("depot", {"dept": ("dept",)}), [])

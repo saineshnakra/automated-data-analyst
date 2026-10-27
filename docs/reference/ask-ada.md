@@ -273,7 +273,9 @@ each word is claimed, in this order, by:
 6. **Conditions** written around a named column (see below).
 7. **Values** of text columns, written in full (any case). A value in
    capitals that is also a query word ("ALL" as a diagnosis) is the value
-   when typed as the data spells it.
+   when typed as the data spells it. "Men", "women", "boys" and "girls" name
+   the values of the one column that holds only sexes (Male and Female, M and
+   F, besides Other or Unknown): "women" is `Gender` = Female.
 8. **Summary words**: "standard deviation", "interquartile range",
    "90th percentile", "upper quartile", "range", "most common",
    "distribution of", "describe", "outliers", "unusual", "impossible",
@@ -309,7 +311,8 @@ each word is claimed, in this order, by:
 15. **Nouns for the rows**: a word from `ENTITY_NOUNS` ("patients", "birds",
     "readings") or a plural word right after "how many", "number of" or
     "share of", or right before "with" or "where" ("for mixes with
-    superplasticizer above 0").
+    superplasticizer above 0"). In a table of counts, any plural that names
+    nothing else names the cases the counts count ("female applicants").
 16. **"missing"**, "null", "blank" or "empty" not attached to a column: a
     question about missing values.
 17. **Column words** ("column", "variable") right after a column's name ("the
@@ -388,8 +391,11 @@ four words that a name shortens word by word name it, when each name word
 starts its word with three letters or more and one is whole: "life
 expectancy" names `lifeExp`, "departure delay" names `dep_delay`. Two to
 four words whose initials spell a column named in capitals name it: "home
-runs" names `HR`, "stolen bases" names `SB`. The answer says so ('Read "home
-runs" as HR.'). A name in mixed case (`Hr`) is never matched this way.
+runs" names `HR`, "stolen bases" names `SB`. A name word that drops letters
+from a word, with at most one vowel, the word's first and last letters and its
+letters in order, names it when the word is three letters longer:
+"department" names `Dept`, "weight" names `wgt`. The answer says so ('Read
+"home runs" as HR.'). A name in mixed case (`Hr`) is never matched this way.
 
 When several columns fit, the one suited to the word's place is used if it is
 the only one: the identifier after "how many", a groupable column after "by"
@@ -544,10 +550,10 @@ temperature) is refused.
 A noun for the rows counts rows ("how many patients are positive"), or the
 distinct values of an entity column when one repeats across rows: the
 identifier, or the one column named with an ID word such as `ID`, `subject`
-or `participant`. When a column of codes repeats in runs and no column is
-named for the noun, the rows are not one each, and the question is refused
-with what to ask: Loblolly's 84 rows are 14 trees (`Seed`) at 6 ages, so
-"how many trees" is refused rather than answered 84. A column that picks the
+or `participant`. When a column of codes repeats and no column is named
+for the noun, the noun may mean the rows or the codes, and the question is
+refused with what to ask: Loblolly's 84 rows are 14 trees (`Seed`) at 6
+ages, so "how many trees" is refused rather than answered 84. A column that picks the
 rows is not counted for its distinct values: "how many reviews in 2019"
 counts the rows with `review_date` = 2019, and "what share have blue eyes"
 the share with `Eye` = Blue. "Readings", "records", "samples" and other nouns in
@@ -560,6 +566,16 @@ A count with conditions or values gives its share of the rows: "18 of the
 where the filtered columns are recorded, and the answer says so when that
 leaves rows out: "701 of the 4,569 rows with diabetes recorded (15.3%) have
 diabetes = 1."
+
+A share of a group is of that group. After "share of", "percentage of",
+"proportion of", "fraction of" or "rate of", the values and conditions before
+the verb (are, is, were, was, have, has, had, who, that, which) make the base,
+and those after it are counted: "what percentage of Adelie are female" gives
+"73 of the 146 rows with species = Adelie, sex recorded (50.0%) have sex =
+female", not 73 of all 333. A yes/no outcome is counted among the rest:
+"what share of women survived" is 344 of the 470 women (73.2%). Values side
+by side with no verb between them ("share of female Adelie") are counted
+together, over every row.
 
 ### 4. Nothing left out
 
