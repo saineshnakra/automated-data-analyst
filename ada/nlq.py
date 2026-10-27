@@ -91,7 +91,8 @@ Intent = Literal[
 #: Plans answered from the column profile or the data checks rather than by combining a measure.
 ProfileIntent = Literal["missing", "duplicates", "outliers"]
 Aggregation = Literal[
-    "sum", "mean", "median", "min", "max", "count", "std", "var", "iqr", "quantile", "mode", "share", "range"
+    "sum", "mean", "median", "min", "max", "count", "std", "var", "iqr", "quantile", "mode", "share", "range",
+    "ratio",
 ]
 Operator = Literal["=", "<", "<=", ">", ">=", "missing", "contains", "starts", "ends"]
 TimePart = Literal["hour", "weekday", "month", "quarter", "year", "season"]
@@ -154,6 +155,7 @@ AGGREGATION_LABELS: dict[Aggregation, str] = {
     "iqr": "Interquartile range of",
     "quantile": "Percentile of",
     "mode": "Most common",
+    "ratio": "Ratio of",
     "share": "Share of rows",
     "range": "Range of",
 }
@@ -427,6 +429,8 @@ class QueryPlan:
     per: tuple[str, ...] = ()
     #: Rows left out before the answer, by value: the World and region rows a decision leaves out.
     excluded: tuple[ValueFilter, ...] = ()
+    #: What a ratio is given per: 100 for "claims per 100 holders".
+    scale: float | None = None
 
 
 @dataclass(frozen=True)
@@ -540,6 +544,7 @@ def plan_reading(plan: QueryPlan) -> dict:
         "second_group_by": plan.second_dimension,
         "distinct_of": plan.count_column,
         "per": list(plan.per),
+        "scale": plan.scale,
         "adjusted_for": list(plan.adjusted_for),
         "year": plan.year,
         "month": plan.month,
@@ -1126,6 +1131,8 @@ class _Reading:
     entity_column: str | None = None
     #: Plurals the values of several columns share, which name the rows ("characters").
     nouns: set[str] = field(default_factory=set)
+    #: The number a rate is given per: 100 in "claims per 100 holders".
+    scale: float | None = None
     asks_missing: bool = False
     #: A spread or percentile the question asks for ("standard deviation", "90th percentile").
     spread: Aggregation | None = None
@@ -2585,6 +2592,16 @@ def _typed_values(
     return tuple(spans)
 
 
+def _claim_rate_scale(reading: _Reading) -> None:
+    """Claim the number a rate is given per, before a column: "claims per 100 holders"."""
+    per = RATE_SCALE.search(reading.original)
+    if per and reading.remaining[per.start("n"):per.end("n")].strip() and any(
+        start == per.end() for start, _ in reading.spans.values()
+    ):
+        reading.scale = float(re.sub(r"[ ,]", "", per.group("n")))
+        reading.claim(per.start("n"), per.end("n"), keep_text=True)
+
+
 def _claim_numbers(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
     """Claim the number of a "top N", a year, and numbers that are whole column names ("1001")."""
     if (top := re.search(r"\b(?:top|bottom)\s+(?P<n>\d{1,3})\b", reading.remaining)):
@@ -2601,6 +2618,81 @@ def _claim_numbers(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRole
         elif is_year and reading.year is None:
             reading.year = int(word)
             reading.claim(start, end, keep_text=True)
+
+
+# The number a rate is given per, before the column it is per: "per 100 holders", "for every 1,000 people".
+RATE_SCALE = re.compile(r"\b(?:per|for\s+every|for\s+each)\s+(?P<n>\d{1,3}(?:[ ,]\d{3})+|\d+)\s+(?=[a-z])")
+RATE_WORDS = r"(?:per|for\s+every|for\s+each)(?:\s+\d{1,3}(?:[ ,]\d{3})+|\s+\d+)?"
+
+
+def _ratio_plan(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> QueryPlan | None:
+    """Plan "Claims per Holders": the total of one column over the total of another.
+
+    Both must be measurements, never negative and not rates or shares
+    themselves (``metric_for``), so their totals mean something; the second
+    must come right after "per", "for every" or "for each", with the number
+    the rate is given per between them ("per 100 Holders"). None for other
+    questions: a code ("per District"), or an average or total asked for
+    ("average quantity per transect" averages within each unit).
+    """
+    mentioned = reading.mentioned
+    after = [column for column, start in mentioned.items() if _follows(reading.text, start, RATE_WORDS)]
+    if len(after) != 1:
+        return None
+    partner = after[0]
+    others = [column for column in mentioned if column != partner]
+    if len(others) != 1:
+        return None
+    measure = others[0]
+    if any(re.search(rf"\b{word}\b", reading.unnamed) for word in AGGREGATION_WORDS):
+        # "average quantity per transect" averages within each unit (_per_unit_plan).
+        return None
+    for column in (measure, partner):
+        coded = column == roles.identifier or column in roles.dimensions or _is_code(column, dataframe, roles)
+        if coded or not _is_measurement(dataframe[column]) or (
+            metric_for(column, roles).unit == "rate" or (dataframe[column].dropna() < 0).any()
+        ):
+            return None
+    return QueryPlan(
+        intent="aggregate", aggregation="ratio", measure=measure, partner=partner, scale=reading.scale,
+        **_scope(reading),
+    )
+
+
+def _execute_ratio(plan: QueryPlan, working: pd.DataFrame, scope: str, applied: list[str]) -> QueryAnswer:
+    """The total of ``measure`` over the total of ``partner``, on the rows that hold both, times ``scale``."""
+    assert plan.measure is not None and plan.partner is not None
+    both = working[[plan.measure, plan.partner]].dropna()
+    top, bottom = float(both[plan.measure].sum()), float(both[plan.partner].sum())
+    if both.empty or bottom == 0:
+        return QueryAnswer(
+            question="",
+            plan=plan,
+            answer=f"{plan.partner} adds up to zero{_phrase(applied)}, so there is no rate to give.",
+            calculation=f"sum({plan.partner}) is 0{scope}",
+        )
+    scale = plan.scale or 1.0
+    value = top / bottom * scale
+    per = f"per {scale:,g} {plan.partner}" if plan.scale else f"per {plan.partner}"
+    formula = f"sum({plan.measure}) ÷ sum({plan.partner})" + (f" × {scale:,g}" if plan.scale else "")
+    left = len(working) - len(both)
+    answer = (
+        f"{plan.measure} {per}{_phrase(applied)} is {value:,.6g}: {_plain_total(top)} {plan.measure} over "
+        f"{_plain_total(bottom)} {plan.partner}, from {counted(len(both), 'row')}"
+        + (f" ({counted(left, 'row')} missing one of them left out)" if left else "") + "."
+    )
+    return QueryAnswer(
+        question="",
+        plan=plan,
+        answer=answer,
+        calculation=f"{formula}{scope}",
+        value=_as_number(value),
+        figures=(("ratio", value), ("numerator", top), ("denominator", bottom), ("n", float(len(both)))),
+    )
+
+
+def _plain_total(value: float) -> str:
+    return f"{value:,.0f}" if float(value).is_integer() else f"{value:,.4g}"
 
 
 def _is_year(word: str, dataframe: pd.DataFrame, roles: ColumnRoles) -> bool:
@@ -3157,6 +3249,7 @@ def _read_question(
     _claim_ages(reading, dataframe, roles)
     _claim_year_ranges(reading, dataframe, roles)
     _claim_fillers(reading)
+    _claim_rate_scale(reading)
     _claim_time_points(reading, dataframe, roles)
     _claim_ordinal_columns(reading, dataframe, roles)
     _claim_conditions(reading, list(reading.spans), dataframe, roles, vocabulary)
@@ -3557,6 +3650,8 @@ def _plan_from_reading(reading: _Reading, dataframe: pd.DataFrame, roles: Column
             {**_scope(reading), "filters": filters_including_dimension},
         )
 
+    if (ratio := _ratio_plan(reading, dataframe, roles)) is not None:
+        return ratio
     if (per_unit := _per_unit_plan(reading, dataframe, roles)) is not None:
         return per_unit
     pair = _grouping_pair(reading, dataframe, roles)
@@ -5211,6 +5306,9 @@ def _run_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -> Q
 
     if plan.intent == "aggregate" and plan.per:
         return _execute_unit_average(plan, working, roles, scope, applied)
+
+    if plan.intent == "aggregate" and plan.aggregation == "ratio":
+        return _execute_ratio(plan, working, scope, applied)
 
     if plan.intent == "aggregate":
         assert plan.measure is not None

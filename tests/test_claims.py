@@ -976,6 +976,19 @@ class PeakTests(unittest.TestCase):
                 self.assertEqual(ada.check_claim(frame, claim).reason, "missing_context")
 
 
+class RateClaimTests(unittest.TestCase):
+    def test_a_rate_for_every_hundred_is_checked_as_totals(self):
+        frame = pd.DataFrame({"District": [1, 1, 1, 1, 2, 2, 2, 2],
+                              "Holders": [100, 300, 60, 40, 50, 50, 70, 30],
+                              "Claims": [10, 20, 6, 4, 15, 5, 8, 12]})
+        check = ada.check_claim(frame, "District 2 had about 20 Claims for every 100 Holders.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("sum(Claims) ÷ sum(Holders) × 100", check.message)
+        # The mean of the rows' own rates (23.2) is not the rate.
+        wrong = ada.check_claim(frame, "District 2 had about 23.2 Claims for every 100 Holders.")
+        self.assertEqual(wrong.reason, "failed_check")
+
+
 class UnitsAndDaysTests(unittest.TestCase):
     def rats(self) -> pd.DataFrame:
         rows = [{"Rat": rat, "Diet": 1 + rat // 3, "Time": day, "weight": 200.0 + 10 * rat + day}

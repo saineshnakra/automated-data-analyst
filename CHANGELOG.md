@@ -34,6 +34,12 @@
 
 ### Reading claims and questions
 
+- Rates: "Claims per 100 Holders" and "about 20 claims for every 100
+  holders" are the total of one column over the total of the other, times
+  the number they are per (`sum(Claims) ÷ sum(Holders) × 100`), with both
+  totals in the answer. A code after "per" ("per District") and an average
+  asked for keep their own readings.
+
 - "6,657 metres high" reads a height, and "Customers paid R$16,008,872" a
   payment: an adjective after the unit and a verb before the number name the
   quantity (high, tall, long, wide, deep, heavy, old; paid, spent, earned,

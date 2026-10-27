@@ -3452,6 +3452,36 @@ class ShareSplitTests(unittest.TestCase):
         self.assertIn("dentists", hint)
 
 
+class RateTests(unittest.TestCase):
+    def policies(self) -> pd.DataFrame:
+        return pd.DataFrame({"District": [1, 1, 1, 1, 2, 2, 2, 2],
+                             "Holders": [100, 300, 60, 40, 50, 50, 70, 30],
+                             "Claims": [10, 20, 6, 4, 15, 5, 8, 12]})
+
+    def test_a_rate_is_one_total_over_another(self):
+        frame = self.policies()
+        roles = detect_roles(frame)
+        answer = answer_question("Claims per Holders", frame, roles)
+        self.assertAlmostEqual(answer.value, 80 / 700)
+        self.assertEqual(answer.calculation, "sum(Claims) ÷ sum(Holders)")
+        scaled = answer_question("Claims per 1,000 Holders for District 2", frame, roles)
+        self.assertAlmostEqual(scaled.value, 40 / 200 * 1000)
+        self.assertEqual(dict(scaled.figures)["denominator"], 200)
+
+    def test_a_code_or_an_average_after_per_is_no_rate(self):
+        frame = self.policies()
+        roles = detect_roles(frame)
+        for question in ("Claims per District", "average Claims per District"):
+            with self.subTest(question=question):
+                answer = answer_question(question, frame, roles)
+                self.assertNotEqual(getattr(answer, "calculation", ""), "sum(Claims) ÷ sum(District)")
+
+    def test_a_rate_of_negative_numbers_is_not_read(self):
+        frame = pd.DataFrame({"profit": [-5.0, 10.0, 3.0], "staff": [2.0, 3.0, 4.0]})
+        answer = answer_question("profit per staff", frame, detect_roles(frame))
+        self.assertFalse(answer is not None and answer.plan.aggregation == "ratio")
+
+
 class AgeTests(unittest.TestCase):
     def bands(self) -> pd.DataFrame:
         return pd.DataFrame({"age": ["12", "13", "20", "22-23", "30-34", "35-49", "50-64", "65+"],

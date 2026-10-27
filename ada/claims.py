@@ -583,6 +583,10 @@ def _candidates(claim: str, columns: list[str]) -> list[_Candidate]:
         filter_like = filter_like or bool(
             re.fullmatch(r"\s*at\s*", before, re.IGNORECASE) and re.match(r"\s*,", claim[match.end():])
         )
+        # "20 claims per 100 holders": the number after "per" says what the rate is given per.
+        filter_like = filter_like or bool(
+            re.search(r"\b(?:per|for\s+every|for\s+each)\s*$", before, re.IGNORECASE)
+        )
         # "cars with 4 cylinders": a number between "with" and a column's name picks rows.
         following = re.match(r"\s*([A-Za-z]+)", claim[match.end():])
         filter_like = filter_like or bool(

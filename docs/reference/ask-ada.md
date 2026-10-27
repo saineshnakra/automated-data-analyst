@@ -863,6 +863,14 @@ Other behaviour:
   the units' means.
 - Sum and count groupings get a `Share %` column when every group has the same
   sign.
+- A rate of one column per another ("Claims per Holders", "claims for every
+  100 Holders", "per 1,000 Holders") is the total of the first over the total
+  of the second, on the rows that hold both, times the number it is per:
+  `sum(Claims) ÷ sum(Holders) × 100`. It is not the average of the rows' own
+  rates, which weights a small row like a large one. Both columns must be
+  measurements that are never negative and are not rates themselves; a code
+  after "per" ("Claims per District") or an average asked for ("average
+  quantity per transect") keeps its own reading.
 - Changes are given in the measure's own terms: percent for an amount or
   count, percentage points for a rate, the plain difference for a level,
   whose percent change is in the figures too. A change between two years the

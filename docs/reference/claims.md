@@ -165,6 +165,11 @@ state in 1988, with 5,390") is read as the same peak, and "Vesuvius had its
 busiest year on record in 2024, with 1,315 earthquakes" as a peak of the rows
 counted in each year.
 
+A rate ("about 20 claims for every 100 policyholders", "16 Claims per 100
+Holders") is checked as the total of one column over the total of the other,
+times the number after "per" or "for every", which is part of the question
+and never the number claimed.
+
 ## Words that name nothing
 
 When the claim still can't be read, ADA leaves out the words its refusal
