@@ -262,10 +262,10 @@ QUERY_STOPWORDS = {
     "a", "about", "across", "all", "also", "an", "and", "any", "are", "as", "at", "be", "been",
     "between", "by", "can", "data", "did", "do", "does", "done", "each",
     "every", "for", "from", "get", "give", "got", "have", "had", "has", "having", "he", "how",
-    "hows", "i", "if", "in", "is", "it", "just", "last", "least", "make", "made", "many", "me",
-    "measured", "most", "much", "my", "next", "of", "on", "only", "or", "our", "overall",
+    "her", "his", "hows", "i", "if", "in", "is", "it", "its", "just", "last", "least", "make", "made",
+    "many", "me", "measured", "most", "much", "my", "next", "of", "on", "only", "or", "our", "overall",
     "please", "re", "recorded", "s", "she", "show", "tell", "tested", "than", "that", "the",
-    "then", "there", "this", "to", "they", "us", "value", "values", "ve", "was", "we", "were",
+    "their", "then", "there", "this", "to", "they", "us", "value", "values", "ve", "was", "we", "were",
     "what", "whats", "when", "where", "which", "whose", "with", "without", "you", "your",
 }
 # Words asking what share of the rows meet a condition: "what share have diabetes".
@@ -886,6 +886,8 @@ YEAR_RANGES: tuple[tuple[re.Pattern, str], ...] = (
     (re.compile(rf"\bbefore\s+(?P<year>{YEAR})\b"), "<"),
     (re.compile(rf"\b(?:until|till|up\s+to|through)\s+(?P<year>{YEAR})\b"), "<="),
 )
+# A decade: "the 2010s" is 2010 to 2019.
+DECADE_PATTERN = re.compile(r"\b(?P<decade>(?:19|20)\d0)s\b")
 # Two groups split at a year: "before and after 2000".
 SPLIT_PATTERN = re.compile(
     rf"\b(?:before\s+(?:and|vs|versus)\s+after|pre\s+(?:and|vs|versus)\s+post)\s+(?P<year>{YEAR})\b"
@@ -1330,8 +1332,21 @@ def _claim_values(
                 else:
                     found, exact = _values_named(words, vocabulary, exact_only=exact_only)
                 found = [value for value in found if _plain_match(value, reading.question, cued)]
+                adverb = not found and size == 1 and len(words[0]) > 4 and words[0].endswith("ly")
+                if adverb:
+                    # "highly satisfied": the adverb of a value, kept when the next words name its column.
+                    found, exact = _values_named((words[0][:-2],), vocabulary, exact_only=True)
                 if not found:
                     continue
+                columns = list(dict.fromkeys(value.column for value in found))
+                beside = _column_beside(reading, columns, window[0][0], window[-1][1]) if (
+                    len(columns) > 1 or adverb) else None
+                if adverb and beside is None:
+                    continue
+                if beside is not None:
+                    # "high satisfaction", "a high level of contact": the word beside the value names
+                    # which of the columns holding it is meant.
+                    found = [value for value in found if value.column == beside[0]]
                 chosen, values, problem = _pick_values(words, found, exact, reading.question, dataframe)
                 if problem:
                     reading.flag(problem)
@@ -1339,11 +1354,54 @@ def _claim_values(
                     _add_filter(reading, values, window[0][0])
                     if _scope_cued(reading, window[0][0]):
                         reading.scoped.add(chosen.column)
+                    if beside is not None:
+                        reading.consumed.add(chosen.column)
+                        reading.claim(*beside[1])
+                        said = reading.original[window[0][0]:beside[1][1]]
+                        reading.notes.append(
+                            f'Read "{_raw_words(reading.question, said.split())}" as {chosen.column} = '
+                            f"{_listed([value.raw for value in values])}."
+                        )
                 reading.claim(window[0][0], window[-1][1])
                 index += size
                 break
             else:
                 index += 1
+
+
+# Words that may stand between a value and the column naming it: "a high level of contact".
+BESIDE_FILLERS = frozenset({"level", "levels", "degree", "amount", "of", "in", "with"})
+
+
+def _column_beside(
+    reading: _Reading, columns: list[str], start: int, end: int
+) -> tuple[str, tuple[int, int]] | None:
+    """The one of ``columns`` named right after a value, and the words from the value's end to the name's.
+
+    The name is a column already found there ("a high level of contact" with
+    Cont), or the next unclaimed word, which a name word of three letters or
+    more starts ("satisfaction" for Sat). Only filler words such as "level
+    of" may come between.
+    """
+    after = reading.original[end:]
+    gap = re.match(r"(?:\s+(?:" + "|".join(sorted(BESIDE_FILLERS)) + r"))*\s+", after)
+    if gap is None:
+        return None
+    position = end + gap.end()
+    spanned = [column for column in columns if reading.spans.get(column, (None,))[0] == position]
+    if len(spanned) == 1:
+        return spanned[0], (end, reading.spans[spanned[0]][1])
+    word = re.match(r"[a-z]+", reading.remaining[position:])
+    if word is None:
+        return None
+    names = _partial_words(columns)
+    prefixed = [
+        column for column in columns
+        if any(len(name) >= 3 and word.group().startswith(name) for name in names[column])
+    ]
+    if len(prefixed) != 1:
+        return None
+    return prefixed[0], (end, position + word.end())
 
 
 def _claim_codes(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
@@ -1411,6 +1469,58 @@ def _claim_sexes(reading: _Reading, vocabulary: _Vocabulary) -> None:
         reading.claim(start, end)
         reading.notes.append(
             f'Read "{_raw_words(reading.question, [word])}" as {sexed[0]} = '
+            f"{_listed([value.raw for value in values])}."
+        )
+
+
+# Adjectives of nationality and the country names a column may spell them with: "Belgian" is Belgium.
+DEMONYMS = {
+    "american": ("united states", "usa", "us", "united states of america"), "argentine": ("argentina",),
+    "argentinian": ("argentina",), "australian": ("australia",), "austrian": ("austria",),
+    "belgian": ("belgium",), "brazilian": ("brazil",), "british": ("united kingdom", "uk", "great britain"),
+    "canadian": ("canada",), "chilean": ("chile",), "chinese": ("china",), "colombian": ("colombia",),
+    "croatian": ("croatia",), "czech": ("czech republic", "czechia"), "danish": ("denmark",),
+    "dutch": ("netherlands", "the netherlands", "holland"), "egyptian": ("egypt",),
+    "english": ("england",), "ethiopian": ("ethiopia",), "finnish": ("finland",), "french": ("france",),
+    "german": ("germany",), "greek": ("greece",), "hungarian": ("hungary",), "indian": ("india",),
+    "indonesian": ("indonesia",), "iranian": ("iran",), "irish": ("ireland",), "israeli": ("israel",),
+    "italian": ("italy",), "jamaican": ("jamaica",), "japanese": ("japan",), "kenyan": ("kenya",),
+    "korean": ("south korea", "korea"), "luxembourgish": ("luxembourg",), "luxembourger": ("luxembourg",),
+    "mexican": ("mexico",), "moroccan": ("morocco",), "nigerian": ("nigeria",), "norwegian": ("norway",),
+    "pakistani": ("pakistan",), "peruvian": ("peru",), "polish": ("poland",), "portuguese": ("portugal",),
+    "romanian": ("romania",), "russian": ("russia",), "scottish": ("scotland",), "slovak": ("slovakia",),
+    "slovenian": ("slovenia",), "spanish": ("spain",), "swedish": ("sweden",), "swiss": ("switzerland",),
+    "turkish": ("turkey", "turkiye"), "ukrainian": ("ukraine",), "venezuelan": ("venezuela",),
+    "vietnamese": ("vietnam", "viet nam"), "welsh": ("wales",),
+}
+# Name words of a column of nationalities, preferred for a nationality adjective over a country of birth.
+NATIONALITY_WORDS = frozenset({"nationality", "citizenship", "nation"})
+
+
+def _claim_demonyms(reading: _Reading, vocabulary: _Vocabulary) -> None:
+    """Filter on a country for its adjective of nationality: "Belgian riders" keeps nationality Belgium.
+
+    When several columns hold the country (a nationality and a country of
+    birth), one named for nationality is used; otherwise nothing is read.
+    """
+    for start, end, word in _tokens(reading.remaining):
+        countries = DEMONYMS.get(word)
+        if countries is None:
+            continue
+        found = [value for value in vocabulary.values if " ".join(value.words) in countries]
+        columns = list(dict.fromkeys(value.column for value in found))
+        if len(columns) > 1:
+            columns = [
+                column for column in columns
+                if NATIONALITY_WORDS & set(_norm(normalized_name(str(column))).split())
+            ]
+        if len(columns) != 1:
+            continue
+        values = [value for value in found if value.column == columns[0]]
+        _add_filter(reading, values, start)
+        reading.claim(start, end)
+        reading.notes.append(
+            f'Read "{_raw_words(reading.question, [word])}" as {columns[0]} = '
             f"{_listed([value.raw for value in values])}."
         )
 
@@ -2406,6 +2516,17 @@ def _claim_year_ranges(reading: _Reading, dataframe: pd.DataFrame, roles: Column
                 reading.conditions.append(Condition(column, operator, year, part="year"))
                 reading.scoped.add(column)
             reading.claim(*match.span())
+    for match in list(DECADE_PATTERN.finditer(reading.remaining)):
+        if column is None:
+            reading.flag("This table has no date or year column for a decade.")
+        else:
+            low = float(match.group("decade"))
+            reading.conditions.extend(
+                [Condition(column, ">=", low, part="year"), Condition(column, "<=", low + 9, part="year")]
+            )
+            reading.scoped.add(column)
+            reading.notes.append(f'Read "{match.group()}" as {low:.0f} to {low + 9:.0f}.')
+        reading.claim(*match.span())
 
 
 # Verbs that only date an event, right before a year: "sets released in 2020".
@@ -2688,6 +2809,7 @@ def _read_question(
     _claim_person_names(reading, dataframe)
     _claim_values(reading, vocabulary, dataframe, exact_only=True, row_noun=roles.row_noun)
     _claim_sexes(reading, vocabulary)
+    _claim_demonyms(reading, vocabulary)
     _claim_analysis_words(reading, dataframe, roles)
     _claim_rate(reading)
     partial = _claim_partial_names(reading, dataframe, roles)
@@ -6103,16 +6225,20 @@ def _execute_repeated_correlation(plan: QueryPlan, found, scope: str, applied: l
             f" The {found.rows:,} rows come {each} to a {unit}, so they are not counted as independent: "
             f"each {unit} counts once."
         )
+        both = f" (and of {first} on {second})" if found.reverse is not None else ""
         calculation = (
-            f"least-squares slope of {second} on {first} within each {unit} with 3 or more rows, then their "
-            f"mean with a one-sample t-test; repeated-measures r: Pearson r of the values centred on each "
-            f"{_owner(unit)} means{scope}"
+            f"least-squares slope of {second} on {first}{both} within each {unit} with 3 or more rows, then "
+            f"their mean with a one-sample t-test; repeated-measures r: Pearson r of the values centred on "
+            f"each {_owner(unit)} means{scope}"
         )
         figures = [("r", found.r), ("units", float(found.units)), ("n", float(found.rows))]
         if found.slope is not None:
             figures += [("slope", found.slope), (f"slope of {second} on {first}", found.slope),
                         ("ci_low", found.low), ("ci_high", found.high),
                         ("p_value", found.p), ("positive_slopes", float(found.positive))]
+        if found.reverse is not None:
+            # A claim may state the change the other way round: "rises 0.66 mm per year of age".
+            figures.append((f"slope of {first} on {second}", found.reverse))
         return QueryAnswer(
             question="", plan=plan, answer=answer, calculation=calculation, value=_as_number(found.r),
             figures=tuple((name, value) for name, value in figures if _as_number(value) is not None),
@@ -6386,6 +6512,10 @@ def _predictors_plan(measure: str, scope: dict) -> QueryPlan:
     return QueryPlan(intent="correlates", measure=measure, notes=(note,), **scope)
 
 
+# Name words of a quantity, which a column set at a few levels still measures.
+QUANTITY_WORDS = frozenset({"age", "dose", "dosage", "time", "temperature", "temp", "concentration", "conc"})
+
+
 def _is_code(column: str, dataframe: pd.DataFrame, roles: ColumnRoles) -> bool:
     """Whether a column holds category codes to compare across rather than a quantity to correlate.
 
@@ -6397,9 +6527,10 @@ def _is_code(column: str, dataframe: pd.DataFrame, roles: ColumnRoles) -> bool:
     series = dataframe[column]
     if not _is_measurement(series) or _is_flag(series):
         return True
-    if column in roles.factors:
-        return not _unit_words(column)
     words = set(_norm(normalized_name(column)).split())
+    if column in roles.factors:
+        # Ages 8, 10, 12 and 14, or doses of 0.5, 1 and 2: a quantity set at a few levels correlates.
+        return not (_unit_words(column) or words & QUANTITY_WORDS)
     values = series.dropna()
     return bool(words & {"id", "ids", "code", "codes"}) and bool((values % 1 == 0).all()) and (
         values.nunique() < len(values)

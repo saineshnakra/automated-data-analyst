@@ -682,6 +682,37 @@ class SummaryColumnTests(unittest.TestCase):
         self.assertTrue(one.verified)
 
 
+class NewDataReadingTests(unittest.TestCase):
+    def growth(self) -> pd.DataFrame:
+        rows = []
+        for child in range(6):
+            for age in (8, 10, 12, 14):
+                rows.append({"Subject": f"S{child}", "age": age, "distance": 20 + child + 0.5 * (age - 8)
+                             + (0.25 if age == 12 else 0)})
+        return pd.DataFrame(rows)
+
+    def test_a_change_per_year_of_a_column_set_at_a_few_ages_is_its_slope(self):
+        frame = self.growth()
+        check = ada.check_claim(frame, "The distance increased by about 0.5 mm per year of age.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("slope of distance on age", check.message)
+        wrong = ada.check_claim(frame, "The distance increased by about 0.9 mm per year of age.")
+        self.assertEqual(wrong.reason, "failed_check")
+
+    def test_n_times_counts_the_rows(self):
+        tours = pd.DataFrame({"edition": range(1, 9),
+                              "nationality": ["France", "Belgium", "France", "Italy", "Belgium", "Spain",
+                                              "France", "Italy"]})
+        self.assertTrue(ada.check_claim(tours, "France won 3 times.").verified)
+        # "won" names nothing; a count read without it may miss rows it picks, so a mismatch is not failed.
+        self.assertEqual(ada.check_claim(tours, "France won 5 times.").reason, "missing_context")
+
+    def test_a_decade_scopes_the_years(self):
+        tours = pd.DataFrame({"year": range(2000, 2020),
+                              "distance": [3000.0 + 10 * index for index in range(20)]})
+        self.assertTrue(ada.check_claim(tours, "The average distance in the 2010s was 3,145 km.").verified)
+
+
 class CountOfThingsTests(unittest.TestCase):
     def test_n_of_the_things_counts_rows(self):
         cats = pd.DataFrame({"tag_id": [f"t{index}" for index in range(8)],

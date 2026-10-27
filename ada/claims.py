@@ -142,6 +142,8 @@ SLOPE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 FALLING_VERBS = ("fall", "fell", "drop", "decreas", "declin", "goes down", "went down")
+# Units of a slope's column besides those in UNITS: "per year of age", "per unit of dose".
+PER_UNIT_WORDS = frozenset({"year", "month", "week", "unit", "point", "level"})
 # Fractions in words: "about a quarter of", "more than half of", "two thirds of".
 FRACTION_PATTERN = re.compile(
     r"\b(?:(?P<qualifier>about|roughly|around|approximately|nearly|almost|just\s+over|just\s+under|over|"
@@ -652,9 +654,10 @@ def read_claim(
             what = re.sub(r"^(?:the|a|an)\s+", "", what.strip(), flags=re.IGNORECASE)
             # "per mm of flipper length" is per unit of flipper length, when those words name a column.
             measured = re.match(r"([A-Za-z]+)\s+of\s+(.+)", per)
-            if measured and measured.group(1).lower() in UNITS and set(_words(measured.group(2))) & (
-                _column_words(columns)
-            ):
+            unit_word = measured.group(1).lower() if measured else ""
+            if measured and (unit_word in UNITS or unit_word in PER_UNIT_WORDS) and set(
+                _words(measured.group(2))
+            ) & _column_words(columns):
                 per = measured.group(2)
             return f"correlation between {per} and {what}", number, ""
     candidates = _candidates(claim, columns)
@@ -693,6 +696,14 @@ def read_claim(
             following.group(1).lower().endswith("s") or following.group(1).lower() in IRREGULAR_PLURALS
         ))
     )
+    # "won the Tour 20 times" counts the rows the rest of the claim picks.
+    times = re.match(r"\s*times\b", claim[chosen.match.end():], re.IGNORECASE)
+    if times and not chosen.match.group("percent"):
+        rest = f"{claim[:chosen.qualifier_start]} {claim[chosen.match.end() + times.end():]}"
+        rest = re.sub(r"\s+", " ", rest).strip(" .,;:!?")
+        written = claim[chosen.qualifier_start:chosen.match.end()]
+        number = claimed_number(written, chosen.match, chosen.qualifier, None)
+        return f"how many rows {rest}", number, ""
     # "55 of the cats were neutered" counts the cats that were.
     of_the = OF_THE.match(claim[chosen.match.end():])
     noun = of_the.group(1).lower() if of_the else ""
