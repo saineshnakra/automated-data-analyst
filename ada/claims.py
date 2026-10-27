@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .file_io import SUPPORTED_SUFFIXES as READABLE
+from .formatting import counted
 from .nlq import QueryAnswer
 from .sources import Source
 
@@ -961,7 +962,8 @@ def _check(analysis: Any, text: str, asked: str, number: ClaimedNumber, source: 
     ))
     failed = [check for check in checks if not check.passed]
     described = answer.calculation
-    rows = f" ({scope.rows_used:,} rows)" if scope is not None and scope.rows_used is not None else ""
+    used = scope.rows_used if scope is not None else None
+    rows = f" ({counted(used, 'row')})" if used is not None else ""
     if agreement == "mismatch":
         reason = "failed_check"
         message = (
