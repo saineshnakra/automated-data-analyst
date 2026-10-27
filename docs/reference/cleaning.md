@@ -149,9 +149,11 @@ with no column saying which. A log in time order that goes back to before the
 earliest tenth of the readings so far starts a new log. Small steps back (a
 clock corrected by minutes, a stretch sent twice) do not count, and neither
 does a block shorter than 100 rows or 1% of the table. A file with more than
-12 such blocks, or with steps back on more than 1% of its rows, is left as it
-is, and so is one with fewer than 20 distinct times: three years shared by 344
-rows sorted by species are not the times of a log.
+12 such blocks, or with more steps back than 24 and 1% of its rows, is left as
+it is: Formula 1's races, listed season by season from 2009 back to 1950, step
+back 65 times in 1,058 rows and are one table out of date order, not 8 logs.
+So is a file with fewer than 20 distinct times: three years shared by 344 rows
+sorted by species are not the times of a log.
 
 When no column already names the logs (a site or sensor whose value changes
 wherever time starts again, and within which time never starts again), a

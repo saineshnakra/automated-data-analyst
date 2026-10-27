@@ -219,7 +219,9 @@ each word is claimed, in this order, by:
    `Temp (°F)` "temp" names neither. A core name that is also a query word
    (`Time (h)` gives "time") counts only after a grouping word: "by time".
    A prefix most names share before a colon (`PROPERTY: YS (MPa)`) and LaTeX
-   markup (`$\mu$m`) can be left out, and "/" in a name reads as a space.
+   markup (`$\mu$m`) can be left out, "/" in a name reads as a space, and a
+   camelCase name reads as its words: "fastest lap speed" names
+   `fastestLapSpeed`, before "lap" can name `laps`.
    Names are read before any query word, so a column called `SEP`, `OCT`,
    `Impact` or `120` is the column, not a month, a research word or a number;
    a number naming a column is still a value right after a comparison word,
@@ -362,6 +364,9 @@ name word is at least three letters and a third of the word: "conductivity"
 names `Conduc`, "stations" names `STA`, "healthy" names `Crop_Health_Label`.
 A word that is a name word less a common ending ("-ing", "-ed", "-ity",
 "-ation" and a few more) names it too: "fast" names `fasting_ability`. Two to
+four words that a name shortens word by word name it, when each name word
+starts its word with three letters or more and one is whole: "life
+expectancy" names `lifeExp`, "departure delay" names `dep_delay`. Two to
 four words whose initials spell a column named in capitals name it: "home
 runs" names `HR`, "stolen bases" names `SB`. The answer says so ('Read "home
 runs" as HR.'). A name in mixed case (`Hr`) is never matched this way.

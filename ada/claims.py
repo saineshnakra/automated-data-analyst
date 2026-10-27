@@ -433,7 +433,8 @@ def _unit_after(claim: str, end: int, columns: list[str], row_noun: str | None) 
     column_words = _column_words(columns) | ({row_noun} if row_noun else set())
     words = []
     position = end
-    for match in re.finditer(r"\s*([A-Za-z][A-Za-z.]*)", claim[end:]):
+    # A unit may hold a slash: "km/h", "mg/dL".
+    for match in re.finditer(r"\s*([A-Za-z][A-Za-z.]*(?:/[A-Za-z][A-Za-z0-9.]*)?)", claim[end:]):
         if match.start() != position - end:
             break
         word = match.group(1).rstrip(".")

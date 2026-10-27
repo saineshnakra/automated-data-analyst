@@ -80,7 +80,9 @@ claim in a unit that measures something else ("44 minutes" about
 `bill_length_mm`) gets `conflicting_evidence`. Units are read only from
 plain forms (`g`, `kg`, `mm`, `cm`, `km`, `minutes`, `hours`, `days`, and
 their full names); short forms that also mean something else, such as `m`
-and `t`, are not read.
+and `t`, are not read. A unit with a slash ("202.6 km/h") is read as the
+claim's unit; one ADA does not convert is noted, and only the numbers are
+compared.
 
 A claim that names no column can still name its kind of quantity: by its
 unit ("4000 g" is a mass) or by a verb ("weigh", "lasted", or "measure" with

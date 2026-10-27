@@ -470,6 +470,15 @@ def _names_match(first: str, second: str, to_profile: FileProfile) -> bool:
     return b <= marks and bool(a & named_for) and bool(a & marks)
 
 
+# Names that are a file's own row id when they stand alone.
+ROW_ID_WORDS = frozenset({"id", "key", "uuid"})
+
+
+def _row_ids(from_columns: tuple[str, ...], to_columns: tuple[str, ...]) -> bool:
+    """Whether both sides are a bare id, each file's own row number ("id" in colors.csv and themes.csv)."""
+    return all(_words(str(column)) <= ROW_ID_WORDS for column in (*from_columns, *to_columns))
+
+
 def _plain_numbers(values: set) -> bool:
     """Whether every key value is a whole number in digits, as row numbers, counters and positions are.
 
@@ -496,6 +505,9 @@ def _link(source: _Keys, from_columns: tuple[str, ...], target: _Keys, to_column
     shared = left_values & right_values
     coverage = len(shared) / len(left_values)
     if coverage < (MIN_NAMED_COVERAGE if named else MIN_COVERAGE):
+        return None
+    if _row_ids(from_columns, to_columns) and len(shared) / len(right_values) < MIN_COVERAGE:
+        # Two files' own row ids match only when they number the same things.
         return None
     right_unique = int(right_counts.max()) == 1
     if not right_unique and (not named or len(right_values) < MIN_KEY_VALUES or not _key_named(from_columns)):

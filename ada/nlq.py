@@ -617,7 +617,7 @@ LATEX_MARKUP = re.compile(r"\$|\\[A-Za-z]+|[\^{}]")
 
 
 def _spellings(columns: list[str]) -> dict[str, list[str]]:
-    """Each column's name as written, then without a prefix most names share, then without LaTeX markup."""
+    """Each column's name as written, without a shared prefix, without LaTeX markup and camelCase split."""
     prefixes = Counter(
         match.group(1).strip().casefold() for column in columns if (match := NAME_PREFIX.match(str(column)))
     )
@@ -629,6 +629,8 @@ def _spellings(columns: list[str]) -> dict[str, list[str]]:
         if match and match.group(1).strip().casefold() in shared:
             forms.append(forms[0][match.end():])
         forms += [LATEX_MARKUP.sub("", form) for form in forms if LATEX_MARKUP.search(form)]
+        # camelCase split, so "fastest lap speed" names fastestLapSpeed.
+        forms += [split for form in forms if _norm(split := normalized_name(form)) != _norm(form)]
         spellings[column] = forms
     return spellings
 
@@ -1246,6 +1248,10 @@ def _claim_values(
                         continue
                 elif not exact_only and sum(len(word) for word in ordinary) < 3:
                     continue
+                elif not exact_only and all(map(_is_number, words)):
+                    # A number inside a longer value ("2020" in a race's web address) is left
+                    # for the year, a condition or a count.
+                    continue
                 else:
                     found, exact = _values_named(words, vocabulary, exact_only=exact_only)
                 found = [value for value in found if _plain_match(value, reading.question, cued)]
@@ -1328,6 +1334,25 @@ def _holding(words: dict[str, tuple[str, ...]], phrase: tuple[str, ...], index: 
     return sorted(found, key=index.position.__getitem__)
 
 
+def _abbreviated_columns(phrase: tuple[str, ...], words: dict[str, tuple[str, ...]]) -> list[str]:
+    """Columns whose name shortens the phrase word by word: "life exp" for "life expectancy".
+
+    Each name word starts its word of the phrase, with three letters at least,
+    and one of them is whole, so a run of short words is not read as initials.
+    """
+    size = len(phrase)
+
+    def shortens(names: tuple[str, ...]) -> bool:
+        return len(names) >= size and any(
+            all(word.startswith(name) and (len(name) >= 3 or name == word) for name, word in pairs)
+            and any(name == word for name, word in pairs)
+            for start in range(len(names) - size + 1)
+            if (pairs := list(zip(names[start:start + size], phrase, strict=True)))
+        )
+
+    return [column for column, names in words.items() if shortens(names)]
+
+
 def _initialled_columns(phrase: tuple[str, ...], words: dict[str, tuple[str, ...]]) -> list[str]:
     """Columns named in capitals by the initials of the phrase: "home runs" for HR, "stolen bases" for SB."""
     if not all(word.isalpha() for word in phrase):
@@ -1361,7 +1386,7 @@ def _claim_partial_at(
         if not candidates and size == 1:
             candidates = _prefixed_columns(phrase[0], words) or _stemmed_columns(phrase[0], words)
         if not candidates and 2 <= size <= 4:
-            candidates = _initialled_columns(phrase, words)
+            candidates = _abbreviated_columns(phrase, words) or _initialled_columns(phrase, words)
         if not candidates:
             continue
         start, end = window[0][0], window[-1][1]

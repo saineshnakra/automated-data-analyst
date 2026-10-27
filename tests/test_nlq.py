@@ -478,6 +478,23 @@ class TimeScopeTests(unittest.TestCase):
 
         self.assertIn("Order Date in May 2025", answer.answer)
 
+    def test_a_year_inside_a_web_address_is_still_the_year(self):
+        dates = pd.to_datetime(["2019-03-17", "2019-07-14", "2020-07-05", "2020-07-12", "2020-08-02",
+                                "2021-03-28"])
+        frame = pd.DataFrame({
+            "date": dates,
+            "name": ["Australian", "British", "Austrian", "Styrian", "British", "Bahrain"],
+            "round": [1, 10, 1, 2, 4, 1],
+            "url": [f"https://en.wikipedia.org/wiki/{day.year}_{name}_Grand_Prix"
+                    for day, name in zip(dates, ["Australian", "British", "Austrian", "Styrian", "British",
+                                                 "Bahrain"], strict=True)],
+        })
+
+        answer = answer_question("how many races in 2020", frame, detect_roles(frame))
+
+        self.assertEqual(answer.plan.year, 2020)
+        self.assertEqual(answer.value, 3)
+
 
 class ShareOfTotalTests(unittest.TestCase):
     def _roles(self, frame):
@@ -707,6 +724,18 @@ class PluralAndWordMatchTests(unittest.TestCase):
         frame = pd.DataFrame({"Category": list("abcabcabca"), "Revenue": [float(i) for i in range(10)]})
         result = answer_question("top 2 categories by revenue", frame, detect_roles(frame))
         self.assertEqual(result.plan.dimension, "Category")
+
+    def test_a_name_that_shortens_the_words_names_its_column(self):
+        frame = pd.DataFrame({"continent": ["Africa", "Asia", "Europe"] * 4,
+                              "lifeExp": [52.0, 70.0, 77.0] * 4, "pop": [1e6, 5e6, 2e6] * 4})
+        roles = detect_roles(frame)
+
+        answer = answer_question("average life expectancy by continent", frame, roles)
+        unrelated = answer_question("average lift exposure by continent", frame, roles)
+
+        self.assertEqual(answer.plan.measure, "lifeExp")
+        self.assertIn('Read "life expectancy" as lifeExp', answer.answer)
+        self.assertNotEqual(getattr(unrelated, "plan", None) and unrelated.plan.measure, "lifeExp")
 
     def test_a_column_name_does_not_flip_the_ranking(self):
         frame = pd.DataFrame({"Store": ["A", "A", "B", "B"], "Lowest Price": [1.0, 2.0, 10.0, 20.0]})

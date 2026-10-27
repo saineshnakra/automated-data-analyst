@@ -16,7 +16,9 @@
   Whole numbers link only under matching names, since ids, positions and
   counters overlap by chance, and a link where both sides repeat needs a key
   word (`id`, `code`, `zip`, `number`) in its name. On the Formula 1 tables
-  this leaves the 7 links the schema documents and one to confirm.
+  this leaves the 7 links the schema documents and one to confirm. Two bare
+  `id` columns, each its own file's row id, link only when each holds 90% of
+  the other's values.
 - `ada.check_claim` and `ada claim` take a folder and check the claim against
   the file it fits; when no single file does, the answer names the keys that
   would join two of them.
@@ -47,6 +49,22 @@
 
 ### Fixes
 
+- Words that a column's name shortens word by word name it: "life
+  expectancy" names Gapminder's `lifeExp`, and the answer says so ('Read
+  "life expectancy" as lifeExp'). The question was refused.
+- A camelCase column name reads as its words, and a claim's unit can hold a
+  slash. "The average fastest lap speed is 202.6 km/h" about Formula 1's
+  results was refused ("lap" named `laps`, and "/h" named nothing); it is now
+  verified against `fastestLapSpeed` (202.59 over 6,777 rows), with the note
+  that only the numbers are compared.
+- A table out of date order is no longer split into logs. Formula 1's races,
+  listed season by season from 2009 back to 1950, were read as 8 logs one
+  after another and given a Block column; a file with more steps back than 24
+  and 1% of its rows is now left as it is.
+- A year in a question is the year even when it also appears inside a longer
+  text value. "how many races in 2020" on Formula 1's races table was refused
+  because 2020 is part of 17 race web addresses; it now counts the 17 races
+  dated 2020.
 - A correlation over rows that come several to a subject counts each subject
   once. "does Reaction increase with Days" on the sleepstudy table (18
   people, 10 days each) used to be refused; it now gives the average of the

@@ -113,6 +113,18 @@ class LinkTests(FolderTestCase):
         self.assertEqual((link.label("from"), link.label("to"), link.named),
                          ("orders.customer_id", "customers.id", True))
 
+    def test_two_bare_ids_link_only_when_they_number_the_same_things(self):
+        colors = pd.DataFrame({"id": np.arange(1, 61), "name": [f"colour {n}" for n in range(60)]})
+        sets = pd.DataFrame({"id": np.arange(1, 2001), "pieces": np.arange(2000) % 300})
+        found = ada.scan(self.folder({"colors.csv": colors, "sets.csv": sets}))
+        self.assertEqual(found.links, ())
+        # Two halves of one table of board games, each listing nearly every game.
+        ratings = pd.DataFrame({"id": np.arange(1, 501), "average": np.linspace(5, 9, 500)})
+        details = pd.DataFrame({"id": np.arange(3, 501), "players": np.arange(498) % 6 + 1})
+        found = ada.scan(self.folder({"ratings.csv": ratings, "details.csv": details}))
+        self.assertEqual([(link.label("from"), link.label("to")) for link in found.links],
+                         [("details.id", "ratings.id")])
+
     def test_a_shared_label_is_not_a_key(self):
         nations = [f"Nation {n}" for n in range(25)]
         teams = pd.DataFrame({"team_id": np.arange(75), "nationality": np.tile(nations, 3)})
