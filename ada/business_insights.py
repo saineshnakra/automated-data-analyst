@@ -124,6 +124,7 @@ from .compare import (
     MIN_CORRELATION_PAIRS as MIN_CORRELATION_PAIRS,
 )
 from .formatting import (
+    counted,
     format_change,
     format_moment,
     format_number,
@@ -331,8 +332,6 @@ def _noise_note(previous: np.ndarray, current: np.ndarray) -> tuple[str, bool | 
 SMALL_SIDE_ROWS = 30
 
 
-def _rows(count: int) -> str:
-    return f"{count:,} row{'' if count == 1 else 's'}"
 
 
 def _segment_labels(dataframe: pd.DataFrame, dimension: str) -> pd.Series:
@@ -364,11 +363,11 @@ def _thin_sides_note(previous_rows: int, latest_rows: int) -> str:
     if min(previous_rows, latest_rows) >= SMALL_SIDE_ROWS:
         return ""
     if previous_rows == latest_rows:
-        sides = f" Each figure is the average of {_rows(latest_rows)}"
+        sides = f" Each figure is the average of {counted(latest_rows, 'row')}"
     else:
         sides = (
-            f" The previous figure is the average of {_rows(previous_rows)} and the latest "
-            f"of {_rows(latest_rows)}"
+            f" The previous figure is the average of {counted(previous_rows, 'row')} and the latest "
+            f"of {counted(latest_rows, 'row')}"
         )
     return f"{sides}, so a few records can swing it."
 
@@ -1505,9 +1504,9 @@ def _rows_per_group(dataframe: pd.DataFrame, roles: ColumnRoles) -> pd.Series:
 def _rows_label(counts: list[int]) -> str:
     """" (4 rows)" for one group, " (4 rows each)" for several alike, " (4 to 9 rows)" otherwise."""
     if len(counts) == 1:
-        return f" ({_rows(counts[0])})"
+        return f" ({counted(counts[0], 'row')})"
     if min(counts) == max(counts):
-        return f" ({_rows(counts[0])} each)"
+        return f" ({counted(counts[0], 'row')} each)"
     return f" ({min(counts):,} to {max(counts):,} rows)"
 
 
@@ -2249,9 +2248,6 @@ def _built_from_grouping(built: Construction | None, reading: str, grouping: str
     )
 
 
-def _count(number: int, noun: str) -> str:
-    """A count with its noun, singular for one: "1 pair", "465 pairs"."""
-    return f"{number:,} {noun}{'' if number == 1 else 's'}"
 
 
 def _variance_shares(measure: str, shares: tuple[tuple[str, float], ...], combined: dict) -> str:
@@ -2411,13 +2407,13 @@ def _differences_evidence(
         return Evidence(
             kind="differences",
             title="Groupings set by the readings",
-            value=_count(len(used_rules), "rule"),
+            value=counted(len(used_rules), "rule"),
             statement=rule_text,
             calculation=_rules_calculation(used_rules) + note,
         )
 
     where = list_names(list(scan.groupings), limit=len(scan.groupings))
-    comparisons = _count(scan.compared, "comparison")
+    comparisons = counted(scan.compared, "comparison")
     parts = []
     lead = ""
     if scan.named:
@@ -2514,13 +2510,13 @@ def _differences_evidence(
         f"each numeric reading compared across {where}: Welch's t-test or ANOVA on means (pooled variances "
         "when a group has fewer than 3 values), or Mann-Whitney or Kruskal-Wallis on ranks for a skewed "
         "or capped reading, each checked with the other; p-values from scipy.stats distributions, "
-        f"{method} for {_count(scan.tested, 'test')} ({ADJUSTED_BY[scan.correction]}); a finding "
+        f"{method} for {counted(scan.tested, 'test')} ({ADJUSTED_BY[scan.correction]}); a finding "
         "needs both tests to agree and groups of 5 or more values; ranked by share of variance explained "
         "(η², or ε² on ranks), those on under 20% of rows last"
     )
     if scan.trends:
         calculation += (
-            f"; {_count(scan.trends, 'trend test')} (Spearman's ρ against the levels of each ordered "
+            f"; {counted(scan.trends, 'trend test')} (Spearman's ρ against the levels of each ordered "
             "numeric grouping) among them"
         )
     if scan.paired:
@@ -3412,8 +3408,8 @@ def _relationship_evidence(
 
     calculation = (
         "Pearson r over each pair's complete rows, 95% CI by Fisher transform, and Spearman r; "
-        + (f"{_count(scan.measure_tests, 'correlation')} with {measure} and " if scan.measure else "")
-        + f"{_count(scan.pair_tests, 'pair')} scanned in all, ranked by the larger of |Spearman r| "
+        + (f"{counted(scan.measure_tests, 'correlation')} with {measure} and " if scan.measure else "")
+        + f"{counted(scan.pair_tests, 'pair')} scanned in all, ranked by the larger of |Spearman r| "
         "and |Pearson r| without the pair's most influential record; intervals not adjusted for "
         "that selection"
     )
@@ -3634,7 +3630,7 @@ def _rate_evidence(
     if len(tested) > 1:
         statement += (
             f" It is the clearest of {len(clear)} clear differences in the rate across "
-            f"{_count(len(tested), 'grouping')}."
+            f"{counted(len(tested), 'grouping')}."
             if len(clear) > 1
             else f" Of the {len(tested)} groupings tested, it is the only one where the rate differs clearly."
         )
@@ -5331,7 +5327,7 @@ def _measure_choice_note(roles: ColumnRoles) -> str:
 
 def _table_description(dataframe: pd.DataFrame, roles: ColumnRoles) -> str:
     """What the table seems to be: its rows and what one row is, the dates, the measure and the groups."""
-    opening = _rows(len(dataframe))
+    opening = counted(len(dataframe), "row")
     if row_key := _row_key(dataframe, roles):
         opening += f", one per {row_key}"
     if roles.date:

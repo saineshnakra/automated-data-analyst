@@ -194,6 +194,7 @@ class ThinFolderTests(FolderTestCase):
         found = ada.scan(folder)
         self.assertEqual(found.links, ())
         self.assertIsNotNone(found.file("broken.csv").problem)
+        self.assertIn("only.csv: 2 rows x 1 column,", str(found))
         json.dumps(found.to_dict(), allow_nan=False)
         empty = tempfile.TemporaryDirectory()
         self.addCleanup(empty.cleanup)

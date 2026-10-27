@@ -33,7 +33,7 @@ import pandas as pd
 from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_dtype
 
 from .file_io import SUPPORTED_SUFFIXES
-from .formatting import normalized_name
+from .formatting import counted, normalized_name
 from .schema import IDENTIFIER_NAME_WORDS, is_identifier_name, is_year_name
 from .sources import Source
 
@@ -223,7 +223,8 @@ class FolderScan:
         return "\n".join(lines)
 
     def __str__(self) -> str:
-        out = [f"{self.folder}: {len(self.files)} files, {len(self.links)} proposed links"]
+        files, links = counted(len(self.files), "file"), counted(len(self.links), "proposed link")
+        out = [f"{self.folder}: {files}, {links}"]
         for profile in self.files:
             if profile.problem:
                 out.append(f"  {profile.name}: not read ({profile.problem})")
@@ -235,15 +236,16 @@ class FolderScan:
             else:
                 what = "rows of unknown meaning"
             extra = f", describes {profile.describes}" if profile.describes else ""
-            size = f"{profile.rows:,} rows x {len(profile.columns)} columns"
+            size = f"{counted(profile.rows, 'row')} x {counted(len(profile.columns), 'column')}"
             out.append(f"  {profile.name}: {size}, {what}{extra}")
         for link in self.links:
             flag = " (confirm)" if link.needs_confirmation and link.confirmed is None else ""
+            unmatched = counted(link.unmatched_rows, "row")
             out.append(f"  link {link.label('from')} -> {link.label('to')}: {link.kind}, "
-                       f"{link.coverage:.1%} of keys found, {link.unmatched_rows:,} rows unmatched{flag}")
+                       f"{link.coverage:.1%} of keys found, {unmatched} unmatched{flag}")
         open_ones = self.open_questions()
         if open_ones:
-            out.append(f"  {len(open_ones)} questions to answer:")
+            out.append(f"  {counted(len(open_ones), 'question')} to answer:")
             out.extend(f"    [{question.topic}] {question.text}" for question in open_ones)
         out.extend(f"  warning: {warning}" for warning in self.warnings)
         return "\n".join(out)
@@ -506,8 +508,10 @@ def _link(source: _Keys, from_columns: tuple[str, ...], target: _Keys, to_column
     if not named:
         reasons.append("the names differ; the link rests on the values alone")
     if coverage < 1:
-        reasons.append(f"{len(left_values) - len(shared):,} {_labelled(from_profile, from_columns)} values "
-                       f"({int(unmatched.sum()):,} rows) have no match in {to_profile.name}")
+        missed = len(left_values) - len(shared)
+        reasons.append(f"{missed:,} {_labelled(from_profile, from_columns)} "
+                       f"{'value' if missed == 1 else 'values'} ({counted(int(unmatched.sum()), 'row')}) "
+                       f"{'has' if missed == 1 else 'have'} no match in {to_profile.name}")
     fan_out = int(right_counts.max())
     if not right_unique:
         reasons.append(f"{_labelled(to_profile, to_columns)} repeats (up to {fan_out:,} rows for one value), "

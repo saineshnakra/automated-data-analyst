@@ -463,6 +463,11 @@ def with_aggregate(word: str, column: str) -> str:
     return f"{word} {column}"
 
 
+def counted(count: int, singular: str, plural: str | None = None) -> str:
+    """A count with its noun, singular for one: "1 row", "465 rows", "2 people"."""
+    return f"{count:,} {singular if count == 1 else (plural or singular + 's')}"
+
+
 def list_names(names: list[str], limit: int = 3) -> str:
     """Join names for a sentence: "A", "A and B", "A, B and C", "A, B, C and 2 others"."""
     if len(names) > limit:
