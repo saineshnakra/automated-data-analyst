@@ -1282,6 +1282,81 @@ class LevelsAndYearsTests(unittest.TestCase):
         self.assertEqual(late.reason, "failed_check", late.message)
 
 
+class WentFromAndTimesTests(unittest.TestCase):
+    def refugees(self) -> pd.DataFrame:
+        return pd.DataFrame({"country": ["Ukraine", "Ukraine", "Syria", "Syria"],
+                             "year": [2021, 2022, 2021, 2022],
+                             "refugees": [28000, 5700000, 6800000, 6500000]})
+
+    def test_times_as_many_is_a_multiple(self):
+        _, number, problem = read_claim("Exports were three times as large.", ["exports"])
+        self.assertEqual((problem, number.value, number.percent), ("", 200, True))
+        _, number, _ = read_claim("Claims were more than two hundred times as many.", ["claims"])
+        self.assertEqual((number.qualifier, number.value), ("more than", 19900))
+
+    def test_went_from_one_value_to_another_checks_the_change_and_its_ends(self):
+        frame = self.refugees()
+        claim = ("Refugees from Ukraine went from about 28,000 in 2021 to 5.7 million in 2022, {} times as "
+                 "many.")
+        check = ada.check_claim(frame, claim.format("more than two hundred"))
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("5.7 million, agrees", " ".join(check.assumptions))
+        more = ada.check_claim(frame, claim.format("more than three hundred"))
+        self.assertEqual(more.reason, "failed_check")
+        wrong = ada.check_claim(frame, claim.format("more than two hundred").replace("28,000", "50,000"))
+        self.assertEqual(wrong.reason, "failed_check")
+
+
+class CountTableClaimTests(unittest.TestCase):
+    def miners(self) -> pd.DataFrame:
+        ages = ["20-24", "25-29", "50-54", "55-59", "60-64"]
+        rows = []
+        for age, wheeze in zip(ages, [10, 20, 30, 40, 50], strict=True):
+            rows += [{"Wheeze": "W", "Age": age, "Freq": wheeze},
+                     {"Wheeze": "NoW", "Age": age, "Freq": 100 - wheeze}]
+        return pd.DataFrame(rows)
+
+    def test_a_yes_and_no_column_after_a_verb_keeps_its_yes(self):
+        check = ada.check_claim(self.miners(), "Among miners aged 50 to 54, 30% had a wheeze.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("Wheeze = W", check.message)
+
+    def test_an_open_age_reaches_the_oldest_band_and_a_decade_is_its_bands(self):
+        frame = self.miners()
+        # 50 and over: 120 of 300.
+        check = ada.check_claim(frame, "Among miners aged 50 and over, 40% had a wheeze.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("50-54, 55-59, 60-64", check.message)
+        self.assertEqual(ada.check_claim(frame, "Half of the miners aged 50 and over had a wheeze.").reason,
+                         "failed_check")
+        check = ada.check_claim(frame, "Among miners in their fifties, 35% had a wheeze.")
+        self.assertTrue(check.verified, check.message)
+
+    def test_no_share_of_the_values_of_a_yes_and_no_column(self):
+        frame = self.miners()
+        check = ada.check_claim(frame, "All of the miners aged 50 to 54 had Wheeze.")
+        self.assertNotEqual(check.status, "verified", check.message)
+
+
+class NamingNumberTests(unittest.TestCase):
+    def test_a_rank_a_chart_a_day_and_a_time_are_not_the_number_claimed(self):
+        for claim, value in (("The song spent 53 weeks on the Hot 100.", 53),
+                             ("It spent 11 weeks at No. 1.", 11),
+                             ("The September 11 attacks killed 182 officers.", 182),
+                             ("The FTSE 100 fell 3% in March.", 3),
+                             ("About 30% of the stops took place between 10 p.m. and 6 a.m.", 30)):
+            _, number, problem = read_claim(claim, ["weeks", "officers", "stops"])
+            self.assertEqual((problem, number.value), ("", value), claim)
+
+    def test_ends_with_a_unit_a_month_and_a_record(self):
+        from ada.claims import _without_ends
+
+        claim = "The spell tripled, from 8.4 weeks in December 2007 to a record 25.2 weeks in June 2010."
+        rest, ends = _without_ends(claim)
+        self.assertEqual(ends, (("previous", "8.4"), ("latest", "25.2")))
+        self.assertIn("between 2007 and 2010", rest)
+
+
 class RateClaimTests(unittest.TestCase):
     def test_a_rate_for_every_hundred_is_checked_as_totals(self):
         frame = pd.DataFrame({"District": [1, 1, 1, 1, 2, 2, 2, 2],

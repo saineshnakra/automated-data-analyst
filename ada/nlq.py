@@ -12,6 +12,7 @@ reason, rather than answer a simpler question under the original wording.
 from __future__ import annotations
 
 import calendar
+import os
 import re
 import unicodedata
 import weakref
@@ -945,8 +946,10 @@ UNSUPPORTED_PHRASES = re.compile(
     # december" is refused rather than read as every December in the file.
     rf"(?:last|next|previous|this) (?:{'|'.join(MONTH_NAMES)})|"
     r"year to date|ytd|today|yesterday|past \d+|"
-    r"or"
-    r")\b"
+    # "65 or older" and "5 or more" bound one number; "Texas or Ohio" is refused.
+    r"or(?!\s+(?:older|over|more|above|younger|under|less|fewer|below)\b)"
+    # "the last quarter of 2019" names its year.
+    r")\b(?!\s+of\s+(?:19|20)\d{2})"
 )
 
 
@@ -978,6 +981,13 @@ DAY_PATTERN = re.compile(
     re.IGNORECASE,
 )
 EPOCH = pd.Timestamp("1970-01-01")
+# Part of a year: "the first half of 2021", "the last quarter of 2019".
+PART_OF_YEAR = re.compile(
+    rf"\bthe\s+(?P<which>first|second|third|fourth|last|final|1st|2nd|3rd|4th)\s+(?P<part>half|quarter)\s+of\s+"
+    rf"(?P<year>{YEAR})\b",
+    re.IGNORECASE,
+)
+PART_ORDER = {"first": 1, "1st": 1, "second": 2, "2nd": 2, "third": 3, "3rd": 3, "fourth": 4, "4th": 4}
 
 
 def day_named(match: re.Match) -> pd.Timestamp | None:
@@ -1008,7 +1018,17 @@ AGE_PHRASE = re.compile(
     rf"|{_AGE_CUE}(?P<over>\d{{1,3}})\s*(?:\+|\s+and\s+(?:over|up|above)\b|\s+or\s+(?:over|more|above)\b)"
     rf"|(?P<plus>\d{{1,3}})\+(?=\s|$|[,.;])"
     rf"|{_AGE_CUE}(?P<one>\d{{1,3}})\b(?!\s*(?:-|–|to\b|and\b|or\b|\+|%))"
-    rf"|(?P<olds>\d{{1,3}}){_YEAR_OLDS})",
+    rf"|(?P<olds>\d{{1,3}}){_YEAR_OLDS}"
+    # "in their fifties": the ten years from 50.
+    r"|in\s+(?:their|his|her)\s+(?P<decade>twenties|thirties|forties|fifties|sixties|seventies|eighties|nineties)\b)",
+    re.IGNORECASE,
+)
+DECADE_AGES = {"twenties": 20, "thirties": 30, "forties": 40, "fifties": 50, "sixties": 60, "seventies": 70,
+               "eighties": 80, "nineties": 90}
+# An age bound after a linking verb, with no age column named: "was under 40", "were over 65".
+AGE_BOUND = re.compile(
+    r"\b(?:was|were|is|are|be|been|aged)\s+(?P<side>under|below|over|above|younger\s+than|older\s+than)\s+"
+    r"(?P<age>\d{1,3})\b(?!\s*(?:%|per\s?cent|[.,]\d))",
     re.IGNORECASE,
 )
 # A band of ages as a table writes it: "30-34", "65+", ">50", "12".
@@ -1018,6 +1038,9 @@ BAND_VALUE = re.compile(r"^\s*(?:(?P<low>\d{1,3})\s*(?:-|–|to)\s*(?P<high>\d{1
 
 def age_range(match: re.Match) -> tuple[float, float]:
     """The ages an ``AGE_PHRASE`` match names, inclusive; an open top is infinity."""
+    if match.groupdict().get("decade"):
+        low = DECADE_AGES[match.group("decade").lower()]
+        return float(low), float(low + 9)
     found = {name: int(value) for name, value in match.groupdict().items() if value}
     if "low" in found or "low2" in found:
         return float(found.get("low", found.get("low2"))), float(found.get("high", found.get("high2")))
@@ -1090,7 +1113,11 @@ def _claim_ages(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) 
             inside = sorted((band, value) for value, band in bands.items() if value in within)
             cut = [value for value, band in bands.items()
                    if band[0] <= high and band[1] >= low and value not in within]
-            covered = bool(inside) and inside[0][0][0] == low and inside[-1][0][1] == high and all(
+            # "50 and over" reaches the oldest band the table has ("60-64" in a table of working ages).
+            top = max(band[1] for band in bands.values())
+            last = inside[-1][0][1] if inside else None
+            reaches = last is not None and (last == high or (high == float("inf") and last == top))
+            covered = bool(reaches) and inside[0][0][0] == low and all(
                 after[0][0] == before[0][1] + 1 for before, after in zip(inside, inside[1:], strict=False))
             if cut:
                 reading.flag(f'"{match.group().strip()}" cuts the {column} band {cut[0]} in two, and no row '
@@ -1105,6 +1132,18 @@ def _claim_ages(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) 
         reading.consumed.add(column)
         reading.scoped.add(column)
         reading.claim(start, start + len(said))
+    if bands:
+        return
+    for match in list(AGE_BOUND.finditer(reading.remaining)):
+        # "was under 40" on a numeric age column: below 40, whatever the fraction of a year.
+        side = match.group("side").lower()
+        operator = "<" if side in ("under", "below") or side.startswith("younger") else ">"
+        reading.conditions.append(Condition(column, operator, float(match.group("age"))))
+        reading.notes.append(f'Read "{match.group("side")} {match.group("age")}" as {column} '
+                             f'{OPERATOR_WORDS[operator]} {match.group("age")}.')
+        reading.consumed.add(column)
+        reading.scoped.add(column)
+        reading.claim(match.start("side"), match.end())
 
 
 # A decade: "the 2010s" is 2010 to 2019.
@@ -2543,6 +2582,22 @@ def _claim_conditions(
                 continue
             reading.conditions.append(Condition(column, "=", 0.0 if match.group("cue") == "without" else 1.0))
             claimed = (match.start(), end)
+        elif not numeric and (yes := _yes_value(series)) is not None and (
+            match := re.search(rf"\b(?P<cue>{FLAG_CUES}|reported|suffered\s+from)\s+(?:a\s+|an\s+)?$", before)
+        ):
+            # "had a wheeze" where Wheeze holds W and NoW: the rows with the yes value.
+            kept = yes if match.group("cue") != "without" else next(
+                value for value in series.dropna().unique() if value != yes)
+            _add_filter(reading, [_Value(column=column, raw=kept, words=())], match.start())
+            reading.notes.append(f'Read "{reading.original[match.start():end].strip()}" as {column} = '
+                                 f"{kept}.")
+            claimed = (match.start(), end)
+        elif not numeric and not is_datetime64_any_dtype(series) and (match := TEXT_IN.search(before)):
+            # "papers with COVID in the title": a word written before the text it is part of.
+            chunks = _raw_chunks(reading.question, [match.group("word")])
+            text = chunks[-1] if chunks else match.group("word")
+            reading.conditions.append(Condition(column, "contains", text=text))
+            claimed = (match.start(), end)
         elif not numeric and (found_text := _text_condition(reading, column, after)):
             condition, length = found_text
             reading.conditions.append(condition)
@@ -2561,6 +2616,13 @@ def _claim_conditions(
 TEXT_MATCH = re.compile(
     r"\s+(?:(?:that|which)\s+)?(?P<how>contains?|containing|includes?|including|"
     r"(?:starts?|starting|begins?|beginning)\s+with|(?:ends?|ending)\s+with)\s+(?P<word>\S+)"
+)
+
+
+# A word before a text column it is part of: "had COVID in the title", 'with "war" in their name'.
+TEXT_IN = re.compile(
+    r"\b(?:with|had|has|have|having|mentions?|mentioned|mentioning|uses?|used|using)\s+"
+    r"(?:the\s+(?:word|term)\s+)?[\"'“]?(?P<word>[^\s\"'”#]+)[\"'”]?\s+in\s+(?:the|its|their|his|her)\s+$"
 )
 
 
@@ -3051,6 +3113,12 @@ def _claim_entity(
         if not rows and _kind_value(word, dataframe):
             # "birds" in a shelter's table whose animal_type holds "bird" picks those rows (_claim_values).
             continue
+        if not rows and (kin := _value_kin(word, dataframe)):
+            # "senators" where chamber holds "senate" may mean those rows, not every row.
+            reading.flag(f'"{word}" may mean the rows with {kin[0]} = {kin[1]}; name the value, as in '
+                         f'"{kin[0]} {kin[1]}".')
+            reading.claim(start, end)
+            continue
         reading.claim(start, end)
         if reading.entity is None:
             reading.entity = word
@@ -3068,6 +3136,25 @@ def _kind_value(word: str, dataframe: pd.DataFrame) -> bool:
         if forms & set(series.dropna().astype(str).str.lower().unique()):
             return True
     return False
+
+
+def _value_kin(word: str, dataframe: pd.DataFrame) -> tuple[str, str] | None:
+    """A one-word value a plural is formed from, as (column, value): "senators" from "senate", "democrats"
+    from "democratic". The two share their first five letters or more and differ only in a short ending."""
+    for column in dataframe.select_dtypes(exclude=["number", "bool", "datetime", "datetimetz"]).columns:
+        series = dataframe[column]
+        if _names_column(series) or series.nunique(dropna=True) > MAX_KIN_VALUES:
+            continue
+        for value in series.dropna().astype(str).unique():
+            lowered = value.lower()
+            shared = len(os.path.commonprefix([word, lowered]))
+            if lowered.isalpha() and shared >= 5 and len(word) - shared <= 3 and len(lowered) - shared <= 2:
+                return str(column), value
+    return None
+
+
+# Values a column may hold for a plural to be formed from one of them.
+MAX_KIN_VALUES = 50
 
 
 # Verbs whose noun names a column of counts: "how many homes were sold" adds up sales.
@@ -3255,6 +3342,32 @@ def _holds_years(column: pd.Series) -> bool:
     """Whether every value of a column is a whole year from 1000 to 2100."""
     values = to_numbers(column).dropna()
     return not values.empty and bool(((values % 1 == 0) & values.between(1000, 2100)).all())
+
+
+def _claim_part_of_year(reading: _Reading, roles: ColumnRoles) -> None:
+    """Read part of a year ("the first half of 2021") as the days from its first to its last, before "quarter"
+    can be read as a grain."""
+    for match in list(PART_OF_YEAR.finditer(reading.remaining)):
+        if any(start < match.end() and end > match.start() for start, end in reading.spans.values()):
+            # A column called quarter holds the quarter: "the fourth quarter" is quarter = 4 there.
+            continue
+        parts = 2 if match.group("part").lower() == "half" else 4
+        which = match.group("which").lower()
+        number = parts if which in ("last", "final") else PART_ORDER[which]
+        if number > parts:
+            continue
+        if not roles.date:
+            reading.flag("This table has no date column to pick part of a year from.")
+        else:
+            months = 12 // parts
+            first = pd.Timestamp(int(match.group("year")), (number - 1) * months + 1, 1)
+            last = first + pd.DateOffset(months=months) - pd.Timedelta(days=1)
+            reading.conditions.extend([
+                Condition(roles.date, ">=", float((first - EPOCH).days), part="date"),
+                Condition(roles.date, "<=", float((last - EPOCH).days), part="date"),
+            ])
+            reading.scoped.add(roles.date)
+        reading.claim(*match.span())
 
 
 def _claim_days(reading: _Reading, roles: ColumnRoles) -> None:
@@ -3624,6 +3737,7 @@ def _read_question(
             column: span for column, span in reading.spans.items() if q[span[0]:span[1]] != roles.row_noun
         }
     _claim_country(reading, vocabulary)
+    _claim_part_of_year(reading, roles)
     _unit_word_names_rows(reading, dataframe, roles)
     _claim_count_column(reading, dataframe, roles)
     _outcome_columns(reading, dataframe)
@@ -5120,6 +5234,13 @@ TEXT_OPERATORS = {"contains": "containing", "starts": "starting with", "ends": "
 YEAR_OPERATOR_WORDS = {"=": "in", "<": "before", "<=": "up to", ">": "after", ">=": "from"}
 
 
+def _condition_value(condition: Condition) -> str:
+    """A condition's value as written: a day for a condition on the day ("2021-06-30"), else the number."""
+    if condition.part == "date":
+        return (EPOCH + pd.Timedelta(days=float(condition.value or 0))).date().isoformat()
+    return _number_text(condition.value)
+
+
 def _describe_condition(condition: Condition) -> str:
     if condition.operator == "missing":
         return f"{condition.column} missing"
@@ -5127,10 +5248,7 @@ def _describe_condition(condition: Condition) -> str:
         return f'{condition.column} {TEXT_OPERATORS[condition.operator]} "{condition.text}"'
     if condition.part == "year":
         return f"{condition.column} {YEAR_OPERATOR_WORDS[condition.operator]} {_number_text(condition.value)}"
-    if condition.part == "date":
-        day = (EPOCH + pd.Timedelta(days=float(condition.value or 0))).date().isoformat()
-        return f"{condition.column} {OPERATOR_WORDS[condition.operator]} {day}"
-    return f"{condition.column} {OPERATOR_WORDS[condition.operator]} {_number_text(condition.value)}"
+    return f"{condition.column} {OPERATOR_WORDS[condition.operator]} {_condition_value(condition)}"
 
 
 def _describe_conditions(conditions: tuple[Condition, ...]) -> list[str]:
@@ -5142,7 +5260,7 @@ def _describe_conditions(conditions: tuple[Condition, ...]) -> list[str]:
         if following and condition.operator == ">=" and following[0].operator == "<=" and (
             following[0].column == condition.column
         ):
-            low, high = _number_text(condition.value), _number_text(following[0].value)
+            low, high = _condition_value(condition), _condition_value(following[0])
             described.append(f"{condition.column} between {low} and {high}")
             index += 2
             continue
@@ -6096,7 +6214,8 @@ def _execute_count(
             for column in dict.fromkeys(filtered):
                 base = base.loc[base[column].notna()]
             total = int(base[plan.count_column].nunique(dropna=True))
-            if total:
+            # A share of two values tells nothing of the rows: "half had a wheeze" is no share of W and NoW.
+            if total and dataframe[plan.count_column].nunique(dropna=True) > 2:
                 share = distinct / total * 100
                 figures = (("share_percent", share), ("denominator", float(total)))
                 share_text = f", {_share_text(share)} of the {total:,} in all"
@@ -7827,22 +7946,36 @@ def _execute_crosstab(plan: QueryPlan, working: pd.DataFrame, scope: str, applie
         rows, columns, working = rows[keep], columns[keep], working[keep]
     row_name = rows.name
     if plan.aggregation == "count":
-        counts = pd.crosstab(rows, columns)
+        # In a table of counts each row stands for its frequency, as a plain count adds it up.
+        weight = plan.weight or frequency_column(working)
+        if weight:
+            counts = pd.crosstab(rows, columns, values=working[weight], aggfunc="sum").fillna(0)
+            if bool((counts % 1 == 0).all().all()):
+                counts = counts.astype(int)
+        else:
+            counts = pd.crosstab(rows, columns)
         if names:
             counts.index = [names.get(value, value) for value in counts.index]
             counts.index.name = row_name
+        what, counted = (f"Counts of {weight}", f"sum({weight})") if weight else ("Rows", "row count")
         answer = (
-            f"Rows by {_grouping_name(plan)} and {plan.second_dimension}{_phrase(applied)}: a "
+            f"{what} by {_grouping_name(plan)} and {plan.second_dimension}{_phrase(applied)}: a "
             f"{counts.shape[0]} × {counts.shape[1]} table of counts."
         )
-        answer += _association_line(counts)
-        table = counts.reset_index()
-        table.columns = [str(column) for column in table.columns]
+        shares = _yes_shares(counts)
+        if shares is not None:
+            table, line = shares
+            answer += line
+        else:
+            table = counts.reset_index()
+            table.columns = [str(column) for column in table.columns]
+        answer += _association_line(counts, "cases" if weight else "rows")
         return QueryAnswer(
             question="", plan=plan, answer=answer,
             calculation=(
-                f"row count for each {row_name} and {plan.second_dimension}; chi-square test of independence "
-                f"with Cramér's V{scope}"
+                f"{counted} for each {row_name} and {plan.second_dimension}"
+                + (", and the share of each group with the yes value" if shares is not None else "")
+                + f"; chi-square test of independence with Cramér's V{scope}"
             ),
             table=table,
         )
@@ -7897,7 +8030,57 @@ def _execute_crosstab(plan: QueryPlan, working: pd.DataFrame, scope: str, applie
     )
 
 
-def _association_line(counts: pd.DataFrame) -> str:
+def _yes_value(series: pd.Series) -> object | None:
+    """The yes of a text column that holds only a yes and a no ("W" of W and NoW), or None."""
+    if is_numeric_dtype(series) or is_bool_dtype(series):
+        return None
+    values = series.dropna().unique()
+    return _yes_level(list(values)) if len(values) == 2 else None
+
+
+def _yes_level(levels: list[object]) -> object | None:
+    """The yes of two levels that say yes and no: "B" of "B" and "NoB", "Yes" of "Yes" and "No"."""
+    if len(levels) != 2:
+        return None
+    first, second = (str(level).strip() for level in levels)
+    for yes, no in ((first, second), (second, first)):
+        if re.fullmatch(rf"(?:no|non|not)[\s_-]?{re.escape(yes)}", no, re.IGNORECASE) or (
+            yes.lower() in YES_NO_VALUES["yes"] and no.lower() in YES_NO_VALUES["no"]
+        ):
+            return levels[0] if yes == first else levels[1]
+    return None
+
+
+def _yes_shares(counts: pd.DataFrame) -> tuple[pd.DataFrame, str] | None:
+    """The share with the yes value in each group of the other column, when one column says yes and no.
+
+    "how does breathlessness change with age" over Breathlessness (B, NoB) and
+    Age gives the share with B in each age band, one row per band.
+    """
+    for grid, side in ((counts, "index"), (counts.T, "columns")):
+        yes = _yes_level(list(grid.index))
+        if yes is None:
+            continue
+        name = counts.index.name if side == "index" else counts.columns.name
+        other = counts.columns.name if side == "index" else counts.index.name
+        totals = grid.sum(axis=0)
+        kept = totals[totals > 0].index
+        share = grid.loc[yes, kept] / totals[kept]
+        table = pd.DataFrame({str(other): [str(level) for level in kept]})
+        for level in grid.index:
+            table[str(level)] = grid.loc[level, kept].to_numpy()
+        table["n"] = totals[kept].to_numpy()
+        table[f"share {yes}"] = share.round(4).to_numpy()
+        low, high = share.idxmin(), share.idxmax()
+        line = (
+            f" The share with {name} = {yes} is lowest for {group_label(str(other), low)}, at "
+            f"{share[low]:.1%}, and highest for {group_label(str(other), high)}, at {share[high]:.1%}."
+        )
+        return table, line
+    return None
+
+
+def _association_line(counts: pd.DataFrame, unit: str = "rows") -> str:
     """One sentence on whether two groupings are associated: a chi-square test and Cramér's V."""
     from scipy.stats import chi2_contingency
 
@@ -7909,7 +8092,7 @@ def _association_line(counts: pd.DataFrame) -> str:
     cramer = float(np.sqrt(chi2 / (total * (min(counts.shape) - 1)))) if total else 0.0
     evidence = f"chi-square = {chi2:.1f}, df = {dof}, {format_p(p_value)}; Cramér's V = {cramer:.2f}"
     rough = float((expected < 5).mean()) > 0.2
-    caution = " Many cells expect fewer than 5 rows, so the test is only a rough guide." if rough else ""
+    caution = f" Many cells expect fewer than 5 {unit}, so the test is only a rough guide." if rough else ""
     if p_value < 0.05:
         return f" The two are associated ({evidence}).{caution}"
     return f" There is no clear association ({evidence}).{caution}"

@@ -222,8 +222,10 @@ A count or a share that comes to 0 because no row fits the words as read
 a claim about rows that are not there more likely means other rows.
 
 A multiple is a change in percent: "doubled" is a rise of about 100%, "more
-than sixfold" one of more than 500%, "tripled" about 200% and "halved" a fall
-of about 50%, compared by its size as "fell by" is.
+than sixfold" one of more than 500%, "tripled" about 200%, "more than two
+hundred times as many" one of more than 19,900%, and "halved" a fall of about
+50%, compared by its size as "fell by" is. "went from about 28,000 in 2021 to
+5.7 million in 2022" names a change by its ends alone.
 
 The values a change went from and to are checked after the change: in "West
 Virginia's Democratic vote halved in twenty years, from 51.5% in 1996 to
@@ -248,6 +250,14 @@ against the year before ("rose to 61"), neither is shown and the claim gives
 plural before the verb names what changed: "Fox rescues nearly doubled" is the
 number of rescues when no column is called rescues. A fraction before a verb needs no "of": "nearly half went on to
 college" is read as "nearly half of" is.
+
+A number that names rather than counts is part of the question: a rank ("No.
+1"), a chart or index ("the Hot 100", "the FTSE 100"), a day with no year
+("the September 11 attacks") and a time of day ("10 p.m.", "15:30"). The ends
+of a change may carry a unit, a month and "a record" ("from 8.4 weeks in
+December 2007 to a record 25.2 weeks in June 2010"). A share of the distinct
+values of a column that holds two values ("half had Wheeze", as a share of W
+and NoW) is not given, as it says nothing of the rows.
 
 A year is never the number claimed after "in", "since", "until", "before",
 "after" or "during" ("rose in 2020" states no number), and a reporting year

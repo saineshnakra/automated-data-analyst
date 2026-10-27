@@ -34,6 +34,24 @@
 
 ### Reading claims and questions
 
+- Fixed a wrong answer: a cross-table of a table of counts counted its rows,
+  not the counts they hold, so "how does breathlessness change with age" in
+  CoalMiners found no association; it now adds up `Freq` and gives the share
+  with the yes value in each age band (0.8% at 20-24, 42.1% at 60-64).
+- Fixed a wrong reading: "Half of the miners aged 50 and over had a wheeze"
+  was checked as the share of distinct Wheeze values among the 50-54 band. A
+  column holding only a yes and a no (W and NoW) now keeps its yes after "had a",
+  "50 and over" reaches the oldest band, "in their fifties" is 50 to 59, and a
+  share of a two-valued column's distinct values is no longer given.
+- "the Hot 100", "No. 1", "September 11" and "10 p.m." are not the number
+  claimed.
+- Fixed a wrong answer: "how many senators were over 65" counted every
+  member of Congress; a plural formed from a value ("senators" for senate) is
+  now refused and names the value.
+- "papers with COVID in the title", "the first half of 2021", "the last
+  quarter of 2019", "was under 40" and "65 or older" are read; "went from
+  28,000 to 5.7 million, more than two hundred times as many" checks the
+  change and both ends.
 - Fixed wrong verdicts: "The number of fox rescues rose in 2020" took 2020 as
   the number claimed; "rose to 61 in 2020" failed and "fell below 40 in 2020"
   passed because the level was compared with the size of the change. A level

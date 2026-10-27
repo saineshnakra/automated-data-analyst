@@ -167,12 +167,24 @@ MULTIPLE = re.compile(
     r"(?P<verb>\b(?:rose|grew|increased|jumped|climbed|fell|dropped|declined|decreased)\s+)?"
     r"(?P<qualifier>\b(?:more\s+than|nearly|almost|about|roughly|over|less\s+than)\s+)?"
     r"\b(?P<word>doubled|tripled|trebled|quadrupled|halved|(?P<n>two|three|four|five|six|seven|eight|nine|ten|"
-    r"\d{1,3})[- ]?fold)\b",
+    r"\d{1,3})[- ]?fold|"
+    # "two hundred times as many": the number of times, in digits or words.
+    r"(?P<times>\d[\d,]*(?:\.\d+)?|a\s+hundred|(?:two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+    r"fifteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:[\s-]+hundred)?)\s+times\s+as\s+"
+    r"(?:many|much|large|high|big|great))\b",
     re.IGNORECASE,
 )
 MULTIPLE_WORDS = {"doubled": 2, "tripled": 3, "trebled": 3, "quadrupled": 4, "halved": 0.5}
 # A reporting year or a period written as two years: "2021-22", "2019/20", "1985-1999".
 YEAR_PAIR = re.compile(r"\b(?:1[5-9]|20)\d{2}\s*[-–/]\s*(?:\d{2}|(?:1[5-9]|20)\d{2})\b")
+# Numbers that name rather than count: a rank ("No. 1"), a chart or index ("the Hot 100"), a day with no
+# year ("September 11") and a time of day ("10 p.m.", "15:30").
+NAMING_NUMBER = re.compile(
+    r"\bNo\.\s*\d+\b|\b[Tt]he\s+(?:[A-Z][\w&]*\s+)+\d{2,4}\b|"
+    r"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+"
+    r"\d{1,2}(?:st|nd|rd|th)?\b(?!,?\s*\d)|"
+    r"\b\d{1,2}(?:[.:]\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)(?!\w)|\b\d{1,2}:\d{2}\b"
+)
 # Words before a year that make it the time of the claim: "rose in 2020", "since 2009".
 YEAR_PREPOSITION = re.compile(r"\b(?:in|since|until|till|before|after|during)\s*$", re.IGNORECASE)
 # Two years that bound a range: "from 2023 to 2024", "between 1982 and 1988".
@@ -585,7 +597,8 @@ def _candidates(claim: str, columns: list[str]) -> list[_Candidate]:
     days = [day.span() for day in DAY_PATTERN.finditer(claim)] + [
         age.span() for age in AGE_PHRASE.finditer(claim)] + [
         span.span() for span in YEAR_SPAN.finditer(claim)] + [
-        span.span() for span in YEAR_PAIR.finditer(claim)]
+        span.span() for span in YEAR_PAIR.finditer(claim)] + [
+        span.span() for span in NAMING_NUMBER.finditer(claim)]
     for match in NUMBER_PATTERN.finditer(claim):
         start = match.start()
         before = claim[:start].rstrip()
@@ -703,6 +716,15 @@ def _fraction_interval(value: float) -> tuple[float, float]:
     return (value + below) / 2 * 100, (value + above) / 2 * 100
 
 
+def _times(written: str) -> float:
+    """The number of times written in digits or words: 200 for "two hundred", 100 for "a hundred"."""
+    words = written.lower().replace("-", " ").split()
+    if words[0][0].isdigit():
+        return float(words[0].replace(",", ""))
+    number = 1 if words[0] == "a" else NUMBER_WORDS.get(words[0], 1)
+    return float(number * (100 if words[-1] == "hundred" else 1))
+
+
 def _worded_number(claim: str) -> tuple[str, Any] | None:
     """The claim with a fraction or a whole number in words written in digits, and how to read it back.
 
@@ -713,8 +735,11 @@ def _worded_number(claim: str) -> tuple[str, Any] | None:
     if multiple:
         # "more than doubled" is a rise of more than 100%, "halved" a fall of about 50%.
         word = multiple.group("word").lower()
-        times = MULTIPLE_WORDS.get(word) or float(NUMBER_WORDS.get((multiple.group("n") or "").lower())
-                                                  or multiple.group("n"))
+        if multiple.group("times"):
+            times = _times(multiple.group("times"))
+        else:
+            times = MULTIPLE_WORDS.get(word) or float(NUMBER_WORDS.get((multiple.group("n") or "").lower())
+                                                      or multiple.group("n"))
         change = (times - 1) * 100
         qualifier = (multiple.group("qualifier") or "about ").strip()
         verb = "fell" if change < 0 else "rose"
@@ -1444,15 +1469,20 @@ _END = (
 CHANGE_WORDS = re.compile(
     r"\b(?:rose|risen|rising|fell|fallen|falling|grew|grown|climbed|dropped|declined|decreased|increased|"
     r"jumped|soared|surged|slumped|plunged|tumbled|went\s+up|went\s+down|doubled|tripled|trebled|"
-    r"quadrupled|halved|\w+fold)\b",
+    r"quadrupled|halved|\w+fold|went(?=\s+from\b))\b",
     re.IGNORECASE,
 )
 # "from 32 the year before to 61": the first end's year, given against the year of the change.
 YEAR_BEFORE = (r"(?:the|a)\s+(?:year|season)\s+(?:before|earlier)|the\s+(?:previous|prior)\s+(?:year|season)|"
                r"last\s+year")
+# The words between a value and its year: a unit ("8.4 weeks") and a month ("in December 2007").
+_UNIT = r"(?:\s+(?!in\b|to\b|the\b)[a-z]+)?"
+_MONTH = (r"(?:(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|"
+          r"sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+)?")
 FROM_TO = re.compile(
-    rf",?\s*\bfrom\s+(?P<first>{_END})(?:\s+(?:in\s+(?P<y1>\d{{4}})|{YEAR_BEFORE}))?\s+to\s+(?P<last>{_END})"
-    rf"(?:\s+in\s+(?P<y2>\d{{4}}))?",
+    rf",?\s*\bfrom\s+(?P<first>{_END}){_UNIT}(?:\s+(?:in\s+{_MONTH}(?P<y1>\d{{4}})|{YEAR_BEFORE}))?\s+to\s+"
+    rf"(?:a\s+(?:record|new\s+high|new\s+low|high|low|peak)\s+(?:of\s+)?)?(?P<last>{_END}){_UNIT}"
+    rf"(?:\s+in\s+{_MONTH}(?P<y2>\d{{4}}))?",
     re.IGNORECASE,
 )
 TO_ONLY = re.compile(rf",\s*to\s+(?P<last>{_END})(?=\s*[.!;]?\s*$)", re.IGNORECASE)
@@ -1503,7 +1533,8 @@ def _without_ends(text: str) -> tuple[str, tuple[tuple[str, str], ...]]:
         re.fullmatch(r"(?:1[5-9]|20)\d{2}", match.group(side).strip()) for side in ("first", "last"))), None)
     if found:
         ends = (("previous", found.group("first").strip()), ("latest", found.group("last").strip()))
-        rest = f"{text[:found.start()]}{text[found.end():]}"
+        # "went from 28,000 to 5.7 million" says no more than its ends.
+        rest = re.sub(r"\s*\bwent\s*$", "", text[:found.start()]) + text[found.end():]
         years = found.group("y1"), found.group("y2")
         lasted = DURATION.search(rest)
         if lasted:
