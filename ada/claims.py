@@ -3438,18 +3438,31 @@ MAX_BREAKDOWN_LABELS = 30
 
 
 def _mixed_breakdowns(check: ClaimCheck, analysis: Any) -> ClaimCheck:
-    """A failed check that averages a column named Value over rows that differ in a breakdown, made
-    missing_context.
+    """A failed check that reads a table of Values as if its rows were things, made missing_context.
 
     "Adult smoking in England has fallen by about three quarters of a percentage point a year" averaged Value
     over Persons, Male and Female, every age band and every category each year; the number mixes them, so it
-    says nothing of the claim.
+    says nothing of the claim. A share of the rows of such a table is no share of its Values either.
     """
+    from pandas.api.types import is_numeric_dtype  # noqa: PLC0415
+
     from .nlq import _apply_filters  # noqa: PLC0415
 
     if check.reason != "failed_check" or check.answer is None:
         return check
     plan, roles = check.answer.plan, analysis.roles
+    values = [str(column) for column in analysis.frame.columns
+              if normalized_name(str(column)) in VALUE_NAMES and is_numeric_dtype(analysis.frame[column])]
+    if (plan.aggregation == "count" and not (plan.measure or plan.count_column or plan.weight) and values
+            and check.claimed is not None and check.claimed.percent):
+        # "Californians received about 13.6% of all personal income": each row of BEA's table holds a
+        # Value, so a share of the rows says nothing of a share of the income.
+        return replace(
+            check, reason="missing_context",
+            message=f"The reading counts rows, but each row holds a {values[0]}, so the claim's share is "
+                    f"likely of {values[0]}: {check.message}",
+            clarification=f"Is the share of rows or of {values[0]}?",
+        )
     measure = normalized_name(str(plan.measure)) if plan.measure else ""
     if plan.aggregation != "mean" or measure not in VALUE_NAMES:
         return check

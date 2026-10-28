@@ -592,7 +592,9 @@ reading is likely of something else: when every end the claim gives ("from
 280 to 123") is ten times or more off the reading's (2 and 4, deaths from Duty
 related illness read from "died on duty"), and when a column named Value is
 averaged over rows that differ in a breakdown (Persons, Male and Female; every
-age band) that the claim does not name.
+age band) that the claim does not name, or when a share is read as a share of
+the rows of a table whose rows each hold a Value ("Californians received
+about 13.6% of all personal income" in BEA's table).
 
 When the claim is unverified for a reason a person can resolve,
 `clarification` holds the smallest question that would let the check go

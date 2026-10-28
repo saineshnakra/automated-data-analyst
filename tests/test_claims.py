@@ -3292,3 +3292,12 @@ class MisreadingGuardTests(unittest.TestCase):
         self.assertEqual(check.reason, "missing_context")
         self.assertIn("The rows averaged differ in Sex", check.message)
         self.assertEqual(ada.check_claim(frame[frame["Sex"] == "Persons"], claim).reason, "failed_check")
+
+    def test_a_share_of_rows_in_a_table_of_values_is_no_verdict(self):
+        # California has 13.6 of the United States' 100; two rows of the eight are 25%.
+        frame = pd.DataFrame({"GeoName": ["United States", "California", "Texas", "Ohio"] * 2,
+                              "Description": ["Personal income"] * 4 + ["Population"] * 4,
+                              "Year": [2025] * 8, "Value": [100.0, 13.6, 9.0, 3.0, 340.0, 39.0, 31.0, 12.0]})
+        claim = "Californians received about 13.6% of all personal income in the United States in 2025."
+        check = ada.check_claim(frame, claim)
+        self.assertNotEqual(check.reason, "failed_check")

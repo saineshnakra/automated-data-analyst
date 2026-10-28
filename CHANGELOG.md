@@ -197,7 +197,8 @@
   when each end the claim gives is ten times or more off the reading's ("from
   280 to 123" read as deaths from Duty related illness, 2 and 4), and when a
   Value column is averaged over rows that differ in a breakdown (Sex, Age,
-  Category). Both get `missing_context`.
+  Category), or a share is of the rows of a table whose rows each hold a
+  Value. These get `missing_context`.
 - Fixed a wrong count: "how many deaths in each region", where each row holds
   a number of deaths, counted the distinct values of Deaths (6 in each
   region). It adds them up now, as "how many deaths in 2020" did, and so does
