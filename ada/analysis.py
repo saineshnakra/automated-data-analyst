@@ -2421,71 +2421,107 @@ def _parse_numeric_suggestion_values(series: pd.Series) -> pd.Series | None:
     """Parse consistently formatted numeric text using the shared number parser."""
     values = series.astype("string").str.strip()
     parsed: list[float | None] = []
-    suffixes: list[str] = []
     currencies: list[str] = []
+    suffixes: list[str] = []
 
     currency_pattern = re.compile(r"[$\u20ac\u00a3\u00a5\u20b9]")
+    suffix_pattern = re.compile(r"\s*([A-Za-z%]+(?:\s+[A-Za-z%]+)*)$")
+    multipliers = {"k": 1_000, "m": 1_000_000}
 
     for value in values:
         if pd.isna(value):
             parsed.append(None)
             continue
 
-        text = str(value)
+        text = str(value).strip()
+
         currency_matches = currency_pattern.findall(text)
         currencies.append("".join(currency_matches))
+        text = currency_pattern.sub("", text).strip()
 
-        without_currency = currency_pattern.sub("", text).strip()
-        suffix_match = re.search(
-            r"[A-Za-z%]+(?:\s+[A-Za-z%]+)*$",
-            without_currency,
-        )
-        suffixes.append(
-            suffix_match.group(0).strip().lower() if suffix_match else ""
+        suffix_match = suffix_pattern.search(text)
+        suffix = suffix_match.group(1).strip().lower() if suffix_match else ""
+
+        numeric_text = (
+            text[:suffix_match.start()].strip()
+            if suffix_match
+            else text
         )
 
-        numeric_text = text
-        if suffix_match:
-            numeric_text = text[:suffix_match.start()].strip()
+        # Reject ambiguous single-letter codes such as 12A or 13A.
+        if len(suffix) == 1 and suffix not in multipliers and suffix != "%":
+            return None
 
         amount = _read_formatted_number(numeric_text)
         if amount is None:
             return None
 
+        amount *= multipliers.get(suffix, 1)
+
+        suffixes.append(suffix)
         parsed.append(amount)
 
-    if len(set(currencies)) > 1 or len(set(suffixes)) > 1:
+    if len(set(currencies)) > 1:
+        return None
+
+    # Allow mixed k/M suffixes, but reject inconsistent measurement units.
+    non_scaling_suffixes = {
+        suffix for suffix in suffixes if suffix not in {"", "k", "m"}
+    }
+    if len(non_scaling_suffixes) > 1:
+        return None
+    if non_scaling_suffixes and any(
+        suffix not in non_scaling_suffixes for suffix in suffixes
+    ):
         return None
 
     return pd.Series(parsed, index=series.index, dtype="float64")
 
 
 def _split_suggestion_values(series: pd.Series) -> pd.DataFrame | None:
-    """Split consistently delimited text values into separate columns."""
+    """Split consistently delimited text into equally sized columns."""
     values = series.astype("string").str.strip()
-    delimiters = ["/", "|", ";", ","]
+    non_null = values.dropna()
 
-    detected_delimiter: str | None = None
-
-    for delimiter in delimiters:
-        non_null = values.dropna()
-        if not non_null.empty and non_null.str.contains(
-            re.escape(delimiter), regex=True, na=False
-        ).all():
-            detected_delimiter = delimiter
-            break
-
-    if detected_delimiter is None:
+    if non_null.empty:
         return None
 
-    split_values = values.str.split(detected_delimiter, expand=True)
-
-    if split_values.shape[1] < 2:
+    # Avoid splitting URLs and domain names.
+    if non_null.str.contains(
+        r"(?:https?://|www\.|(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?:/|$))",
+        case=False,
+        regex=True,
+    ).any():
         return None
 
-    return split_values.map(
-        lambda value: value.strip() if isinstance(value, str) else value
-    )
+    # Avoid splitting date-like values.
+    date_patterns = [
+        r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}$",
+        r"^\d{1,2}[-/]\d{1,2}[-/]\d{2,4}$",
+        r"^\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}$",
+        r"^[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4}$",
+    ]
+
+    date_pattern = "|".join(f"(?:{pattern})" for pattern in date_patterns)
+    if non_null.str.match(date_pattern, case=False).any():
+        return None
+
+    for delimiter in ["/", "|", ";", ","]:
+        part_counts = non_null.map(
+            lambda value, sep=delimiter: len(str(value).split(sep))
+        )
+
+        # Every non-null value must contain the delimiter equally.
+        if part_counts.nunique() != 1 or part_counts.iloc[0] < 2:
+            continue
+
+        split_values = values.str.split(delimiter, expand=True)
+
+        return split_values.map(
+            lambda value: value.strip() if isinstance(value, str) else value
+        )
+
+    return None
 
 
 def _split_cleaning_result(

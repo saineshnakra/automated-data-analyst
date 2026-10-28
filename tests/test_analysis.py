@@ -6,17 +6,17 @@ import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 
 from ada.analysis import (
+    CleaningSuggestion,
     _numeric_from_text,
     _read_formatted_number,
+    apply_cleaning_suggestion,
     build_markdown_report,
     clean_dataframe,
     column_profile,
     generate_insights,
+    preview_cleaning_suggestion,
     separate_stacked_logs,
     set_aside_coarser_rows,
-    CleaningSuggestion,
-    apply_cleaning_suggestion,
-    preview_cleaning_suggestion,
     suggest_cleaning,
 )
 from ada.formatting import format_moment, is_undated
@@ -410,7 +410,97 @@ class CleanDataframeTests(unittest.TestCase):
 
         self.assertEqual(cleaned["Revenue"].tolist(), [-1200.0, -2500.0, 300.0])
 
+    def test_numeric_parser_handles_mixed_k_and_m_suffixes(self):
+        frame = pd.DataFrame(
+            {"Revenue": ["1.2k", "3.4k", "1.5M"]}
+        )
 
+        suggestions = suggest_cleaning(frame)
+        suggestion = next(
+            s for s in suggestions
+            if s.column == "Revenue" and s.operation == "parse_numeric"
+        )
+
+        cleaned = apply_cleaning_suggestion(frame, suggestion)
+
+        self.assertEqual(
+            cleaned["Revenue"].tolist(),
+            [1200.0, 3400.0, 1500000.0],
+        )
+
+    def test_numeric_parser_handles_currency_with_space_and_units(self):
+        frame = pd.DataFrame(
+            {"Revenue": ["$ 1,200 units", "$ 2,400 units", "$ 3,600 units"]}
+        )
+
+        suggestions = suggest_cleaning(frame)
+
+        self.assertTrue(
+            any(
+                s.column == "Revenue" and s.operation == "parse_numeric"
+                for s in suggestions
+            )
+        )
+
+    def test_alphanumeric_codes_are_not_parsed_as_numbers(self):
+        frame = pd.DataFrame({"Code": ["12A", "13A", "14A"]})
+
+        suggestions = suggest_cleaning(frame)
+
+        self.assertFalse(
+            any(
+                s.column == "Code" and s.operation == "parse_numeric"
+                for s in suggestions
+            )
+        )
+
+    def test_date_values_are_not_suggested_for_splitting(self):
+        frame = pd.DataFrame(
+            {"Date": ["Jan 2, 2024", "Feb 3, 2024", "Mar 4, 2024"]}
+        )
+
+        suggestions = suggest_cleaning(frame)
+
+        self.assertFalse(
+            any(
+                s.column == "Date" and s.operation == "split"
+                for s in suggestions
+            )
+        )
+
+    def test_url_values_are_not_suggested_for_splitting(self):
+        frame = pd.DataFrame(
+            {
+                "Website": [
+                    "https://example.com/page1",
+                    "https://example.com/page2",
+                    "https://example.com/page3",
+                ]
+            }
+        )
+
+        suggestions = suggest_cleaning(frame)
+
+        self.assertFalse(
+            any(
+                s.column == "Website" and s.operation == "split"
+                for s in suggestions
+            )
+        )
+
+    def test_uneven_comma_separated_values_are_not_split(self):
+        frame = pd.DataFrame(
+            {"Name": ["Smith, John", "Brown, Mary, Jr.", "Jones, Alex"]}
+        )
+
+        suggestions = suggest_cleaning(frame)
+
+        self.assertFalse(
+            any(
+                s.column == "Name" and s.operation == "split"
+                for s in suggestions
+            )
+        )
 
 class YearColumnTests(unittest.TestCase):
     def test_a_year_column_becomes_the_first_of_each_year(self):
