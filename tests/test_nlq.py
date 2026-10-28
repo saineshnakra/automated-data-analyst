@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from table_helpers import births, migration
 
 import ada
 from ada import nlq, ui
@@ -3058,6 +3059,17 @@ class InitialsTests(unittest.TestCase):
         frame = self.frame().drop(columns="HR")
         self.assertIsNone(answer_question("total home runs", frame, detect_roles(frame)))
 
+    def test_initials_come_before_a_value_matched_by_its_plural(self):
+        frame = self.frame().assign(nameFirst=["Barry", "Home Run", "Sammy", "Luis"] * 2)
+        answer = answer_question("total home runs in 2001", frame, detect_roles(frame))
+        self.assertEqual(answer.calculation, "sum(HR) · filtered to yearID = 2001")
+        self.assertEqual(answer.value, 132)
+        # Without HR the plural still names the value.
+        frame = frame.drop(columns="HR")
+        answer = answer_question("total Hr for home runs", frame, detect_roles(frame))
+        self.assertEqual(answer.calculation, "sum(Hr) · filtered to nameFirst = Home Run")
+        self.assertEqual(answer.value, 8)
+
 
 def days_frame() -> pd.DataFrame:
     """Eighteen subjects measured on ten days each, each rising by a slope of their own."""
@@ -4365,3 +4377,192 @@ class SeriesNameTests(unittest.TestCase):
         frame = self.series()
         answer = answer_question("how many rows where Price fell below zero", frame, detect_roles(frame))
         self.assertEqual(answer.value, 6)
+
+
+class CountCubeTests(unittest.TestCase):
+    def test_a_share_of_an_age_band_is_of_the_total_level(self):
+        frame = migration()
+        answer = answer_question("share of immigrants aged 25 to 44 in 2024", frame, detect_roles(frame))
+        # 50 of the 100 thousand immigrants of 2024, not one band of six rows.
+        self.assertAlmostEqual(dict(answer.figures)["share_percent"], 50.0)
+        self.assertIn("sum(VALUE)", answer.calculation)
+        self.assertIn("Age Group = All ages", answer.calculation)
+
+    def test_a_share_that_would_add_up_different_counts_is_refused(self):
+        frame = migration()
+        answer = answer_question("share of people aged 25 to 44 in 2024", frame, detect_roles(frame))
+        self.assertIsNone(answer.value)
+        self.assertIn("Inward or Outward Flow holds 2 values", answer.answer)
+
+    def test_a_count_adds_up_the_column_of_counts(self):
+        frame = migration()
+        answer = answer_question("how many emigrants in 2024", frame, detect_roles(frame))
+        self.assertAlmostEqual(answer.value, 40.0)
+        self.assertNotIn("share_percent", dict(answer.figures))
+
+    def test_a_column_of_rates_is_no_column_of_counts(self):
+        frame = migration().assign(UNIT="Rate per 1,000")
+        self.assertIsNone(nlq.cube_measure(frame))
+        answer = answer_question("share of immigrants aged 25 to 44 in 2024", frame, detect_roles(frame))
+        self.assertIsNone(answer.value)
+        self.assertIn("no single column of counts", answer.answer)
+        # Two columns of numbers besides the years: neither is the one column of counts.
+        other = migration()
+        self.assertIsNone(nlq.cube_measure(other.assign(OTHER=np.linspace(0.5, 9.5, len(other)))))
+
+    def test_totals_with_blank_cells_are_compared_where_given(self):
+        frame = migration()
+        # A total withheld in one year: the levels still add up wherever the total and its parts are given.
+        frame.loc[(frame["Year"] == 2023) & (frame["Age Group"] == "All ages"), "VALUE"] = np.nan
+        levels = {(level.column, level.label) for level in nlq.total_levels(frame)}
+        self.assertEqual(levels, {("Age Group", "All ages"), ("Sex", "Both sexes")})
+
+
+class AgeWordingTests(unittest.TestCase):
+    def test_two_ages_and_an_age_under_a_bound(self):
+        found = nlq.AGE_PHRASE.search("older teens, those aged 18 and 19, had")
+        self.assertEqual(nlq.age_range(found), (18.0, 19.0))
+        found = nlq.AGE_PHRASE.search("was a child under 15")
+        self.assertEqual((found.group(), nlq.age_range(found)), ("under 15", (float("-inf"), 14.0)))
+        self.assertIsNone(nlq.AGE_PHRASE.search("children under 5 minutes away"))
+
+    def test_bands_written_with_years_and_a_total(self):
+        self.assertEqual(nlq._band("25 - 44 years"), (25.0, 44.0))
+        self.assertEqual(nlq._band("65 years and over"), (65.0, float("inf")))
+        self.assertEqual(nlq._band("Under 15 years"), (0.0, 14.0))
+        self.assertIsNone(nlq._band("All ages"))
+        frame = migration()
+        column, bands = nlq._age_column(frame, detect_roles(frame))
+        self.assertEqual((column, len(bands)), ("Age Group", 5))
+
+    def test_under_an_age_on_a_numeric_column_is_below_it(self):
+        frame = pd.DataFrame({"age": [3.5, 14.5, 15.0, 40.0], "visits": [1, 2, 3, 4]})
+        answer = answer_question("total visits of patients under 15", frame, detect_roles(frame))
+        # 14.5 is under 15; 15.0 is not.
+        self.assertEqual(answer.value, 3)
+
+
+class ValueWordingTests(unittest.TestCase):
+    def test_the_words_before_a_colon_name_the_value(self):
+        frame = migration()
+        reading = nlq._read_question("how many immigrants in 2024", frame, detect_roles(frame))
+        self.assertEqual(reading.filters, {"Inward or Outward Flow": ("Immigrants: All origins",)})
+
+    def test_the_thing_done_names_those_who_do_it(self):
+        frame = migration()
+        for question in ("total immigration in 2024", "how many people emigrated in 2024"):
+            reading = nlq._read_question(question, frame, detect_roles(frame))
+            self.assertEqual(len(reading.filters["Inward or Outward Flow"]), 1, question)
+        # A word the table holds stays as it is.
+        self.assertEqual(nlq._agent_nouns("immigration", nlq._Vocabulary([], {}, {"immigration": [0]})),
+                         "immigration")
+
+
+class StatCanTableTests(unittest.TestCase):
+    def analysis(self):
+        return ada.analyze(births())
+
+    def test_dotted_codes_stay_text_and_a_date_named_column_of_years_is_the_date(self):
+        analysis = self.analysis()
+        self.assertEqual(analysis.roles.date, "REF_DATE")
+        self.assertEqual(analysis.frame["COORDINATE"].dtype, object)
+
+    def test_a_nation_over_its_provinces_and_labels_with_shared_words_are_total_levels(self):
+        levels = {(level.column, level.label) for level in nlq.total_levels(self.analysis().frame)}
+        self.assertEqual(levels, {("GEO", "Canada, place of residence of mother"),
+                                  ("Age of mother", "Age of mother, all ages")})
+
+    def test_counts_beside_percentages_are_read_at_the_counts(self):
+        analysis = self.analysis()
+        answer = analysis.ask("how many births in Alberta in 2025")
+        self.assertEqual(answer.value, 40.0)
+        self.assertIn("Characteristics = Number of live births", answer.calculation)
+        answer = analysis.ask("share of births in 2025 with mothers aged 35 or older")
+        # 30 aged 35 to 39 and 8 aged 40 to 44, of the 100 at all ages.
+        self.assertAlmostEqual(dict(answer.figures)["share_percent"], 38.0)
+
+    def test_two_picked_levels_give_a_count_with_no_share(self):
+        answer = self.analysis().ask("how many births in Nunavut in 2025 with mothers aged 15 to 19")
+        self.assertEqual(answer.value, 12.0)
+        self.assertNotIn("share_percent", dict(answer.figures))
+
+    def test_units_that_are_all_rates_make_no_counts(self):
+        frame = births()
+        self.assertEqual(nlq.cube_measure(frame), "VALUE")
+        self.assertIsNone(nlq.cube_measure(frame.assign(UOM="Percentage")))
+
+
+class InitialsNameTests(unittest.TestCase):
+    def monsters(self) -> pd.DataFrame:
+        return pd.DataFrame({
+            "name": [f"Monster {index}" for index in range(8)],
+            "size": ["Gargantuan"] * 3 + ["Large"] * 5,
+            "cr": [20.0, 21.0, 24.0, 1.0, 2.0, 3.0, 0.5, 4.0],
+            "hp": ["410 (20d20 + 200)", "420 (21d20 + 200)", "410 (20d20 + 200)", "30 (4d10 + 8)",
+                   "45 (6d10 + 12)", "52 (7d10 + 14)", "30 (4d10 + 8)", "60 (8d10 + 16)"],
+            "hp_number": [410, 420, 410, 30, 45, 52, 30, 60],
+        })
+
+    def test_initials_name_a_short_lower_case_column(self):
+        frame = self.monsters()
+        answer = answer_question("median challenge rating", frame, detect_roles(frame))
+        self.assertEqual(answer.plan.measure, "cr")
+
+    def test_the_number_beside_a_column_written_out_is_the_one_averaged(self):
+        frame = self.monsters()
+        answer = answer_question("average hit points for Gargantuan", frame, detect_roles(frame))
+        self.assertAlmostEqual(answer.value, 413.333333, places=4)
+        self.assertIn("hp_number", answer.calculation)
+
+    def test_a_key_word_after_another_columns_name_is_its_number(self):
+        from ada.schema import is_identifier_name  # noqa: PLC0415
+
+        self.assertFalse(is_identifier_name("hp_number", ["hp", "hp_number"]))
+        self.assertTrue(is_identifier_name("order_number", ["order_date", "order_number"]))
+        self.assertTrue(is_identifier_name("hp_number"))
+
+
+class CauseVerbTests(unittest.TestCase):
+    def disruptions(self) -> pd.DataFrame:
+        return pd.DataFrame({
+            "cause_en": ["broken down train"] * 4 + ["signal failure"] * 3 + ["copper theft"] * 3,
+            "statistical_cause_en": ["broken down train"] * 5 + ["signal failure"] * 2 + ["copper theft"] * 3,
+            "cause_group": ["rolling stock"] * 4 + ["infrastructure"] * 6,
+        })
+
+    def test_a_verb_from_several_columns_stem_is_grammar(self):
+        frame = self.disruptions()
+        answer = answer_question("how many disruptions were caused by copper theft", frame,
+                                 detect_roles(frame))
+        self.assertEqual(answer.value, 3)
+
+    def test_the_last_word_of_a_value_takes_the_plural(self):
+        frame = self.disruptions()
+        reading = nlq._read_question("how many cause_en broken down trains", frame, detect_roles(frame))
+        self.assertEqual(reading.filters, {"cause_en": ("broken down train",)})
+
+
+class WhichRowsTests(unittest.TestCase):
+    def parks(self) -> pd.DataFrame:
+        return pd.DataFrame({
+            "year": [2016] * 4 + [2015] * 4,
+            "unit_name": ["Zion National Park", "Yosemite National Park", "Lake Mead Recreation Area",
+                          "Acadia National Park"] * 2,
+            "unit_type": ["National Park", "National Park", "Recreation Area", "National Park"] * 2,
+            "visitors": [4.3, 5.0, 7.0, 3.3, 4.0, 4.1, 6.0, 2.8],
+        })
+
+    def test_which_rows_of_a_kind_ranks_the_rows_by_their_names(self):
+        frame = self.parks()
+        roles = detect_roles(frame)
+        answer = answer_question("which national park had the most visitors in 2016", frame, roles)
+        self.assertEqual(answer.plan.dimension, "unit_name")
+        self.assertIn("Yosemite National Park", answer.answer)
+        answer = answer_question("which national parks had the fewest visitors in 2016", frame, roles)
+        self.assertEqual(answer.plan.top_n, 5)
+        self.assertIn("Acadia National Park", answer.answer)
+
+    def test_names_that_repeat_in_the_rows_asked_about_give_no_ranking(self):
+        frame = self.parks()
+        answer = answer_question("which national park had the most visitors", frame, detect_roles(frame))
+        self.assertTrue(answer is None or answer.plan.dimension is None or "max" not in answer.calculation)

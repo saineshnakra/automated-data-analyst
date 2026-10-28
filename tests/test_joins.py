@@ -225,6 +225,42 @@ class AskFolderTests(JoinTestCase):
         self.assertIsInstance(ask_folder(holder.name, "total HR"), Refusal)
 
 
+class CodeNameTests(JoinTestCase):
+    def airports(self) -> dict[str, pd.DataFrame]:
+        # By hand: three large airports in US, two in CN, one in RU; the heliport is left out. A scan links
+        # columns whose names differ only when the key holds 20 values or more, so there are 20 countries.
+        codes = ["US", "CN", "RU", *(f"C{index}" for index in range(17))]
+        return {
+            "airports.csv": pd.DataFrame({
+                "ident": [f"A{index}" for index in range(8)],
+                "type": ["large_airport"] * 6 + ["heliport", "small_airport"],
+                "iso_country": ["US", "US", "US", "CN", "CN", "RU", "US", "CN"],
+            }),
+            "countries.csv": pd.DataFrame({
+                "code": codes,
+                "name": ["United States", "China", "Russia", *(f"Country {index}" for index in range(17))],
+            }),
+        }
+
+    def test_a_grouped_answer_names_its_codes_from_the_linked_file(self):
+        answer = ask_folder(self.folder(self.airports()), "which countries have the most large airports")
+        self.assertEqual(answer.values[0], ("US", 3.0))
+        self.assertEqual(list(answer.table["name (countries)"]), ["United States", "China", "Russia"])
+        self.assertIn("In countries.csv, US is United States, CN is China and RU is Russia", answer.answer)
+        self.assertIn("airports.iso_country = countries.code", answer.scope.readings[-1])
+
+    def test_no_names_when_the_caller_allows_no_joins(self):
+        answer = ask_folder(self.folder(self.airports()), "which countries have the most large airports",
+                            decisions={"join_links": "none"})
+        self.assertNotIn("name (countries)", answer.table.columns)
+
+    def test_a_column_of_repeated_labels_is_no_column_of_names(self):
+        files = self.airports()
+        files["countries.csv"]["name"] = ["Americas", "Asia", "Asia", *(["Europe"] * 17)]
+        answer = ask_folder(self.folder(files), "which countries have the most large airports")
+        self.assertNotIn("name (countries)", answer.table.columns)
+
+
 class IntakeTests(JoinTestCase):
     def emissions(self) -> pd.DataFrame:
         return pd.DataFrame({

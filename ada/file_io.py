@@ -84,7 +84,7 @@ def list_excel_sheets(contents: bytes, filename: str) -> list[str]:
 NA_VALUES = sorted(STR_NA_VALUES - {"NA"} | {"\\N"})
 def _kept_as_text(columns) -> dict[str, type]:
     """Read key columns (see ``schema.is_identifier_name``) as text, so "00042" keeps its zeros."""
-    return {column: str for column in columns if is_identifier_name(str(column))}
+    return {column: str for column in columns if is_identifier_name(str(column), columns)}
 
 
 def _read_csv(contents: bytes, encoding: str, **options) -> pd.DataFrame:

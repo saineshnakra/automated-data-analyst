@@ -142,6 +142,19 @@ the only file in lahman whose columns fit the question."). When several
 give different answers, the question is refused, or the claim is
 `ambiguous_intent`, naming them.
 
+An answer grouped by a column of codes names them when the scan links that
+column to the key of another file with a column of names (a text column
+named `name`, `..._name` or `title` whose values are nearly all distinct):
+"which countries have the most large airports" groups `airports.csv` by
+`iso_country`, and `countries.csv` holds `code` and `name`, so the table
+gains `name (countries)` and the answer says "In countries.csv, US is United
+States, CN is China and RU is Russia (matched on airports.iso_country =
+countries.code; the names differ; the link rests on the values alone)."
+Names change no number, so a link that needs confirmation is used for them
+too, and the answer says what it rests on. Every code must be found in the
+other file; a link the answers file rejects, or `join_links` set to `none`,
+adds no names.
+
 When no file answers it, two files are joined along a link and tried the
 same way: "Barry Bonds hit 73 home runs in 2001." needs the names in
 `People.csv` and the home runs in `Batting.csv`. The join:

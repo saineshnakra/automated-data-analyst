@@ -2852,7 +2852,8 @@ def entity_column(dataframe: pd.DataFrame, roles: ColumnRoles) -> str | None:
     excluded = tuple(column for column in measures if column)
     if roles.measure and (key := reading_key(dataframe, roles.measure, exclude=excluded)):
         return key
-    candidates = [roles.identifier, *(column for column in dataframe.columns if is_entity_name(column))]
+    candidates = [roles.identifier, *(column for column in dataframe.columns
+                                      if is_entity_name(column, dataframe.columns))]
     for column in dict.fromkeys(column for column in candidates if column):
         if column not in dataframe.columns or column in measures:
             continue

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from table_helpers import births, migration
 
 import ada
 from ada.claims import (
@@ -459,6 +460,17 @@ class PhrasingClaimTests(unittest.TestCase):
         holder = tempfile.TemporaryDirectory()
         self.addCleanup(holder.cleanup)
         path = Path(holder.name) / "sets.csv"
+        pd.DataFrame({"set_num": [f"s{index}" for index in range(6)], "name": list("abcdef"),
+                      "num_parts": [100, 200, 300, 150, 250, 50]}).to_csv(path, index=False)
+        check = ada.check_claim(path, "The average Lego set has 175 parts.")
+        self.assertTrue(check.verified)
+        self.assertIn('Read "Lego set" as every set', check.assumptions[0])
+
+    def test_a_brand_the_folder_is_named_for_still_describes_every_row(self):
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        path = Path(holder.name) / "lego" / "sets.csv"
+        path.parent.mkdir()
         pd.DataFrame({"set_num": [f"s{index}" for index in range(6)], "name": list("abcdef"),
                       "num_parts": [100, 200, 300, 150, 250, 50]}).to_csv(path, index=False)
         check = ada.check_claim(path, "The average Lego set has 175 parts.")
@@ -1906,3 +1918,172 @@ class RepeatedDateTests(unittest.TestCase):
         self.assertTrue(check.verified, check.message)
         note = "counting each date once gives the same verdict"
         self.assertTrue(any(note in item for item in check.assumptions))
+
+
+class RecordedScaleTests(unittest.TestCase):
+    def migration(self) -> Path:
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        path = Path(holder.name) / "migration.csv"
+        migration().to_csv(path, index=False)
+        return path
+
+    def test_a_unit_column_gives_the_scale_of_the_counts(self):
+        path = self.migration()
+        check = ada.check_claim(path, "About 40,000 people emigrated in 2024.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("UNIT gives VALUE in Thousand, so 40 is 40,000.", check.assumptions)
+        self.assertEqual(ada.check_claim(path, "More than 50,000 people emigrated in 2024.").reason,
+                         "failed_check")
+
+    def test_the_ends_of_a_change_are_scaled_and_share_their_about(self):
+        path = self.migration()
+        check = ada.check_claim(path, "Immigration rose by about two thirds between 2023 and 2024, from "
+                                      "about 60,000 to 100,000.")
+        self.assertTrue(check.verified, check.message)
+        check = ada.check_claim(path, "Immigration rose by about two thirds between 2023 and 2024, from "
+                                      "about 60,000 to 130,000.")
+        self.assertEqual(check.reason, "failed_check")
+
+    def test_words_that_only_describe_a_checked_base(self):
+        path = self.migration()
+        check = ada.check_claim(path, "People aged 25 to 44 made up half of the 100,000 immigrants who "
+                                      "arrived in 2024.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn('"arrived" only describe the 100,000 immigrants', check.message)
+        check = ada.check_claim(path, "People aged 25 to 44 made up 70% of the 100,000 immigrants who "
+                                      "arrived in 2024.")
+        self.assertEqual(check.reason, "failed_check")
+        # A base the share is not of leaves the words unchecked.
+        check = ada.check_claim(path, "People aged 25 to 44 made up half of the 90,000 immigrants who "
+                                      "arrived in 2024.")
+        self.assertEqual(check.reason, "missing_context")
+
+    def test_the_year_to_a_month_on_a_table_of_years(self):
+        path = self.migration()
+        check = ada.check_claim(path, "About 40,000 people emigrated in the year to April 2024.")
+        self.assertTrue(check.verified, check.message)
+        self.assertTrue(any("as 2024, since the table gives one figure a year" in item
+                            for item in check.assumptions))
+
+
+class BirthTableClaimTests(unittest.TestCase):
+    def path(self) -> Path:
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        folder = Path(holder.name) / "canada-births"
+        folder.mkdir()
+        births().to_csv(folder / "13100416.csv", index=False)
+        return folder / "13100416.csv"
+
+    def test_a_share_of_the_babies_born_is_of_the_counts(self):
+        path = self.path()
+        check = ada.check_claim(path, "Among the 100 babies born in 2025, more than a third had mothers aged "
+                                      "35 or older.")
+        self.assertTrue(check.verified, check.message)
+        check = ada.check_claim(path, "More than 60% of the babies born in 2025 had mothers aged 20 to 34.")
+        self.assertEqual(check.reason, "failed_check")
+
+    def test_teenage_mothers_and_women_in_their_early_forties(self):
+        path = self.path()
+        check = ada.check_claim(path, "In Nunavut, about 20 of every 100 babies born in 2025 had a teenage "
+                                      "mother.")
+        self.assertTrue(check.verified, check.message)
+        check = ada.check_claim(path, "Births to women in their early forties doubled between 2024 and 2025.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("Added up VALUE, since each row of the table is a count.", check.assumptions)
+
+
+class DisruptionClaimTests(unittest.TestCase):
+    def path(self) -> Path:
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        folder = Path(holder.name) / "dutch-rail-disruptions"
+        folder.mkdir()
+        starts = pd.date_range("2025-07-01 06:00", periods=10, freq="h")
+        pd.DataFrame({
+            "rdt_id": range(10),
+            "cause_en": ["broken down train"] * 4 + ["signal failure"] * 3 + ["copper theft"] * 3,
+            "statistical_cause_en": ["broken down train"] * 5 + ["signal failure"] * 2 + ["copper theft"] * 3,
+            "start_time": [*starts[:8], pd.Timestamp("2025-07-02 09:00"), pd.Timestamp("2025-07-02 10:00")],
+            # Two of the 1 July disruptions run past midnight.
+            "end_time": [*(starts[:6] + pd.Timedelta(hours=1)), pd.Timestamp("2025-07-02 01:00"),
+                         pd.Timestamp("2025-07-02 02:00"), pd.Timestamp("2025-07-02 10:00"),
+                         pd.Timestamp("2025-07-02 11:00")],
+        }).to_csv(folder / "disruptions-2025.csv", index=False)
+        return folder / "disruptions-2025.csv"
+
+    def test_a_value_every_fitting_column_agrees_on(self):
+        path = self.path()
+        # 4 of 10 by cause_en and 5 of 10 by statistical_cause_en: more than a third either way.
+        check = ada.check_claim(path, "Broken-down trains caused more than a third of the disruptions on the "
+                                      "Dutch railways in 2025.")
+        self.assertTrue(check.verified, check.message)
+        check = ada.check_claim(path, "Broken-down trains caused more than 60% of the disruptions on the "
+                                      "Dutch railways in 2025.")
+        self.assertEqual(check.reason, "failed_check")
+
+    def test_a_day_counts_what_started_on_it(self):
+        path = self.path()
+        self.assertTrue(ada.check_claim(path, "There were 8 disruptions on 1 July 2025.").verified)
+
+
+class QualifierBoundTests(unittest.TestCase):
+    def test_nearly_a_fraction_reaches_down_to_the_next_fraction(self):
+        frame = pd.DataFrame({"park": ["Smokies"] * 47 + ["Other"] * 53})
+        self.assertTrue(ada.check_claim(frame, "Smokies account for nearly half of the rows.").verified)
+        self.assertEqual(ada.check_claim(frame, "Smokies account for nearly a third of the rows.").reason,
+                         "failed_check")
+
+    def test_a_base_in_round_thousands_is_rounded(self):
+        frame = pd.DataFrame({"park": ["Smokies"] * 470 + ["Other"] * 542})
+        check = ada.check_claim(frame, "Smokies account for nearly half of the 1,000 records.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("rounded", " ".join(check.assumptions))
+
+    def test_every_value_of_a_column_spans_the_table(self):
+        from ada.claims import _every_value  # noqa: PLC0415
+
+        frame = pd.DataFrame({"ParkName": ["A", "B", "C", "A"], "birds": [1, 2, 3, 4]})
+        text, note = _every_value("Between them, the 3 parks list 4 birds.", frame)
+        self.assertEqual(text, "Between them, list 4 birds.")
+        self.assertIn("every value of ParkName", note)
+        # A count that is not the column's number of values stays in the claim.
+        self.assertEqual(_every_value("the 5 parks list 4 birds", frame), ("the 5 parks list 4 birds", None))
+
+
+class MoneyColumnTests(unittest.TestCase):
+    def test_a_word_for_money_picks_the_column_it_names(self):
+        # invest and value are both money; "investment" names invest. By hand GM invested 60 of 100.
+        frame = pd.DataFrame({"firm": ["General Motors", "US Steel", "GE", "General Motors"],
+                              "invest": [40.0, 30.0, 10.0, 20.0], "value": [500.0, 100.0, 300.0, 100.0]})
+        check = ada.check_claim(frame, "General Motors accounted for about 60% of all the investment by the "
+                                       "3 firms.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("sum(invest)", check.answer.calculation)
+
+
+class OtherUnitTests(unittest.TestCase):
+    def test_a_claim_in_another_unit_of_a_column_with_none(self):
+        # MSL is in metres, though its name does not say so: 0.58 in 1924 and 0.98 in 2024, a rise of 0.40.
+        frame = pd.DataFrame({"Year": [1924, 2024], "MSL": [0.58, 0.98]})
+        check = ada.check_claim(frame, "MSL rose by about 40 centimetres between 1924 and 2024.")
+        self.assertEqual(check.reason, "missing_context")
+        self.assertIn("only if MSL is recorded in metres", check.message)
+        # A bound that another unit would make true is not refuted either.
+        check = ada.check_claim(frame, "MSL rose by more than 30 centimetres between 1924 and 2024.")
+        self.assertEqual(check.reason, "missing_context")
+        self.assertTrue(ada.check_claim(frame, "MSL rose by about 0.4 between 1924 and 2024.").verified)
+
+
+class EveryRowShareTests(unittest.TestCase):
+    def test_a_share_of_every_row_says_nothing(self):
+        # "Home teams" reads as the distinct HomeTeam values, every one of them in the years named: 100%.
+        frame = pd.DataFrame({
+            "Date": pd.date_range("1963-08-24", periods=12, freq="30D"),
+            "HomeTeam": ["Koeln", "Bremen", "Hamburg"] * 4, "AwayTeam": ["Bremen", "Hamburg", "Koeln"] * 4,
+            "HomeGoals": [2, 1, 0, 3, 1, 1, 2, 0, 0, 1, 2, 2],
+            "AwayGoals": [1, 1, 2, 0, 0, 1, 2, 1, 0, 3, 1, 0],
+        })
+        check = ada.check_claim(frame, "Home teams won 52% of matches between 1963 and 1964.")
+        self.assertNotEqual(check.reason, "failed_check", check.message)
