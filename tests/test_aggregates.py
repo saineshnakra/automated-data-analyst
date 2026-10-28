@@ -47,6 +47,13 @@ class AggregateRowsTests(unittest.TestCase):
         self.assertEqual(found.labels, tuple(groups))
         self.assertEqual(found.totals, ())
 
+    def test_a_lone_group_code_among_county_names_is_a_county(self):
+        counties = ["LEE", "IDA", "SAN DIEGO", "COOK", "KING", "LOS ANGELES"]
+        self.assertIsNone(aggregate_rows(places(counties, "county")))
+        countries = [f"Country {index}" for index in range(10)]
+        found = aggregate_rows(places(countries + ["IDA", "World"], "entity"))
+        self.assertEqual(found.labels, ("IDA", "World"))
+
     def test_countries_named_after_regions_are_not_aggregates(self):
         labels = ["South Africa", "United States", "Central African Republic",
                   "Federated States of Micronesia", "Dominican Republic", "World"]

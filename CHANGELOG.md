@@ -34,6 +34,60 @@
 
 ### Reading claims and questions
 
+- Temperatures: "°C" and "°F" are units, and "Maximum Temperature (C)" is
+  in degrees Celsius. "Edmonton International fell to -46.6 °C" is the
+  lowest Minimum Temperature (C) at that station, "Blatchford hit 37 °C"
+  the highest Maximum Temperature (C), and "Blatchford averages a high of
+  about 24 °C in July" the mean of the maximum in July. "the average high
+  temperature" and "the lowest temperature" pick the maximum and minimum
+  columns. A claim in °F about a column in °C gets `conflicting_evidence`.
+  Before, these claims guessed Station Elevation (m), and "fell to" was read
+  as a change between periods.
+- "fell below -40 °C on more than 20 days" counts the days whose minimum is
+  below -40, rather than reading "fell" as a fall from one year to the next;
+  "rose above 30 °C" uses the maximum.
+- A day's reading called a record ("The coldest reading in the records came
+  on 12 January 2024, when Edmonton International fell to -46.6 °C") is
+  checked against every day too: when another day is colder, the claim gets
+  `failed_check` naming the record.
+- "on 5 days" counts days; it no longer reads as Day = 5 in a table with a
+  day-of-the-month column. "Day 5" still does.
+- Times in UTC: a date column whose name says UTC (START_DT_UTC) or whose
+  values carry the UTC zone gives answers by hour, weekday or date with a
+  caution that these are UTC's. A claim checked on such dates is checked
+  again in every time zone from UTC-12 to UTC+14; when some zone turns the
+  verdict ("110 incidents on 25 March 2026": 101 in UTC, 110 in Calgary's
+  time), it gets `missing_context` with the range the zones give.
+- Fixed wrong totals: in Stats NZ's migration table the date was
+  month_of_release, when each estimate was published, rather than
+  year_month, the month it describes, so "net migration in 2023" gave
+  -10,805 instead of 126,196. A date named for its release, publication,
+  report or revision gives way to another date.
+- Fixed a wrong answer: "Hakeem Jeffries" in a column of names written
+  surname first picked both "JEFFRIES, HAKEEM" and "HAKEEM, JAWAD HASHEM",
+  another candidate, and added up their receipts. A full name now names the
+  value written surname first.
+- "NIBRS" names is_nibrs, a flag of whether each agency reports through
+  NIBRS, rather than nibrs_start_date, when one name fits a flag and a date.
+- "California has more than 1,500 law enforcement agencies on the FBI's
+  list" in fbi-agencies/agencies.csv counts the rows: the rows' own noun
+  right after the number is what it counts, and "list", "register" or
+  "database" names the table as a whole.
+- Fixed lost rows: a date column holding "NA" for missing dates
+  (nibrs_start_date, "NA" on 4,061 of 19,166 rows) stayed text, because the
+  "NA" cells counted against the share of cells that read as dates. They are
+  missing values now, and the column is read as dates.
+- Fixed a dropped row: "IDA" among US county names (Ida County, Iowa) was
+  read as the World Bank's IDA group and left out of every answer. A group
+  known only by its initials (IDA, IBRD, HIPC, OECD) is an aggregate only
+  beside other aggregate rows such as World or an income group.
+- Fixed a wrong answer: "how many incidents in 2024" in Traffic_Incidents.csv
+  counted the one row whose description says "multiple incidents in the
+  area", because "incidents in" was read as part of that value. The file's
+  own noun for its rows, with query words around it, names no value.
+- "on more than 20 days" counts the rows of one station when each of its
+  rows is one day, in a table of several stations.
+
 - "Half of all rail disruptions were over within 51 minutes" is checked as
   the median; "the first of July 2025" is a date; "D was the worst day of the
   year, with fifty-one disruptions" is checked against every day of the

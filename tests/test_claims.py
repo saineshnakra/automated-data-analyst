@@ -2441,3 +2441,143 @@ class WideYearClaimTests(unittest.TestCase):
         check = ada.check_claim(frame, "Life expectancy in Japan was 84.4 years in 2021.")
         self.assertTrue(check.verified, check.message)
         self.assertEqual(check.compared, 84.4)
+
+
+class TemperatureClaimTests(unittest.TestCase):
+    def weather(self) -> pd.DataFrame:
+        return pd.DataFrame({
+            "Station Name": ["NORTH", "SOUTH"] * 4,
+            "Date": pd.to_datetime(["2024-01-10", "2024-01-10", "2024-01-11", "2024-01-11",
+                                    "2024-07-10", "2024-07-10", "2024-07-11", "2024-07-11"]),
+            "Maximum Temperature (C)": [-20.0, -18.0, -25.0, -21.0, 25.0, 27.0, 23.0, 30.0],
+            "Minimum Temperature (C)": [-35.0, -30.0, -41.0, -33.0, 10.0, 12.0, 9.0, 15.0],
+            "Mean Temperature (C)": [-27.5, -24.0, -33.0, -27.0, 17.5, 19.5, 16.0, 22.5],
+            "Heating Degree Days (C)": [45.5, 42.0, 51.0, 45.0, 0.5, 0.0, 2.0, 0.0],
+        })
+
+    def test_fell_to_is_the_lowest_reading_and_hit_the_highest(self):
+        check = ada.check_claim(self.weather(), "North fell to -41 °C.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("min(Minimum Temperature (C))", check.message)
+        self.assertEqual(ada.check_claim(self.weather(), "North fell to -50 °C.").reason, "failed_check")
+        self.assertTrue(ada.check_claim(self.weather(), "South hit 30 °C.").verified)
+
+    def test_an_average_high_is_the_mean_of_the_maximum(self):
+        check = ada.check_claim(self.weather(), "South averages a high of about 28.5 °C in July.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("mean(Maximum Temperature (C))", check.message)
+        check = ada.check_claim(self.weather(), "South averages a high of about 24 °C in July.")
+        self.assertEqual(check.reason, "failed_check")
+
+    def test_fahrenheit_is_never_checked_against_celsius(self):
+        check = ada.check_claim(self.weather(), "North fell to -41 °F.")
+        self.assertEqual(check.reason, "conflicting_evidence")
+        self.assertIn("recorded in °C", check.message)
+
+    def test_a_temperature_with_no_side_names_no_column(self):
+        check = ada.check_claim(self.weather(), "The temperature at North was -27.5 °C on 10 January 2024.")
+        self.assertFalse(check.verified)
+        self.assertNotEqual(check.reason, "failed_check")
+
+
+class CountedDaysClaimTests(unittest.TestCase):
+    def test_a_number_of_days_is_no_day_of_the_month(self):
+        dates = pd.date_range("2024-01-01", periods=40)
+        frame = pd.DataFrame({"Station": ["A"] * 40, "Date": dates, "Day": dates.day,
+                              "Maximum Temperature (C)": [-30.0] * 5 + [-2.0] * 35,
+                              "Minimum Temperature (C)": [-45.0] * 5 + [-10.0] * 35})
+        check = ada.check_claim(frame, "Station A had a low temperature below -40 on 5 days in 2024.")
+        self.assertNotEqual(check.reason, "failed_check")
+        claim = "Station A had a low temperature below -40 on more than 20 days in 2024."
+        check = ada.check_claim(frame, claim)
+        self.assertEqual((check.reason, check.compared), ("failed_check", 5))
+
+
+class UtcClaimTests(unittest.TestCase):
+    def incidents(self) -> Path:
+        # 40 incidents at 23:00 UTC on 9 March: the afternoon of 9 March in Calgary, 10 March in Tokyo.
+        starts = [pd.Timestamp("2026-03-09 23:00")] * 40 + [pd.Timestamp("2026-03-09 12:00")] * 30
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        path = Path(holder.name) / "Traffic_Incidents.csv"
+        pd.DataFrame({"START_DT_UTC": starts + list(pd.date_range("2026-01-01", periods=30, freq="D")),
+                      "QUADRANT": ["SE", "NW"] * 50}).to_csv(path, index=False)
+        return path
+
+    def test_a_day_that_turns_with_the_time_zone_is_not_judged(self):
+        check = ada.check_claim(self.incidents(), "There were 70 incidents on 9 March 2026.")
+        self.assertEqual(check.reason, "missing_context")
+        self.assertIn("UTC-12 to UTC+14", check.message)
+
+    def test_a_verdict_that_holds_in_every_zone_stands(self):
+        check = ada.check_claim(self.incidents(), "There were more than 500 incidents in 2026.")
+        self.assertEqual(check.reason, "failed_check")
+        self.assertIn("holds in every time zone", check.assumptions[-1])
+
+
+class TableListClaimTests(unittest.TestCase):
+    def agencies(self) -> Path:
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        path = Path(holder.name) / "fbi-agencies" / "agencies.csv"
+        path.parent.mkdir()
+        pd.DataFrame({"ori": [f"X{index}" for index in range(12)],
+                      "state": ["California"] * 7 + ["Texas"] * 5}).to_csv(path, index=False)
+        return path
+
+    def test_a_count_of_the_rows_noun_on_the_tables_list_is_checked(self):
+        claim = "California has 7 law enforcement agencies on the FBI's list."
+        check = ada.check_claim(self.agencies(), claim)
+        self.assertTrue(check.verified, check.message)
+        check = ada.check_claim(self.agencies(), "California has more than 15 agencies on the FBI's list.")
+        self.assertEqual(check.reason, "failed_check")
+
+    def table(self, name: str, frame: pd.DataFrame) -> Path:
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        path = Path(holder.name) / name
+        frame.to_csv(path, index=False)
+        return path
+
+    def test_lists_as_a_verb_is_not_the_table(self):
+        # 3 vascular and 2 non-vascular plants among Smoky's 10 species: the 5 plants are not every row.
+        rows = [("Smoky", "Vascular Plant")] * 3 + [("Smoky", "Non-vascular Plant")] * 2
+        rows += [("Smoky", "Mammal")] * 5
+        path = self.table("park_species.csv", pd.DataFrame(rows, columns=["ParkName", "Category"]))
+        check = ada.check_claim(path, "Smoky lists 5 plant species.")
+        self.assertEqual(check.reason, "missing_context")
+        self.assertIn('"lists"', check.message)
+
+    def test_a_city_named_is_not_what_the_cities_after_the_number_count(self):
+        # Two cities are called Athens; the 49 cities Athens is twinned with are in another file.
+        names = ["Athens", "Athens", "Paris", "Rome", "Berlin", "Madrid", "Lisbon", "Vienna", "Prague",
+                 "Oslo"]
+        path = self.table("twin_cities.csv", pd.DataFrame({"id": range(10), "name": names}))
+        check = ada.check_claim(path, "Athens is twinned with 49 cities.")
+        self.assertEqual(check.reason, "missing_context")
+        self.assertIn("may count something the rows hold", check.message)
+
+
+class TemperatureRecordClaimTests(unittest.TestCase):
+    def weather(self) -> pd.DataFrame:
+        days = pd.date_range("2024-01-08", periods=6)
+        return pd.DataFrame({
+            "Station Name": ["NORTH"] * 6, "Date": days,
+            "Maximum Temperature (C)": [-20.0, -25.0, -30.0, -33.0, -28.0, -15.0],
+            "Minimum Temperature (C)": [-31.0, -38.0, -41.2, -46.6, -42.0, -25.0],
+        })
+
+    def test_a_day_called_the_record_must_hold_it(self):
+        claim = "The coldest reading in the records came on 11 January 2024, when North fell to -46.6 °C."
+        self.assertTrue(ada.check_claim(self.weather(), claim).verified)
+        claim = "The coldest reading in the records came on 10 January 2024, when North fell to -41.2 °C."
+        check = ada.check_claim(self.weather(), claim)
+        self.assertEqual(check.reason, "failed_check")
+        self.assertIn("does not hold the record", check.message)
+        claim = "North fell to -41.2 °C on 10 January 2024."
+        self.assertTrue(ada.check_claim(self.weather(), claim).verified)
+
+    def test_falling_below_a_temperature_is_a_threshold_for_the_low(self):
+        check = ada.check_claim(self.weather(), "North fell below -40 °C on more than 4 days in 2024.")
+        self.assertEqual((check.reason, check.compared), ("failed_check", 3))
+        self.assertIn("Minimum Temperature (C) below -40", check.message)

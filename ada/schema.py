@@ -440,8 +440,12 @@ DATE_NAME_TOKENS = ("date", "time", "timestamp", "created", "updated")
 
 EVENT_DATE_TOKENS = ("order", "transaction", "sale", "invoice", "posting", "created", "booking", "start",
                      "started", "begin", "began", "onset", "opened")
+# The words after "resolved" say when the figures were published or fetched, not what they describe:
+# month_of_release beside year_month.
 FOLLOW_UP_DATE_TOKENS = ("ship", "delivery", "delivered", "due", "updated", "modified", "closed", "end",
-                         "ended", "finish", "finished", "stop", "stopped", "resolved")
+                         "ended", "finish", "finished", "stop", "stopped", "resolved", "release", "released",
+                         "published", "publication", "report", "reported", "revised", "revision", "vintage",
+                         "extracted", "uploaded", "downloaded", "retrieved", "refreshed")
 
 
 def _date_preference(name: str) -> int:

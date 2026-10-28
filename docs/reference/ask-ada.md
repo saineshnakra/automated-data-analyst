@@ -553,7 +553,11 @@ column: "magnitude" is `mag` rather than `magType` or `magError`, and
 word right before the words ("median", "average", "total", "maximum") picks
 the one column named for it: "the median salary" is `Annual Salary Median`
 rather than `Annual Salary Avg`, and the word then names the column rather
-than saying how its rows combine.
+than saying how its rows combine. "High" and "low" name the maximum and the
+minimum: "the average high temperature" is the mean of `Maximum Temperature
+(C)`. "Lowest" and "highest" pick the column of the same extreme and still
+combine its rows: "the lowest temperature" is the lowest `Minimum
+Temperature (C)`.
 Otherwise the question is refused with "Did you mean bill_length_mm or
 flipper_length_mm?", listing at most five columns ("or 995 others"). A noun
 for rows ("how many samples" in a table of `sample.*` columns) counts rows
@@ -885,7 +889,11 @@ A count with a condition says when the rows it picks hold flagged values
 ("Caution: 69 of these rows have Na values the data checks flag (Na: 69
 values above 200 ...)"), and when cleaning set a code the condition would
 have matched to missing ("-1 in pm2_5 was read as a missing-value code and
-set to missing during cleaning, so those cells are not counted").
+set to missing during cleaning, so those cells are not counted"). An answer
+by hour, weekday or date, or for a year or month, of a date column in UTC
+(`START_DT_UTC`, or values that carry the UTC zone) says so: "Caution:
+START_DT_UTC is in UTC, so the hours, weekdays and dates here are those of
+UTC, not local time."
 
 **Running totals.** A column the notes set aside as a running total
 (`schema.running_total_columns`) is never summed, averaged, binned or

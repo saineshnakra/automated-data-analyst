@@ -59,6 +59,8 @@ GROUP_PATTERN = re.compile(
     r"\b(?:income|countries|excl|excluding|including|oecd|ida|ibrd|hipc|dividend|small states|developing"
     r"|developed|fragile|world|total)\b|\(region\)"
 )
+#: Groups known by their initials alone, which are also names: IDA, IBRD, HIPC, OECD.
+GROUP_CODES = re.compile(r"ida|ibrd|hipc|oecd", re.IGNORECASE)
 #: A label that is a code rather than a name: "USA", "OWID_WRL", "IDA".
 CODE_PATTERN = re.compile(r"[A-Z0-9_]{2,8}")
 #: The share of a column's labels that are codes for it to be a column of codes, not of names.
@@ -187,6 +189,10 @@ def _found_in(frame: pd.DataFrame, column: object) -> AggregateRows | None:
     place = _is_place_column(column) and not codes
     found = [label for label in labels if _is_aggregate(label, place)]
     if not found or len(labels) - len(found) < 2 or len(found) > MAX_AGGREGATE_SHARE * len(labels):
+        return None
+    if all(GROUP_CODES.fullmatch(label.strip()) for label in found):
+        # "IDA" alone, with no World, region or income row beside it, is Ida County among Iowa's counties
+        # more likely than the World Bank's group.
         return None
     if not place and not _adds_up(frame, column, found):
         return None

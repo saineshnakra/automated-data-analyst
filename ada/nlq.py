@@ -2020,8 +2020,12 @@ def _values_named(
     if not all(postings):
         return [], False
     shared = set(postings[0]).intersection(*postings[1:])
+    # "Hakeem Jeffries" names "JEFFRIES, HAKEEM", a name written surname first.
+    reordered = (run[-1], *run[:-1])
     found = [
         vocabulary.values[index] for index in sorted(shared) if _holds(vocabulary.values[index].words, run)
+        or (len(run) > 1 and "," in vocabulary.values[index].raw
+            and _holds(vocabulary.values[index].words, reordered))
     ]
     if column is not None:
         found = [value for value in found if value.column == column]
@@ -2423,9 +2427,12 @@ def _claim_values(
                     found = [value for value in found if _typed_in_case(value, reading.question)]
                     if not found:
                         continue
-                elif size == 1 and words[0] in row_nouns:
+                elif (size == 1 and words[0] in row_nouns) or (
+                        row_nouns and [word for word in words if word not in QUERY_GRAMMAR]
+                        and all(word in row_nouns for word in words if word not in QUERY_GRAMMAR)):
                     # The file's own noun for its rows ("members" in members.csv) names the rows; it is
-                    # a value only typed as the data spell it ("Member").
+                    # a value only typed as the data spell it ("Member"). So is it with a query word:
+                    # "incidents in" is no part of "There are multiple incidents in the area".
                     found, exact = _values_named(words, vocabulary, exact_only=True)
                     found = [value for value in found if _typed_in_case(value, reading.question)]
                     if not found:
@@ -3296,10 +3303,24 @@ def _claim_partial_at(
             # name, not a way to combine the rows.
             column, word, at = summary
             others = _listed_capped([other for other in candidates if other != column])
-            reading.notes.append(f'Read "{word} {_raw_words(reading.question, list(phrase))}" as '
-                                 f"{column}, the one column named for the {word}, not {others}.")
-            reading.claim(at, at + len(word))
+            if at is None:
+                # "the lowest temperature": the lowest of Minimum Temperature, so "lowest" still combines.
+                said = _raw_words(reading.question, list(phrase))
+                reading.notes.append(f'Read "{word} {said}" as the {word} {column}, not {others}.')
+            else:
+                reading.notes.append(f'Read "{word} {_raw_words(reading.question, list(phrase))}" as '
+                                     f"{column}, the one column named for the {word}, not {others}.")
+                reading.claim(at, at + len(word))
             candidates = [column]
+        flags = [column for column in candidates if _is_flag(dataframe[column])]
+        if len(candidates) > 1 and len(flags) == 1 and all(
+                is_datetime64_any_dtype(dataframe[column]) for column in candidates if column != flags[0]):
+            # "report through NIBRS" names is_nibrs, whether each row is in NIBRS, not nibrs_start_date, when
+            # it joined.
+            dates = _listed_capped([column for column in candidates if column != flags[0]])
+            said = _raw_words(reading.question, list(phrase))
+            reading.notes.append(f'Read "{said}" as {flags[0]}, not the date {dates}.')
+            candidates = flags
         if len(candidates) > 1:
             role = _role_of_position(reading.text, start)
             suited = [column for column in candidates if _suits(column, role, dataframe, roles)]
@@ -3334,23 +3355,30 @@ def _claim_partial_at(
     return 1
 
 
-# The words a column's name may use for a summary a question names: "avg" for "average".
+# The words a column's name may use for a summary a question names: "avg" for "average", and "high" for the
+# day's maximum ("the average high temperature").
 SUMMARY_NAMES = {
     "median": {"median", "med"}, "average": {"average", "avg", "mean"}, "mean": {"mean", "avg", "average"},
     "total": {"total", "tot", "sum"}, "maximum": {"maximum", "max"}, "minimum": {"minimum", "min"},
+    "high": {"maximum", "max", "high"}, "low": {"minimum", "min", "low"},
 }
+# Extremes that pick the column of the same extreme and still combine its rows: the lowest temperature is the
+# lowest of the daily minimums.
+EXTREME_NAMES = {"lowest": SUMMARY_NAMES["low"], "highest": SUMMARY_NAMES["high"]}
 
 
-def _summary_named(question: str, start: int, candidates: list[str]) -> tuple[str, str, int] | None:
+def _summary_named(question: str, start: int, candidates: list[str]) -> tuple[str, str, int | None] | None:
     """The one candidate column named for the summary the word before a phrase asks for, that word and
     where it starts: "the median salary" picks Annual Salary Median among Annual Salary Avg and Annual
-    Salary Median."""
-    before = list(re.finditer(r"[a-z]+", question[:start]))[-1:]
-    forms = SUMMARY_NAMES.get(before[0].group()) if before else None
+    Salary Median. For "lowest" or "highest" the start is None, as the word still says how to combine."""
+    before = list(re.finditer(r"[a-z]+", question[:start].lower()))[-1:]
+    word = before[0].group() if before else ""
+    forms = SUMMARY_NAMES.get(word) or EXTREME_NAMES.get(word)
     if not forms:
         return None
     named = [column for column in candidates if forms & set(_norm(normalized_name(column)).split())]
-    return (named[0], before[0].group(), before[0].start()) if len(named) == 1 else None
+    at = None if word in EXTREME_NAMES else before[0].start()
+    return (named[0], word, at) if len(named) == 1 else None
 
 
 # Name words that identify the thing a column is named for: "Plot Code" and
@@ -3692,6 +3720,13 @@ def _in_column_unit(column: str, unit: str, value: float) -> float | None:
     return value * UNITS[unit][1] / UNITS[own][1]
 
 
+def _counted_plural(spelled: str, column: str) -> bool:
+    """Whether a column named in the singular is spelled as its plural, which counts things: "on 5 days"
+    counts days where the column is Day, while "6 cyl" or "6 cylinders" for cylinders names a value."""
+    said, name = _norm(spelled), _norm(str(column))
+    return said != name and said in (f"{name}s", f"{name}es")
+
+
 def _code_before(
     column: str, before: str, series: pd.Series, roles: ColumnRoles
 ) -> tuple[Condition, int] | None:
@@ -3775,7 +3810,8 @@ def _claim_conditions(
             sign = match.group("sign")
             reading.conditions.append(_sign_condition(column, "zero" if sign.startswith("zero") else sign))
             claimed = (match.start(), end)
-        elif numeric and (found := _code_before(column, before, series, roles)):
+        elif numeric and not _counted_plural(reading.original[start:end], column) and (
+                found := _code_before(column, before, series, roles)):
             reading.conditions.append(found[0])
             claimed = (found[1], end)
         elif _is_flag(series) and (match := re.search(rf"\b(?P<cue>{FLAG_CUES})\s+(?:a\s+|an\s+)?$", before)):
@@ -7094,6 +7130,9 @@ def _with_scope(
         cautions.extend(_flag_cautions(plan, dataframe, working, roles))
         cautions.extend(_condition_cautions(plan, dataframe, working, roles))
     cautions.extend(_blanked_notes(plan, dataframe, roles))
+    if (clock := utc_dates(plan, dataframe, roles)) is not None:
+        cautions.append(f"Caution: {clock} is in UTC, so the hours, weekdays and dates here are those of "
+                        "UTC, not local time.")
     if result.scope is not None:
         cautions[:0] = result.scope.cautions
     sentences.extend(cautions)
@@ -7216,6 +7255,29 @@ def _flag_cautions(
                     f"Caution: the data checks flag {plan.measure} for {_and_listed(named)}: {issue.summary}."
                 )
     return cautions
+
+
+# Name words of a date column whose times are in UTC: START_DT_UTC.
+UTC_WORDS = frozenset({"utc", "gmt", "zulu"})
+
+
+def utc_dates(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -> str | None:
+    """The date column in UTC that the plan groups or picks rows by, or None.
+
+    A column is in UTC when its name says so (START_DT_UTC) or its values carry
+    the UTC zone. Its hours, weekdays and days are UTC's, which for Calgary are
+    six or seven hours ahead of the local ones.
+    """
+    date = plan.dimension if plan.time_part else roles.date
+    if date is None or date not in dataframe.columns or not is_datetime64_any_dtype(dataframe[date]):
+        return None
+    zone = getattr(dataframe[date].dt, "tz", None)
+    named = set(_norm(normalized_name(str(date))).split()) & UTC_WORDS
+    if not named and str(zone) not in ("UTC", "GMT"):
+        return None
+    dated = any(isinstance(item, Condition) and item.column == date for item in plan.conditions)
+    used = plan.time_part or plan.year or plan.month or plan.grain or dated or plan.dimension == date
+    return str(date) if used else None
 
 
 def _condition_cautions(

@@ -37,6 +37,9 @@ from the numbers:
   or total in them). A parenthesis is ignored for the name lists: "Africa
   (GCP)" is Africa.
 - A column of codes (`USA`, `OWID_WRL`, `IDA`) is not read as names.
+- A group known only by its initials (IDA, IBRD, HIPC, OECD) is an
+  aggregate only beside other aggregate rows, such as World or an income
+  group: "IDA" among US counties is Ida County.
 - In any other text column, only a total label counts (Total, Grand total,
   Sum, Overall), and only when those rows add up to the other rows, within
   1%, in some numeric column. A theme called "World" among Lego themes is a

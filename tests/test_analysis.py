@@ -684,6 +684,13 @@ class MissingMarkerTests(unittest.TestCase):
         self.assertEqual(int(cleaned["OD600"].isna().sum()), 3)
         self.assertTrue(any('"NA"' in note and "OD600" in note for note in report.notes), report.notes)
 
+    def test_na_among_dates_leaves_a_column_of_dates(self):
+        starts = ["2021-01-01", "NA", "2012-04-01", "NA", "2020-12-01"]
+        cleaned, report = clean_dataframe(pd.DataFrame({"nibrs_start_date": starts, "n": [1, 2, 3, 4, 5]}))
+        self.assertEqual(cleaned["nibrs_start_date"].dtype.kind, "M")
+        self.assertEqual(int(cleaned["nibrs_start_date"].isna().sum()), 2)
+        self.assertTrue(any("other values are dates" in note for note in report.notes), report.notes)
+
     def test_a_text_column_keeps_its_na_values(self):
         frame = pd.DataFrame({"Region": ["NA", "EU", "APAC", "NA"], "Revenue": [1.0, 2.0, 3.0, 4.0]})
         cleaned, _ = clean_dataframe(frame)
