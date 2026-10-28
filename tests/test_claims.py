@@ -1825,3 +1825,84 @@ class LongTableTests(unittest.TestCase):
                                         ["Value"])
         self.assertEqual(problem, "")
         self.assertEqual(number.value, 0.75)
+
+
+class FractionChangeTests(unittest.TestCase):
+    def test_a_change_by_several_parts_is_a_fraction(self):
+        for claim, low, high in (("Visitors fell by more than three quarters in 2020.", 75, math.inf),
+                                 ("Sales fell by two thirds between 2022 and 2024.", 64.5, 68.4)):
+            _, number, problem = read_claim(claim, ["Visitors", "Sales"])
+            self.assertEqual(problem, "")
+            self.assertAlmostEqual(number.low, low, places=0)
+            self.assertTrue(number.high == high or abs(number.high - high) < 0.1)
+
+    def test_a_fall_of_three_quarters_is_not_more_than_three(self):
+        frame = pd.DataFrame({"Year": [2019, 2020], "Visitors": [100.0, 90.0]})
+        check = ada.check_claim(frame, "Visitors fell by more than three quarters in 2020.")
+        self.assertEqual(check.reason, "failed_check")
+
+
+class CurrencyColumnTests(unittest.TestCase):
+    def rates(self) -> pd.DataFrame:
+        days = pd.date_range("2020-01-01", "2025-12-31", freq="7D")
+        years = days.year - 2020
+        return pd.DataFrame({"Date": days, "USD": 1.10 + 0.01 * years, "JPY": 120.0 + 10.0 * years,
+                             "DKK": 7.45, "NOK": 10.0 + 0.3 * years})
+
+    def test_a_currency_after_the_number_names_its_rate_column(self):
+        check = ada.check_claim(self.rates(), "Between 2020 and 2025 the euro gained about 10 yen a year.")
+        self.assertIn("JPY", check.answer.calculation)
+        check = ada.check_claim(self.rates(), "In 2025 the euro averaged about $1.15.")
+        self.assertIn("USD", check.answer.calculation)
+
+    def test_a_currency_two_columns_hold_names_neither(self):
+        claim = "In 2025 a euro was worth about 7.45 krone on average."
+        check = ada.check_claim(self.rates(), claim)
+        self.assertFalse(check.verified)
+
+    def test_an_all_time_high_is_checked_against_the_column(self):
+        rates = self.rates()
+        last = rates["Date"].iloc[-1].strftime("%d %B %Y").lstrip("0")
+        top = ada.check_claim(rates, f"The yen hit its all-time high on {last}, at 170.")
+        self.assertTrue(top.verified, top.message)
+        first = rates["Date"].iloc[0].strftime("%d %B %Y").lstrip("0")
+        low = ada.check_claim(rates, f"The yen hit its all-time high on {first}, at 120.")
+        self.assertEqual(low.reason, "failed_check")
+
+
+class WordedAmountTests(unittest.TestCase):
+    def prices(self) -> pd.DataFrame:
+        hours = pd.date_range("2024-01-01", periods=2000, freq="h")
+        return pd.DataFrame({"Datetime": hours, "Price": [-1.0] * 300 + [50.0] * 1700})
+
+    def test_a_thousand_is_one_thousand(self):
+        claim = "Prices dropped below zero in more than a thousand hours in 2024."
+        check = ada.check_claim(self.prices(), claim)
+        self.assertEqual(check.reason, "failed_check")
+        check = ada.check_claim(self.prices(), "Prices dropped below zero in 300 hours in 2024.")
+        self.assertTrue(check.verified, check.message)
+
+    def test_a_multiple_of_an_earlier_year_is_a_change(self):
+        frame = pd.DataFrame({"Year": [2019, 2020, 2021, 2022, 2023],
+                              "Price": [40.0, 30.0, 90.0, 230.0, 100.0]})
+        check = ada.check_claim(frame, "Prices in 2023 averaged 2.5 times their 2019 level.")
+        self.assertTrue(check.verified, check.message)
+        check = ada.check_claim(frame, "Prices in 2023 averaged five times their 2019 level.")
+        self.assertEqual(check.reason, "failed_check")
+
+
+class RepeatedDateTests(unittest.TestCase):
+    def test_a_repeated_month_that_changes_the_verdict_is_ambiguous(self):
+        months = list(pd.date_range("2020-01-01", periods=36, freq="MS"))
+        frame = pd.DataFrame({"Date": months + [months[5]], "Sales": [100.0] * 37})
+        check = ada.check_claim(frame, "Total Sales were 1,200 in 2020.")
+        self.assertEqual(check.reason, "ambiguous_intent")
+        self.assertTrue(any(item.reading == "each date once" and item.agrees for item in check.alternatives))
+
+    def test_a_repeat_that_changes_nothing_is_noted(self):
+        months = list(pd.date_range("2020-01-01", periods=36, freq="MS"))
+        frame = pd.DataFrame({"Date": months + [months[30]], "Sales": [100.0] * 37})
+        check = ada.check_claim(frame, "Total Sales were 1,200 in 2020.")
+        self.assertTrue(check.verified, check.message)
+        note = "counting each date once gives the same verdict"
+        self.assertTrue(any(note in item for item in check.assumptions))

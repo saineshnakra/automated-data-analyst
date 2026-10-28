@@ -175,7 +175,8 @@ FRACTION_PATTERN = re.compile(
 # A change by a fraction: "rose by about half", "fell by a third".
 BY_FRACTION = re.compile(
     r"(?<=\bby\s)(?:(?P<qualifier>about|roughly|around|approximately|nearly|almost|more\s+than|less\s+than)"
-    r"\s+)?(?:(?P<count>a|one)\s+)?(?P<part>half|third|quarter|fifth|tenth)\b(?!\s+of\b)",
+    r"\s+)?(?:(?P<count>a|one|two|three|four|nine)\s+)?(?P<part>half|thirds?|quarters?|fifths?|tenths?)\b"
+    r"(?!\s+of\b)",
     re.IGNORECASE,
 )
 # A fraction of one unit: "three quarters of a percentage point", "half a point", "a quarter of a mile".
@@ -292,8 +293,21 @@ BY_YEAR = re.compile(r"\bby\s+(?:the\s+end\s+of\s+)?(?P<year>(?:19|20)\d{2})\b",
 # that value column.
 INDICATOR_WORDS = frozenset({"indicator", "measure", "statistic", "series", "variable", "metric"})
 VALUE_NAMES = frozenset({"value", "values", "obs value", "observation value", "data value", "estimate"})
-# A description set off by commas after a name: ", a veterinary sedative,".
-APPOSITIVE = re.compile(r",\s+(?:a|an)\s+[A-Za-z][A-Za-z' -]{0,40}(?=,)(?<!\d)", re.IGNORECASE)
+# "averaged five times their 2019 level": the later level as a multiple of an earlier year's.
+TIMES_LEVEL = re.compile(
+    r"\b(?P<verb>averaged|was|were|stood\s+at|came\s+to|reached|hit)\s+"
+    r"(?:(?P<qualifier>about|almost|nearly|roughly|more\s+than|over|less\s+than)\s+)?"
+    r"(?P<times>\d+(?:\.\d+)?|two|three|four|five|six|seven|eight|nine|ten)\s+times\s+(?:its|their|the)\s+"
+    r"(?P<earlier>(?:19|20)\d{2})\s+(?:level|value|figure|average|total|rate|price)s?\b",
+    re.IGNORECASE,
+)
+# A description set off by commas after a name: ", a veterinary sedative,", ", the category that takes in
+# SUVs and pickups,".
+APPOSITIVE = re.compile(
+    r",\s+(?:(?:a|an)\s+[A-Za-z][A-Za-z' -]{0,40}|the\s+[a-z]+\s+(?:that|which|who)\s+[A-Za-z' -]{1,60})"
+    r"(?=,)",
+    re.IGNORECASE,
+)
 # "seven in ten", "one in five", "1 in 20", "about 12 of every 100": a share written as a count in a total.
 # "Of every 100 birds taken in, about 25 were put down": a share said as so many of every hundred.
 EVERY_BASE = re.compile(
@@ -796,6 +810,13 @@ def _worded_number(claim: str) -> tuple[str, Any] | None:
         verb = "fell" if change < 0 else "rose"
         written = f"{verb} by {qualifier} {abs(change):g}%"
         return f"{claim[:multiple.start()]}{written}{claim[multiple.end():]}", lambda number: number
+    scaled = re.search(r"\b(?:a|one)\s+(?P<scale>hundred|thousand|million|billion)\b", claim, re.IGNORECASE)
+    rest = claim[:scaled.start()] + claim[scaled.end():] if scaled else ""
+    if scaled and all(item.year_like for item in _candidates(rest, [])):
+        # "more than a thousand hours" is more than 1,000.
+        written = {"hundred": "100", "thousand": "1,000"}.get(scaled.group("scale").lower(),
+                                                             f"1 {scaled.group('scale')}")
+        return f"{claim[:scaled.start()]}{written}{claim[scaled.end():]}", lambda number: number
     unit_part = FRACTION_OF_UNIT.search(claim)
     if unit_part:
         # "three quarters of a percentage point a year" is 0.75 points, not 75%.
@@ -1191,6 +1212,50 @@ def _initials(question: str, column: str) -> bool:
                                    for start in range(len(words))}
 
 
+# The currency a sign before a number writes: "$1.18" is in dollars.
+CURRENCY_SIGNS = {"$": "dollar", "us$": "dollar", "£": "pound", "€": "euro", "¥": "yen"}
+
+
+def _currency_named(frame: Any, number: ClaimedNumber) -> str | None:
+    """The currency a claim's number is in ("10 yen", "$1.18") when one column of the table, titled by its
+    ISO code, holds that currency's rate."""
+    from .nlq import CURRENCY_NAMES  # noqa: PLC0415
+
+    written = NUMBER_PATTERN.search(number.text)
+    sign = (written.group("currency") or "").strip().lower() if written else ""
+    unit = (number.unit or "").split()[0].lower() if number.unit else ""
+    for word in (CURRENCY_SIGNS.get(sign), unit, unit.removesuffix("s")):
+        holding = [column for column in frame.columns
+                   if word and word in CURRENCY_NAMES.get(str(column).strip(), ())]
+        if len(holding) == 1:
+            return word
+    return None
+
+
+def _times_level(text: str) -> str:
+    """A claim of a later level as a multiple of an earlier year's, written as the change between the years.
+
+    "Prices in 2023 averaged five times their 2019 level" is "average Prices rose by about 400% between
+    2019 and 2023"; the later year is the claim's one other year.
+    """
+    found = TIMES_LEVEL.search(text)
+    if not found:
+        return text
+    before, after = text[:found.start()], text[found.end():]
+    years = re.findall(r"\b(?:19|20)\d{2}\b", before + after)
+    later = [year for year in years if year != found.group("earlier")]
+    if len(later) != 1:
+        return text
+    times = found.group("times").lower()
+    factor = float(NUMBER_WORDS.get(times, times))
+    qualifier = re.sub(r"\s+", " ", (found.group("qualifier") or "about").lower())
+    subject = re.sub(rf"\s*\b(?:in\s+)?{later[0]}\b,?", "", before, flags=re.IGNORECASE).strip()
+    tail = re.sub(rf"\s*\b(?:in\s+)?{later[0]}\b", "", after, flags=re.IGNORECASE)
+    lead = "average " if found.group("verb").lower() == "averaged" else ""
+    change = f"rose by {qualifier} {(factor - 1) * 100:g}%"
+    return f"{lead}{subject} {change} between {found.group('earlier')} and {later[0]}{tail}"
+
+
 def _named(question: str, column: str) -> bool:
     """Whether the question names ``column``: one of its words, a word that shortens or lengthens one,
     or its initials."""
@@ -1200,6 +1265,12 @@ def _named(question: str, column: str) -> bool:
     if str(column).lower() in question.lower() or _initials(question, column):
         return True
     if _outcome_named(words, column):
+        return True
+    from .nlq import CURRENCY_NAMES  # noqa: PLC0415
+
+    # "the dollar" names USD in a table of exchange rates.
+    if any(re.search(rf"\b{re.escape(name)}s?\b", question, re.IGNORECASE)
+           for name in CURRENCY_NAMES.get(str(column).strip(), ())):
         return True
     return any(_abbreviates(word, part) for word in words for part in parts if len(part) >= 2)
 
@@ -1232,7 +1303,8 @@ def _names_head(question: str, column: str, strict: bool = False) -> bool:
         return True
     if _outcome_named(words, column):
         return True
-    parts = re.findall(r"[a-z]+", normalized_name(column))
+    # "Price (EUR/MWhe)": what is in brackets is a unit or a note, not the kind of quantity.
+    parts = re.findall(r"[a-z]+", normalized_name(re.sub(r"\([^)]*\)", " ", str(column)).strip() or column))
     if len(parts) > 1 and column_unit(column) == parts[-1]:
         parts = parts[:-1]
     parts = [part for part in parts if part not in COUNTING_WORDS] or parts
@@ -1518,6 +1590,8 @@ def check_claim(
         asked = question
     said, ends, direction = text, (), None
     if question is None:
+        text = _times_level(text)
+    if question is None:
         # "rose by more than 60%, from 29,199 in 1999 to 47,173 in 2017": the change is read without its ends,
         # which are checked after it.
         text, ends = _without_ends(text)
@@ -1539,6 +1613,8 @@ def check_claim(
         check.verified or check.reason == "failed_check"
     ):
         check = _by_year(check, analysis, text, asked, by, number, source, choices)
+    if question is None and (check.verified or check.reason == "failed_check"):
+        check = _repeated_dates(check, analysis, text, asked, number, source, choices)
     counts = _counted_ends(check, ends, text) if ends else None
     if counts and not _ends_hold(check, ends):
         # "rose 46%, from 147.7 billion pounds in 1990": ends that count pounds may be totals, as a level in
@@ -1571,7 +1647,7 @@ def _by_year(
     year = by.group("year")
     within = f"{asked[:by.start()]}in {year}{asked[by.end():]}"
     other = _checked_dates(_checked_table(analysis, text, within, number, source, choices, None), analysis)
-    if other.verified == check.verified or not (other.verified or other.reason == "failed_check"):
+    if (other.verified, other.reason) == (check.verified, check.reason):
         return check
     readings = [(f"up to {year}", asked, check), (f"in {year}", within, other)]
     alternatives = tuple(
@@ -1587,6 +1663,46 @@ def _by_year(
         f"verdicts: {shown}.",
         claimed=number, question=asked, alternatives=alternatives, source=source,
         clarification=f"Is the share over every year up to {year}, or in {year} alone?",
+    )
+
+
+def _repeated_dates(
+    check: ClaimCheck, analysis: Any, text: str, asked: str, number: ClaimedNumber, source: Source | None,
+    choices: dict[str, str],
+) -> ClaimCheck:
+    """A claim on a table of one row per date where a date or two repeat, checked with each counted once.
+
+    BTS's monthly table gives April 2023 twice; a yearly total counts it twice
+    unless the repeat is left out. When the two readings give different
+    verdicts, the claim is ambiguous; when they agree, the check says so.
+    """
+    date = analysis.roles.date
+    if not date or date not in analysis.frame.columns:
+        return check
+    counts = analysis.frame[date].value_counts()
+    repeated = counts[counts > 1]
+    if repeated.empty or len(counts) < 20 or (counts == 1).mean() < 0.95 or int(counts.max()) > 2:
+        return check
+    once = replace(analysis, frame=analysis.frame.drop_duplicates(subset=[date], keep="first"))
+    other = _checked_dates(_checked_table(once, text, asked, number, source, choices, None), once)
+    shown = ", ".join(str(value)[:10] for value in repeated.index[:3])
+    if (other.verified, other.reason) == (check.verified, check.reason):
+        note = (f"{date} repeats {shown}; counting each date once gives the same verdict "
+                f"({_plain(other.compared) if other.compared is not None else 'no number'}).")
+        return replace(check, assumptions=(*check.assumptions, note))
+    alternatives = tuple(
+        Alternative(reading, asked, item.compared, item.verified,
+                    item.answer.calculation if item.answer is not None else "")
+        for reading, item in ((f"every row, {shown} counted twice", check), ("each date once", other))
+    )
+    values = "; ".join(f"{item.reading} gives {_plain(item.value) if item.value is not None else 'no number'}"
+                       for item in alternatives)
+    return ClaimCheck(
+        text, "unverified", "ambiguous_intent",
+        f"{date} repeats {shown} in a table of one row per date, and the verdict rests on whether the repeat "
+        f"counts: {values}.",
+        claimed=number, question=asked, alternatives=alternatives, source=source,
+        clarification=f"Is {shown} one row or two?",
     )
 
 
@@ -1618,6 +1734,10 @@ def _checked_table(
         check.verified or check.reason == "failed_check"
     ):
         return _checked_peak(check, analysis, text)
+    if question is None and check.verified and check.answer is not None and RECORD_EXTREME.search(text) and (
+        check.answer.plan.measure
+    ):
+        return _checked_extreme(check, analysis, RECORD_EXTREME.search(text))
     if question is None and check.verified and check.answer is not None and SUPERLATIVE.search(text) and (
         AGAINST_ALL.search(text) and not _ranked(check.answer)
     ):
@@ -2019,6 +2139,41 @@ SUPERLATIVE = re.compile(
 AGAINST_ALL = re.compile(
     r"\b(?:of|among)\s+(?:any|all)\b|\bthan\s+(?:in\s+)?any\b|\bon\s+record\b|\bever\b", re.IGNORECASE
 )
+
+
+# "its all-time high", "a record low": the value claimed is the highest or lowest the table holds.
+RECORD_EXTREME = re.compile(r"\b(?:all[- ]time|record)\s+(?P<side>high|low|peak)s?\b", re.IGNORECASE)
+
+
+def _checked_extreme(check: ClaimCheck, analysis: Any, extreme: re.Match) -> ClaimCheck:
+    """A verified value that the claim calls its all-time high or low, checked against the highest or lowest
+    value of the column over every row the claim's other conditions keep."""
+    from .nlq import _apply_filters  # noqa: PLC0415
+    from .numeric import to_numbers  # noqa: PLC0415
+
+    answer = check.answer
+    assert answer is not None and answer.plan.measure is not None
+    date = analysis.roles.date
+    plan = replace(answer.plan, year=None, month=None,
+                   conditions=tuple(item for item in answer.plan.conditions if item.column != date))
+    working, _ = _apply_filters(analysis.frame, plan, analysis.roles)
+    values = to_numbers(working[answer.plan.measure]).dropna()
+    if values.empty or check.claimed is None:
+        return check
+    high = extreme.group("side").lower() != "low"
+    best = float(values.max() if high else values.min())
+    word = "highest" if high else "lowest"
+    if check.claimed.holds(best):
+        return replace(check, assumptions=(*check.assumptions, f"Checked that {_plain(best)} is the {word} "
+                                           f"{answer.plan.measure} over the {len(values):,} rows."))
+    return ClaimCheck(
+        check.claim, "unverified", "failed_check",
+        f"The data give {_plain(check.compared)} for {answer.calculation}, as claimed, but the claim calls "
+        f"it the {extreme.group(0)}, and the {word} {answer.plan.measure} over the {len(values):,} rows is "
+        f"{_plain(best)}.",
+        claimed=check.claimed, question=check.question, answer=answer, compared=best, agreement="mismatch",
+        assumptions=check.assumptions, source=check.source,
+    )
 
 
 def _ranked(answer: QueryAnswer) -> bool:
@@ -2690,6 +2845,10 @@ def _check(
 
     choices = choices or {}
     noun = (number.unit or "").split()
+    currency = _currency_named(analysis.frame, number)
+    if currency and not re.search(rf"\b{re.escape(currency)}s?\b", asked, re.IGNORECASE):
+        # "the euro gained about 10 yen a year", "averaged about $1.18": the currency is a column of rates.
+        asked = f"{asked} {currency}"
     unsaid = len(noun) == 1 and not re.search(rf"\b{re.escape(noun[0])}\b", asked, re.IGNORECASE)
     if unsaid and not _claim_unit(number) and _kind_value(noun[0].lower(), analysis.frame):
         # "565 boys were named Jack": the boys are Sex = Boy, so the noun picks rows as well as naming them.

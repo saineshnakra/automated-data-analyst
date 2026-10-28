@@ -345,6 +345,16 @@ several columns ("shelter" in `at shelter` and `shelter, neuter, return`, in
 no value in full. Generic folder words (data, raw, files and the like) are
 not used.
 
+In a table of exchange rates whose columns are ISO codes (USD, JPY, DKK),
+a currency after the number or before it ("10 yen", "$1.18") names its
+column; one name two columns share ("krone") names neither. A value the claim
+calls an all-time or record high or low is checked against the highest or
+lowest value of its column over the rows the claim's other conditions keep.
+
+On a table of one row per date where one date or two repeat, a claim is also
+checked with each date counted once; when the two verdicts differ, the
+claim is `ambiguous_intent` and names both readings.
+
 A word for dying ("died", "killed") names a table whose name holds
 "deaths". A country or US state that no column of the table could hold (no
 column has three country names or ten state codes) is read as the place the

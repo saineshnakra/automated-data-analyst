@@ -4336,3 +4336,32 @@ class NameColumnTests(unittest.TestCase):
     def test_two_name_columns_stay_ambiguous(self):
         self.assertIsNone(nlq._name_column(["Area Name", "Parent Name", "Region Name"]))
         self.assertIsNone(nlq._name_column(["Area Name", "Country"]))
+
+
+class SeriesNameTests(unittest.TestCase):
+    def series(self) -> pd.DataFrame:
+        months = pd.date_range("2020-01-01", periods=24, freq="MS")
+        return pd.DataFrame({
+            "Date": months,
+            "Light truck sales": [100.0] * 24, "Heavy truck sales": [10.0] * 24, "Auto sales": [50.0] * 24,
+            "Transit Ridership - Urban Rail - Adjusted": [7.0] * 24,
+            "Transit Ridership - Fixed Route Bus - Adjusted": [5.0] * 24,
+            "Transit Ridership - Other Transit Modes - Adjusted": [1.0] * 24,
+            "Price": [-1.0] * 6 + [3.0] * 18,
+        })
+
+    def test_a_name_written_with_of_is_the_column(self):
+        frame = self.series()
+        answer = answer_question("total sales of light trucks in 2020", frame, detect_roles(frame))
+        self.assertEqual(answer.plan.measure, "Light truck sales")
+        self.assertEqual(answer.value, 1200)
+
+    def test_a_word_beside_a_column_from_its_own_name_is_part_of_it(self):
+        frame = self.series()
+        answer = answer_question("total urban rail ridership in 2020", frame, detect_roles(frame))
+        self.assertEqual(answer.plan.measure, "Transit Ridership - Urban Rail - Adjusted")
+
+    def test_below_zero_and_a_verb_before_it_bound_the_column(self):
+        frame = self.series()
+        answer = answer_question("how many rows where Price fell below zero", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 6)
