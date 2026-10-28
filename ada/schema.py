@@ -609,6 +609,9 @@ def looks_like_identifier(name: str, series: pd.Series) -> bool:
     if words and words[-1] in MEASURE_KEYWORDS:
         # The last word decides, as in _keyword_score: "Invoice Amount" is an amount.
         return False
+    if re.match(r"\s*(?:total\s+)?(?:number|count|num)\s+of\b", str(name), re.IGNORECASE):
+        # "Number of residents" counts residents, however many of its counts differ; "Order Number" is a key.
+        return False
     if not any(token in words for token in IDENTIFIER_TOKENS):
         return False
     if is_numeric_dtype(series) and not is_bool_dtype(series) and bool((series.dropna() % 1 != 0).any()):
@@ -2469,10 +2472,28 @@ def detect_roles(dataframe: pd.DataFrame, source_name: str | None = None) -> Col
     """Infer likely roles from names, values, and cardinality, and the rows' noun from the file name."""
     roles = _file_roles(dataframe, source_name)
     noun = row_noun(source_name)
-    # A word that is part of a column's name ("updrs" in total_UPDRS) names that column, not the rows.
-    if noun and any(noun in re.findall(r"[a-z]+", normalized_name(column)) for column in dataframe.columns):
+    # A word that is part of a column's name ("updrs" in total_UPDRS) names that column, not the rows, unless
+    # a column counts the rows' things ("Number Of Trees" in trees_in_camden.csv). Such a count is 1 on most
+    # rows, each row a tree or a few; n_cats, above 1 on most rows of cats_uk_reference.csv, counts the cats
+    # of each cat's household.
+    columns = dataframe.columns
+    named = noun and any(noun in re.findall(r"[a-z]+", normalized_name(column)) for column in columns)
+    if named and not any(
+        _counts_noun(column, noun) and bool((dataframe[column] == 1).mean() >= 0.5) for column in columns
+    ):
         noun = None
     return replace(roles, row_noun=noun) if noun else roles
+
+
+# Words of a column's name that say it counts what the rest names: "Number Of Trees", tree_count.
+NOUN_COUNT_WORDS = frozenset({"number", "count", "num", "n", "no", "of"})
+
+
+def _counts_noun(column: object, noun: str) -> bool:
+    """Whether a column's name is a word for a count and the plural noun: "Number Of Trees" for "trees"."""
+    words = re.findall(r"[a-z]+", normalized_name(str(column)))
+    others = [word for word in words if word != noun]
+    return noun in words and bool(others) and all(word in NOUN_COUNT_WORDS for word in others)
 
 
 # Plurals that don't end in s.

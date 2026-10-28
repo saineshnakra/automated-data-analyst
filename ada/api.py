@@ -548,7 +548,7 @@ class Analysis:
         ``{"aggregate_rows": "keep"}``; the answer's ``decisions`` list each one
         taken, and an unknown key or option raises ``UnknownDecision``.
         """
-        if unsupported_phrasing(question, self.frame.columns):
+        if unsupported_phrasing(question, self.frame.columns, self.frame):
             return Refusal(
                 "unsupported_phrasing",
                 "ADA has no way to represent that question, so it will not guess at a near one.",

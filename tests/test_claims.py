@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from table_helpers import births, migration
+from table_helpers import air_quality, births, commuting, covid_deaths, deaths, migration, registry
 
 import ada
 from ada.claims import (
@@ -336,12 +336,11 @@ class GuessedColumnTests(unittest.TestCase):
         })
 
     def test_a_column_the_claim_does_not_name_by_its_last_word_does_not_fail_it(self):
-        # "deaths" is the first word of death_height_metres, a height; summing heights is a guess.
+        # "deaths" is the first word of death_height_metres, a height, so it names the deaths, not the height;
+        # summing heights would be a guess.
         check = ada.check_claim(self.frame(), "Members recorded 3 member deaths in total.")
-        self.assertEqual(check.answer.plan.measure, "death_height_metres")
-        self.assertEqual((check.reason, check.agreement), ("missing_context", "mismatch"))
-        self.assertEqual(check.clarification,
-                         "Is the number about death_height_metres, or about another column?")
+        self.assertEqual(check.reason, "missing_context")
+        self.assertTrue(check.answer is None or check.answer.plan.measure != "death_height_metres")
 
     def test_counting_words_and_units_need_not_be_named(self):
         check = ada.check_claim(self.frame(), "Rows have 40 parts on average.")
@@ -515,9 +514,13 @@ class LeftOutWordTests(unittest.TestCase):
         self.assertIn('without "lost" and "forest"', check.assumptions[0])
 
     def test_a_mismatch_without_them_proves_nothing(self):
-        check = ada.check_claim(losses(), "Brazil lost 2,500 hectares of forest to pasture in 2004.")
+        # Fewer rows than the words keep could add up to less than 2,000.
+        check = ada.check_claim(losses(), "Brazil lost 1,500 hectares of forest to pasture in 2004.")
         self.assertEqual(check.reason, "missing_context")
         self.assertIn("may pick other rows", check.message)
+        # No fewer rows add up to more than the 2,000 of every row they keep.
+        check = ada.check_claim(losses(), "Brazil lost 2,500 hectares of forest to pasture in 2004.")
+        self.assertEqual(check.reason, "failed_check")
 
     def test_an_average_or_a_bound_that_agrees_without_them_is_not_verified(self):
         average = ada.check_claim(losses(), "The average forest pasture was 1,500.")
@@ -2052,6 +2055,45 @@ class QualifierBoundTests(unittest.TestCase):
         self.assertEqual(_every_value("the 5 parks list 4 birds", frame), ("the 5 parks list 4 birds", None))
 
 
+class DayClaimTests(unittest.TestCase):
+    def path(self) -> Path:
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        folder = Path(holder.name) / "dutch-rail-disruptions"
+        folder.mkdir()
+        # By hand: 3 disruptions on 1 July 2025, 2 on 2 July and 1 on 3 July, lasting 10, 20, 30, 40, 50
+        # and 60 minutes (median 35).
+        pd.DataFrame({
+            "start_time": pd.to_datetime(["2025-07-01 06:00", "2025-07-01 07:00", "2025-07-01 08:00",
+                                          "2025-07-02 06:00", "2025-07-02 07:00", "2025-07-03 06:00"]),
+            "duration_minutes": [10, 20, 30, 40, 50, 60],
+        }).to_csv(folder / "disruptions-2025.csv", index=False)
+        return folder / "disruptions-2025.csv"
+
+    def test_the_worst_day_is_checked_against_every_day(self):
+        path = self.path()
+        check = ada.check_claim(path, "The first of July 2025 was the worst day of the year, with three "
+                                      "disruptions.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("has the most of any day of 2025", " ".join(check.assumptions))
+        check = ada.check_claim(path, "The second of July 2025 was the worst day of the year, with two "
+                                      "disruptions.")
+        self.assertEqual(check.reason, "failed_check")
+        self.assertIn("is not the worst day of 2025", check.message)
+
+    def test_half_within_a_time_is_the_median(self):
+        path = self.path()
+        check = ada.check_claim(path, "Half of all disruptions were over within 35 minutes.")
+        self.assertTrue(check.verified, check.message)
+        self.assertEqual(ada.check_claim(path, "Half of all disruptions were over within 20 minutes.").reason,
+                         "failed_check")
+
+    def test_a_day_in_words(self):
+        from ada.nlq import days_in_words  # noqa: PLC0415
+
+        self.assertEqual(days_in_words("the twenty-third of May and the first of July"), "23 May and 1 July")
+
+
 class MoneyColumnTests(unittest.TestCase):
     def test_a_word_for_money_picks_the_column_it_names(self):
         # invest and value are both money; "investment" names invest. By hand GM invested 60 of 100.
@@ -2087,3 +2129,315 @@ class EveryRowShareTests(unittest.TestCase):
         })
         check = ada.check_claim(frame, "Home teams won 52% of matches between 1963 and 1964.")
         self.assertNotEqual(check.reason, "failed_check", check.message)
+
+
+class RegistryClaimTests(unittest.TestCase):
+    def test_a_share_of_people_diagnosed_is_of_the_incidences(self):
+        claim = "Women made up {}% of the people diagnosed with lung cancer in 2024."
+        check = ada.check_claim(registry(), claim.format(52))
+        self.assertTrue(check.verified, check.message)
+        check = ada.check_claim(registry(), claim.format(70))
+        self.assertEqual(check.reason, "failed_check")
+
+    def test_a_share_of_a_site_is_of_all_cancer_types(self):
+        claim = "Breast cancer made up about 40% of the cancers diagnosed in women in 2024."
+        self.assertEqual(ada.check_claim(registry(), claim).reason, "failed_check")
+        claim = "Breast cancer made up about 53% of the cancers diagnosed in women in 2024."
+        self.assertTrue(ada.check_claim(registry(), claim).verified)
+
+    def test_ages_over_columns_of_age_bands(self):
+        claim = "More than a third of the cancers diagnosed in 2024 were in people aged 75 or over."
+        check = ada.check_claim(registry(), claim)
+        self.assertTrue(check.verified, check.message)
+        self.assertTrue(any("columns of counts by age band" in item for item in check.assumptions))
+        claim = "Fewer than a quarter of the cancers diagnosed in 2024 were in people aged 75 or over."
+        self.assertEqual(ada.check_claim(registry(), claim).reason, "failed_check")
+
+    def test_a_change_in_diagnoses_of_one_site(self):
+        claim = "Prostate cancer diagnoses rose by 20% between 2020 and 2024, from 80 to 96."
+        self.assertTrue(ada.check_claim(registry(), claim).verified)
+
+
+class SeaLevelClaimTests(unittest.TestCase):
+    def frame(self) -> pd.DataFrame:
+        years = list(range(1856, 2025))
+        return pd.DataFrame({"Year": years, "MSL": [0.4 + 0.003 * (year - 1856) for year in years],
+                             "MHW": [1.1 + 0.003 * (year - 1856) for year in years]})
+
+    def test_since_records_began_is_from_their_first_year(self):
+        claim = "Sea level has risen by about 0.003 metres a year since records began in 1856."
+        check = ada.check_claim(self.frame(), claim)
+        self.assertTrue(check.verified, check.message)
+        self.assertTrue(any('"sea level" as msl' in item.lower() for item in check.assumptions))
+
+    def test_a_unit_the_data_do_not_state_is_not_assumed(self):
+        claim = "Sea level has risen by about 3 millimetres a year since records began."
+        check = ada.check_claim(self.frame(), claim)
+        self.assertEqual(check.reason, "missing_context")
+        self.assertIn("only if MSL is recorded in metres", check.message)
+
+    def test_a_comparison_after_the_number_fails_a_wrong_number(self):
+        claim = ("Since 2000, sea level has been rising by about 0.009 metres a year, three times the "
+                 "long-run pace.")
+        check = ada.check_claim(self.frame(), claim)
+        self.assertEqual(check.reason, "failed_check")
+        self.assertTrue(any("Set aside" in item for item in check.assumptions))
+
+    def test_a_comparison_after_the_number_does_not_verify_a_right_one(self):
+        claim = ("Since 2000, sea level has been rising by about 0.003 metres a year, twice the pace of the "
+                 "1800s.")
+        check = ada.check_claim(self.frame(), claim)
+        self.assertFalse(check.verified)
+        self.assertIn("ADA does not check", check.message)
+
+    def test_words_of_the_table_s_name_that_name_a_column_stay(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "battery-sea-level" / "monthly.csv"
+            path.parent.mkdir()
+            self.frame().to_csv(path, index=False)
+            check = ada.check_claim(path, "Mean sea level at the Battery was about 0.904 metres in 2024.")
+        self.assertTrue(check.verified, check.message)
+
+
+class DeathsTableClaimTests(unittest.TestCase):
+    def test_a_share_of_single_years_of_age_is_of_all_ages(self):
+        # 2024: 494 deaths, 215 of them aged 40 or over (43.5%) and 139 under 20 (28.1%).
+        claim = "More than {} of the people who died in 2024 were aged 40 or over."
+        check = ada.check_claim(deaths(), claim.format("two fifths"))
+        self.assertTrue(check.verified, check.message)
+        check = ada.check_claim(deaths(), claim.format("half"))
+        self.assertEqual(check.reason, "failed_check")
+
+    def test_how_deaths_were_counted_leaves_no_word_out(self):
+        claim = "Nearly a third of the deaths registered in 2024 were of people under 20."
+        check = ada.check_claim(deaths(), claim)
+        self.assertEqual(check.reason, "failed_check")
+        self.assertFalse(any("registered" in item for item in check.assumptions))
+
+    def test_a_count_of_people_adds_up_the_counts(self):
+        check = ada.check_claim(deaths(), "More than 1,000 people died in 2024.")
+        self.assertEqual(check.reason, "failed_check")
+        self.assertIn("494", check.message)
+        self.assertFalse(any("Each row counts" in item for item in check.assumptions))
+
+    def test_sexagenarians_are_aged_60_to_69(self):
+        check = ada.check_claim(deaths(), "Deaths of sexagenarians rose by about 17% between 2023 and 2024, "
+                                          "from 59 to 69.")
+        self.assertTrue(check.verified, check.message)
+
+
+class CountedThingsClaimTests(unittest.TestCase):
+    def trees(self, folder: str) -> Path:
+        path = Path(folder) / "trees_in_town.csv"
+        pd.DataFrame({
+            "Number Of Trees": [1, 2, 1, 3, 1, 1],
+            "Capital Asset Value For Amenity Trees": [100.0, 200.0, 50.0, 10.0, 5.0, 5.0],
+            "Common Name": ["Oak", "Ash", "Oak", "Elm", "Oak", "Ash"],
+        }).to_csv(path, index=False)
+        return path
+
+    def test_a_share_of_the_file_s_things_adds_up_their_count(self):
+        with tempfile.TemporaryDirectory() as folder:
+            # 3 of the 9 trees are oaks.
+            check = ada.check_claim(self.trees(folder), "Oaks make up half of the town's trees.")
+            self.assertEqual(check.reason, "failed_check")
+            self.assertIn("sum(Number Of Trees)", check.message)
+            check = ada.check_claim(self.trees(folder), "Oaks make up a third of the town's trees.")
+            self.assertTrue(check.verified, check.message)
+
+    def test_an_amount_of_money_is_never_a_count(self):
+        frame = pd.DataFrame({"Number Of Trees": [1, 2, 1], "Common Name": ["Oak", "Ash", "Oak"]})
+        check = ada.check_claim(frame, "There are trees worth £4 here.")
+        self.assertFalse(check.verified)
+        self.assertNotEqual(check.reason, "failed_check")
+
+
+class RateBaseClaimTests(unittest.TestCase):
+    def cars(self) -> pd.DataFrame:
+        # Cars per thousand inhabitants: Poland rises by 15 a year from 300 in 2000; Germany 593 in 2025.
+        rows = [{"STRUCTURE_NAME": "Passenger cars - per thousand inhabitants", "geo": name,
+                 "TIME_PERIOD": year, "OBS_VALUE": value}
+                for name, values in {"Poland": [300 + 15 * step for step in range(26)],
+                                     "Germany": [500 + step * 3.72 for step in range(26)]}.items()
+                for year, value in zip(range(2000, 2026), values, strict=True)]
+        frame = pd.DataFrame(rows)
+        frame.loc[(frame["geo"] == "Germany") & (frame["TIME_PERIOD"] == 2025), "OBS_VALUE"] = 593.0
+        return frame
+
+    def test_a_base_the_table_states_is_its_figures_own(self):
+        claim = "Since 2000, Poland has added about 15 cars per 1,000 inhabitants a year."
+        check = ada.check_claim(self.cars(), claim)
+        self.assertTrue(check.verified, check.message)
+        self.assertTrue(any("per thousand inhabitants" in item for item in check.assumptions))
+
+    def test_things_a_row_s_figure_counts_are_not_rows(self):
+        claim = "Germany had about {} cars for every 1,000 residents in 2025."
+        self.assertTrue(ada.check_claim(self.cars(), claim.format(590)).verified)
+        check = ada.check_claim(self.cars(), claim.format(700))
+        self.assertEqual(check.reason, "failed_check")
+        self.assertIn("593", check.message)
+
+    def test_a_rate_is_never_added_up_over_rows(self):
+        claim = "The two countries had about 1,500 cars per 1,000 inhabitants in 2025."
+        check = ada.check_claim(self.cars(), claim)
+        self.assertFalse(check.verified)
+
+
+class BeyondEveryRowTests(unittest.TestCase):
+    def traffic(self) -> pd.DataFrame:
+        hours = pd.date_range("2024-01-01", periods=48, freq="h")
+        return pd.DataFrame({"date_time": hours, "traffic_volume": [100.0 + hour for hour in range(48)]})
+
+    def test_a_highest_beyond_every_row_fails_whatever_words_are_left_out(self):
+        # The busiest hour has 147 vehicles.
+        claim = "At its busiest, traffic on this stretch topped {} vehicles an hour."
+        self.assertEqual(ada.check_claim(self.traffic(), claim.format(200)).reason, "failed_check")
+        self.assertEqual(ada.check_claim(self.traffic(), claim.format(140)).reason, "missing_context")
+
+    def test_a_span_longer_than_a_row_is_not_refuted(self):
+        claim = "At its busiest, traffic on this stretch topped 200 vehicles a week."
+        self.assertNotEqual(ada.check_claim(self.traffic(), claim).reason, "failed_check")
+
+    def test_digits_after_a_letter_and_a_hyphen_are_a_name(self):
+        claim = "At its busiest, traffic on I-94 topped 200 vehicles an hour."
+        check = ada.check_claim(self.traffic(), claim)
+        self.assertEqual(check.claimed.value, 200)
+
+
+class PartsClaimTests(unittest.TestCase):
+    def test_a_state_on_a_share_of_days_is_a_share_of_the_days(self):
+        frame = air_quality()
+        claim = "Air quality was good on more than 90% of the days monitored across US counties in 2025."
+        check = ada.check_claim(frame, claim)
+        self.assertEqual(check.reason, "failed_check")
+        self.assertAlmostEqual(check.compared, 610 / 1810 * 100)
+        claim = "Air quality was good on about 34% of the days in 2025."
+        self.assertTrue(ada.check_claim(frame, claim).verified)
+
+    def test_a_place_in_the_subject_picks_its_rows(self):
+        frame = air_quality()
+        for claim in ("Air quality in Maricopa County was good on 8.8% of days in 2025.",
+                      "In Maricopa County, air was good on fewer than 10% of days in 2025.",
+                      "Maricopa County, home to Phoenix, had good air on fewer than one day in ten in 2025."):
+            check = ada.check_claim(frame, claim)
+            self.assertTrue(check.verified, claim)
+            self.assertAlmostEqual(check.compared, 32 / 365 * 100)
+
+    def test_one_thing_in_ten_is_a_share_of_those_things(self):
+        question, number, _ = read_claim("Fewer than one day in ten was good.", ["Good Days"])
+        self.assertEqual(question, "share of days was good")
+        self.assertEqual(number.value, 10)
+        # Another noun after the fraction is what the share is of: no rewrite.
+        self.assertEqual(read_claim("He scored one goal in ten games.", ["goals"])[1].value, 10)
+
+    def test_a_share_of_residents_is_of_the_total_column(self):
+        claim = ("Two thirds of the City of London's working residents worked mainly from home at the time "
+                 "of the 2021 census.")
+        check = ada.check_claim(commuting(), claim)
+        self.assertTrue(check.verified)
+        self.assertAlmostEqual(check.compared, 3602 / 5352 * 100)
+
+
+class CountsByAgeClaimTests(unittest.TestCase):
+    def test_an_age_bound_after_the_people_counted_keeps_their_ages(self):
+        frame = covid_deaths()
+        check = ada.check_claim(frame, "Fewer than 100 Americans under 18 died of COVID-19.")
+        self.assertEqual(check.reason, "failed_check")
+        self.assertEqual(check.compared, 351)
+        self.assertTrue(ada.check_claim(frame, "About 350 Americans under 18 died of COVID-19.").verified)
+
+    def test_a_word_that_names_two_columns_of_counts_is_ambiguous_when_they_disagree(self):
+        frame = covid_deaths()
+        claim = "Women accounted for 47.5% of the deaths recorded from January 2020 to June 2023."
+        check = ada.check_claim(frame, claim)
+        # Of all deaths 16,510 of 34,760 (47.50%), of COVID-19 deaths 605 of 1,645 (36.78%).
+        self.assertEqual(check.reason, "ambiguous_intent")
+        self.assertEqual([item.reading for item in check.alternatives], ["Total deaths", "COVID-19 Deaths"])
+        self.assertTrue(ada.check_claim(frame, "Women accounted for about 37% of COVID-19 deaths.").verified)
+
+    def test_a_share_of_all_deaths_is_of_the_total_column(self):
+        frame = covid_deaths()
+        self.assertTrue(ada.check_claim(frame, "COVID-19 accounted for about 5% of all deaths.").verified)
+        check = ada.check_claim(frame, "COVID-19 accounted for about a quarter of all deaths.")
+        self.assertEqual(check.reason, "failed_check")
+        # 1,645 of 34,760.
+        self.assertAlmostEqual(check.compared, 1645 / 34760 * 100)
+
+    def test_nearly_one_in_ten_is_from_nine_tenths_of_it(self):
+        number = read_claim("COVID-19 was involved in nearly one in ten deaths.", ["Total deaths"])[1]
+        self.assertAlmostEqual(number.low, 9)
+        self.assertAlmostEqual(number.high, 10)
+
+    def test_the_tables_own_period_is_no_filter(self):
+        frame = covid_deaths()
+        claim = "More than 1,600 Americans died of COVID-19 between January 2020 and late June 2023."
+        check = ada.check_claim(frame, claim)
+        self.assertTrue(check.verified)
+        self.assertEqual(check.compared, 1645)
+
+
+class OpenScaleTests(unittest.TestCase):
+    def test_an_open_bound_with_a_scale_word_says_nothing_of_the_columns_unit(self):
+        drivers = pd.DataFrame({
+            "State": ["Texas", "Ohio", "Iowa"] * 2, "Year": [2023] * 3 + [2024] * 3,
+            "Drivers": [17_500_000, 8_100_000, 2_300_000, 17_800_000, 8_150_000, 2_310_000],
+        })
+        check = ada.check_claim(drivers, "Texas had more than 25 million drivers in 2024.")
+        self.assertEqual(check.reason, "failed_check")
+        self.assertEqual(check.compared, 17_800_000)
+        self.assertTrue(ada.check_claim(drivers, "Texas had about 17.8 million drivers in 2024.").verified)
+
+    def test_the_people_of_a_state_after_a_number_pick_its_rows(self):
+        drivers = pd.DataFrame({
+            "State": ["Texas", "Ohio", "Iowa"] * 2, "Year": [2023] * 3 + [2024] * 3,
+            "Drivers": [17_500_000, 8_100_000, 2_300_000, 17_800_000, 8_150_000, 2_310_000],
+        })
+        check = ada.check_claim(drivers, "More than 20 million Texans were Drivers in 2024.")
+        self.assertEqual(check.reason, "failed_check")
+        self.assertEqual(check.compared, 17_800_000)
+        self.assertIn('Read "Texans" as State = Texas.', check.assumptions)
+        claim = "There were about 8.15 million Ohioan drivers in 2024."
+        self.assertTrue(ada.check_claim(drivers, claim).verified)
+
+
+class UnnamedYearClaimTests(unittest.TestCase):
+    def deaths(self) -> pd.DataFrame:
+        return pd.DataFrame({
+            "state": ["California", "New York"] * 3, "year": [1982, 1982, 1983, 1983, 1984, 1984],
+            "fatal": [4615, 2000, 4573, 2100, 5020, 2050],
+        })
+
+    def test_a_total_that_fits_one_year_is_not_proved_wrong_by_every_year(self):
+        check = ada.check_claim(self.deaths(), "California recorded about 5,000 fatalities.")
+        self.assertEqual(check.reason, "missing_context")
+        self.assertIn("names no year", check.message)
+        self.assertIn("1984 (5,020)", check.message)
+
+    def test_a_total_that_fits_no_year_still_fails(self):
+        check = ada.check_claim(self.deaths(), "California recorded about 9,000 fatalities.")
+        self.assertEqual(check.reason, "failed_check")
+
+    def test_a_share_is_never_a_years_count(self):
+        frame = pd.DataFrame({"state": ["California"] * 30 + ["Texas"] * 10 + ["California"] * 30,
+                              "year": [1982] * 40 + [1983] * 30})
+        check = ada.check_claim(frame, "30% of the rows were in California.")
+        self.assertEqual(check.reason, "failed_check")
+
+    def test_a_named_year_or_every_year_is_checked_as_said(self):
+        claim = "California recorded about 5,000 fatalities in 1984."
+        self.assertTrue(ada.check_claim(self.deaths(), claim).verified)
+        check = ada.check_claim(self.deaths(), "California recorded about 5,000 fatalities in all.")
+        self.assertEqual(check.reason, "failed_check")
+        self.assertEqual(check.compared, 14_208)
+
+
+class WideYearClaimTests(unittest.TestCase):
+    def test_a_column_named_for_a_year_alone_is_checked(self):
+        frame = pd.DataFrame({
+            "Country Name": ["Japan", "Chad", "Peru"],
+            "Indicator Name": ["Life expectancy at birth, total (years)"] * 3,
+            "2020": [84.6, 52.8, 75.2], "2021": [84.4, 52.5, 73.6],
+        })
+        check = ada.check_claim(frame, "Life expectancy in Japan was 84.4 years in 2021.")
+        self.assertTrue(check.verified, check.message)
+        self.assertEqual(check.compared, 84.4)

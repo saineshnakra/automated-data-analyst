@@ -56,7 +56,9 @@ Three kinds of column key or label the rows, and the first found wins:
 1. **A key name.** One of the name's words is `id`, `uuid`, `key`, `code`,
    `number`, `invoice`, `order` or `barcode` (as a whole word), the last word is not a
    measure keyword, at least 80% of the values are distinct, and the values are
-   whole numbers or text. A `Reynolds Number` with decimals is a measurement.
+   whole numbers or text. A `Reynolds Number` with decimals is a measurement,
+   and a name that starts `Number of`, `Count of` or `Total number of`
+   (`Number of residents`) counts things however many of its values differ.
 2. **A row key by its values.** Unique whole numbers on every row, under a
    row-key name (`seqn`, `index`, `idx`, `row`, `record`, `serial`, `obs`,
    `unnamed`), or in the table's first column climbing in uneven steps, as

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from table_helpers import births, migration
+from table_helpers import air_quality, births, commuting, covid_deaths, migration, registry
 
 import ada
 from ada import nlq, ui
@@ -924,6 +924,17 @@ class NumericGroupingTests(unittest.TestCase):
         self.assertEqual(answer.table["weight"].astype(str).tolist()[0], "Q1: 0.5 to 15.25")
         self.assertEqual(answer.table["n"].tolist(), [15, 15, 15, 15])
         self.assertIn("split into 4 groups of about equal size at its quartiles", answer.answer)
+
+    def test_a_grouping_with_one_value_in_scope_is_not_split(self):
+        frame, roles = timepoint_frame()
+        frame.loc[0, "Region"] = "West"
+
+        answer = answer_question("average signal by weight for West", frame, roles)
+
+        self.assertEqual(answer.plan.bins, 4)
+        self.assertIsNone(answer.table)
+        self.assertIn("weight has one value for Region = West", answer.answer)
+        self.assertIn("cannot be split into groups", answer.answer)
 
     def test_two_groupings_give_each_cell_with_its_count(self):
         frame, roles = timepoint_frame()
@@ -3493,6 +3504,13 @@ class CountColumnsAndNamesTests(unittest.TestCase):
         answer = answer_question("total new cases in Kenya", frame, roles)
         self.assertTrue(answer is None or "New" not in answer.calculation)
 
+    def test_a_value_in_sentence_case_is_not_a_name(self):
+        descriptions = ["Personal income (millions of dollars)", "Per capita personal income (dollars)"] * 3
+        frame = pd.DataFrame({"state": ["Texas", "Texas", "Ohio", "Ohio", "Iowa", "Iowa"],
+                              "Description": descriptions, "2024": [2198.0, 70.0, 700.0, 60.0, 250.0, 65.0]})
+        answer = answer_question("personal income in Texas in 2024", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 2198)
+
 
 class GroupsAndModifiersTests(unittest.TestCase):
     def rescues(self) -> pd.DataFrame:
@@ -4542,6 +4560,83 @@ class CauseVerbTests(unittest.TestCase):
         self.assertEqual(reading.filters, {"cause_en": ("broken down train",)})
 
 
+class CancerRegistryTests(unittest.TestCase):
+    def ask(self, question: str, frame: pd.DataFrame | None = None):
+        frame = registry() if frame is None else frame
+        return answer_question(question, frame, detect_roles(frame))
+
+    def test_the_level_for_all_of_overlapping_parts_is_the_total(self):
+        levels = {(level.column, level.label) for level in nlq.total_levels(registry())}
+        self.assertEqual(levels, {("CancerSite", "All cancer types"), ("Sex", "All")})
+
+    def test_few_cells_give_no_total_by_size_alone(self):
+        thin = registry().query("Sex == 'All' and Year == 2024")
+        self.assertEqual(nlq.total_levels(thin), ())
+
+    def test_diagnoses_are_the_incidences_for_all_ages_at_the_total_levels(self):
+        answer = self.ask("new cancer diagnoses in 2024")
+        self.assertEqual(answer.value, 468)
+        self.assertIn("IncidencesAllAges, the column of incidences", answer.answer)
+        self.assertIn("CancerSite = All cancer types", answer.calculation)
+
+    def test_a_value_before_its_column_s_word_is_that_value(self):
+        self.assertEqual(self.ask("prostate cancer diagnoses in 2024").value, 96)
+        answer = self.ask("lung cancer diagnoses among women in 2024")
+        self.assertEqual(answer.value, 65)
+        self.assertNotIn("All cancer types", answer.calculation)
+
+    def test_a_label_is_read_over_its_code(self):
+        answer = self.ask("prostate cancer diagnoses in 2024")
+        self.assertNotIn("CancerSiteICD10Code", answer.calculation)
+
+    def test_a_value_that_negates_the_word_is_not_it(self):
+        answer = self.ask("melanoma diagnoses in 2024")
+        self.assertEqual(answer.value, 36)
+        self.assertIn("Malignant melanoma of the skin", answer.calculation)
+
+    def test_a_share_of_diagnoses_weighs_the_incidences(self):
+        answer = self.ask("share of diagnoses among women in 2024 that were breast cancer")
+        self.assertAlmostEqual(dict(answer.figures)["share_percent"], 120 / 228 * 100)
+
+    def test_ages_over_columns_of_age_bands_add_the_bands(self):
+        answer = self.ask("share of how many cancers diagnosed in 2024 were in people aged 75 or over")
+        self.assertAlmostEqual(dict(answer.figures)["share_percent"], 163 / 468 * 100)
+        self.assertIn("columns of counts by age band", answer.answer)
+
+    def test_two_band_columns_are_no_family(self):
+        frame = registry().drop(columns=["IncidencesAgeUnder50", "IncidencesAge50To74"])
+        self.assertEqual(nlq._band_families(frame), {})
+
+    def test_the_most_common_site_leaves_out_the_total(self):
+        answer = self.ask("which cancer had the most diagnoses in 2024")
+        self.assertIn("Non-melanoma skin cancer", answer.answer)
+
+
+class SeaLevelTests(unittest.TestCase):
+    def frame(self) -> pd.DataFrame:
+        years = list(range(1856, 2025))
+        return pd.DataFrame({"Year": years, "MSL": [0.4 + 0.003 * (year - 1856) for year in years],
+                             "MHW": [1.1 + 0.003 * (year - 1856) for year in years],
+                             "MLLW": [0.0] * len(years)})
+
+    def test_the_m_of_a_name_in_capitals_stands_for_mean(self):
+        answer = answer_question("sea level in 2024", self.frame(), detect_roles(self.frame()))
+        self.assertEqual(answer.plan.measure, "MSL")
+
+    def test_initials_in_full_come_first(self):
+        frame = self.frame().assign(SL=1.0)
+        answer = answer_question("sea level in 2024", frame, detect_roles(frame))
+        self.assertEqual(answer.plan.measure, "SL")
+
+    def test_since_names_a_year_before_1900(self):
+        answer = ada.analyze(self.frame()).ask("MSL per year since 1856")
+        self.assertAlmostEqual(dict(answer.figures)["least_squares_per_year"], 0.003)
+
+    def test_a_column_of_years_is_never_divided_by(self):
+        answer = answer_question("MSL per year since 1856", self.frame(), detect_roles(self.frame()))
+        self.assertTrue(answer is None or answer.plan.aggregation != "ratio")
+
+
 class WhichRowsTests(unittest.TestCase):
     def parks(self) -> pd.DataFrame:
         return pd.DataFrame({
@@ -4566,3 +4661,242 @@ class WhichRowsTests(unittest.TestCase):
         frame = self.parks()
         answer = answer_question("which national park had the most visitors", frame, detect_roles(frame))
         self.assertTrue(answer is None or answer.plan.dimension is None or "max" not in answer.calculation)
+
+
+class NamedCountColumnTests(unittest.TestCase):
+    def test_how_many_adds_up_the_one_column_of_counts_named_for_them(self):
+        frame = pd.DataFrame({
+            "Year": [2023] * 4 + [2024] * 4, "Sex": ["Male", "Female"] * 4,
+            "State": ["Texas", "Texas", "Ohio", "Ohio"] * 2,
+            "Drivers": [9_000_000.0, 9_100_000.0, 4_000_000.0, 4_100_000.0,
+                        9_200_000.0, 9_300_000.0, 4_050_000.0, 4_150_000.0],
+        })
+        answer = answer_question("how many drivers in Texas in 2024", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 18_500_000)
+        self.assertEqual(answer.plan.weight, "Drivers")
+
+    def test_a_column_of_readings_is_still_not_counted(self):
+        frame = pd.DataFrame({"Year": [2023, 2023, 2024, 2024], "Station": ["A", "B"] * 2,
+                              "Temperatures": [12.5, 14.0, 13.1, 15.2]})
+        self.assertIsNone(answer_question("how many temperatures in 2024", frame, detect_roles(frame)))
+
+
+class DayOfMonthTests(unittest.TestCase):
+    def test_a_day_of_the_month_never_weights_a_share_of_days(self):
+        dates = pd.date_range("2024-07-01", periods=20)
+        frame = pd.DataFrame({"Station": ["A", "B"] * 20, "Date": np.repeat(dates, 2),
+                              "Day": np.repeat(dates.day, 2),
+                              "Max Temp": [28.0, 31.0, 25.0, 33.0, 29.0, 30.5, 22.0, 35.0, 31.0, 26.0] * 4})
+        question = "what share of July days at A had a Max Temp of 30 or more"
+        answer = answer_question(question, frame, detect_roles(frame))
+        self.assertTrue(answer is None or answer.plan.weight is None)
+
+
+class NumberOfThingsTests(unittest.TestCase):
+    def frame(self) -> pd.DataFrame:
+        return pd.DataFrame({"Number Of Trees": [1, 2, 1], "Value Of Trees": [3.0, 4.0, 5.0],
+                             "Name": ["a", "b", "c"]})
+
+    def test_number_of_a_plural_counts_it(self):
+        answer = answer_question("how many trees are there", self.frame(), detect_roles(self.frame()))
+        self.assertEqual(answer.value, 4)
+
+    def test_a_file_named_for_the_counted_things_keeps_its_noun(self):
+        roles = detect_roles(self.frame(), "trees_in_town.csv")
+        self.assertEqual(roles.row_noun, "trees")
+        frame = self.frame().drop(columns="Number Of Trees")
+        self.assertIsNone(detect_roles(frame, "trees_in_town.csv").row_noun)
+
+    def test_a_count_above_one_on_most_rows_counts_something_else(self):
+        # Each row is a cat, and n_cats counts the cats of its household.
+        frame = pd.DataFrame({"animal_id": ["a", "b", "c", "d", "e"], "n_cats": [2, 2, 3, 1, 2],
+                              "condition": ["Neutered", "Spayed", "Neutered", "Neutered", "Spayed"]})
+        roles = detect_roles(frame, "cats_uk_reference.csv")
+        self.assertIsNone(roles.row_noun)
+        answer = answer_question("how many cats were neutered", frame, roles)
+        self.assertTrue(answer is None or answer.plan.weight is None)
+
+
+class PartsTableTests(unittest.TestCase):
+    def test_a_share_of_a_part_kept_in_a_column_is_of_the_whole_it_adds_up_to(self):
+        frame = air_quality()
+        answer = answer_question("what share of days were good in Maricopa", frame, detect_roles(frame))
+        self.assertAlmostEqual(dict(answer.figures)["share_percent"], 32 / 365 * 100)
+        self.assertIn("Kind = Good", answer.calculation)
+        self.assertIn("Read Good Days to Unhealthy Days as parts of Days with AQI", answer.answer)
+
+    def test_across_a_column_is_every_row(self):
+        frame = air_quality()
+        question = "what percentage of days were good across counties"
+        answer = answer_question(question, frame, detect_roles(frame))
+        self.assertAlmostEqual(dict(answer.figures)["share_percent"], 610 / 1810 * 100)
+        self.assertIn('Read "across counties" as every row, not each County.', answer.answer)
+
+    def test_parts_on_two_rows_are_not_read_as_parts(self):
+        frame = air_quality().head(2)
+        question = "what share of days were good in Maricopa"
+        self.assertIsNone(answer_question(question, frame, detect_roles(frame)))
+
+
+class CountsByAgeTests(unittest.TestCase):
+    def test_deaths_under_an_age_are_the_deaths_of_people_that_age(self):
+        frame = covid_deaths()
+        answer = answer_question("total COVID-19 Deaths under 18", frame, detect_roles(frame))
+        # 0 to 17, 19 rows each: men 190 + 33, women 95 + 33, the ages mod 5 adding up to 33.
+        self.assertEqual(answer.value, 351)
+        self.assertIn("Age Years in (0-05 Months, 06-11 Months, 01 Year", answer.calculation)
+
+    def test_died_of_a_cause_names_the_column_of_its_deaths(self):
+        frame = covid_deaths()
+        answer = answer_question("how many people died of COVID-19", frame, detect_roles(frame))
+        self.assertEqual(answer.calculation, "sum(COVID-19 Deaths)")
+        # 87 rows each: men 870 + 170, women 435 + 170, the ages mod 5 adding up to 170.
+        self.assertEqual(answer.value, 1645)
+
+    def test_a_share_of_a_column_of_counts_adds_up_the_counts(self):
+        frame = covid_deaths()
+        answer = answer_question("what share of COVID-19 Deaths were 65 or older", frame, detect_roles(frame))
+        # 65 and over, 21 rows each: men 210 + 40, women 105 + 40, of 1,645.
+        self.assertAlmostEqual(dict(answer.figures)["share_percent"], 395 / 1645 * 100)
+        self.assertNotIn("Each row counts as one", answer.answer)
+
+    def test_a_share_of_a_part_column_is_of_its_total_column(self):
+        frame = covid_deaths()
+        question = "share of total deaths that were COVID-19 deaths"
+        answer = answer_question(question, frame, detect_roles(frame))
+        # 1,645 of 34,760: COVID-19 Deaths never exceeds Total deaths on a row.
+        self.assertAlmostEqual(dict(answer.figures)["share_percent"], 1645 / 34760 * 100)
+        self.assertEqual(answer.calculation, "sum(COVID-19 Deaths) ÷ sum(Total deaths) × 100")
+        # A column above the other on a row is no part of it.
+        frame.loc[0, "COVID-19 Deaths"] = 10_000
+        self.assertIsNone(answer_question(question, frame, detect_roles(frame)))
+
+    def test_the_period_every_row_covers_keeps_every_row(self):
+        frame = covid_deaths()
+        question = "total COVID-19 Deaths between January 2020 and late June 2023"
+        answer = ada.analyze(frame).ask(question)
+        self.assertEqual(answer.value, 1645)
+        self.assertIn('Read "between January 2020 and late June 2023" as the period every row covers',
+                      answer.answer)
+        # Another span is one the rows do not split by.
+        refused = ada.analyze(frame).ask("total COVID-19 Deaths between January 2021 and June 2023")
+        self.assertIsInstance(refused, ada.Refusal)
+
+
+class InitialledValueTests(unittest.TestCase):
+    def frame(self) -> pd.DataFrame:
+        return pd.DataFrame({
+            "Country": ["European Union - 27 countries (from 2020)", "France", "United Kingdom", "Spain"] * 2,
+            "Year": [2024] * 4 + [2025] * 4,
+            "Cars": [560, 580, 520, 540, 584, 590, 530, 550],
+        })
+
+    def test_capitals_spell_the_value_they_are_the_initials_of(self):
+        frame = self.frame()
+        answer = answer_question("total Cars for the EU in 2025", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 584)
+        self.assertIn("Country = European Union - 27 countries (from 2020)", answer.calculation)
+        answer = answer_question("total Cars for the UK in 2025", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 530)
+
+    def test_lower_case_or_two_values_with_the_same_initials_spell_nothing(self):
+        frame = self.frame()
+        self.assertIsNone(answer_question("total Cars for the eu in 2025", frame, detect_roles(frame)))
+        frame.loc[3, "Country"] = "European Union - 28 countries (2013-2020)"
+        self.assertIsNone(answer_question("total Cars for the EU in 2025", frame, detect_roles(frame)))
+
+
+class WebAddressTests(unittest.TestCase):
+    def test_a_word_inside_a_web_address_names_no_value(self):
+        frame = pd.DataFrame({
+            "category": ["castle", "ruin", "palace", "ruin", "castle", "fortress"],
+            "image": [f"https://commons.wikimedia.org/wiki/File:{name}.png"
+                      for name in ("keep", "domus-map", "court", "abbey", "tower", "wall")],
+        })
+        question = "what share of the landmarks on the map are ruins"
+        answer = answer_question(question, frame, detect_roles(frame))
+        self.assertAlmostEqual(dict(answer.figures)["share_percent"], 2 / 6 * 100)
+        self.assertNotIn("image", answer.calculation)
+
+
+class CommonEraTests(unittest.TestCase):
+    def frame(self) -> pd.DataFrame:
+        return pd.DataFrame({
+            "name": ["Great Wall", "Aniba", "Mycenae", "Windsor", "Alhambra", "Himeji", "Dover"],
+            "year": [-700.0, -3000.0, -1350.0, 1070.0, 889.0, 1333.0, np.nan],
+            "year_approx": [0, 1, 1, 0, 0, 0, 0],
+        })
+
+    def test_before_the_common_era_is_a_year_below_0(self):
+        frame = self.frame()
+        question = "how many landmarks were founded before the common era"
+        answer = answer_question(question, frame, detect_roles(frame))
+        self.assertEqual(answer.value, 3)
+        self.assertIn('Read "before the common era" as year below 0', answer.answer)
+
+    def test_a_table_with_no_years_below_0_does_not_read_it(self):
+        frame = self.frame().assign(year=[700.0, 3000.0, 1350.0, 1070.0, 889.0, 1333.0, np.nan])
+        question = "how many landmarks were founded before the common era"
+        self.assertIsNone(answer_question(question, frame, detect_roles(frame)))
+
+
+class NationTests(unittest.TestCase):
+    def test_a_nation_is_the_rows_its_geography_codes_start_with(self):
+        frame = commuting()
+        question = "what share of Welsh residents drove a car or van to work"
+        answer = answer_question(question, frame, detect_roles(frame))
+        # Cardiff alone: 90,000 of 170,000.
+        self.assertAlmostEqual(dict(answer.figures)["share_percent"], 90000 / 170000 * 100)
+        self.assertIn('Read "Welsh" as geography code starting with W (1 code).', answer.answer)
+
+    def test_the_nations_every_code_is_in_are_every_row(self):
+        frame = commuting()
+        question = "what share of residents worked mainly from home in England and Wales"
+        answer = answer_question(question, frame, detect_roles(frame))
+        home, total = 3602 + 30000 + 25000 + 6570 + 40000, 5352 + 163446 + 70596 + 37750 + 170000
+        self.assertAlmostEqual(dict(answer.figures)["share_percent"], home / total * 100)
+        self.assertIn('Read "England and Wales" as every row', answer.answer)
+
+    def test_without_geography_codes_a_nation_names_nothing(self):
+        frame = commuting().drop(columns="geography code")
+        question = "what share of Welsh residents drove a car or van to work"
+        self.assertIsNone(answer_question(question, frame, detect_roles(frame)))
+
+    def test_drove_names_driving(self):
+        frame = commuting()
+        question = "what share of residents drove to work in Cardiff"
+        answer = answer_question(question, frame, detect_roles(frame))
+        self.assertAlmostEqual(dict(answer.figures)["share_percent"], 90000 / 170000 * 100)
+
+
+class ResaleFlatTests(unittest.TestCase):
+    def frame(self) -> pd.DataFrame:
+        return pd.DataFrame({
+            "flat_type": ["3 ROOM", "4 ROOM", "4 ROOM", "EXECUTIVE", "5 ROOM"] * 4,
+            "resale_price": [300_000.0, 420_000.0, 440_000.0, 625_000.0, 500_000.0] * 4,
+        })
+
+    def test_number_words_name_a_value_written_in_digits(self):
+        frame = self.frame()
+        answer = answer_question("how many four-room flats", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 8)
+        self.assertIn('Read "four-room flats" as flat_type = 4 ROOM.', answer.answer)
+
+    def test_the_plural_of_a_names_first_word_counts_the_rows(self):
+        frame = self.frame()
+        answer = answer_question("how many resales were there", frame, detect_roles(frame))
+        self.assertEqual((answer.calculation, answer.value), ("row count", 20))
+        answer = answer_question("average resale price", frame, detect_roles(frame))
+        self.assertEqual(answer.calculation, "mean(resale_price)")
+
+    def test_the_first_word_of_several_names_is_not_left_out(self):
+        frame = pd.DataFrame({
+            "Candidate family name": ["Ali", "Brown", "Cole", "Day"] * 3,
+            "Candidate given name": ["Ann", "Ben", "Cy", "Di"] * 3,
+            "Party": ["Green", "Labour", "Green", "Reform"] * 3,
+        })
+        answer = answer_question("Green put up candidates in", frame, detect_roles(frame))
+        self.assertIsNone(answer)
+        # Without "candidates" the claim would count the rows for Green, 6, and pass.
+        check = ada.check_claim(frame, "The Greens put up candidates in 6 constituencies.")
+        self.assertFalse(check.verified)

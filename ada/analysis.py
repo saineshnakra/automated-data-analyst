@@ -14,7 +14,8 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_dtype
 
-from .formatting import UNDATED_DAY, format_moment, normalized_name
+from .aggregates import TOTAL_LEVEL
+from .formatting import UNDATED_DAY, counted, format_moment, normalized_name
 from .numeric import to_numbers
 from .quality import QualityIssue, blank_codes
 from .schema import finer_part_name, is_identifier_name, is_month_name, is_year_name
@@ -300,6 +301,16 @@ def _reached_note(frame: pd.DataFrame, column: str, limits: pd.Series) -> str | 
     )
 
 
+def _total_labels(distinct: _Distinct, unread: np.ndarray) -> bool:
+    """Whether the text left in a column of numbers is a total label on two rows or more, as "ALL" or "All
+    ages" beside single years of age in a published table of counts."""
+    if not unread.any():
+        return False
+    texts = [str(value).strip().lower() for value in distinct.values[unread].dropna()]
+    rows = int(distinct.counts[unread].sum())
+    return bool(texts) and rows >= 2 and all(TOTAL_LEVEL.fullmatch(text) for text in texts)
+
+
 def _lone_token(distinct: _Distinct, unread: np.ndarray) -> str | None:
     """The single text token left in an otherwise numeric column, when it reads as a marker.
 
@@ -514,6 +525,52 @@ def _dropped_columns_note(columns: list[str]) -> str:
 
 # Numbers joined by dots with no group of four digits: a code, not a date.
 _DOTTED_CODE = r"\d{1,3}(?:\.\d{1,3}){2,}"
+
+
+# Most rows at the end of a table that may be read as notes below it.
+MAX_FOOTER_ROWS = 10
+
+
+def _filled(value: object) -> bool:
+    return not (pd.isna(value) or (isinstance(value, str) and not value.strip()))
+
+
+# How a note below a table starts: "Note: ...", "Source: ...", "Last updated: ...", "* Provisional".
+NOTE_START = re.compile(
+    r"\s*(?:[*\u2020\u00a9]|\(\d+\)|notes?\b|sources?\b|footnotes?\b|last updated\b|updated\b"
+    r"|data extracted\b|extracted\b|copyright\b)",
+    re.IGNORECASE,
+)
+
+
+def _footer_rows(frame: pd.DataFrame) -> int:
+    """How many rows at the end of a table of four columns or more are notes below it: each fills one cell
+    with words not seen above, one starts like a note, and the row above them fills three cells or more."""
+    if frame.shape[1] < 4 or len(frame) < 2 * MAX_FOOTER_ROWS:
+        return 0
+    count, noted = 0, False
+    for position in range(len(frame) - 1, len(frame) - 1 - MAX_FOOTER_ROWS, -1):
+        row = frame.iloc[position]
+        filled = [column for column, value in row.items() if _filled(value)]
+        if len(filled) != 1 or not isinstance(text := row[filled[0]], str) or len(text.split()) < 2:
+            break
+        count += 1
+        noted = noted or bool(NOTE_START.match(text))
+    if not count or not noted:
+        return 0
+    body = frame.iloc[: len(frame) - count]
+    if sum(_filled(value) for value in body.iloc[-1]) < 3:
+        return 0
+    for row in frame.iloc[len(frame) - count:].itertuples(index=False):
+        column = next(position for position, value in enumerate(row) if _filled(value))
+        if (body.iloc[:, column].astype(str).str.strip() == str(row[column]).strip()).any():
+            return 0
+    return count
+
+
+def _note_text(row: pd.Series) -> str:
+    text = next(str(value) for value in row if _filled(value)).strip()
+    return text if len(text) <= 60 else f"{text[:57]}..."
 
 
 def _speculative_dates(values: pd.Series) -> pd.Series:
@@ -1638,6 +1695,8 @@ LABELLED_SHARE = 0.5
 MAX_READING_UNITS = 12
 # Different letters after whole numbers ("7D", "6C") that make a column codes, not readings in units.
 MIN_CODE_LETTERS = 3
+# Share of a column's cells a word with no number may hold before the column is one of classes.
+CLASS_WORD_SHARE = 0.01
 
 
 def _unit_text(unit: str) -> str:
@@ -1667,6 +1726,11 @@ def _readings_with_units(
     readable = int(counts[~markers].sum())
     labelled = matched & (parts["unit"].notna() | parts["spread"].notna()).to_numpy()
     if not readable or counts[matched].sum() < READINGS_SHARE * readable:
+        return None
+    # "EXECUTIVE" on 4,194 rows beside "4 ROOM" and "5 ROOM": a word no number starts, on many rows, is a
+    # class of its own, so the column holds classes, not readings.
+    words = (~matched & ~markers & text.str.fullmatch(r"[^\d]+").fillna(False).to_numpy(dtype=bool))
+    if counts[words].sum() >= CLASS_WORD_SHARE * readable:
         return None
     # Ordinals ("1st", "2nd", "3rd") are labels, not readings in a unit called "st"; "Crew" beside
     # them is another class, not a reading that failed to parse.
@@ -1847,6 +1911,15 @@ def clean_dataframe(
     if empty_rows_removed:
         cleaned = cleaned.loc[~empty_row_mask].copy()
         distincts = {column: distinct.take(~empty_row_mask) for column, distinct in distincts.items()}
+    footer = _footer_rows(cleaned)
+    if footer:
+        # "Last updated: September 30, 2026", "U.S. Bureau of Economic Analysis": notes below the table.
+        notes.append(f"Left out the last {counted(footer, 'row')}, notes below the table such as "
+                     f"\"{_note_text(cleaned.iloc[len(cleaned) - footer])}\".")
+        keep = np.ones(len(cleaned), dtype=bool)
+        keep[len(cleaned) - footer:] = False
+        cleaned = cleaned.iloc[:len(cleaned) - footer].copy()
+        distincts = {column: distinct.take(keep) for column, distinct in distincts.items()}
 
     index_columns = [
         column for column in cleaned.columns if _looks_like_exported_index(cleaned[column], column)
@@ -1963,6 +2036,9 @@ def clean_dataframe(
             unread = distinct.rows(unread_values)
             # One short token repeated among numbers ("T" for a trace) is a marker,
             # as long as it is not most of the column.
+            if _total_labels(distinct, unread_values):
+                # "ALL" beside the single years 0 to 115 is their total, a level of the column, not a blank.
+                continue
             token = _lone_token(distinct, unread_values)
             token_cells = unread if token and unread.sum() <= 0.5 * non_null_before else unread & False
             marked = int(distinct.counts[markers].sum())

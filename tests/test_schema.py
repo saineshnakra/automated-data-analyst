@@ -473,6 +473,15 @@ class IdentifierContentTests(unittest.TestCase):
         self.assertFalse(looks_like_identifier("Reynolds Number", decimals))
         self.assertTrue(looks_like_identifier("Order Number", pd.Series(range(1000, 1020))))
 
+    def test_a_number_of_things_counts_them_however_many_counts_differ(self):
+        counts = pd.Series([5352, 163446, 70596, 37750, 3602, 30000])
+
+        for name in ("Number of residents", "Count of visits", "Total number of births"):
+            with self.subTest(name=name):
+                self.assertFalse(looks_like_identifier(name, counts))
+        frame = pd.DataFrame({"Kind": ["All", "Home"] * 3, "Number of residents": counts})
+        self.assertIsNone(detect_roles(frame).identifier)
+
 
 class IdentifierByContentTests(unittest.TestCase):
     def test_a_barcode_unique_on_every_row_is_an_identifier_not_a_reading(self):

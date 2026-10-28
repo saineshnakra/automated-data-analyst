@@ -25,7 +25,14 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_dtype
 
-from .aggregates import TOTAL_LEVEL, aggregate_rows, distinct_parts, total_levels
+from .aggregates import (
+    TOTAL_LEVEL,
+    TotalLevel,
+    aggregate_rows,
+    distinct_parts,
+    set_total_levels,
+    total_levels,
+)
 from .aggregation import TrendSeries, build_trend, preferred_frequency, unlabelled_label
 from .business_insights import (
     MIN_CORRELATION_PAIRS,
@@ -327,6 +334,8 @@ QUERY_GRAMMAR = frozenset({
 # Conditions on a column, read before anything else claims their words. Numbers
 # keep a decimal point (see _norm) and a minus sign becomes "minus".
 NUMBER = r"(?:minus\s+)?\d+(?:\.\d+)?"
+# Words that multiply the number before them: "100 million".
+SCALE_WORDS = {"thousand": 1e3, "million": 1e6, "billion": 1e9, "trillion": 1e12}
 COMPARISONS: tuple[tuple[Operator, str], ...] = (
     (">=", r"at least|no less than"),
     ("<=", r"at most|no more than"),
@@ -643,6 +652,35 @@ def _inverted_names(question: str, columns) -> str:
     return question
 
 
+# Words for the people a place has, which a column called population counts.
+POPULATION_WORDS = ("inhabitants", "residents", "people")
+
+
+def _population_words(question: str, columns) -> str:
+    """The question with "100 million inhabitants" written "100 million population" when one column is the
+    population and none is named for the word."""
+    names = [_norm(normalized_name(str(column))).split() for column in columns]
+    if sum(name == ["population"] for name in names) != 1:
+        return question
+    for word in POPULATION_WORDS:
+        if not any(word in name for name in names):
+            question = re.sub(rf"\b{word}\b", "population", question)
+    return question
+
+
+def _died_of(question: str, columns) -> str:
+    """The question with "died of covid 19" written "covid 19 deaths" when that names a column: the deaths
+    from a cause are counted in the column named for them."""
+    for column in columns:
+        words = _norm(normalized_name(str(column))).split()
+        if len(words) < 2 or words[-1] not in ("deaths", "death"):
+            continue
+        cause = " ".join(words[:-1])
+        question = re.sub(rf"\b(?:died|die|dying)\s+(?:of|from|with)\s+{re.escape(cause)}\b", " ".join(words),
+                          question)
+    return question
+
+
 # "in the year to April 2024", "the twelve months to April 2026": a year that ends in that month.
 YEAR_TO_MONTH = re.compile(
     r"\b(?:in\s+|during\s+|over\s+)?the\s+(?:year|twelve\s+months|12\s+months)\s+(?:to|ending(?:\s+in)?)\s+"
@@ -681,13 +719,39 @@ def _agent_nouns(question: str, vocabulary: _Vocabulary) -> str:
     return re.sub(r"\b[a-z]+(?:ation|ated)\b", swap, question)
 
 
+# Days of the month written in words: "the first of July", "the twenty-third of May".
+_FIRST_DAYS = ("first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth")
+DAY_WORDS = {
+    **{word: index for index, word in enumerate(_FIRST_DAYS, start=1)},
+    **{word: index for index, word in enumerate(
+        ("tenth", "eleventh", "twelfth", "thirteenth", "fourteenth", "fifteenth", "sixteenth", "seventeenth",
+         "eighteenth", "nineteenth", "twentieth"), start=10)},
+    **{f"twenty-{word}": 20 + index for index, word in enumerate(_FIRST_DAYS, start=1)},
+    "thirtieth": 30, "thirty-first": 31,
+}
+_DAY_NAMES = "|".join(sorted((word.replace("-", "[- ]") for word in DAY_WORDS), key=len, reverse=True))
+DAY_IN_WORDS = re.compile(
+    rf"\b(?:the\s+)?(?P<day>{_DAY_NAMES})"
+    rf"\s+of\s+(?P<month>{'|'.join(name for name in MONTH_NAMES if len(name) > 3 or name == 'may')})\b",
+    re.IGNORECASE,
+)
+
+
+def days_in_words(text: str) -> str:
+    """The text with a day of the month written in words as a number: "the first of July" is "1 July"."""
+    def written(found: re.Match) -> str:
+        return f"{DAY_WORDS[re.sub(r'[- ]', '-', found.group('day').lower())]} {found.group('month')}"
+
+    return DAY_IN_WORDS.sub(written, text)
+
+
 def _question_text(question: str) -> str:
     """The question with comparison symbols as words and a minus sign kept as "minus".
 
     A bound's adjective moves before it as the quantity it bounds: "less than 1 km deep" reads as "depth
     less than 1 km", and "deeper than 50 cm" as "depth more than 50 cm".
     """
-    text = str(question)
+    text = days_in_words(str(question))
     for symbol, words in SYMBOL_WORDS:
         text = text.replace(symbol, words)
     # "below zero" bounds a column at 0.
@@ -1050,6 +1114,8 @@ UNSUPPORTED_PHRASES = re.compile(
 
 
 YEAR = r"(?:19|20)\d{2}"
+# A year after "since", where a number is a year even before 1900: "since 1856".
+SINCE_YEAR = r"(?:1[6-9]|20)\d{2}"
 # Ranges of years, read as conditions on the date: "since 1978", "before 1950",
 # "between 1990 and 2000". Each gives the operator on the year, or "range".
 YEAR_RANGES: tuple[tuple[re.Pattern, str], ...] = (
@@ -1058,6 +1124,7 @@ YEAR_RANGES: tuple[tuple[re.Pattern, str], ...] = (
     (re.compile(
         rf"\b(?:since|from|starting(?:\s+in|\s+from)?|beginning(?:\s+in)?)\s+(?P<year>{YEAR})(?:\s+onwards?)?\b"
     ), ">="),
+    (re.compile(rf"\bsince\s+(?P<year>{SINCE_YEAR})\b"), ">="),
     (re.compile(rf"\b(?P<year>{YEAR})\s+(?:onwards?|and\s+later|and\s+after)\b"), ">="),
     (re.compile(rf"\bafter\s+(?P<year>{YEAR})\b"), ">"),
     (re.compile(rf"\bbefore\s+(?P<year>{YEAR})\b"), "<"),
@@ -1107,9 +1174,13 @@ def day_named(match: re.Match) -> pd.Timestamp | None:
 # Ages written out: "30- to 34-year-olds", "aged 50 and over", "people 65 and older", "20-year-olds".
 _AGE_CUE = r"(?:aged|ages|age)\s+"
 _YEAR_OLDS = r"\s*-?\s*years?\s*-?\s*olds?\b"
-# People an age bound is about: "a child under 15", "people under 30".
+# People an age bound is about: "a child under 15", "people under 30". In a table with an age column, "deaths
+# under 18" are the deaths of people under 18, never rows with fewer than 18 deaths.
 _AGED_NOUNS = ("child", "children", "kid", "kids", "boy", "boys", "girl", "girls", "baby", "babies", "infant",
-               "infants", "teen", "teens", "teenagers", "people", "persons", "those", "patients", "victims")
+               "infants", "teen", "teens", "teenagers", "people", "persons", "those", "patients", "victims",
+               "men", "women", "adults", "residents", "citizens", "americans", "britons", "canadians",
+               "australians", "europeans", "drivers", "workers", "students", "pupils", "voters", "deaths",
+               "cases", "infections", "admissions", "hospitalizations")
 _AGED_BEFORE = "|".join(rf"(?<=\b{noun}\s)" for noun in _AGED_NOUNS)
 AGE_PHRASE = re.compile(
     rf"\b(?:{_AGE_CUE}(?P<low>\d{{1,3}})\s*-?\s*(?:to|-|–)\s*(?P<high>\d{{1,3}})(?:{_YEAR_OLDS})?"
@@ -1129,9 +1200,18 @@ AGE_PHRASE = re.compile(
     r"pregnanc\w*|births?)\b)"
     # "in their fifties": the ten years from 50; "in their early forties", 40 to 44, and "late", 45 to 49.
     r"|in\s+(?:their|his|her)\s+(?:(?P<part>early|late)\s+)?"
-    r"(?P<decade>twenties|thirties|forties|fifties|sixties|seventies|eighties|nineties)\b)",
+    r"(?P<decade>twenties|thirties|forties|fifties|sixties|seventies|eighties|nineties)\b"
+    # "centenarians": every age from 100; "octogenarians", 80 to 89.
+    r"|(?P<genarian>centenarians?|nonagenarians?|octogenarians?|septuagenarians?|sexagenarians?)\b)",
     re.IGNORECASE,
 )
+# A question that starts with an age bound, its people named before it in a claim: "under 18 died of ..."
+# from "Fewer than 1,000 Americans under 18 died of ...". Only a table with a column of ages reads it.
+LEADING_UNDER = re.compile(
+    r"^\s*(?:under|below|younger\s+than)\s+(?P<under>\d{1,3})\b(?![.,]\d|\s*(?:%|-|–|to\b))", re.IGNORECASE
+)
+GENARIAN_AGES = {"centenarian": 100, "nonagenarian": 90, "octogenarian": 80, "septuagenarian": 70,
+                 "sexagenarian": 60}
 DECADE_AGES = {"twenties": 20, "thirties": 30, "forties": 40, "fifties": 50, "sixties": 60, "seventies": 70,
                "eighties": 80, "nineties": 90}
 # An age bound after a linking verb, with no age column named: "was under 40", "were over 65".
@@ -1160,6 +1240,9 @@ def age_range(match: re.Match) -> tuple[float, float]:
             float(low), float(low + 4) if part == "early" else float(low + 9))
     if match.groupdict().get("teen"):
         return float("-inf"), 19.0
+    if genarian := match.groupdict().get("genarian"):
+        low = GENARIAN_AGES[genarian.lower().removesuffix("s")]
+        return float(low), float("inf") if low == 100 else float(low + 9)
     found = {name: int(value) for name, value in match.groupdict().items() if value}
     if "low" in found or "low2" in found or "low3" in found:
         low = found.get("low", found.get("low2", found.get("low3")))
@@ -1177,8 +1260,18 @@ def age_range(match: re.Match) -> tuple[float, float]:
     return float(single), float(single)
 
 
+# A band written as an interval, "[70-80)", and one in months under a year, "06-11 Months".
+INTERVAL_BAND = re.compile(r"^\s*\[\s*(?P<low>\d{1,3})\s*[-,]\s*(?P<high>\d{1,3})\s*\)\s*$")
+MONTH_BAND = re.compile(r"^\s*\d{1,2}\s*(?:-|–|to)\s*(?P<high>\d{1,2})\s*months?\s*$", re.IGNORECASE)
+
+
 def _band(value: str) -> tuple[float, float] | None:
-    """The ages a band value covers: "30-34" is 30 to 34, "65+" 65 and up, ">50" 51 and up."""
+    """The ages a band value covers: "30-34" is 30 to 34, "65+" 65 and up, ">50" 51 and up, "[70-80)" 70 to
+    79, and "06-11 Months" age 0."""
+    if interval := INTERVAL_BAND.match(value):
+        return float(interval.group("low")), float(interval.group("high")) - 1
+    if (months := MONTH_BAND.match(value)) and int(months.group("high")) < 12:
+        return 0.0, 0.0
     found = BAND_VALUE.match(value)
     if not found:
         return None
@@ -1199,6 +1292,9 @@ def _age_column(
     """The column of ages, and its bands when it holds them as text ("30-34", "65+")."""
     named = [column for column in dataframe.columns
              if {"age", "ages", "agegroup"} & set(_norm(normalized_name(str(column))).split())]
+    if len(named) > 1 and _same_values(dataframe, named):
+        # AGE beside "Single year of age", the same years written twice: the shorter name stands for both.
+        named = [min(named, key=lambda name: len(str(name)))]
     if len(named) != 1:
         return None
     column = named[0]
@@ -1213,6 +1309,268 @@ def _age_column(
     others = [value for value in values if value not in bands and (
         TOTAL_LEVEL.fullmatch(_norm(parts[value])) or _norm(parts[value]) in UNSTATED_AGES)]
     return (column, bands) if bands and len(bands) + len(others) == len(values) else None
+
+
+# A column named for one age band of a count: IncidencesAge5To9, deaths_age_85plus; or for all of them.
+BAND_COLUMN = re.compile(r"^(?P<prefix>.+?)\s+aged?\s+(?P<band>.+)$")
+ALL_AGES_COLUMN = re.compile(r"^(?P<prefix>.+?)\s+all\s+ages$")
+# Fewest band columns that make a family of them.
+MIN_BAND_COLUMNS = 3
+
+
+def _spaced_name(column: object) -> str:
+    """A column's name in words, with numbers apart from letters: "incidences age 5 to 9"."""
+    name = _norm(normalized_name(str(column)))
+    name = re.sub(r"(?<=[a-z])(?=\d)|(?<=\d)(?=[a-z])", " ", name)
+    return re.sub(r"\s+", " ", re.sub(r"\bplus\b", "+", name)).strip()
+
+
+def _band_families(dataframe: pd.DataFrame) -> dict[str, dict[str, str]]:
+    """Columns of whole counts by age band, grouped by what they count: {"incidences": {"5 to 9":
+    "IncidencesAge5To9", ..., "all ages": "IncidencesAllAges"}}."""
+    families: dict[str, dict[str, str]] = defaultdict(dict)
+    for column in dataframe.columns:
+        if not is_numeric_dtype(dataframe[column]) or is_bool_dtype(dataframe[column]):
+            continue
+        values = dataframe[column].dropna()
+        if values.empty or bool((values < 0).any()) or bool((values % 1 != 0).any()):
+            # Counts only: rates by age band (IncidenceRateAge5To9) do not add up to all ages.
+            continue
+        name = _spaced_name(column)
+        banded = BAND_COLUMN.match(name)
+        band = banded.group("band").replace(" +", "+") if banded else ""
+        if (total := ALL_AGES_COLUMN.match(name)) is not None:
+            families[total.group("prefix")]["all ages"] = str(column)
+        elif banded is not None and _band(band):
+            families[banded.group("prefix")][band] = str(column)
+    return {prefix: bands for prefix, bands in families.items()
+            if sum(band != "all ages" for band in bands) >= MIN_BAND_COLUMNS}
+
+
+def _banded_table(
+    question: str, dataframe: pd.DataFrame, roles: ColumnRoles
+) -> tuple[pd.DataFrame, str] | None:
+    """The table with a row for each age band of its band columns, when the question names ages and no
+    column holds them, and a note saying how it was read; None otherwise.
+
+    Each family of band columns (IncidencesAgeUnder5 to IncidencesAllAges) becomes one column, and an Age
+    column says which band a row gives, "all ages" among them. The other numbers (a rate for all ages) give
+    one figure for every band, so they are set aside.
+    """
+    if not AGE_PHRASE.search(question) or _age_column(dataframe, roles) is not None:
+        return None
+    families = _band_families(dataframe)
+    if not families:
+        return None
+    banded = {column for bands in families.values() for column in bands.values()}
+    keys = [column for column in dataframe.columns if column not in banded and (
+        not is_numeric_dtype(dataframe[column]) or _holds_years(dataframe[column]))]
+    dropped = [str(column) for column in dataframe.columns if column not in banded and column not in keys]
+    # EASRLower95pcConfidenceIntervalQF flags a figure set aside, and goes with it.
+    flags = [column for column in keys if any(str(column) != name and str(column).startswith(name)
+                                              for name in dropped)]
+    keys = [column for column in keys if column not in flags]
+    dropped += [str(column) for column in flags]
+    labels = list(dict.fromkeys(band for bands in families.values() for band in bands))
+    names = {prefix: prefix.title() for prefix in families}
+    parts = []
+    for label in labels:
+        part = dataframe[keys].copy()
+        part["Age"] = "All ages" if label == "all ages" else label.capitalize()
+        for prefix, bands in families.items():
+            part[names[prefix]] = dataframe[bands[label]] if label in bands else np.nan
+        parts.append(part)
+    frame = pd.concat(parts, ignore_index=True)
+    columns = [column for bands in families.values() for column in bands.values()]
+    note = (f"Read the {len(columns)} columns of counts by age band, {columns[0]} to {columns[-1]}, as "
+            f"{_and_listed(list(names.values()))}, with a row for each band in a column called Age")
+    if dropped:
+        others = (f"the {len(dropped)} other figures, such as {dropped[0]}," if len(dropped) > 1
+                  else f"{dropped[0]},")
+        note += f", and set aside {others} which give one figure for all ages"
+    return frame, f"{note}."
+
+
+def _same_values(dataframe: pd.DataFrame, columns: list) -> bool:
+    """Whether the columns hold the same value on every row, totals aside ("ALL" beside "All ages")."""
+    def plain(column: object) -> pd.Series:
+        values = dataframe[column].astype(str).str.strip().str.lower()
+        return values.mask(values.map(lambda value: bool(TOTAL_LEVEL.fullmatch(value))), "total")
+
+    first = plain(columns[0])
+    return all(plain(column).equals(first) for column in columns[1:])
+
+
+# Words in a question that ask for a part of a whole.
+PART_CUES = re.compile(r"%|\b(?:share|proportion|percentage|percent|fraction|half|third|quarter|fifth|"
+                       r"tenth|in\s+(?:ten|five|four|three|every)|made\s+up|accounted\s+for|of\s+the|how\s+many)\b",
+                       re.IGNORECASE)
+# Short words of a part's label a question need not repeat: "or" in "Work mainly at or from home".
+PART_FILLERS = frozenset({"a", "an", "the", "of", "or", "and", "at", "for", "to", "in", "on", "from", "by"})
+# Fewest rows on which parts must add up to their whole.
+MIN_PART_ROWS = 3
+
+
+def _whole_noun(whole: str) -> str | None:
+    """The first plural in a whole's name after its last colon: "residents" in "Method of travel to workplace:
+    Total: All usual residents aged 16 years and over"."""
+    tail = whole.rsplit(":", 1)[-1]
+    plurals = [word for word in re.findall(r"[a-z]+", tail.lower())
+               if len(word) > 3 and word.endswith("s") and not word.endswith(("ss", "us", "is"))
+               and word not in {"years", "ages", "days", "months", "weeks"}]
+    return plurals[0] if plurals else None
+
+
+def _claim_part(reading: _Reading, dataframe: pd.DataFrame) -> None:
+    """In a table ADA built from parts kept in columns, read the words that named the part as Kind = it."""
+    part = dataframe.attrs.get("part")
+    if not part or "Kind" not in dataframe.columns:
+        return
+    label, stems = part
+    tokens = [(start, end) for start, end, word in _tokens(reading.remaining)
+              if _stem(word) in stems and reading.remaining[start:end] == reading.original[start:end]]
+    if not tokens:
+        return
+    _add_filter(reading, [_Value(column="Kind", raw=label, words=tuple(_norm(label).split()))], tokens[0][0])
+    reading.fixed.add("Kind")
+    for start, end in tokens:
+        reading.claim(start, end)
+    reading.notes.append(f"Read {_listed([reading.original[start:end] for start, end in tokens])} as Kind = "
+                         f"{label}.")
+
+
+# Past forms that add no ending: "drove" is driving's verb.
+IRREGULAR_STEMS = {"drove": "driv", "driven": "driv", "rode": "rid", "ridden": "rid", "took": "tak",
+                   "taken": "tak", "went": "go", "gone": "go"}
+
+
+def _stem(word: str) -> str:
+    """A word less a common ending, so "worked" meets "work", "drivers" meets "driver" and "drove" or "drive"
+    meets "driving"."""
+    if word in IRREGULAR_STEMS:
+        return IRREGULAR_STEMS[word]
+    for ending in ("ing", "ed", "es", "s"):
+        if word.endswith(ending) and len(word) - len(ending) >= 3:
+            return word[:-len(ending)]
+    return word[:-1] if word.endswith("e") and len(word) > 4 else word
+
+
+def _whole_counts(frame: pd.DataFrame) -> list[str]:
+    """The columns of whole counts, never negative, that are not years."""
+    found = []
+    for column in frame.columns:
+        series = frame[column]
+        if not is_numeric_dtype(series) or is_bool_dtype(series) or _holds_years(series):
+            continue
+        values = series.dropna()
+        whole = not bool((values < 0).any()) and not bool((values % 1 != 0).any())
+        if len(values) >= MIN_PART_ROWS and whole:
+            found.append(str(column))
+    return found
+
+
+def _part_families(frame: pd.DataFrame) -> list[tuple[str, dict[str, str], str | None]]:
+    """Columns of counts that add up to another on nineteen rows in twenty, each with the label it gives
+    a part, and the plural their names share: Good Days to Hazardous Days ("Good" ... "Hazardous") make up
+    Days with AQI, as Days CO to Days PM10 do, and both count days."""
+    counts = _whole_counts(frame)
+    words = {column: _norm(normalized_name(column)).split() for column in counts}
+    families = []
+    for whole in counts:
+        total = frame[whole]
+        parts = [column for column in counts if column != whole and words[column]
+                 and bool((frame[column].fillna(0) <= total.fillna(np.inf)).mean() >= 0.99)]
+        groups: dict[tuple[str, str], list[str]] = defaultdict(list)
+        for column in parts:
+            groups[("first", words[column][0])].append(column)
+            groups[("last", words[column][-1])].append(column)
+        for (side, _), members in groups.items():
+            if len(members) < 2:
+                continue
+            given = frame[[*members, whole]].dropna()
+            if len(given) < MIN_PART_ROWS or (given[members].sum(axis=1) == given[whole]).mean() < 0.95:
+                continue
+            labels = {}
+            for column in members:
+                kept = words[column][1:] if side == "first" else words[column][:-1]
+                raw = re.sub(r"\s+", " ", str(column)).strip()
+                labels[_part_label(raw, kept, members)] = column
+            shared = _shared_word(side, members, words)
+            noun = shared if shared and shared.endswith("s") else None
+            if len(labels) == len(members) and all(labels != family[1] for family in families):
+                families.append((whole, labels, noun))
+    return families
+
+
+def _shared_word(side: str, members: list[str], words: dict[str, list[str]]) -> str | None:
+    """The word every member's name starts or ends with."""
+    found = {words[member][0] if side == "first" else words[member][-1] for member in members}
+    return found.pop() if len(found) == 1 else None
+
+
+def _part_label(raw: str, kept: list[str], members: list[str]) -> str:
+    """A part's label from its column's name, less what every part's name shares: "Good" for Good Days,
+    "Work mainly at or from home" for "Method of travel to workplace: Work mainly at or from home"."""
+    heads = [str(member).rsplit(":", 1)[0] for member in members if ":" in str(member)]
+    if len(heads) == len(members) and len(set(heads)) == 1:
+        return raw.rsplit(":", 1)[1].strip()
+    words = re.findall(r"[A-Za-z0-9.]+", raw)
+    shown = [word for word in words if _norm(word) in kept or word.lower() in kept]
+    return " ".join(shown) or raw
+
+
+def _parts_table(
+    question: str, dataframe: pd.DataFrame, roles: ColumnRoles
+) -> tuple[pd.DataFrame, str] | None:
+    """The table with a row for each part of a whole kept in columns, when the question asks for a share of
+    a part it names: "good on more than 90% of the days" with Good Days, Moderate Days and the rest beside
+    Days with AQI. The parts go in a column called Kind and the whole is its level "All"."""
+    if not PART_CUES.search(question):
+        return None
+    asked = {_stem(word) for word in _norm(question).split()}
+    for whole, labels, noun in _part_families(dataframe):
+        words = {label: {_stem(word) for word in _norm(label).split()} - PART_FILLERS for label in labels}
+        named = [label for label in labels if words[label] and words[label] <= asked]
+        if not named:
+            # "the Tube, metro, light rail or tram" for "Underground, metro, light rail, tram": two words or
+            # more that no other part's label holds.
+            own = {label: words[label] - set().union(*(words[other] for other in labels if other != label))
+                   for label in labels}
+            named = [label for label in labels if len(own[label] & asked) >= 2]
+        if not named:
+            # "drove to work" for "Driving a car or van": the first word of one label alone, which no other
+            # label holds.
+            firsts = {label: next((_stem(word) for word in _norm(label).split() if word not in PART_FILLERS),
+                                  None) for label in labels}
+            named = [label for label in labels if firsts[label] in own[label] & asked]
+        if len(named) != 1:
+            continue
+        banded = {whole, *labels.values()}
+        keys = [column for column in dataframe.columns if column not in banded and (
+            not is_numeric_dtype(dataframe[column]) or _holds_years(dataframe[column]))]
+        noun = noun or _whole_noun(whole)
+        counted = f"Number of {noun}" if noun else "Number"
+        parts = []
+        for label, column in [("All", whole), *labels.items()]:
+            part = dataframe[keys].copy()
+            part["Kind"] = label
+            part[counted] = dataframe[column]
+            parts.append(part)
+        frame = pd.concat(parts, ignore_index=True)
+        # The parts add up to the whole on each row, so All is the level for all of them, beside the table's
+        # own total levels.
+        kept = tuple(level for level in total_levels(dataframe) if level.column in keys)
+        set_total_levels(frame, (TotalLevel("Kind", "All"), *kept))
+        # Each row of the source was one place or group with its own counts, so they add up across rows.
+        frame.attrs["additive_keys"] = tuple(column for column in keys
+                                             if column not in {level.column for level in kept})
+        # The words that named the part are read as it, however the question spells them.
+        frame.attrs["part"] = (named[0], tuple(sorted(words[named[0]])))
+        columns = list(labels.values())
+        note = (f"Read {columns[0]} to {columns[-1]} as parts of {whole}, with a row for each in a column "
+                f"called Kind, All for the whole, and the counts in {counted}.")
+        return frame, note
+    return None
 
 
 # Values of an age column that give no age.
@@ -1232,7 +1590,7 @@ def _claim_ages(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) 
     if found is None:
         return
     column, bands = found
-    for match in AGE_PHRASE.finditer(reading.question):
+    for match in [*AGE_PHRASE.finditer(reading.question), *LEADING_UNDER.finditer(reading.question)]:
         low, high = age_range(match)
         said = _norm(_question_text(match.group()))
         start = reading.remaining.find(said)
@@ -1262,7 +1620,7 @@ def _claim_ages(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) 
             # "44 or younger" starts at the youngest band the table has.
             first = min(band[0] for band in bands.values()) if low == float("-inf") else low
             covered = bool(reaches) and inside[0][0][0] == first and all(
-                after[0][0] == before[0][1] + 1 for before, after in zip(inside, inside[1:], strict=False))
+                _next_band(before, after) for before, after in zip(inside, inside[1:], strict=False))
             if cut:
                 reading.flag(f'"{match.group().strip()}" cuts the {column} band {cut[0]} in two, and no row '
                              "says which side its people are on.")
@@ -1290,6 +1648,19 @@ def _claim_ages(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) 
         reading.claim(match.start("side"), match.end())
 
 
+def _next_band(before: tuple[tuple[float, float], str], after: tuple[tuple[float, float], str]) -> bool:
+    """Whether a band of ages starts the year after the one before it ends. "0-05 Months" and "06-11 Months"
+    are both age 0, the two halves of one year."""
+    (low_before, high_before), said_before = before
+    (low_after, high_after), said_after = after
+    if low_after == high_before + 1:
+        return True
+    halves = all("month" in said.lower() for said in (said_before, said_after))
+    return halves and (low_before, high_before) == (low_after, high_after)
+
+
+# Before year 1: "before the common era", "BCE".
+ERA_PATTERN = re.compile(r"\bbefore\s+the\s+common\s+era\b|\bbce\b")
 # A decade: "the 2010s" is 2010 to 2019.
 DECADE_PATTERN = re.compile(r"\b(?P<decade>(?:19|20)\d0)s\b")
 # Two groups split at a year: "before and after 2000".
@@ -1310,15 +1681,25 @@ def _asks_for_several_periods(q: str) -> bool:
     return len(months) >= 2 or len(years) >= 2
 
 
-def unsupported_phrasing(question: str, columns=()) -> bool:
+def unsupported_phrasing(question: str, columns=(), dataframe: pd.DataFrame | None = None) -> bool:
     """Whether the question uses a form no plan can hold, such as "!=", "or" or two separate years.
 
     ``columns`` are the table's column names, so a word in one ("SEP" and
-    "OCT" as columns, "Sales or Returns") is read as the name it is.
+    "OCT" as columns, "Sales or Returns") is read as the name it is. With
+    ``dataframe``, a span of time that is the one period every row covers is
+    one period, not two.
     """
     q = _norm(question)
+    period = _own_period(dataframe) if dataframe is not None else None
+    for match in reversed(_own_period_spans(q, period) if period else []):
+        q = f"{q[:match.start()]} {q[match.end():]}"
     if len(columns):
         q = _without_names(q, _name_index(columns))
+        # "light rail or tram" for the column "Underground, metro, light rail, tram": both words are its own.
+        named = [set(_norm(normalized_name(str(column))).split()) for column in columns]
+        q = re.sub(r"\b(\w+)\s+or\s+(\w+)\b",
+                   lambda found: f"{found.group(1)} {found.group(2)}"
+                   if any({found.group(1), found.group(2)} <= words for words in named) else found.group(), q)
     return bool(
         UNSUPPORTED_OPERATORS.search(str(question))
         or UNSUPPORTED_PHRASES.search(q)
@@ -1365,6 +1746,8 @@ class _Reading:
     names: dict[str, tuple[str, ...]]
     index: _NameIndex | None = None
     spans: dict[str, tuple[int, int]] = field(default_factory=dict)
+    #: Columns whose filter is settled, which later words do not add to.
+    fixed: set[str] = field(default_factory=set)
     #: Columns a filter or condition uses, so they are neither measure nor grouping.
     consumed: set[str] = field(default_factory=set)
     filters: dict[str, tuple[str, ...]] = field(default_factory=dict)
@@ -1518,6 +1901,12 @@ def _vocabulary(dataframe: pd.DataFrame, roles: ColumnRoles) -> _Vocabulary:
         uniques = texts.iloc[:, position].dropna().unique()
         if len(uniques) > MAX_FILTER_CANDIDATES:
             continue
+        sample = [str(raw).strip().lower() for raw in uniques[:200]]
+        addresses = sum(raw.startswith(("http://", "https://", "www.")) for raw in sample)
+        if sample and addresses >= 0.9 * len(sample):
+            # A web address holds words only by the way ("Domus-augustana-map.png"); none is asked for by
+            # them.
+            continue
         for raw in uniques:
             words = tuple(_norm(raw).split())
             if not words:
@@ -1588,6 +1977,11 @@ def _holds(words: tuple[str, ...], run: tuple[str, ...]) -> bool:
     return any(words[index:index + size] == run for index in range(len(words) - size + 1))
 
 
+# Number words a value may write in digits.
+DIGIT_WORDS = {"one": "1", "two": "2", "three": "3", "four": "4", "five": "5", "six": "6", "seven": "7",
+               "eight": "8", "nine": "9", "ten": "10"}
+
+
 def _values_named(
     run: tuple[str, ...], vocabulary: _Vocabulary, *, exact_only: bool, column: str | None = None
 ) -> tuple[list[_Value], bool]:
@@ -1603,6 +1997,9 @@ def _values_named(
     elif len(run) > 1 and len(run[-1]) > 2:
         # "broken down trains" names "broken down train": the last word takes the plural.
         texts |= {" ".join((*run[:-1], variant)) for variant in _word_variants(run[-1])}
+    if any(word in DIGIT_WORDS for word in run):
+        # "four room" names "4 ROOM".
+        texts.add(" ".join(DIGIT_WORDS.get(word, word) for word in run))
     exact = [vocabulary.values[index] for text in texts for index in vocabulary.by_text.get(text, ())]
     if column is not None:
         exact = [value for value in exact if value.column == column]
@@ -1723,6 +2120,11 @@ def _pick_values(
         )
     if exact:
         return found[0], found, None
+    negated = [value for value in found
+               if re.search(rf"\bnon[-\s]?{re.escape(phrase.lower())}\b", value.raw.lower())]
+    if negated and len(negated) < len(found):
+        # "melanoma" is Malignant melanoma of the skin, not Non-melanoma skin cancer.
+        found = [value for value in found if value not in negated]
     starting = [value for value in found if value.words[:len(run)] == run]
     chosen = found if len(found) == 1 else starting if len(starting) == 1 else []
     if chosen:
@@ -1842,13 +2244,20 @@ def _common_noun(phrase: str, question: str) -> bool:
 
 
 def _capitalised_in(raw: str, run: tuple[str, ...]) -> bool:
-    """Whether the words of ``run`` start with a capital where ``raw`` holds them: "New" in "New Zealand"."""
+    """Whether the words of ``run`` start with a capital where ``raw`` holds them: "New" in "New Zealand".
+
+    The capital that opens a value written in sentence case ("Personal income (millions of dollars)") does not
+    make its first words a name.
+    """
     tokens = re.findall(r"[A-Za-z0-9]+", raw)
     lowered = [token.lower() for token in tokens]
     for index in range(len(tokens) - len(run) + 1):
         if tuple(lowered[index:index + len(run)]) == run or tuple(
             _norm(word) for word in lowered[index:index + len(run)]
         ) == run:
+            later = [token for token in tokens[len(run):] if token[:1].isalpha()]
+            if index == 0 and later and not any(token[:1].isupper() for token in later):
+                return False
             return tokens[index][:1].isupper()
     return False
 
@@ -1894,6 +2303,21 @@ def _plain_match(value: _Value, question: str, cued: bool) -> bool:
     return True
 
 
+def _initialled_values(word: str, question: str, vocabulary: _Vocabulary) -> list[_Value]:
+    """The one value whose name, before a dash or a bracket, a word in capitals spells by its initials: "EU"
+    for "European Union - 27 countries (from 2020)", "UK" for "United Kingdom"."""
+    if not re.search(rf"(?<![0-9A-Za-z]){re.escape(word.upper())}(?![0-9A-Za-z])", question) or not (
+            2 <= len(word) <= 4 and word.isalpha()):
+        return []
+    found = []
+    for value in vocabulary.values:
+        name = re.split(r"\s+[-–(]", value.raw, maxsplit=1)[0]
+        capitals = [part[0] for part in name.split() if part[:1].isupper()]
+        if len(capitals) >= 2 and "".join(capitals) == word.upper():
+            found.append(value)
+    return found if len({value.raw for value in found}) == 1 else []
+
+
 def _typed_in_case(value: _Value, question: str) -> bool:
     """Whether a value with capitals is typed exactly as the data spells it: "ALL", not "all"."""
     return value.raw != value.raw.lower() and bool(
@@ -1919,6 +2343,9 @@ def _scope_cued(reading: _Reading, start: int) -> bool:
 
 def _add_filter(reading: _Reading, values: list[_Value], start: int | None = None) -> None:
     column = values[0].column
+    if column in reading.fixed:
+        # The part a question named in a table ADA built from parts kept in columns stays the one part.
+        return
     if start is not None:
         reading.starts.setdefault(column, start)
     known = reading.filters.get(column, ())
@@ -2059,11 +2486,20 @@ def _claim_values(
                 if adverb:
                     # "highly satisfied": the adverb of a value, kept when the next words name its column.
                     found, exact = _values_named((words[0][:-2],), vocabulary, exact_only=True)
+                if not found and size == 1:
+                    found = _initialled_values(words[0], reading.question, vocabulary)
+                    exact = bool(found)
                 if not found:
                     continue
                 columns = list(dict.fromkeys(value.column for value in found))
-                beside = _column_beside(reading, columns, window[0][0], window[-1][1]) if (
-                    len(columns) > 1 or adverb or not exact) else None
+                beside = _column_beside(reading, columns, window[0][0], window[-1][1])
+                own = {word for name in _partial_words(columns)[beside[0]]
+                       for word in (name, f"{name}s")} if beside else set()
+                if beside and len(columns) == 1 and exact and not adverb and not (
+                        set(reading.original[beside[1][0]:beside[1][1]].split()[-1:]) & own):
+                    # "prostate cancer" names CancerSite = Prostate, "cancer" being a word of the column's
+                    # name; a word that only starts like one does not.
+                    beside = None
                 named = reading.original[beside[1][0]:beside[1][1]].split() if beside else []
                 if not exact and not adverb and named and re.fullmatch(r"[a-z]+[^s]s", named[-1]):
                     # "London boroughs": a word only inside a value ("City of London"), before the plural of
@@ -2171,7 +2607,8 @@ SEX_WORDS = {
     "women": "female", "woman": "female", "females": "female", "girls": "female", "girl": "female",
 }
 SEX_VALUES = {
-    "male": frozenset({"male", "m", "man", "men"}), "female": frozenset({"female", "f", "woman", "women"}),
+    "male": frozenset({"male", "males", "m", "man", "men"}),
+    "female": frozenset({"female", "females", "f", "woman", "women"}),
 }
 # Values a column of genders may hold besides the sexes: "Agender", "Non-binary", "Prefer not to say".
 GENDER_VALUES = frozenset({
@@ -2199,7 +2636,8 @@ def _claim_sexes(reading: _Reading, vocabulary: _Vocabulary, nouns: set[str] = f
     allowed = SEX_VALUES["male"] | SEX_VALUES["female"] | GENDER_VALUES
     sexed = [
         column for column, values in columns.items()
-        if {spelled(value) for value in values} <= allowed
+        # "All" or "Both sexes" beside Male and Females is the total of the two.
+        if {spelled(value) for value in values if not TOTAL_LEVEL.fullmatch(spelled(value))} <= allowed
         and all(any(spelled(value) in SEX_VALUES[side] for value in values) for side in SEX_VALUES)
     ]
     if len(sexed) != 1:
@@ -2288,6 +2726,52 @@ def _claim_country(reading: _Reading, vocabulary: _Vocabulary) -> None:
         reading.claim(match.start(), match.end())
         reading.notes.append(f'Read "{match.group().strip()}" as all the rows: {whole[0]} holds the states, '
                              "and no row is the country as a whole.")
+
+
+# An ONS geography code starts with the letter of its nation: E06000001 is in England, W06000001 in Wales.
+GSS_CODE = r"^[EWSN]\d{8}$"
+NATION_LETTERS = {
+    "england and wales": {"E", "W"}, "great britain": {"E", "W", "S"}, "england": {"E"}, "english": {"E"},
+    "wales": {"W"}, "welsh": {"W"}, "scotland": {"S"}, "scottish": {"S"}, "northern ireland": {"N"},
+    "northern irish": {"N"},
+}
+_NATION_NAMES = "|".join(name.replace(" ", r"\s+") for name in NATION_LETTERS)
+NATION_PATTERN = re.compile(rf"\b(?:{_NATION_NAMES})\b")
+
+
+def _claim_nations(reading: _Reading, dataframe: pd.DataFrame, vocabulary: _Vocabulary) -> None:
+    """Read a nation of the UK as the rows whose ONS geography code starts with its letter: "Welsh workers"
+    are the rows coded W..., and "England and Wales" is every row of a table coded only E and W. A nation a
+    value is named for ("Wales" as a row) is that value's."""
+    columns = []
+    for column in dataframe.columns:
+        series = dataframe[column]
+        if is_numeric_dtype(series):
+            continue
+        codes = series.dropna().astype(str)
+        if not codes.empty and bool(codes.str.match(GSS_CODE).mean() >= 0.95):
+            columns.append(column)
+    if len(columns) != 1:
+        return
+    column = columns[0]
+    codes = dataframe[column].dropna().astype(str)
+    held = set(codes.str[0])
+    for match in list(NATION_PATTERN.finditer(reading.remaining)):
+        said = " ".join(match.group().split())
+        letters = NATION_LETTERS[said]
+        if vocabulary.by_text.get(said) or not letters & held:
+            continue
+        written = _raw_words(reading.question, said.split())
+        if held <= letters:
+            reading.notes.append(f'Read "{written}" as every row: each {column} starts with '
+                                 f"{_listed(sorted(held))}.")
+        else:
+            picked = sorted(code for code in codes.unique() if code[0] in letters)
+            _add_filter(reading, [_Value(column=column, raw=code, words=(code.lower(),)) for code in picked],
+                        match.start())
+            reading.notes.append(f'Read "{written}" as {column} starting with {_listed(sorted(letters))} '
+                                 f"({counted(len(picked), 'code')}).")
+        reading.claim(*match.span())
 
 
 def _word_forms(word: str) -> set[str]:
@@ -2488,6 +2972,18 @@ DEMONYMS = {
     "slovenian": ("slovenia",), "spanish": ("spain",), "swedish": ("sweden",), "swiss": ("switzerland",),
     "turkish": ("turkey", "turkiye"), "ukrainian": ("ukraine",), "venezuelan": ("venezuela",),
     "vietnamese": ("vietnam", "viet nam"), "welsh": ("wales",),
+    # The states of the US, by the names their people are called.
+    "alabamian": ("alabama",), "alaskan": ("alaska",), "arizonan": ("arizona",), "arkansan": ("arkansas",),
+    "californian": ("california",), "coloradan": ("colorado",), "delawarean": ("delaware",),
+    "floridian": ("florida",), "georgian": ("georgia",), "hawaiian": ("hawaii",), "idahoan": ("idaho",),
+    "illinoisan": ("illinois",), "hoosier": ("indiana",), "iowan": ("iowa",), "kansan": ("kansas",),
+    "kentuckian": ("kentucky",), "louisianian": ("louisiana",), "mainer": ("maine",),
+    "marylander": ("maryland",), "michigander": ("michigan",), "minnesotan": ("minnesota",),
+    "mississippian": ("mississippi",), "missourian": ("missouri",), "montanan": ("montana",),
+    "nebraskan": ("nebraska",), "nevadan": ("nevada",), "ohioan": ("ohio",), "oklahoman": ("oklahoma",),
+    "oregonian": ("oregon",), "pennsylvanian": ("pennsylvania",), "tennessean": ("tennessee",),
+    "texan": ("texas",), "utahn": ("utah",), "vermonter": ("vermont",), "virginian": ("virginia",),
+    "washingtonian": ("washington",), "wisconsinite": ("wisconsin",), "wyomingite": ("wyoming",),
 }
 # Name words of a column of nationalities, preferred for a nationality adjective over a country of birth.
 NATIONALITY_WORDS = frozenset({"nationality", "citizenship", "nation"})
@@ -2634,7 +3130,34 @@ def _initialled_columns(phrase: tuple[str, ...], words: dict[str, tuple[str, ...
     if not all(word.isalpha() for word in phrase):
         return []
     initials = "".join(word[0] for word in phrase)
-    return [column for column in words if initials_of(str(column), len(phrase)) == initials]
+    named = [column for column in words if initials_of(str(column), len(phrase)) == initials]
+    if named or len(phrase) < 2:
+        return named
+    # "sea level" for MSL, mean sea level: the M of a name in capitals stands for mean.
+    meant = [column for column in words if initials_of(str(column), len(phrase)) == f"m{initials}"]
+    return meant if len(meant) == 1 else []
+
+
+# Words for cases newly diagnosed, which a column of incidences counts.
+DIAGNOSIS_WORDS = frozenset({"diagnoses", "diagnosed", "diagnosis"})
+# Name words of a column about incidence that counts no cases: a rate, a ratio, a quality flag.
+NOT_INCIDENCE_WORDS = frozenset({"rate", "rates", "ratio", "ratios", "qf", "flag", "percent", "percentage"})
+# Words of a column's name that say it holds the whole of what its siblings split: IncidencesAllAges.
+TOTAL_NAME_WORDS = frozenset({"all", "total", "overall", "combined", "both"})
+WHOLE_NAME_WORDS = TOTAL_NAME_WORDS | {"ages", "age", "persons", "people", "sexes", "groups"}
+
+
+def _total_named(phrase: tuple[str, ...], candidates: list[str]) -> str | None:
+    """The one candidate column whose name adds to the phrase only words for all of something ("all ages"),
+    when the others add words that split it (IncidencesAge5To9)."""
+    said = set(phrase) | {word.removesuffix("s") for word in phrase}
+    totals = []
+    for column in candidates:
+        extra = [word for word in _norm(normalized_name(str(column))).split()
+                 if word not in said and word.removesuffix("s") not in said]
+        if extra and set(extra) <= WHOLE_NAME_WORDS and set(extra) & TOTAL_NAME_WORDS:
+            totals.append(column)
+    return totals[0] if len(totals) == 1 and len(candidates) >= 3 else None
 
 
 def initials_of(column: str, size: int) -> str | None:
@@ -2694,7 +3217,18 @@ def _claim_partial_at(
             # The file's own noun for its rows, left for _claim_entity: "flights" in flights.csv.
             return 1
         candidates = _holding(words, phrase, reading.index or _name_index(dataframe.columns))
-        if not candidates and size == 1:
+        said = phrase
+        if not candidates and size == 1 and phrase[0] in DIAGNOSIS_WORDS:
+            # "diagnoses" for IncidencesAllAges: a registry's incidence counts the cases newly diagnosed.
+            said = ("incidences",)
+            index_ = reading.index or _name_index(dataframe.columns)
+            candidates = [column for column in _holding(words, said, index_)
+                          if not set(words[column]) & NOT_INCIDENCE_WORDS]
+            new = re.search(r"\b(new)\s+(?:[a-z]+\s+){0,2}$", reading.remaining[:window[0][0]])
+            if candidates and new:
+                # "new cancer diagnoses": every diagnosis counted is a new one.
+                reading.claim(new.start(1), new.end(1))
+        elif not candidates and size == 1:
             candidates = (_prefixed_columns(phrase[0], words) or _stemmed_columns(phrase[0], words)
                           or _skeleton_columns(phrase[0], words))
             if len(candidates) > 1 and re.fullmatch(r"[a-z]{3,}(?:ed|ing)", phrase[0]):
@@ -2704,6 +3238,23 @@ def _claim_partial_at(
                 return 1
         if not candidates and 2 <= size <= 4:
             candidates = _abbreviated_columns(phrase, words) or _initialled_columns(phrase, words)
+        if size == 1 and len(candidates) == 1 and phrase[0].endswith("s"):
+            # "resales" are the sales, not resale_price, a price of each: the plural of a name's first word
+            # counts the things the rest of the name measures. The first word of several names ("candidates"
+            # for Candidate family name and Candidate given name) is left to ask which is meant.
+            kept = [column for column in candidates
+                    if not (len(words[column]) > 1 and phrase[0] != words[column][0]
+                            and phrase[0] in _word_variants(words[column][0])
+                            and not set(words[column][1:]) <= COUNT_NAME_WORDS)]
+            if not kept:
+                return 1
+            candidates = kept
+        if len(candidates) > 1 and (total := _total_named(said, candidates)):
+            # "incidences" names IncidencesAge5To9 and the rest, and IncidencesAllAges counts them all.
+            kind = "the column of incidences, the cases newly diagnosed," if said != phrase else "the one"
+            reading.notes.append(f'Read "{_raw_words(reading.question, list(phrase))}" as {total}, {kind} '
+                                 f"of its {len(candidates)} columns for all of them.")
+            candidates = [total]
         start, end = window[0][0], window[-1][1]
         beside = [column for column, (first, last) in reading.spans.items()
                   if (last <= start and not reading.original[last:start].strip())
@@ -2758,6 +3309,9 @@ def _claim_partial_at(
                 extra = other if named else ""
             if role == "group" and len(suited) > 1:
                 suited = _interchangeable(suited, dataframe) or suited
+            if len(suited) != 1 and all(not _is_measurement(dataframe[column]) for column in candidates):
+                # "cancer" in CancerSite and CancerSiteICD10Code: a label and its code pick the same rows.
+                suited = _interchangeable(candidates, dataframe) or suited
             if len(suited) != 1:
                 if size == 1 and (phrase[0] in ENTITY_NOUNS or role == "count"):
                     # Left for _claim_entity: "how many samples" counts rows.
@@ -2770,7 +3324,9 @@ def _claim_partial_at(
         del words[column]
         reading.spans[column] = (start, end)
         reading.claim(start, end, keep_text=True)
-        reading.notes.append(f'Read "{_raw_words(reading.question, phrase)}" as {column}.')
+        said = f'Read "{_raw_words(reading.question, phrase)}" as {column}'
+        if not any(note.startswith(said) for note in reading.notes):
+            reading.notes.append(f"{said}.")
         if extra:
             reading.notes.append(extra)
         found.append(column)
@@ -2866,7 +3422,9 @@ def _interchangeable(columns: list[str], dataframe: pd.DataFrame) -> list[str]:
     words = _partial_words(columns)
     texts = [column for column in columns if not _is_measurement(dataframe[column])] or columns
     labelled = [column for column in texts if set(words[column]) & {"label", "name", "names"}]
-    return [(labelled or texts)[0]]
+    # CancerSite over CancerSiteICD10Code: a column named for codes holds the codes of another's labels.
+    uncoded = [column for column in texts if not set(words[column]) & {"code", "codes", "id", "ids"}]
+    return [(labelled or uncoded or texts)[0]]
 
 
 # Fewest columns a word must name for "which <word>" to rank the columns themselves.
@@ -3057,6 +3615,9 @@ def _condition_words(
             operator for index, (operator, _) in enumerate(COMPARISONS) if match.group(f"op{index}")
         )
         value, length = _number(match.group("number")), match.end()
+        if (scale := re.match(r"\s+(thousand|million|billion|trillion)\b", after[length:])):
+            # "population above 100 million": the bound counts in millions.
+            value, length = value * SCALE_WORDS[scale.group(1)], length + scale.end()
         unit = re.match(r"\s+([a-z]+)\b", after[length:])
         if unit and (converted := _in_column_unit(column, unit.group(1), value)) is not None:
             # "depth_km below 1 km", "depth_m above 50 cm": the bound's unit is the column's, or converts.
@@ -3196,6 +3757,17 @@ def _claim_conditions(
                              f"{_number_text(conditions[0].value)}; name the column.")
             reading.conditions.extend(conditions)
             claimed = (start, end + length)
+        elif numeric and (match := re.search(
+            rf"\b(?:{COMPARISON_PATTERN})\s+(?P<number>{NUMBER})(?:\s+(?P<scale>{'|'.join(SCALE_WORDS)}))?\s+$",
+            before,
+        )):
+            # "more than 100 million population": the bound comes before the column it bounds.
+            operator = next(
+                operator for index, (operator, _) in enumerate(COMPARISONS) if match.group(f"op{index}")
+            )
+            value = _number(match.group("number")) * SCALE_WORDS.get(match.group("scale") or "", 1.0)
+            reading.conditions.append(Condition(column, operator, value))
+            claimed = (match.start(), end)
         elif numeric and (match := re.search(
             r"\b(?P<sign>negative|positive|zeros?|zero)\s+(?:values?\s+|readings?\s+)?"
             r"(?:(?:in|of|for)\s+(?:the\s+)?)?$", before
@@ -3630,13 +4202,45 @@ def _ratio_plan(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) 
         return None
     for column in (measure, partner):
         coded = column == roles.identifier or column in roles.dimensions or _is_code(column, dataframe, roles)
-        if coded or not _is_measurement(dataframe[column]) or (
+        # "per year" with a column of years is a time unit, not a total to divide by.
+        if coded or _holds_years(dataframe[column]) or not _is_measurement(dataframe[column]) or (
             metric_for(column, roles).unit == "rate" or (dataframe[column].dropna() < 0).any()
         ):
             return None
     return QueryPlan(
         intent="aggregate", aggregation="ratio", measure=measure, partner=partner, scale=reading.scale,
         **_scope(reading),
+    )
+
+
+def _part_share_plan(reading: _Reading, dataframe: pd.DataFrame) -> QueryPlan | None:
+    """Plan "what share of deaths were COVID-19 deaths" with COVID-19 Deaths beside Total deaths: the total of
+    the part over the total of the whole, as a percentage.
+
+    The question asks for a share and names two columns of counts with the same last word, one of them the
+    total of that word ("Total deaths"); the other never exceeds it on a row, as a part of it does.
+    """
+    if not _asks_share(reading) or len(reading.mentioned) != 2:
+        return None
+    columns = list(reading.mentioned)
+    counts = set(_whole_counts(dataframe))
+    if not set(columns) <= counts:
+        return None
+    words = {column: _norm(normalized_name(str(column))).split() for column in columns}
+    heads = {column: [word for word in words[column] if word not in {"total", "all", "number", "of"}]
+             for column in columns}
+    wholes = [column for column in columns if len(heads[column]) == 1 and len(words[column]) > 1]
+    parts = [column for column in columns if column not in wholes]
+    if len(wholes) != 1 or len(parts) != 1 or heads[parts[0]][-1:] != heads[wholes[0]]:
+        return None
+    part, whole = parts[0], wholes[0]
+    given = dataframe[[part, whole]].dropna()
+    if given.empty or not bool((given[part] <= given[whole]).all()) or (given[part] == given[whole]).all():
+        return None
+    return QueryPlan(
+        intent="aggregate", aggregation="ratio", measure=part, partner=whole, scale=100.0,
+        notes=(f"Read the share as {part} over {whole}: {part} never exceeds {whole} on a row, as a part of "
+               "it does.",), **_scope(reading),
     )
 
 
@@ -3662,13 +4266,19 @@ def _execute_ratio(plan: QueryPlan, working: pd.DataFrame, scope: str, applied: 
         f"{_plain_total(bottom)} {plan.partner}, from {counted(len(both), 'row')}"
         + (f" ({counted(left, 'row')} missing one of them left out)" if left else "") + "."
     )
+    figures = (("ratio", value), ("numerator", top), ("denominator", bottom), ("n", float(len(both))))
+    if plan.scale == 100 and bool((both[plan.measure] <= both[plan.partner]).all()):
+        # A part over its whole, times 100, is its share.
+        answer = (f"{_plain_total(top)} of the {_plain_total(bottom)} {plan.partner}{_phrase(applied)} "
+                  f"({_share_text(value)}) are {plan.measure}, from {counted(len(both), 'row')}.")
+        figures = (("share_percent", value), *figures)
     return QueryAnswer(
         question="",
         plan=plan,
         answer=answer,
         calculation=f"{formula}{scope}",
         value=_as_number(value),
-        figures=(("ratio", value), ("numerator", top), ("denominator", bottom), ("n", float(len(both)))),
+        figures=figures,
     )
 
 
@@ -3895,7 +4505,9 @@ def _count_column(noun: str, dataframe: pd.DataFrame) -> str | None:
         if not is_numeric_dtype(series) or is_bool_dtype(series):
             continue
         named = _norm(normalized_name(str(column))).split()
+        # "Number Of Trees" counts trees, as tree_count does.
         words = [word for word in named if word not in COUNT_NAME_WORDS]
+        words = words[1:] if len(words) < len(named) and words[:1] == ["of"] else words
         forms = {noun, singular(noun)} if len(words) < len(named) else {noun}
         values = series.dropna().to_numpy(dtype=float)
         whole = len(values) and (values >= 0).all() and (values % 1 == 0).all()
@@ -3942,6 +4554,18 @@ def _claim_count_column(reading: _Reading, dataframe: pd.DataFrame, roles: Colum
             # "share of all the money" weighs each row by the one column of money; "investment" by `invest`,
             # the column it names, before any other column of money.
             column = _named_numeric(word, dataframe) or _amount_column(dataframe)
+        elif word in DIAGNOSIS_WORDS and (diagnosed := re.search(
+                rf"{COUNT_PATTERN}\s+(?:of\s+)?(?:all\s+)?(?:the\s+)?(?:(?P<noun>[a-z]+)\s+)?$", before)):
+            # "how many cancers diagnosed", "share of diagnoses": the cases a column of incidences counts.
+            column = _incidence_total(dataframe)
+            if column is not None:
+                reading.notes.append(f'Read "{word}" as {column}, the column of incidences, the cases newly '
+                                     "diagnosed, for all of them.")
+                if diagnosed.group("noun"):
+                    # "cancers" in "how many cancers diagnosed" are the cases, not the column of cancer sites.
+                    noun = diagnosed.span("noun")
+                    reading.spans = {named: span for named, span in reading.spans.items() if span != noun}
+                    reading.claim(*noun)
         elif ids is not None and ids.notna().all() and ids.is_unique:
             continue
         elif word.endswith("s") and re.search(rf"{COUNT_PATTERN}\s+(?:of\s+)?(?:all\s+)?(?:the\s+)?$",
@@ -3969,6 +4593,18 @@ def _claim_count_column(reading: _Reading, dataframe: pd.DataFrame, roles: Colum
         reading.claim(start, end)
         reading.entity, reading.entity_column, reading.weight = word, None, column
         return
+
+
+def _incidence_total(dataframe: pd.DataFrame) -> str | None:
+    """The one column of incidences in a table, or the one of several for all of them (IncidencesAllAges)."""
+    index = _name_index(dataframe.columns)
+    words = {column: index.partial[column] for column in dataframe.columns
+             if is_numeric_dtype(dataframe[column])}
+    named = [column for column in _holding(words, ("incidences",), index)
+             if not set(words[column]) & NOT_INCIDENCE_WORDS]
+    if len(named) == 1:
+        return named[0]
+    return _total_named(("incidences",), named) if len(named) > 1 else None
 
 
 def _has_times(dates: pd.Series) -> bool:
@@ -4029,9 +4665,11 @@ def _year_column(dataframe: pd.DataFrame, roles: ColumnRoles) -> str | None:
     """The column a year in the question refers to: the date column, or one numeric column of years."""
     if roles.date and roles.date in dataframe.columns:
         return roles.date
+    # year_approx, a 0/1 flag beside year, holds no years.
     named = [
         column for column in roles.numeric
         if column in dataframe.columns and {"year", "yr"} & set(_norm(normalized_name(column)).split())
+        and not set(to_numbers(dataframe[column]).dropna().unique()) <= {0, 1}
     ]
     if named:
         return named[0] if len(named) == 1 else None
@@ -4091,6 +4729,64 @@ def _claim_days(reading: _Reading, roles: ColumnRoles) -> None:
         reading.claim(*match.span())
 
 
+# A span of time from one month or year to another: "between january 2020 and late june 2023", "from 2020 to
+# mid 2023".
+PERIOD_SPAN = re.compile(
+    r"\b(?:between|from)\s+(?:(?P<first_month>[a-z]+)\s+)?(?P<first>(?:19|20)\d{2})\s+(?:and|to|through|until)\s+"
+    r"(?:(?P<part>early|mid|late)\s+)?(?:(?P<last_month>[a-z]+)\s+)?(?P<last>(?:19|20)\d{2})\b"
+)
+# Months "mid" a year may mean.
+MID_MONTHS = range(5, 9)
+
+
+def _own_period(dataframe: pd.DataFrame) -> tuple[str, pd.Timestamp, str, pd.Timestamp] | None:
+    """The one period every row covers, when a start date column and an end date column each hold one date:
+    (start column, start, end column, end)."""
+    dates = {column: dataframe[column].dropna() for column in dataframe.columns
+             if is_datetime64_any_dtype(dataframe[column])}
+    constant = {column: values.iloc[0] for column, values in dates.items()
+                if not values.empty and values.nunique() == 1}
+    named = {side: [column for column in constant if set(_norm(normalized_name(str(column))).split()) & words]
+             for side, words in (("start", {"start", "begin", "beginning", "from"}),
+                                 ("end", {"end", "ending", "through", "until"}))}
+    if len(named["start"]) != 1 or len(named["end"]) != 1:
+        return None
+    first, last = named["start"][0], named["end"][0]
+    return str(first), constant[first], str(last), constant[last]
+
+
+def _own_period_spans(text: str, period: tuple[str, pd.Timestamp, str, pd.Timestamp]) -> list[re.Match]:
+    """The spans of time in normalized text whose ends are the period's: "between january 2020 and late june
+    2023", "from 2020 to mid 2023" for 1 January 2020 to 24 June 2023."""
+    _, start, _, end = period
+    found = []
+    for match in PERIOD_SPAN.finditer(text):
+        months = [match.group(name) for name in ("first_month", "last_month")]
+        if any(month is not None and month not in MONTH_NAMES for month in months):
+            continue
+        first, last = (MONTH_NAMES[month] if month else None for month in months)
+        part = match.group("part")
+        fits_start = int(match.group("first")) == start.year and first in (None, start.month)
+        fits_end = int(match.group("last")) == end.year and (
+            last == end.month or (last is None and (not part or (part == "mid" and end.month in MID_MONTHS))))
+        if fits_start and fits_end:
+            found.append(match)
+    return found
+
+
+def _claim_own_period(reading: _Reading, dataframe: pd.DataFrame) -> None:
+    """Read a span of time that is the one period every row covers as no filter: "between January 2020 and
+    late June 2023" where Start Date is 1 January 2020 and End Date 24 June 2023 on every row."""
+    period = _own_period(dataframe)
+    if period is None:
+        return
+    for match in _own_period_spans(reading.remaining, period):
+        reading.claim(*match.span())
+        said = _raw_words(reading.question, match.group().split())
+        reading.notes.append(f'Read "{said}" as the period every row covers, {period[0]} '
+                             f"{period[1]:%Y-%m-%d} to {period[2]} {period[3]:%Y-%m-%d}.")
+
+
 def _claim_year_ranges(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
     """Read ranges of years as conditions on the date ("since 1978") and "before and after 2000" as a split.
 
@@ -4137,6 +4833,13 @@ def _claim_year_ranges(reading: _Reading, dataframe: pd.DataFrame, roles: Column
                 reading.conditions.append(Condition(column, operator, year, part="year"))
                 reading.scoped.add(column)
             reading.claim(*match.span())
+    era = ERA_PATTERN.search(reading.remaining)
+    if era and column is not None and is_numeric_dtype(dataframe[column]) and (dataframe[column] < 0).any():
+        # Years before the common era written as negative numbers: "-700" for 700 BC.
+        reading.conditions.append(Condition(column, "<", 0.0))
+        reading.scoped.add(column)
+        reading.notes.append(f'Read "{era.group()}" as {column} below 0, as the table writes those years.')
+        reading.claim(*era.span())
     for match in list(DECADE_PATTERN.finditer(reading.remaining)):
         if column is None:
             reading.flag("This table has no date or year column for a decade.")
@@ -4158,19 +4861,37 @@ EVENT_VERBS = (
     "completed", "conducted", "observed", "collected", "surveyed", "caught", "born", "elected", "awarded",
 )
 EVENT_PATTERN = re.compile(
-    rf"\b(?:{'|'.join(EVENT_VERBS)})\b(?=\s+(?:in|during|since|before|after|from|between|by)\s+{YEAR}\b)"
+    rf"\b(?:{'|'.join(EVENT_VERBS)})\b(?=\s+(?:(?:in|during|since|before|after|from|between|by)\s+{YEAR}\b"
+    r"|before\s+the\s+common\s+era\b|bce\b))"
 )
 # Phrases that say where the rows are, not which: "on board", "in the data".
 FILLER_PATTERN = re.compile(
     r"\b(?:on\s+board|aboard|in\s+the\s+(?:data|dataset|data\s+set|table|file|sample)|in\s+this\s+"
     r"(?:data|dataset|table|file|sample)|all\s+told|altogether|at\s+an?\s+(?:\S+\s+)?rate(?:\s+of)?|"
-    r"surveyed|interviewed|polled|questioned|came\s+from|comes?\s+from)\b"
+    r"surveyed|interviewed|polled|questioned|came\s+from|comes?\s+from|at\s+the\s+time\s+of|census|"
+    # "COVID-19 accounted for a quarter of all deaths": the share says what the verb does.
+    r"accounted\s+for|(?:was|were)\s+involved\s+in|made\s+up|on\s+the\s+map)\b"
 )
 # A passive verb after what is counted says how the rows came about, not which: "medals were won".
 PASSIVE_PATTERN = re.compile(
     r"\b(?:were|was|are|is|been|be|got|get)\s+(?:won|awarded|given|earned|handed\s+out|recorded|scored|"
     r"taken|reported|logged|filed|placed|played)\b"
 )
+
+
+# A word after what is counted for how it came to be counted: "deaths registered", "cases reported".
+RECORDED_PATTERN = re.compile(r"(?<=[a-z]s)\s+(registered|recorded|reported|logged|notified)\b")
+
+
+def _claim_recording_words(reading: _Reading, vocabulary: _Vocabulary) -> None:
+    """Claim the word saying how the things counted were counted ("deaths registered in 2024"), unless a
+    value of the table holds it, as a status of Registered beside Provisional would."""
+    for match in list(RECORDED_PATTERN.finditer(reading.original)):
+        word = match.group(1)
+        unread = reading.remaining[match.start(1):match.end(1)] == word
+        held = vocabulary.by_word.get(word) or vocabulary.by_word.get(word.removesuffix("ed"))
+        if unread and not held:
+            reading.claim(*match.span(1))
 
 
 # Words for how the rows were gathered, which say nothing about which rows before a noun: "the tracked
@@ -4195,7 +4916,12 @@ def _claim_gathering_words(reading: _Reading) -> None:
 
 def _claim_fillers(reading: _Reading) -> None:
     """Claim the words that date an event or say where the rows are, so they name nothing by mistake."""
-    for pattern in (EVENT_PATTERN, FILLER_PATTERN, PASSIVE_PATTERN):
+    # The date after a verb may already be read ("before the common era"), so the verb is found in the
+    # question as written.
+    for match in list(EVENT_PATTERN.finditer(reading.original)):
+        if reading.remaining[match.start():match.end()] == match.group():
+            reading.claim(*match.span())
+    for pattern in (FILLER_PATTERN, PASSIVE_PATTERN):
         for match in list(pattern.finditer(reading.remaining)):
             reading.claim(*match.span())
 
@@ -4450,6 +5176,7 @@ def _read_question(
     """
     vocabulary = _vocabulary(dataframe, roles)
     q = _agent_nouns(_norm(_inverted_names(_question_text(question), dataframe.columns)), vocabulary)
+    q = _population_words(_died_of(q, dataframe.columns), dataframe.columns)
     q, year_to = _year_to_month(q, dataframe, roles)
     index = _name_index(dataframe.columns)
     reading = _Reading(question=question, original=q, text=q, remaining=q, names=index.names, index=index)
@@ -4467,6 +5194,7 @@ def _read_question(
             column: span for column, span in reading.spans.items() if q[span[0]:span[1]] != roles.row_noun
         }
     _claim_country(reading, vocabulary)
+    _claim_nations(reading, dataframe, vocabulary)
     _claim_select_all(reading, dataframe)
     _claim_part_of_year(reading, roles)
     _unit_word_names_rows(reading, dataframe, roles)
@@ -4477,6 +5205,7 @@ def _read_question(
     _reread_aggregation_names(reading)
     _claim_numbered_columns(reading, roles)
     _claim_adjustment(reading)
+    _claim_own_period(reading, dataframe)
     _claim_time_part(reading, dataframe, roles)
     _claim_month_of_year(reading, dataframe, roles)
     _claim_days(reading, roles)
@@ -4490,7 +5219,9 @@ def _read_question(
     _claim_conditions(reading, list(reading.spans), dataframe, roles, vocabulary)
     _claim_person_names(reading, dataframe)
     nouns = reading.nouns = _value_nouns(vocabulary) | _prefix_nouns(dataframe)
+    _claim_part(reading, dataframe)
     _claim_values(reading, vocabulary, dataframe, exact_only=True, row_noun=roles.row_noun, nouns=nouns)
+    _claim_recording_words(reading, vocabulary)
     _claim_sexes(reading, vocabulary, nouns)
     _claim_outcomes(reading, vocabulary)
     _claim_demonyms(reading, vocabulary)
@@ -4501,6 +5232,8 @@ def _read_question(
     _claim_conditions(reading, partial, dataframe, roles, vocabulary)
     _claim_values(reading, vocabulary, dataframe, exact_only=False, row_noun=roles.row_noun, nouns=nouns)
     _claim_codes(reading, dataframe, roles)
+    _claim_total_words(reading, dataframe)
+    _claim_across(reading)
     _claim_unit_conditions(reading, dataframe, roles)
     _claim_numbers(reading, dataframe, roles)
     _claim_row_label(reading, roles)
@@ -4523,6 +5256,55 @@ def _read_question(
     if unknown:
         reading.flag(_unknown_reason(question, unknown, len(dataframe), rows_not_analyzed))
     return reading
+
+
+# "across US counties" before a column's name: over all of them. Words that ask how the groups differ.
+ACROSS = re.compile(r"\bacross\s+(?:all\s+)?(?:the\s+)?(?:[a-z]+\s+)?$")
+DIFFER_WORDS = re.compile(r"\b(?:compare[sd]?|comparing|var(?:y|ies|ied)|differ(?:s|ed)?|range[sd]?|spread|"
+                          r"distribut\w*|each|every|per|by)\b")
+
+
+def _claim_across(reading: _Reading) -> None:
+    """Read a column named after "across" as every row, not each group, unless the question asks how the
+    groups differ: "good on 75% of the days monitored across US counties" is one share."""
+    if DIFFER_WORDS.search(reading.original):
+        return
+    for column, start in list(reading.mentioned.items()):
+        found = ACROSS.search(reading.original[:start])
+        if found and column not in reading.filters:
+            said = reading.original[found.start():reading.spans[column][1]]
+            reading.claim(found.start(), reading.spans.pop(column)[1])
+            reading.notes.append(f'Read "{said}" as every row, not each {column}.')
+
+
+# Words before a column's name that ask for its groups: "by cancer", "which cancer", "the most common cancer".
+GROUP_CUE = re.compile(
+    r"\b(?:by|per|each|every|across|which|what|among|between|most|least|common|top|leading)\s+(?:[a-z]+\s+)?$"
+)
+
+
+def _claim_total_words(reading: _Reading, dataframe: pd.DataFrame) -> None:
+    """A column named only by words of its total level, with nothing asking for its groups, picks that
+    level: "new cancer diagnoses" is CancerSite = All cancer types, not each site in turn."""
+    named = [(column, span) for column, span in reading.spans.items()
+             if column not in reading.consumed and column not in reading.filters
+             and column in dataframe.columns and not is_numeric_dtype(dataframe[column])]
+    # Only a column of labels has a total level; finding them costs a pass over a large table.
+    levels = {level.column: level.label for level in total_levels(dataframe)} if named else {}
+    for column, (start, end) in named:
+        if column not in levels:
+            continue
+        said = reading.original[start:end].split()
+        label = set(_norm(levels[column]).split())
+        if not said or not set(said) <= label | {f"{word}s" for word in label}:
+            continue
+        if GROUP_CUE.search(reading.original[:start]):
+            continue
+        whole = levels[column]
+        _add_filter(reading, [_Value(column=column, raw=whole, words=tuple(_norm(whole).split()))], start)
+        reading.consumed.add(column)
+        reading.notes.append(f'Read "{_raw_words(reading.question, said)}" as {column} = {whole}, the level '
+                             "for all of them.")
 
 
 def _unknown_reason(question: str, runs: list[list[str]], rows: int, rows_not_analyzed: int) -> str:
@@ -4686,7 +5468,9 @@ def _plan_question(
         compared = _comparison_plan(question, dataframe, roles)
     except _ComparisonRefused as refused:
         return None, str(refused)
-    if compared is None and unsupported_phrasing(question, dataframe.columns):
+    # In a table ADA built from parts kept in columns, the part's label is a name as a column's is.
+    names = [*dataframe.columns, *([dataframe.attrs["part"][0]] if dataframe.attrs.get("part") else [])]
+    if compared is None and unsupported_phrasing(question, names, dataframe):
         return None, None
     plan, reason = (compared, None) if compared else _rule_plan(question, dataframe, roles, rows_not_analyzed)
     problem = (_running_total_problem(plan, roles) or _code_total_problem(plan, roles)) if plan else None
@@ -4767,7 +5551,7 @@ def _rule_plan(
             counts = reading.weight if plan.intent in ("trend", "growth") else None
             plan = replace(plan, measure=reading.weight, aggregation="sum", weight=counts)
     # In a table of counts each row stands for its count of cases, which the answer says itself.
-    entity = () if frequency_column(dataframe) or weighted else _entity_note(reading, plan)
+    entity = () if frequency_column(dataframe) or weighted or plan.weight else _entity_note(reading, plan)
     notes = (*plan.notes, *reading.notes, *entity, *weighted, *_weather_note(reading, plan))
     return replace(plan, notes=notes), None
 
@@ -4918,7 +5702,7 @@ def _plan_from_reading(reading: _Reading, dataframe: pd.DataFrame, roles: Column
             {**_scope(reading), "filters": filters_including_dimension},
         )
 
-    if (ratio := _ratio_plan(reading, dataframe, roles)) is not None:
+    if (ratio := _ratio_plan(reading, dataframe, roles) or _part_share_plan(reading, dataframe)) is not None:
         return ratio
     if (per_unit := _per_unit_plan(reading, dataframe, roles)) is not None:
         return per_unit
@@ -5545,8 +6329,25 @@ def _count_plan(
         counted = _role_of_position(reading.original, start) == "count"
         if _labels_entities(column, series) and plural and counted:
             return QueryPlan(intent="count", aggregation="count", count_column=column, **counting)
+        if column == cube_measure(dataframe) and total_levels(dataframe):
+            # "how many of the residents" in a table of counts: the counts add up, at the total levels.
+            return QueryPlan(intent="count", aggregation="count", weight=column, **counting)
+        named = _norm(normalized_name(str(column))).split()
+        plural = bool(named) and len(named[-1]) > 3 and named[-1].endswith("s") and not named[-1].endswith(
+            ("ss", "us", "is"))
+        counts_named = plural or bool(set(named) & COUNT_NAME_WORDS)
+        if _asks_share(reading) and (counting["filters"] or counting["conditions"]) and counts_named and (
+                column in _whole_counts(dataframe)):
+            # "what share of COVID-19 Deaths were 65 or older": those deaths over all of them, each row
+            # holding a count. A name that says it counts is needed: Day, a day of the month, counts nothing.
+            return QueryPlan(intent="count", aggregation="count", weight=column, **counting)
         if metric_for(column, roles).aggregation == "sum":
             return QueryPlan(intent="aggregate", aggregation="sum", **{**ungrouped, "measure": column})
+        if roles.identifier is None and column == cube_measure(dataframe) and (
+                _count_column(spelled.lower(), dataframe) == column):
+            # "how many drivers" where Drivers, the one column of counts, is named for them: they add up.
+            # Rows with an id are things, and their n_cats (the cats of a cat's household) a value of each.
+            return QueryPlan(intent="count", aggregation="count", weight=column, **counting)
         reading.refusal = (
             f'"How many" counts rows or distinct values, and {column} is a measurement; '
             "ask for its average or its total."
@@ -7199,8 +8000,10 @@ def _share_of_whole(
     whole = " and ".join(_describe_filter(item) for item in plan.whole)
     used = base.loc[hits | at_whole]
     counted = {item.column for item in (*plan.counted, *plan.whole)}
+    # The counties of a table ADA built from parts kept in columns are each a place, and their counts add up.
+    additive = set(base.attrs.get("additive_keys", ()))
     mixed = [str(column) for column in base.columns
-             if column not in counted and not is_numeric_dtype(base[column])
+             if column not in counted and column not in additive and not is_numeric_dtype(base[column])
              and not is_datetime64_any_dtype(base[column]) and base.loc[at_whole, column].nunique() > 1]
     problem = None
     if weight is None:
@@ -7761,6 +8564,17 @@ def _execute_grouping(
         value_label = with_aggregate(_aggregation_label(plan), plan.measure)
     groups = _group_values(working, plan)
     grouped = _grouped_frame(working, plan, value_label, groups, weight)
+    if grouped.empty:
+        # Bins of a column with one value in scope (one country's life expectancy) leave no group.
+        values = "one value" if working[plan.dimension].nunique() else "no values"
+        return QueryAnswer(
+            question="",
+            plan=plan,
+            answer=(
+                f"{plan.dimension} has {values}{_phrase(applied)}, so the rows cannot be split into groups."
+            ),
+            calculation=f"{values} of {plan.dimension}{scope}",
+        )
     key = grouped.columns[0]
     single_rows = not counted and not (plan.time_part or plan.bins) and 1 < len(grouped) == len(working)
     plain = not (counted or single_rows or plan.time_part or plan.bins)
@@ -9874,6 +10688,17 @@ def answer_question(
         return wider
     if whole is not None and (elsewhere := _part_answer(question, dataframe, whole, rows_not_analyzed)):
         return elsewhere
+    reshaped = _banded_table(question, dataframe, roles) or _parts_table(question, dataframe, roles)
+    if reshaped is not None:
+        # "aged 75 or over" in a table with IncidencesAge75To79 and the rest: a row for each band; "good on
+        # 70% of the days" with Good Days beside Days with AQI: a row for each kind of day.
+        frame, note = reshaped
+        answer = answer_question(question, frame, detect_roles(frame), rows_not_analyzed=rows_not_analyzed,
+                                 choices=choices)
+        if answer is not None:
+            scope = answer.scope and replace(answer.scope, readings=(note, *answer.scope.readings))
+            return replace(answer, answer=f"{answer.answer} {note}", scope=scope,
+                           plan=replace(answer.plan, notes=(note, *answer.plan.notes)))
     plan = parse_question(question, dataframe, roles)
     if plan is None:
         return None
@@ -9933,7 +10758,10 @@ def _decide_total_levels(
         picked &= _value_mask(dataframe[item.column], item.values)
     # "Vestland" is a county, so its rows are never at the country level: a level no row picked holds is
     # left alone.
-    kept = [level for level in levels if level.column not in named and level.column not in grouped
+    # SEX beside Sex Label, AGE beside "Single year of age": a column whose twin the question names is named.
+    twins = {level.column for level in levels for other in named | grouped
+             if other is not None and other != level.column and _one_to_one(dataframe, level.column, other)}
+    kept = [level for level in levels if level.column not in named | grouped | twins
             and dataframe.loc[picked, level.column].astype(str).eq(level.label).any()]
     dropped = [level for level in levels if level.column in grouped]
     # "25 - 44 years made up half of immigrants": a share of a level is of the total level, weighed by the
@@ -9978,15 +10806,27 @@ def _decide_total_levels(
             [f"{column} as {label}" for column, label in kinds]) + ", the counts."
     # Every row of such a table is a cell of counts, so a count adds up the column of counts.
     weight = plan.weight or (cube_measure(dataframe) if (whole or counts) and not plan.measure else None)
+    # Once the rows are weighed by their counts, a row no longer counts as one of the things counted.
+    earlier = tuple(item for item in plan.notes
+                    if not (weight and not plan.weight and item.startswith("Each row counts as one of the")))
     return replace(
         plan,
         filters=(*plan.filters, *(ValueFilter(level.column, (level.label,)) for level in kept),
                  *(ValueFilter(column, (label,)) for column, label in kinds)),
         excluded=(*plan.excluded, *(ValueFilter(level.column, (level.label,)) for level in dropped)),
-        notes=(*plan.notes, note.strip()),
+        notes=(*earlier, note.strip()),
         whole=whole,
         weight=weight,
     ), (decision,)
+
+
+def _one_to_one(dataframe: pd.DataFrame, column: object, other: object) -> bool:
+    """Whether two columns name the same groups, each value of one with one value of the other: SEX ("1",
+    "2", "ALL") and Sex Label ("Females", "Males", "All persons")."""
+    if other not in dataframe.columns:
+        return False
+    pairs = dataframe[[column, other]].astype(str).drop_duplicates()
+    return len(pairs) > 1 and pairs[column].is_unique and pairs[other].is_unique
 
 
 # Words of a measure or its unit that say it is no count, so its rows do not add up: a rate, an average.
@@ -10404,6 +11244,10 @@ def rephrase_hint(
         if (part := _part_reason(question, dataframe, whole)):
             return part
         dataframe, roles = whole.frame, replace(whole.roles, focus=None)
+    if whole is None and (reshaped := _parts_table(question, dataframe, roles)) is not None:
+        # The question named a part kept in a column: why the table built from the parts refuses it.
+        dataframe = reshaped[0]
+        roles = detect_roles(dataframe)
     reason = _plan_question(question, dataframe, roles, rows_not_analyzed)[1]
     if reason:
         return reason

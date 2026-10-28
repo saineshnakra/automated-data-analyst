@@ -278,6 +278,17 @@ each word is claimed, in this order, by:
    band 35-49) are refused, as no row says which side its people are on. A
    bound after a verb ("was under 40", "were over 65") is on a numeric age
    column too, below or above the number whatever the fraction of a year.
+   Deaths, cases and admissions under an age ("COVID-19 Deaths under 18")
+   are of people that age, never rows with fewer than 18 deaths, and two
+   bands in months under a year ("0-05 Months", "06-11 Months") are both
+   age 0. "died of COVID-19" names a column called "COVID-19 Deaths", and
+   "what share of COVID-19 Deaths were 65 or older" adds up those deaths
+   over all of them, and "share of total deaths that were COVID-19 deaths"
+   is the total of COVID-19 Deaths over the total of Total deaths, since
+   one never exceeds the other on a row. A span such as "between January
+   2020 and late June 2023" is no filter when every row covers that period
+   (a start and an end date column, each one date); any other span is
+   refused.
    Numbers with no age word ("rose from 12 to 20") are not ages. "From 2019"
    right after the rows' own noun is that year
    ("sets from 2019" in `sets.csv` are 2019's sets); "from 2019 onwards"
