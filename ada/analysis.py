@@ -512,6 +512,10 @@ def _dropped_columns_note(columns: list[str]) -> str:
     return f"{len(columns)} empty {noun} dropped: {listed}."
 
 
+# Numbers joined by dots with no group of four digits: a code, not a date.
+_DOTTED_CODE = r"\d{1,3}(?:\.\d{1,3}){2,}"
+
+
 def _speculative_dates(values: pd.Series) -> pd.Series:
     """Parse values as dates, suppressing pandas' "could not infer format" warning.
 
@@ -1193,6 +1197,13 @@ def _year_columns(
         column
         for column in frame.columns
         if is_year_name(column)
+        and _whole_years(frame[column], DETECTED_YEARS)
+        and frame[column].nunique() >= 2
+    ] or [
+        # A date-named column of whole years (StatCan's REF_DATE) holds the years when none is named for them.
+        column
+        for column in frame.columns
+        if set(normalized_name(column).split()) & {"date", "period"}
         and _whole_years(frame[column], DETECTED_YEARS)
         and frame[column].nunique() >= 2
     ]
@@ -1915,7 +1926,7 @@ def clean_dataframe(
         leading_zero = _flags(distinct.values.astype("string").str.match(r"^0\d")).any()
         # Whole numbers under a key name ("Order No") are keys; decimals under one
         # are measurements whatever the name says.
-        keys = is_identifier_name(column) and not _holds_decimals(distinct)
+        keys = is_identifier_name(column, cleaned.columns) and not _holds_decimals(distinct)
         readings = None if leading_zero else _readings_with_units(distinct, probe)
         if readings is not None:
             numbers, units, markers = readings
@@ -1983,7 +1994,12 @@ def clean_dataframe(
             # year-named column is turned into dates, after this loop.
             # A sample is checked first because most text columns are not dates.
             sample = distinct.head(date_sample_size)
-            if len(sample) and _speculative_dates(sample).notna().mean() >= unnamed_date_ratio:
+            # "1.1.1" or "16.10.2" (a StatCan COORDINATE, a section number) are codes: dotted numbers with
+            # no year of four digits, under a name that says nothing of dates.
+            dotted = sample.astype("string").str.fullmatch(_DOTTED_CODE).fillna(False)
+            if len(sample) and not bool(dotted.all()) and (
+                _speculative_dates(sample).notna().mean() >= unnamed_date_ratio
+            ):
                 parsed_dates, ordering = _read_dates(distinct)
                 if parsed_dates.notna().sum() / non_null_before >= unnamed_date_ratio:
                     if ordering:
@@ -2059,7 +2075,7 @@ def clean_dataframe(
             notes.append(range_note)
         if restored is not None:
             distinct, changed = distinct.relabel(restored), True
-        if not is_identifier_name(column):
+        if not is_identifier_name(column, cleaned.columns):
             for merge in (_merge_label_variants, partial(_respelt_labels, frame=cleaned)):
                 mapping, merge_note = merge(distinct, column)
                 if mapping:

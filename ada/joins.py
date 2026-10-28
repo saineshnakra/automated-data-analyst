@@ -34,7 +34,7 @@ from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_
 from .decisions import Decision, checked_choices, decide
 from .file_io import SUPPORTED_SUFFIXES
 from .folder import KEYED, FolderScan, Link, load_answers, scan
-from .formatting import counted, list_names, normalized_name
+from .formatting import counted, group_label, list_names, normalized_name
 from .schema import finer_part_name, is_month_name, is_year_name
 from .sources import Source
 
@@ -264,9 +264,12 @@ def ask_folder(
         answer = analysis.ask(question, decisions=folder_choices(given, item.name, choices))
         if not isinstance(answer, Refusal):
             fitted.append((item.name, answer))
-    if fitted:
-        return _one_answer(root, fitted, "file", question)
     policy = folder_choices(given, None, choices).get("join_links", "sure")
+    if fitted:
+        answer = _one_answer(root, fitted, "file", question)
+        if isinstance(answer, Refusal):
+            return answer
+        return _with_names(root, answer, _name(fitted[0][0]), given, policy)
     found = scan(root, answers=given)
     joined: list[JoinedTable] = []
     for wide in (False, True):
@@ -320,6 +323,70 @@ def _one_answer(root: Path, fitted: list, kind: str, question: str, decision: De
     decisions = (decision, *answer.decisions) if decision is not None else answer.decisions
     return replace(answer, answer=f"{answer.answer} {note}", scope=scope, source=source, decisions=decisions,
                    question=question)
+
+
+# The last word of a column that says what a code stands for: "name", "country_name", "title".
+NAME_WORDS = frozenset({"name", "title"})
+
+
+def _names_codes(column: str, values: pd.Series) -> bool:
+    """Whether ``column`` names each row: text, its last word a name word, nearly every value distinct."""
+    words = normalized_name(column).split()
+    present = values.dropna()
+    return (bool(words) and words[-1] in NAME_WORDS and not is_numeric_dtype(values) and not present.empty
+            and present.nunique() >= 0.9 * len(present))
+
+
+def _with_names(root: Path, answer, file: str, given: Mapping[str, str], policy: str):
+    """``answer`` with the name beside each code it groups by, from the file those codes link to.
+
+    An answer grouped by iso_country shows "US" and "CN". When the folder's
+    scan links iso_country to the key of another file that has a column of
+    names (countries.csv: code, name), the table gains that column and the
+    answer says what its first codes stand for. Names change no number, so a
+    link that needs confirmation is used too, and the answer says what the
+    link rests on; a link the answers file rejects, or ``join_links`` set to
+    ``none``, is not.
+    """
+    from .api import AdaError, analyze_file  # noqa: PLC0415
+
+    column, table = answer.plan.dimension, answer.table
+    if (policy == "none" or column is None or answer.plan.second_dimension is not None or table is None
+            or column not in table.columns or table.empty):
+        return answer
+    for link in scan(root, answers=given).links:
+        if (link.from_file != file or link.from_columns != (column,) or link.kind not in KEYED
+                or link.confirmed is False or link.coverage < 1):
+            continue
+        try:
+            other = analyze_file(root / link.to_file).frame
+        except AdaError:
+            continue
+        key = link.to_columns[0]
+        names = [name for name in other.columns if name != key and _names_codes(str(name), other[name])]
+        names.sort(key=lambda name: len(normalized_name(str(name)).split()))
+        if key not in other.columns or not names:
+            continue
+        keys = _join_keys(other[key])
+        lookup = pd.Series(other[names[0]].to_numpy(), index=keys.to_numpy())[keys.notna().to_numpy()]
+        if lookup.index.duplicated().any():
+            continue
+        shown = _join_keys(table[column]).map(lookup)
+        if shown.isna().iloc[0] or (shown.astype(str) == table[column].astype(str)).all():
+            continue
+        named = table.copy()
+        named.insert(named.columns.get_loc(column) + 1, f"{names[0]} ({Path(link.to_file).stem})",
+                     shown.to_numpy())
+        pairs = [f"{group_label(column, code)} is {name}"
+                 for code, name in zip(table[column], shown, strict=True) if pd.notna(name)][:3]
+        unsure = link.needs_confirmation and link.confirmed is not True and link.reasons
+        rests = f"; {link.reasons[0]}" if unsure else ""
+        note = (f"In {link.to_file}, {list_names(pairs)} (matched on {link.label('from')} = "
+                f"{link.label('to')}{rests}).")
+        scope = answer.scope if answer.scope is None else replace(answer.scope,
+                                                                  readings=(*answer.scope.readings, note))
+        return replace(answer, answer=f"{answer.answer} {note}", table=named, scope=scope)
+    return answer
 
 
 def _name(found) -> str:

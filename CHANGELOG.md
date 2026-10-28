@@ -34,6 +34,57 @@
 
 ### Reading claims and questions
 
+- Fixed wrong answers on published tables of counts (CSO, StatCan): each
+  row is a cell of counts, so a count adds up the column of counts (`VALUE`)
+  instead of counting rows, a change or total adds it up unless the question
+  says average, and a share of a level is of its total level ("25 - 44
+  years" over "All ages"). It is refused, with the reason, when another
+  column would add up different counts (immigrants with emigrants), a count
+  is missing or below zero, or the unit column gives a rate or two units.
+  Counts beside percentages of them ("Number of live births", "Percentage
+  of live births") are read at the counts.
+- Total levels are found behind words every label shares ("Age of mother,
+  all ages"), cell by cell when some counts are blank or a level starts
+  partway through the years, and with no total word when a label's counts
+  are the others' added up ("Canada" over the provinces).
+- A unit column that gives one scale for every row ("Thousand") scales the
+  value checked, the ends of a change and a base; "from about 74,000 to
+  149,000" says "about" of both ends.
+- Ages: "aged 18 and 19", "a child under 15", "teenage mothers" (under 20),
+  "in their early forties" (40 to 44), and bands written "25 - 44 years",
+  "65 years and over" or "Under 15 years" beside "All ages" and "not stated".
+- "immigrants" names "Immigrants: All origins", the words before a value's
+  colon; "immigration" and "emigrated" name immigrants and emigrants; "broken
+  down trains" names "broken down train"; "caused" beside `cause_en` and
+  `cause_group` names neither.
+- "hit points" names `hp_number` by its initials, the number `hp` writes
+  first, and "challenge rating" names `cr`; `hp_number` beside `hp` is read
+  as numbers, not as a key.
+- "the year to April 2024" on a table of one figure a year is 2024; dotted
+  codes ("1.1.1") are not dates; a date-named column of whole years
+  (`REF_DATE`) is the date; a start date is the date over an end date.
+- Words that only describe a base the data confirm ("the 149,200 immigrants
+  who arrived in Ireland") no longer keep a share from being checked; a base
+  in round thousands is the denominator rounded; "the 15 parks", every value
+  of a column, spans the table.
+- When every column a claim's words fit gives the same verdict, the claim
+  stands or falls on it; "nearly half" reaches down to 4/9, the next simple
+  fraction below; words for births, babies and mothers name a table of
+  births, and unknown words are left out up to three times over.
+- A folder answer grouped by codes names them from the file they link to:
+  airports by `iso_country` say "US is United States" from `countries.csv`.
+- Fixed a wrong reading: "made up half of" lost the space before "50%" when
+  "half" was written as a number, and an age range after it was misread.
+- Fixed a wrong verdict: "rose by about 40 centimetres" failed against a
+  column in metres whose name gives no unit. A claim that agrees once the
+  column is read in another unit of its kind (metres for centimetres), or a
+  bound that would, gets `missing_context`.
+- "the investment" in a share weighs by `invest`, the column it names, before
+  any other column of money (`value`).
+- Fixed a wrong answer: "which national parks had the most visitors in 2016"
+  gave the largest single number. Which rows of a kind are now ranked by the
+  column that names each row (`unit_name`), or refused when none does.
+
 - Fixed a wrong reading: "fell by more than three quarters" was read as
   "more than 3" and "fell by two thirds" as 2, so a fall of 10% agreed with
   the first. A change by several parts of a whole is that fraction.

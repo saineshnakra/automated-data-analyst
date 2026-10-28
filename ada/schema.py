@@ -438,8 +438,10 @@ _UNIT_ANNOTATION = re.compile(r"[(\[]([^)\]]*)[)\]]\s*$")
 DATE_NAME_TOKENS = ("date", "time", "timestamp", "created", "updated")
 
 
-EVENT_DATE_TOKENS = ("order", "transaction", "sale", "invoice", "posting", "created", "booking")
-FOLLOW_UP_DATE_TOKENS = ("ship", "delivery", "delivered", "due", "updated", "modified", "closed")
+EVENT_DATE_TOKENS = ("order", "transaction", "sale", "invoice", "posting", "created", "booking", "start",
+                     "started", "begin", "began", "onset", "opened")
+FOLLOW_UP_DATE_TOKENS = ("ship", "delivery", "delivered", "due", "updated", "modified", "closed", "end",
+                         "ended", "finish", "finished", "stop", "stopped", "resolved")
 
 
 def _date_preference(name: str) -> int:
@@ -451,15 +453,23 @@ def _date_preference(name: str) -> int:
     return 1
 
 
-def is_identifier_name(name: str) -> bool:
+def is_identifier_name(name: str, columns=()) -> bool:
     """Whether the name marks a key column: its last word is in IDENTIFIER_NAME_WORDS.
 
     The reader and the cleaner both use this, so they agree on which columns
     (such as "Order No") stay text. "No" alone counts only with a mark ("No.",
-    "No #"): a bare "NO" is as likely nitric oxide or a yes/no answer.
+    "No #"): a bare "NO" is as likely nitric oxide or a yes/no answer. Among
+    ``columns``, "hp_number" beside "hp" is the number of hp, not a key.
     """
     words = _head_words(name)
-    return bool(words) and words[-1] in IDENTIFIER_NAME_WORDS and not _bare_no(name, words)
+    if not words or words[-1] not in IDENTIFIER_NAME_WORDS or _bare_no(name, words):
+        return False
+    return not (words[-1] in NUMBER_KEY_WORDS and len(words) > 1 and " ".join(words[:-1]) in {
+        " ".join(_head_words(str(column))) for column in columns if str(column) != str(name)})
+
+
+# Key words that may instead mean "the number of" the column named before them: hp_number beside hp.
+NUMBER_KEY_WORDS = frozenset({"number", "num", "no"})
 
 
 def _bare_no(name: str, words: list[str]) -> bool:
@@ -479,14 +489,16 @@ def is_design_name(name: str) -> bool:
     return bool(words) and words[-1] in DESIGN_TOKENS
 
 
-def is_entity_name(name: str) -> bool:
+def is_entity_name(name: str, columns=()) -> bool:
     """Whether the name labels the unit a row belongs to, such as "Subject", "Station" or "Patient ID".
 
     A bare "NO" is not one (see ``is_identifier_name``): it is as likely a
-    reading of nitric oxide.
+    reading of nitric oxide, and nor is "hp_number" beside "hp" among ``columns``.
     """
     words = _head_words(name)
-    return bool(words) and words[-1] in ENTITY_NAME_WORDS and not _bare_no(name, words)
+    if not words or words[-1] not in ENTITY_NAME_WORDS or _bare_no(name, words):
+        return False
+    return words[-1] not in IDENTIFIER_NAME_WORDS or is_identifier_name(name, columns)
 
 
 def is_year_name(name: str, values: pd.Series | None = None) -> bool:

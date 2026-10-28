@@ -356,10 +356,35 @@ checked with each date counted once; when the two verdicts differ, the
 claim is `ambiguous_intent` and names both readings.
 
 A word for dying ("died", "killed") names a table whose name holds
-"deaths". A country or US state that no column of the table could hold (no
+"deaths", and a word for being born ("born", "babies", and "women" or
+"mothers" for those giving birth) a table whose name holds "births". A word
+of the name of four letters or more may start a longer word of the claim:
+"railways" in `dutch-rail-disruptions`. Such words are also left out when
+they keep a claim from being read at all. Words that name nothing are left
+out up to three times over, since leaving out one ("born") may show that
+another ("babies") names nothing either. A country or US state that no column of the table could hold (no
 column has three country names or ten state codes) is read as the place the
 whole table covers: "Births in Ireland rose by 20%" on a table of births
 with no column of places. The assumptions say so.
+
+A claim that names its base ("the 149,200 immigrants who arrived in Ireland")
+has the base checked against the share's denominator; a base in round
+thousands ("the 61,000 species records") stands for the denominator rounded.
+When the base agrees, words left out of the clause that follows it
+("arrived") only describe the base, so the share is verified or fails as it
+is. A count that is every value of a column ("the 15 parks", "America's 15
+most visited national parks" where ParkName holds 15 values) spans the whole
+table: it is no number of the claim's own, and it is left out with the
+preposition before it.
+
+When a claim's words fit several columns, or a value is held by several
+("broken down train" in `cause_en` and `statistical_cause_en`), each is
+tried; when they all give the same verdict the claim stands or falls on it,
+and the assumptions name every column and its number. A verb from the stem
+of several columns' names ("caused" beside `cause_en` and `cause_group`)
+says how, not which column. A count of things on a day counts those that
+started on it when the table has a start and an end date, unless the claim
+says ended.
 
 In a folder, a file read without some of the claim's words comes after the
 files and joins that read all of them.
@@ -392,7 +417,14 @@ disagrees gives way to the one column the unit points to ("4.2 feet" to
 
 When the column's name gives no unit, ADA does not assume one. A claim that
 agrees only if the column were recorded in thousands or millions gets
-`missing_context`, with the question "What unit is co2 recorded in?". A claim
+`missing_context`, with the question "What unit is co2 recorded in?". So does
+a claim in a unit that agrees once the column is read in another unit of the
+same kind ("about 40 centimetres" of 0.403, which agrees in metres), and a
+bound that would hold in such a unit ("more than 30 centimetres"). A unit
+column that gives one scale for every row (a CSO table's `UNIT` of
+"Thousand") does say: VALUE 149.2 is 149,200, in the value checked, in the
+ends of a change and in a base, and the assumption says so. In "from about
+74,000 to 149,000", "about" is said of both ends. A claim
 whose scale word is part of the unit ("37,528 million tonnes" about a column
 recorded in million tonnes) agrees, and the assumption says how it was read.
 

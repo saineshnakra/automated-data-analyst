@@ -79,6 +79,17 @@ rows in some count, and to no more than half as much again (groups no level
 names, such as other races, add to the total alone). Two or more columns must
 qualify; one total row alone is `aggregate_rows`' to find.
 
+The words every label of a column shares are set aside first, so "Age of
+mother, all ages" reads as "all ages". When some counts are blank (a total
+withheld where its parts are given), the total and its parts are compared
+cell by cell, matched on the other columns, over the cells that give them; a
+code beside the column (a DGUID for GEO) names the same level and marks no
+cell. A label with no word for a total is the total when its counts are the
+others' added up, within 2%, in nine cells of ten: "Canada, place of
+residence of mother" over the provinces. Counts beside percentages of them
+("Number of live births", "Percentage of live births") are compared within
+the counts.
+
 A column of geographic levels qualifies alone: each row is at one level (a
 salmon table gives each month's losses by area, again by county, and again
 for the whole country), every label is a level (area, county, region,
@@ -95,6 +106,20 @@ million. A level that no row the question picks holds is left alone:
 "total losses in Vestland" keeps Vestland's county rows rather than looking
 for Vestland at the country level. With `total_levels=all_rows`, every row
 counts, as in the file.
+
+Each row of such a table is a cell of counts, so a count adds up the table's
+one column of counts (`VALUE` in a CSO or StatCan table) rather than counting
+rows, and a change or a total adds it up too unless the question says
+average. A share of a level is of that column's total level: "people aged 25
+to 44 made up half of immigrants in 2024" is the VALUE of 25 - 44 years over
+the VALUE of All ages, with the other columns at what the question picks. A
+column whose values say what kind of figure a row gives ("Number of live
+births", "Percentage of live births") is read at the counts. No share is
+given when two level columns are picked ("aged 15 to 19 in Nunavut": either
+could be the part), and the answer is a refusal with the reason when
+another column still holds several values in the rows (immigrants,
+emigrants and net migration would be added up), when a count is missing or
+below zero, or when the unit column gives a rate or more than one unit.
 
 ## Choosing an option
 

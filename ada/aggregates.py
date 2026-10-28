@@ -100,6 +100,44 @@ def _label_key(label: str) -> str:
     return " ".join(text.split())
 
 
+def distinct_parts(labels: list[str]) -> dict[str, str]:
+    """Each label without the words every label starts or ends with, after a comma: "Age of mother, all ages"
+    is "all ages", "Alberta, place of residence of mother" is "Alberta"."""
+    parts = {label: label for label in labels}
+    if len(labels) < 2:
+        return parts
+    heads = {label.split(",", 1)[0] for label in labels if "," in label}
+    tails = {label.rsplit(",", 1)[1] for label in labels if "," in label}
+    if len(heads) == 1 and all("," in label for label in labels):
+        parts = {label: label.split(",", 1)[1].strip() for label in labels}
+    elif len(tails) == 1 and all("," in label for label in labels):
+        parts = {label: label.rsplit(",", 1)[0].strip() for label in labels}
+    return parts
+
+
+#: How near the rows of a label with no total word must come to the rows of the others, as a fraction.
+NAMELESS_TOLERANCE = 0.02
+
+
+def _sum_of_others(frame: pd.DataFrame, column: object, labels: list[str]) -> str | None:
+    """The label whose counts are the other labels' added up, cell by cell, though no word says it is a total:
+    "Canada" over the provinces. Only the label with the largest counts is tried, on columns of counts."""
+    if len(frame) > MAX_ALIGNED_ROWS:
+        return None
+    texts = frame[column].astype(str)
+    for other in frame.columns:
+        values = frame[other]
+        if other == column or is_bool_dtype(values) or not is_numeric_dtype(values) or values.nunique() <= 20:
+            continue
+        numbers = to_numbers(values)
+        if (numbers < 0).any():
+            continue
+        largest = numbers.groupby(texts).sum().idxmax()
+        if _covers_where_given(frame, column, largest, other, numbers, tolerance=NAMELESS_TOLERANCE):
+            return str(largest)
+    return None
+
+
 def _is_place_column(column: object) -> bool:
     return bool(set(normalized_name(str(column)).split()) & PLACE_WORDS)
 
@@ -166,7 +204,11 @@ class TotalLevel:
 
 def _covers(frame: pd.DataFrame, column: object, label: str) -> bool:
     """Whether the rows of ``label`` add up to at least the rows of the other levels of ``column`` in some
-    numeric column, and to no more than half as much again."""
+    numeric column, and to no more than half as much again.
+
+    When some counts are blank (a total withheld where its parts are given),
+    only the cells whose total and every part are given are compared.
+    """
     rows = frame[column].astype(str).eq(label) & frame[column].notna()
     for other in frame.columns:
         if other == column or is_bool_dtype(frame[other]) or not is_numeric_dtype(frame[other]):
@@ -175,7 +217,70 @@ def _covers(frame: pd.DataFrame, column: object, label: str) -> bool:
         total, parts = float(values[rows].sum()), float(values[~rows & frame[column].notna()].sum())
         if parts > 0 and parts * (1 - SUM_TOLERANCE) <= total <= parts * (1 + LEVEL_EXCESS):
             return True
+        if values.isna().any() and _covers_where_given(frame, column, label, other, values):
+            return True
     return False
+
+
+#: Most rows a table may have for the cell-by-cell comparison of a total with its parts.
+MAX_ALIGNED_ROWS = 200_000
+
+
+def _covers_where_given(frame: pd.DataFrame, column: object, label: str, other: object, values: pd.Series,
+                        tolerance: float | None = None) -> bool:
+    """``_covers`` over the cells whose total and every part are given, matched on the other columns.
+
+    When no cell gives every part (a territory split in two partway through
+    the years), each cell's total is compared with the parts it gives. With
+    ``tolerance`` the total must come within that fraction of its parts
+    either way, in nine cells of ten.
+    """
+    if len(frame) > MAX_ALIGNED_ROWS:
+        return False
+    # A code beside the column (C02076V03371 for Age Group, a DGUID for GEO) names the same level, so it
+    # marks no cell.
+    keys = [key for key in frame.columns if key not in (column, other)
+            and not (is_numeric_dtype(frame[key]) and frame[key].nunique() > len(frame) // 2)
+            and not (frame[key].nunique() > 1
+                     and frame.dropna(subset=[key]).groupby(key)[column].nunique().max() == 1)]
+    if not keys:
+        return False
+    cells = frame[keys].astype(str).agg("\x1f".join, axis=1)
+    level = frame[column].astype(str)
+    table = pd.DataFrame({"cell": cells, "level": level, "value": values}).dropna(subset=["value"])
+    if table.duplicated(["cell", "level"]).any():
+        return False
+    wide = table.pivot(index="cell", columns="level", values="value")
+    if label not in wide.columns or wide.shape[1] < 2:
+        return False
+    given = wide.loc[wide[label].notna()]
+    others = given.drop(columns=[label])
+    if tolerance is not None or not others.notna().all(axis=1).any():
+        # A cell of zeros (no births under 15 in a territory) says nothing either way.
+        usable = (others.notna().sum(axis=1) >= 2) & (others.sum(axis=1) > 0)
+        totals, parts = given.loc[usable, label], others.loc[usable].sum(axis=1)
+        if len(totals) < 3:
+            return False
+        low, high = (1 - tolerance, 1 + tolerance) if tolerance is not None else (1 - SUM_TOLERANCE,
+                                                                                  1 + LEVEL_EXCESS)
+        within = (totals / parts).between(low, high)
+        if bool(within.mean() >= 0.9):
+            return True
+        # Counts beside percentages of them ("Number of live births", "Percentage of live births"): the
+        # counts may add up where the percentages do not.
+        cell_keys = frame.loc[table.index, keys].set_axis(table["cell"]).groupby(level=0).first()
+        for key in keys:
+            if not 2 <= frame[key].nunique() <= 5:
+                continue
+            groups = cell_keys.loc[within.index, key].astype(str)
+            for _, members in within.groupby(groups):
+                if len(members) >= 3 and bool(members.mean() >= 0.9):
+                    return True
+        return False
+    complete = given.loc[others.notna().all(axis=1)]
+    total = float(complete[label].sum())
+    parts = float(complete.drop(columns=[label]).to_numpy().sum())
+    return parts > 0 and parts * (1 - SUM_TOLERANCE) <= total <= parts * (1 + LEVEL_EXCESS)
 
 
 #: Levels a column of geographic levels may name: the whole, and the parts it is split into.
@@ -239,9 +344,13 @@ def total_levels(frame: pd.DataFrame) -> tuple[TotalLevel, ...]:
             continue
         if not MIN_LEVELS <= len(labels) <= MAX_LEVELS:
             continue
-        totals = [label for label in labels if TOTAL_LEVEL.fullmatch(_label_key(label))]
+        # "Age of mother, all ages": the words every label shares say nothing of the level.
+        keys = distinct_parts(labels)
+        totals = [label for label in labels if TOTAL_LEVEL.fullmatch(_label_key(keys[label]))]
         if len(totals) == 1 and _covers(frame, column, totals[0]):
             found.append(TotalLevel(str(column), totals[0]))
+        elif not totals and (whole := _sum_of_others(frame, column, labels)):
+            found.append(TotalLevel(str(column), whole))
     levels = (*(found if len(found) >= 2 else ()), *wholes)
     if len(_LEVELS) >= 8:
         _LEVELS.clear()
