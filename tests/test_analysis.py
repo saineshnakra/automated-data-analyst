@@ -684,6 +684,28 @@ class MissingMarkerTests(unittest.TestCase):
         self.assertEqual(int(cleaned["OD600"].isna().sum()), 3)
         self.assertTrue(any('"NA"' in note and "OD600" in note for note in report.notes), report.notes)
 
+    def test_a_dash_among_yes_and_no_is_missing(self):
+        # Seattle's Terry stops give Frisk Flag as Y, N or "-".
+        frame = pd.DataFrame({"Frisk Flag": ["Y", "N", "-", "N", "Y", "N"], "Precinct": list("ABCABC")})
+        cleaned, report = clean_dataframe(frame)
+        self.assertEqual(int(cleaned["Frisk Flag"].isna().sum()), 1)
+        self.assertTrue(any("'-'" in note and "yes and no" in note for note in report.notes), report.notes)
+        # Among other labels a dash stays a label of its own.
+        frame = pd.DataFrame({"Grade": ["A", "B", "-", "A"]})
+        cleaned, _ = clean_dataframe(frame)
+        self.assertEqual(int(cleaned["Grade"].isna().sum()), 0)
+
+    def test_months_written_as_numbers_are_read_as_dates(self):
+        periods = [2006.09, 2006.1, 2006.11, 2006.12, 2007.01]
+        frame = pd.DataFrame({"Period": periods, "Data_value": [1.0] * 5})
+        cleaned, report = clean_dataframe(frame)
+        self.assertEqual(cleaned["Period"].dt.strftime("%Y-%m").tolist(),
+                         ["2006-09", "2006-10", "2006-11", "2006-12", "2007-01"])
+        self.assertTrue(any("2006.10 for October 2006" in note for note in report.notes), report.notes)
+        halves = pd.DataFrame({"Period": [2006.5, 2007.5, 2008.25], "v": [1.0, 2.0, 3.0]})
+        cleaned, _ = clean_dataframe(halves)
+        self.assertEqual(cleaned["Period"].dtype.kind, "f")
+
     def test_na_among_dates_leaves_a_column_of_dates(self):
         starts = ["2021-01-01", "NA", "2012-04-01", "NA", "2020-12-01"]
         cleaned, report = clean_dataframe(pd.DataFrame({"nibrs_start_date": starts, "n": [1, 2, 3, 4, 5]}))
@@ -966,6 +988,27 @@ class ClockTimeTests(unittest.TestCase):
         expected = pd.to_datetime(["2024-03-01 23:00", "2024-03-01 23:30", "2024-03-02 00:15"])
         self.assertEqual(cleaned["Date"].tolist(), expected.tolist())
         self.assertTrue(any("combined into one column, Date" in note for note in report.notes))
+
+    def test_year_and_month_still_make_the_dates_beside_a_time_of_day(self):
+        # Road deaths: Year, Month and Time, the time of the crash with no date.
+        frame = pd.DataFrame({
+            "Year": [2022, 2022, 2023, 2023],
+            "Month": [3, 4, 3, 4],
+            "Time": ["03:00", "14:30", None, "22:15"],
+            "Age": [30, 41, 25, 60],
+        })
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["Year-Month"].dt.strftime("%Y-%m").tolist(),
+                         ["2022-03", "2022-04", "2023-03", "2023-04"])
+        self.assertTrue(cleaned["Time"].dropna().map(is_undated).all())
+        self.assertEqual(detect_roles(cleaned).date, "Year-Month")
+
+        # One year is not enough to read the column as years, time of day or not.
+        cleaned, _ = clean_dataframe(frame.assign(Year=2022))
+        self.assertNotIn("Year-Month", cleaned.columns)
+        self.assertEqual(cleaned["Year"].tolist(), [2022] * 4)
 
 
 class ElapsedTimeTests(unittest.TestCase):

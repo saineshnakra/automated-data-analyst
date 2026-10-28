@@ -1131,6 +1131,15 @@ class MatrixTests(unittest.TestCase):
         self.assertIn("common scale", note)
         self.assertEqual(row_summary_columns(roles, frame), samples)
 
+    def test_columns_numbering_areas_are_not_a_matrix_of_counts(self):
+        # San Francisco's eviction notices give a dozen district and neighbourhood numbers, 1 to 11 or 1 to
+        # 41.
+        rng = np.random.default_rng(33)
+        frame = pd.DataFrame({"Eviction ID": [f"M{index}" for index in range(600)]})
+        for index in range(12):
+            frame[f"Districts {index}"] = rng.integers(1, 12 + 3 * index, 600)
+        self.assertEqual(detect_roles(frame).table_shape, "flat")
+
     def test_codes_beside_structured_sample_names_are_left_out_of_the_matrix(self):
         rng = np.random.default_rng(32)
         samples = [f"{index}A_{100 + index}_1_{2000 + index}" for index in range(20)]

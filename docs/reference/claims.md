@@ -222,8 +222,17 @@ counted in each year. A count is made the answer's way for every year: the
 distinct values, or the counts a frequency column holds, rather than the rows. So is "Chorleywood had the best education score of any
 town in England, at 9.4". A claim that ranks its group against all the others
 ("the highest of any town", "more than in any other month", "on record") in
-any other words is not verified on its value alone: unless the answer itself
-ranks the groups, it gets `missing_context`.
+any other words is not verified on its value alone. When the reading keeps
+one group apart from what the closing words name ("Sherrod Brown raised
+about $96.5 million, the most of any Senate candidate": Cand_Name = BROWN,
+SHERROD beside Cand_Office = S, which "Senate" names), the same number is
+made for every group the closing words keep, and the claim holds only if
+the group named has the highest (or, for "the fewest", the lowest); "raised
+more than any other House candidate, almost $23 million" is read the same
+way. Otherwise, unless the answer itself ranks the groups, it gets
+`missing_context`. A failure from such a rank, or from a record, stands
+even when the claim's words were read through a column ADA guessed, since
+the guess gave the claim's own number.
 
 A claim that says neither "average" nor "total" ("Oxford got 984 mm of rain in
 2012", twelve monthly rows) that disagrees with the way its column combines
@@ -292,9 +301,16 @@ against the year before ("rose to 61"), neither is shown and the claim gives
 `missing_context`. "fell to a record low of 0.72 in 2023" is such a level, and
 the year must also give the lowest value of the years up to it (a record high,
 the highest). A record with no word of height takes it from the verb: "rose to
-a record 11.3 million" is a record high. "rose over 30%" is the size of the rise, not a level. The
+a record 11.3 million" is a record high. "the fewest of any year", alone or
+"since records began", is a record low set against every year, before and
+after; with a year after "since" it is left as written. "rose over 30%" is the size of the rise, not a level. The
 plural before the verb names what changed: "Fox rescues nearly doubled" is the
-number of rescues when no column is called rescues. A fraction before a verb needs no "of": "nearly half went on to
+number of rescues when no column is called rescues. So does the file's noun
+for its rows at the head of the claim, before "in", a participle or a
+relative word: "Terry stops in Seattle fell", "Notices citing non-payment
+rose", and for a level "Eviction notices in San Francisco fell to 778 in
+2020", which counts the notices rather than averaging a column ADA would
+have guessed. A fraction before a verb needs no "of": "nearly half went on to
 college" is read as "nearly half of" is.
 
 A change in percent of a rate (a column ADA gives changes of in points) is
@@ -373,7 +389,13 @@ lowest value of its column over the rows the claim's other conditions keep.
 
 On a table of one row per date where one date or two repeat, a claim is also
 checked with each date counted once; when the two verdicts differ, the
-claim is `ambiguous_intent` and names both readings.
+claim is `ambiguous_intent` and names both readings. In the same way, a
+claim on a table whose rows each hold a count (a column named only Count,
+Freq or N), with rows repeated exactly (NYC's baby names give every 2014
+row twice), is also checked with each such row counted once: when the
+verdicts differ the claim is `ambiguous_intent`, and when only the number
+moves an assumption gives the other number. Rows that are records may
+repeat as separate records, so a table of them is checked as it is.
 
 A word for dying ("died", "killed") names a table whose name holds
 "deaths", and a word for being born ("born", "babies", and "women" or
@@ -432,6 +454,16 @@ names); short forms that also mean something else, such as `m`, `t` and
 claim's unit; one ADA does not convert is noted, and only the numbers are
 compared.
 
+Money is read in `cents` and `dollars`. A unit column ("UNITS = Dollars" on
+the rows a claim picks) gives the unit of a column of values, so "29 cents a
+year" of a price in dollars is compared in cents; a change each year is
+converted before its two slopes are compared. An amount of money that ADA
+would read as a count of rows is the total of the table's one column of
+amounts ("$2 million in parking fines" adds up OffenceAmount), or the value
+of the one row the claim picks when a unit column gives that row in dollars.
+A column of small whole amounts ($55 on every row) could be codes, and is
+not read as money.
+
 Temperatures are read from `°C`, `°F`, `celsius` and `fahrenheit`, and a
 column named for a temperature with `(C)` or `(F)` after it is in that
 unit; `Heating Degree Days (C)` is no temperature. Degrees Celsius and
@@ -448,8 +480,12 @@ unit ("4000 g" is a mass) or by a verb ("weigh", "lasted", or "measure" with
 a unit). ADA then tries each column recorded in a unit of that kind, and
 each column whose name gives no unit but names the kind: `height`, `length`,
 `width`, `depth`, `distance` and the like for a length, `weight`, `mass`,
-`wgt` and `wt` for a mass. One such column is used, and the assumptions say
-so; several give `ambiguous_intent` with each column's number. A column
+`wgt` and `wt` for a mass. A plural unit word inside a name counts too:
+`hours_mission` and `total_hrs_sum` hold hours as `total_eva_hrs` does. One
+such column is used, and the assumptions say so; several give
+`ambiguous_intent` with each column's number. A column whose name holds
+another unit of the kind (`hours_mission` for a claim in minutes) gives no
+reading, since its unit is not known well enough to convert. A column
 guessed from the start of a longer word ("seedlings" for `Seed`) that
 disagrees gives way to the one column the unit points to ("4.2 feet" to
 `height`), with the guessed word left out (see
@@ -530,7 +566,16 @@ Besides the number, a check records what could make the answer misleading:
   table has more than one date column, the same calculation is made with each
   of the others. If one turns the verdict ("Ward 1 recorded 15 homicides in
   2024" gives 14 by `START_DATE` and 15 by `REPORT_DAT`), the claim gives
-  `ambiguous_intent` with both numbers.
+  `ambiguous_intent` with both numbers. A date of release, extraction or
+  loading (`month_of_release`, `data_as_of`, `data_loaded_at`), a time of day
+  with no date, and a date on fewer than half as many rows as the table's
+  own (`Constraints Date`, on 9% of eviction notices) are not tried. When a
+  change agrees and the values it went between do not, the change is made
+  again by each other date and, when rows are counted and the table's ID
+  repeats, with each ID once: "Terry stops fell by more than half between
+  2018 and 2025, from 8,798 to 3,651" gives 3,670 for 2025 by Occurred Date
+  and 3,651 counting each Terry Stop ID once by Reported Date, so the claim
+  gets `ambiguous_intent` rather than `failed_check`.
 - **A total with no year.** When a claimed total names no year and the total
   over every year fails, the same total is made for each year. If one year's
   total fits ("California recorded about 5,000 traffic deaths" gives 35,315
@@ -549,6 +594,35 @@ Besides the number, a check records what could make the answer misleading:
   the claim gets `missing_context` with the range the zones give; when none
   does, the assumptions say the verdict holds in every zone.
 
+- **Another reading of the words.** A claim false under ADA's reading but
+  true under another the words allow is never failed. Before a
+  `failed_check` stands, the same calculation is made:
+  - for each place a shared name stands for: "Lincoln County has about 520
+    wind turbines" is a county in four states (1,975 together); Colorado's
+    521 agree, so the claim gets `ambiguous_intent` with each state's
+    number. "Washington" is also tried as the District of Columbia when the
+    same column holds it.
+  - at each occasion of a repeated design: children measured at 8, 10, 12
+    and 14 give 24.0 mm over every age and 23.17 at 10, so "The average
+    distance was 23.2 mm" gets `missing_context`, as it names no age.
+  - with another column named for the same thing: Deaths and Age-adjusted
+    Death Rate, Meth/Amphetamine and Amphet. When the other agrees, the
+    claim gets `ambiguous_intent`.
+  - with the narrower meaning of a word: "casualties" for the dead alone.
+  - with the values a word is also said of: "neutered" of Spayed beside
+    Neutered, "no hair" of Bald beside No Hair. Here a verified claim is
+    checked too: "55 of the cats were neutered" holds for Neutered (55) and
+    not for Neutered or Spayed (96), so it gets `ambiguous_intent`.
+  - for each value of a column that holds Net beside the flows it comes
+    from (Arrivals, Departures, Net), when the claim names none: a sum over
+    all three counts nothing, so the claim gets `ambiguous_intent` when one
+    of them agrees, `failed_check` when none does.
+
+  A claim that every reading fails is failed as before. A reading that
+  rests on a column ADA picked because nothing else fit ("the only column
+  the question fits") is no verdict when it disagrees: the claim gets
+  `missing_context`. And the things counted after the number ("23 nursing
+  homes") are never averaged from a column named for them.
 - **Rows left out.** Each reason rows were left out, with its count: rows
   with the measure missing, cells the data checks flag, exact repeats of
   other rows left out of a test.

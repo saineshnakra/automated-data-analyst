@@ -78,6 +78,7 @@ from .formatting import (
     format_period,
     format_values_apart,
     group_label,
+    holds_undated,
     list_names,
     normalized_name,
     sentence_case,
@@ -374,12 +375,13 @@ FILTER_CUES = frozenset({"within", "among", "amongst"})
 # Words before a 0/1 flag column that ask for the rows where it is set:
 # "how many have hypertension". "without" asks for the rows where it is not.
 # Words before a yes/no column that keep its yes rows; a verb of seeing says how it was noticed
-# ("squirrels seen foraging").
+# ("squirrels seen foraging"), and one of citing what a record gives ("notices citing non-payment").
 FLAG_CUES = (
     r"have|has|having|had|with|without|are|were|is|was|"
     r"received|receive|receiving|given|got|took|taking|using|used|seen|spotted|observed|heard|"
     r"featured|featuring|features|feature|showed|shows|showing|show|included|includes|including|"
-    r"depicted|depicting|appeared\s+in|appears\s+in|involved|involving|involves|involve"
+    r"depicted|depicting|appeared\s+in|appears\s+in|involved|involving|involves|involve|"
+    r"cite|cites|cited|citing|mentioned|mentioning|mentions"
 )
 # Words after a flag or a column of marks that keep the rows where it is set: "xylazine was found in".
 FOUND_IN = re.compile(
@@ -706,6 +708,43 @@ def _year_to_month(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -
     return f"{question[:found.start()]}in {year}{question[found.end():]}", note
 
 
+# The years up to the table's latest date: "over the past ten years", "in the last decade".
+RELATIVE_YEARS = re.compile(
+    r"\b(?:over|in|during|across|for)\s+the\s+(?:past|last|previous)\s+(?:(?P<count>\d{1,2}|one|two|three|four|"
+    r"five|six|seven|eight|nine|ten|fifteen|twenty)\s+years|(?P<decade>decade))\b"
+)
+COUNT_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+               "nine": 9, "ten": 10, "fifteen": 15, "twenty": 20}
+
+
+def _relative_years(question: str, dataframe: pd.DataFrame, roles: ColumnRoles) -> tuple[str, str | None]:
+    """The question with "over the past ten years" read as the span from ten years before the table's latest
+    date to that date, when the question asks for a change; a change over it compares its two ends.
+
+    On a table of monthly or finer dates the ends are months ("between september 2016 and september 2026"),
+    on a table of one date a year they are years.
+    """
+    found = RELATIVE_YEARS.search(question)
+    if not found or not roles.date or roles.date not in dataframe.columns:
+        return question, None
+    if not any(re.search(rf"\b{word}\b", question) for word in GROWTH_WORDS):
+        return question, None
+    dates = dataframe[roles.date].dropna()
+    if dates.dtype.kind != "M" or dates.empty or holds_undated(dates):
+        return question, None
+    count = 10 if found.group("decade") else int(COUNT_WORDS.get(found.group("count"), found.group("count")))
+    latest = dates.max()
+    if (dates.dt.month.eq(1) & dates.dt.day.eq(1)).all():
+        first, last = str(latest.year - count), str(latest.year)
+    else:
+        month = calendar.month_name[latest.month].lower()
+        first, last = f"{month} {latest.year - count}", f"{month} {latest.year}"
+    said = found.group(0).strip()
+    note = (f'Read "{said}" as {first.title()} to {last.title()}, the {count} years to the latest date in '
+            f"{roles.date}.")
+    return f"{question[:found.start()]}between {first} and {last}{question[found.end():]}", note
+
+
 def _agent_nouns(question: str, vocabulary: _Vocabulary) -> str:
     """The question with "immigration" and "emigrated" written "immigrants" and "emigrants" when the table's
     values hold that word and not the one asked: the people who do a thing, for the thing done."""
@@ -789,15 +828,24 @@ def _word_variants(normalized_name: str) -> set[str]:
 
 
 
+# Past tenses with no -ed, for the nouns they stand for as values: "migrants who left" are departures.
+IRREGULAR_VERB_NOUNS = {"left": ("departure", "departures")}
+
+
 def _verb_nouns(word: str) -> set[str]:
     """The nouns a past participle may stand for as a value: "adopted" for "adoption", "returned" for
-    "return", "transferred" for "transfer"."""
+    "return", "transferred" for "transfer", "arrived" for "arrivals" and "departed" for "departures"."""
+    if word in IRREGULAR_VERB_NOUNS:
+        return set(IRREGULAR_VERB_NOUNS[word])
     if len(word) <= 5 or not word.endswith("ed"):
         return set()
     stems = {word[:-2], word[:-1]}
     if len(word) > 6 and word[-3] == word[-4]:
         stems.add(word[:-3])
-    return stems | {f"{stem}ion" for stem in stems if stem.endswith("t")}
+    nouns = {f"{stem[:-1]}al" for stem in stems if stem.endswith("ive")}
+    nouns |= {f"{stem}ure" for stem in stems if stem.endswith("rt")}
+    nouns |= {f"{noun}s" for noun in nouns}
+    return stems | {f"{stem}ion" for stem in stems if stem.endswith("t")} | nouns
 
 
 def _core_name(column: str) -> str:
@@ -1672,8 +1720,11 @@ SPLIT_PATTERN = re.compile(
 def _asks_for_several_periods(q: str) -> bool:
     """Whether the question names two or more months or years, which a plan cannot hold.
 
-    The two ends of a range of years ("between 1990 and 2000") are one condition.
+    The two ends of a range of years ("between 1990 and 2000") are one condition, and so are those of a span
+    of months ("between September 2016 and September 2026").
     """
+    q = PERIOD_SPAN.sub(lambda found: " " if not found.group("part") and all(
+        found.group(name) in MONTH_NAMES for name in ("first_month", "last_month")) else found.group(), q)
     for pattern, _ in YEAR_RANGES:
         q = pattern.sub(" ", q)
     months = {MONTH_NAMES[name] for name in MONTH_NAMES if re.search(rf"\b{name}\b", q)}
@@ -2001,6 +2052,11 @@ def _values_named(
         # "four room" names "4 ROOM".
         texts.add(" ".join(DIGIT_WORDS.get(word, word) for word in run))
     exact = [vocabulary.values[index] for text in texts for index in vocabulary.by_text.get(text, ())]
+    if len(run) > 1 and not exact:
+        # "a dozen eggs" names "Eggs, dozen", a label written head first, in full.
+        head_first = " ".join((run[-1], *run[:-1]))
+        exact = [vocabulary.values[index] for index in vocabulary.by_text.get(head_first, ())
+                 if "," in vocabulary.values[index].raw]
     if column is not None:
         exact = [value for value in exact if value.column == column]
     nouns = _verb_nouns(run[0]) if len(run) == 1 and not exact else set()
@@ -2081,16 +2137,31 @@ def _pick_values(
         if not found:
             return None, [], None
         columns = list(dict.fromkeys(value.column for value in found))
-    if not exact and len(run) == 1 and re.sub(r"[^A-Za-z]", "", phrase).islower():
+    if not exact and len(run) == 1 and (re.sub(r"[^A-Za-z]", "", phrase).islower() or run[0] in DEMONYMS):
         # "shortlisted writers" is no part of "The Crime Writers' Association": one word in lower case names a
         # capitalised name of three or more words only when another of its words follows ("the southwest
-        # border" for Southwest Land Border).
+        # border" for Southwest Land Border). So does an adjective of nationality: "Australian roads" are
+        # the country's, not the Australian Capital Territory's.
         after = re.search(rf"(?<![A-Za-z]){re.escape(phrase)}(?![A-Za-z])((?:\W+\w+){{0,3}})", question,
                           re.IGNORECASE)
         following = {_norm(word) for word in re.findall(r"\w+", after.group(1))} if after else set()
         found = [value for value in found
                  if len(value.words) < 3 or not _capitalised_in(value.raw, run)
                  or (set(value.words) - set(run) - DETERMINERS) & following or _colon_head(value.raw) == run]
+        if not found:
+            return None, [], None
+        columns = list(dict.fromkeys(value.column for value in found))
+    place = run[1:] if run[0] == "in" else run
+    located = [value for value in found if place and any(
+        value.words[index - 1] == "in" and value.words[index:index + len(place)] == place
+        for index in range(2, len(value.words) - len(place) + 1)
+    )]
+    said = r"\W+".join(re.escape(word) for word in place)
+    where = bool(place) and bool(re.search(rf"\bin\s+(?:the\s+)?{said}(?!\w)", question, re.IGNORECASE))
+    if not exact and located and where:
+        # "eggs in New Zealand" says where, and "Overseas accommodation prepaid in New Zealand" is a thing
+        # there, not the place.
+        found = [value for value in found if value not in located]
         if not found:
             return None, [], None
         columns = list(dict.fromkeys(value.column for value in found))
@@ -2138,6 +2209,13 @@ def _pick_values(
         # "births" in "Number of live births" and "Percentage of live births": the counts, which the rest add
         # up to; a share is worked out from them.
         return counts, [counts], None
+    if where and all(any(
+        value.words[index - 1] == "for" and value.words[index:index + len(place)] == place
+        for index in range(1, len(value.words) - len(place) + 1)
+    ) for value in found):
+        # "in New Zealand" where Group holds "Food Price Index Level 4 Sections for New Zealand" and others:
+        # the series for the place, all of them.
+        return found[0], found, None
     shown = _leaders([value.raw for value in found])
     return None, [], f'"{phrase}" matches several {columns[0]} values: {shown}. Name one in full.'
 
@@ -2520,6 +2598,19 @@ def _claim_values(
                     # which of the columns holding it is meant.
                     found = [value for value in found if value.column == beside[0]]
                 chosen, values, problem = _pick_values(words, found, exact, reading.question, dataframe)
+                held = list(dict.fromkeys(value.column for value in found))
+                placed = words[0] == "in" or bool(re.search(r"\bin\s+(?:the\s+)?$",
+                                                             reading.original[:window[0][0]]))
+                if problem and placed and not exact and len(held) == 1 and dataframe is not None and (
+                    len(found) > 1 and len({value.raw for value in found}) == dataframe[held[0]].nunique()
+                ):
+                    # "in New Zealand" where every Group value is "... for New Zealand": a place every value
+                    # of a column holds, and that picks none of them, is where the whole table is.
+                    said = _raw_words(reading.question, list(words))
+                    reading.notes.append(f'Read "{said}" as every row: each {held[0]} value holds it.')
+                    reading.claim(window[0][0], window[-1][1])
+                    index += size
+                    break
                 if not problem and chosen is None:
                     # Words found only inside free text pick nothing and stay unread.
                     continue
@@ -2613,10 +2704,15 @@ SEX_WORDS = {
     "men": "male", "man": "male", "males": "male", "boys": "male", "boy": "male",
     "women": "female", "woman": "female", "females": "female", "girls": "female", "girl": "female",
 }
+# The plurals among them, which a count counts: "the number of girls".
+SEX_PLURALS = ("men", "males", "boys", "women", "females", "girls")
 SEX_VALUES = {
     "male": frozenset({"male", "males", "m", "man", "men"}),
     "female": frozenset({"female", "females", "f", "woman", "women"}),
 }
+# The share of the answered rows of a column of sexes that other labels may hold: "transgender woman" once
+# in MoMA's artists.
+SEX_OTHERS_SHARE = 0.01
 # Values a column of genders may hold besides the sexes: "Agender", "Non-binary", "Prefer not to say".
 GENDER_VALUES = frozenset({
     "other", "unknown", "intersex", "not stated", "agender", "genderfluid", "gender fluid", "non binary",
@@ -2625,13 +2721,18 @@ GENDER_VALUES = frozenset({
 })
 
 
-def _claim_sexes(reading: _Reading, vocabulary: _Vocabulary, nouns: set[str] = frozenset()) -> None:
+def _claim_sexes(
+    reading: _Reading, vocabulary: _Vocabulary, nouns: set[str] = frozenset(),
+    dataframe: pd.DataFrame | None = None,
+) -> None:
     """Filter on a column of sexes for "men", "women", "boys" or "girls" ("Gender" with Male and Female).
 
     The column must hold both sexes and nothing but sexes, besides values
     such as "Other", "Unknown" or "Agender" (GENDER_VALUES), so "men" never
-    picks a value of any other column. A plural every value shares ("Male
-    Characters") is left out of the comparison.
+    picks a value of any other column. Other labels on under 1% of the rows
+    answered (MoMA's "transgender woman", once among 12,700 artists) are
+    allowed too. A plural every value shares ("Male Characters") is left out
+    of the comparison.
     """
     columns: dict[str, list[_Value]] = defaultdict(list)
     for value in vocabulary.values:
@@ -2641,10 +2742,21 @@ def _claim_sexes(reading: _Reading, vocabulary: _Vocabulary, nouns: set[str] = f
         return " ".join(word for word in value.words if word not in nouns)
 
     allowed = SEX_VALUES["male"] | SEX_VALUES["female"] | GENDER_VALUES
+
+    def sexes_only(column: str, values: list[_Value]) -> bool:
+        # "All" or "Both sexes" beside Male and Females is the total of the two.
+        others = [value for value in values
+                  if spelled(value) not in allowed and not TOTAL_LEVEL.fullmatch(spelled(value))]
+        if not others:
+            return True
+        if dataframe is None or column not in dataframe.columns:
+            return False
+        answered = dataframe[column].dropna().astype(str)
+        return bool(answered.isin({value.raw for value in others}).mean() < SEX_OTHERS_SHARE)
+
     sexed = [
         column for column, values in columns.items()
-        # "All" or "Both sexes" beside Male and Females is the total of the two.
-        if {spelled(value) for value in values if not TOTAL_LEVEL.fullmatch(spelled(value))} <= allowed
+        if sexes_only(column, values)
         and all(any(spelled(value) in SEX_VALUES[side] for value in values) for side in SEX_VALUES)
     ]
     if len(sexed) != 1:
@@ -2682,6 +2794,14 @@ US_TERRITORIES = {
 }
 # The fewest postal codes a column must hold, and nothing else, to be read as a column of states.
 STATE_CODES_MIN = 10
+# The states and territories of Australia and the short names a column of them may hold ("Qld").
+AU_STATES = {
+    "new south wales": "nsw", "victoria": "vic", "queensland": "qld", "south australia": "sa",
+    "western australia": "wa", "tasmania": "tas", "northern territory": "nt",
+    "australian capital territory": "act",
+}
+# The fewest of those short names a column must hold, and nothing else, to be read as a column of them.
+AU_CODES_MIN = 6
 # The abbreviations newspapers use for states, written with a full stop: "Calif." is California.
 PRESS_STATES = {
     "ala": "alabama", "ariz": "arizona", "ark": "arkansas", "calif": "california", "colo": "colorado",
@@ -2863,6 +2983,65 @@ def _claim_us_states(reading: _Reading, vocabulary: _Vocabulary) -> None:
     for name in sorted(places, key=len, reverse=True):
         for match in re.finditer(rf"\b{name}\b", reading.remaining):
             values = [value for value in columns[held[0]] if " ".join(value.words) == places[name]]
+            if not values:
+                continue
+            _add_filter(reading, values, match.start())
+            reading.claim(match.start(), match.end())
+            reading.notes.append(f'Read "{_raw_words(reading.question, name.split())}" as {held[0]} = '
+                                 f"{values[0].raw}.")
+
+
+# The offices a column of election codes writes by their first letter, as the FEC does: H, S and P.
+OFFICE_CODES = {"house": "h", "senate": "s", "president": "p", "presidential": "p"}
+
+
+def _claim_office_codes(reading: _Reading, vocabulary: _Vocabulary) -> None:
+    """Filter a column of office codes on the office named: "House candidates" keeps Cand_Office = H.
+
+    Only a column named for an office whose values are all the codes, two of them or more, is read this way.
+    """
+    codes = set(OFFICE_CODES.values())
+    columns: dict[str, list[_Value]] = defaultdict(list)
+    for value in vocabulary.values:
+        columns[value.column].append(value)
+    held = [
+        column for column, values in columns.items()
+        if "office" in _norm(normalized_name(str(column))).split()
+        and len({" ".join(value.words) for value in values}) >= 2
+        and all(" ".join(value.words) in codes for value in values)
+    ]
+    if len(held) != 1:
+        return
+    for start, end, word in _tokens(reading.remaining):
+        code = OFFICE_CODES.get(word)
+        values = [value for value in columns[held[0]] if " ".join(value.words) == code] if code else []
+        if not values:
+            continue
+        _add_filter(reading, values, start)
+        reading.claim(start, end)
+        reading.notes.append(f'Read "{_raw_words(reading.question, [word])}" as {held[0]} = {values[0].raw}.')
+
+
+def _claim_au_states(reading: _Reading, vocabulary: _Vocabulary) -> None:
+    """Filter on an Australian state's short name for its full name: "Queensland" keeps State = Qld.
+
+    Only a column whose values are all the short names, at least AU_CODES_MIN
+    of them, is read this way.
+    """
+    codes = set(AU_STATES.values())
+    columns: dict[str, list[_Value]] = defaultdict(list)
+    for value in vocabulary.values:
+        columns[value.column].append(value)
+    held = [
+        column for column, values in columns.items()
+        if len({" ".join(value.words) for value in values}) >= AU_CODES_MIN
+        and all(" ".join(value.words) in codes for value in values)
+    ]
+    if len(held) != 1:
+        return
+    for name in sorted(AU_STATES, key=len, reverse=True):
+        for match in re.finditer(rf"\b{name}\b", reading.remaining):
+            values = [value for value in columns[held[0]] if " ".join(value.words) == AU_STATES[name]]
             if not values:
                 continue
             _add_filter(reading, values, match.start())
@@ -3158,13 +3337,17 @@ def _total_named(phrase: tuple[str, ...], candidates: list[str]) -> str | None:
     """The one candidate column whose name adds to the phrase only words for all of something ("all ages"),
     when the others add words that split it (IncidencesAge5To9)."""
     said = set(phrase) | {word.removesuffix("s") for word in phrase}
-    totals = []
+    totals, others = [], []
     for column in candidates:
         extra = [word for word in _norm(normalized_name(str(column))).split()
                  if word not in said and word.removesuffix("s") not in said]
         if extra and set(extra) <= WHOLE_NAME_WORDS and set(extra) & TOTAL_NAME_WORDS:
             totals.append(column)
-    return totals[0] if len(totals) == 1 and len(candidates) >= 3 else None
+        elif set(extra) <= {"other"}:
+            others.append(column)
+    # Total_Receipt beside Other_Receipts: the rest of something is a part of the total, as each split is.
+    rest = len(candidates) == 2 and len(others) == 1
+    return totals[0] if len(totals) == 1 and (len(candidates) >= 3 or rest) else None
 
 
 def initials_of(column: str, size: int) -> str | None:
@@ -4411,7 +4594,11 @@ def _claim_entity(
     for start, end, word in _tokens(reading.remaining):
         if word in QUERY_GRAMMAR:
             continue
-        counted = re.search(rf"{COUNT_PATTERN}\s+(?:of\s+)?(?:the\s+)?$", reading.original[:start])
+        # "had the most tickets" counts tickets as "how many tickets" does.
+        counted = re.search(
+            rf"(?:{COUNT_PATTERN}|\b(?:the\s+)?(?:most|fewest|least))\s+(?:of\s+)?(?:the\s+)?$",
+            reading.original[:start],
+        )
         plural = word.endswith("s") and word.isalpha() and len(word) > 3
         described = plural and re.match(
             r"\s+(?:with|where|whose|having|that\s+have|which\s+have)\s+\S", reading.original[end:]
@@ -4441,11 +4628,28 @@ def _claim_entity(
             if len(tallies) == 1 and (dataframe[tallies[0]].dropna() >= 0).all():
                 # "how many deaths" adds up total_deaths, a column of them on each row.
                 reading.weight = tallies[0]
+            elif (not settled and not tallies and word.endswith("s") and word not in ROW_NOUNS
+                  and total_levels(dataframe) and (cube := cube_measure(dataframe))):
+                # "migrants" in Stats NZ's table of migration estimates by sex and age, with totals: what the
+                # table counts, added up from estimate.
+                reading.weight = cube
+            elif (not settled and not tallies and counted and plural and word not in ROW_NOUNS
+                  and (column := counts_column(dataframe, roles)) and column not in reading.spans):
+                # "the number of babies" in NYC's baby names, a row per year, sex, ethnicity and name: Count
+                # holds how many babies each row stands for.
+                reading.weight = column
             elif tallies:
                 # "the number of votes" in a table of candidatevotes and totalvotes: the rows are not the
                 # votes, and which column adds them up is not said.
                 reading.flag(f'"{word}" may be added up from {_and_listed(tallies)}, not counted as rows; '
                              f'name the column, as in "total {tallies[0]}".')
+    sexes = "|".join(SEX_PLURALS)
+    sexed = re.search(rf"{COUNT_PATTERN}\s+(?:of\s+)?(?:all\s+)?(?:the\s+)?(?P<noun>{sexes})\b",
+                      reading.original)
+    column = counts_column(dataframe, roles) if reading.entity is None and sexed else None
+    if column and column not in reading.spans:
+        # "the number of girls" read as Gender = FEMALE counts girls, and Count says how many each row holds.
+        reading.entity, reading.weight = sexed.group("noun"), column
 
 
 def _kind_value(word: str, dataframe: pd.DataFrame) -> bool:
@@ -4550,6 +4754,28 @@ def _count_column(noun: str, dataframe: pd.DataFrame) -> str | None:
         if words and " ".join(words) in forms and whole:
             found.append(column)
     return found[0] if len(found) == 1 else None
+
+
+def counts_column(dataframe: pd.DataFrame, roles: ColumnRoles) -> str | None:
+    """The one column named only as a count ("Count", "Freq", "N"), of whole numbers never negative, when no
+    ID names each row once: each row holds how many of the things it stands for."""
+    ids = dataframe[roles.identifier] if roles.identifier in dataframe.columns else None
+    if ids is not None and ids.notna().all() and ids.is_unique:
+        return None
+    named = [column for column in dataframe.columns if _norm(str(column)) in COUNT_ONLY_NAMES]
+    if len(named) != 1:
+        return None
+    series = dataframe[named[0]]
+    if not is_numeric_dtype(series) or is_bool_dtype(series):
+        return None
+    values = series.dropna().to_numpy(dtype=float)
+    if not len(values) or (values < 0).any() or (values % 1 != 0).any():
+        return None
+    return str(named[0])
+
+
+# Names of a column that say only that it counts, not what: "cases" names the things too.
+COUNT_ONLY_NAMES = frozenset({"freq", "frequency", "count", "counts", "n"})
 
 
 def _tallies_named(noun: str, dataframe: pd.DataFrame) -> list[str]:
@@ -4725,6 +4951,73 @@ def _holds_years(column: pd.Series) -> bool:
     return not values.empty and bool(((values % 1 == 0) & values.between(1000, 2100)).all())
 
 
+# A time of day as the question's words are read, with "." and ":" as spaces: "10 am", "6 30 p m", "22 00". A
+# bare "10" is a number, not a time; "22 00" is a time only where the question writes "22:00".
+CLOCK_TIME = r"(?:\d{1,2}(?:[: ][0-5]\d)?\s*[ap]\s?\.?m\b\.?|\d{1,2}[: ][0-5]\d(?![\d:]|\s\d))"
+CLOCK_SPAN = re.compile(
+    rf"\b(?:(?P<word>before|after|until|till|from|since)\s+(?P<at>{CLOCK_TIME})|"
+    rf"between\s+(?P<low>{CLOCK_TIME})\s+and\s+(?P<high>{CLOCK_TIME}))",
+    re.IGNORECASE,
+)
+CLOCK_OPERATORS: dict[str, Operator] = {
+    "before": "<", "until": "<", "till": "<", "after": ">", "from": ">=", "since": ">=",
+}
+# How a condition on the time of day reads: "IssueDate time of day before 10:00".
+CLOCK_OPERATOR_WORDS = {"=": "at", "<": "before", "<=": "up to", ">": "after", ">=": "from"}
+
+
+def _clock_minutes(text: str) -> float | None:
+    """Minutes after midnight for a time of day: "10 am" is 600, "12:30 am" 30 and "6 pm" 1,080."""
+    found = re.match(r"(\d{1,2})(?:[: ](\d{2}))?\s*(?:([ap])\s?\.?m)?", text.strip(), re.IGNORECASE)
+    if found is None:
+        return None
+    hour, minute, half = int(found.group(1)), int(found.group(2) or 0), (found.group(3) or "").lower()
+    if half:
+        if not 1 <= hour <= 12:
+            return None
+        hour = hour % 12 + (12 if half == "p" else 0)
+    if hour > 23 or minute > 59:
+        return None
+    return float(hour * 60 + minute)
+
+
+def _clock_column(dataframe: pd.DataFrame, roles: ColumnRoles) -> str | None:
+    """The column a time of day bounds: the date column when it holds times, else the one column of times
+    with no date (a crash's Time beside its Year and Month)."""
+    date = roles.date
+    if date and date in dataframe.columns and is_datetime64_any_dtype(dataframe[date]) and (
+        _has_times(dataframe[date])
+    ):
+        return date
+    clocks = [column for column in dataframe.columns if holds_undated(dataframe[column])]
+    return clocks[0] if len(clocks) == 1 else None
+
+
+def _claim_clock(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
+    """Read "before 10 am" or "between 8 am and 10 am" as a condition on the time of day, whatever the day."""
+    for match in list(CLOCK_SPAN.finditer(reading.remaining)):
+        said = [time for time in (match.group("at"), match.group("low"), match.group("high")) if time]
+        if not all(re.search(r"[ap]\s?\.?m", time) or re.search(
+            rf"(?<!\d){time.replace(' ', ':')}(?!\d)", reading.question
+        ) for time in said):
+            continue
+        column = _clock_column(dataframe, roles)
+        if match.group("word"):
+            bounds = [(CLOCK_OPERATORS[match.group("word").lower()], _clock_minutes(match.group("at")))]
+        else:
+            bounds = [(">=", _clock_minutes(match.group("low"))), ("<", _clock_minutes(match.group("high")))]
+        if column is None:
+            reading.flag("This table has no times of day for a time such as "
+                         f'"{match.group().strip()}" to pick rows by.')
+        elif all(minutes is not None for _, minutes in bounds):
+            reading.conditions.extend(Condition(column, operator, minutes, part="clock")
+                                      for operator, minutes in bounds)
+            reading.scoped.add(column)
+        else:
+            continue
+        reading.claim(*match.span())
+
+
 def _claim_part_of_year(reading: _Reading, roles: ColumnRoles) -> None:
     """Read part of a year ("the first half of 2021") as the days from its first to its last, before "quarter"
     can be read as a grain."""
@@ -4808,6 +5101,46 @@ def _own_period_spans(text: str, period: tuple[str, pd.Timestamp, str, pd.Timest
         if fits_start and fits_end:
             found.append(match)
     return found
+
+
+# A month a span of time starts from, with no end named: "since january 2022".
+MONTH_SINCE = re.compile(
+    r"\b(?:since|from)\s+(?P<month>[a-z]+)\s+(?P<year>(?:19|20)\d{2})\b(?!\s+(?:and|to|through|until)\b)"
+)
+
+
+def _claim_month_spans(reading: _Reading, roles: ColumnRoles) -> None:
+    """Read a span from one month to another ("between September 2016 and September 2026") as the days from
+    the first month's first to the last month's last; a change over it compares the two months. A month a
+    span starts from ("since January 2022") keeps the days from its first on; a change compares it with the
+    latest month."""
+    for match in list(MONTH_SINCE.finditer(reading.remaining)):
+        if match.group("month") not in MONTH_NAMES:
+            continue
+        first = pd.Timestamp(int(match.group("year")), MONTH_NAMES[match.group("month")], 1)
+        if not roles.date:
+            reading.flag("This table has no date column to pick months from.")
+        else:
+            reading.conditions.append(Condition(roles.date, ">=", float((first - EPOCH).days), part="date"))
+            reading.scoped.add(roles.date)
+        reading.claim(*match.span())
+    for match in list(PERIOD_SPAN.finditer(reading.remaining)):
+        months = [match.group("first_month"), match.group("last_month")]
+        if match.group("part") or not all(month in MONTH_NAMES for month in months):
+            continue
+        first = pd.Timestamp(int(match.group("first")), MONTH_NAMES[months[0]], 1)
+        last = pd.Timestamp(int(match.group("last")), MONTH_NAMES[months[1]], 1) + pd.offsets.MonthEnd(0)
+        if last <= first:
+            continue
+        if not roles.date:
+            reading.flag("This table has no date column to pick months from.")
+        else:
+            reading.conditions.extend([
+                Condition(roles.date, ">=", float((first - EPOCH).days), part="date"),
+                Condition(roles.date, "<=", float((last - EPOCH).days), part="date"),
+            ])
+            reading.scoped.add(roles.date)
+        reading.claim(*match.span())
 
 
 def _claim_own_period(reading: _Reading, dataframe: pd.DataFrame) -> None:
@@ -4908,10 +5241,11 @@ FILLER_PATTERN = re.compile(
     # "COVID-19 accounted for a quarter of all deaths": the share says what the verb does.
     r"accounted\s+for|(?:was|were)\s+involved\s+in|made\s+up|on\s+the\s+map)\b"
 )
-# A passive verb after what is counted says how the rows came about, not which: "medals were won".
+# A passive verb after what is counted says how the rows came about, not which: "medals were won", "tickets
+# are written".
 PASSIVE_PATTERN = re.compile(
     r"\b(?:were|was|are|is|been|be|got|get)\s+(?:won|awarded|given|earned|handed\s+out|recorded|scored|"
-    r"taken|reported|logged|filed|placed|played)\b"
+    r"taken|reported|logged|filed|placed|played|written|issued)\b"
 )
 
 
@@ -5214,10 +5548,10 @@ def _read_question(
     q = _agent_nouns(_norm(_inverted_names(_question_text(question), dataframe.columns)), vocabulary)
     q = _population_words(_died_of(q, dataframe.columns), dataframe.columns)
     q, year_to = _year_to_month(q, dataframe, roles)
+    q, relative = _relative_years(q, dataframe, roles)
     index = _name_index(dataframe.columns)
     reading = _Reading(question=question, original=q, text=q, remaining=q, names=index.names, index=index)
-    if year_to:
-        reading.notes.append(year_to)
+    reading.notes.extend(note for note in (year_to, relative) if note)
     reading.spans = _mention_spans(q, index, worded=True, protected=_typed_values(reading, vocabulary, index))
     # "which month had the highest wind" names a period, not a column called month.
     period = re.search(r"\b(?:which|what)\s+(day|week|month|quarter|year)\b", q) if roles.date else None
@@ -5242,7 +5576,9 @@ def _read_question(
     _claim_numbered_columns(reading, roles)
     _claim_adjustment(reading)
     _claim_own_period(reading, dataframe)
+    _claim_month_spans(reading, roles)
     _claim_time_part(reading, dataframe, roles)
+    _claim_clock(reading, dataframe, roles)
     _claim_month_of_year(reading, dataframe, roles)
     _claim_days(reading, roles)
     _claim_ages(reading, dataframe, roles)
@@ -5258,10 +5594,12 @@ def _read_question(
     _claim_part(reading, dataframe)
     _claim_values(reading, vocabulary, dataframe, exact_only=True, row_noun=roles.row_noun, nouns=nouns)
     _claim_recording_words(reading, vocabulary)
-    _claim_sexes(reading, vocabulary, nouns)
+    _claim_sexes(reading, vocabulary, nouns, dataframe)
     _claim_outcomes(reading, vocabulary)
     _claim_demonyms(reading, vocabulary)
     _claim_us_states(reading, vocabulary)
+    _claim_au_states(reading, vocabulary)
+    _claim_office_codes(reading, vocabulary)
     _claim_analysis_words(reading, dataframe, roles)
     _claim_rate(reading)
     partial = _claim_partial_names(reading, dataframe, roles)
@@ -5877,7 +6215,11 @@ def _plan_from_reading(reading: _Reading, dataframe: pd.DataFrame, roles: Column
             )
         return _count_plan(reading, dataframe, roles, ungrouped)
 
-    if wants_growth and roles.date:
+    # A table dated only by a column of whole years ("Year of Birth") has a change between the years it names.
+    yearly = None if roles.date else _year_column(dataframe, roles)
+    yearly = yearly if yearly and ((year and not month) or any(
+        item.part == "year" and item.column == yearly for item in conditions)) else None
+    if wants_growth and (roles.date or yearly):
         wants_ranked_growth = superlative or bool(re.search(r"\b(which|fastest|slowest)\b", intent_text))
         rank_dimension = dimension or (roles.dimension if wants_ranked_growth else None)
         ascending = bool(re.search(ASCENDING_PATTERN, intent_text))
@@ -5985,8 +6327,10 @@ def _plan_from_reading(reading: _Reading, dataframe: pd.DataFrame, roles: Column
     if base["measure"] and (aggregation or measure):
         return QueryPlan(intent="aggregate", aggregation=aggregation or default_aggregation, **ungrouped)
 
-    if conditions or filters_including_dimension:
-        # A question that only states conditions ("pH below 5", "West") counts the rows meeting them.
+    timed = ungrouped.get("year") is not None or ungrouped.get("month") is not None
+    if conditions or filters_including_dimension or timed:
+        # A question that only states conditions ("pH below 5", "West") or a time ("in March 2015") counts the
+        # rows meeting them.
         return QueryPlan(intent="count", aggregation="count", **{**ungrouped, "measure": None})
     return None
 
@@ -6810,7 +7154,10 @@ def _condition_mask(series: pd.Series, condition: Condition) -> pd.Series:
             "ends": text.str.endswith(wanted),
         }[condition.operator]
         return found.fillna(False).astype(bool)
-    if is_datetime64_any_dtype(series) and condition.part == "date":
+    if is_datetime64_any_dtype(series) and condition.part == "clock":
+        # "before 10 am": minutes after midnight, whatever the day.
+        values = (series.dt.hour * 60 + series.dt.minute + series.dt.second / 60).astype(float)
+    elif is_datetime64_any_dtype(series) and condition.part == "date":
         # "on April 27, 2011": the day, as days since 1970, whatever the time of day.
         days = series.dt.tz_localize(None) if series.dt.tz is not None else series
         values = (days.dt.normalize() - EPOCH).dt.days.astype(float)
@@ -6844,6 +7191,9 @@ def _condition_value(condition: Condition) -> str:
     """A condition's value as written: a day for a condition on the day ("2021-06-30"), else the number."""
     if condition.part == "date":
         return (EPOCH + pd.Timedelta(days=float(condition.value or 0))).date().isoformat()
+    if condition.part == "clock":
+        hours, minutes = divmod(int(condition.value or 0), 60)
+        return f"{hours:02d}:{minutes:02d}"
     return _number_text(condition.value)
 
 
@@ -6854,6 +7204,9 @@ def _describe_condition(condition: Condition) -> str:
         return f'{condition.column} {TEXT_OPERATORS[condition.operator]} "{condition.text}"'
     if condition.part == "year":
         return f"{condition.column} {YEAR_OPERATOR_WORDS[condition.operator]} {_number_text(condition.value)}"
+    if condition.part == "clock":
+        return (f"{condition.column} time of day {CLOCK_OPERATOR_WORDS[condition.operator]} "
+                f"{_condition_value(condition)}")
     return f"{condition.column} {OPERATOR_WORDS[condition.operator]} {_condition_value(condition)}"
 
 
@@ -10432,7 +10785,14 @@ def _execute_growth(
     scope: str,
     applied: list[str],
 ) -> QueryAnswer:
-    assert roles.date is not None
+    if roles.date is None:
+        # The years of a column such as "Year of Birth" date the rows, each as 1 January of its year.
+        column = _year_column(working, roles)
+        assert column is not None
+        years = to_numbers(working[column]).dropna()
+        dates = pd.to_datetime(years.astype(int).astype(str), format="%Y")
+        working = working.loc[years.index].assign(**{column: dates})
+        roles = replace(roles, date=column)
     measure = plan.measure
     scoped_roles = _scoped_roles(roles, measure, plan.dimension)
     if measure and plan.aggregation in ("sum", "mean") and (
@@ -10443,8 +10803,12 @@ def _execute_growth(
     # Two years named ("from 2023 to 2024") are compared as whole years, for each group too; so is the one
     # year a change runs from ("halved since 1950"), against the latest.
     named = _named_years(plan)
-    since = _since_year(plan) if not named else None
-    grain = plan.grain or ("Y" if named or since else None)
+    # Two months named ("from September 2016 to September 2026") are compared month to month.
+    months = _named_months(plan) if not named else None
+    since = _since_year(plan) if not (named or months) else None
+    # A month named alone ("since January 2022") is compared with the latest month.
+    since_month = _since_month(plan) if not (named or months or since) else None
+    grain = plan.grain or ("Y" if named or since else "M" if months or since_month else None)
     series = build_trend(working, scoped_roles, frequency=grain)
     trend = series.frame
     if len(trend) < 2:
@@ -10454,17 +10818,32 @@ def _execute_growth(
             answer="Not enough history in that scope to measure change.",
             calculation=f"growth needs at least 2 periods{scope}",
         )
+    if since_month is not None and trend.iloc[0]["Period"] == since_month:
+        months = (since_month, trend.iloc[-1]["Period"])
     previous_period, current_period = trend.iloc[-2]["Period"], trend.iloc[-1]["Period"]
     if since and trend.iloc[0]["Period"].year == since:
         named = (since, int(trend.iloc[-1]["Period"].year))
     spanned = bool(named) and (trend.iloc[0]["Period"].year, trend.iloc[-1]["Period"].year) == named
+    ends = (str(named[0]), str(named[1])) if named else None
+    if months and (trend.iloc[0]["Period"], trend.iloc[-1]["Period"]) == months:
+        spanned, ends = True, (f"{months[0]:%b %Y}", f"{months[1]:%b %Y}")
+    elif months:
+        # A change between two months the rows do not both reach has no two ends to compare.
+        return QueryAnswer(
+            question="",
+            plan=plan,
+            answer=(f"The rows in scope run from {trend.iloc[0]['Period']:%b %Y} to "
+                    f"{trend.iloc[-1]['Period']:%b %Y}, so they do not hold both {months[0]:%b %Y} and "
+                    f"{months[1]:%b %Y} to compare."),
+            calculation=f"change from {months[0]:%b %Y} to {months[1]:%b %Y} unavailable{scope}",
+        )
     if spanned:
         previous_period = trend.iloc[0]["Period"]
 
     if plan.dimension:
         grain = grain or preferred_frequency(working[roles.date])
-        when = f"from {named[0]} to {named[1]}" if spanned else "in the latest period"
-        versus = f"{named[1]} vs {named[0]}" if spanned else "latest vs previous period"
+        when = f"from {ends[0]} to {ends[1]}" if spanned and ends else "in the latest period"
+        versus = f"{ends[1]} vs {ends[0]}" if spanned and ends else "latest vs previous period"
         frame = working[[roles.date, plan.dimension] + ([measure] if measure else [])].dropna(
             subset=[roles.date, plan.dimension]
         )
@@ -10556,10 +10935,10 @@ def _execute_growth(
 
     previous, current = float(trend.iloc[-2]["Value"]), float(trend.iloc[-1]["Value"])
     prior, latest = "previous period", "latest"
-    if spanned:
+    if spanned and ends:
         # "between 1982 and 1988" compares the two years named, not the last two in the range.
         previous, current = float(trend.iloc[0]["Value"]), float(trend.iloc[-1]["Value"])
-        prior, latest = str(named[0]), str(named[1])
+        prior, latest = ends
     unit = _unit(measure, scoped_roles)
     column = working[measure].dropna() if measure else None
     size = format_change(previous, current, measure, unit, column)
@@ -10608,6 +10987,29 @@ def _named_years(plan: QueryPlan) -> tuple[int, int] | None:
     if low is None or high is None or not float(low).is_integer() or not float(high).is_integer():
         return None
     return int(low), int(high)
+
+
+def _named_months(plan: QueryPlan) -> tuple[pd.Timestamp, pd.Timestamp] | None:
+    """The first and last month of a span the question names, by their first days: (Sep 2016, Sep 2026) for
+    "between September 2016 and September 2026"."""
+    days = [item for item in plan.conditions if item.part == "date"]
+    low = next((item.value for item in days if item.operator == ">="), None)
+    high = next((item.value for item in days if item.operator == "<="), None)
+    if len(days) != 2 or low is None or high is None:
+        return None
+    first, last = EPOCH + pd.Timedelta(days=float(low)), EPOCH + pd.Timedelta(days=float(high))
+    if first.day != 1 or last != last + pd.offsets.MonthEnd(0) or last <= first:
+        return None
+    return first, last.replace(day=1)
+
+
+def _since_month(plan: QueryPlan) -> pd.Timestamp | None:
+    """The month a span starts from when it names no end: January 2022 for "since January 2022"."""
+    days = [item for item in plan.conditions if item.part == "date"]
+    if len(days) != 1 or days[0].operator != ">=":
+        return None
+    first = EPOCH + pd.Timedelta(days=float(days[0].value))
+    return first if first.day == 1 else None
 
 
 def _since_year(plan: QueryPlan) -> int | None:
@@ -10916,6 +11318,12 @@ def _codes_a_label(dataframe: pd.DataFrame, column: object) -> bool:
     return False
 
 
+# Name words of a column that gives the uncertainty of another, never a count of its own: standard_error.
+UNCERTAINTY_WORDS = frozenset({
+    "error", "errors", "se", "stderr", "moe", "margin", "uncertainty", "lcl", "ucl", "confidence",
+})
+
+
 def cube_measure(dataframe: pd.DataFrame) -> str | None:
     """The one column of counts in a cross-tabulated table: VALUE in a table of migration in thousands.
 
@@ -10924,7 +11332,8 @@ def cube_measure(dataframe: pd.DataFrame) -> str | None:
     """
     numbers = [column for column in dataframe.columns
                if is_numeric_dtype(dataframe[column]) and not is_bool_dtype(dataframe[column])
-               and not _holds_years(dataframe[column]) and not _codes_a_label(dataframe, column)]
+               and not _holds_years(dataframe[column]) and not _codes_a_label(dataframe, column)
+               and not set(_norm(normalized_name(str(column))).split()) & UNCERTAINTY_WORDS]
     if len(numbers) != 1 or set(_norm(normalized_name(str(numbers[0]))).split()) & RATE_UNIT_WORDS:
         return None
     for column in dataframe.columns:

@@ -48,15 +48,17 @@ from typing import Any, Literal
 from .aggregates import total_levels
 from .decisions import Decision, checked_choices
 from .file_io import SUPPORTED_SUFFIXES as READABLE
-from .formatting import counted, list_names, normalized_name
+from .formatting import counted, holds_undated, list_names, normalized_name
 from .nlq import (
     AGE_PHRASE,
     DAY_PATTERN,
     LEADING_UNDER,
+    MONTH_WORD,
     OUTCOME_WORDS,
     Condition,
     QueryAnswer,
     ValueFilter,
+    counts_column,
     cube_measure,
     days_in_words,
 )
@@ -121,8 +123,10 @@ ADJECTIVE_NOUNS = {
 VERB_NOUNS = {
     "paid": "payment", "pays": "payment", "spent": "spending", "spends": "spending", "earned": "earnings",
     "earns": "earnings", "sold": "sales", "charged": "charge", "cost": "cost", "costs": "cost",
-    "lost": "losses", "loses": "losses",
+    "lost": "losses", "loses": "losses", "raised": "receipt", "raises": "receipt",
 }
+# Nouns for what an amount of money is: "the average price of a dozen eggs" is the value, in dollars.
+PRICE_WORDS = frozenset({"price", "prices"})
 # Nouns for the people a table is about: a claim's subject, not a column ("Customers paid ...").
 PEOPLE_NOUNS = frozenset({
     "customers", "clients", "users", "players", "passengers", "students", "members", "employees",
@@ -174,6 +178,14 @@ LOSING_VERBS = ("lose", "loses", "lost", "shed", "sheds")
 TIME_SLOPE_UNITS = {"year": 1.0, "decade": 0.1, "month": 12.0, "week": 52.1775, "day": 365.25}
 # Units of a slope's column besides those in UNITS: "per year of age", "per unit of dose".
 PER_UNIT_WORDS = frozenset({"year", "month", "week", "unit", "point", "level"})
+# "Most of Ballarat's parking tickets", "the majority of deaths": more than half of them.
+MOST_SHARE = re.compile(r"^\s*(?:(?:the\s+)?majority\s+of|most(?:\s+of)?)\s+(?=[A-Za-z])", re.IGNORECASE)
+# A time of day, which picks rows and is never the number claimed: "before 10 am", "between 22:00 and 23:00".
+CLOCK_PHRASE = re.compile(r"\b\d{1,2}(?::[0-5]\d)?\s*[ap]\.?\s?m\b\.?|\b\d{1,2}:[0-5]\d(?::[0-5]\d)?\b",
+                          re.IGNORECASE)
+# A span back from now, which picks rows and is never the number claimed: "over the past ten years".
+RELATIVE_SPAN = re.compile(r"\b(?:past|last|previous)\s+[\w-]+\s+(?:years|months|weeks|days|decades)\b",
+                           re.IGNORECASE)
 # Fractions in words: "about a quarter of", "more than half of", "two thirds of".
 FRACTION_PATTERN = re.compile(
     r"\b(?:(?P<qualifier>about|roughly|around|approximately|nearly|almost|just\s+over|just\s+under|over|"
@@ -284,7 +296,7 @@ NOUN_IN_FRACTION = re.compile(
     re.IGNORECASE,
 )
 # Plurals not made by adding s.
-IRREGULAR_PLURALS = {"person": "people", "child": "children", "man": "men", "woman": "women"}
+PLURAL_OF = {"person": "people", "child": "children", "man": "men", "woman": "women"}
 # Words in a subject that make it a measure rather than a group: "The tax rate was 45% of ...".
 MEASURE_SUBJECTS = frozenset({
     "rate", "average", "mean", "median", "share", "percentage", "proportion", "growth", "increase",
@@ -413,6 +425,8 @@ UNITS = {
     "°c": ("degrees Celsius", 1.0), "ºc": ("degrees Celsius", 1.0), "celsius": ("degrees Celsius", 1.0),
     "°f": ("degrees Fahrenheit", 1.0), "ºf": ("degrees Fahrenheit", 1.0),
     "fahrenheit": ("degrees Fahrenheit", 1.0),
+    # Money in cents and dollars; "pounds" is a weight as often as money, so it is left out.
+    "cent": ("money", 0.01), "cents": ("money", 0.01), "dollar": ("money", 1.0), "dollars": ("money", 1.0),
 }
 # Name words of a column of temperatures, whose bracketed "(C)" or "(F)" is a unit.
 TEMPERATURE_NAMES = frozenset({"temp", "temperature", "temperatures", "tmax", "tmin", "tavg"})
@@ -706,7 +720,9 @@ def _candidates(claim: str, columns: list[str]) -> list[_Candidate]:
         age.span() for age in AGE_PHRASE.finditer(claim)] + [
         span.span() for span in YEAR_SPAN.finditer(claim)] + [
         span.span() for span in YEAR_PAIR.finditer(claim)] + [
-        span.span() for span in NAMING_NUMBER.finditer(claim)]
+        span.span() for span in NAMING_NUMBER.finditer(claim)] + [
+        span.span() for span in CLOCK_PHRASE.finditer(claim)] + [
+        span.span() for span in RELATIVE_SPAN.finditer(claim)]
     for match in NUMBER_PATTERN.finditer(claim):
         start = match.start()
         before = claim[:start].rstrip()
@@ -959,6 +975,9 @@ def _worded_number(claim: str) -> tuple[str, Any] | None:
     else:
         worded = re.search(rf"\b{worded.group(1)}\b", claim)
         assert worded is not None
+    if any(span.start() <= worded.start() < span.end() for span in RELATIVE_SPAN.finditer(claim)):
+        # "over the past ten years" says which rows; its number is not the one claimed.
+        return None
     rewritten = f"{claim[:worded.start()]}{total}{claim[worded.end():]}"
     return rewritten, lambda number: replace(number, text=worded.group(0))
 
@@ -1044,8 +1063,11 @@ def _noun_share(found: re.Match) -> str:
     if not 0 < top < bottom:
         return found.group(0)
     noun = found.group("noun").lower()
-    if noun in IRREGULAR_PLURALS:
-        plural = IRREGULAR_PLURALS[noun]
+    if noun in PLURAL_OF:
+        plural = PLURAL_OF[noun]
+    elif noun in IRREGULAR_PLURALS:
+        # "two men in five": the noun is already a plural.
+        plural = noun
     elif re.search(r"[^aeiou]y$", noun):
         plural = f"{noun[:-1]}ies"
     elif noun.endswith(("s", "x", "ch", "sh")):
@@ -1071,6 +1093,14 @@ def read_claim(
     claim = re.sub(r"(\d)\s+out\s+of\s+(?:10|5|100)\b", r"\1", claim)
     # "xylazine, a veterinary sedative, turned up in": a description between commas says what a thing is.
     claim = APPOSITIVE.sub("", claim)
+    most = MOST_SHARE.match(claim)
+    numbered = [item for item in _candidates(claim, columns)
+                if not (item.year_like or item.filter_like or item.ordinal)]
+    if most and not numbered and not re.match(
+        r"(?:the\s+)?(?:most|least|common)\b", claim[most.end():], re.IGNORECASE
+    ):
+        # With a number of its own ("Most of the 20,071 tickets cost $55"), "most" is not the number claimed.
+        claim = f"More than half of {claim[most.end():]}"
     claim = NOUN_IN_FRACTION.sub(_noun_share, claim)
     every = EVERY_BASE.match(claim)
     if every:
@@ -1406,7 +1436,7 @@ def _outcome_named(words: list[str], column: str) -> bool:
 
 # Name words that say a column counts or totals something; a claim need not repeat them ("250 parts"
 # for num_parts).
-COUNTING_WORDS = frozenset({"num", "number", "no", "n", "count", "total", "amount", "qty"})
+COUNTING_WORDS = frozenset({"num", "number", "no", "n", "count", "total", "amount", "amt", "qty"})
 
 
 def _names_head(question: str, column: str, strict: bool = False) -> bool:
@@ -1605,6 +1635,38 @@ def _recorded_scale(analysis: Any, answer: QueryAnswer | None) -> tuple[float, s
     return None
 
 
+def _row_unit(analysis: Any, answer: QueryAnswer | None) -> tuple[str, str] | None:
+    """The unit a unit column gives every row the answer uses, when it is one of UNITS: UNITS = Dollars for
+    the price of a dozen eggs. Returns (unit, the unit column)."""
+    from .nlq import UNIT_COLUMN_NAMES, _apply_filters  # noqa: PLC0415
+
+    if answer is None or not (answer.plan.measure or answer.plan.weight):
+        return None
+    frame = analysis.frame
+    for column in frame.columns:
+        if normalized_name(str(column)) not in UNIT_COLUMN_NAMES:
+            continue
+        rows, _ = _apply_filters(frame, answer.plan, analysis.roles)
+        units = rows[column].dropna().astype(str).str.strip().str.lower().unique()
+        if len(units) == 1 and units[0] in UNITS:
+            return str(units[0]), str(column)
+    return None
+
+
+def _unit_factor(analysis: Any, answer: QueryAnswer, number: ClaimedNumber, measure: str | None
+                 ) -> tuple[float, str, str] | None:
+    """The factor from the unit the data are recorded in to the claim's, with both units and where the data's
+    comes from: (factor, recorded unit, where)."""
+    claimed = _claim_unit(number)
+    recorded, where = column_unit(measure), "the unit in its name"
+    if claimed and not recorded and (row_unit := _row_unit(analysis, answer)):
+        # "29 cents" of a price whose rows say UNITS = Dollars.
+        recorded, where = row_unit[0], f"the unit {row_unit[1]} gives for these rows"
+    if not (claimed and recorded) or claimed == recorded or UNITS[claimed][0] != UNITS[recorded][0]:
+        return None
+    return UNITS[recorded][1] / UNITS[claimed][1], recorded, where
+
+
 def _row_step(analysis: Any, plan: Any = None) -> str | None:
     """The hour or day each row of the table stands for, when the rows are one date each, that far apart.
 
@@ -1652,7 +1714,15 @@ def _unit_columns(analysis: Any, asked: str, number: ClaimedNumber) -> list[tupl
         unit = column_unit(str(column))
         words = set(normalized_name(str(column)).split())
         named = not unit and bool(QUANTITY_NAMES.get(kind, frozenset()) & words)
-        if (unit and UNITS[unit][0] == kind) or named:
+        # A plural unit word inside the name holds the kind too: hours_mission, total_hrs_sum. A singular one
+        # is often something else: temp_min, day of the month, hour of the day.
+        spelled = {word for word in words if word in UNITS and UNITS[word][0] == kind and word.endswith("s")
+                   and len(word) > 2} if not unit else set()
+        if claimed and spelled and any(UNITS[word][1] != UNITS[claimed][1] for word in spelled):
+            # hours_mission beside a claim in minutes: a column of the kind in another unit, which the claim's
+            # number cannot be compared with as it is, so no one column is read.
+            return []
+        if (unit and UNITS[unit][0] == kind) or named or spelled:
             rewritten = (
                 re.sub(rf"\b{re.escape(verbs[0])}\b", str(column), asked, count=1) if verbs
                 else f"{asked} {column}"
@@ -1784,6 +1854,20 @@ def check_claim(
         message = problem if reason == "missing_context" else f"The data could not be read: {problem}"
         return ClaimCheck(text, "unverified", reason, message, source=source,
                           clarification=problem if reason == "missing_context" else None)
+    check = _checked_claim(analysis, text, question, value, choices)
+    if not (check.verified or check.reason == "failed_check") or not analysis.frame.duplicated().any() or (
+        counts_column(analysis.frame, analysis.roles) is None
+    ):
+        # Rows that are records may repeat as separate records; rows that each hold a count may not.
+        return check
+    once = replace(analysis, frame=analysis.frame.drop_duplicates(ignore_index=True))
+    return _repeated_rows(check, analysis, _checked_claim(once, text, question, value, choices))
+
+
+def _checked_claim(
+    analysis: Any, text: str, question: str | None, value: str | float | None, choices: dict[str, str]
+) -> ClaimCheck:
+    """Check a claim on a table that was read: the body of check_claim."""
     source = analysis.source
     columns = [str(column) for column in analysis.frame.columns]
     if question is not None and value is not None:
@@ -1797,13 +1881,20 @@ def check_claim(
         number = claimed_number(str(written)[item.qualifier_start:], item.match, item.qualifier, None)
         asked = question
     said, ends, direction, every, worst, compared, rate_base = text, (), None, None, None, None, None
+    own_name = started = None
+    if question is None and (wrong := _wrong_weekday(text)):
+        return ClaimCheck(text, "unverified", "failed_check", f"The claim's date and weekday disagree: "
+                          f"{wrong}", source=analysis.source, clarification="Which day is meant?")
     if question is None:
         text = _times_level(days_in_words(text))
         text, every = _every_value(text, analysis.frame)
+        text = _paid_rate(_ranked_lead(text))
         text = _half_within(_records_began(_temperature_words(text, analysis.frame)))
         text, worst = _worst_day(text)
         text, compared = _compared_tail(text)
         text, rate_base = _table_rate_base(text, analysis.frame)
+        text, own_name = _own_name(text, analysis.source, analysis.roles.row_noun)
+        text, started = _start_dates(text, analysis.frame)
     if question is None:
         # "rose by more than 60%, from 29,199 in 1999 to 47,173 in 2017": the change is read without its ends,
         # which are checked after it.
@@ -1823,7 +1914,16 @@ def check_claim(
     assert number is not None and asked is not None
     check = _checked_dates(_checked_table(analysis, text, asked, number, source, choices, question), analysis)
     check = _checked_record_day(_checked_unnamed_year(check, analysis), analysis, said)
+    check = _checked_record_year(check, analysis, _any_year_record(said, every=True))
     check = _checked_clock(check, analysis)
+    check = _checked_namesakes(check, analysis)
+    check = _checked_occasions(check, analysis)
+    recheck = lambda other_question: _checked_dates(  # noqa: E731
+        _checked_table(analysis, text, other_question, number, source, choices, question), analysis)
+    check = _checked_net_sums(check, analysis)
+    check = _checked_kin_columns(check, analysis, recheck)
+    check = _checked_other_meanings(check, recheck)
+    check = _checked_wider_values(check, analysis)
     if question is None and number.percent and (by := BY_YEAR.search(asked)) and (
         check.verified or check.reason == "failed_check"
     ):
@@ -1844,18 +1944,93 @@ def check_claim(
             note = f"Read the change as one in the total, since the values it went between count {counts}."
             check = replace(total, assumptions=(*total.assumptions, note))
     if ends:
-        check = _checked_ends(check, ends, factor)
+        check = _ends_other_readings(check, _checked_ends(check, ends, factor), analysis, ends, factor)
     if direction:
         check = _checked_direction(check, analysis, *direction)
     if every:
         check = replace(check, assumptions=(every, *check.assumptions))
     if worst:
-        check = _checked_worst_day(check, analysis, worst)
+        adjective, period = worst
+        checker = _checked_worst_month if period == "month" else _checked_worst_day
+        check = checker(check, analysis, adjective)
     if compared:
         check = _checked_compared(check, compared)
     if rate_base:
         check = replace(check, assumptions=(rate_base, *check.assumptions))
-    return replace(check, claim=said)
+    if own_name:
+        check = replace(check, assumptions=(own_name, *check.assumptions))
+    if started:
+        check = replace(check, assumptions=(started, *check.assumptions))
+    return replace(_guessed_failure(check), claim=said)
+
+
+def _repeated_rows(check: ClaimCheck, analysis: Any, other: ClaimCheck) -> ClaimCheck:
+    """A claim on a table with rows repeated exactly, checked with each such row counted once too (``other``).
+
+    Only a table whose rows each hold a count (``counts_column``) is checked so: there a repeat is the same
+    count given twice, where a table of records may hold two records alike. NYC's baby names give every 2014
+    row twice: "578 girls named Sophia in 2014" holds once the repeats are dropped and 1,156 is the sum of
+    every row. When the two readings give different verdicts the claim is
+    ambiguous; when only the number moves, the check says so. Repeats outside the rows the claim uses
+    change nothing and are not mentioned.
+    """
+    if other.compared == check.compared and (other.verified, other.reason) == (check.verified, check.reason):
+        return check
+    repeats = int(analysis.frame.duplicated().sum())
+    shown = _counted("rows repeated exactly", repeats)
+    if (other.verified, other.reason) == (check.verified, check.reason):
+        note = (f"The table has {shown}; counting each once gives the same verdict "
+                f"({_plain(other.compared) if other.compared is not None else 'no number'}).")
+        return replace(check, assumptions=(*check.assumptions, note))
+    alternatives = tuple(
+        Alternative(reading, item.question or "", item.compared, item.verified,
+                    item.answer.calculation if item.answer is not None else "")
+        for reading, item in (("every row", check), ("each repeated row once", other))
+    )
+    values = "; ".join(f"{item.reading} gives {_plain(item.value) if item.value is not None else 'no number'}"
+                       for item in alternatives)
+    return ClaimCheck(
+        check.claim, "unverified", "ambiguous_intent",
+        f"The table has {shown}, and the verdict rests on whether they count: {values}.",
+        claimed=check.claimed, question=check.question, alternatives=alternatives, source=check.source,
+        clarification="Are the repeated rows separate records, or one record given twice?",
+    )
+
+
+# The last word of the noun phrase a question starts with, before a preposition, a participle, a relative
+# word or a comma: "stops" in "stops in Seattle fell between 2018 and 2025", "Notices" in "Notices citing
+# non-payment rose".
+LEADING_HEAD = re.compile(
+    r"\s*(?:the\s+)?(?:[A-Za-z]+\s+){0,3}?([A-Za-z]+)(?=\s+(?:in|at|for|across|from|on|within|among|during|"
+    r"since|between|of|with|without|who|that|which|whose|where|[a-z]+ing|[a-z]+ed)\b|\s*[,;]|\s*$)",
+    re.IGNORECASE)
+
+
+# Notes that say a reading rests on a column ADA picked because nothing else fit, not one the claim names.
+GUESSED_NOTES = ("the only column the question fits",)
+
+
+def _guessed_failure(check: ClaimCheck) -> ClaimCheck:
+    """A failed check whose reading rests on a guessed column, made missing_context.
+
+    "Washington has had 223 federal disaster declarations" read through declarationTitle, the only column its
+    words fit, gives 1 row of EASTERN WASHINGTON FIRES: a number that far off says the guess is wrong more
+    often than the claim is. A guess that agrees is kept, as it rarely agrees by chance.
+    """
+    if check.reason != "failed_check":
+        return check
+    if check.claimed is not None and check.compared is not None and check.claimed.holds(check.compared):
+        # The guess gave the claim's number; what failed is a rank or a record beside it.
+        return check
+    guessed = next((note for note in check.assumptions if any(cue in note for cue in GUESSED_NOTES)), None)
+    if guessed is None:
+        return check
+    return replace(
+        check, reason="missing_context",
+        message=f"{guessed} The claim names no column, so a number that disagrees may only show the column "
+                f"is the wrong one: {check.message}",
+        clarification="Which column is the number about?",
+    )
 
 
 # Words for a span of time, which change what a figure adds up to when left out of a claim.
@@ -1906,6 +2081,58 @@ RATE_BASE = re.compile(
 # The words a table may write a base in.
 BASE_WORDS = {"1,000": "thousand", "1000": "thousand", "100,000": "hundred thousand",
               "100000": "hundred thousand", "100": "hundred", "1,000,000": "million"}
+
+
+# Verbs of beginning, and the name words of a date column that says when each row began something.
+START_VERBS = re.compile(r"\b(?:began|begun|begin|begins|started|starts|start|joined|joins)\b", re.IGNORECASE)
+START_NAME_WORDS = frozenset({"start", "begin", "began", "first", "since", "joined"})
+
+
+def _start_dates(text: str, frame: Any) -> tuple[str, str | None]:
+    """The claim with "began reporting to NIBRS" written as the date column for it, nibrs_start_date.
+
+    A verb of beginning followed, within four words, by a word of a date column's name that also says start
+    ("nibrs" of nibrs_start_date) names that column: "in 2021" is then the year it began.
+    """
+    from pandas.api.types import is_datetime64_any_dtype  # noqa: PLC0415
+
+    verb = START_VERBS.search(text)
+    if verb is None:
+        return text, None
+    after = list(re.finditer(r"[A-Za-z]+", text[verb.end():]))[:4]
+    for column in frame.columns:
+        words = set(normalized_name(str(column)).split())
+        if not is_datetime64_any_dtype(frame[column]) or not words & START_NAME_WORDS:
+            continue
+        named = [match for match in after if match.group().lower() in words - START_NAME_WORDS - {"date"}]
+        if not named:
+            continue
+        end = verb.end() + named[-1].end()
+        note = f'Read "{text[verb.start():end]}" as {column}, the date each row began it.'
+        return f"{text[:verb.start()]}{column}{text[end:]}", note
+    return text, None
+
+
+def _own_name(text: str, source: Any, row_noun: str | None) -> tuple[str, str | None]:
+    """The claim without the table's own name before its rows' noun, and the note saying so.
+
+    "There were 5,034 film permits in 2025" in Film_Permits.csv: "film permits" is what every row is, so
+    "film" picks no rows, though Category holds Film.
+    """
+    from .folder import singular  # noqa: PLC0415
+
+    if source is None or not row_noun or not getattr(source, "name", None):
+        return text, None
+    words = re.findall(r"[a-z]+", Path(str(source.name)).stem.lower())
+    if len(words) < 2 or singular(words[-1]) != singular(row_noun.lower()):
+        return text, None
+    joined = r"[\s_-]+".join(words[:-1])
+    found = re.search(rf"\b({joined})\s+(?={words[-1]}\b)", text, re.IGNORECASE)
+    if found is None:
+        return text, None
+    note = (f'Read "{found.group(1)} {words[-1]}" as the table\'s own name ({source.name}), so '
+            f'"{found.group(1)}" picks no rows.')
+    return f"{text[:found.start()]}{text[found.end():]}", note
 
 
 def _table_rate_base(text: str, frame: Any) -> tuple[str, str | None]:
@@ -1991,7 +2218,38 @@ def _records_began(text: str) -> str:
     def since(found: re.Match) -> str:
         return f"since {found.group('year')}" if found.group("year") else ""
 
-    return RECORDS_BEGAN.sub(since, text)
+    return RECORDS_BEGAN.sub(since, _any_year_record(text))
+
+
+# A verb of paying or carrying before a rate: "TIPS paid an average interest rate of 1.1%" and "bonds still
+# carried an average interest rate above 6%" had that rate; a rate is not a payment, which "paid" names before
+# an amount.
+PAID_RATE = re.compile(
+    r"\b(?:still\s+)?(?:paid|pays|pay|offered|offers|yielded|yields|carried|carries|carry)\s+(?=(?:an?\s+|"
+    r"the\s+)?(?:average\s+|mean\s+)?(?:[a-z-]+\s+){0,2}rates?\b)", re.IGNORECASE)
+
+
+def _paid_rate(text: str) -> str:
+    """"paid an average interest rate" or "still carried an average interest rate" as "had an average
+    interest rate"."""
+    return PAID_RATE.sub("had ", text)
+
+
+# "the fewest of any year", alone or "since records began": a record low over every year, as "a record low"
+# is.
+ANY_YEAR_RECORD = re.compile(
+    r"\bthe\s+(?:(?P<low>fewest|lowest|least)|(?P<high>most|highest|largest|greatest))\s+(?:of|in|for)\s+"
+    r"any\s+(?:other\s+)?year(?:\s+since\s+records\s+began(?:\s+in\s+(?:1[89]|20)\d{2})?)?(?=\s*[,.;]|\s*$)",
+    re.IGNORECASE,
+)
+
+
+def _any_year_record(text: str, every: bool = False) -> str:
+    """"fell to 778 in 2020, the fewest of any year since records began in 1997" as "..., a record low"; with
+    ``every``, as "an every-year record low", which the record check sets against every year. A year after
+    "since" ("since 2005") narrows the years, and is left as it is."""
+    record = "an every-year record" if every else "a record"
+    return ANY_YEAR_RECORD.sub(lambda found: f"{record} {'low' if found.group('low') else 'high'}", text)
 
 
 # ", three times the long-run pace": a clause after the number that compares it with another figure.
@@ -2037,14 +2295,109 @@ WORST_DAY = re.compile(
 )
 
 
-def _worst_day(text: str) -> tuple[str, str | None]:
-    """"D was the worst day, with N things" as "There were N things on D", and the word for most or least."""
-    found = WORST_DAY.match(text)
-    if not found or not DAY_PATTERN.search(found.group("when")):
-        return text, None
-    scope = found.group("scope").rstrip()
-    rewritten = f"There were {found.group('number')} {found.group('noun')} on {found.group('when')}{scope}."
-    return rewritten, found.group("adjective").lower()
+# A weekday written with a date: "Thursday 12 March 2015", "12 March 2015, a Thursday".
+_A_DAY = re.sub(r"\(\?P<\w+>", "(?:", DAY_PATTERN.pattern)
+_WEEKDAY = r"monday|tuesday|wednesday|thursday|friday|saturday|sunday"
+WEEKDAY_WITH_DATE = re.compile(
+    rf"\b(?P<before>{_WEEKDAY}),?\s+(?P<date>{_A_DAY})"
+    rf"|(?P<date2>{_A_DAY}),?\s+(?:a|on\s+a)\s+(?P<after>{_WEEKDAY})\b",
+    re.IGNORECASE,
+)
+
+
+def _wrong_weekday(text: str) -> str | None:
+    """Why the weekday a claim gives a date is not the date's own ("12 March 2015 was a Thursday, not a
+    Friday"), or None."""
+    from .nlq import day_named  # noqa: PLC0415
+
+    for found in WEEKDAY_WITH_DATE.finditer(text):
+        written = found.group("before") or found.group("after")
+        date = DAY_PATTERN.search(found.group("date") or found.group("date2"))
+        day = day_named(date) if date else None
+        if day is not None and day.day_name().lower() != written.lower():
+            return f"{day:%-d %B %Y} was a {day.day_name()}, not a {written.capitalize()}."
+    return None
+
+
+# "The busiest day of the year was Thursday 12 March 2015, when 159 tickets were written": the day named last.
+WORST_DAY_LAST = re.compile(
+    r"^\s*the\s+(?P<adjective>worst|busiest|biggest|heaviest|deadliest|quietest|calmest)\s+day"
+    r"(?:\s+of\s+the\s+year|\s+on\s+record|\s+in\s+the\s+records|\s+ever)?(?P<scope>[^,]*?)\s+was\s+"
+    r"(?P<when>[^,]+?),\s*(?:when|with)\s+(?P<number>.+?)\s+(?P<noun>[A-Za-z][A-Za-z-]*)"
+    r"(?:\s+(?:were|was)\s+[a-z]+)?\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+# "March was the busiest month for Ballarat's parking officers in 2015, with 2,259 tickets".
+WORST_MONTH = re.compile(
+    rf"^\s*(?P<when>{MONTH_WORD})\s+was\s+(?:the\s+)?(?P<adjective>worst|busiest|biggest|heaviest|deadliest|"
+    r"quietest|calmest)\s+month(?:\s+of\s+the\s+year)?(?P<scope>[^,]*),\s*with\s+(?P<number>.+?)\s+"
+    r"(?P<noun>[A-Za-z][A-Za-z-]*)\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+WEEKDAY_FIRST = re.compile(r"^\s*(?P<weekday>monday|tuesday|wednesday|thursday|friday|saturday|sunday),?\s+",
+                           re.IGNORECASE)
+
+
+def _worst_day(text: str) -> tuple[str, tuple[str, str] | None]:
+    """"D was the worst day, with N things" as "There were N things on D", with the word for most or least and
+    the period ("day" or "month"). A weekday before the date ("Thursday 12 March 2015") goes when it is the
+    date's own."""
+    from .nlq import day_named  # noqa: PLC0415
+
+    found = WORST_DAY.match(text) or WORST_DAY_LAST.match(text)
+    if found and (day := DAY_PATTERN.search(found.group("when"))):
+        when = found.group("when").strip()
+        weekday = WEEKDAY_FIRST.match(when)
+        named = day_named(day)
+        if weekday and named is not None and named.day_name().lower() == weekday.group("weekday").lower():
+            when = when[weekday.end():]
+        scope = found.group("scope").rstrip()
+        rewritten = f"There were {found.group('number')} {found.group('noun')} on {when}{scope}."
+        return rewritten, (found.group("adjective").lower(), "day")
+    found = WORST_MONTH.match(text)
+    if found:
+        scope = found.group("scope").rstrip()
+        number, noun, when = found.group("number"), found.group("noun"), found.group("when")
+        # "March was the busiest month in 2015": the year goes with the month.
+        if year := re.search(r"\s+in\s+((?:19|20)\d{2})\b", scope):
+            when, scope = f"{when} {year.group(1)}", scope[:year.start()] + scope[year.end():]
+        return f"There were {number} {noun} in {when}{scope}.", (found.group("adjective").lower(), "month")
+    return text, None
+
+
+def _checked_worst_month(check: ClaimCheck, analysis: Any, adjective: str) -> ClaimCheck:
+    """A month the claim calls the worst or busiest, checked to have the most of the claim's rows of any month
+    of its year (the fewest for the quietest)."""
+    import pandas as pd  # noqa: PLC0415
+
+    from .nlq import _apply_filters  # noqa: PLC0415
+
+    if not check.verified or check.answer is None:
+        return check
+    plan, date = check.answer.plan, analysis.roles.date
+    working, _ = _apply_filters(analysis.frame, replace(plan, month=None), analysis.roles) if (
+        date is not None and plan.month is not None) else (None, [])
+    dated = working.loc[working[date].notna()] if working is not None else None
+    if dated is None or (plan.year is None and dated[date].dt.year.nunique() != 1):
+        message = (f"The claim calls a month the {adjective}, and ADA could not count every month of one "
+                   f"year the same way: {check.message}")
+        return replace(check, status="unverified", reason="missing_context",
+                       clarification="Which year is meant?", message=message)
+    by_month = dated.groupby(dated[date].dt.month)
+    counts = by_month[plan.weight].sum() if plan.weight else by_month.size()
+    fewest = adjective in ("quietest", "calmest")
+    best_month = int(counts.idxmin() if fewest else counts.idxmax())
+    best, claimed = float(counts.loc[best_month]), float(counts.get(plan.month, 0))
+    word, year = ("fewest" if fewest else "most"), int(dated[date].dt.year.iloc[0])
+    names = pd.Timestamp(year, best_month, 1).month_name(), pd.Timestamp(year, plan.month, 1).month_name()
+    if claimed == best:
+        note = f"Checked that {names[1]} has the {word} of any month of {year}, {_plain(best)}."
+        return replace(check, assumptions=(*check.assumptions, note))
+    return replace(
+        check, status="unverified", reason="failed_check", clarification=None,
+        message=f"{check.message} But {names[0]} has {_plain(best)}, so {names[1]} is not the {adjective} "
+                f"month of {year}.",
+    )
 
 
 def _checked_worst_day(check: ClaimCheck, analysis: Any, adjective: str) -> ClaimCheck:
@@ -2249,6 +2602,11 @@ def _checked_table(
     if question is None and check.verified and check.answer is not None and SUPERLATIVE.search(text) and (
         AGAINST_ALL.search(text) and not _ranked(check.answer)
     ):
+        # "raised about $96.5 million, the most of any Senate candidate": the same total for every candidate
+        # the closing words keep.
+        ranked = _checked_rank_tail(check, analysis, text)
+        if ranked is not None:
+            return ranked
         # "had the best score of any town, at 9.4" holds only if no other town scores more; the value alone
         # does not say so.
         return replace(
@@ -2498,6 +2856,99 @@ END_WORDS = frozenset({"end", "ended", "finish", "finished", "stop", "stopped", 
 END_CLAIMED = re.compile(r"\b(?:ended|finished|stopped|closed|resolved|were\s+over|was\s+over)\b", re.I)
 
 
+# Name words of a date the figures were published or fetched on.
+PUBLISHED_WORDS = frozenset({
+    "release", "released", "published", "publication", "vintage", "revision", "revised", "extracted",
+    "uploaded", "downloaded", "retrieved", "refreshed", "loaded",
+})
+
+
+# The least share of the rows the date holds that another date column must hold to date the same rows.
+OTHER_DATES_SHARE = 0.5
+
+
+def _other_dates(frame: Any, date: str, claim: str) -> list[str]:
+    """The table's other date columns a claim's year or day may mean, besides ``date``.
+
+    A date the figures were published on (month_of_release) is never one, nor is a time of day with no
+    date (a crash's Time), nor the date the data are as of (data_as_of), nor a date only some rows have
+    (Constraints Date, on 9% of San Francisco's eviction notices).
+    """
+    from pandas.api.types import is_datetime64_any_dtype  # noqa: PLC0415
+
+    dated = int(frame[date].notna().sum())
+    others = [str(column) for column in frame.columns
+              if str(column) != date and is_datetime64_any_dtype(frame[column])
+              and not holds_undated(frame[column])
+              and not set(normalized_name(str(column)).split()) & PUBLISHED_WORDS
+              and not re.search(r"\bas of\b", normalized_name(str(column)))
+              and frame[column].notna().sum() >= OTHER_DATES_SHARE * dated]
+    if set(normalized_name(date).split()) & START_WORDS and not END_CLAIMED.search(claim):
+        # "51 disruptions on 1 July 2025" counts those that started that day, not those that ended then.
+        others = [other for other in others if not set(normalized_name(other).split()) & END_WORDS]
+    return others
+
+
+def _ends_other_readings(
+    check: ClaimCheck, ended: ClaimCheck, analysis: Any, ends: tuple[tuple[str, str], ...], factor: float
+) -> ClaimCheck:
+    """A change that agrees with ends that do not (``ended``), made again under the other readings its
+    words allow: by each other date column, and, when rows are counted and the table's ID repeats, with each
+    ID once.
+
+    "Terry stops in Seattle fell by more than half between 2018 and 2025, from 8,798 to 3,651": by Occurred
+    Date the rows give 3,670 in 2025; each Terry Stop ID once, by Reported Date, gives 3,651. When one
+    reading gives the change and both ends, the claim does not say which it means, and gets
+    `ambiguous_intent`.
+    """
+    from .nlq import execute_plan  # noqa: PLC0415
+
+    if ended.reason != "failed_check" or not check.verified or check.answer is None or check.claimed is None:
+        return ended
+    plan, roles, frame = check.answer.plan, analysis.roles, analysis.frame
+    if plan.intent != "growth" or not roles.date or roles.date not in frame.columns:
+        return ended
+    dates = [roles.date, *_other_dates(frame, roles.date, check.claim)]
+    identifier = roles.identifier
+    counted = plan.measure is None and plan.aggregation == "count" and not plan.count_column
+    repeats = counted and identifier in frame.columns and frame[identifier].dropna().duplicated().any()
+    readings = [(date, once) for date in dates for once in ((False, True) if repeats else (False,))][1:]
+    for date, once in readings:
+        swapped = replace(plan, conditions=tuple(
+            replace(item, column=date) if isinstance(item, Condition) and item.column == roles.date else item
+            for item in plan.conditions
+        ))
+        rows = frame.drop_duplicates(subset=[identifier]) if once else frame
+        try:
+            answer = execute_plan(swapped, rows, replace(roles, date=date))
+        except (KeyError, ValueError):
+            continue
+        value, _ = _comparable(answer, check.claimed)
+        if value is None:
+            continue
+        if _says_fall(check.claim, check.claimed):
+            value = -value
+        other = replace(check, answer=answer, compared=value)
+        if not check.claimed.holds(value) or not _ends_hold(other, ends, factor):
+            continue
+        reading = f"by {date}" + (f", each {identifier} once" if once else "")
+        alternatives = (
+            Alternative(f"by {roles.date}", check.question or "", check.compared, False,
+                        check.answer.calculation),
+            Alternative(reading, check.question or "", value, True, answer.calculation),
+        )
+        return ClaimCheck(
+            check.claim, "unverified", "ambiguous_intent",
+            f"{ended.message} Read {reading}, the change and both ends agree, and the claim does not say "
+            "which it means.",
+            claimed=check.claimed, question=check.question, alternatives=alternatives, source=check.source,
+            assumptions=check.assumptions,
+            clarification=f"Which date counts, and is each {identifier} counted once?" if repeats
+            else "Which date counts?",
+        )
+    return ended
+
+
 def _checked_dates(check: ClaimCheck, analysis: Any) -> ClaimCheck:
     """A verdict that rests on a year or a day, made again with the table's other date columns.
 
@@ -2505,8 +2956,6 @@ def _checked_dates(check: ClaimCheck, analysis: Any) -> ClaimCheck:
     REPORT_DAT. When another date column turns the verdict, the claim does not
     say which date it means, and neither verdict stands.
     """
-    from pandas.api.types import is_datetime64_any_dtype  # noqa: PLC0415
-
     from .nlq import execute_plan  # noqa: PLC0415
 
     decided = check.verified or check.reason == "failed_check"
@@ -2517,12 +2966,7 @@ def _checked_dates(check: ClaimCheck, analysis: Any) -> ClaimCheck:
     conditions = [item for item in plan.conditions if isinstance(item, Condition)]
     if date is None or not (plan.year or plan.month or any(item.column == date for item in conditions)):
         return check
-    others = [str(column) for column in frame.columns
-              if str(column) != date and is_datetime64_any_dtype(frame[column])]
-    if set(normalized_name(date).split()) & START_WORDS and not END_CLAIMED.search(check.claim):
-        # "51 disruptions on 1 July 2025" counts those that started that day, not those that ended then.
-        others = [other for other in others if not set(normalized_name(other).split()) & END_WORDS]
-    for other in others:
+    for other in _other_dates(frame, date, check.claim):
         swapped = replace(plan, conditions=tuple(
             replace(item, column=other) if isinstance(item, Condition) and item.column == date else item
             for item in plan.conditions
@@ -2591,6 +3035,447 @@ def _checked_record_day(check: ClaimCheck, analysis: Any, said: str) -> ClaimChe
                 f"so the day does not hold the record. {check.message}",
         compared=value, agreement="mismatch",
     )
+
+
+# "hit a record of about 126,000 in 2023": the year's level must be the highest of every year, or the
+# lowest for "a record low".
+RECORD_YEAR = re.compile(
+    r"\b(?:a\s+|an\s+)?(?:new\s+)?(?:all-time\s+)?(?P<every>every-year\s+)?record(?:(?P<low>\s+low)|"
+    r"(?P<high>\s+high))?\b",
+    re.IGNORECASE,
+)
+
+
+def _checked_record_year(check: ClaimCheck, analysis: Any, said: str) -> ClaimCheck:
+    """A verified level in one year that the claim, as written, calls a record, checked against the years up
+    to it: 3.0 in 1953 was a record low then, whatever came after. "fell to a record 2" is a record low."""
+    if not check.verified or check.answer is None or check.claimed is None:
+        return check
+    plan = check.answer.plan
+    found = RECORD_YEAR.search(said)
+    if found is None or plan.year is None or plan.month is not None or plan.dimension:
+        return check
+    yearly = _yearly(analysis, plan)
+    if yearly is None or str(plan.year) not in yearly[0].index or len(yearly[0]) < 2:
+        message = (f"The claim calls {plan.year}'s level a record, and ADA could not set it against the "
+                   f"other years. {check.message}")
+        return replace(check, status="unverified", reason="missing_context", message=message)
+    by_year, how = yearly
+    # "the fewest of any year" is set against every year; a record, against the years up to it.
+    every = bool(found.group("every"))
+    by_year = by_year if every else by_year[[int(year) <= plan.year for year in by_year.index]]
+    if len(by_year) < 2:
+        # The first year of the table is a record of nothing.
+        message = (f"The claim calls {plan.year}'s level a record, and the table has no year before it to "
+                   f"set it against. {check.message}")
+        return replace(check, status="unverified", reason="missing_context", message=message)
+    low = bool(found.group("low")) or (not found.group("high") and _says_fall(said, check.claimed))
+    record = by_year.idxmin() if low else by_year.idxmax()
+    if by_year[record] == by_year[str(plan.year)]:
+        side = "lowest" if low else "highest"
+        held = f"{how} is {side} in {plan.year} of the {len(by_year)} years{'' if every else ' up to it'}."
+        return replace(check, assumptions=(*check.assumptions, held))
+    return replace(
+        check, status="unverified", reason="failed_check", agreement="mismatch",
+        message=f"The level agrees ({check.message}), but the record is {record}, at "
+                f"{_plain(float(by_year[record]))}.",
+    )
+
+
+# Name words that say how a column counts, not what: Total_Receipt and Total_Disbursement share no thing.
+KIN_GENERIC_WORDS = frozenset({"total", "number", "count", "amount", "value", "values", "data", "mean",
+                                "average", "median", "percent", "share", "rate", "change", "other", "year"})
+# Most other columns named for the same thing that a failed check is made again with.
+KIN_COLUMNS_MAX = 3
+
+
+def _checked_kin_columns(check: ClaimCheck, analysis: Any, recheck: Any) -> ClaimCheck:
+    """A failed check made again with each other column named for the same thing as one the reading used.
+
+    "Deaths from heart disease fell by more than a third" fails on Deaths (10.7%) and holds on Age-adjusted
+    Death Rate (38.1%); "Amphetamines were found in nearly 4% of the deaths" fails on Meth/Amphetamine and
+    holds on Amphet. The claim's words fit both, and it does not say which it means. ``recheck`` checks the
+    claim for a question, which names the other column in place of the words that named the first.
+    """
+    from pandas.api.types import is_bool_dtype, is_numeric_dtype  # noqa: PLC0415
+
+    if check.reason != "failed_check" or check.answer is None or check.claimed is None or not check.question:
+        return check
+    plan, frame = check.answer.plan, analysis.frame
+    used = [(str(plan.measure), "measure")] if plan.measure in frame.columns and plan.intent in (
+        "aggregate", "growth") else []
+    used += [(item.column, "filter") for item in plan.filters if item.column in frame.columns]
+    for named, role in used:
+        said = [match for match in re.finditer(r"[A-Za-z]+", check.question)
+                if _kin_words({match.group().lower()}, _name_words_of(named))]
+        if not said:
+            continue
+        # Only the first run of words that name the column, side by side, is replaced.
+        said = [match for index, match in enumerate(said)
+                if index == 0 or not check.question[said[index - 1].end():match.start()].strip(" _-'/")
+                and all(not check.question[said[k - 1].end():said[k].start()].strip(" _-'/")
+                        for k in range(1, index + 1))]
+        flag = frame[named].nunique() <= 3
+        kin = [str(column) for column in frame.columns
+               if column != named and str(column) not in {analysis.roles.date, analysis.roles.identifier}
+               and _kin_words(_name_words_of(str(column)), _name_words_of(named))
+               and (is_numeric_dtype(frame[column]) and not is_bool_dtype(frame[column]) if role == "measure"
+                    else (frame[column].nunique() <= 3) == flag)][:KIN_COLUMNS_MAX]
+        for column in kin:
+            asked = f"{check.question[:said[0].start()]}{column}{check.question[said[-1].end():]}"
+            other = recheck(asked)
+            reads = other.answer is not None and (
+                other.answer.plan.measure == column if role == "measure"
+                else column in {item.column for item in other.answer.plan.filters})
+            if not other.verified or not reads:
+                continue
+            alternatives = (
+                Alternative(f"{role}={named}", check.question, check.compared, False,
+                            check.answer.calculation),
+                Alternative(f"{role}={column}", asked, other.compared, True, other.answer.calculation),
+            )
+            return replace(
+                check, reason="ambiguous_intent", alternatives=alternatives,
+                message=f"The claim's words fit {named} and {column}: {named} gives "
+                        f"{_plain(check.compared)}, which disagrees, and {column} {_plain(other.compared)}, "
+                        f"which agrees. {check.message}",
+                clarification=f"Is the claim about {named} or {column}?",
+            )
+    return check
+
+
+def _checked_net_sums(check: ClaimCheck, analysis: Any) -> ClaimCheck:
+    """A verdict on a sum over a column that holds Net beside the flows it comes from, with none chosen.
+
+    "Migration to New Zealand fell by more than half" adds up direction = Arrivals, Departures and Net, and
+    Net is Arrivals less Departures: the sum counts nothing. The claim gets missing_context with each
+    direction's number.
+    """
+    from .nlq import execute_plan  # noqa: PLC0415
+
+    decided = check.verified or check.reason == "failed_check"
+    if not decided or check.answer is None or check.claimed is None:
+        return check
+    plan, frame = check.answer.plan, analysis.frame
+    summed = plan.aggregation == "sum" or bool(plan.weight)
+    if not summed or plan.intent not in ("aggregate", "growth", "count"):
+        return check
+    picked = {item.column for item in plan.filters}
+    for column in frame.columns:
+        if column in picked or frame[column].dtype != object:
+            continue
+        values = [str(value) for value in frame[column].dropna().unique()]
+        flows = [value for value in values if value.strip().lower() != "net"]
+        if not 3 <= len(values) <= NET_VALUES_MAX or len(flows) == len(values):
+            continue
+        readings = []
+        for value in sorted(values):
+            try:
+                split = replace(plan, filters=(*plan.filters, ValueFilter(str(column), (value,))))
+                answer = execute_plan(split, frame, analysis.roles)
+            except (KeyError, ValueError):
+                continue
+            number, _ = _comparable(answer, check.claimed)
+            if number is None:
+                continue
+            if plan.intent == "growth" and _says_fall(check.claim, check.claimed):
+                number = -number
+            readings.append(Alternative(f"{column} = {value}", check.question or "", number,
+                                        check.claimed.holds(number), answer.calculation))
+        shown = "; ".join(f"{item.reading} gives {_plain(item.value)}" for item in readings)
+        # When one direction agrees, the claim fits it and not the others: ambiguous_intent. When none does,
+        # a failed claim fails whichever is meant; a sum that agreed did so by chance.
+        agreeing = any(item.agrees for item in readings)
+        failed = not agreeing and check.reason == "failed_check" and len(readings) == len(values)
+        reason = "ambiguous_intent" if agreeing else "failed_check" if failed else "missing_context"
+        return replace(
+            check, status="unverified", reason=reason, alternatives=tuple(readings),
+            message=f"{column} holds Net beside {_and_names(flows)}, and the claim names none, so the answer "
+                    f"adds Net to the flows it comes from: {shown}. {check.message}",
+            clarification=f"Which {column} is the claim about?",
+        )
+    return check
+
+
+# Most values a column holding Net may have: arrivals, departures and net, by a kind or two.
+NET_VALUES_MAX = 6
+# Values a word for another value may cover as well: "neutered" is said of spayed females too, and a character
+# with "no hair" may be one recorded as Bald.
+WIDER_VALUES = {"neutered": ("spayed",), "no hair": ("bald",), "bald": ("no hair",)}
+
+
+def _checked_wider_values(check: ClaimCheck, analysis: Any) -> ClaimCheck:
+    """A check on a value a column also holds under another name (WIDER_VALUES), made with both.
+
+    "55 of the cats were neutered": animal_reproductive_condition holds Neutered (55) and Spayed (41), and
+    neutering is said of both. When the rows of both give another verdict, the claim does not say which is
+    meant, and it gets `ambiguous_intent` with both numbers.
+    """
+    from .nlq import _and_listed, execute_plan  # noqa: PLC0415
+
+    settled = check.verified or check.reason == "failed_check"
+    if not settled or check.answer is None or check.claimed is None:
+        return check
+    plan, frame = check.answer.plan, analysis.frame
+    for item in plan.filters:
+        if len(item.values) != 1 or item.column not in frame.columns:
+            continue
+        wider = WIDER_VALUES.get(str(item.values[0]).lower(), ())
+        held = [str(value) for value in frame[item.column].dropna().unique() if str(value).lower() in wider]
+        if not held:
+            continue
+        both = replace(plan, filters=tuple(
+            ValueFilter(other.column, (*other.values, *held)) if other is item else other
+            for other in plan.filters))
+        try:
+            answer = execute_plan(both, frame, analysis.roles)
+        except (KeyError, ValueError):
+            continue
+        number, _ = _comparable(answer, check.claimed)
+        if number is None or check.claimed.holds(number) == check.verified:
+            continue
+        joined = " or ".join([str(item.values[0]), *held])
+        alternatives = (
+            Alternative(f"{item.column} = {item.values[0]}", check.question or "", check.compared,
+                        check.verified, check.answer.calculation),
+            Alternative(f"{item.column} = {joined}", check.question or "", number, not check.verified,
+                        answer.calculation),
+        )
+        return ClaimCheck(
+            check.claim, "unverified", "ambiguous_intent",
+            f"{item.values[0]} may also take in {_and_listed(held)}, which {item.column} holds too, and the "
+            f"verdict rests on it: {item.values[0]} gives {_plain(check.compared)} and {joined} "
+            f"{_plain(number)}.",
+            claimed=check.claimed, question=check.question, alternatives=alternatives, source=check.source,
+            clarification=f"Does the claim count {_and_listed(held)} too?",
+        )
+    return check
+# Words often used for a narrower thing than they mean: "casualties" for the dead alone.
+OTHER_MEANINGS = {"casualties": "deaths", "casualty": "death"}
+
+
+def _checked_other_meanings(check: ClaimCheck, recheck: Any) -> ClaimCheck:
+    """A failed check made again with the narrower meaning of a word the claim uses.
+
+    "Pedestrians accounted for 22% of the casualties": of everyone killed or injured they are 15.2%, of the
+    dead 22.2%. When the narrower reading agrees, the claim does not say which it means.
+    """
+    if check.reason != "failed_check" or not check.question or check.answer is None:
+        return check
+    for word, narrower in OTHER_MEANINGS.items():
+        found = re.search(rf"\b{word}\b", check.question, re.IGNORECASE)
+        if found is None:
+            continue
+        asked = f"{check.question[:found.start()]}{narrower}{check.question[found.end():]}"
+        other = recheck(asked)
+        if not other.verified or other.answer is None:
+            continue
+        alternatives = (
+            Alternative(word, check.question, check.compared, False, check.answer.calculation),
+            Alternative(narrower, asked, other.compared, True, other.answer.calculation),
+        )
+        return replace(
+            check, reason="ambiguous_intent", alternatives=alternatives,
+            message=f'"{word}" may mean {narrower} alone: read that way the data give '
+                    f"{_plain(other.compared)}, which agrees, and as written {_plain(check.compared)}. "
+                    f"{check.message}",
+            clarification=f'Does "{word}" mean {narrower} alone?',
+        )
+    return check
+
+
+def _name_words_of(column: str) -> set[str]:
+    """A column's name words of four letters or more, singular: "death" and "rate" for "Age-adjusted Death
+    Rate"."""
+    from .folder import singular  # noqa: PLC0415
+
+    return {singular(word) for word in re.findall(r"[a-z]+", normalized_name(column))
+            if len(word) >= 4 and singular(word) not in KIN_GENERIC_WORDS}
+
+
+def _kin_words(some: set[str], others: set[str]) -> bool:
+    """Whether a word of one set is a word of the other, or the start of one: "amphet" of "amphetamine"."""
+    from .folder import singular  # noqa: PLC0415
+
+    some = {singular(word) for word in some if len(word) >= 4}
+    return any(word == other or other.startswith(word) or word.startswith(other)
+               for word in some for other in others)
+
+
+# Name words of a column that says when each subject was measured: age 8, 10, 12 and 14; day 1 to 64.
+OCCASION_WORDS = frozenset({"age", "time", "day", "days", "week", "weeks", "visit", "month", "occasion",
+                            "wave", "session", "trial", "round"})
+# Most occasions a subject may be measured at for each to be tried.
+OCCASIONS_MAX = 30
+
+
+def _checked_occasions(check: ClaimCheck, analysis: Any) -> ClaimCheck:
+    """A failed average over every occasion each subject was measured at, made again at each occasion.
+
+    "The average distance was 23.2 mm" of children measured at 8, 10, 12 and 14 pools four ages into 24.0;
+    at age 10 the mean is 23.17. When one occasion agrees, the claim names none, and neither verdict stands.
+    """
+    from pandas.api.types import is_numeric_dtype  # noqa: PLC0415
+
+    from .nlq import execute_plan  # noqa: PLC0415
+
+    if check.reason != "failed_check" or check.answer is None or check.claimed is None:
+        return check
+    plan, frame = check.answer.plan, analysis.frame
+    if plan.intent != "aggregate" or plan.aggregation not in ("mean", "median"):
+        return check
+    used = {item.column for item in (*plan.filters, *plan.conditions)} | {plan.measure}
+    for column in frame.columns:
+        if column in used or not OCCASION_WORDS & set(normalized_name(str(column)).split()):
+            continue
+        values = frame[column].dropna()
+        if not 2 <= values.nunique() <= OCCASIONS_MAX:
+            continue
+        unit = _measured_unit(frame, str(column), used)
+        if unit is None:
+            continue
+        readings = []
+        for occasion in sorted(values.unique()):
+            scope = (Condition(str(column), "=", float(occasion)),) if is_numeric_dtype(values) else ()
+            filters = () if scope else (ValueFilter(str(column), (str(occasion),)),)
+            at = replace(plan, conditions=(*plan.conditions, *scope), filters=(*plan.filters, *filters))
+            try:
+                answer = execute_plan(at, frame, analysis.roles)
+            except (KeyError, ValueError):
+                continue
+            value, _ = _comparable(answer, check.claimed)
+            if value is not None:
+                readings.append((occasion, value))
+        agreeing = [occasion for occasion, value in readings if check.claimed.holds(value)]
+        if not agreeing:
+            continue
+        numbered = is_numeric_dtype(values)
+        shown = "; ".join(f"{column} {_plain(float(occasion)) if numbered else occasion} gives "
+                          f"{_plain(value)}" for occasion, value in readings)
+        return replace(
+            check, reason="missing_context",
+            message=f"Each {unit} is measured at several {column} values, and the claim names none: over all "
+                    f"of them the data give {_plain(check.compared)}, and by {column}: {shown}. "
+                    f"{check.message}",
+            clarification=f"At which {column} is the {plan.aggregation} taken?",
+        )
+    return check
+
+
+# Fewest subjects a repeated design has, and the share of its rows that may repeat a subject and occasion.
+SUBJECTS_MIN, REPEATS_MAX = 5, 0.05
+
+
+def _measured_unit(frame: Any, occasion: str, used: set) -> str | None:
+    """The column of subjects measured at each value of ``occasion``: Subject in Orthodont, whose children are
+    each measured at 8, 10, 12 and 14, so that a subject and an age pick one row."""
+    for column in frame.columns:
+        if column == occasion or column in used:
+            continue
+        subjects = frame[column].nunique()
+        if not SUBJECTS_MIN <= subjects < len(frame):
+            continue
+        pairs = frame[[column, occasion]].dropna()
+        if pairs.duplicated().mean() > REPEATS_MAX or pairs.groupby(column)[occasion].nunique().median() < 2:
+            continue
+        return str(column)
+    return None
+
+
+# Places a name may also mean when the same column holds them: Washington, the state or the capital.
+PLACE_ALIASES = {
+    "washington": ("district of columbia", "washington, d.c.", "washington dc", "washington d.c."),
+}
+# Name words of a column of the larger places a name sits in: Lincoln County, Colorado.
+PARENT_PLACE_WORDS = frozenset({"state", "country", "province", "region", "territory", "nation", "county",
+                                "st", "prov"})
+# Most places a shared name may stand for before it is read as a label, not a place.
+NAMESAKES_MAX = 10
+
+
+def _checked_namesakes(check: ClaimCheck, analysis: Any) -> ClaimCheck:
+    """A failed check on a name several places share, made again for each of them.
+
+    "Lincoln County has about 520 wind turbines": t_county = Lincoln County is a county in four states, and
+    together they have 1,975. When the rows of one of them (t_state = CO, 521) agree, the claim does not say
+    which is meant, and neither verdict stands. A column that splits the name's rows, and holds fewer
+    values than the name's own column over the table, is taken as where each one is.
+    """
+    from pandas.api.types import is_numeric_dtype  # noqa: PLC0415
+
+    from .nlq import execute_plan  # noqa: PLC0415
+
+    if check.reason != "failed_check" or check.answer is None or check.claimed is None:
+        return check
+    plan, frame = check.answer.plan, analysis.frame
+    named = [item for item in plan.filters if len(item.values) == 1 and item.column in frame.columns]
+    for item in named:
+        others = PLACE_ALIASES.get(str(item.values[0]).lower(), ())
+        held = [str(value) for value in frame[item.column].dropna().unique() if str(value).lower() in others]
+        for value in held:
+            # "Washington's per capita income" in a table with a row for the District of Columbia as well.
+            swapped = replace(plan, filters=tuple(
+                ValueFilter(other.column, (value,)) if other is item else other for other in plan.filters))
+            try:
+                answer = execute_plan(swapped, frame, analysis.roles)
+            except (KeyError, ValueError):
+                continue
+            number, _ = _comparable(answer, check.claimed)
+            if number is None or not check.claimed.holds(number):
+                continue
+            alternatives = (
+                Alternative(f"{item.column} = {item.values[0]}", check.question or "", check.compared, False,
+                            check.answer.calculation),
+                Alternative(f"{item.column} = {value}", check.question or "", number, True,
+                            answer.calculation),
+            )
+            return replace(
+                check, reason="ambiguous_intent", alternatives=alternatives,
+                message=f"{item.values[0]} may also mean {value}, which {item.column} holds too: {value} "
+                        f"gives {_plain(number)}, which agrees, and {item.values[0]} "
+                        f"{_plain(check.compared)}. {check.message}",
+                clarification=f"Is it {item.values[0]} or {value}?",
+            )
+        rows = frame[frame[item.column].astype(str) == str(item.values[0])]
+        whole = frame[item.column].nunique()
+        for column in frame.columns:
+            if column == item.column or is_numeric_dtype(frame[column]) or column in {
+                    other.column for other in plan.filters}:
+                continue
+            places = rows[column].dropna().astype(str).unique()
+            if not 2 <= len(places) <= NAMESAKES_MAX or frame[column].nunique() >= whole or not (
+                PARENT_PLACE_WORDS & set(normalized_name(str(column)).split())
+            ):
+                continue
+            readings = []
+            for place in sorted(places):
+                split = replace(plan, filters=(*plan.filters, ValueFilter(str(column), (place,))))
+                try:
+                    answer = execute_plan(split, frame, analysis.roles)
+                except (KeyError, ValueError):
+                    continue
+                value, _ = _comparable(answer, check.claimed)
+                if value is not None:
+                    readings.append((place, value, answer))
+            agreeing = [reading for reading in readings if check.claimed.holds(reading[1])]
+            if not agreeing:
+                continue
+            alternatives = (
+                Alternative(f"{item.column} = {item.values[0]} (all)", check.question or "", check.compared,
+                            False, check.answer.calculation),
+                *(Alternative(f"{column} = {place}", check.question or "", value, check.claimed.holds(value),
+                              answer.calculation) for place, value, answer in readings),
+            )
+            shown = "; ".join(f"{column} = {place} gives {_plain(value)}" for place, value, _ in readings)
+            fitting = _and_names([str(reading[0]) for reading in agreeing])
+            return replace(
+                check, reason="ambiguous_intent", alternatives=alternatives,
+                message=f"{item.values[0]} is in {len(places)} {column} values, and the claim holds for "
+                        f"{fitting} only: {shown}. Together they give {_plain(check.compared)}. "
+                        f"{check.message}",
+                clarification=f"Which {item.values[0]} is meant?",
+            )
+    return check
 
 
 def _checked_clock(check: ClaimCheck, analysis: Any) -> ClaimCheck:
@@ -2694,6 +3579,9 @@ def _yearly(analysis: Any, plan: Any) -> tuple[Any, str] | None:
     rows, _ = _apply_filters(analysis.frame, replace(plan, year=None), analysis.roles)
     dates = rows[analysis.roles.date]
     years = dates.dt.year if hasattr(dates, "dt") else dates
+    # Rows with no date are in no year: 4,061 agencies yet to start NIBRS are no year of their own.
+    dated = years.notna()
+    rows, years = rows[dated], years[dated]
     grouped = rows.groupby(years.astype("Int64").astype(str))
     if plan.measure is None:
         # The same count the answer makes: distinct values, the rows' frequencies, or the rows.
@@ -2830,6 +3718,68 @@ def _checked_extreme(check: ClaimCheck, analysis: Any, extreme: re.Match) -> Cla
     )
 
 
+# A closing rank against the rest: "the most of any Senate candidate", "more than any other state".
+RANK_TAIL = re.compile(
+    r"\b(?P<word>most|highest|largest|biggest|greatest|lowest|smallest|fewest|least|more|fewer|less)\s+"
+    r"(?:[a-z]+\s+){0,3}?(?:of|among|than)\s+(?:in\s+)?(?:any|all)\s+(?:other\s+|the\s+)?(?P<scope>[^,.;]+)",
+    re.IGNORECASE,
+)
+LOW_RANK_WORDS = frozenset({"lowest", "smallest", "fewest", "least", "fewer", "less"})
+
+
+def _checked_rank_tail(check: ClaimCheck, analysis: Any, text: str) -> ClaimCheck | None:
+    """A verified value for one group, checked against every group the closing words keep, or None.
+
+    "Sherrod Brown raised about $96.5 million, the most of any Senate candidate": the reading keeps
+    Cand_Name = BROWN, SHERROD and Cand_Office = S, which "Senate" names. The total is made for every
+    Cand_Name with Cand_Office = S, and the claim holds only if Brown's is the highest. None when the
+    reading keeps no one group apart from what the closing words name.
+    """
+    from .nlq import _apply_filters  # noqa: PLC0415
+
+    found = RANK_TAIL.search(text)
+    answer = check.answer
+    if found is None or answer is None:
+        return None
+    plan = answer.plan
+    counted = plan.measure is None and plan.aggregation == "count"
+    if not counted and not (plan.measure and plan.aggregation in ("sum", "mean", "median", "max", "min")):
+        return None
+    scope = found.group("scope").lower()
+    named = {match.group(2) for item in check.assumptions
+             if (match := re.fullmatch(r'Read "(.+?)" as (.+?) = .+\.', item))
+             and match.group(1).lower() in scope}
+    groups = [item for item in plan.filters
+              if len(item.values) == 1 and item.column not in named
+              and analysis.frame[item.column].nunique(dropna=True) > 1]
+    if len(groups) != 1 or plan.dimension or plan.year or plan.month:
+        return None
+    group = groups[0]
+    others = replace(plan, filters=tuple(item for item in plan.filters if item is not group))
+    rows, _ = _apply_filters(analysis.frame, others, analysis.roles)
+    column, value = group.column, str(group.values[0])
+    labels = rows[column].astype(str)
+    if counted:
+        by_group, how = rows.groupby(labels).size(), "row count"
+    else:
+        by_group = rows.groupby(labels)[plan.measure].agg(plan.aggregation).dropna()
+        how = f"{plan.aggregation}({plan.measure})"
+    if value not in by_group.index or len(by_group) < 2:
+        return None
+    low = found.group("word").lower() in LOW_RANK_WORDS
+    leader = by_group.idxmin() if low else by_group.idxmax()
+    side = "lowest" if low else "highest"
+    kept = "".join(f" with {item.column} = {', '.join(map(str, item.values))}" for item in others.filters)
+    if by_group[leader] == by_group[value]:
+        held = f"{how} is {side} for {value} of the {len(by_group):,} {column} values{kept}."
+        return replace(check, assumptions=(*check.assumptions, held))
+    return replace(
+        check, status="unverified", reason="failed_check", agreement="mismatch",
+        message=f"The value agrees ({check.message}), but the {side} {how} of the {column} values{kept} is "
+                f"{leader}'s, at {_plain(float(by_group[leader]))}.",
+    )
+
+
 def _ranked(answer: QueryAnswer) -> bool:
     """Whether the answer itself ranks the groups, so a claim that one leads them all is checked."""
     plan = answer.plan
@@ -2847,8 +3797,61 @@ BUSIEST_PERIOD = re.compile(
 )
 
 
+# "Queensland's roads were the deadliest in Australia in 2022, with 297 deaths": the group with most deaths.
+DEADLIEST_LEAD = re.compile(
+    r"^\s*(?P<group>[A-Z][\w.-]*(?:\s+[A-Z][\w.-]*){0,3})(?:'s\s+[a-z]+)?\s+(?:was|were)\s+the\s+deadliest"
+    r"(?:\s+[a-z]+)?(?:\s+in\s+[A-Z][\w.-]*(?:\s+[A-Z][\w.-]*){0,2})?(?P<when>\s+(?:in|during)\s+\d{4})?"
+    r",\s*with\s+(?P<value>[\d,.]+)\s+(?P<noun>deaths|fatalities)\b(?P<rest>.*)$"
+)
+# ", more than New South Wales" after a peak: one of the groups it is above, which the peak check covers.
+ABOVE_ONE = re.compile(
+    r",\s*(?:more|higher|greater)\s+than\s+[A-Z][A-Za-z.'-]*(?:\s+[A-Z][A-Za-z.'-]*){0,3}(?=\s*[.!]?\s*$)"
+)
+
+
+# "More agencies began reporting in 2021 than in any other year: 2,664": a peak over the years.
+MORE_IN_YEAR = re.compile(
+    r"^\s*more\s+(?P<what>.+?)\s+in\s+(?P<year>\d{4})\s+than\s+in\s+any\s+other\s+year\s*[:,]\s*"
+    r"(?P<value>.+?)\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+
+
+# "Hakeem Jeffries raised more than any other House candidate in the 2024 cycle, almost $23 million": the rank
+# said first, with no noun between "more" and "than", and the value after it.
+RANKED_LEAD = re.compile(
+    r"^\s*(?P<subject>[A-Z][^,]*?)\s+(?P<verb>[a-z]+)\s+more\s+than\s+any\s+other\s+(?P<kind>[^,]+?),\s*"
+    r"(?P<value>[^,]+?)\s*[.!]?\s*$"
+)
+
+
+def _ranked_lead(text: str) -> str:
+    """"G raised more than any other D, V" as "G raised V, the most of any D"."""
+    found = RANKED_LEAD.match(text)
+    if found is None or not NUMBER_PATTERN.search(found.group("value")) or found.group("verb") in (
+            "had", "has", "have", "was", "were", "is", "are"):
+        return text
+    return (f"{found.group('subject')} {found.group('verb')} {found.group('value')}, the most of any "
+            f"{found.group('kind')}.")
+
+
+def _as_most(text: str) -> str:
+    """A lead said with "the deadliest", or naming a group it beats, as "G had the most X in Y, with V"."""
+    over_years = MORE_IN_YEAR.match(text)
+    if over_years is not None:
+        return (f"The number of {over_years.group('what')} peaked in {over_years.group('year')} at "
+                f"{over_years.group('value')}.")
+    found = DEADLIEST_LEAD.match(text)
+    if found is not None:
+        text = (f"{found.group('group')} had the most {found.group('noun')}{found.group('when') or ''}, "
+                f"with {found.group('value')}{found.group('rest')}")
+    beaten = ABOVE_ONE.sub("", text)
+    return beaten if beaten != text and MOST_LEAD.match(beaten) else text
+
+
 def _most_as_peak(text: str) -> str:
     """"G had more X than any other D, with V" as "X in G peaked at V", which is checked as a peak."""
+    text = _as_most(text)
     busiest = BUSIEST_PERIOD.match(text)
     if busiest and NUMBER_PATTERN.search(busiest.group("number")):
         subject, when, noun = busiest.group("subject"), busiest.group("when"), busiest.group("noun")
@@ -2906,14 +3909,19 @@ def _checked_peak(check: ClaimCheck, analysis: Any, text: str = "") -> ClaimChec
         r"\b(?:than\s+(?:in\s+)?any\s+other|of\s+any|among\s+all(?:\s+the)?)\s+([a-z]+)", text
     )
     over_groups = bool(against) and against.group(1) not in TIME_NOUNS
+    # "Queensland had the most deaths in 2022": the group leads, so the peak is over the groups that year.
+    lead = MOST_LEAD.match(_as_most(text))
+    led = bool(groups and lead and lead.group("most"))
+    counted = plan is not None and plan.measure is None and plan.aggregation == "count"
     one_year = plan is not None and plan.year is not None and plan.month is None
     in_year = one_year and not over_groups and bool(
         peak and re.search(rf"\b{plan.year}\b", rewritten[peak.end():]) or against
     )
     yearly = one_year and analysis.roles.date is not None and (
-        (plan.measure is None and plan.aggregation == "count") or (combined and in_year)
+        (counted and not (groups and (over_groups or led))) or (combined and in_year)
     )
-    if plan is not None and plan.year is not None and groups and not yearly and combined and not over_groups:
+    if (plan is not None and plan.year is not None and groups and not yearly and combined and not over_groups
+            and not led):
         # "Rain at Oxford in 2012 peaked at 984 mm": over the years, or over the stations that year?
         return replace(
             check, status="unverified", reason="missing_context",
@@ -2922,7 +3930,7 @@ def _checked_peak(check: ClaimCheck, analysis: Any, text: str = "") -> ClaimChec
             clarification=f"Is it the highest of the years, or of the {groups[0].column} values in "
                           f"{plan.year}?",
         )
-    if plan is None or not (len(groups) == 1 or yearly) or (not yearly and not combined):
+    if plan is None or not (len(groups) == 1 or yearly) or (not yearly and not (combined or counted)):
         return replace(
             check, status="unverified", reason="missing_context",
             message=f"The claim names a peak, and ADA could not tell for which group: {check.message}",
@@ -2946,8 +3954,12 @@ def _checked_peak(check: ClaimCheck, analysis: Any, text: str = "") -> ClaimChec
         group = groups[0]
         others = replace(plan, filters=tuple(item for item in plan.filters if item is not group))
         rows, _ = _apply_filters(analysis.frame, others, analysis.roles)
-        by_group = rows.groupby(rows[group.column].astype(str))[plan.measure].agg(plan.aggregation).dropna()
-        column, named, how = group.column, str(group.values[0]), f"{plan.aggregation}({plan.measure})"
+        column, named = group.column, str(group.values[0])
+        if counted:
+            by_group, how = rows.groupby(rows[column].astype(str)).size(), "row count"
+        else:
+            by_group = rows.groupby(rows[column].astype(str))[plan.measure].agg(plan.aggregation).dropna()
+            how = f"{plan.aggregation}({plan.measure})"
     if by_group.empty or named not in by_group.index:
         return check
     top = by_group.idxmax()
@@ -3426,8 +4438,73 @@ def _names_anything(frame: Any, word: str) -> bool:
     return False
 
 
+def _counted_after(text: str, number: ClaimedNumber) -> str | None:
+    """The plural noun, with up to two words before it, right after the claim's number: "nursing homes" in
+    "23 nursing homes in Kansas City"."""
+    if number.percent or number.text not in text:
+        return None
+    after = text[text.index(number.text) + len(number.text):]
+    found = re.match(r"\s+((?:[A-Za-z-]+\s+){0,2}?[A-Za-z-]{3,}s)\b", after)
+    if found is None or found.group(1).split()[-1].lower() in VERB_ENDINGS_S:
+        return None
+    return found.group(1)
+
+
+def _counted_total(analysis: Any, answer: QueryAnswer, asked: str, number: ClaimedNumber, text: str,
+                   choices: Mapping[str, str]) -> tuple[QueryAnswer, str, str | None]:
+    """The total of a column named for the things a claim counts, in place of its average over several rows.
+
+    "Sudan had about 1.1 million refugees in 2022": refugees counts them on each row, so over the 100 rows the
+    count is their total. Returns the answer, its question and the note saying so, or the answer as it was.
+    """
+    from .api import Refusal  # noqa: PLC0415
+
+    phrase = _counted_after(text, number)
+    measure = answer.plan.measure
+    used = answer.scope.rows_used if answer.scope is not None else None
+    if not phrase or not measure or answer.plan.aggregation not in ("mean", "median") or (
+            AVERAGING.search(text)):
+        return answer, asked, None
+    if not (_words_in_name(phrase, str(measure)) and _words_in_name(normalized_name(str(measure)), phrase)):
+        return answer, asked, None
+    if not used or used <= 1:
+        # One row's value is its count.
+        return answer, asked, None
+    total = analysis.ask(f"total {asked}", decisions=choices)
+    if isinstance(total, Refusal) or total.plan.aggregation != "sum" or total.plan.measure != measure:
+        return answer, asked, None
+    note = f'Read "{number.text} {phrase}" as a total of {measure}, since it counts them.'
+    return total, f"total {asked}", note
+
+
+def _words_in_name(phrase: str, column: str) -> bool:
+    """Whether every word of a phrase, or its singular, is a word of a column's name."""
+    from .folder import singular  # noqa: PLC0415
+
+    words = set(normalized_name(column).split())
+    return all(word in words or singular(word) in words for word in _words(phrase))
+
+
+def _valued_columns(frame: Any, word: str) -> list[str]:
+    """Text columns of labels (not free text) with a value holding ``word`` or its singular as a whole word:
+    Category for "plant" in "Vascular Plant"."""
+    from .folder import singular  # noqa: PLC0415
+
+    pattern = rf"\b(?:{re.escape(word.lower())}|{re.escape(singular(word.lower()))})\b"
+    found = []
+    for column in frame.select_dtypes(exclude=["number", "bool", "datetime"]).columns:
+        values = frame[column].dropna().astype(str).drop_duplicates()
+        if 1 < len(values) <= LABEL_VALUES_MAX and values.str.lower().str.contains(pattern).any():
+            found.append(str(column))
+    return found
+
+
+# Words ending in s that are verbs, not the plural noun a modifier comes before: "3 tickets was".
+VERB_ENDINGS_S = frozenset({"was", "is", "has", "does", "goes", "makes", "gives", "takes", "comes", "says"})
 # Share of a column's values that must differ for a filter on it to pick one thing by its name.
 NAME_SHARE = 0.9
+# Most distinct values a column of labels holds; more are names or free text.
+LABEL_VALUES_MAX = 200
 
 
 def _in_any_value(frame: Any, word: str) -> bool:
@@ -3784,6 +4861,14 @@ def _check(
                 other = analysis.ask(rewritten, decisions=choices)
             if isinstance(other, Refusal):
                 continue
+            if other.plan.count_column == column and not re.search(
+                rf"{re.escape(number.text)}\s+{re.escape(str(column))}", rewritten
+            ):
+                # "2,000 people died on Australia's roads" counts people: "roads" fitting Road User does not
+                # make the claim a count of road users.
+                continue
+            # "1.1 million refugees" is a total in each reading, as in the one checked.
+            other, rewritten, _ = _counted_total(analysis, other, rewritten, number, text, choices)
             computed, _ = _comparable(other, number)
             readings.append((column, rewritten, other, computed))
         written = NUMBER_PATTERN.search(number.text)
@@ -3866,9 +4951,11 @@ def _check(
                     f"{LEFT_OUT_NOTE} {_quoted(unknown)}, which name no column or value in the table."
                 )
             answer, asked = retried, shorter
+    # A change in "the number of girls" adds up Count, the column that says how many each row holds: the
+    # plan keeps it as its weight, read from the counted noun rather than picked by default.
     unnamed = [
         column for column in (answer.plan.measure, answer.plan.partner)
-        if column and not _named(asked, column)
+        if column and not _named(asked, column) and column != answer.plan.weight
     ]
     tally = _tally_column(analysis.frame) if re.search(r"\bcases\b", asked, re.IGNORECASE) else None
     if tally and unnamed == [tally]:
@@ -3917,18 +5004,24 @@ def _check(
                     )
             assumptions.append(f'Read "{number.text}" as a count of rows, as no column names {noun[0]}.')
     changed = CHANGE_WORDS.search(asked) if unnamed and answer.plan.intent == "growth" else None
-    subject = re.search(r"([A-Za-z]+)\s*$", asked[:changed.start()]) if changed else None
     row_noun = (analysis.roles.row_noun or "").lower()
-    if subject and not averaging and row_noun and subject.group(1).lower() in (row_noun, f"{row_noun}s"):
-        # "Fox rescues nearly doubled" in animal_rescues.csv: the file's noun for its rows, before the change,
-        # counts them.
-        rows_changed = analysis.ask(f"number of {asked}", decisions=choices)
-        if not isinstance(rows_changed, Refusal) and rows_changed.plan.intent == "growth" and (
-            not rows_changed.plan.measure
-        ):
-            answer, asked, unnamed = rows_changed, f"number of {asked}", []
-            assumptions.append(f"Read the change as one in the number of {subject.group(1)}, the file's "
-                               "rows.")
+    rows_named = (row_noun, f"{row_noun}s")
+    lead = asked[:changed.start()] if changed else asked
+    # The noun before the change ("Fox rescues nearly doubled"), or the head of the words the question starts
+    # with ("stops in Seattle fell", "notices in San Francisco in 2020").
+    heads = [match.group(1) for match in (re.search(r"([A-Za-z]+)\s*$", lead) if changed else None,
+                                          LEADING_HEAD.match(lead)) if match]
+    subject = next((head for head in heads if head.lower() in rows_named), None)
+    level = unnamed == [answer.plan.measure] and answer.plan.intent == "aggregate" and not changed
+    if subject and not averaging and row_noun and (changed or level):
+        # In animal_rescues.csv the file's noun for its rows, as the subject, counts them.
+        rows_counted = analysis.ask(f"number of {asked}", decisions=choices)
+        if not isinstance(rows_counted, Refusal) and rows_counted.plan.intent == (
+            "growth" if changed else "count"
+        ) and not rows_counted.plan.measure:
+            answer, asked, unnamed = rows_counted, f"number of {asked}", []
+            reading = "the change as one in the number of" if changed else "the number as a count of"
+            assumptions.append(f"Read {reading} {subject}, the file's rows.")
     indicator = next((item for item in answer.plan.filters
                       if set(normalized_name(str(item.column)).split()) & INDICATOR_WORDS), None)
     if indicator is None and unnamed == [answer.plan.measure] and cube_measure(analysis.frame) == unnamed[0]:
@@ -3982,6 +5075,60 @@ def _check(
             )
         assumptions.append(f'Read "{number.text}" as a total, since it counts {noun[0]}.')
         answer, asked = total, f"total {asked}"
+    answer, asked, note = _counted_total(analysis, answer, asked, number, text, choices)
+    if note:
+        assumptions.append(note)
+    counted_phrase = _counted_after(text, number)
+    # A column named for more than the things counted ("Number of administrators who have left the nursing
+    # home" for "nursing homes") holds something else about them.
+    measured = str(answer.plan.measure) if answer.plan.measure else ""
+    counted_measure = bool(counted_phrase and measured) and not averaged and (
+        answer.plan.aggregation in ("mean", "median") and _words_in_name(str(counted_phrase), measured)
+        and not _words_in_name(normalized_name(measured), str(counted_phrase)))
+    if counted_measure:
+        # "There are 23 nursing homes in Kansas City": the homes are counted, and averaging "Number of
+        # administrators who have left the nursing home" over them counts nothing.
+        return ClaimCheck(
+            text, "unverified", "missing_context",
+            f'"{number.text} {counted_phrase}" counts {counted_phrase}, but ADA read them as '
+            f"{answer.plan.measure} and took its {answer.plan.aggregation} ({answer.calculation}), which "
+            "counts nothing.",
+            claimed=number, question=asked, answer=answer, assumptions=tuple(assumptions), source=source,
+            clarification=f"Which column or rows are the {counted_phrase}?",
+        )
+    written = NUMBER_PATTERN.search(number.text)
+    if written and written.group("currency") and answer.plan.aggregation == "count" and not (
+        answer.plan.measure or answer.plan.count_column or answer.plan.weight
+    ):
+        from pandas.api.types import is_numeric_dtype  # noqa: PLC0415
+
+        from .metrics import is_additive_name  # noqa: PLC0415
+
+        frame = analysis.frame
+        money = [str(column) for column in frame.columns
+                 if is_numeric_dtype(frame[column]) and is_additive_name(str(column))
+                 and _money_column(str(column), frame[column])]
+        figures = [str(column) for column in frame.columns
+                   if normalized_name(str(column)) in VALUE_NAMES and is_numeric_dtype(frame[column])]
+        total = analysis.ask(f"total {money[0]} {asked}", decisions=choices) if len(money) == 1 else None
+        figure = analysis.ask(f"{figures[0]} {asked}", decisions=choices) if (
+            not money and len(figures) == 1) else None
+        unit = _row_unit(analysis, figure) if figure is not None and not isinstance(figure, Refusal) else None
+        if total is not None and not isinstance(total, Refusal) and total.plan.aggregation == "sum" and (
+            total.plan.measure == money[0]
+        ):
+            # "more than $2 million in parking fines": an amount of money is the total of the table's one
+            # column of amounts, not a count of its rows.
+            assumptions.append(f"Read the claim as the total of {money[0]}, the only column of amounts of "
+                               "money, as the number is an amount of money.")
+            answer, asked = total, f"total {money[0]} {asked}"
+        elif unit and UNITS[unit[0]][0] == "money" and figure.scope is not None and (
+            figure.scope.rows_used == 1
+        ):
+            # "fish and chips cost under $8" where the one row's UNITS is Dollars: the amount is its value.
+            assumptions.append(f"Read the claim as {figures[0]} of the one row it picks, which {unit[1]} "
+                               f"gives in {unit[0]}, as the number is an amount of money.")
+            answer, asked = figure, f"{figures[0]} {asked}"
     summary = _summary_word(answer.plan.measure)
     used_rows = answer.scope.rows_used if answer.scope is not None else None
     if summary and answer.plan.intent == "aggregate" and used_rows is not None and used_rows > 1:
@@ -4076,14 +5223,21 @@ def _check(
             clarification="Which column changes, and over which years?",
         )
     timed = said_slope if answer.plan.intent == "trend" else None
+    scale = 1.0
     if timed:
         # "grew by about 500 million pounds a year": the slope of the yearly values, by least squares and by
         # Theil-Sen; when only one of them agrees, the claim does not say which it means.
         _, _, unit, falling = timed
         found = dict(answer.figures)
         keys = (("least squares", "least_squares_per_year"), ("Theil-Sen", "slope_per_year"))
-        fits = [(name, found[key] / TIME_SLOPE_UNITS[unit] * (-1 if falling else 1))
+        # "29 cents a year" of prices in dollars: both slopes are in the claim's unit before they are
+        # compared.
+        unit_change = _unit_factor(analysis, answer, number, measure)
+        scale = unit_change[0] if unit_change else 1.0
+        fits = [(name, found[key] / TIME_SLOPE_UNITS[unit] * (-1 if falling else 1) * scale)
                 for name, key in keys if key in found]
+        in_unit = [f"Converted {measure} from {unit_change[1]}, {unit_change[2]}, to {_claim_unit(number)}."
+                   ] if unit_change else []
         if not fits:
             return ClaimCheck(
                 text, "unverified", "unsupported_analysis",
@@ -4108,9 +5262,9 @@ def _check(
         computed = fits[0][1]
         sloped = f"the least-squares slope per {unit} of the yearly values, from "
         same = f"; the Theil-Sen slope, {_plain(fits[1][1])}, gives the same verdict" if len(fits) > 1 else ""
-        notes = [f"Compared with the least-squares slope of the yearly values, {_plain(computed)} per {unit}"
-                 + same
-                 + ("; the claim says it falls, so the slope's sign is reversed." if falling else ".")]
+        reversed_sign = "; the claim says it falls, so the slope's sign is reversed." if falling else "."
+        notes = [*in_unit, f"Compared with the least-squares slope of the yearly values, {_plain(computed)} "
+                 f"per {unit}{same}{reversed_sign}"]
     figures = dict(answer.figures)
     if answer.plan.intent == "growth" and number.percent and "change_percent" not in figures and (
         figures.get("previous") and "latest" in figures
@@ -4150,6 +5304,9 @@ def _check(
     if number.qualifier:
         assumptions.append(f'Read "{number.qualifier}" as {number.interval()}.')
     claimed_unit, recorded_unit = _claim_unit(number), column_unit(measure)
+    where = "the unit in its name"
+    if claimed_unit and not recorded_unit and (row_unit := _row_unit(analysis, answer)):
+        recorded_unit, where = row_unit[0], f"the unit {row_unit[1]} gives for these rows"
     key = _key_filter(analysis.frame, answer)
     if key and answer.plan.aggregation == "count" and not measure and not answer.plan.count_column and (
             not answer.plan.weight):
@@ -4231,16 +5388,38 @@ def _check(
             claimed=number, question=asked, answer=answer, assumptions=tuple(assumptions), source=source,
             clarification=f"Is the number about {measure}, or about another column?",
         )
-    factor = 1.0
-    if claimed_unit and recorded_unit and computed is not None and claimed_unit != recorded_unit:
+    factor = scale
+    if claimed_unit and recorded_unit and computed is not None and claimed_unit != recorded_unit and (
+        not timed
+    ):
         factor = UNITS[recorded_unit][1] / UNITS[claimed_unit][1]
         converted = computed * factor
         assumptions.append(
-            f"Converted {measure} from {recorded_unit}, the unit in its name, to {claimed_unit}: "
+            f"Converted {measure} from {recorded_unit}, {where}, to {claimed_unit}: "
             f"{_plain(computed)} {recorded_unit} is {_plain(converted)} {claimed_unit}."
         )
         computed = converted
     elif number.unit and not number.scale_word and not recorded_unit:
+        said = number.unit.split()[0]
+        after = text[text.find(number.text) + len(number.text):] if number.text in text else ""
+        following = re.match(rf"\s*{re.escape(said)}\s+([A-Za-z]+)", after)
+        modifier = following is not None and not claimed_unit and (
+            following.group(1).lower() == (analysis.roles.row_noun or "").lower()
+            or (following.group(1).lower().endswith("s") and following.group(1).lower() not in VERB_ENDINGS_S)
+        )
+        filtered = {item.column for item in answer.plan.filters}
+        unused = [column for column in _valued_columns(analysis.frame, said) if column not in filtered] if (
+            modifier) else []
+        if unused:
+            # "about 3,200 plant species": "plant" picks Category = Vascular Plant or Non-vascular Plant,
+            # which a unit would leave out.
+            return ClaimCheck(
+                text, "unverified", "missing_context",
+                f'The claim\'s "{said}" names values of {unused[0]}, which ADA\'s reading '
+                f"({answer.calculation}) does not use, so the number may count only some of its rows.",
+                claimed=number, question=asked, answer=answer, assumptions=tuple(assumptions), source=source,
+                clarification=f"Which {unused[0]} values are the {said} {following.group(1)}?",
+            )
         assumptions.append(f'The unit "{number.unit}" comes from the claim; the check compares numbers only.')
     warnings = list(scope.cautions) if scope is not None else []
     checks: list[Check] = []
@@ -4302,9 +5481,12 @@ def _check(
             assumptions.append(f"Read {_quoted(units)} as the unit the measure is in; a change in percent is "
                                "the same in any unit.")
     measure_values = analysis.frame[measure] if measure in analysis.frame.columns else None
-    spent = [phrase for phrase in left_out if phrase.lower() in VERB_NOUNS] if (
-        measure_values is not None and _money_column(str(measure), measure_values)
-    ) else []
+    # A value whose unit column says Dollars for these rows is money too.
+    row_unit = _row_unit(analysis, answer)
+    money = measure_values is not None and (_money_column(str(measure), measure_values) or bool(
+        row_unit and UNITS[row_unit[0]][0] == "money"))
+    spent = [phrase for phrase in left_out
+             if phrase.lower() in VERB_NOUNS or phrase.lower() in PRICE_WORDS] if money else []
     if spent:
         # "nurses earned a median salary of $33,150": a verb of money says what a money column holds.
         left_out = [phrase for phrase in left_out if phrase not in spent]
@@ -4427,8 +5609,10 @@ def _check(
             return replace(check, assumptions=(note, *check.assumptions))
     # "Net migration" in Inward or Outward Flow says what VALUE holds on the rows it keeps.
     valued = any(item.startswith(f"Read {measure} as the value of ") for item in assumptions)
-    if agreement == "mismatch" and measure and not valued and not _names_head(" ".join([asked, *named]),
-                                                                                measure, strict=True):
+    # A column of counts read from the noun counted ("the number of girls") is not a guess either.
+    tallied = measure == answer.plan.weight
+    if agreement == "mismatch" and measure and not (valued or tallied) and not _names_head(
+            " ".join([asked, *named]), measure, strict=True):
         # A column read from a word that does not say what it measures may be the wrong one; a
         # mismatch there proves nothing. Words that also name the table still name the column:
         # "milk production" in state_milk_production.csv names milk_produced.

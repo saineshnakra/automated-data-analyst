@@ -176,3 +176,112 @@ def covid_deaths() -> pd.DataFrame:
     for column in ("Data as of", "Start Date", "End Date"):
         frame[column] = pd.to_datetime(frame[column], format="%m/%d/%Y")
     return frame
+
+
+def migration_estimates() -> pd.DataFrame:
+    """Monthly migration estimates for 2022 and 2023 by direction, sex and age, with TOTAL levels."""
+    rows = []
+    months = pd.date_range("2022-01-01", periods=24, freq="MS")
+    for month in months:
+        arrivals = 5000 if month.year == 2022 else 10000
+        departures = 4000 if month.year == 2022 else 3000
+        for direction, total in (("Arrivals", arrivals), ("Departures", departures),
+                                 ("Net", arrivals - departures)):
+            for sex, share in (("TOTAL", 1.0), ("Female", 0.5), ("Male", 0.5)):
+                for age, part in (("TOTAL", 1.0), ("0-14 years", 0.25), ("15+ years", 0.75)):
+                    rows.append({"year_month": month, "month_of_release": month + pd.DateOffset(months=2),
+                                 "direction": direction, "sex": sex, "age": age,
+                                 "estimate": int(total * share * part), "standard_error": 10})
+    return pd.DataFrame(rows)
+
+
+def road_deaths() -> pd.DataFrame:
+    """One row per person killed on Australia's roads in 2021 and 2022, with Year, Month and a Time of day.
+
+    Queensland has the most deaths in 2022 (6) but more in 2021 (8); every state but the three largest has one
+    death a year.
+    """
+    counts = {2021: {"Qld": 8, "NSW": 7, "Vic": 3}, 2022: {"Qld": 6, "NSW": 5, "Vic": 4}}
+    regions = {"Qld": "Queensland - Outback", "NSW": "Sydney - City", "Vic": "Melbourne - Inner",
+               "SA": "Adelaide - Central", "WA": "Perth - Inner", "Tas": "Hobart", "NT": "Darwin",
+               "ACT": "Australian Capital Territory"}
+    rows = []
+    for year, largest in counts.items():
+        for state, region in regions.items():
+            for index in range(largest.get(state, 1)):
+                rows.append({
+                    "Crash ID": len(rows) + 1, "State": state, "Month": index % 12 + 1, "Year": year,
+                    "Time": f"{index:02d}:30", "Road User": ("Pedestrian", "Driver", "Passenger")[index % 3],
+                    "Age": 70 if state == "ACT" else 20 + 5 * index, "SA4 Name 2021": region,
+                })
+    return pd.DataFrame(rows)
+
+
+def food_prices() -> pd.DataFrame:
+    """Monthly prices from September 2016 to September 2026 in Stats NZ's layout: Period written as 2016.09, a
+    Data_value whose UNITS says Dollars or Index, and Group names that say the series are for New Zealand.
+
+    A dozen eggs rises 2 cents a month from $3.00; a loaf rises 1 cent a month from $1.00 to $2.20.
+    """
+    months = pd.period_range("2016-09", "2026-09", freq="M")
+    rows = []
+    for index, month in enumerate(months):
+        period = float(f"{month.year}.{month.month:02d}")
+        for title, group, units, value in (
+            ("Eggs, dozen", "Food Price Index Selected Monthly Weighted Average Prices for New Zealand",
+             "Dollars", 3.0 + 0.02 * index),
+            ("Bread - white sliced loaf, 600g",
+             "Food Price Index Selected Monthly Weighted Average Prices for New Zealand", "Dollars",
+             1.0 + 0.01 * index),
+            ("Overseas accommodation prepaid in New Zealand", "CPI Level 3 Classes for New Zealand", "Index",
+             1000.0 + index),
+            ("Rent", "CPI Monthly Rents (National)", "Index", 900.0 + index),
+        ):
+            rows.append({"Period": period, "Data_value": round(value, 2), "UNITS": units, "Group": group,
+                         "Series_title_1": title})
+    return pd.DataFrame(rows)
+
+
+def parking_tickets() -> pd.DataFrame:
+    """Parking tickets written in 2015: 3 before 10 am and 7 from 10 am on, $796 in all."""
+    times = ["08:15", "09:05", "09:59", "10:00", "10:30", "11:45", "13:00", "14:20", "16:00", "17:59"]
+    days = [f"2015-03-{day:02d} {time}" for day, time in zip(range(2, 12), times, strict=True)]
+    amounts = [55.0, 55.0, 82.0, 82.0, 110.0, 55.0, 55.0, 82.0, 165.0, 55.0]
+    return pd.DataFrame({"IssueDate": pd.to_datetime(days), "Offence": ["FAIL TO PAY"] * 10,
+                         "OffenceAmount": amounts})
+
+
+def baby_names() -> pd.DataFrame:
+    """Babies by year of birth, sex, ethnicity and first name, with every 2014 row given twice, as NYC's file
+    does. Girls named Sophia: 500 in 2014 (1,000 counting the repeats), 400 in 2015 and 300 in 2016."""
+    counts = {
+        ("FEMALE", "Sophia"): {2014: (300, 200), 2015: (250, 150), 2016: (180, 120)},
+        ("MALE", "Liam"): {2014: (400, 100), 2015: (380, 120), 2016: (350, 150)},
+        ("FEMALE", "Emma"): {2014: (220, 80), 2015: (210, 90), 2016: (200, 100)},
+    }
+    rows = []
+    for (sex, name), years in counts.items():
+        for year, pair in years.items():
+            for ethnicity, count in zip(("HISPANIC", "WHITE NON HISPANIC"), pair, strict=True):
+                row = {"Year of Birth": year, "Gender": sex, "Ethnicity": ethnicity,
+                       "Child's First Name": name, "Count": count, "Rank": 1 if count >= 200 else 2}
+                rows.extend([row, dict(row)] if year == 2014 else [row])
+    return pd.DataFrame(rows)
+
+
+def eviction_notices() -> pd.DataFrame:
+    """Eviction notices by File Date, as San Francisco's Rent Board gives them: 6 in 2018, 5 in 2019, 2 in
+    2020 and 3 in 2021; non-payment is cited once in 2020 and three times in 2021. Constraints Date is on one
+    row and data_as_of is the day of the extract."""
+    days = (["2018-03-01"] * 6 + ["2019-04-02"] * 5 + ["2020-05-03"] * 2 + ["2021-06-04"] * 3)
+    unpaid = [False] * 11 + [True, False] + [True] * 3
+    return pd.DataFrame({
+        "Eviction ID": [f"M{index:03d}" for index in range(16)],
+        "City": ["San Francisco"] * 16,
+        "File Date": pd.to_datetime(days),
+        "Non Payment": unpaid,
+        "Owner Move In": [True, False] * 8,
+        "Constraints Date": pd.to_datetime([None] * 12 + ["2020-07-01"] + [None] * 3),
+        "data_as_of": pd.to_datetime(["2025-01-01"] * 16),
+    })
+

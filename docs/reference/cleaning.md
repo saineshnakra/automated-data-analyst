@@ -332,6 +332,9 @@ other values are words (`male`, `female`, `NA`). Among codes (values of three
 characters or fewer, or in capitals up to five letters: `EU`, `APAC`, `NA`;
 `Yes`, `No`, `NA`) it is kept as a code of its own, and `Na`, the symbol for
 sodium, is never matched. A column holding only `NA` is left as it is.
+A dash, `?` or `.` in a column whose other values are one yes and one no
+(`Y`, `N` and `-` in Seattle's Frisk Flag) is a missing answer, so the
+column is a yes/no column; among other labels it stays a label.
 
 A total label among numbers ("ALL" beside the single years of age 0 to 115,
 "All ages"), on two rows or more, keeps the column as labels: it is the
