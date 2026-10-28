@@ -144,6 +144,73 @@ def _found_in(frame: pd.DataFrame, column: object) -> AggregateRows | None:
     return AggregateRows(str(column), tuple(found), totals)
 
 
+#: A level that stands for every other level of its column in a cross-tabulated table: "All Ages",
+#: "Both sexes", "All races", "Total"; "All Other Transport" is one level among the rest.
+TOTAL_LEVEL = re.compile(r"(?:all(?!\sothers?\b)|total)(?:\s.+)?|both sexes|everyone|.+\stotal|overall")
+#: Fewest and most labels a column of levels with a total among them may hold.
+MIN_LEVELS, MAX_LEVELS = 3, 60
+#: How far the rows of a total level may exceed the rows of the other levels in some count, as a
+#: fraction: groups no level names ("other races") add to the total but to no level.
+LEVEL_EXCESS = 0.5
+
+
+@dataclass(frozen=True)
+class TotalLevel:
+    """A column of a cross-tabulated table and its level that stands for all its others."""
+
+    column: str
+    label: str
+
+
+def _covers(frame: pd.DataFrame, column: object, label: str) -> bool:
+    """Whether the rows of ``label`` add up to at least the rows of the other levels of ``column`` in some
+    numeric column, and to no more than half as much again."""
+    rows = frame[column].astype(str).eq(label) & frame[column].notna()
+    for other in frame.columns:
+        if other == column or is_bool_dtype(frame[other]) or not is_numeric_dtype(frame[other]):
+            continue
+        values = to_numbers(frame[other])
+        total, parts = float(values[rows].sum()), float(values[~rows & frame[column].notna()].sum())
+        if parts > 0 and parts * (1 - SUM_TOLERANCE) <= total <= parts * (1 + LEVEL_EXCESS):
+            return True
+    return False
+
+
+def total_levels(frame: pd.DataFrame) -> tuple[TotalLevel, ...]:
+    """The columns of a cross-tabulated table that each hold one level standing for all the others.
+
+    A published table of counts often gives every count under each level of
+    a column and again under its total ("Both sexes", "All Ages", "All
+    races"), so adding up every row counts each death once per level. A column
+    qualifies when one of its 3 to 60 labels reads as a total and its rows add
+    up to at least the other levels' rows in some count. Empty unless two or
+    more columns qualify: one total row alone is ``aggregate_rows``' to find.
+    """
+    cached = _LEVELS.get(id(frame))
+    if cached and cached[0]() is frame:
+        return cached[1]
+    found = []
+    for column in frame.columns:
+        series = frame[column]
+        if is_numeric_dtype(series) or is_datetime64_any_dtype(series) or is_bool_dtype(series):
+            continue
+        labels = [str(label) for label in pd.unique(series.dropna().astype(str))]
+        if not MIN_LEVELS <= len(labels) <= MAX_LEVELS:
+            continue
+        totals = [label for label in labels if TOTAL_LEVEL.fullmatch(_label_key(label))]
+        if len(totals) == 1 and _covers(frame, column, totals[0]):
+            found.append(TotalLevel(str(column), totals[0]))
+    levels = tuple(found) if len(found) >= 2 else ()
+    if len(_LEVELS) >= 8:
+        _LEVELS.clear()
+    _LEVELS[id(frame)] = (weakref.ref(frame), levels)
+    return levels
+
+
+# The total levels of the last few tables looked at, found once per table.
+_LEVELS: dict[int, tuple[weakref.ref, tuple[TotalLevel, ...]]] = {}
+
+
 # The aggregate rows of the last few tables looked at, found once per table.
 _FOUND: dict[int, tuple[weakref.ref, AggregateRows | None]] = {}
 
@@ -169,4 +236,4 @@ def aggregate_rows(frame: pd.DataFrame) -> AggregateRows | None:
     return best
 
 
-__all__ = ["AggregateRows", "aggregate_rows"]
+__all__ = ["AggregateRows", "TotalLevel", "aggregate_rows", "total_levels"]

@@ -34,6 +34,27 @@
 
 ### Reading claims and questions
 
+- Fixed wrong answers on cross-tabulated tables: CDC's injury deaths give
+  every count under each sex, age band, race and intent and again under
+  "Both sexes", "All Ages", "All races" and "All Intentions", so "total
+  Deaths for Poisoning in 2016" added up 1.1 million deaths where there were
+  68,995. A column the question does not name is now read at its total level,
+  and a grouping leaves its total level out (decision `total_levels`).
+- Fixed a wrong answer: "how many ships were wrecked in Irish waters in each
+  year of the First World War" kept only the two wrecks whose descriptions
+  hold "ships were wrecked" and "First World War". A column of long text is
+  free text even when many of its values repeat, and words inside it pick no
+  rows.
+- Fixed a wrong verdict: "The number of votes fell by more than a quarter
+  between 2020 and 2022" failed against the 8% fall in the number of rows
+  (candidates). A plural that columns of counts end in (`candidatevotes`,
+  `totalvotes`) is no longer counted as rows: one such column is added up,
+  and several are named in a refusal.
+- "median salary each year" is a trend of `Annual Salary Median`, not a
+  median of it: a summary word that names a column is part of its name.
+- "Starr County, Texas" picks the state: a US state's name that a column of
+  states holds is the state, even when a column of county names holds Texas
+  County, Missouri, unless "County" follows it.
 - Fixed wrong answers on NOAA's storm events: the unit column ADA adds for
   `DAMAGE_PROPERTY` ("0.00K", "1.5M") was taken as the unit of the whole
   table, so every answer covered only the 54,231 rows in K of 69,801. A unit

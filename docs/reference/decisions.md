@@ -16,6 +16,7 @@ The code is in `ada/decisions.py`; the rows that add up others are found in
 |---|---|---|---|
 | `aggregate_rows` | `leave_out`, `keep` | The table has rows that add up other rows, and some are in the question's scope | Counting World or Africa with the countries counts some values twice |
 | `total_from` | `total_row`, `sum_of_parts` | A total (`sum`) over the scope, with `aggregate_rows` left out and one total row (World, Total) in the scope | The table gives that row as the total of the others, and it can hold what no other row does |
+| `total_levels` | `use_totals`, `all_rows` | A cross-tabulated table where two or more columns each hold a total level ("Both sexes", "All Ages") | The table gives every count under each level and again under the total, so adding up all the rows counts each one once per level |
 | `join_links` | `sure`, `all`, `none` | A question or claim about a folder that no single file answers | A link that needs confirmation (names that differ, keys that do not all match) may join rows that do not belong together; see [Answers across files](folder.md#answers-across-files) |
 
 A decision that does not arise is not listed, and a choice passed for it
@@ -65,6 +66,25 @@ With `aggregate_rows=keep`, every row counts as its own value, as in the file.
 
 A question that picks rows of that column itself is about them, and no
 decision is taken: "co2 of World in 2022" gives the World row.
+
+## Total levels of a cross-tabulated table
+
+A published table of counts often gives every count under each level of a
+column and again under its total: CDC's injury deaths under each sex and
+"Both sexes", each age band and "All Ages", each race and "All races".
+`total_levels(frame)` finds such columns: one of a column's 3 to 60 labels
+reads as a total ("All ...", "Total ...", "Both sexes", "... total", but not
+"All Other Transport"), and its rows add up to at least the other levels'
+rows in some count, and to no more than half as much again (groups no level
+names, such as other races, add to the total alone). Two or more columns must
+qualify; one total row alone is `aggregate_rows`' to find.
+
+With `total_levels=use_totals`, a column the question neither filters nor
+groups by is read at its total level, and a column it groups by leaves its
+total level out of the groups: "total Deaths for Injury mechanism Poisoning
+in 2016" reads the one row with Both sexes, All Ages, All races and All
+Intentions, 68,995 deaths, where adding up every Poisoning row gives 1.1
+million. With `total_levels=all_rows`, every row counts, as in the file.
 
 ## Choosing an option
 

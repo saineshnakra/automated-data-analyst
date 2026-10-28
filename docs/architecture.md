@@ -62,7 +62,7 @@ with the `app` extra, and the OpenAI client and Pydantic with the `ai` extra.
 | `ada/claims.py` | `check_claim`: reads a claim's number and interval, asks the question, compares, and returns `ClaimCheck` with its reason |
 | `ada/sources.py` | `Source`: the file, its sha256, rows and columns an answer was computed from |
 | `ada/folder.py` | `scan`: profiles every table in a folder, proposes links from their key values, and lists the questions to confirm |
-| `ada/aggregates.py` | `aggregate_rows`: the World, region and Total rows that add up other rows |
+| `ada/aggregates.py` | `aggregate_rows`: the World, region and Total rows that add up other rows; `total_levels`: the "Both sexes" and "All Ages" levels of a cross-tabulated table |
 | `ada/joins.py` | `ask_folder`: a question about a folder answered from the file it fits, or from two files joined along a link; `joined_tables` |
 | `ada/decisions.py` | `Decision`: the choices an answer rests on, ADA's default for each, and the options a caller may pick |
 | `ada/numeric.py` | `to_numbers`: text read as numbers; every module uses it instead of `pd.to_numeric`, which crashes on some text |
