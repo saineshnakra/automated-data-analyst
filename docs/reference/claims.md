@@ -100,7 +100,10 @@ when the file can't be read, and 3 when it is unverified for any other reason.
    quantity are turned into the noun a column carries: an adjective after
    the unit ("6,657 metres high" is a height; also tall, long, wide, deep,
    heavy, old) and a verb before the number ("paid" is a payment; also
-   spent, earned, sold, charged, cost).
+   spent, earned, sold, charged, cost). Elsewhere in the claim such a verb
+   names nothing on its own, and it is read as what a column of money holds:
+   in "nurses earned a median salary of about $33,000", "earned" is not a
+   word left out.
 3. **The interval.** The number stands for the values its writing implies,
    worked out in decimal arithmetic:
 

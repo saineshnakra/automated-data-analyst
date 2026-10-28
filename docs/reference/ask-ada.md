@@ -395,7 +395,11 @@ each word is claimed, in this order, by:
 
 The rest must be query grammar: aggregation, ranking, growth, correlation,
 time, grain and share words, and `QUERY_STOPWORDS`, a fixed list of function
-words ("the", "by", "how", "where", "tested", ...). Any other word refuses the
+words ("the", "by", "how", "where", "tested", ...), with words for how the rows
+were gathered ("tracked", "surveyed", "located") when they stand before a noun:
+"the tracked frogs" is every frog, while "how many cats were tracked" asks
+about the cats, which a table of GPS fixes does not hold one to a row. Any
+other word refuses the
 question, and each unbroken run of such words is quoted as typed: `ADA found
 no column or value called "A1_1" in this table`. Words of comparison or
 research ("differ", "affect") that no plan used get a reason of their own: they
@@ -516,7 +520,10 @@ other's count. After "by" or "which", columns that pick the same groups of
 rows (a code and its label) stand for each other, and the label is used. A
 word that every name word of one column starts, its units aside, names that
 column: "magnitude" is `mag` rather than `magType` or `magError`, and
-"capacity" is `capacity_mw` rather than `year_of_capacity_data`.
+"capacity" is `capacity_mw` rather than `year_of_capacity_data`. A summary
+word right before the words ("median", "average", "total", "maximum") picks
+the one column named for it: "the median salary" is `Annual Salary Median`
+rather than `Annual Salary Avg`.
 Otherwise the question is refused with "Did you mean bill_length_mm or
 flipper_length_mm?", listing at most five columns ("or 995 others"). A noun
 for rows ("how many samples" in a table of `sample.*` columns) counts rows

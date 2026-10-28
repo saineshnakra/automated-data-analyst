@@ -1413,6 +1413,16 @@ def _parameter_by_rows(dataframe: pd.DataFrame, measure: str, text_columns: list
     return None
 
 
+def _units_of_another(column: str, dataframe: pd.DataFrame, measure: str) -> bool:
+    """Whether a column holds the units read off another column's values: "DAMAGE_PROPERTY unit" beside
+    DAMAGE_PROPERTY ("0.00K", "1.5M") says nothing of how the measure, END_TIME, is recorded."""
+    name = str(column)
+    if not name.endswith(" unit"):
+        return False
+    owner = name.removesuffix(" unit")
+    return owner in dataframe.columns and owner != measure
+
+
 def _long_layout(
     dataframe: pd.DataFrame, measure: str | None, text_columns: list[str]
 ) -> tuple[str | None, str | None]:
@@ -1438,6 +1448,7 @@ def _long_layout(
             for column in text_columns
             if (_core_words(column) or [""])[-1] in UNIT_WORDS
             and 2 <= dataframe[column].nunique() <= MAX_LABEL_LEVELS
+            and not _units_of_another(column, dataframe, measure)
         ),
         None,
     )

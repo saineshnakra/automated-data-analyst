@@ -1608,3 +1608,50 @@ class TimeSlopeTests(unittest.TestCase):
     def test_one_year_has_no_slope(self):
         frame = pd.DataFrame({"year": [2020, 2020], "value": [1.0, 2.0]})
         self.assertNotEqual(ada.check_claim(frame, "The value rose by about 1 a year.").status, "verified")
+
+
+class GatheringWordTests(unittest.TestCase):
+    def test_how_the_rows_were_gathered_picks_no_rows(self):
+        frogs = pd.DataFrame({"Female": [1, 1, 1, 0], "mass": [10.0, 12, 11, 9]})
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "frogs.csv"
+            frogs.to_csv(path, index=False)
+            # Every row is a tracked frog; "tracked" says how they were gathered, not which.
+            check = ada.check_claim(path, "Three quarters of the tracked frogs were female.")
+            wrong = ada.check_claim(path, "Half of the tracked frogs were female.")
+        self.assertTrue(check.verified, check.message)
+        self.assertEqual(wrong.reason, "failed_check")
+
+    def test_a_word_for_gathering_after_a_verb_stays_a_word(self):
+        # GPS fixes of two cats: "how many cats were tracked" asks about the cats, not the fixes.
+        fixes = pd.DataFrame({"event_id": range(6), "tag_id": ["a", "a", "a", "b", "b", "b"],
+                              "speed": [1.0, 2.0, 0.5, 3.0, 1.5, 2.5]})
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "cats.csv"
+            fixes.to_csv(path, index=False)
+            answer = ada.analyze(path).ask("how many cats were tracked")
+        self.assertFalse(getattr(answer, "value", None) == 6)
+
+
+class SummaryNamedColumnTests(unittest.TestCase):
+    def pay(self) -> pd.DataFrame:
+        return pd.DataFrame({
+            "State": ["Ohio", "Ohio", "Iowa", "Iowa"], "Year": [2019, 2020, 2019, 2020],
+            "Annual Salary Avg": [70000.0, 72000, 60000, 61000],
+            "Annual Salary Median": [68000.0, 70500, 58000, 59500],
+            "Wage/Salary standard error (%)": [1.2, 1.1, 2.0, 1.9],
+        })
+
+    def test_the_summary_before_a_word_picks_the_column_named_for_it(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "nurses.csv"
+            self.pay().to_csv(path, index=False)
+            # "median salary" is Annual Salary Median; "earned" says what that column of money holds.
+            claim = "Nurses in {} earned {} salary of about ${} in 2020."
+            check = ada.check_claim(path, claim.format("Ohio", "a median", "70,500"))
+            wrong = ada.check_claim(path, claim.format("Ohio", "a median", "50,000"))
+            average = ada.check_claim(path, claim.format("Iowa", "an average", "61,000"))
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("Annual Salary Median", check.message)
+        self.assertEqual(wrong.reason, "failed_check", wrong.message)
+        self.assertTrue(average.verified, average.message)

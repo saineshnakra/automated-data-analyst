@@ -2346,6 +2346,13 @@ def _claim_partial_at(
             reading.notes.append(f'Read "{_raw_words(reading.question, list(phrase))}" as {full[0]}, the one '
                                  f"column it names in full, not {others}.")
             candidates = full
+        summary = _summary_named(reading.original, start, candidates) if len(candidates) > 1 else None
+        if summary:
+            # "the median salary" names Annual Salary Median, not Annual Salary Avg.
+            others = _listed_capped([column for column in candidates if column != summary[0]])
+            reading.notes.append(f'Read "{summary[1]} {_raw_words(reading.question, list(phrase))}" as '
+                                 f"{summary[0]}, the one column named for the {summary[1]}, not {others}.")
+            candidates = [summary[0]]
         if len(candidates) > 1:
             role = _role_of_position(reading.text, start)
             suited = [column for column in candidates if _suits(column, role, dataframe, roles)]
@@ -2373,6 +2380,24 @@ def _claim_partial_at(
         found.append(column)
         return size
     return 1
+
+
+# The words a column's name may use for a summary a question names: "avg" for "average".
+SUMMARY_NAMES = {
+    "median": {"median", "med"}, "average": {"average", "avg", "mean"}, "mean": {"mean", "avg", "average"},
+    "total": {"total", "tot", "sum"}, "maximum": {"maximum", "max"}, "minimum": {"minimum", "min"},
+}
+
+
+def _summary_named(question: str, start: int, candidates: list[str]) -> tuple[str, str] | None:
+    """The one candidate column named for the summary the word before a phrase asks for, and that word:
+    "the median salary" picks Annual Salary Median among Annual Salary Avg and Annual Salary Median."""
+    before = re.findall(r"[a-z]+", question[:start])[-1:]
+    forms = SUMMARY_NAMES.get(before[0]) if before else None
+    if not forms:
+        return None
+    named = [column for column in candidates if forms & set(_norm(normalized_name(column)).split())]
+    return (named[0], before[0]) if len(named) == 1 else None
 
 
 # Name words that identify the thing a column is named for: "Plot Code" and
@@ -3673,6 +3698,26 @@ PASSIVE_PATTERN = re.compile(
 )
 
 
+# Words for how the rows were gathered, which say nothing about which rows before a noun: "the tracked
+# frogs", "the located earthquakes". After a verb ("cats were tracked") they may ask about the things
+# tracked, which the rows need not be one each.
+GATHERING_WORDS = frozenset({
+    "tracked", "surveyed", "sampled", "studied", "located", "monitored", "polled", "interviewed",
+})
+
+
+def _claim_gathering_words(reading: _Reading) -> None:
+    """Read a word for how the rows were gathered as grammar when it stands before a noun."""
+    tokens = _tokens(reading.remaining)
+    for position, (start, end, word) in enumerate(tokens):
+        if word not in GATHERING_WORDS or position + 1 >= len(tokens):
+            continue
+        before = tokens[position - 1][2] if position else ""
+        if before in ("were", "was", "are", "is", "be", "been", "being", "get", "got"):
+            continue
+        reading.claim(start, end)
+
+
 def _claim_fillers(reading: _Reading) -> None:
     """Claim the words that date an event or say where the rows are, so they name nothing by mistake."""
     for pattern in (EVENT_PATTERN, FILLER_PATTERN, PASSIVE_PATTERN):
@@ -3960,6 +4005,7 @@ def _read_question(
     _claim_ages(reading, dataframe, roles)
     _claim_year_ranges(reading, dataframe, roles)
     _claim_fillers(reading)
+    _claim_gathering_words(reading)
     _claim_rate_scale(reading)
     _claim_time_points(reading, dataframe, roles)
     _claim_ordinal_columns(reading, dataframe, roles)
