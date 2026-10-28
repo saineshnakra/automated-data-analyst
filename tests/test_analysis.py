@@ -1464,3 +1464,16 @@ class StackedLogTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class PlaceCodeTests(unittest.TestCase):
+    def test_a_number_glued_to_one_of_several_letters_is_a_code(self):
+        import ada
+
+        codes = ["1A", "1B", "2C", "6D", "7E", "8F", "3G"] * 3
+        frame = pd.DataFrame({"ANC": codes, "offense": ["theft"] * 21})
+        report = ada.analyze(frame)
+        self.assertEqual(len(report.frame), 21)
+        self.assertFalse(any("ANC unit" in note for note in report.cleaning.notes))
+        # Readings in two units with decimals are still readings.
+        readings = pd.DataFrame({"dose": ["1.5 mg", "2.0 mg", "0.5 g", "1.0 g"] * 3})
+        self.assertTrue(any("dose" in note for note in ada.analyze(readings).cleaning.notes))

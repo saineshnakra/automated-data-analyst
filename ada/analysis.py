@@ -1573,6 +1573,8 @@ LABELLED_SHARE = 0.5
 # Most units a column of readings is written in. More are codes that start with a number
 # ("37F-PM-1014-03", a squirrel's ID), not readings in units.
 MAX_READING_UNITS = 12
+# Different letters after whole numbers ("7D", "6C") that make a column codes, not readings in units.
+MIN_CODE_LETTERS = 3
 
 
 def _unit_text(unit: str) -> str:
@@ -1608,6 +1610,12 @@ def _readings_with_units(
     if labelled.any() and text.str.fullmatch(r"\d+(?:st|nd|rd|th)", case=False).to_numpy()[labelled].all():
         return None
     if counts[labelled].sum() < LABELLED_SHARE * counts[matched].sum():
+        return None
+    # "7D", "1A", "6C": a whole number glued to one of several letters names a place (DC's Advisory
+    # Neighborhood Commissions), not a reading in units D, A and C.
+    glued = text[labelled].str.fullmatch(r"\d{1,3}[A-Za-z]")
+    letters = parts["unit"][labelled].str.upper().unique()
+    if bool(glued.all()) and len(letters) >= MIN_CODE_LETTERS:
         return None
     numbers = parts["number"].where(matched).map(
         lambda value: _read_formatted_number(value) if isinstance(value, str) else None

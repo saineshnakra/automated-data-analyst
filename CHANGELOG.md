@@ -34,6 +34,13 @@
 
 ### Reading claims and questions
 
+- Fixed wrong answers on DC's crime incidents: the `ANC` codes ("7D", "6C")
+  were read as readings in units, and every answer then covered only the 6,693
+  rows "in unit C" of 29,304. Whole numbers glued to one of several letters now
+  stay codes.
+- A verdict that rests on a year is made again with the table's other date
+  columns; when one turns it, the claim is ambiguous. A column of codes such as
+  `WARD` is never summed.
 - Fixed a wrong verdict: "Day 7 was the slowest for births" verified as
   `day_of_week` = 7 in a table whose `date_of_month` also holds 7; a bare "day
   N" that both day columns hold is now refused, naming both.

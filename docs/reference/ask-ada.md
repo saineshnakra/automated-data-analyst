@@ -824,7 +824,10 @@ set to missing during cleaning, so those cells are not counted").
 
 **Running totals.** A column the notes set aside as a running total
 (`schema.running_total_columns`) is never summed, averaged, binned or
-correlated; its maximum and minimum are still answered.
+correlated; its maximum and minimum are still answered. A column of codes the
+notes read as categories and whose name says it numbers places or things
+(`WARD`, `DISTRICT`, `PSA`, a zip or FIPS code) is never summed either: "total
+WARD" is refused, since adding ward numbers counts nothing.
 
 Trend, growth and period-ranking answers use the same `TrendSeries` as the
 dashboard, so the timeline notes ([Periods](periods.md#timeline-adjustments))

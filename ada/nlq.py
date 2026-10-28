@@ -4029,9 +4029,29 @@ def _plan_question(
     if compared is None and unsupported_phrasing(question, dataframe.columns):
         return None, None
     plan, reason = (compared, None) if compared else _rule_plan(question, dataframe, roles, rows_not_analyzed)
-    if plan is not None and (problem := _running_total_problem(plan, roles)):
+    problem = (_running_total_problem(plan, roles) or _code_total_problem(plan, roles)) if plan else None
+    if plan is not None and problem:
         return None, problem
     return plan, reason
+
+
+# Name words of a column whose codes name places or things: its numbers count nothing when added.
+CODE_NAME_WORDS = frozenset({
+    "ward", "district", "precinct", "zone", "code", "id", "region", "area", "psa", "beat", "sector", "tract",
+    "block", "county", "fips", "zip", "postcode", "station",
+})
+
+
+def _code_total_problem(plan: QueryPlan, roles: ColumnRoles) -> str | None:
+    """Why a plan may not add up a column of codes: WARD numbers the wards, so its total counts nothing."""
+    if plan.aggregation != "sum" or plan.measure is None or plan.measure not in roles.factors:
+        return None
+    if not CODE_NAME_WORDS & set(_norm(normalized_name(str(plan.measure))).split()):
+        return None
+    return (
+        f"{plan.measure} holds codes that name groups, so adding them up gives no total. Ask how many rows "
+        f"each {plan.measure} has, or name the column that holds the amount."
+    )
 
 
 def _running_total_problem(plan: QueryPlan, roles: ColumnRoles) -> str | None:
