@@ -587,6 +587,13 @@ in Huila, among 994 municipalities) is also read as the whole table: when the
 town and the whole table give other verdicts, the claim gets
 `ambiguous_intent` with both numbers.
 
+A failure is no verdict, and the claim gets `missing_context`, when the
+reading is likely of something else: when every end the claim gives ("from
+280 to 123") is ten times or more off the reading's (2 and 4, deaths from Duty
+related illness read from "died on duty"), and when a column named Value is
+averaged over rows that differ in a breakdown (Persons, Male and Female; every
+age band) that the claim does not name.
+
 When the claim is unverified for a reason a person can resolve,
 `clarification` holds the smallest question that would let the check go
 ahead, such as "Which column is meant: dep_delay or arr_delay?".

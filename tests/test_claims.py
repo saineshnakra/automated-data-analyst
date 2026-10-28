@@ -3266,3 +3266,29 @@ class ChangeAndLevelTests(unittest.TestCase):
 
     def test_one_number_alone_is_read_as_before(self):
         self.assertTrue(ada.check_claim(self.frame, "Sales rose by about a third in 2020.").verified)
+
+
+class MisreadingGuardTests(unittest.TestCase):
+    def test_ends_ten_times_off_say_the_reading_counts_something_else(self):
+        # Widgets sold 30 and 20; the claim's 3,000 and 1,200 are another thing's counts.
+        frame = pd.DataFrame({"year": [2019, 2020] * 2, "product": ["widgets"] * 2 + ["gadgets"] * 2,
+                              "sales": [30, 20, 2900, 2000]})
+        claim = "Sales of widgets fell by more than half between 2019 and 2020, from 3,000 to 1,200."
+        check = ada.check_claim(frame, claim)
+        self.assertEqual(check.reason, "missing_context")
+        self.assertIn("The claim's ends are far from the reading's", check.message)
+        # Ends near the data's leave the failure standing.
+        check = ada.check_claim(frame, claim.replace("widgets", "gadgets"))
+        self.assertEqual(check.reason, "failed_check")
+
+    def test_a_value_averaged_over_breakdowns_is_no_verdict(self):
+        # Persons fall by 1 point a year; the mean over Persons, Male and Female falls by two thirds of one.
+        shares = {"Persons": (20, 19, 18, 17), "Male": (22, 21, 20, 19), "Female": (18, 18, 18, 18)}
+        frame = pd.DataFrame([{"Indicator Name": "Smoking prevalence", "Area Name": "England", "Sex": sex,
+                               "Time period": 2011 + index, "Value": value}
+                              for sex, values in shares.items() for index, value in enumerate(values)])
+        claim = "Smoking prevalence in England has fallen by about 3 points a year since 2011."
+        check = ada.check_claim(frame, claim)
+        self.assertEqual(check.reason, "missing_context")
+        self.assertIn("The rows averaged differ in Sex", check.message)
+        self.assertEqual(ada.check_claim(frame[frame["Sex"] == "Persons"], claim).reason, "failed_check")

@@ -1989,6 +1989,7 @@ def _checked_claim(
     check = _checked_kin_columns(check, analysis, recheck)
     check = _checked_other_meanings(check, recheck)
     check = _checked_country_scope(_checked_wider_values(check, analysis), analysis)
+    check = _mixed_breakdowns(check, analysis)
     if question is None and number.percent and (by := BY_YEAR.search(asked)) and (
         check.verified or check.reason == "failed_check"
     ):
@@ -2887,7 +2888,7 @@ def _checked_ends(check: ClaimCheck, ends: tuple[tuple[str, str], ...], factor: 
     if not (check.verified or check.reason == "failed_check"):
         return check
     figures = dict(check.answer.figures) if check.answer is not None else {}
-    notes, wrong = [], []
+    notes, wrong, far = [], [], 0
     for name, written in ends:
         value = figures.get(name)
         found = _candidates(written, [])
@@ -2907,6 +2908,17 @@ def _checked_ends(check: ClaimCheck, ends: tuple[tuple[str, str], ...], factor: 
             notes.append(f"The claim's {side} value, {written}, agrees with the data's {given}.")
         else:
             wrong.append(f"the claim's {side} value is {written}, and the data give {given}")
+            low, high = sorted((abs(float(value) * factor), abs(stated.value)))
+            far += high >= FAR_ENDS * low
+    if ends and far == len(ends):
+        # "fell by more than half, from 280 to 123" read as deaths from Duty related illness, 2 and 4: ends
+        # that far off say the reading counts something else, not that the claim is false.
+        return replace(
+            check, status="unverified", reason="missing_context",
+            message=f"The claim's ends are far from the reading's ({'; '.join(wrong)}), so the reading may "
+                    f"not count what the claim does: {check.message}",
+            clarification="Which rows or column does the claim count?",
+        )
     if wrong and check.verified:
         return replace(
             check, status="unverified", reason="failed_check",
@@ -2917,6 +2929,10 @@ def _checked_ends(check: ClaimCheck, ends: tuple[tuple[str, str], ...], factor: 
         return replace(check, message=f"{check.message} Also, {'; '.join(wrong)}.",
                        assumptions=(*check.assumptions, *notes))
     return replace(check, assumptions=(*check.assumptions, *notes))
+
+
+# How many times larger one end must be than the other to be far from it.
+FAR_ENDS = 10
 
 
 def _ends_hold(check: ClaimCheck, ends: tuple[tuple[str, str], ...], factor: float = 1.0) -> bool:
@@ -3415,6 +3431,47 @@ def _checked_country_scope(check: ClaimCheck, analysis: Any) -> ClaimCheck:
             clarification=f"Is {place} the {item.column} value or the whole table?",
         )
     return check
+
+
+# Most labels a column may have to be a breakdown (Sex, Age, Category) rather than names or notes.
+MAX_BREAKDOWN_LABELS = 30
+
+
+def _mixed_breakdowns(check: ClaimCheck, analysis: Any) -> ClaimCheck:
+    """A failed check that averages a column named Value over rows that differ in a breakdown, made
+    missing_context.
+
+    "Adult smoking in England has fallen by about three quarters of a percentage point a year" averaged Value
+    over Persons, Male and Female, every age band and every category each year; the number mixes them, so it
+    says nothing of the claim.
+    """
+    from .nlq import _apply_filters  # noqa: PLC0415
+
+    if check.reason != "failed_check" or check.answer is None:
+        return check
+    plan, roles = check.answer.plan, analysis.roles
+    measure = normalized_name(str(plan.measure)) if plan.measure else ""
+    if plan.aggregation != "mean" or measure not in VALUE_NAMES:
+        return check
+    try:
+        rows, _ = _apply_filters(analysis.frame, plan, roles)
+    except (KeyError, ValueError):
+        return check
+    fixed = {item.column for item in plan.filters} | {plan.dimension, roles.date}
+    mixed = [column for column in rows.columns
+             if column not in fixed and rows[column].dtype == object
+             and 1 < rows[column].nunique() <= MAX_BREAKDOWN_LABELS
+             and not set(normalized_name(str(column)).split()) & {"note", "notes", "comment", "comments"}]
+    if not mixed:
+        return check
+    shown = "; ".join(f"{column} ({_and_names([str(value) for value in rows[column].dropna().unique()[:3]])}"
+                      f"{' and others' if rows[column].nunique() > 3 else ''})" for column in mixed[:2])
+    return replace(
+        check, reason="missing_context",
+        message=f"The rows averaged differ in {shown}, so the number mixes them and may not be what the "
+                f"claim measures: {check.message}",
+        clarification=f"Which {mixed[0]} is meant?",
+    )
 
 
 def _country_names() -> set[str]:
@@ -4937,6 +4994,14 @@ def _holds_counts(analysis: Any) -> bool:
                and frame[column].nunique() > 1 for column in roles.numeric if column in frame.columns)
 
 
+def _values_written(plan: Any, text: str) -> bool:
+    """Whether the claim writes out in full each value the reading filters on: "Antioquia" for DEPARTAMENTO =
+    ANTIOQUIA, but not "duty" for cause_of_death = Duty related illness."""
+    values = [str(value) for item in (*plan.filters, *plan.counted) if isinstance(item, ValueFilter)
+              for value in item.values]
+    return all(re.search(rf"(?<!\w){re.escape(value)}(?!\w)", text, re.IGNORECASE) for value in values)
+
+
 # Nouns for deaths, which name the same rows.
 DEATH_NOUNS = frozenset({"death", "deaths", "fatality", "fatalities"})
 
@@ -5807,7 +5872,7 @@ def _check(
         after = text[text.index(number.text) + len(number.text):]
         rows_named = _names_rows(re.findall(r"[A-Za-z]+", after)[:4], analysis.roles.row_noun)
     if (named and counts_rows and agreement == "mismatch" and not _names_rows(named, analysis.roles.row_noun)
-            and not rows_named and _holds_counts(analysis)):
+            and not rows_named and (_holds_counts(analysis) or not _values_written(plan, text))):
         # "Visits to the park rose to 11.3 million" in national-park-visits/national_parks.csv: the visits
         # are a column of counts, not the park-years the rows are, so a count of rows proves nothing.
         return ClaimCheck(
