@@ -299,8 +299,9 @@ each word is claimed, in this order, by:
 7. **Values** of text columns, written in full (any case). A value in
    capitals that is also a query word ("ALL" as a diagnosis) is the value
    when typed as the data spells it. A word found only inside free text (a
-   column of titles, mostly unique values of five words or more) picks no
-   rows unless the whole value is typed; beside a category that holds it
+   column of titles, mostly unique values of five words or more, or of 50
+   values or more averaging ten words even when many repeat, such as a
+   wreck's description) picks no rows unless the whole value is typed; beside a category that holds it
    too ("TCD" in "Trinity College Dublin (TCD)"), the category is meant. "Men", "women", "boys" and "girls" name
    the values of the one column that holds only sexes (Male and Female, M and
    F, besides Other, Unknown or a gender such as Agender or Non-binary;
@@ -462,7 +463,10 @@ unless it picks the same rows in each (a label and its definition), when the
 first column is used, or unless it is written in lower case and all but one
 of the columns hold names (50 or more values, one for every ten rows or
 more): "dogs" is a kind in `animal_type`, not a pet called Dog in
-`animal_name`.
+`animal_name`. A US state's name that a column of states holds and another
+column holds as a place's name is the state, unless "County", "Parish",
+"City" or the like follows it: "Starr County, Texas" is `StateDesc` = Texas,
+not Texas County in `CountyName`.
 
 A determiner ("the", "other", "any", "all", "each") is a value only when
 typed as the data spells it ("Other"), so "more than in any other month"
@@ -523,7 +527,8 @@ column: "magnitude" is `mag` rather than `magType` or `magError`, and
 "capacity" is `capacity_mw` rather than `year_of_capacity_data`. A summary
 word right before the words ("median", "average", "total", "maximum") picks
 the one column named for it: "the median salary" is `Annual Salary Median`
-rather than `Annual Salary Avg`.
+rather than `Annual Salary Avg`, and the word then names the column rather
+than saying how its rows combine.
 Otherwise the question is refused with "Did you mean bill_length_mm or
 flipper_length_mm?", listing at most five columns ("or 995 others"). A noun
 for rows ("how many samples" in a table of `sample.*` columns) counts rows
@@ -680,7 +685,11 @@ rows is not counted for its distinct values: "how many reviews in 2019"
 counts the rows with `review_date` = 2019, and "what share have blue eyes"
 the share with `Eye` = Blue. "Readings", "records", "samples" and other nouns in
 `ROW_NOUNS` always count rows. The answer says which: "Counted the birds as
-distinct ID values." or "Each row counts as one of the patients." "How many
+distinct ID values." or "Each row counts as one of the patients." A plural
+that a column of whole counts ends in is added up from that column instead
+("how many deaths" sums `total_deaths`); when several do ("votes" in
+`candidatevotes` and `totalvotes`), the question is refused with both, since
+counting rows would count candidates. "How many
 participants per condition" counts distinct participants per condition.
 The word for the units, when the question names another column too, names
 the rows rather than a measure: in "the heaviest rat's weight" with a `Rat`

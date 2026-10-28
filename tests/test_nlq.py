@@ -4055,3 +4055,101 @@ class StemTests(unittest.TestCase):
         parks = pd.DataFrame({"unit_name": ["Zion", "Zion", "Arches"], "visitors": [10.0, 20.0, 5.0]})
         answer = answer_question("total visits for Zion", parks, detect_roles(parks))
         self.assertEqual(answer.value, 30)
+
+
+class StateOrCountyTests(unittest.TestCase):
+    def counties(self) -> pd.DataFrame:
+        states = ["Texas", "Missouri", "Ohio", "Iowa", "Utah", "Idaho", "Maine", "Kansas", "Oregon", "Nevada"]
+        rows = [{"StateDesc": state, "CountyName": f"{state[:3]} {index}", "rate": rate}
+                for state in states for index, rate in enumerate((5.0, 2.0, 8.0))]
+        # Missouri has a Texas County.
+        rows.append({"StateDesc": "Missouri", "CountyName": "Texas", "rate": 50.0})
+        return pd.DataFrame(rows)
+
+    def test_a_state_s_name_alone_is_the_state(self):
+        frame = self.counties()
+        answer = answer_question("average rate in Texas", frame, detect_roles(frame))
+        self.assertIn("StateDesc = Texas", answer.calculation)
+        self.assertEqual(answer.value, 5.0)
+
+    def test_a_state_s_name_before_county_is_the_county(self):
+        frame = self.counties()
+        answer = answer_question("average rate in Texas County", frame, detect_roles(frame))
+        self.assertTrue(answer is None or "StateDesc = Texas" not in answer.calculation)
+
+
+class TallyNameTests(unittest.TestCase):
+    def races(self) -> pd.DataFrame:
+        return pd.DataFrame({
+            "year": [2020, 2020, 2020, 2022, 2022, 2022], "district": [1, 1, 2, 1, 1, 2],
+            "candidate": ["A", "B", "C", "A", "B", "C"],
+            "candidatevotes": [600, 400, 900, 300, 200, 500], "totalvotes": [1000, 1000, 900, 500, 500, 500],
+        })
+
+    def test_a_plural_two_columns_of_counts_end_in_is_not_a_count_of_rows(self):
+        races = self.races()
+        answer = answer_question("how many votes in 2022", races, detect_roles(races))
+        # Summing candidatevotes gives 1,000 and totalvotes 1,500; counting rows would give 3.
+        self.assertIsNone(answer)
+        hint = rephrase_hint("how many votes in 2022", races, detect_roles(races))
+        self.assertIn("candidatevotes and totalvotes", hint)
+
+    def test_one_column_of_counts_ending_in_the_plural_is_added_up(self):
+        races = self.races().drop(columns=["totalvotes"])
+        answer = answer_question("how many votes in 2022", races, detect_roles(races))
+        self.assertEqual(answer.value, 1000)
+
+
+class TotalLevelTests(unittest.TestCase):
+    def cube(self) -> pd.DataFrame:
+        # Deaths by sex, age and cause, each also given under "Both sexes" and "All Ages".
+        counts = {"Fall": (10, 30, 5, 25), "Fire": (4, 6, 2, 8), "Drowning": (7, 3, 1, 9)}
+        cells = [("Male", "Young"), ("Male", "Old"), ("Female", "Young"), ("Female", "Old")]
+        base = {(sex, age, cause): numbers[index]
+                for cause, numbers in counts.items() for index, (sex, age) in enumerate(cells)}
+        rows = []
+        for sex in ("Male", "Female", "Both sexes"):
+            for age in ("Young", "Old", "All Ages"):
+                for cause in ("Fall", "Fire", "Drowning"):
+                    deaths = sum(count for (s, a, c), count in base.items()
+                                 if c == cause and sex in (s, "Both sexes") and age in (a, "All Ages"))
+                    rows.append({"Sex": sex, "Age": age, "Cause": cause, "Deaths": deaths})
+        return pd.DataFrame(rows)
+
+    def test_a_column_the_question_does_not_name_is_read_at_its_total(self):
+        cube = self.cube()
+        answer = answer_question("total Deaths for Cause Fall", cube, detect_roles(cube))
+        # Fall deaths: 10 + 30 + 5 + 25 = 70, once each, not 280 over every level.
+        self.assertEqual(answer.value, 70)
+        self.assertIn("at its total level", answer.answer)
+
+    def test_a_grouping_leaves_its_total_level_out(self):
+        cube = self.cube()
+        answer = answer_question("total Deaths by Sex", cube, detect_roles(cube))
+        values = dict(answer.values)
+        self.assertNotIn("Both sexes", values)
+        self.assertEqual(values["Male"], 60)
+        self.assertEqual(values["Female"], 50)
+
+    def test_the_caller_can_add_up_every_row(self):
+        cube = self.cube()
+        answer = answer_question("total Deaths for Cause Fall", cube, detect_roles(cube),
+                                 choices={"total_levels": "all_rows"})
+        self.assertEqual(answer.value, 280)
+
+    def test_one_total_level_alone_is_no_cross_table(self):
+        frame = pd.DataFrame({"Sex": ["Male", "Female", "Both sexes"], "Deaths": [60, 50, 110]})
+        self.assertEqual(nlq.total_levels(frame), ())
+
+
+class LongTextTests(unittest.TestCase):
+    def test_long_text_that_repeats_is_still_free_text(self):
+        # Sixty wreck descriptions, most of them repeated, a dozen words each.
+        texts = [f"Schooner number {index} of Dublin foundered in a gale with all crew saved"
+                 for index in range(60)]
+        descriptions = texts + ["Many ships were wrecked in the gale of that winter off the coast"] * 200
+        frame = pd.DataFrame({"year": [1900 + index % 20 for index in range(len(descriptions))],
+                              "description": descriptions})
+        self.assertTrue(nlq._free_text(frame["description"]))
+        answer = answer_question("how many ships were wrecked", frame, detect_roles(frame))
+        self.assertTrue(answer is None or "description" not in answer.calculation)

@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_dtype
 
-from .aggregates import aggregate_rows
+from .aggregates import aggregate_rows, total_levels
 from .aggregation import TrendSeries, build_trend, preferred_frequency, unlabelled_label
 from .business_insights import (
     MIN_CORRELATION_PAIRS,
@@ -1515,6 +1515,12 @@ def _pick_values(
         if kinds and len(kinds) < len(columns):
             found = [value for value in found if value.column in kinds]
             columns = kinds
+    if len(columns) > 1 and dataframe is not None and _state_meant(phrase, question):
+        # "Starr County, Texas": the state, not Texas County, Missouri, in the column of county names.
+        states = [column for column in columns if _holds_states(dataframe[column])]
+        if len(states) == 1:
+            found = [value for value in found if value.column == states[0]]
+            columns = states
     if len(columns) > 1:
         return None, [], (
             f'"{phrase}" is a value of {_and_listed(columns)}; name the column too, '
@@ -1528,6 +1534,24 @@ def _pick_values(
         return chosen[0], chosen, None
     shown = _leaders([value.raw for value in found])
     return None, [], f'"{phrase}" matches several {columns[0]} values: {shown}. Name one in full.'
+
+
+# Nouns after a state's name that make it the name of a place within one: "Texas County".
+PLACE_NOUNS = r"county|parish|borough|city|township|town|village"
+
+
+def _state_meant(phrase: str, question: str) -> bool:
+    """Whether a phrase is a US state's name not followed by a place noun ("Texas", not "Texas County")."""
+    if phrase.lower() not in US_STATES:
+        return False
+    after = re.search(rf"(?<![A-Za-z]){re.escape(phrase)}(?![A-Za-z])\s*(\w+)?", question, re.IGNORECASE)
+    return not (after and after.group(1) and re.fullmatch(PLACE_NOUNS, after.group(1), re.IGNORECASE))
+
+
+def _holds_states(series: pd.Series) -> bool:
+    """Whether a text column holds US states: most of its distinct values are states' names."""
+    values = series.dropna().astype(str).str.strip().str.lower().unique()
+    return len(values) >= STATE_CODES_MIN and sum(value in US_STATES for value in values) >= 0.8 * len(values)
 
 
 def _common_noun(phrase: str, question: str) -> bool:
@@ -1560,12 +1584,19 @@ def _names_column(series: pd.Series) -> bool:
     return distinct >= 50 and distinct >= 0.1 * len(values)
 
 
+# Fewest distinct values of long text that make a column free text even when many repeat.
+FREE_TEXT_VALUES = 50
+
+
 def _free_text(series: pd.Series) -> bool:
-    """Whether a text column holds free text, such as titles: values mostly unique and five words or more."""
+    """Whether a text column holds free text, such as titles: values mostly unique and five words or more,
+    or ten words or more over many values even when some repeat (a wreck's description)."""
     values = series.dropna().astype(str)
-    if values.empty or values.nunique() < 0.5 * len(values):
+    if values.empty:
         return False
-    return float(values.str.split().str.len().mean()) >= 5
+    words = float(values.str.split().str.len().mean())
+    distinct = values.nunique()
+    return (distinct >= 0.5 * len(values) and words >= 5) or (distinct >= FREE_TEXT_VALUES and words >= 10)
 
 
 def _is_number(text: str) -> bool:
@@ -2348,11 +2379,14 @@ def _claim_partial_at(
             candidates = full
         summary = _summary_named(reading.original, start, candidates) if len(candidates) > 1 else None
         if summary:
-            # "the median salary" names Annual Salary Median, not Annual Salary Avg.
-            others = _listed_capped([column for column in candidates if column != summary[0]])
-            reading.notes.append(f'Read "{summary[1]} {_raw_words(reading.question, list(phrase))}" as '
-                                 f"{summary[0]}, the one column named for the {summary[1]}, not {others}.")
-            candidates = [summary[0]]
+            # "the median salary" names Annual Salary Median, not Annual Salary Avg; "median" is part of the
+            # name, not a way to combine the rows.
+            column, word, at = summary
+            others = _listed_capped([other for other in candidates if other != column])
+            reading.notes.append(f'Read "{word} {_raw_words(reading.question, list(phrase))}" as '
+                                 f"{column}, the one column named for the {word}, not {others}.")
+            reading.claim(at, at + len(word))
+            candidates = [column]
         if len(candidates) > 1:
             role = _role_of_position(reading.text, start)
             suited = [column for column in candidates if _suits(column, role, dataframe, roles)]
@@ -2389,15 +2423,16 @@ SUMMARY_NAMES = {
 }
 
 
-def _summary_named(question: str, start: int, candidates: list[str]) -> tuple[str, str] | None:
-    """The one candidate column named for the summary the word before a phrase asks for, and that word:
-    "the median salary" picks Annual Salary Median among Annual Salary Avg and Annual Salary Median."""
-    before = re.findall(r"[a-z]+", question[:start])[-1:]
-    forms = SUMMARY_NAMES.get(before[0]) if before else None
+def _summary_named(question: str, start: int, candidates: list[str]) -> tuple[str, str, int] | None:
+    """The one candidate column named for the summary the word before a phrase asks for, that word and
+    where it starts: "the median salary" picks Annual Salary Median among Annual Salary Avg and Annual
+    Salary Median."""
+    before = list(re.finditer(r"[a-z]+", question[:start]))[-1:]
+    forms = SUMMARY_NAMES.get(before[0].group()) if before else None
     if not forms:
         return None
     named = [column for column in candidates if forms & set(_norm(normalized_name(column)).split())]
-    return (named[0], before[0]) if len(named) == 1 else None
+    return (named[0], before[0].group(), before[0].start()) if len(named) == 1 else None
 
 
 # Name words that identify the thing a column is named for: "Plot Code" and
@@ -3355,6 +3390,16 @@ def _claim_entity(
             reading.entity = word
             reading.entity_column = None if rows else _entity_column(word, dataframe, roles)
             reading.weight = None if reading.entity_column else _count_column(word, dataframe)
+            settled = rows or reading.entity_column or reading.weight
+            tallies = [] if settled else _tallies_named(word, dataframe)
+            if len(tallies) == 1 and (dataframe[tallies[0]].dropna() >= 0).all():
+                # "how many deaths" adds up total_deaths, a column of them on each row.
+                reading.weight = tallies[0]
+            elif tallies:
+                # "the number of votes" in a table of candidatevotes and totalvotes: the rows are not the
+                # votes, and which column adds them up is not said.
+                reading.flag(f'"{word}" may be added up from {_and_listed(tallies)}, not counted as rows; '
+                             f'name the column, as in "total {tallies[0]}".')
 
 
 def _kind_value(word: str, dataframe: pd.DataFrame) -> bool:
@@ -3448,6 +3493,26 @@ def _count_column(noun: str, dataframe: pd.DataFrame) -> str | None:
         if words and " ".join(words) in forms and whole:
             found.append(column)
     return found[0] if len(found) == 1 else None
+
+
+def _tallies_named(noun: str, dataframe: pd.DataFrame) -> list[str]:
+    """Columns of whole counts whose names end in a plural, glued or not: candidatevotes and total_votes
+    for "votes"."""
+    if not noun.endswith("s") or len(noun) < 4:
+        return []
+    found = []
+    for column in dataframe.columns:
+        series = dataframe[column]
+        if not is_numeric_dtype(series) or is_bool_dtype(series):
+            continue
+        glued = "".join(_norm(normalized_name(str(column))).split())
+        if not glued.endswith(noun) or glued == noun:
+            continue
+        values = series.dropna().to_numpy(dtype=float)
+        # A rare -1 marks an unknown count, as it does for one race in the House returns.
+        if len(values) and (values < 0).mean() <= 0.01 and (values % 1 == 0).all():
+            found.append(str(column))
+    return found
 
 
 def _claim_count_column(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
@@ -9258,7 +9323,9 @@ def answer_question(
     plan = parse_question(question, dataframe, roles)
     if plan is None:
         return None
+    plan, levels = _decide_total_levels(plan, dataframe, choices or {})
     plan, decisions = _decide_aggregates(plan, dataframe, roles, choices or {})
+    decisions = (*levels, *decisions)
     try:
         result = execute_plan(plan, dataframe, roles, rows_not_analyzed=rows_not_analyzed)
     except ValueError:
@@ -9270,6 +9337,54 @@ def answer_question(
             f"brief follows; name another {whole.parameter} to ask about it."
         )
     return replace(result, question=question, answer=answer, decisions=decisions)
+
+
+# Plans whose rows a total level does not double: they read the columns or the rows themselves.
+LEVELLESS_INTENTS = frozenset({"duplicates", "missing", "columns", "options", "outliers"})
+
+
+def _decide_total_levels(
+    plan: QueryPlan, dataframe: pd.DataFrame, choices: Mapping[str, str]
+) -> tuple[QueryPlan, tuple[Decision, ...]]:
+    """Read each column of a cross-tabulated table at its total level unless the question names its values.
+
+    In a table that gives every count under each sex and again under "Both
+    sexes" (and likewise each age band and "All Ages", see
+    ``ada.aggregates.total_levels``), adding up every row counts each case once
+    per level. By default a column the question neither filters nor groups by
+    is kept at its total level, and a column it groups by leaves its total
+    level out of the groups.
+    """
+    levels = total_levels(dataframe)
+    if not levels or plan.intent in LEVELLESS_INTENTS:
+        return plan, ()
+    named = {item.column for item in (*plan.filters, *plan.conditions, *plan.counted)}
+    grouped = {plan.dimension, plan.second_dimension}
+    kept = [level for level in levels if level.column not in named and level.column not in grouped]
+    dropped = [level for level in levels if level.column in grouped]
+    if not kept and not dropped:
+        return plan, ()
+    shown = ", ".join(f"{level.label} for {level.column}" for level in levels)
+    decision = decide(
+        "total_levels", choices,
+        f"Read each column at its total level ({shown}) unless the question names its values?",
+        "The table gives every count under each level and again under the total, so adding up all the "
+        "rows counts each one once per level.",
+    )
+    if decision.chosen == "all_rows":
+        return plan, (decision,)
+    note = "Read " + _and_listed([f"{level.column} at its total level, {level.label}" for level in kept]) + (
+        ", since the table gives each count under every level and again under the total." if kept else ""
+    )
+    if dropped:
+        note = (f"{note} " if kept else "") + "Left " + _and_listed(
+            [f"{level.label} out of the {level.column} groups" for level in dropped]) + "."
+    return replace(
+        plan,
+        filters=(*plan.filters, *(ValueFilter(level.column, (level.label,)) for level in kept)),
+        excluded=(*plan.excluded, *(ValueFilter(level.column, (level.label,)) for level in dropped)),
+        notes=(*plan.notes, note.strip()),
+    ), (decision,)
 
 
 def _decide_aggregates(
