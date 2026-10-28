@@ -110,6 +110,7 @@ ADJECTIVE_NOUNS = {
 VERB_NOUNS = {
     "paid": "payment", "pays": "payment", "spent": "spending", "spends": "spending", "earned": "earnings",
     "earns": "earnings", "sold": "sales", "charged": "charge", "cost": "cost", "costs": "cost",
+    "lost": "losses", "loses": "losses",
 }
 # Nouns for the people a table is about: a claim's subject, not a column ("Customers paid ...").
 PEOPLE_NOUNS = frozenset({
@@ -175,6 +176,13 @@ FRACTION_PATTERN = re.compile(
 BY_FRACTION = re.compile(
     r"(?<=\bby\s)(?:(?P<qualifier>about|roughly|around|approximately|nearly|almost|more\s+than|less\s+than)"
     r"\s+)?(?:(?P<count>a|one)\s+)?(?P<part>half|third|quarter|fifth|tenth)\b(?!\s+of\b)",
+    re.IGNORECASE,
+)
+# A fraction of one unit: "three quarters of a percentage point", "half a point", "a quarter of a mile".
+FRACTION_OF_UNIT = re.compile(
+    r"\b(?:(?P<qualifier>about|roughly|around|approximately|nearly|almost|more\s+than|less\s+than)\s+)?"
+    r"(?:(?P<count>a|an|one|two|three|four|nine)\s+)?(?P<part>half|thirds?|quarters?|fifths?|tenths?)\s+"
+    r"(?:of\s+)?an?\s+(?P<unit>percentage\s+point|point|degree|mile|kilometre|kilometer|hour|day|year)\b",
     re.IGNORECASE,
 )
 # A change by a multiple: "doubled", "more than sixfold", "halved", "three-fold".
@@ -247,7 +255,7 @@ REPORTING_CLAUSE = re.compile(
 OF_THE = re.compile(r"\s*of\s+(?:the|these|those|all(?:\s+the)?)\s+([A-Za-z]+)\b", re.IGNORECASE)
 # A lead that names a claim's base: "Of the 4,526 applicants,", "Of the 5,144 Danes in the study,".
 BASE_LEAD = re.compile(
-    r"^\s*(?:of|out\s+of)\s+(?:the\s+|all\s+)?(?P<count>\d{1,3}(?:,\d{3})+|\d+)\s+"
+    r"^\s*(?:of|out\s+of)\s+(?:the\s+|all\s+)?(?:[A-Za-z]+['’]s\s+)?(?P<count>\d{1,3}(?:,\d{3})+|\d+)\s+"
     r"(?P<noun>[A-Za-z]+(?:\s[\w']+){0,10}),\s*",
     re.IGNORECASE,
 )
@@ -260,14 +268,17 @@ PART_OF_BASE = re.compile(
 )
 # A base a share is of: "64% of the 53,182 suicides", "about a third of the 86 departments".
 SHARE_BASE = re.compile(
-    r"(?:%|\b(?:half|third|thirds|quarter|quarters|fifth|fifths|tenth|tenths))\s+of\s+(?:the\s+|all\s+)?"
+    r"(?:%|\b(?:half|third|thirds|quarter|quarters|fifth|fifths|tenth|tenths)"
+    r"|\bin\s+(?:every\s+)?(?:two|three|four|five|six|seven|eight|nine|ten|\d{1,3}))\s+of\s+(?:the\s+|all\s+)?"
     r"(?P<count>\d{1,3}(?:,\d{3})+|\d+)\s+(?P<noun>[A-Za-z]+)\b",
     re.IGNORECASE,
 )
 # A base the claim spans: "across the 48 states", "in all 50 states", "among the 20 firms".
 SCOPE_BASE = re.compile(
     r"\b(?:across|in|among|for|over)\s+(?:all\s+)?(?:the\s+|all\s+)?"
-    r"(?P<count>\d{1,3}(?:,\d{3})+|\d+)\s+(?P<noun>[A-Za-z]+s)\b",
+    r"(?P<count>\d{1,3}(?:,\d{3})+|\d+)\s+"
+    # "for 511 hours" is how long, not a base.
+    r"(?!(?:seconds|minutes|hours|days|weeks|months|years|decades)\b)(?P<noun>[A-Za-z]+s)\b",
     re.IGNORECASE,
 )
 # A base opening the claim: "The 93 models came from 28 manufacturers".
@@ -275,7 +286,15 @@ OPENING_BASE = re.compile(
     r"^\s*(?:the|all|these|those)\s+(?P<count>\d{1,3}(?:,\d{3})+|\d+)\s+(?P<noun>[A-Za-z]+)\b",
     re.IGNORECASE,
 )
-# "seven in ten", "one in five", "1 in 20": a share written as a count in a total.
+# "by 2024": a year a share was reached by, which may be the year itself or every year up to it.
+BY_YEAR = re.compile(r"\bby\s+(?:the\s+end\s+of\s+)?(?P<year>(?:19|20)\d{2})\b", re.IGNORECASE)
+# Name words of a column that says what a long table's value column holds on each row, and the names of
+# that value column.
+INDICATOR_WORDS = frozenset({"indicator", "measure", "statistic", "series", "variable", "metric"})
+VALUE_NAMES = frozenset({"value", "values", "obs value", "observation value", "data value", "estimate"})
+# A description set off by commas after a name: ", a veterinary sedative,".
+APPOSITIVE = re.compile(r",\s+(?:a|an)\s+[A-Za-z][A-Za-z' -]{0,40}(?=,)(?<!\d)", re.IGNORECASE)
+# "seven in ten", "one in five", "1 in 20", "about 12 of every 100": a share written as a count in a total.
 # "Of every 100 birds taken in, about 25 were put down": a share said as so many of every hundred.
 EVERY_BASE = re.compile(
     r"\s*(?:of|out\s+of)\s+every\s+(?P<bottom>[1-9]\d{0,2}(?:,\d{3})*)\s+(?P<base>[^,]+),\s*"
@@ -286,7 +305,8 @@ EVERY_BASE = re.compile(
 IN_FRACTION = re.compile(
     r"\b(?:(?P<qualifier>about|roughly|around|approximately|nearly|almost|just\s+over|just\s+under|over|"
     r"under|more\s+than|less\s+than|fewer\s+than|at\s+least|at\s+most)\s+)?"
-    r"(?P<top>one|two|three|four|five|six|seven|eight|nine|(?<![\d.,])\d{1,2})\s+in\s+"
+    r"(?P<top>one|two|three|four|five|six|seven|eight|nine|(?<![\d.,])\d{1,2})\s+"
+    r"(?:in(?:\s+every)?|(?:out\s+)?of\s+every)\s+"
     r"(?P<bottom>two|three|four|five|six|seven|eight|nine|ten|\d{1,3})\b(?![.,]\d)",
     re.IGNORECASE,
 )
@@ -631,7 +651,9 @@ def _candidates(claim: str, columns: list[str]) -> list[_Candidate]:
         previous = re.search(r"([A-Za-z]+)\W*$", before)
         # "Of the strikes where it was recorded, almost a third": a comma ends the clause the verb is in.
         cued = previous is not None and not re.search(r"[,;:]", before[previous.end(1):])
-        cue = previous.group(1).lower() if cued and previous.group(1).lower() in PREDICATE_CUES else None
+        cue = previous.group(1).lower() if cued and (
+            previous.group(1).lower() in PREDICATE_CUES or previous.group(1).lower() in VERB_NOUNS
+        ) else None
         cue_start = previous.start(1) if cue and previous else qualifier_start
         marked = any(match.group(name) for name in ("currency", "scale", "suffix", "percent"))
         plain = not marked and "," not in match.group("number") and "." not in match.group("number")
@@ -774,6 +796,15 @@ def _worded_number(claim: str) -> tuple[str, Any] | None:
         verb = "fell" if change < 0 else "rose"
         written = f"{verb} by {qualifier} {abs(change):g}%"
         return f"{claim[:multiple.start()]}{written}{claim[multiple.end():]}", lambda number: number
+    unit_part = FRACTION_OF_UNIT.search(claim)
+    if unit_part:
+        # "three quarters of a percentage point a year" is 0.75 points, not 75%.
+        count = COUNT_WORDS.get((unit_part.group("count") or "a").lower(), 1)
+        value = count / FRACTION_PARTS[unit_part.group("part").lower()]
+        qualifier = f"{unit_part.group('qualifier')} " if unit_part.group("qualifier") else ""
+        written = f"{qualifier}{value:g} {unit_part.group('unit')}s"
+        return f"{claim[:unit_part.start()]}{written}{claim[unit_part.end():]}", lambda number: number
+
     def is_fraction(found: re.Match) -> bool:
         # "the fourth quarter of 2020", "a third quarter" and "the top third of the class" are no shares;
         # a fraction is "a quarter of" or "half".
@@ -784,7 +815,7 @@ def _worded_number(claim: str) -> tuple[str, Any] | None:
     # "rose by about half" is a change of about 50%, read as "about half of" is.
     fraction = next((found for found in (*BY_FRACTION.finditer(claim), *FRACTION_PATTERN.finditer(claim))
                      if is_fraction(found)), None)
-    value = None
+    value, rest = None, claim[fraction.end():] if fraction else ""
     if fraction:
         count = COUNT_WORDS.get((fraction.group("count") or "a").lower(), 1)
         bottom = FRACTION_PARTS[fraction.group("part").lower()]
@@ -794,18 +825,22 @@ def _worded_number(claim: str) -> tuple[str, Any] | None:
         words = {**NUMBER_WORDS, "one": 1}
         top, bottom = (int(words.get(part.lower(), part)) if not part.isdigit() else int(part)
                        for part in (fraction.group("top"), fraction.group("bottom")))
-        value = top / bottom if 0 < top < bottom else None
+        value, rest = (top / bottom if 0 < top < bottom else None), claim[fraction.end():]
+        if re.search(r"\bevery\s+\S+$", fraction.group(0), re.IGNORECASE):
+            # "35 of every 100 overdose deaths" is 35% of the deaths; "8 in every 100 were" names no noun.
+            verb = r"(?:of|were|was|are|is|had|have|has|who|that|[A-Za-z]+ed)\b"
+            rest = re.sub(rf"^(\s+)(?!{verb})(?=[A-Za-z])", r"\1of ", rest, flags=re.IGNORECASE)
         if value is not None and bottom > 10:
             # "1 in 20" is 5%, read with a percent's own rounding.
             return f"{claim[:fraction.start()]}{fraction.group('qualifier') or ''} {value * 100:g}%" \
-                   f"{claim[fraction.end():]}".replace("  ", " "), lambda number: number
+                   f"{rest}".replace("  ", " "), lambda number: number
     if fraction:
         if value is None:
             return None
         low, high = _fraction_interval(value)
         qualifier = re.sub(r"\s+", " ", (fraction.group("qualifier") or "").lower())
         kind = next((kind for phrase, kind in QUALIFIERS if phrase == qualifier), None)
-        rewritten = f"{claim[:fraction.start()]}{value * 100:g}%{claim[fraction.end():]}"
+        rewritten = f"{claim[:fraction.start()]}{value * 100:g}%{rest}"
 
         share = value * 100
 
@@ -841,7 +876,8 @@ def _worded_number(claim: str) -> tuple[str, Any] | None:
 # A comparison that makes the number after it a bound on a column: "deeper than 50 cm", "25 or more days".
 COMPARATIVE_THAN = re.compile(r"\b[A-Za-z]+er\s+than\s*$", re.IGNORECASE)
 OR_MORE = re.compile(
-    r"\s*(?:[A-Za-z]+\s+)?or\s+(?:more|over|above|higher|greater|longer|less|fewer|under|below|lower)\b",
+    r"\s*(?:[A-Za-z]+\s+)?or\s+(?:more|over|above|higher|greater|longer|less|fewer|under|below|lower|younger|"
+    r"older|earlier|later|sooner)\b",
     re.IGNORECASE,
 )
 BOUND_QUALIFIERS = frozenset({"more than", "less than", "at least", "at most"})
@@ -857,8 +893,10 @@ def _bound_like(claim: str, item: _Candidate, percent: bool = False) -> bool:
         return percent and item.qualifier in BOUND_QUALIFIERS
     if item.year_like or item.ordinal:
         return False
+    # "declared within 19 days": a span the rows fall inside.
+    within = re.search(r"\bwithin\s+$", claim[:item.qualifier_start], re.IGNORECASE)
     return (item.qualifier in BOUND_QUALIFIERS or bool(COMPARATIVE_THAN.search(claim[:item.match.start()]))
-            or bool(OR_MORE.match(claim[item.match.end():])))
+            or bool(OR_MORE.match(claim[item.match.end():])) or bool(within))
 
 
 def _past_bounds(claim: str, usable: list[_Candidate]) -> _Candidate | None:
@@ -872,6 +910,11 @@ def _past_bounds(claim: str, usable: list[_Candidate]) -> _Candidate | None:
         # claimed; the one written "or above" picks the rows.
         rest = [item for item in bounds if item.qualifier and not OR_MORE.match(claim[item.match.end():])
                 and re.match(r"\s+[a-z]+s\b", claim[item.match.end():])]
+        shares = [item for item in bounds if item.match.group("percent")]
+        if not rest and len(shares) == 1 and re.match(r"\s+of\b", claim[shares[0].match.end():]):
+            # "More than 85% of the babies born to mothers under 20": the share of a group is the number
+            # claimed; the other bounds pick the group.
+            rest = shares
         bounds = [item for item in bounds if item not in rest]
     if not bounds or len(rest) != 1:
         return None
@@ -912,6 +955,8 @@ def read_claim(
     """
     # "6.5 out of 10": the scale says what the number is out of, not a second number.
     claim = re.sub(r"(\d)\s+out\s+of\s+(?:10|5|100)\b", r"\1", claim)
+    # "xylazine, a veterinary sedative, turned up in": a description between commas says what a thing is.
+    claim = APPOSITIVE.sub("", claim)
     every = EVERY_BASE.match(claim)
     if every:
         # "Of every 100 birds taken in, about 25 were put down" is a share of the birds: 25%.
@@ -1067,8 +1112,15 @@ def read_claim(
     adjective = re.match(r"\s*([A-Za-z]+)", after)
     if adjective and adjective.group(1).lower() in ADJECTIVE_NOUNS:
         after = f" {ADJECTIVE_NOUNS[adjective.group(1).lower()]}{after[adjective.end():]}"
-    if chosen.cue in VERB_NOUNS:
-        before = re.sub(rf"\b{chosen.cue}\b", VERB_NOUNS[chosen.cue], before, flags=re.IGNORECASE)
+    # "Fish farms lost 71.4 million salmon" names `losses` only where the table has such a column.
+    noun = VERB_NOUNS.get(chosen.cue or "")
+    forms = {noun, noun.rstrip("s"), noun.removesuffix("es")} if noun else set()
+    if noun and (chosen.cue in PREDICATE_CUES or any(forms & set(normalized_name(column).split())
+                                                     for column in columns)):
+        before = re.sub(rf"\b{chosen.cue}\b", noun, before, flags=re.IGNORECASE)
+        if not number.percent and not AVERAGING.search(claim) and not AGGREGATION_SAID.search(claim):
+            # "Fish farms lost about 71.4 million salmon in 2023": what was lost over the rows, added up.
+            before = f"total {before}"
     question = f"{before} {after}"
     if chosen.cue in AGGREGATION_CUES:
         question = f"{AGGREGATION_CUES[chosen.cue]} {question}"
@@ -1285,6 +1337,21 @@ def column_unit(column: str | None) -> str | None:
     return None
 
 
+def _row_step(analysis: Any) -> str | None:
+    """The hour or day each row of the table stands for, when the rows are one date each, that far apart."""
+    date = analysis.roles.date
+    if not date or date not in analysis.frame.columns:
+        return None
+    dates = analysis.frame[date].dropna()
+    if dates.dtype.kind != "M" or len(dates) < 3 or dates.nunique() < 0.99 * len(analysis.frame):
+        return None
+    steps = dates.drop_duplicates().sort_values().diff().dropna().dt.total_seconds()
+    usual = float(steps.median())
+    if (steps == usual).mean() < 0.9:
+        return None
+    return {3600.0: "hour", 86400.0: "day"}.get(usual)
+
+
 def _claim_unit(number: ClaimedNumber) -> str | None:
     if number.percent or number.scale_word or not number.unit:
         return None
@@ -1468,6 +1535,10 @@ def check_claim(
             )
     assert number is not None and asked is not None
     check = _checked_dates(_checked_table(analysis, text, asked, number, source, choices, question), analysis)
+    if question is None and number.percent and (by := BY_YEAR.search(asked)) and (
+        check.verified or check.reason == "failed_check"
+    ):
+        check = _by_year(check, analysis, text, asked, by, number, source, choices)
     counts = _counted_ends(check, ends, text) if ends else None
     if counts and not _ends_hold(check, ends):
         # "rose 46%, from 147.7 billion pounds in 1990": ends that count pounds may be totals, as a level in
@@ -1485,6 +1556,38 @@ def check_claim(
     if direction:
         check = _checked_direction(check, analysis, *direction)
     return replace(check, claim=said)
+
+
+def _by_year(
+    check: ClaimCheck, analysis: Any, text: str, asked: str, by: re.Match, number: ClaimedNumber,
+    source: Source | None, choices: dict[str, str],
+) -> ClaimCheck:
+    """A share "by 2024" read both as the share in 2024 and as the share of every row up to it.
+
+    "48 women had won by 2016" counts up to its end, but "by 2024, xylazine
+    turned up in 35 of every 100 deaths" is the share in 2024. When the two
+    readings give different verdicts, the claim is ambiguous.
+    """
+    year = by.group("year")
+    within = f"{asked[:by.start()]}in {year}{asked[by.end():]}"
+    other = _checked_dates(_checked_table(analysis, text, within, number, source, choices, None), analysis)
+    if other.verified == check.verified or not (other.verified or other.reason == "failed_check"):
+        return check
+    readings = [(f"up to {year}", asked, check), (f"in {year}", within, other)]
+    alternatives = tuple(
+        Alternative(reading, question, item.compared, item.verified,
+                    item.answer.calculation if item.answer is not None else "")
+        for reading, question, item in readings
+    )
+    shown = "; ".join(f"{item.reading} gives {_plain(item.value) if item.value is not None else 'no number'}"
+                      for item in alternatives)
+    return ClaimCheck(
+        text, "unverified", "ambiguous_intent",
+        f'"by {year}" may mean every row up to {year} or the rows of {year}, and they give different '
+        f"verdicts: {shown}.",
+        claimed=number, question=asked, alternatives=alternatives, source=source,
+        clarification=f"Is the share over every year up to {year}, or in {year} alone?",
+    )
 
 
 def _checked_table(
@@ -2454,13 +2557,38 @@ def _table_name_words(source: Source | None) -> set[str]:
     return {word for word in words if len(word) > 2 and not word.isdigit() and word not in GENERIC_NAME_WORDS}
 
 
+def _place_scope(phrase: str, frame: Any) -> bool:
+    """Whether a phrase only names countries or US states ("Ireland", "England and Wales", "New Zealand's")
+    and no column of the table holds countries or states, so the place is the whole table's."""
+    from .nlq import DEMONYMS, US_STATES  # noqa: PLC0415
+
+    places = {name for names in DEMONYMS.values() for name in names} | set(DEMONYMS) | set(US_STATES) | {
+        "new zealand", "northern ireland", "great britain",
+    }
+    text = re.sub(r"['’]s\b", "", phrase.lower())
+    parts = [part.strip() for part in re.split(r"\band\b|,", text) if part.strip()]
+    if not parts or not all(part in places for part in parts):
+        return False
+    codes = set(US_STATES.values())
+    for column in frame.columns:
+        series = frame[column]
+        if series.dtype.kind in "biufcmM":
+            continue
+        values = {str(value).strip().lower() for value in series.dropna().unique()[:5_000]}
+        if len(values & places) >= 3 or len(values & codes) >= 10:
+            return False
+    return True
+
+
 def _names_table(phrase: str, words: set[str]) -> bool:
     """Whether each word of a phrase is in the table's name, as "Marvel's" is in marvel-wikia-data.csv."""
     from .folder import singular  # noqa: PLC0415
 
     parts = _words(re.sub(r"['’]s\b", "", phrase))
+    # "died" names Accidental_Drug_Related_Deaths.csv: a word for dying names a table of deaths.
+    dying = OUTCOME_WORDS["died"] if words & OUTCOME_WORDS["died"] else frozenset()
     return bool(parts) and all(
-        part in words or singular(part) in words or f"{part}s" in words for part in parts
+        part in words or singular(part) in words or f"{part}s" in words or part in dying for part in parts
     )
 
 
@@ -2766,6 +2894,14 @@ def _check(
             answer, asked, unnamed = rows_changed, f"number of {asked}", []
             assumptions.append(f"Read the change as one in the number of {subject.group(1)}, the file's "
                                "rows.")
+    indicator = next((item for item in answer.plan.filters
+                      if set(normalized_name(str(item.column)).split()) & INDICATOR_WORDS), None)
+    if unnamed == [answer.plan.measure] and indicator and normalized_name(str(unnamed[0])) in VALUE_NAMES:
+        # "Adult smoking in England" in a long table: Indicator Name = Smoking Prevalence says what Value
+        # holds on the rows it keeps.
+        unnamed = []
+        assumptions.append(f"Read {answer.plan.measure} as the value of {indicator.column} = "
+                           f"{', '.join(map(str, indicator.values))}, which the claim names.")
     if unnamed:
         return ClaimCheck(
             text, "unverified", "missing_context",
@@ -2785,8 +2921,11 @@ def _check(
             answer, asked = share, _share_question(asked)
     averaged = AVERAGING.search(text)
     noun = (number.unit or "").split()[-1:] or [""]
+    # "0.75 percentage points" or "3 degrees" measure a level; they count nothing.
+    measured = noun[0].lower() in ("points", "degrees") or (
+        (number.unit or "").lower().startswith("percentage"))
     if answer.plan.aggregation in ("mean", "median") and not averaged and not _claim_unit(number) and (
-        noun[0].lower().endswith("s") and not number.percent
+        noun[0].lower().endswith("s") and not number.percent and not measured
     ):
         # "1,524 Kenyans were recorded as intersex" counts people: a total, never an average.
         total = analysis.ask(f"total {asked}", decisions=choices)
@@ -2859,7 +2998,9 @@ def _check(
         computed, measure, sloped = (-fitted if slope[3] else fitted), y, f"the slope of {y} on {x}, from "
         notes = [f"Compared with the slope of {y} on {x}, {_plain(fitted)} {y} per {x}"
                  + ("; the claim says it falls, so the slope's sign is reversed." if slope[3] else ".")]
-    timed = _time_slope(text) if answer.plan.intent == "trend" else None
+    # "about two percentage points a year": the slope is read from the claim with its number in digits.
+    worded = _worded_number(text)
+    timed = _time_slope(worded[0] if worded else text) if answer.plan.intent == "trend" else None
     if timed:
         # "grew by about 500 million pounds a year": the slope of the yearly values, by least squares and by
         # Theil-Sen; when only one of them agrees, the claim does not say which it means.
@@ -2946,7 +3087,13 @@ def _check(
             claimed=number, question=asked, answer=answer, assumptions=tuple(assumptions), source=source,
             clarification="Which column holds the number?",
         )
-    if claimed_unit and answer.plan.aggregation == "count" and not measure:
+    if claimed_unit and answer.plan.aggregation == "count" and not measure and (
+        step := _row_step(analysis)
+    ) and UNITS[claimed_unit] == UNITS[step]:
+        # "negative prices for more than 500 hours" in a table of one reading an hour: each row is an hour.
+        assumptions.append(f"Read the {number.unit} as rows, since each row of the table is one {step} of "
+                           f"{analysis.roles.date}.")
+    elif claimed_unit and answer.plan.aggregation == "count" and not measure:
         # A count of rows has no unit; a number in hours or grams is about some column the reading missed.
         return ClaimCheck(
             text, "unverified", "missing_context",
@@ -3059,6 +3206,18 @@ def _check(
         assumptions.append(
             f"Read {_quoted(named)} as the name of the table ({source.name}), not of rows in it."
         )
+    scope = [phrase for phrase in left_out if _place_scope(phrase, analysis.frame)]
+    if scope:
+        # "babies born in Ireland" in a table of Irish births with no column of places: the place is the
+        # whole table's.
+        left_out = [phrase for phrase in left_out if phrase not in scope]
+        assumptions = [item for item in assumptions if not item.startswith(LEFT_OUT_NOTE)]
+        if left_out:
+            assumptions.append(
+                f"{LEFT_OUT_NOTE} {_quoted(left_out)}, which name no column or value in the table."
+            )
+        assumptions.append(f"Read {_quoted(scope)} as the place the whole table covers, since no column of "
+                           "the table holds countries or states.")
     plan = answer.plan
     counts_rows = plan.aggregation == "count" and not (plan.measure or plan.count_column or plan.weight)
     if named and counts_rows and agreement == "mismatch" and not _names_rows(named, analysis.roles.row_noun):

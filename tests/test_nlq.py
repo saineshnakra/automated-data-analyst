@@ -4153,3 +4153,186 @@ class LongTextTests(unittest.TestCase):
         self.assertTrue(nlq._free_text(frame["description"]))
         answer = answer_question("how many ships were wrecked", frame, detect_roles(frame))
         self.assertTrue(answer is None or "description" not in answer.calculation)
+
+
+class MarkColumnTests(unittest.TestCase):
+    def deaths(self) -> pd.DataFrame:
+        # Xylazine holds "Y" where it was found and nothing where it was not.
+        return pd.DataFrame({
+            "Year": [2023] * 40 + [2024] * 60,
+            "Xylazine": ["Y"] * 5 + [None] * 35 + ["Y"] * 21 + [None] * 39,
+        })
+
+    def test_a_blank_in_a_column_of_marks_is_a_mark_not_made(self):
+        frame = self.deaths()
+        answer = answer_question("what share of deaths had xylazine in 2024", frame, detect_roles(frame))
+        # 21 of the 60 deaths of 2024, not 21 of the 21 rows with Xylazine written.
+        self.assertAlmostEqual(dict(answer.figures)["share_percent"], 35.0)
+        self.assertIn("a mark not made", answer.answer)
+
+    def test_without_keeps_the_blank_rows(self):
+        frame = self.deaths()
+        answer = answer_question("share of deaths without xylazine in 2024", frame, detect_roles(frame))
+        self.assertAlmostEqual(dict(answer.figures)["share_percent"], 65.0)
+
+    def test_a_column_marked_on_every_row_is_no_column_of_marks(self):
+        self.assertIsNone(nlq._marks(pd.Series(["Y", "Y", "Y"])))
+        self.assertIsNone(nlq._marks(pd.Series(["Y", None, "N"])))
+        self.assertEqual(nlq._marks(pd.Series(["Y", None, "Y (PTCH)"])), ("Y", "Y (PTCH)"))
+
+
+class TerritoryCodeTests(unittest.TestCase):
+    def test_a_column_of_state_codes_may_hold_territories(self):
+        codes = ["IL", "TX", "CA", "NY", "FL", "OH", "PA", "GA", "NC", "MI", "PR", "GU"]
+        frame = pd.DataFrame({
+            "Address": ["1 Illinois Ave", "2 Main St", "3 Oak Rd", "4 Elm St", "5 Pine Rd", "6 Ash St",
+                        "7 Bay Rd", "8 Fir St", "9 Elm Rd", "10 Oak St", "11 Sol St", "12 Mar Rd"] * 2,
+            "State": codes * 2,
+            "Fine": [100.0] * 12 + [50.0] * 12,
+        })
+        answer = answer_question("total Fine in Illinois", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 150)
+        self.assertIn("State = IL", answer.calculation)
+
+
+class PlaceholderValueTests(unittest.TestCase):
+    def thefts(self) -> pd.DataFrame:
+        # BIKE_MAKE holds "BIKE" on one row, and three columns' names start with BIKE.
+        return pd.DataFrame({
+            "OCC_YEAR": [2019] * 4 + [2020] * 6,
+            "BIKE_MAKE": ["TREK", "GIANT", "BIKE", "TREK", "GIANT", "TREK", "OTHER", "GIANT", "TREK",
+                          "OTHER"],
+            "BIKE_TYPE": ["RG", "MT", "RG", "MT", "RG", "RG", "MT", "RG", "MT", "RG"],
+            "BIKE_COST": [500.0, 700.0, 300.0, 900.0, 650.0, 400.0, 350.0, 800.0, 1000.0, 450.0],
+        })
+
+    def test_a_value_that_repeats_its_column_name_is_no_filter(self):
+        frame = self.thefts()
+        reading = nlq._read_question("how many bike thefts in 2020", frame, detect_roles(frame))
+        self.assertEqual(reading.filters, {})
+        # Typed as the data spell it, the value still picks its row.
+        reading = nlq._read_question("how many rows with BIKE_MAKE BIKE", frame, detect_roles(frame))
+        self.assertEqual(reading.filters, {"BIKE_MAKE": ("BIKE",)})
+
+    def test_the_word_that_starts_several_column_names_names_the_rows(self):
+        frame = self.thefts()
+        answer = answer_question("how many bikes in 2020", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 6)
+        self.assertEqual(nlq._prefix_nouns(frame), {"bikes", "bikees"})
+
+    def test_the_word_is_no_partial_name_of_those_columns(self):
+        frame = self.thefts()
+        answer = answer_question("which OCC_YEAR had the most bikes", frame, detect_roles(frame))
+        self.assertEqual(dict(answer.values)["2020"], 6)
+
+    def test_two_columns_sharing_a_word_name_no_rows(self):
+        frame = pd.DataFrame({"bike_make": ["A", "B"], "bike_cost": [1.0, 2.0], "year_built": [2000, 2001]})
+        self.assertEqual(nlq._prefix_nouns(frame), set())
+
+    def test_a_word_with_its_own_id_or_numbered_columns_names_no_rows(self):
+        plots = pd.DataFrame({"Plot Code": ["a"], "Plot Name": ["b"], "Plot Type": ["c"], "Yield": [1.0]})
+        genes = pd.DataFrame({f"Gene_{index}": [1.0] for index in range(4)})
+        self.assertEqual(nlq._prefix_nouns(plots), set())
+        self.assertEqual(nlq._prefix_nouns(genes), set())
+
+
+class GenderValueTests(unittest.TestCase):
+    def test_a_trans_gender_value_still_leaves_a_column_of_sexes(self):
+        frame = pd.DataFrame({
+            "prize": ["Women's Prize for Fiction"] * 4 + ["Booker Prize"] * 6,
+            "gender": ["woman", "woman", "man", "transman", "woman", "man", "man", "woman", "man",
+                       "non-binary"],
+        })
+        answer = answer_question("share of women", frame, detect_roles(frame))
+        self.assertAlmostEqual(dict(answer.figures)["share_percent"], 40.0)
+        self.assertIn("gender = woman", answer.calculation)
+
+
+class LongNameWordTests(unittest.TestCase):
+    def test_a_lower_case_word_is_no_part_of_a_long_name(self):
+        frame = pd.DataFrame({
+            "institution": ["The Crime Writers' Association"] * 3 + ["Booksellers Ltd"] * 3,
+            "role": ["shortlisted", "winner"] * 3,
+            "gender": ["woman", "man", "woman", "woman", "man", "man"],
+        })
+        answer = answer_question("what share of shortlisted writers were women", frame, detect_roles(frame))
+        self.assertTrue(answer is None or "institution" not in answer.calculation)
+
+    def test_a_word_of_the_name_that_follows_still_picks_it(self):
+        frame = pd.DataFrame({
+            "border": ["Southwest Land Border"] * 3 + ["Northern Land Border"] * 3,
+            "encounters": [10, 20, 30, 1, 2, 3],
+        })
+        answer = answer_question("total encounters at the southwest border", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 60)
+
+
+class LevelColumnTests(unittest.TestCase):
+    def losses(self) -> pd.DataFrame:
+        # Each month's losses by area and by county, and again for the whole country.
+        rows = []
+        for month in ("2023-01-01", "2023-02-01"):
+            for region, value in (("1", 10), ("2", 20), ("3", 30)):
+                rows.append({"date": month, "geo_group": "area", "region": region, "losses": value})
+            for region, value in (("Vestland", 25), ("Nordland", 35)):
+                rows.append({"date": month, "geo_group": "county", "region": region, "losses": value})
+            rows.append({"date": month, "geo_group": "country", "region": "Norge", "losses": 60})
+        frame = pd.DataFrame(rows)
+        frame["date"] = pd.to_datetime(frame["date"])
+        return frame
+
+    def test_a_column_of_levels_is_read_at_the_whole(self):
+        frame = self.losses()
+        answer = answer_question("total losses in 2023", frame, detect_roles(frame))
+        # 60 a month for the country, not 180 over its areas, counties and itself.
+        self.assertEqual(answer.value, 120)
+        self.assertIn("geo_group at its total level, country", answer.answer)
+
+    def test_a_part_the_question_names_keeps_its_own_level(self):
+        frame = self.losses()
+        answer = answer_question("total losses in Vestland", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 50)
+
+    def test_levels_that_do_not_add_up_are_no_hierarchy(self):
+        frame = self.losses()
+        frame.loc[frame["geo_group"] == "country", "losses"] = 5
+        self.assertEqual(nlq.total_levels(frame), ())
+
+
+class EventColumnTests(unittest.TestCase):
+    def test_a_month_in_two_columns_is_when_it_happened(self):
+        columns = ["OCC_MONTH", "REPORT_MONTH"]
+        self.assertEqual(nlq._event_column(columns, "thefts in July"), "OCC_MONTH")
+        self.assertEqual(nlq._event_column(columns, "thefts reported in July"), "REPORT_MONTH")
+        dates = ["Created Date", "Closed Date"]
+        self.assertEqual(nlq._event_column(dates, "complaints in July"), "Created Date")
+
+    def test_columns_that_are_not_event_and_later_stay_ambiguous(self):
+        self.assertIsNone(nlq._event_column(["OCC_MONTH", "BIRTH_MONTH"], "in July"))
+        self.assertIsNone(nlq._event_column(["REPORT_MONTH", "CLOSED_MONTH"], "in July"))
+
+    def test_the_question_picks_the_month_it_happened(self):
+        frame = pd.DataFrame({
+            "OCC_MONTH": ["July", "July", "June", "May"],
+            "REPORT_MONTH": ["July", "August", "July", "May"],
+            "COST": [1.0, 2.0, 3.0, 4.0],
+        })
+        answer = answer_question("total COST in July", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 3)
+
+
+class NameColumnTests(unittest.TestCase):
+    def test_a_place_is_the_area_of_that_name_not_its_children(self):
+        frame = pd.DataFrame({
+            "Parent Name": ["England", "England", None, None],
+            "Area Name": ["North East", "London", "England", "Wales"],
+            "Area Type": ["Region", "Region", "England", "Country"],
+            "Value": [10.0, 12.0, 11.0, 14.0],
+        })
+        answer = answer_question("average Value for England", frame, detect_roles(frame))
+        self.assertEqual(answer.value, 11)
+        self.assertIn("Area Name = England", answer.calculation)
+
+    def test_two_name_columns_stay_ambiguous(self):
+        self.assertIsNone(nlq._name_column(["Area Name", "Parent Name", "Region Name"]))
+        self.assertIsNone(nlq._name_column(["Area Name", "Country"]))

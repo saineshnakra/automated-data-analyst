@@ -13,6 +13,7 @@ import ada
 from ada.claims import (
     NUMBER_PATTERN,
     REASONS,
+    _based,
     claimed_number,
     column_unit,
     read_claim,
@@ -1655,3 +1656,172 @@ class SummaryNamedColumnTests(unittest.TestCase):
         self.assertIn("Annual Salary Median", check.message)
         self.assertEqual(wrong.reason, "failed_check", wrong.message)
         self.assertTrue(average.verified, average.message)
+
+
+class EveryHundredTests(unittest.TestCase):
+    def cases(self) -> pd.DataFrame:
+        return pd.DataFrame({
+            "Mode": ["Foodborne"] * 50 + ["Infant"] * 50,
+            "Toxin": ["E"] * 6 + ["A"] * 44 + ["A"] * 25 + ["B"] * 25,
+        })
+
+    def test_so_many_in_every_hundred_is_a_share(self):
+        check = ada.check_claim(self.cases(), "Of the Foodborne cases, about 12 in every 100 had Toxin E.")
+        self.assertTrue(check.verified, check.message)
+        self.assertEqual(check.claimed.value, 12.0)
+        check = ada.check_claim(self.cases(), "Of the Foodborne cases, about 30 of every 100 had Toxin E.")
+        self.assertEqual(check.reason, "failed_check")
+
+    def test_a_rate_per_hundred_thousand_is_not_read_as_a_share(self):
+        check = ada.check_claim(self.cases(), "Toxin E caused about 12 of every 100,000 cases.")
+        self.assertFalse(check.verified)
+        self.assertNotEqual(check.reason, "failed_check")
+
+
+class FoundInTests(unittest.TestCase):
+    def setUp(self):
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        self.folder = Path(holder.name)
+
+    def deaths(self) -> Path:
+        path = self.folder / "overdose_deaths.csv"
+        pd.DataFrame({
+            "Date": [f"{2023 + index % 2}-06-01" for index in range(100)],
+            "Fentanyl": ["Y"] * 68 + [None] * 32,
+            "Location": ["Found in car"] * 2 + ["Residence"] * 98,
+        }).to_csv(path, index=False)
+        return path
+
+    def test_a_thing_found_in_a_share_of_rows_is_its_marked_rows(self):
+        check = ada.check_claim(self.deaths(), "Fentanyl was found in about 68% of the deaths.")
+        self.assertTrue(check.verified, check.message)
+        self.assertNotIn("Location", check.answer.calculation)
+        check = ada.check_claim(self.deaths(), "Fentanyl was found in about 40% of the deaths.")
+        self.assertEqual(check.reason, "failed_check")
+
+    def test_a_description_between_commas_is_left_out(self):
+        claim = "Fentanyl, a synthetic opioid, was found in about 68% of the deaths."
+        check = ada.check_claim(self.deaths(), claim)
+        self.assertTrue(check.verified, check.message)
+
+    def test_a_share_by_a_year_reads_both_ways(self):
+        path = self.folder / "overdose_deaths.csv"
+        pd.DataFrame({
+            "Date": ["2023-06-01"] * 50 + ["2024-06-01"] * 50,
+            "Xylazine": [None] * 50 + ["Y"] * 35 + [None] * 15,
+        }).to_csv(path, index=False)
+        check = ada.check_claim(path, "By 2024, xylazine was found in about 70% of the deaths.")
+        self.assertEqual(check.reason, "ambiguous_intent")
+        self.assertEqual({item.reading for item in check.alternatives}, {"up to 2024", "in 2024"})
+
+
+class LostAmountTests(unittest.TestCase):
+    def test_a_verb_of_amount_adds_up_what_was_lost(self):
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        path = Path(holder.name) / "farm_losses.csv"
+        pd.DataFrame({
+            "date": [f"2023-{month:02d}-01" for month in range(1, 13)],
+            "species": ["salmon"] * 12,
+            "losses": [100.0] * 12,
+        }).to_csv(path, index=False)
+        check = ada.check_claim(path, "Farms lost about 1,200 salmon in 2023.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("sum(losses)", check.answer.calculation)
+        # "on average" asks for the average row.
+        check = ada.check_claim(path, "Farms lost 100 salmon on average in 2023.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("mean(losses)", check.answer.calculation)
+
+
+class BoundBesideShareTests(unittest.TestCase):
+    def setUp(self):
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        self.path = Path(holder.name) / "overdose_deaths.csv"
+        pd.DataFrame({
+            "Age": [25, 30, 35, 40, 44, 45, 50, 55, 60, 65],
+            "Lag": [3, 5, 10, 12, 19, 20, 25, 30, 40, 60],
+        }).to_csv(self.path, index=False)
+
+    def test_an_age_or_younger_bounds_the_rows_a_share_is_of(self):
+        check = ada.check_claim(self.path, "Half of the people who died were 44 or younger.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("Age at most 44", check.answer.calculation)
+
+    def test_a_span_written_within_bounds_the_rows(self):
+        check = ada.check_claim(self.path, "Half of the deaths came within 19 Lag.")
+        self.assertNotEqual(check.reason, "unsupported_analysis", check.message)
+
+    def test_a_share_of_a_group_past_a_bound_is_the_number_claimed(self):
+        question, number, problem = read_claim(
+            "More than 85% of the babies born to mothers under 20 were born outside marriage.", ["Age"])
+        self.assertEqual(problem, "")
+        self.assertEqual(number.value, 85)
+
+
+class BaseFormTests(unittest.TestCase):
+    def test_a_share_in_words_of_a_counted_base(self):
+        candies = pd.DataFrame({"name": [f"c{index}" for index in range(10)],
+                                "hard": [1, 0, 0, 0, 0, 0, 0, 0, 0, 1]})
+        check = ada.check_claim(candies, "Fewer than one in four of the 10 candies is hard.")
+        self.assertTrue(check.verified, check.message)
+        check = ada.check_claim(candies, "Fewer than one in four of the 12 candies is hard.")
+        self.assertEqual(check.reason, "missing_context")
+
+    def test_a_possessive_before_the_base_count(self):
+        _, base = _based("Of the District's 187 homicides in 2024, four in five were committed with a gun.")
+        self.assertEqual(base, ("187", "homicides in 2024"))
+
+
+class PlaceScopeTests(unittest.TestCase):
+    def test_a_country_no_column_holds_is_the_whole_table(self):
+        births = pd.DataFrame({"Year": [2021, 2022, 2023], "Births": [90, 100, 120]})
+        check = ada.check_claim(births, "Births in Ireland rose by 20% between 2022 and 2023.")
+        self.assertTrue(check.verified, check.message)
+        self.assertTrue(any("the place the whole table covers" in item for item in check.assumptions))
+
+    def test_a_country_beside_a_column_of_countries_names_other_rows(self):
+        births = pd.DataFrame({"Year": [2022, 2023] * 3,
+                               "Country": ["France"] * 2 + ["Spain"] * 2 + ["Italy"] * 2,
+                               "Births": [100, 120, 50, 60, 70, 84]})
+        check = ada.check_claim(births, "Births in Ireland rose by 20% between 2022 and 2023.")
+        self.assertFalse(check.verified)
+
+
+class HourlyRowTests(unittest.TestCase):
+    def prices(self) -> pd.DataFrame:
+        hours = pd.date_range("2025-01-01", periods=48, freq="h")
+        return pd.DataFrame({"Datetime": hours, "Price": [-5.0] * 11 + [40.0] * 37})
+
+    def test_hours_in_a_table_of_one_reading_an_hour_are_rows(self):
+        check = ada.check_claim(self.prices(), "Prices were negative for 11 hours in 2025.")
+        self.assertTrue(check.verified, check.message)
+        self.assertTrue(any("each row of the table is one hour" in item for item in check.assumptions))
+        self.assertEqual(ada.check_claim(self.prices(), "Prices were negative for 30 hours in 2025.").reason,
+                         "failed_check")
+
+    def test_hours_in_a_table_of_several_series_are_no_rows(self):
+        frame = pd.concat([self.prices().assign(Country="DE"), self.prices().assign(Country="FR")])
+        check = ada.check_claim(frame, "Prices were negative for 22 hours in 2025.")
+        self.assertFalse(check.verified)
+
+
+class LongTableTests(unittest.TestCase):
+    def test_an_indicator_named_says_what_the_value_holds(self):
+        frame = pd.DataFrame({
+            "Indicator Name": ["Smoking prevalence"] * 6 + ["Obesity prevalence"] * 6,
+            "Year": list(range(2020, 2026)) * 2,
+            "Value": [20.0, 19.0, 18.0, 17.0, 16.0, 15.0, 30.0, 31.0, 32.0, 33.0, 34.0, 35.0],
+        })
+        check = ada.check_claim(frame, "Smoking prevalence fell by about 1 point a year since 2020.")
+        self.assertTrue(check.verified, check.message)
+        note = "Read Value as the value of Indicator Name"
+        self.assertTrue(any(note in item for item in check.assumptions))
+
+    def test_a_fraction_of_a_point_is_a_number_of_points(self):
+        _, number, problem = read_claim("Smoking fell by about three quarters of a percentage point a year.",
+                                        ["Value"])
+        self.assertEqual(problem, "")
+        self.assertEqual(number.value, 0.75)

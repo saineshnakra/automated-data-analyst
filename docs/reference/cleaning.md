@@ -421,7 +421,19 @@ when several words start with it, or when the only match is a code in capitals
 another, by a letter added, dropped or two neighbours swapped (`Hipanic` and
 `Hispanic`), is merged into the other when it is at most a fifth as common, as
 a typo is; labels with digits or other marks (`Type A`, `Type B`) never count.
-A note names each merge.
+A spelling on ten rows or more that never sits beside the same value of
+another column of 50 labels or fewer as the commoner one is a label of its
+own, not a typo: `country` beside `Norge` only and `county` beside the
+counties stay apart. A note names each merge.
+
+## Single years beside spans
+
+A text column named for years or a time period that holds single years and
+spans of years (`2019`, `2023 - 25`, `2019/20`) gets a new column, named
+after it with "year" added, holding the single years and nothing for the
+spans: a span is no one year. The new column then gives the table its
+dates. A column of spans alone gets none. A note says how many rows hold a
+span.
 
 ## One-hot columns
 

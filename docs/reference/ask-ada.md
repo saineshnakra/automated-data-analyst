@@ -371,6 +371,15 @@ each word is claimed, in this order, by:
     superplasticizer above 0"). In a table of counts, the first plural that
     names nothing else names the cases the counts count ("female
     applicants"); a second one ("people who were cyclists") names nothing.
+    A word that starts the names of three or more columns and is no
+    column's whole name ("bike" in `BIKE_MAKE`, `BIKE_TYPE` and `BIKE_COST`)
+    names what each row is about, so "how many bikes" counts rows; a unit of
+    time ("year" in `year_built`) never does. A value that only repeats its
+    column's name ("BIKE" in `BIKE_MAKE`) picks rows only when typed as the
+    data spell it. A value two columns hold, one named for when a thing
+    happened (OCC_MONTH, Created Date) and the other for when it was
+    reported or closed, is read in the first, unless the question says
+    "reported".
     A plural formed from a one-word value ("senators" where `chamber` holds
     senate, "democrats" for Democratic) is not every row: the question is
     refused and names the value to write instead.
@@ -389,7 +398,12 @@ each word is claimed, in this order, by:
     shipped, admitted, discharged, born, installed, downloaded, registered,
     enrolled), and the totals read as counts, not money.
 16. **"missing"**, "null", "blank" or "empty" not attached to a column: a
-    question about missing values.
+    question about missing values. A column that holds only a mark or a
+    blank ("Y" where xylazine was found, "Y (PTCH)" as a note on it) reads a
+    blank as a mark not made: "with", "had", "involving" before it, or "was
+    found in", "turned up in" after it, keep its marked rows, "without"
+    keeps the blank ones, and a share is of every row, not of the marked
+    rows alone. The answer says so.
 17. **Column words** ("column", "variable") right after a column's name ("the
     pH column") or in a question about missing values, and **filter cues**
     ("within", "among") right before a filter or condition ("within CLASS 0").

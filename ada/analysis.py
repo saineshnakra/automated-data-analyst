@@ -7,7 +7,7 @@ import re
 import unicodedata
 import warnings
 from dataclasses import asdict, dataclass
-from functools import cached_property
+from functools import cached_property, partial
 from typing import Any
 
 import numpy as np
@@ -1146,6 +1146,31 @@ def _fills_part(values: pd.Series, bounds: tuple[int, int]) -> bool:
     return bool((values % 1 == 0).all()) and bool(values.between(*bounds).all())
 
 
+# A year as a time column writes it, and a span of years: "2019", "2023 - 25", "2019/20", "2018-2020".
+_SINGLE_YEAR = r"(?:1[89]|20)\d{2}"
+_YEAR_SPAN = rf"{_SINGLE_YEAR}\s*(?:-|–|/|to)\s*(?:\d{{2}}|{_SINGLE_YEAR})"
+# Name words of a column that may hold years.
+_TIME_NAME_WORDS = frozenset({"year", "years", "yr", "period", "time"})
+
+
+def _single_years(column: str, series: pd.Series) -> pd.Series | None:
+    """The single years of a year-named text column that also holds spans of years, as numbers, or None.
+
+    The spans ("2023 - 25") are left missing: a span is no one year, and over
+    the single years a trend or a year's value stays one reading a year.
+    """
+    if is_numeric_dtype(series) or not set(normalized_name(str(column)).split()) & _TIME_NAME_WORDS:
+        return None
+    text = series.dropna().astype(str).str.strip()
+    single = text.str.fullmatch(_SINGLE_YEAR)
+    span = text.str.fullmatch(_YEAR_SPAN)
+    if text.empty or not (single | span).all() or not span.any() or text[single].nunique() < 2:
+        return None
+    stripped = series.astype("string").str.strip()
+    years = stripped.where(stripped.str.fullmatch(_SINGLE_YEAR).fillna(False))
+    return to_numbers(years.astype(object)).astype("float64")
+
+
 def _year_columns(
     frame: pd.DataFrame, requested: str | None
 ) -> tuple[str, str | None, dict[str, str]] | None:
@@ -1358,6 +1383,26 @@ def _decimal_comma(text: pd.Series) -> bool:
 MAX_LABELS_TO_RESPELL = 50
 RARE_SPELLING = 0.2
 MIN_RESPELT_LETTERS = 5
+# A spelling on this many rows or more that sits beside other values than the common one is a label of its
+# own: "country" only beside "Norge", "county" beside the counties.
+MIN_LABEL_ROWS = 10
+
+
+def _marks_other_rows(frame: pd.DataFrame, column: str, rows: pd.Series, others: pd.Series) -> bool:
+    """Whether two sets of rows never share a value of another text column of few labels."""
+    for other in frame.columns:
+        series = frame[other]
+        if other == column or is_numeric_dtype(series) or is_bool_dtype(series) or (
+            is_datetime64_any_dtype(series)
+        ):
+            continue
+        if series.nunique() > MAX_LABELS_TO_RESPELL:
+            continue
+        first = set(series[rows].dropna().astype(str))
+        second = set(series[others].dropna().astype(str))
+        if first and second and not first & second:
+            return True
+    return False
 
 
 def _one_letter_apart(first: str, second: str) -> bool:
@@ -1374,7 +1419,9 @@ def _one_letter_apart(first: str, second: str) -> bool:
     return False
 
 
-def _respelt_labels(distinct: _Distinct, column: str) -> tuple[dict, str | None]:
+def _respelt_labels(
+    distinct: _Distinct, column: str, frame: pd.DataFrame | None = None
+) -> tuple[dict, str | None]:
     """Merge labels that are one label written another way: "M" with "male", "Hipanic" with "Hispanic".
 
     Two cases, kept conservative. A single letter is the first letter of
@@ -1383,8 +1430,11 @@ def _respelt_labels(distinct: _Distinct, column: str) -> tuple[dict, str | None]
     apart (see ``_one_letter_apart``) where the rarer is at most RARE_SPELLING
     of the other, as a typo is; "Type A" and "Type B" differ in a letter that
     is not a typo, so letters other than a-z never count. The single letter
-    gives way to the word, and the rarer spelling to the commoner. Returns
-    the mapping from each spelling dropped to the one kept and a note.
+    gives way to the word, and the rarer spelling to the commoner. A spelling
+    on MIN_LABEL_ROWS rows or more that never sits beside the same value of
+    another column of ``frame`` as the commoner one ("country" beside "Norge",
+    "county" beside the counties) is a label of its own. Returns the mapping
+    from each spelling dropped to the one kept and a note.
     """
     counts = pd.Series(distinct.counts, index=distinct.values.to_numpy())
     counts = counts[[isinstance(label, str) and count > 0 for label, count in counts.items()]]
@@ -1407,6 +1457,8 @@ def _respelt_labels(distinct: _Distinct, column: str) -> tuple[dict, str | None]
                 rare != common and rare not in mapping and common not in mapping
                 and counts[rare] <= RARE_SPELLING * counts[common]
                 and _one_letter_apart(keys[rare], keys[common])
+                and not (frame is not None and counts[rare] >= MIN_LABEL_ROWS and _marks_other_rows(
+                    frame, column, distinct.column().eq(rare), distinct.column().eq(common)))
             ):
                 mapping[rare] = common
                 break
@@ -2008,7 +2060,7 @@ def clean_dataframe(
         if restored is not None:
             distinct, changed = distinct.relabel(restored), True
         if not is_identifier_name(column):
-            for merge in (_merge_label_variants, _respelt_labels):
+            for merge in (_merge_label_variants, partial(_respelt_labels, frame=cleaned)):
                 mapping, merge_note = merge(distinct, column)
                 if mapping:
                     notes.append(merge_note)
@@ -2016,6 +2068,18 @@ def clean_dataframe(
                     changed = True
         if changed:
             cleaned[column] = distinct.column()
+
+    # "Time period" holding "2019" and "2023 - 25": the single years get a column of their own.
+    for column in list(still_text):
+        years = _single_years(column, cleaned[column])
+        name = f"{column} year"
+        if years is not None and name not in cleaned.columns:
+            cleaned.insert(cleaned.columns.get_loc(column) + 1, name, years)
+            spans = int(cleaned[column].notna().sum() - years.notna().sum())
+            notes.append(
+                f"{column} holds single years and spans of years; its single years were copied to a new "
+                f"column, {name}, and the {spans:,} rows with a span left out of it."
+            )
 
     # Runs after inference, so year columns held as text have become numbers.
     year_columns = _year_columns(cleaned, None if elapsed else date)
