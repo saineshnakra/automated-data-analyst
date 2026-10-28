@@ -93,7 +93,11 @@ Two parsing rules apply to CSV and Excel alike:
 
 `list_excel_sheets` returns the worksheet names, or an empty list for a CSV.
 When a workbook has more than one sheet, `app.py` shows a picker and passes the
-choice through. With no choice, the first sheet is read.
+choice through. With no choice, the first sheet is read, unless it holds only
+notes: a first sheet with a cell of prose (over 80 characters) and fewer than
+one number in twenty filled cells, as the Maddison Project's "Notes" sheet is.
+Then the sheet with the most numbers is read ("Full data"), its name is kept
+in the source's `sheet`, and a note says so.
 
 A file with an Excel extension that is not a valid workbook raises "The file
 is not a valid Excel workbook." rather than a raw `BadZipFile` or `KeyError`.
@@ -112,7 +116,7 @@ is not a valid Excel workbook." rather than a raw `BadZipFile` or `KeyError`.
 | Situation | Behavior |
 |---|---|
 | Empty file | `ValueError`: "The uploaded file is empty." |
-| Multi-sheet workbook, no sheet chosen | First sheet |
+| Multi-sheet workbook, no sheet chosen | First sheet; after a sheet of notes, the sheet with the most numbers |
 | `.xlsx` that is not a workbook | `ValueError` with a readable message |
 | CSV with a byte-order mark | Handled by `utf-8-sig` or `utf-16` |
 | Semicolon, tab or pipe CSV | Detected on the re-parse |

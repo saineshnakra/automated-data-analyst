@@ -4,6 +4,7 @@ import unittest
 import numpy as np
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
+from table_helpers import deaths_by_cause_wide
 
 from ada.analysis import (
     _numeric_from_text,
@@ -694,6 +695,36 @@ class MissingMarkerTests(unittest.TestCase):
         frame = pd.DataFrame({"Grade": ["A", "B", "-", "A"]})
         cleaned, _ = clean_dataframe(frame)
         self.assertEqual(int(cleaned["Grade"].isna().sum()), 0)
+
+    def test_quarters_are_read_as_the_first_day_of_each(self):
+        # INE writes "2026QIII"; others "2026Q3", "2026 T3" or "Q3 2026". Read as numbers they were all
+        # 2026.
+        spellings = (["2025QIV", "2026QI", "2026QII", "2026QIII"], ["2025Q4", "2026Q1", "2026Q2", "2026Q3"],
+                     ["2025 T4", "2026 T1", "2026 T2", "2026 T3"],
+                     ["Q4 2025", "Q1 2026", "Q2 2026", "Q3 2026"])
+        for quarters in spellings:
+            frame = pd.DataFrame({"Periodo": quarters, "Total": [1.5, 2.5, 3.5, 4.5]})
+            cleaned, report = clean_dataframe(frame)
+            self.assertEqual(cleaned["Periodo"].dt.strftime("%Y-%m").tolist(),
+                             ["2025-10", "2026-01", "2026-04", "2026-07"])
+            self.assertTrue(any("holds quarters" in note for note in report.notes), report.notes)
+        # A code that only looks like one stays a code.
+        codes = pd.DataFrame({"code": ["Q7", "Q8", "Q9", "Q7"], "v": [1.0, 2.0, 3.0, 4.0]})
+        cleaned, _ = clean_dataframe(codes)
+        self.assertEqual(cleaned["code"].tolist(), ["Q7", "Q8", "Q9", "Q7"])
+
+    def test_months_written_with_an_m_are_read_as_the_first_day_of_each(self):
+        # Statistics Norway writes "1993M01"; read as text, the months could not be put in order or by year.
+        frame = pd.DataFrame({"month": ["2025M11", "2025M12", "2026M01", "2026M1"],
+                              "MWh": [1.0, 2.0, 3.0, 4.0]})
+        cleaned, report = clean_dataframe(frame)
+        self.assertEqual(cleaned["month"].dt.strftime("%Y-%m").tolist(),
+                         ["2025-11", "2025-12", "2026-01", "2026-01"])
+        self.assertTrue(any("holds months" in note for note in report.notes), report.notes)
+        # A month number past 12, or a label among other text, stays as it is.
+        mixed = pd.DataFrame({"label": ["2025M13", "2025M02", "total", "notes"], "v": [1.0, 2.0, 3.0, 4.0]})
+        self.assertEqual(clean_dataframe(mixed)[0]["label"].tolist(),
+                         ["2025M13", "2025M02", "total", "notes"])
 
     def test_months_written_as_numbers_are_read_as_dates(self):
         periods = [2006.09, 2006.1, 2006.11, 2006.12, 2007.01]
@@ -1631,3 +1662,27 @@ class YearSpanTests(unittest.TestCase):
         cleaned, _ = clean_dataframe(frame)
 
         self.assertNotIn("Period year", cleaned.columns)
+
+
+class WideYearTableTests(unittest.TestCase):
+    """Statistics Finland's deaths by cause: a column for each year, "2019 Deaths" to "2024 Deaths"."""
+
+    def test_a_column_for_each_year_is_read_as_a_row_for_each_year(self):
+        cleaned, report = clean_dataframe(deaths_by_cause_wide())
+        self.assertEqual(cleaned.columns.tolist(), ["Wellbeing services county", "Underlying cause of death",
+                                                    "Year", "Deaths"])
+        self.assertEqual(len(cleaned), 30 * 6)
+        whole = cleaned[(cleaned["Wellbeing services county"] == "WHOLE COUNTRY")
+                        & (cleaned["Underlying cause of death"] == "00-54 Total")]
+        self.assertTrue(is_datetime64_any_dtype(cleaned["Year"]))
+        self.assertEqual(dict(zip(whole["Year"].dt.year, whole["Deaths"], strict=True))[2022], 1080)
+        self.assertTrue(any("2019 Deaths to 2024 Deaths each hold one year of Deaths" in note
+                            for note in report.notes))
+
+    def test_a_few_year_columns_or_mixed_names_stay_as_they_are(self):
+        wide = deaths_by_cause_wide()
+        few = wide.drop(columns=["2023 Deaths", "2024 Deaths"])
+        self.assertIn("2019 Deaths", clean_dataframe(few)[0].columns)
+        mixed = wide.rename(columns={"2024 Deaths": "2024 Births"})
+        self.assertIn("2024 Births", clean_dataframe(mixed)[0].columns)
+

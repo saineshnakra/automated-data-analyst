@@ -229,8 +229,20 @@ SHERROD beside Cand_Office = S, which "Senate" names), the same number is
 made for every group the closing words keep, and the claim holds only if
 the group named has the highest (or, for "the fewest", the lowest); "raised
 more than any other House candidate, almost $23 million" is read the same
-way. Otherwise, unless the answer itself ranks the groups, it gets
-`missing_context`. A failure from such a rank, or from a record, stands
+way. When the closing words only name the groups ("Texas has 1,477 agencies,
+the most of any state", "more than any other state"), the claim is read
+without them and the rank is checked after, over every state; each of its
+words must name a value, the group column or the rows. Otherwise, unless the
+answer itself ranks the groups, it gets `missing_context`.
+
+"Sales rose by about a third in 2020, to 1,200" gives the size of a change
+and the level it reached: each is checked as its own claim ("rose by about a
+third in 2020" and "rose to 1,200 in 2020"), and the claim holds when both
+do and fails when either does, with the message saying which.
+
+"Pennsylvania and Texas each have 1,477 agencies" is checked for each name on
+its own: it holds when both do, with both numbers in the assumptions, and
+fails when either does, with the message saying which. A failure from such a rank, or from a record, stands
 even when the claim's words were read through a column ADA guessed, since
 the guess gave the claim's own number.
 
@@ -303,14 +315,20 @@ the year must also give the lowest value of the years up to it (a record high,
 the highest). A record with no word of height takes it from the verb: "rose to
 a record 11.3 million" is a record high. "the fewest of any year", alone or
 "since records began", is a record low set against every year, before and
-after; with a year after "since" it is left as written. "rose over 30%" is the size of the rise, not a level. The
+after; "the most of any year since 2016" is a record high set against the
+years from 2016. "hit a record high of more than 63,000 in 2022" is that
+level in 2022, and the record is checked as above. Strong verbs of change
+before "by", "to" or a percent read as plain ones: "collapsed by more than
+80%" fell by it, "soared 40%" rose; "jumped 8.95 metres" is no change. "rose over 30%" is the size of the rise, not a level. The
 plural before the verb names what changed: "Fox rescues nearly doubled" is the
 number of rescues when no column is called rescues. So does the file's noun
 for its rows at the head of the claim, before "in", a participle or a
 relative word: "Terry stops in Seattle fell", "Notices citing non-payment
 rose", and for a level "Eviction notices in San Francisco fell to 778 in
 2020", which counts the notices rather than averaging a column ADA would
-have guessed. A fraction before a verb needs no "of": "nearly half went on to
+have guessed. In a table whose rows are deaths, "deaths" names the rows as
+"fatalities" does: "Deaths rose by about 8% between 2020 and 2022" counts
+them. A fraction before a verb needs no "of": "nearly half went on to
 college" is read as "nearly half of" is.
 
 A change in percent of a rate (a column ADA gives changes of in points) is
@@ -475,6 +493,13 @@ lowest reading in scope, not a fall from one period to the next, and "hit
 37 °C" the highest; "averages a high of about 24 °C" is the mean of the
 maximum. With no such word, or with words for both, no column is picked.
 
+In a table of counts whose one column of numbers is `crimes` (dates and
+years aside), a value the claim names that is not a total level says what
+that column holds on its rows: "Motorcycle thefts in Malaysia fell by about
+70%" is the change in `crimes` for type = theft_vehicle_motorcycle, not a
+guess. With a second column of numbers, the column is still a guess and the
+claim gets `missing_context`.
+
 A claim that names no column can still name its kind of quantity: by its
 unit ("4000 g" is a mass) or by a verb ("weigh", "lasted", or "measure" with
 a unit). ADA then tries each column recorded in a unit of that kind, and
@@ -552,7 +577,15 @@ the claim, so it gets `missing_context` with `agreement: "mismatch"` and the
 question "Is the number about death_height_metres, or about another column?".
 So does a count of rows whose words were read as the table's name but not as
 its rows: "Visits to the park" in `national-park-visits/national_parks.csv`,
-whose rows are park-years, may count a column of visits.
+whose rows are park-years, may count a column of visits. When no column could
+hold such a count (every number is the date, an ID, a code or the same on
+every row, as `CANTIDAD` is 1 in Colombia's road deaths), each row is one of
+what the table is named for, and the count of rows stands.
+
+A country's name that a column of smaller places also holds (Colombia, a town
+in Huila, among 994 municipalities) is also read as the whole table: when the
+town and the whole table give other verdicts, the claim gets
+`ambiguous_intent` with both numbers.
 
 When the claim is unverified for a reason a person can resolve,
 `clarification` holds the smallest question that would let the check go
@@ -651,7 +684,9 @@ Besides the number, a check records what could make the answer misleading:
   "Smith"), the claim may mean them all, and it gets `missing_context` naming
   them. This holds for a value a share counts as for one that picks the rows.
   In a column of a few categories,
-  "Wheelchair Men" is a category of its own, not "Men" written another way.
+  "Wheelchair Men" is a category of its own, not "Men" written another way,
+  and in a column of places a value with more after a comma is another place
+  ("China, Hong Kong SAR" beside "China").
   (A filter already matches a value in any capitals.) A value with
   "non", "not" or "no" before the words is the opposite, not another
   spelling ("non-USA").

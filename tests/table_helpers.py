@@ -285,3 +285,75 @@ def eviction_notices() -> pd.DataFrame:
         "data_as_of": pd.to_datetime(["2025-01-01"] * 16),
     })
 
+
+
+def deaths_by_cause_wide() -> pd.DataFrame:
+    """Deaths by area and cause with a column for each year, "2019 Deaths" to "2024 Deaths", as Statistics
+    Finland gives them. Areas nest (WHOLE COUNTRY is the mainland and Åland; the mainland is two counties;
+    MA2 ÅLAND repeats HVA91 Åland), and so do causes (00-54 Total is the three single causes; 04-22
+    Neoplasms is the two cancers). The whole country has 1,080 deaths in 2022, the most of any year, and
+    864 in 2019."""
+    leaves = {"HVA01 East Uusimaa wellbeing services county": 3, "HVA05 Southwest Finland wellbeing services "
+              "county": 5, "HVA91 Åland": 1}
+    causes = {"04 Malignant neoplasm of lung": 2, "05 Malignant neoplasm of breast": 1, "27 Ischaemic heart "
+              "diseases": 3}
+    years = range(2019, 2025)
+    per_year = {2019: 16, 2020: 17, 2021: 18, 2022: 20, 2023: 19, 2024: 18}
+
+    def deaths(areas: list[str], kinds: list[str], year: int) -> int:
+        return sum(leaves[area] * causes[kind] * per_year[year] for area in areas for kind in kinds)
+
+    areas = {
+        "WHOLE COUNTRY": list(leaves), "MA1 MAINLAND FINLAND": list(leaves)[:2],
+        **{area: [area] for area in list(leaves)[:2]}, "MA2 ÅLAND": ["HVA91 Åland"],
+        "HVA91 Åland": ["HVA91 Åland"],
+    }
+    kinds = {"00-54 Total": list(causes), "04-22 Neoplasms": list(causes)[:2],
+             **{kind: [kind] for kind in causes}}
+    rows = [{"Wellbeing services county": area, "Underlying cause of death": kind,
+             **{f"{year} Deaths": deaths(parts, members, year) for year in years}}
+            for area, parts in areas.items() for kind, members in kinds.items()]
+    return pd.DataFrame(rows)
+
+
+def crimes_by_type() -> pd.DataFrame:
+    """Crimes by state, category, type and year, as Malaysia's police give them: the state Malaysia is the
+    country's total, and type "all" is each category's. Rapes in Malaysia: 1,600 in 2016 rising by 50 a
+    year to 1,950 in 2023, the most of any year; motorcycle thefts fall from 30,000 in 2016 to 10,400 in
+    2023, 65.3% fewer."""
+    rows = []
+    for year in range(2016, 2024):
+        step = year - 2016
+        counts = {
+            "Selangor": {"assault": {"rape": 400 + 10 * step, "murder": 50},
+                         "property": {"theft_vehicle_motorcycle": 10_000 - 1_000 * step,
+                                      "theft_other": 5_000}},
+            "Johor": {"assault": {"rape": 1_200 + 40 * step, "murder": 40},
+                      "property": {"theft_vehicle_motorcycle": 20_000 - 1_800 * step, "theft_other": 4_000}},
+        }
+        for state, categories in counts.items():
+            for category, types in categories.items():
+                for kind, count in {"all": sum(types.values()), **types}.items():
+                    rows.append({"state": state, "category": category, "type": kind,
+                                 "date": f"{year}-01-01", "crimes": count})
+        for category in ("assault", "property"):
+            for kind in {"all", *counts["Selangor"][category]}:
+                total = sum(row["crimes"] for row in rows
+                            if row["date"] == f"{year}-01-01" and row["category"] == category
+                            and row["type"] == kind and row["state"] != "Malaysia")
+                rows.append({"state": "Malaysia", "category": category, "type": kind, "date": f"{year}-01-01",
+                             "crimes": total})
+    return pd.DataFrame(rows)
+
+
+def road_deaths_colombia() -> pd.DataFrame:
+    """Road deaths in Colombia, one row each as the Policía Nacional gives them: a municipality code (CODIGO
+    DANE), CANTIDAD of 1 on every row, and a town called Colombia among the municipalities. 2024: 6 deaths in
+    Antioquia, 4 in Cauca and 1 in Colombia (Huila), 11 in all; 2025: 7 in Antioquia and 5 in Cauca."""
+    places = {"Medellín": ("ANTIOQUIA", 5001000), "Popayán": ("CAUCA", 19001000),
+              "Colombia": ("HUILA", 41206000)}
+    deaths = {2024: {"Medellín": 6, "Popayán": 4, "Colombia": 1}, 2025: {"Medellín": 7, "Popayán": 5}}
+    rows = [{"DEPARTAMENTO": places[town][0], "MUNICIPIO": town, "CODIGO DANE": places[town][1],
+             "FECHA HECHO": f"{day + 1:02d}/03/{year}", "CANTIDAD": 1}
+            for year, towns in deaths.items() for town, count in towns.items() for day in range(count)]
+    return pd.DataFrame(rows)

@@ -937,6 +937,43 @@ def _parse_dates(values: pd.Series, *, dayfirst: bool) -> pd.Series:
         return parsed.mask(_time_only(today).reindex(parsed.index, fill_value=False))
 
 
+# A quarter of a year as statistics offices write it: "2026Q3", "2026QIII", "2026 Q3", "2026-Q3", "2026T3"
+# (INE's trimestre), "Q3 2026".
+_QUARTER = re.compile(
+    r"^\s*(?:(?P<year>(?:1[89]|20)\d{2})\s*[-/ ]?\s*[QqTtKk]\s*(?P<quarter>[1-4]|IV|I{1,3})|"
+    r"[Qq](?P<lead>[1-4])\s*[-/ ]?\s*(?P<later>(?:1[89]|20)\d{2}))\s*$"
+)
+_ROMAN_QUARTERS = {"I": 1, "II": 2, "III": 3, "IV": 4}
+
+
+def _quarter_starts(values: pd.Series) -> pd.Series:
+    """The first day of each quarter written as one, missing for anything else."""
+    def start(value: object) -> pd.Timestamp | None:
+        found = _QUARTER.match(str(value)) if isinstance(value, str) else None
+        if found is None:
+            return None
+        year = int(found.group("year") or found.group("later"))
+        quarter = found.group("quarter") or found.group("lead")
+        number = _ROMAN_QUARTERS.get(quarter.upper(), None) if not quarter.isdigit() else int(quarter)
+        return pd.Timestamp(year, 3 * number - 2, 1)
+
+    return pd.to_datetime(values.map(start), errors="coerce")
+
+
+# A month as Statistics Norway, Eurostat and other statistics offices write it: "1993M01", "2025M1",
+# "2025-M12".
+_MONTH_LABEL = re.compile(r"^\s*(?P<year>(?:1[89]|20)\d{2})\s*-?\s*M(?P<month>0?[1-9]|1[0-2])\s*$")
+
+
+def _month_starts(values: pd.Series) -> pd.Series:
+    """The first day of each month written as "1993M01", missing for anything else."""
+    def start(value: object) -> pd.Timestamp | None:
+        found = _MONTH_LABEL.match(value) if isinstance(value, str) else None
+        return pd.Timestamp(int(found.group("year")), int(found.group("month")), 1) if found else None
+
+    return pd.to_datetime(values.map(start), errors="coerce")
+
+
 def _dated(distinct: _Distinct, *, dayfirst: bool) -> pd.Series:
     return distinct.spread(lambda cells: _parse_dates(cells, dayfirst=dayfirst))
 
@@ -1935,6 +1972,9 @@ def clean_dataframe(
     original_rows, original_columns = cleaned.shape
     cleaned.columns = _make_unique_columns(cleaned.columns)
     notes: list[str] = [header_note] if header_note else []
+    if sheet := dataframe.attrs.get("sheet"):
+        notes.insert(0, f'The first sheet holds only notes, so the data were read from the sheet "{sheet}", '
+                        "the one with the most numbers.")
     notes.extend(_duplicate_header_notes(frame.columns, cleaned))
 
     # Each text column is factorised once here, and every later check on it
@@ -2007,6 +2047,26 @@ def clean_dataframe(
         still_text[column] = distinct
 
         if non_null_before == 0:
+            continue
+
+        quarters = distinct.spread(_quarter_starts)
+        if quarters.notna().sum() / non_null_before >= named_date_ratio:
+            # "2026QIII", "2026Q3", "2026 T3": INE and Eurostat quarters, each read as its first day, so the
+            # four quarters of a year are never read as the year four times.
+            example = distinct.values.dropna().iloc[0]
+            notes.append(f'{column} holds quarters ("{example}"), read as the first day of each quarter.')
+            cleaned[column] = quarters
+            datetime_columns_inferred += 1
+            del still_text[column]
+            continue
+        months = distinct.spread(_month_starts)
+        if months.notna().sum() / non_null_before >= named_date_ratio:
+            # "1993M01": Statistics Norway's months, each read as its first day rather than as text.
+            example = distinct.values.dropna().iloc[0]
+            notes.append(f'{column} holds months ("{example}"), read as the first day of each month.')
+            cleaned[column] = months
+            datetime_columns_inferred += 1
+            del still_text[column]
             continue
 
         named_like_a_date = any(token in column.lower() for token in date_tokens)
@@ -2237,6 +2297,13 @@ def clean_dataframe(
         notes.append(f"{column} holds months written as numbers, 2006.10 for October 2006, so it was read as "
                      "dates on the first day of each month.")
 
+    # Statistics Finland's deaths by cause give "1969 Deaths" to "2024 Deaths", a column for each year: a row
+    # for each year instead, so a year is a date like any other.
+    wide = _year_wide_columns(cleaned) if date is None else None
+    if wide:
+        cleaned, note = _years_as_rows(cleaned, *wide)
+        notes.append(note)
+
     # Runs after inference, so year columns held as text have become numbers.
     year_columns = _year_columns(cleaned, None if elapsed else date, clock_columns)
     if year_columns:
@@ -2307,6 +2374,50 @@ def clean_dataframe(
         blanked_codes=blanked_codes,
     )
     return cleaned, report
+
+
+# A column named for one year, alone or before the name of what it holds: "2024", "2024 Deaths".
+_YEAR_COLUMN = re.compile(r"^\s*(?P<year>(?:1[6-9]|20)\d{2})(?:\s*[-_: ]\s*(?P<rest>[^\d].*?))?\s*$")
+# The fewest year columns, and the least share of the table's columns, that make a table of one column per
+# year.
+MIN_YEAR_COLUMNS = 5
+MIN_YEAR_COLUMN_SHARE = 0.5
+
+
+def _year_wide_columns(frame: pd.DataFrame) -> tuple[list[str], list[int], str] | None:
+    """The columns that each hold one year of the same figure, their years, and the figure's name, or None.
+
+    They must all be named by a year and the same words after it ("1969 Deaths" to "2024 Deaths"; "1960" to
+    "2023" for World Bank tables, whose figure is called Value), hold numbers, and be most of the table.
+    """
+    found = [(str(column), _YEAR_COLUMN.match(str(column))) for column in frame.columns]
+    named = [(column, match) for column, match in found if match]
+    if len(named) < MIN_YEAR_COLUMNS or len(named) < MIN_YEAR_COLUMN_SHARE * len(frame.columns):
+        return None
+    rests = {(match.group("rest") or "").strip().lower() for _, match in named}
+    years = [int(match.group("year")) for _, match in named]
+    if len(rests) != 1 or len(set(years)) != len(years):
+        return None
+    columns = [column for column, _ in named]
+    if not all(is_numeric_dtype(frame[column]) and not is_bool_dtype(frame[column]) for column in columns):
+        return None
+    rest = (named[0][1].group("rest") or "").strip()
+    return columns, years, rest or "Value"
+
+
+def _years_as_rows(frame: pd.DataFrame, columns: list[str], years: list[int], measure: str) -> tuple[
+        pd.DataFrame, str]:
+    """The table with a row for each year of each row, the year in a column called Year and the figure in
+    one called ``measure``."""
+    keys = [column for column in frame.columns if column not in columns]
+    year_name = "Year" if "Year" not in keys else "Year of figure"
+    value_name = measure if measure not in keys and measure != year_name else f"{measure} value"
+    long = frame.melt(id_vars=keys, value_vars=columns, var_name=year_name, value_name=value_name)
+    long[year_name] = long[year_name].map(dict(zip(columns, years, strict=True))).astype("int64")
+    note = (f"The {len(columns)} columns {columns[0]} to {columns[-1]} each hold one year of {value_name}, "
+            f"so they were read as one column, {value_name}, with a row for each year in a new column, "
+            f"{year_name}.")
+    return long.reset_index(drop=True), note
 
 
 # A run of date-only rows after rows with times of day is read as summaries at a

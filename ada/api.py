@@ -136,7 +136,8 @@ def _frame_from(data: Any, sheet: str | None) -> tuple[pd.DataFrame, str, Source
         contents = bytes(data)
         frame = read_tabular_file(contents, "upload.csv", sheet)
         return frame, "upload", describe_source(
-            "upload", contents=contents, rows=len(frame), columns=frame.shape[1], sheet=sheet
+            "upload", contents=contents, rows=len(frame), columns=frame.shape[1],
+            sheet=sheet or frame.attrs.get("sheet"),
         )
     if isinstance(data, str | Path):
         path = Path(data)
@@ -148,7 +149,8 @@ def _frame_from(data: Any, sheet: str | None) -> tuple[pd.DataFrame, str, Source
         except ValueError as error:
             raise UnreadableData(str(error)) from error
         return frame, path.name, describe_source(
-            path.name, path=data, contents=contents, rows=len(frame), columns=frame.shape[1], sheet=sheet
+            path.name, path=data, contents=contents, rows=len(frame), columns=frame.shape[1],
+            sheet=sheet or frame.attrs.get("sheet"),
         )
     raise UnreadableData(
         f"analyze() takes a DataFrame, a path or bytes, not {type(data).__name__}."

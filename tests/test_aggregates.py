@@ -6,9 +6,10 @@ import unittest
 from pathlib import Path
 
 import pandas as pd
+from table_helpers import deaths_by_cause_wide
 
 import ada
-from ada.aggregates import aggregate_rows
+from ada.aggregates import TotalLevel, aggregate_rows, total_levels
 from ada.cli import main
 from ada.decisions import Decision, UnknownDecision, checked_choices, parse_choices
 
@@ -223,3 +224,31 @@ class DecisionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NestedTotalTests(unittest.TestCase):
+    """Areas and causes that each nest, with a whole above them: WHOLE COUNTRY and 00-54 Total."""
+
+    def test_a_whole_country_and_a_coded_total_are_the_total_levels(self):
+        frame = ada.analyze(deaths_by_cause_wide()).frame
+        self.assertEqual(total_levels(frame), (
+            TotalLevel("Wellbeing services county", "WHOLE COUNTRY"),
+            TotalLevel("Underlying cause of death", "00-54 Total"),
+        ))
+
+    def test_many_labels_need_a_total_among_them(self):
+        # 65 causes beside "00-54 Total" qualify; 65 sites with no total label do not.
+        sites = [f"Site {index}" for index in range(65)]
+        frame = pd.DataFrame({
+            "Area": ["Total", "North", "South"] * 65,
+            "Site": [site for site in sites for _ in range(3)],
+            "Cases": [30, 10, 20] * 65,
+        })
+        self.assertEqual([level.column for level in total_levels(frame)], [])
+        causes = pd.DataFrame({
+            "Area": ["Total", "North", "South"] * 66,
+            "Cause": [cause for cause in ["00-64 Total", *sites] for _ in range(3)],
+            "Cases": [30 * 65, 10 * 65, 20 * 65] + [30, 10, 20] * 65,
+        })
+        self.assertEqual([level.column for level in total_levels(causes)], ["Area", "Cause"])
+

@@ -76,8 +76,9 @@ A published table of counts often gives every count under each level of a
 column and again under its total: CDC's injury deaths under each sex and
 "Both sexes", each age band and "All Ages", each race and "All races".
 `total_levels(frame)` finds such columns: one of a column's 3 to 60 labels
-reads as a total ("All ...", "Total ...", "Both sexes", "... total", but not
-"All Other Transport"), and its rows add up to at least the other levels'
+(up to 150 when one reads as a total) reads as a total ("All ...", "Total ...",
+"Both sexes", "Both genders", "... total", "WHOLE COUNTRY", but not "All
+Other Transport"), and its rows add up to at least the other levels'
 rows in some count, and to no more than half as much again (groups no level
 names, such as other races, add to the total alone). Two or more columns must
 qualify; one total row alone is `aggregate_rows`' to find.
@@ -91,7 +92,11 @@ cell. A label with no word for a total is the total when its counts are the
 others' added up, within 2%, in nine cells of ten: "Canada, place of
 residence of mother" over the provinces. Counts beside percentages of them
 ("Number of live births", "Percentage of live births") are compared within
-the counts.
+the counts. When the other levels overlap, so that they add up to more than
+the total (cancer sites that include each other; Statistics Finland's areas
+and causes of death, each with subtotals under the whole), the label that
+reads as a total qualifies when its count is at least every other level's in
+the cells holding nineteen twentieths of the counts.
 
 A column of geographic levels qualifies alone: each row is at one level (a
 salmon table gives each month's losses by area, again by county, and again

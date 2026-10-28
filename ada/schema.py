@@ -232,9 +232,12 @@ CHECK_WORDS = frozenset({"realism", "attention", "manipulation"})
 # Head words that mark a column as a key rather than a quantity. Such columns stay
 # text through reading and cleaning, so an account number 00042 keeps its zeros.
 # Whole-word match, so "Paid Amount" is not an id.
+CODE_WORDS_ABROAD = frozenset({"codigo", "código", "codice", "cod"})
 IDENTIFIER_NAME_WORDS = frozenset({
     "id", "ids", "code", "codes", "zip", "zipcode", "postal", "postcode", "phone", "telephone",
     "mobile", "tel", "fax", "sku", "number", "no", "#", "key", "uuid", "notation", "barcode",
+    # The same in Spanish, Portuguese and Italian: CODIGO DANE, codice ISTAT.
+    *CODE_WORDS_ABROAD,
 })
 
 # Head words that name the unit a row belongs to rather than a quantity: subject 12
@@ -824,7 +827,7 @@ def _named_as_quantity(name: str) -> bool:
 def _named_as_label(name: str) -> bool:
     """Whether the name marks group labels: a status, a condition, a site, a plate row or "id_reef"."""
     words = _head_words(name)
-    keyed = len(words) > 1 and words[0] in {"id", "code"}
+    keyed = len(words) > 1 and words[0] in {"id", "code", *CODE_WORDS_ABROAD}
     return bool(words) and (
         words[-1] in LABEL_NAME_WORDS or is_entity_name(name) or is_design_name(name) or keyed
     )
