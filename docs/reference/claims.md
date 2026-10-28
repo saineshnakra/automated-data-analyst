@@ -432,6 +432,17 @@ names); short forms that also mean something else, such as `m`, `t` and
 claim's unit; one ADA does not convert is noted, and only the numbers are
 compared.
 
+Temperatures are read from `°C`, `°F`, `celsius` and `fahrenheit`, and a
+column named for a temperature with `(C)` or `(F)` after it is in that
+unit; `Heating Degree Days (C)` is no temperature. Degrees Celsius and
+Fahrenheit are never converted into each other: a claim in °F about a column
+in °C gets `conflicting_evidence`. Among a day's maximum, minimum and mean,
+the claim's words pick one: "high", "hottest", "hit" or "reached" the
+maximum, "low", "coldest" or "fell" the minimum. "Fell to -46.6 °C" is the
+lowest reading in scope, not a fall from one period to the next, and "hit
+37 °C" the highest; "averages a high of about 24 °C" is the mean of the
+maximum. With no such word, or with words for both, no column is picked.
+
 A claim that names no column can still name its kind of quantity: by its
 unit ("4000 g" is a mass) or by a verb ("weigh", "lasted", or "measure" with
 a unit). ADA then tries each column recorded in a unit of that kind, and
@@ -526,6 +537,17 @@ Besides the number, a check records what could make the answer misleading:
   over 1982 to 1988 and 5,020 in 1984), the claim gets `missing_context`
   naming the years that fit. "In all", "altogether" or "since 1990" says the
   total is over the years, and it is checked as said.
+
+- **A record on a day.** When the claim calls a day's lowest or highest
+  reading a record ("the coldest reading in the records came on 12 January
+  2024"), the same calculation is made over every day. If another day gives
+  a more extreme value, the claim gets `failed_check` naming it.
+- **Times in UTC.** When the dates the verdict rests on are in UTC (the
+  column's name says UTC, or its values carry the zone), the calculation is
+  made again with the times shifted to every zone from UTC-12 to UTC+14.
+  A claim most likely means local time, so when some zone turns the verdict
+  the claim gets `missing_context` with the range the zones give; when none
+  does, the assumptions say the verdict holds in every zone.
 
 - **Rows left out.** Each reason rows were left out, with its count: rows
   with the measure missing, cells the data checks flag, exact repeats of

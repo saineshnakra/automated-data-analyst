@@ -87,6 +87,12 @@ class RoleDeterminismTests(unittest.TestCase):
         self.assertEqual(detect_roles(frame).date, "Order Date")
         self.assertEqual(detect_roles(frame[["Ship Date", "Order Date", "Revenue"]]).date, "Order Date")
 
+    def test_the_month_described_wins_over_the_month_of_release(self):
+        months = pd.date_range("2023-01-01", periods=12, freq="MS")
+        frame = pd.DataFrame({"year_month": months, "month_of_release": months + pd.DateOffset(months=3),
+                              "estimate": range(12)})
+        self.assertEqual(detect_roles(frame).date, "year_month")
+
 
 class DesignColumnTests(unittest.TestCase):
     def test_a_replicate_number_is_not_picked_as_the_measure(self):

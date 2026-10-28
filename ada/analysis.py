@@ -1983,8 +1983,15 @@ def clean_dataframe(
 
         if named_like_a_date:
             parsed_dates, ordering = _read_dates(distinct)
-            if parsed_dates.notna().sum() / non_null_before >= named_date_ratio:
-                unreadable = int(non_null_before - parsed_dates.notna().sum())
+            # "NA" among dates ("2021-01-01", "NA") is a missing value, not a date that could not be read.
+            unstated, unstated_notes = _unstated(column, distinct)
+            stated = non_null_before - int(distinct.counts[unstated].sum())
+            if stated and parsed_dates.notna().sum() / stated >= named_date_ratio:
+                words = ("the column's other values are words, not codes, so it is not a code such as NA for "
+                         "North America")
+                dates = "the column's other values are dates"
+                notes.extend(note.replace(words, dates) for note in unstated_notes)
+                unreadable = int(stated - parsed_dates.notna().sum())
                 if unreadable:
                     unparsed_date_cells += unreadable
                     notes.append(f"{unreadable} {column} values could not be read as dates.")

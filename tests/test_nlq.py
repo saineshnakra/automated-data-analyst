@@ -4900,3 +4900,83 @@ class ResaleFlatTests(unittest.TestCase):
         # Without "candidates" the claim would count the rows for Green, 6, and pass.
         check = ada.check_claim(frame, "The Greens put up candidates in 6 constituencies.")
         self.assertFalse(check.verified)
+
+
+class HighAndLowTests(unittest.TestCase):
+    def frame(self) -> pd.DataFrame:
+        return pd.DataFrame({
+            "Station Name": ["NORTH", "SOUTH"] * 4,
+            "Date": pd.to_datetime(["2024-01-10", "2024-01-10", "2024-01-11", "2024-01-11",
+                                    "2024-07-10", "2024-07-10", "2024-07-11", "2024-07-11"]),
+            "Maximum Temperature (C)": [-20.0, -18.0, -25.0, -21.0, 25.0, 27.0, 23.0, 30.0],
+            "Minimum Temperature (C)": [-35.0, -30.0, -41.0, -33.0, 10.0, 12.0, 9.0, 15.0],
+            "Mean Temperature (C)": [-27.5, -24.0, -33.0, -27.0, 17.5, 19.5, 16.0, 22.5],
+        })
+
+    def test_high_and_low_name_the_maximum_and_minimum_columns(self):
+        frame = self.frame()
+        high = answer_question("average high temperature in July", frame, detect_roles(frame))
+        low = answer_question("average low temperature in January", frame, detect_roles(frame))
+        self.assertEqual((high.plan.measure, high.value), ("Maximum Temperature (C)", 26.25))
+        self.assertEqual((low.plan.measure, low.value), ("Minimum Temperature (C)", -34.75))
+
+    def test_the_lowest_temperature_is_the_lowest_minimum(self):
+        frame = self.frame()
+        answer = answer_question("lowest temperature", frame, detect_roles(frame))
+        self.assertEqual((answer.plan.measure, answer.value), ("Minimum Temperature (C)", -41.0))
+        answer = answer_question("highest temperature at SOUTH", frame, detect_roles(frame))
+        self.assertEqual((answer.plan.measure, answer.value), ("Maximum Temperature (C)", 30.0))
+
+    def test_with_one_column_of_temperatures_high_picks_nothing(self):
+        frame = self.frame()[["Station Name", "Date", "Mean Temperature (C)"]]
+        answer = answer_question("lowest temperature", frame, detect_roles(frame))
+        self.assertEqual((answer.plan.measure, answer.value), ("Mean Temperature (C)", -33.0))
+
+
+class UtcTimesTests(unittest.TestCase):
+    def incidents(self) -> pd.DataFrame:
+        starts = pd.date_range("2024-01-01 00:30", periods=48, freq="7h")
+        return pd.DataFrame({
+            "DESCRIPTION": ["Traffic incident."] * 46
+            + ["Stalled vehicle. There are multiple incidents in the area.", "Two vehicle incident."],
+            "START_DT_UTC": starts, "QUADRANT": ["SE", "NW", "NE", "SW"] * 12,
+        })
+
+    def test_hours_and_weekdays_of_a_utc_column_carry_a_caution(self):
+        frame = self.incidents()
+        roles = detect_roles(frame, "Traffic_Incidents.csv")
+        answer = answer_question("which hour has the most incidents", frame, roles)
+        self.assertIn("START_DT_UTC is in UTC", answer.answer)
+        answer = answer_question("how many incidents in the SE quadrant", frame, roles)
+        self.assertNotIn("UTC", answer.answer)
+
+    def test_the_rows_noun_with_a_query_word_is_no_part_of_a_longer_value(self):
+        frame = self.incidents()
+        roles = detect_roles(frame, "Traffic_Incidents.csv")
+        answer = answer_question("how many incidents in 2024", frame, roles)
+        self.assertEqual(answer.value, 48)
+        self.assertEqual(answer.plan.filters, ())
+
+
+class FlagBesideDateTests(unittest.TestCase):
+    def test_a_name_of_a_flag_and_a_date_is_the_flag(self):
+        frame = pd.DataFrame({
+            "state": ["Ohio", "Iowa"] * 5,
+            "is_nibrs": [True, True, False, True, True, True, False, True, True, False],
+            "nibrs_start_date": pd.to_datetime(["2021-01-01", "2012-04-01", None, "2020-12-01", "2021-01-01",
+                                                "2019-06-01", None, "2021-01-01", "2018-01-01", None]),
+        })
+        answer = answer_question("what share of agencies are NIBRS", frame, detect_roles(frame))
+        self.assertAlmostEqual(dict(answer.figures)["share_percent"], 70.0)
+        self.assertIn('Read "NIBRS" as is_nibrs, not the date nibrs_start_date.', answer.answer)
+
+
+class SurnameFirstTests(unittest.TestCase):
+    def test_a_full_name_names_the_value_written_surname_first(self):
+        frame = pd.DataFrame({
+            "Cand_Name": ["JEFFRIES, HAKEEM", "HAKEEM, JAWAD HASHEM", "BROWN, SHERROD", "SMITH, ANN"],
+            "Total_Receipt": [22_977_197.0, 5_000.0, 96_530_241.0, 10_000.0],
+        })
+        answer = answer_question("Total_Receipt for Hakeem Jeffries", frame, detect_roles(frame))
+        self.assertEqual(answer.plan.filters[0].values, ("JEFFRIES, HAKEEM",))
+        self.assertEqual(answer.value, 22_977_197.0)

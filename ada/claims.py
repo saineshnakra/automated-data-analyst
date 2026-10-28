@@ -409,6 +409,20 @@ UNITS = {
     "ft": ("length", 0.3048), "foot": ("length", 0.3048), "feet": ("length", 0.3048),
     "inch": ("length", 0.0254), "inches": ("length", 0.0254), "yard": ("length", 0.9144),
     "yards": ("length", 0.9144), "mile": ("length", 1609.344), "miles": ("length", 1609.344),
+    # Degrees Celsius and Fahrenheit differ by an offset as well as a size, so they are never converted.
+    "°c": ("degrees Celsius", 1.0), "ºc": ("degrees Celsius", 1.0), "celsius": ("degrees Celsius", 1.0),
+    "°f": ("degrees Fahrenheit", 1.0), "ºf": ("degrees Fahrenheit", 1.0),
+    "fahrenheit": ("degrees Fahrenheit", 1.0),
+}
+# Name words of a column of temperatures, whose bracketed "(C)" or "(F)" is a unit.
+TEMPERATURE_NAMES = frozenset({"temp", "temperature", "temperatures", "tmax", "tmin", "tavg"})
+# Words of a claim that pick a day's maximum, minimum or mean among columns of temperatures.
+TEMPERATURE_SIDES = {
+    "maximum": frozenset({"high", "highs", "highest", "hottest", "warmest", "hot", "reach", "reached",
+                          "reaches", "hit", "hits", "topped", "tops", "maximum", "max"}),
+    "minimum": frozenset({"low", "lows", "lowest", "coldest", "cold", "fell", "falls", "dropped", "drops",
+                          "dipped", "plunged", "minimum", "min"}),
+    "mean": frozenset({"mean"}),
 }
 # Name words for a kind of quantity, for a column whose name gives no unit: "height" holds a length.
 QUANTITY_NAMES = {
@@ -758,7 +772,7 @@ def _unit_after(claim: str, end: int, columns: list[str], row_noun: str | None) 
     words = []
     position = end
     # A unit may hold a slash: "km/h", "mg/dL".
-    for match in re.finditer(r"\s*([A-Za-z][A-Za-z.]*(?:/[A-Za-z][A-Za-z0-9.]*)?)", claim[end:]):
+    for match in re.finditer(r"\s*([°º]?[A-Za-z][A-Za-z.]*(?:/[A-Za-z][A-Za-z0-9.]*)?)", claim[end:]):
         if match.start() != position - end:
             break
         word = match.group(1).rstrip(".")
@@ -1547,9 +1561,14 @@ def column_unit(column: str | None) -> str | None:
     """
     if not column:
         return None
-    bracketed = re.search(r"[(\[]\s*([A-Za-z]+)\s*[)\]]\s*$", str(column))
+    bracketed = re.search(r"[(\[]\s*([°º]?\s*[A-Za-z]+)\s*[)\]]\s*$", str(column))
     if bracketed and bracketed.group(1).lower() in UNITS:
         return bracketed.group(1).lower()
+    degrees = {"c": "°c", "f": "°f", "degc": "°c", "degf": "°f"}
+    written = re.sub(r"[°º\s]", "", bracketed.group(1)).lower() if bracketed else ""
+    if written in degrees and TEMPERATURE_NAMES & set(normalized_name(str(column)).split()):
+        # "Maximum Temperature (C)" is in degrees Celsius; "Heating Degree Days (C)" is no temperature.
+        return degrees[written]
     parts = [part for part in re.split(r"[^A-Za-z]+", str(column)) if part]
     if len(parts) >= 2 and parts[-1].lower() in UNITS:
         return parts[-1].lower()
@@ -1586,13 +1605,20 @@ def _recorded_scale(analysis: Any, answer: QueryAnswer | None) -> tuple[float, s
     return None
 
 
-def _row_step(analysis: Any) -> str | None:
-    """The hour or day each row of the table stands for, when the rows are one date each, that far apart."""
+def _row_step(analysis: Any, plan: Any = None) -> str | None:
+    """The hour or day each row of the table stands for, when the rows are one date each, that far apart.
+
+    With a plan, the rows are those its values pick: one station's rows in a table of several stations.
+    """
     date = analysis.roles.date
     if not date or date not in analysis.frame.columns:
         return None
-    dates = analysis.frame[date].dropna()
-    if dates.dtype.kind != "M" or len(dates) < 3 or dates.nunique() < 0.99 * len(analysis.frame):
+    rows = analysis.frame
+    for item in (plan.filters if plan is not None else ()):
+        if isinstance(item, ValueFilter) and item.column in rows.columns:
+            rows = rows[rows[item.column].isin(item.values)]
+    dates = rows[date].dropna()
+    if dates.dtype.kind != "M" or len(dates) < 3 or dates.nunique() < 0.99 * len(rows):
         return None
     steps = dates.drop_duplicates().sort_values().diff().dropna().dt.total_seconds()
     usual = float(steps.median())
@@ -1632,6 +1658,11 @@ def _unit_columns(analysis: Any, asked: str, number: ClaimedNumber) -> list[tupl
                 else f"{asked} {column}"
             )
             found.append((str(column), rewritten))
+    if kind.startswith("degrees") and len(found) > 1:
+        # "fell to -46.6 °C" among a day's maximum, minimum and mean: the minimum.
+        said = set(re.findall(r"[a-z]+", asked.lower()))
+        sides = [side for side, cues in TEMPERATURE_SIDES.items() if cues & said]
+        found = [item for item in found if len(sides) == 1 and sides[0] in normalized_name(item[0]).split()]
     return found
 
 
@@ -1769,7 +1800,7 @@ def check_claim(
     if question is None:
         text = _times_level(days_in_words(text))
         text, every = _every_value(text, analysis.frame)
-        text = _half_within(_records_began(text))
+        text = _half_within(_records_began(_temperature_words(text, analysis.frame)))
         text, worst = _worst_day(text)
         text, compared = _compared_tail(text)
         text, rate_base = _table_rate_base(text, analysis.frame)
@@ -1791,7 +1822,8 @@ def check_claim(
             )
     assert number is not None and asked is not None
     check = _checked_dates(_checked_table(analysis, text, asked, number, source, choices, question), analysis)
-    check = _checked_unnamed_year(check, analysis)
+    check = _checked_record_day(_checked_unnamed_year(check, analysis), analysis, said)
+    check = _checked_clock(check, analysis)
     if question is None and number.percent and (by := BY_YEAR.search(asked)) and (
         check.verified or check.reason == "failed_check"
     ):
@@ -1903,6 +1935,55 @@ RECORDS_BEGAN = re.compile(
     r"(?:began|started|start|begin)(?:\s+in\s+(?P<year>(?:1[6-9]|20)\d{2}))?",
     re.IGNORECASE,
 )
+
+
+# A reading in degrees: "-46.6 °C", "30 degrees Celsius".
+DEGREES = r"-?\d[\d,]*(?:\.\d+)?\s*(?:[°º]\s*[CF]\b|degrees?\s+(?:Celsius|Fahrenheit|C|F)\b)"
+# "fell to -46.6 °C" is the lowest reading, not a fall from one period to the next; "hit 37 °C" the highest.
+TEMPERATURE_EXTREMES = (
+    (re.compile(rf"\b(?:fell|dropped|dipped|plunged|plummeted|sank)\s+to\s+(?={DEGREES})", re.IGNORECASE),
+     "had a lowest temperature of "),
+    (re.compile(rf"\b(?:rose|climbed|soared|hit|reached|topped\s+out\s+at|peaked\s+at)\s+(?:to\s+)?"
+                rf"(?={DEGREES})", re.IGNORECASE),
+     "had a highest temperature of "),
+)
+# "fell below -40 °C on 5 days" is a threshold for the day's low, not a fall from one period to the next.
+THRESHOLD_DEGREES = (r"(?P<number>-?\d[\d,]*(?:\.\d+)?)\s*"
+                     r"(?P<unit>[°º]\s*(?P<scale>[CF])\b|degrees?\s+(?P<word>Celsius|Fahrenheit|C|F)\b)")
+TEMPERATURE_THRESHOLDS = (
+    (re.compile(rf"\b(?:fell|dropped|dipped|plunged|sank|falls|drops|dips)\s+(?P<bound>below|under)\s+"
+                rf"{THRESHOLD_DEGREES}", re.IGNORECASE), "low"),
+    (re.compile(rf"\b(?:rose|climbed|soared|rises|climbs)\s+(?P<bound>above|over|past)\s+{THRESHOLD_DEGREES}",
+                re.IGNORECASE), "high"),
+)
+# "a high of 24 °C": the day's high temperature; "averages a high of" its average.
+HIGH_OR_LOW_OF = re.compile(
+    rf"\b(?P<average>averag(?:e|es|ed|ing)\s+)?(?:an?\s+)?(?P<side>highs?|lows?)\s+of\s+"
+    rf"(?P<qualifier>(?:about|around|nearly|almost|over|under|roughly|some)\s+)?(?={DEGREES})",
+    re.IGNORECASE,
+)
+
+
+def _temperature_words(text: str, frame: Any) -> str:
+    """Words for a reading in degrees as a question can say them: "fell to -46.6 °C" as "had a lowest
+    temperature of -46.6 °C", and "a high of 24 °C" as "a high temperature of 24 °C". A threshold ("fell
+    below -40 °C") loses its unit when the table's temperatures are in it: it is then no word to look up."""
+    units = {column_unit(str(column)) for column in frame.columns}
+
+    def threshold(found: re.Match, side: str) -> str:
+        scale = (found.group("scale") or found.group("word") or "").upper()[:1]
+        unit = "" if f"°{scale.lower()}" in units else f" {found.group('unit')}"
+        return f"had a {side} temperature {found.group('bound')} {found.group('number')}{unit}"
+
+    for pattern, side in TEMPERATURE_THRESHOLDS:
+        text = pattern.sub(lambda found, side=side: threshold(found, side), text)
+    for pattern, said in TEMPERATURE_EXTREMES:
+        text = pattern.sub(said, text)
+    def said(found: re.Match) -> str:
+        average = "average " if found.group("average") else "a "
+        return f"{average}{found.group('side')} temperature of {found.group('qualifier') or ''}"
+
+    return HIGH_OR_LOW_OF.sub(said, text)
 
 
 def _records_began(text: str) -> str:
@@ -2469,6 +2550,91 @@ def _checked_dates(check: ClaimCheck, analysis: Any) -> ClaimCheck:
             alternatives=alternatives, clarification=f"Is the date {date} or {other}?",
         )
     return check
+
+
+# Words that make a day's reading a record: "the coldest reading in the records came on 12 January 2024".
+RECORD_WORDS = re.compile(
+    r"\b(?:coldest|hottest|warmest|wettest|driest|windiest|snowiest|highest|lowest|largest|smallest|biggest|"
+    r"record|ever)\b",
+    re.IGNORECASE,
+)
+
+
+def _checked_record_day(check: ClaimCheck, analysis: Any, said: str) -> ClaimCheck:
+    """A verified lowest or highest reading on a named day that the claim, as written (``said``), calls a
+    record, checked against every day: the day's reading must be the extreme of all of them too."""
+    from .nlq import execute_plan  # noqa: PLC0415
+
+    if not check.verified or check.answer is None or check.claimed is None or check.compared is None:
+        return check
+    plan = check.answer.plan
+    days = [item for item in plan.conditions if isinstance(item, Condition) and item.part == "date"]
+    if plan.aggregation not in ("min", "max") or not days or not RECORD_WORDS.search(said):
+        return check
+    every = replace(plan, conditions=tuple(item for item in plan.conditions if item not in days))
+    try:
+        answer = execute_plan(every, analysis.frame, analysis.roles)
+    except (KeyError, ValueError):
+        return check
+    value, _ = _comparable(answer, check.claimed)
+    side = "lowest" if plan.aggregation == "min" else "highest"
+    if value is None:
+        message = (f"The claim calls the day's reading a record, and ADA could not find the {side} over "
+                   f"every day to compare it with. {check.message}")
+        return replace(check, status="unverified", reason="missing_context", message=message)
+    if check.claimed.holds(value):
+        held = f"The {side} over every day is {_plain(value)} too, so the day holds the record."
+        return replace(check, assumptions=(*check.assumptions, held))
+    return replace(
+        check, status="unverified", reason="failed_check",
+        message=f"The day gives {_plain(check.compared)}, but the {side} over every day is {_plain(value)}, "
+                f"so the day does not hold the record. {check.message}",
+        compared=value, agreement="mismatch",
+    )
+
+
+def _checked_clock(check: ClaimCheck, analysis: Any) -> ClaimCheck:
+    """A verdict on dates in UTC, made again in every time zone from UTC-12 to UTC+14.
+
+    A claim most likely means its days, weekdays, hours and years in local
+    time, which the table does not give: 101 incidents started on 25 March
+    2026 in UTC and 110 in Calgary's time. When some zone turns the verdict,
+    the claim gets missing_context with the range the zones give.
+    """
+    import pandas as pd  # noqa: PLC0415
+
+    from .nlq import execute_plan, utc_dates  # noqa: PLC0415
+
+    decided = check.verified or check.reason == "failed_check"
+    if not decided or check.answer is None or check.claimed is None:
+        return check
+    plan, frame = check.answer.plan, analysis.frame
+    clock = utc_dates(plan, frame, analysis.roles)
+    if clock is None:
+        return check
+    values = []
+    for hours in range(-12, 15):
+        shifted = frame.assign(**{clock: frame[clock] + pd.Timedelta(hours=hours)})
+        try:
+            answer = execute_plan(plan, shifted, analysis.roles)
+        except (KeyError, ValueError):
+            return check
+        value, _ = _comparable(answer, check.claimed)
+        if value is None:
+            return check
+        if plan.intent == "growth" and _says_fall(check.claim, check.claimed):
+            value = -value
+        values.append(value)
+    if all(check.claimed.holds(value) == check.verified for value in values):
+        held = f"{clock} is in UTC; the verdict holds in every time zone from UTC-12 to UTC+14."
+        return replace(check, assumptions=(*check.assumptions, held))
+    return replace(
+        check, status="unverified", reason="missing_context",
+        message=f"{clock} is in UTC, and the claim most likely means local time, which the table does not "
+                f"give: in time zones from UTC-12 to UTC+14 the data give {_plain(min(values))} to "
+                f"{_plain(max(values))}, and the verdict turns within that range. {check.message}",
+        clarification="What time zone are the claim's dates and hours in?",
+    )
 
 
 # Words that say a total is over every year: "in all", "altogether", "over the period".
@@ -3260,6 +3426,10 @@ def _names_anything(frame: Any, word: str) -> bool:
     return False
 
 
+# Share of a column's values that must differ for a filter on it to pick one thing by its name.
+NAME_SHARE = 0.9
+
+
 def _in_any_value(frame: Any, word: str) -> bool:
     """Whether ``word`` (or its singular) is a word of a column's name or of any value of a text column."""
     from .folder import singular  # noqa: PLC0415
@@ -3356,11 +3526,20 @@ def _names_table(phrase: str, words: set[str]) -> bool:
     # The births are to women, so "women" and "mothers" name the table's rows too.
     born = BIRTH_WORDS | {"mother", "mothers", "woman", "women"} if words & BIRTH_WORDS else frozenset()
     # "railways" in dutch-rail-disruptions: a word of the name of four letters or more may start a longer one.
+    # "list" in "on the FBI's list" is the table itself.
     return bool(parts) and all(
         part in words or singular(part) in words or f"{part}s" in words or part in dying or part in born
-        or any(len(word) >= 4 and part.startswith(word) for word in words)
+        or any(len(word) >= 4 and part.startswith(word) for word in words) or part in TABLE_NOUNS
         for part in parts
     )
+
+
+# Nouns for a table as a whole: "on the FBI's list", "in the register".
+TABLE_NOUNS = frozenset({
+    # "lists" is left out: "the park lists 3,200 species" is a verb.
+    "list", "register", "registry", "database", "roster", "directory", "catalogue", "catalog",
+    "inventory",
+})
 
 
 # Words for being born, which name a table of births.
@@ -4025,11 +4204,15 @@ def _check(
             clarification="Which column holds the number?",
         )
     if claimed_unit and answer.plan.aggregation == "count" and not measure and (
-        step := _row_step(analysis)
+        step := _row_step(analysis) or _row_step(analysis, answer.plan)
     ) and UNITS[claimed_unit] == UNITS[step]:
         # "negative prices for more than 500 hours" in a table of one reading an hour: each row is an hour.
-        assumptions.append(f"Read the {number.unit} as rows, since each row of the table is one {step} of "
-                           f"{analysis.roles.date}.")
+        # In a table of several stations, each of one station's rows is a day.
+        picked = [f"{item.column} = {list_names([str(value) for value in item.values])}"
+                  for item in answer.plan.filters if isinstance(item, ValueFilter)]
+        among = f" for {', '.join(picked)}" if picked and not _row_step(analysis) else ""
+        assumptions.append(f"Read the {number.unit} as rows, since each row of the table{among} is one "
+                           f"{step} of {analysis.roles.date}.")
     elif claimed_unit and answer.plan.aggregation == "count" and not measure:
         # A count of rows has no unit; a number in hours or grams is about some column the reading missed.
         return ClaimCheck(
@@ -4042,7 +4225,8 @@ def _check(
     if claimed_unit and recorded_unit and UNITS[claimed_unit][0] != UNITS[recorded_unit][0]:
         return ClaimCheck(
             text, "unverified", "conflicting_evidence",
-            f'The claim gives the number in {number.unit}, but {measure} is recorded in {recorded_unit}, '
+            f'The claim gives the number in {number.unit}, but {measure} is recorded in '
+            f'{recorded_unit.replace("°c", "°C").replace("°f", "°F")}, '
             f"which measures {UNITS[recorded_unit][0]}, not {UNITS[claimed_unit][0]}.",
             claimed=number, question=asked, answer=answer, assumptions=tuple(assumptions), source=source,
             clarification=f"Is the number about {measure}, or about another column?",
@@ -4162,6 +4346,16 @@ def _check(
     counted_noun = re.match(r"\s*how\s+many\s+([A-Za-z]+)", asked)
     rows_named = _names_rows([counted_noun.group(1)], analysis.roles.row_noun) if counted_noun else (
         number.percent and _names_rows(re.findall(r"[A-Za-z]+", asked), analysis.roles.row_noun))
+    frame = analysis.frame
+    # "Athens is twinned with 49 cities" in cities.csv: name = Athens picks the city itself (a column whose
+    # values are nearly all different), so the cities after the number are others, not its rows.
+    subject = any(item.column in frame.columns and frame[item.column].nunique() >= NAME_SHARE * frame[
+        item.column].notna().sum() for item in plan.filters)
+    if not rows_named and analysis.roles.row_noun and number.text in text and not subject:
+        # "more than 1,500 law enforcement agencies" in agencies.csv: the rows' own noun right after the
+        # number is what it counts.
+        after = text[text.index(number.text) + len(number.text):]
+        rows_named = _names_rows(re.findall(r"[A-Za-z]+", after)[:4], analysis.roles.row_noun)
     if (named and counts_rows and agreement == "mismatch" and not _names_rows(named, analysis.roles.row_noun)
             and not rows_named):
         # "Visits to the park rose to 11.3 million" in national-park-visits/national_parks.csv: the visits
