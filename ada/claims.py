@@ -1421,7 +1421,7 @@ def check_claim(
     if ends:
         check = _checked_ends(check, ends)
     if direction:
-        check = _checked_direction(check, analysis, direction)
+        check = _checked_direction(check, analysis, *direction)
     return replace(check, claim=said)
 
 
@@ -1496,7 +1496,8 @@ TO_ONLY = re.compile(rf",\s*to\s+(?P<last>{_END})(?=\s*[.!;]?\s*$)", re.IGNORECA
 LEVEL_REACHED = re.compile(
     r"\b(?:(?P<rise>rose|risen|grew|grown|climbed|increased|jumped|soared|surged|went\s+up)|"
     r"(?P<fall>fell|fallen|dropped|declined|decreased|slumped|plunged|tumbled|sank|went\s+down))"
-    rf"(?P<size>\s+(?:by\s+)?{_END})?(?P<side>\s+(?:to|below|beneath|above|past|beyond|over|under)\s+)"
+    rf"(?P<size>\s+(?:by\s+)?{_END})?(?P<side>\s+(?:to(?:\s+(?:a\s+)?(?P<record>(?:new|record|all-time|historic)"
+    r"\s+)+(?P<extreme>low|high)\s+of)?|below|beneath|above|past|beyond|over|under)\s+)"
     rf"(?=(?P<level>{_END}))",
     re.IGNORECASE,
 )
@@ -1565,7 +1566,7 @@ def _without_ends(text: str) -> tuple[str, tuple[tuple[str, str], ...]]:
         end = found.end() + len(found.group("level"))
         rest = f"{text[:found.end('side') - len(found.group('side'))]}{text[end:]}"
         if stated(_without_years(rest)):
-            side = LEVEL_SIDES[found.group("side").strip().lower()]
+            side = LEVEL_SIDES[found.group("side").split()[0].lower()]
             return re.sub(r"\s+", " ", rest).strip(), (("latest", f"{side}{found.group('level').strip()}"),)
     return text, ()
 
@@ -1578,7 +1579,7 @@ def _without_years(text: str) -> str:
 def _level_reached(text: str) -> re.Match | None:
     """The first level a change is said to reach ("rose to 61", "fell below 40"), or None."""
     for found in LEVEL_REACHED.finditer(text):
-        side = found.group("side").strip().lower()
+        side = found.group("side").split()[0].lower()
         if side in ("over", "under") and re.search(r"%|per\s?cent", found.group("level"), re.IGNORECASE):
             continue
         if re.fullmatch(r"(?:1[5-9]|20)\d{2}", found.group("level").strip()):
@@ -1588,9 +1589,10 @@ def _level_reached(text: str) -> re.Match | None:
     return None
 
 
-def _as_level(text: str) -> tuple[str, str | None]:
-    """A claim whose only number is the level a change reached, read as that level, and the direction of the
-    change ("rise" or "fall") to check after it: "rose to 61 in 2020" is "were 61 in 2020", having risen."""
+def _as_level(text: str) -> tuple[str, tuple[str, str | None] | None]:
+    """A claim whose only number is the level a change reached, read as that level, with the direction of the
+    change ("rise" or "fall") to check after it and the record it sets, if any ("low" or "high"): "rose to 61
+    in 2020" is "were 61 in 2020", having risen; "fell to a record low of 0.72" is also the lowest year."""
     found = _level_reached(text)
     if found is None or found.group("size"):
         return text, None
@@ -1598,9 +1600,10 @@ def _as_level(text: str) -> tuple[str, str | None]:
     others = _without_years(f"{text[:found.start()]}{text[end:]}")
     if re.search(r"\d", others) or MULTIPLE.search(others) or BY_FRACTION.search(others):
         return text, None
-    side = LEVEL_SIDES[found.group("side").strip().lower()]
+    side = LEVEL_SIDES[found.group("side").split()[0].lower()]
     level = f"{text[:found.start()]}was {side}{text[found.end():]}"
-    return level, "rise" if found.group("rise") else "fall"
+    extreme = found.group("extreme").lower() if found.group("extreme") else None
+    return level, ("rise" if found.group("rise") else "fall", extreme)
 
 
 def _checked_ends(check: ClaimCheck, ends: tuple[tuple[str, str], ...]) -> ClaimCheck:
@@ -1719,12 +1722,15 @@ def _yearly(analysis: Any, plan: Any) -> tuple[Any, str] | None:
     return grouped[plan.measure].agg(plan.aggregation).dropna(), f"{plan.aggregation}({plan.measure})"
 
 
-def _checked_direction(check: ClaimCheck, analysis: Any, direction: str) -> ClaimCheck:
+def _checked_direction(
+    check: ClaimCheck, analysis: Any, direction: str, extreme: str | None = None
+) -> ClaimCheck:
     """A level a change reached, checked, then the change itself against the year before.
 
     "Fox rescues rose to 61 in 2020" holds when 2020 gives 61 and 2019 gives
     less. Without one year to compare with the year before, the change cannot
-    be shown, so the claim is not verified.
+    be shown, so the claim is not verified. A record ("fell to a record low of
+    0.72 in 2023") holds only when no year up to it is lower, or higher.
     """
     if not (check.verified or check.reason == "failed_check") or check.answer is None:
         return check
@@ -1745,9 +1751,19 @@ def _checked_direction(check: ClaimCheck, analysis: Any, direction: str) -> Clai
     moved = latest > previous if direction == "rise" else latest < previous
     said = "rose" if direction == "rise" else "fell"
     note = f"{how} was {_plain(previous)} in {before} and {_plain(latest)} in {year}."
+    # A record is set against the years up to it: 0.78 in 2022 was a record low then, whatever came after.
+    upto = by_year[[label for label in by_year.index if label <= year]]
+    record = (upto.idxmin() if extreme == "low" else upto.idxmax()) if extreme else year
+    if moved and (record == year or upto[record] == latest):
+        kept = [f"The claim says it {said} to it: {note}"]
+        if extreme:
+            kept.append(f"{year} gives the {'lowest' if extreme == 'low' else 'highest'} {how} of the "
+                        f"{len(upto)} years up to it.")
+        return replace(check, assumptions=(*check.assumptions, *kept))
     if moved:
-        return replace(check, assumptions=(*check.assumptions, f"The claim says it {said} to it: {note}"))
-    wrong = f"the claim says it {said}, and {note.rstrip('.')}"
+        wrong = f"the record {extreme} up to {year} is in {record}, at {_plain(float(upto[record]))}"
+    else:
+        wrong = f"the claim says it {said}, and {note.rstrip('.')}"
     if check.verified:
         return replace(check, status="unverified", reason="failed_check",
                        message=f"The level agrees ({check.message}), but {wrong}.", clarification=None)
@@ -2709,6 +2725,33 @@ def _check(
         computed, measure, sloped = (-fitted if slope[3] else fitted), y, f"the slope of {y} on {x}, from "
         notes = [f"Compared with the slope of {y} on {x}, {_plain(fitted)} {y} per {x}"
                  + ("; the claim says it falls, so the slope's sign is reversed." if slope[3] else ".")]
+    figures = dict(answer.figures)
+    if answer.plan.intent == "growth" and number.percent and "change_percent" not in figures and (
+        figures.get("previous") and "latest" in figures
+    ):
+        # A rate's change is in points; a change in percent may be of the first value instead.
+        previous, latest = float(figures["previous"]), float(figures["latest"])
+        relative = (latest - previous) / abs(previous) * 100
+        if MULTIPLE.search(text) or BY_FRACTION.search(text):
+            # "halved", "fell by a third": a multiple or a fraction is of the first value.
+            computed = relative
+            notes.append(f"A multiple or a fraction compares the values themselves, so the change is taken "
+                         f"in percent of the first value ({_plain(relative)}%), not in points.")
+        else:
+            alternatives = (
+                Alternative("points", asked, computed, False, answer.calculation),
+                Alternative("percent of the first value", asked, relative, False,
+                            f"({_plain(latest)} − {_plain(previous)}) ÷ {_plain(abs(previous))} × 100"),
+            )
+            return ClaimCheck(
+                text, "unverified", "ambiguous_intent",
+                f"The claim gives a change in percent of a rate, which may be in points "
+                f"({_plain(computed)}) or in percent of the first value ({_plain(relative)}%): "
+                f"{answer.answer}",
+                claimed=number, question=asked, answer=answer, assumptions=tuple(assumptions),
+                alternatives=alternatives, source=source,
+                clarification="Is the change in percentage points, or in percent of the first value?",
+            )
     if answer.plan.intent == "growth" and computed is not None and _says_fall(text, number):
         # "fell by about 19%" states the size of a fall: the change is compared with its sign reversed.
         computed = -computed
