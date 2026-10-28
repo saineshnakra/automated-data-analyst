@@ -125,14 +125,26 @@ def _sum_of_others(frame: pd.DataFrame, column: object, labels: list[str]) -> st
     if len(frame) > MAX_ALIGNED_ROWS:
         return None
     texts = frame[column].astype(str)
+    counts = {}
     for other in frame.columns:
         values = frame[other]
         if other == column or is_bool_dtype(values) or not is_numeric_dtype(values) or values.nunique() <= 20:
             continue
         numbers = to_numbers(values)
-        if (numbers < 0).any():
-            continue
+        if not (numbers < 0).any():
+            counts[other] = numbers
+    if not counts:
+        return None
+    # The cells told apart without any column of counts hold every finer cell a comparison uses, so a total
+    # needs three rows in cells beside two other levels here before any column of counts is compared.
+    codes = _cell_codes(frame, column)
+    coarse = [codes[key] for key in codes.columns if key not in counts]
+    cells = codes.groupby(coarse, sort=False).ngroup() if coarse else pd.Series(0, index=frame.index)
+    shared = texts[texts.groupby(cells).transform("nunique") >= 3]
+    for other, numbers in counts.items():
         largest = numbers.groupby(texts).sum().idxmax()
+        if int(shared.eq(largest).sum()) < 3:
+            continue
         if _covers_where_given(frame, column, largest, other, numbers, tolerance=NAMELESS_TOLERANCE):
             return str(largest)
     return None
@@ -237,15 +249,11 @@ def _covers_where_given(frame: pd.DataFrame, column: object, label: str, other: 
     """
     if len(frame) > MAX_ALIGNED_ROWS:
         return False
-    # A code beside the column (C02076V03371 for Age Group, a DGUID for GEO) names the same level, so it
-    # marks no cell.
-    keys = [key for key in frame.columns if key not in (column, other)
-            and not (is_numeric_dtype(frame[key]) and frame[key].nunique() > len(frame) // 2)
-            and not (frame[key].nunique() > 1
-                     and frame.dropna(subset=[key]).groupby(key)[column].nunique().max() == 1)]
+    codes = _cell_codes(frame, column)
+    keys = [key for key in codes.columns if key != other]
     if not keys:
         return False
-    cells = frame[keys].astype(str).agg("\x1f".join, axis=1)
+    cells = codes.groupby([codes[key] for key in keys], sort=False).ngroup()
     level = frame[column].astype(str)
     table = pd.DataFrame({"cell": cells, "level": level, "value": values}).dropna(subset=["value"])
     if table.duplicated(["cell", "level"]).any():
@@ -281,6 +289,28 @@ def _covers_where_given(frame: pd.DataFrame, column: object, label: str, other: 
     total = float(complete[label].sum())
     parts = float(complete.drop(columns=[label]).to_numpy().sum())
     return parts > 0 and parts * (1 - SUM_TOLERANCE) <= total <= parts * (1 + LEVEL_EXCESS)
+
+
+def _cell_codes(frame: pd.DataFrame, column: object) -> pd.DataFrame:
+    """The columns that mark a cell beside ``column``, each as codes of its labels, found once per table and
+    column: every count column of a large table is compared on the same cells."""
+    cached = _CODES.get((id(frame), column))
+    if cached and cached[0]() is frame:
+        return cached[1]
+    # A code beside the column (C02076V03371 for Age Group, a DGUID for GEO) names the same level, so it
+    # marks no cell.
+    keys = [key for key in frame.columns if key != column
+            and not (is_numeric_dtype(frame[key]) and frame[key].nunique() > len(frame) // 2)
+            and not (frame[key].nunique() > 1 and frame.groupby(key)[column].nunique().max() == 1)]
+    codes = pd.DataFrame({key: pd.factorize(frame[key].astype(str))[0] for key in keys}, index=frame.index)
+    if len(_CODES) >= 16:
+        _CODES.clear()
+    _CODES[(id(frame), column)] = (weakref.ref(frame), codes)
+    return codes
+
+
+# The cell codes of the last few columns looked at.
+_CODES: dict[tuple[int, object], tuple[weakref.ref, pd.DataFrame]] = {}
 
 
 #: Levels a column of geographic levels may name: the whole, and the parts it is split into.

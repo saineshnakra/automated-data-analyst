@@ -2034,6 +2034,9 @@ def _claim_values(
                     continue
                 else:
                     found, exact = _values_named(words, vocabulary, exact_only=exact_only)
+                    if exact and size > 1 and _initialled_columns(words, dict.fromkeys(dataframe.columns)):
+                        # "home runs" names HR by its initials, not the first name "Home Run" by its plural.
+                        found = [value for value in found if value.words == words]
                     if all(word in QUERY_GRAMMAR for word in words):
                         # "is to", "for top": a query word after a cue names a value spelled just so,
                         # not "tos".

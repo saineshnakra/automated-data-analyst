@@ -466,6 +466,17 @@ class PhrasingClaimTests(unittest.TestCase):
         self.assertTrue(check.verified)
         self.assertIn('Read "Lego set" as every set', check.assumptions[0])
 
+    def test_a_brand_the_folder_is_named_for_still_describes_every_row(self):
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        path = Path(holder.name) / "lego" / "sets.csv"
+        path.parent.mkdir()
+        pd.DataFrame({"set_num": [f"s{index}" for index in range(6)], "name": list("abcdef"),
+                      "num_parts": [100, 200, 300, 150, 250, 50]}).to_csv(path, index=False)
+        check = ada.check_claim(path, "The average Lego set has 175 parts.")
+        self.assertTrue(check.verified)
+        self.assertIn('Read "Lego set" as every set', check.assumptions[0])
+
     def test_a_value_before_the_rows_noun_still_filters(self):
         holder = tempfile.TemporaryDirectory()
         self.addCleanup(holder.cleanup)

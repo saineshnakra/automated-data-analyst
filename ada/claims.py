@@ -3079,10 +3079,16 @@ def _check(
         left = (*left, spread.group(1))
         answer = analysis.ask(asked, decisions=choices)
     if isinstance(answer, Refusal):
+        from .folder import singular  # noqa: PLC0415
+
         # "babies" in canada-births/13100416.csv: a word that names the table's rows, and nothing in them,
-        # picks no rows.
+        # picks no rows. A word before the rows' own noun ("The average Lego set") is read with it below.
+        row_noun = analysis.roles.row_noun
+        nouns = {row_noun, singular(row_noun)} if row_noun else set()
         naming = [word for word in dict.fromkeys(_words(asked))
-                  if _names_table(word, table_words) and not _in_any_value(analysis.frame, word)]
+                  if _names_table(word, table_words) and not _in_any_value(analysis.frame, word)
+                  and not any(re.search(rf"\b{re.escape(word)}\s+{re.escape(noun)}\b", asked, re.IGNORECASE)
+                              for noun in nouns)]
         shorter = re.sub(r"\s+", " ", re.sub(rf"\b(?:{'|'.join(naming)})\b", " ", asked, flags=re.IGNORECASE)
                          ).strip() if naming else asked
         retried = analysis.ask(shorter, decisions=choices) if naming else answer

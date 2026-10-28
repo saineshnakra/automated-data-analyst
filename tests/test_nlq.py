@@ -3059,6 +3059,17 @@ class InitialsTests(unittest.TestCase):
         frame = self.frame().drop(columns="HR")
         self.assertIsNone(answer_question("total home runs", frame, detect_roles(frame)))
 
+    def test_initials_come_before_a_value_matched_by_its_plural(self):
+        frame = self.frame().assign(nameFirst=["Barry", "Home Run", "Sammy", "Luis"] * 2)
+        answer = answer_question("total home runs in 2001", frame, detect_roles(frame))
+        self.assertEqual(answer.calculation, "sum(HR) · filtered to yearID = 2001")
+        self.assertEqual(answer.value, 132)
+        # Without HR the plural still names the value.
+        frame = frame.drop(columns="HR")
+        answer = answer_question("total Hr for home runs", frame, detect_roles(frame))
+        self.assertEqual(answer.calculation, "sum(Hr) · filtered to nameFirst = Home Run")
+        self.assertEqual(answer.value, 8)
+
 
 def days_frame() -> pd.DataFrame:
     """Eighteen subjects measured on ten days each, each rising by a slope of their own."""
