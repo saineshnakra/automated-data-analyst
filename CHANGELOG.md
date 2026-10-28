@@ -154,9 +154,10 @@
   the same thing (Deaths and Age-adjusted Death Rate) are tried first; when
   one agrees the claim gets `ambiguous_intent` or `missing_context`. A
   failure through a column ADA picked because nothing else fit gets
-  `missing_context`, and the things counted after a number are never
-  averaged from a column named for them: "Sudan had about 1.1 million
-  refugees" adds up refugees in each reading of Sudan (hosted 1,097,128,
+  `missing_context`, unless that column is the table's date and only places
+  the year ("Sweden's 2022 election"), and the things counted after a number
+  are never averaged from a column named for them: "Sudan had about 1.1
+  million refugees" adds up refugees in each reading of Sudan (hosted 1,097,128,
   from Sudan 836,756). "casualties" is also tried as the dead alone, and a
   sum over a column holding Net beside Arrivals and Departures, with none
   named, is made for each of them.

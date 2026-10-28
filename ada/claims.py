@@ -1961,7 +1961,7 @@ def _checked_claim(
         check = replace(check, assumptions=(own_name, *check.assumptions))
     if started:
         check = replace(check, assumptions=(started, *check.assumptions))
-    return replace(_guessed_failure(check), claim=said)
+    return replace(_guessed_failure(check, analysis.roles.date), claim=said)
 
 
 def _repeated_rows(check: ClaimCheck, analysis: Any, other: ClaimCheck) -> ClaimCheck:
@@ -2010,12 +2010,14 @@ LEADING_HEAD = re.compile(
 GUESSED_NOTES = ("the only column the question fits",)
 
 
-def _guessed_failure(check: ClaimCheck) -> ClaimCheck:
+def _guessed_failure(check: ClaimCheck, date: str | None = None) -> ClaimCheck:
     """A failed check whose reading rests on a guessed column, made missing_context.
 
     "Washington has had 223 federal disaster declarations" read through declarationTitle, the only column its
     words fit, gives 1 row of EASTERN WASHINGTON FIRES: a number that far off says the guess is wrong more
-    often than the claim is. A guess that agrees is kept, as it rarely agrees by chance.
+    often than the claim is. A guess that agrees is kept, as it rarely agrees by chance. So is the table's
+    ``date`` guessed from "election" in "Sweden's 2022 election": it only places the year, as the date would
+    whatever word named it.
     """
     if check.reason != "failed_check":
         return check
@@ -2024,6 +2026,11 @@ def _guessed_failure(check: ClaimCheck) -> ClaimCheck:
         return check
     guessed = next((note for note in check.assumptions if any(cue in note for cue in GUESSED_NOTES)), None)
     if guessed is None:
+        return check
+    plan = check.answer.plan if check.answer is not None else None
+    dated = date is not None and guessed.startswith(f"Read the claim's words as {date}, ")
+    if dated and plan is not None and date not in (
+            plan.measure, plan.count_column, plan.dimension, plan.weight):
         return check
     return replace(
         check, reason="missing_context",

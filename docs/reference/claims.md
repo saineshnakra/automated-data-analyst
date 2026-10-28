@@ -621,7 +621,10 @@ Besides the number, a check records what could make the answer misleading:
   A claim that every reading fails is failed as before. A reading that
   rests on a column ADA picked because nothing else fit ("the only column
   the question fits") is no verdict when it disagrees: the claim gets
-  `missing_context`. And the things counted after the number ("23 nursing
+  `missing_context`. The table's date picked that way ("election" for
+  `election_date` in "Sweden's 2022 election") only places the year, as the
+  date would whatever word named it, so a failure through it stands. And the
+  things counted after the number ("23 nursing
   homes") are never averaged from a column named for them.
 - **Rows left out.** Each reason rows were left out, with its count: rows
   with the measure missing, cells the data checks flag, exact repeats of

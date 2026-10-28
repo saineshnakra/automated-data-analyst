@@ -2888,6 +2888,22 @@ class OtherReadingClaimTests(unittest.TestCase):
         named = replace(failed, assumptions=("Read \"declarations\" as declarationTitle.",))
         self.assertEqual(_guessed_failure(named).reason, "failed_check")
 
+    def test_a_date_guessed_from_a_word_only_places_the_year(self):
+        # "election" fits election_date, which the year 2022 picks from anyway; ParlGov gives 20.5.
+        rows = [{"country_name": country, "election_date": date, "party_name_english": party,
+                 "vote_share": share}
+                for country, dates, parties in (
+                    ("Sweden", ("2018-09-09", "2022-09-11"),
+                     {"Sweden Democrats": (17.5, 20.5), "Social Democrats": (28.3, 30.3)}),
+                    ("Norway", ("2017-09-11", "2021-09-13"),
+                     {"Labour": (27.4, 26.3), "Progress": (15.2, 11.6)}))
+                for party, shares in parties.items() for date, share in zip(dates, shares, strict=True)]
+        frame = pd.DataFrame(rows)
+        claim = "The Sweden Democrats won more than a quarter of the vote in Sweden's 2022 election."
+        self.assertEqual(ada.check_claim(frame, claim).reason, "failed_check")
+        claim = "The Sweden Democrats won about 20.5% of the vote in Sweden's 2022 election."
+        self.assertTrue(ada.check_claim(frame, claim).verified)
+
 
 class CandidateReceiptsClaimTests(unittest.TestCase):
     def candidates(self) -> pd.DataFrame:
