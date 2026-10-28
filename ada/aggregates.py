@@ -145,8 +145,10 @@ def _found_in(frame: pd.DataFrame, column: object) -> AggregateRows | None:
 
 
 #: A level that stands for every other level of its column in a cross-tabulated table: "All Ages",
-#: "Both sexes", "All races", "Total"; "All Other Transport" is one level among the rest.
-TOTAL_LEVEL = re.compile(r"(?:all(?!\sothers?\b)|total)(?:\s.+)?|both sexes|everyone|.+\stotal|overall")
+#: "Both sexes", "Persons", "All races", "Total"; "All Other Transport" is one level among the rest.
+TOTAL_LEVEL = re.compile(
+    r"(?:all(?!\sothers?\b)|total)(?:\s.+)?|both sexes|persons|everyone|.+\stotal|overall"
+)
 #: Fewest and most labels a column of levels with a total among them may hold.
 MIN_LEVELS, MAX_LEVELS = 3, 60
 #: How far the rows of a total level may exceed the rows of the other levels in some count, as a
@@ -176,6 +178,39 @@ def _covers(frame: pd.DataFrame, column: object, label: str) -> bool:
     return False
 
 
+#: Levels a column of geographic levels may name: the whole, and the parts it is split into.
+WHOLE_LEVELS = frozenset({"country", "national", "nation", "nationwide", "world", "global", "total", "all"})
+PART_LEVELS = frozenset({
+    "area", "areas", "county", "counties", "state", "states", "region", "regions", "regional", "district",
+    "districts", "municipality", "municipalities", "municipal", "province", "provinces", "provincial", "city",
+    "cities", "local", "zone", "zones", "borough", "boroughs", "ward", "wards", "parish", "parishes",
+    "division", "divisions", "subregion", "subregions", "neighbourhood", "neighborhood", "local authority",
+    "council", "health board",
+})
+#: How close the whole's rows must come to one level of parts in some count, as a fraction of it.
+LEVEL_TOLERANCE = 0.02
+
+
+def _level_whole(frame: pd.DataFrame, column: object, labels: list[str]) -> str | None:
+    """The label of a column of geographic levels ("country" of area, county and country) whose rows add
+    up to the rows of another level in some count, or None."""
+    keys = {label: _label_key(label) for label in labels}
+    wholes = [label for label, key in keys.items() if key in WHOLE_LEVELS]
+    if len(wholes) != 1 or not all(key in WHOLE_LEVELS | PART_LEVELS for key in keys.values()):
+        return None
+    texts = frame[column].astype(str)
+    for other in frame.columns:
+        if other == column or is_bool_dtype(frame[other]) or not is_numeric_dtype(frame[other]):
+            continue
+        values = to_numbers(frame[other])
+        whole = float(values[texts.eq(wholes[0])].sum())
+        for label in labels:
+            part = float(values[texts.eq(label)].sum()) if label != wholes[0] else 0.0
+            if part > 0 and abs(whole - part) <= LEVEL_TOLERANCE * part:
+                return wholes[0]
+    return None
+
+
 def total_levels(frame: pd.DataFrame) -> tuple[TotalLevel, ...]:
     """The columns of a cross-tabulated table that each hold one level standing for all the others.
 
@@ -185,22 +220,29 @@ def total_levels(frame: pd.DataFrame) -> tuple[TotalLevel, ...]:
     qualifies when one of its 3 to 60 labels reads as a total and its rows add
     up to at least the other levels' rows in some count. Empty unless two or
     more columns qualify: one total row alone is ``aggregate_rows``' to find.
+
+    A column of geographic levels (area, county and country, each row at one
+    of them) qualifies alone, when the whole's rows add up to the rows of one
+    level of parts in some count: each fish is then counted once per level.
     """
     cached = _LEVELS.get(id(frame))
     if cached and cached[0]() is frame:
         return cached[1]
-    found = []
+    found, wholes = [], []
     for column in frame.columns:
         series = frame[column]
         if is_numeric_dtype(series) or is_datetime64_any_dtype(series) or is_bool_dtype(series):
             continue
         labels = [str(label) for label in pd.unique(series.dropna().astype(str))]
+        if 2 <= len(labels) <= MIN_LEVELS * 2 and (whole := _level_whole(frame, column, labels)):
+            wholes.append(TotalLevel(str(column), whole))
+            continue
         if not MIN_LEVELS <= len(labels) <= MAX_LEVELS:
             continue
         totals = [label for label in labels if TOTAL_LEVEL.fullmatch(_label_key(label))]
         if len(totals) == 1 and _covers(frame, column, totals[0]):
             found.append(TotalLevel(str(column), totals[0]))
-    levels = tuple(found) if len(found) >= 2 else ()
+    levels = (*(found if len(found) >= 2 else ()), *wholes)
     if len(_LEVELS) >= 8:
         _LEVELS.clear()
     _LEVELS[id(frame)] = (weakref.ref(frame), levels)

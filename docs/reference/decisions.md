@@ -16,7 +16,7 @@ The code is in `ada/decisions.py`; the rows that add up others are found in
 |---|---|---|---|
 | `aggregate_rows` | `leave_out`, `keep` | The table has rows that add up other rows, and some are in the question's scope | Counting World or Africa with the countries counts some values twice |
 | `total_from` | `total_row`, `sum_of_parts` | A total (`sum`) over the scope, with `aggregate_rows` left out and one total row (World, Total) in the scope | The table gives that row as the total of the others, and it can hold what no other row does |
-| `total_levels` | `use_totals`, `all_rows` | A cross-tabulated table where two or more columns each hold a total level ("Both sexes", "All Ages") | The table gives every count under each level and again under the total, so adding up all the rows counts each one once per level |
+| `total_levels` | `use_totals`, `all_rows` | A cross-tabulated table where two or more columns each hold a total level ("Both sexes", "All Ages"), or a column of geographic levels (area, county, country) | The table gives every count under each level and again under the total, so adding up all the rows counts each one once per level |
 | `join_links` | `sure`, `all`, `none` | A question or claim about a folder that no single file answers | A link that needs confirmation (names that differ, keys that do not all match) may join rows that do not belong together; see [Answers across files](folder.md#answers-across-files) |
 
 A decision that does not arise is not listed, and a choice passed for it
@@ -79,12 +79,22 @@ rows in some count, and to no more than half as much again (groups no level
 names, such as other races, add to the total alone). Two or more columns must
 qualify; one total row alone is `aggregate_rows`' to find.
 
+A column of geographic levels qualifies alone: each row is at one level (a
+salmon table gives each month's losses by area, again by county, and again
+for the whole country), every label is a level (area, county, region,
+municipality, country, national and the like), one of them is the whole,
+and the whole's rows add up to the rows of one level of parts, within 2%, in
+some count.
+
 With `total_levels=use_totals`, a column the question neither filters nor
 groups by is read at its total level, and a column it groups by leaves its
 total level out of the groups: "total Deaths for Injury mechanism Poisoning
 in 2016" reads the one row with Both sexes, All Ages, All races and All
 Intentions, 68,995 deaths, where adding up every Poisoning row gives 1.1
-million. With `total_levels=all_rows`, every row counts, as in the file.
+million. A level that no row the question picks holds is left alone:
+"total losses in Vestland" keeps Vestland's county rows rather than looking
+for Vestland at the country level. With `total_levels=all_rows`, every row
+counts, as in the file.
 
 ## Choosing an option
 

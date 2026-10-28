@@ -34,6 +34,69 @@
 
 ### Reading claims and questions
 
+- Fixed a cleaning error: "country" was merged into "county" as a typo, one
+  letter apart, so a salmon table's national rows were counted as a county
+  and "total losses of salmon in 2023" gave 214 million where there were
+  71.4 million. A spelling on ten rows or more that never sits beside the
+  same value of another column as the commoner one ("country" beside
+  "Norge", "county" beside the counties) is a label of its own.
+- A column of geographic levels (area, county and country, each row at one)
+  is read at the whole unless the question names a part (decision
+  `total_levels`).
+- Fixed a wrong verdict: "Fentanyl was found in about 68% of the deaths"
+  read "found in" as the value "Found in car". A value only partly written
+  right after "was" or "were" is a verb, not that value.
+- A column that holds only a mark or a blank ("Y" where xylazine was found)
+  reads a blank as a mark not made, so a share is of every row: "what share
+  of deaths had xylazine in 2024" is 342 of 982, not 342 of the 342 rows
+  marked. "with", "involving", "was found in", "turned up in" and
+  "without" pick its rows.
+- "about 12 of every 100 cases" and "8 in every 100" are shares, as "one in
+  five" is; a rate per 100,000 is not.
+- "By 2024, xylazine turned up in 35 of every 100 deaths" is the share in
+  2024 or over every year up to it; when the two give different verdicts,
+  the claim is ambiguous.
+- A description between commas (", a veterinary sedative,") is left out of
+  a claim.
+- "Fish farms lost about 71.4 million salmon in 2023" adds up `losses`: a
+  verb of amount ("lost", "spent", "sold", "paid") names the column and
+  adds it up unless the claim says how rows combine ("on average").
+- "Illinois" picks State = IL in a column of postal codes that also holds
+  PR and GU.
+- "bike thefts" no longer keeps the two rows where BIKE_MAKE is "BIKE": a
+  value that only repeats its column's name picks rows only when typed as
+  the data spell it. A word that starts the names of three or more columns
+  (BIKE_MAKE, BIKE_TYPE, BIKE_COST) names what each row is about, so "how
+  many bikes" counts rows.
+- "July" in a table with OCC_MONTH and REPORT_MONTH is the month a theft
+  happened, unless the question says reported; "Created Date" wins over
+  "Closed Date" the same way.
+- "Births in Ireland rose by 20%" checks a table of births with no column
+  of places: a country or US state that no column could hold is read as the
+  place the whole table covers, and the check says so.
+- "Prices were negative for 511 hours in 2025" counts rows in a table of
+  one reading an hour; "for 511 hours" is no longer read as a base like
+  "across the 48 states".
+- A year-named text column of single years and spans ("2019", "2023 - 25")
+  gets a column of its single years, so OHID's Fingertips tables have dates;
+  the note says how many rows hold a span.
+- "England" in Area Name, Parent Name and Area Type is the area of that name.
+- "three quarters of a percentage point a year" is 0.75 points, not 75%, and
+  a slope written in words is compared as one.
+- In a long table, a filter on its indicator column (Indicator Name =
+  Smoking prevalence) says what `Value` holds, so the check does not call
+  `Value` a guess. "Persons" is a total level, as "Both sexes" is.
+- "women" picks a gender column that also holds "transman".
+- "Half of the people who died were 44 or younger" reads the age bound ("44
+  or younger", "18 and under") and the share past it; "within 19 days" and
+  "mothers under 20" bound the rows, and the share of a group ("more than
+  85% of the babies") is the number claimed. "died" names a table of deaths.
+- "Fewer than one in five of the 85 candies" and "Of the District's 187
+  homicides" name the base the share is of, and the base is checked. "is a
+  hard candy" picks the 0/1 column `hard`.
+- "shortlisted writers" is no part of "The Crime Writers' Association": one
+  lower-case word picks a capitalised name of three or more words only when
+  another of its words follows.
 - Fixed wrong answers on cross-tabulated tables: CDC's injury deaths give
   every count under each sex, age band, race and intent and again under
   "Both sexes", "All Ages", "All races" and "All Intentions", so "total

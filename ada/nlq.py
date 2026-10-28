@@ -366,10 +366,16 @@ FILTER_CUES = frozenset({"within", "among", "amongst"})
 # Words before a yes/no column that keep its yes rows; a verb of seeing says how it was noticed
 # ("squirrels seen foraging").
 FLAG_CUES = (
-    r"have|has|having|had|with|without|are|were|"
+    r"have|has|having|had|with|without|are|were|is|was|"
     r"received|receive|receiving|given|got|took|taking|using|used|seen|spotted|observed|heard|"
     r"featured|featuring|features|feature|showed|shows|showing|show|included|includes|including|"
-    r"depicted|depicting|appeared\s+in|appears\s+in"
+    r"depicted|depicting|appeared\s+in|appears\s+in|involved|involving|involves|involve"
+)
+# Words after a flag or a column of marks that keep the rows where it is set: "xylazine was found in".
+FOUND_IN = re.compile(
+    r"\s+(?:(?:was|were|is|are)\s+(?:found|detected|present|involved|listed|noted|recorded)|(?:turned|turns|"
+    r"showed|shows)\s+up|appeared|appears)\s+in\b",
+    re.IGNORECASE,
 )
 # Grouping by a part of the date: "average PM2.5 by hour", "revenue by weekday",
 # "which month of the year is wettest", which pools each month across the years.
@@ -1028,6 +1034,7 @@ AGE_PHRASE = re.compile(
     rf"\b(?:{_AGE_CUE}(?P<low>\d{{1,3}})\s*-?\s*(?:to|-|–)\s*(?P<high>\d{{1,3}})(?:{_YEAR_OLDS})?"
     rf"|(?P<low2>\d{{1,3}})\s*-?\s*(?:to|-|–)\s*(?P<high2>\d{{1,3}}){_YEAR_OLDS}"
     rf"|(?:{_AGE_CUE})?(?P<older>\d{{1,3}})\s*(?:and|or)\s+older\b"
+    rf"|(?:{_AGE_CUE})?(?P<younger>\d{{1,3}})\s*(?:and|or)\s+(?:younger|under)\b"
     rf"|{_AGE_CUE}(?P<over>\d{{1,3}})\s*(?:\+|\s+and\s+(?:over|up|above)\b|\s+or\s+(?:over|more|above)\b)"
     rf"|(?P<plus>\d{{1,3}})\+(?=\s|$|[,.;])"
     rf"|{_AGE_CUE}(?P<one>\d{{1,3}})\b(?!\s*(?:-|–|to\b|and\b|or\b|\+|%))"
@@ -1060,6 +1067,9 @@ def age_range(match: re.Match) -> tuple[float, float]:
     start = next((found[name] for name in ("older", "over", "plus") if name in found), None)
     if start is not None:
         return float(start), float("inf")
+    if "younger" in found:
+        # "44 or younger": every age up to 44.
+        return float("-inf"), float(found["younger"])
     single = found.get("one", found.get("olds"))
     return float(single), float(single)
 
@@ -1118,7 +1128,8 @@ def _claim_ages(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) 
             if low == high:
                 reading.conditions.append(Condition(column, "=", low))
             else:
-                reading.conditions.append(Condition(column, ">=", low))
+                if low != float("-inf"):
+                    reading.conditions.append(Condition(column, ">=", low))
                 if high != float("inf"):
                     reading.conditions.append(Condition(column, "<=", high))
         else:
@@ -1130,7 +1141,9 @@ def _claim_ages(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) 
             top = max(band[1] for band in bands.values())
             last = inside[-1][0][1] if inside else None
             reaches = last is not None and (last == high or (high == float("inf") and last == top))
-            covered = bool(reaches) and inside[0][0][0] == low and all(
+            # "44 or younger" starts at the youngest band the table has.
+            first = min(band[0] for band in bands.values()) if low == float("-inf") else low
+            covered = bool(reaches) and inside[0][0][0] == first and all(
                 after[0][0] == before[0][1] + 1 for before, after in zip(inside, inside[1:], strict=False))
             if cut:
                 reading.flag(f'"{match.group().strip()}" cuts the {column} band {cut[0]} in two, and no row '
@@ -1419,6 +1432,38 @@ def _value_nouns(vocabulary: _Vocabulary) -> set[str]:
     return {word for word, count in sharing.items() if count >= 2}
 
 
+# Fewest columns whose names start with one word for it to name what each row is about: BIKE_MAKE, BIKE_TYPE
+# and BIKE_COST.
+PREFIX_COLUMNS = 3
+# Words that start column names as a unit of time does ("year_built", "year_sold"), never naming the rows.
+TIME_PREFIXES = frozenset({"year", "month", "day", "date", "time", "hour", "week", "quarter", "period"})
+
+
+def _prefix_nouns(dataframe: pd.DataFrame) -> set[str]:
+    """The plural of a word that starts the names of several columns, none of them its id, name or a number.
+
+    "bikes" for BIKE_MAKE, BIKE_TYPE and BIKE_COST names the things the rows
+    are, so "41 bikes were stolen" counts rows. A word with an id or name
+    column (Plot Code, Plot Name) names things that rows may repeat, and
+    numbered columns (Gene_1, Gene_2) are a set of measures.
+    """
+    names = [normalized_name(str(column)).split() for column in dataframe.columns]
+    whole = {" ".join(words) for words in names}
+    firsts = Counter(words[0] for words in names if len(words) > 1)
+    found = set()
+    for word, count in firsts.items():
+        if count < PREFIX_COLUMNS or not word.isalpha() or len(word) <= 2 or word in whole:
+            continue
+        if word in QUERY_GRAMMAR or word in AGGREGATION_WORDS or word in TIME_PREFIXES:
+            continue
+        rests = [words[1:] for words in names if len(words) > 1 and words[0] == word]
+        if any(set(rest) & (ENTITY_NUMBER_WORDS | {"name"}) or any(part.isdigit() for part in rest)
+               for rest in rests):
+            continue
+        found |= {f"{word}s", f"{word}es"}
+    return found
+
+
 def _holds(words: tuple[str, ...], run: tuple[str, ...]) -> bool:
     """Whether ``run`` appears in ``words`` as consecutive whole words."""
     size = len(run)
@@ -1508,6 +1553,19 @@ def _pick_values(
         if not found:
             return None, [], None
         columns = list(dict.fromkeys(value.column for value in found))
+    if not exact and len(run) == 1 and re.sub(r"[^A-Za-z]", "", phrase).islower():
+        # "shortlisted writers" is no part of "The Crime Writers' Association": one word in lower case names a
+        # capitalised name of three or more words only when another of its words follows ("the southwest
+        # border" for Southwest Land Border).
+        after = re.search(rf"(?<![A-Za-z]){re.escape(phrase)}(?![A-Za-z])((?:\W+\w+){{0,3}})", question,
+                          re.IGNORECASE)
+        following = {_norm(word) for word in re.findall(r"\w+", after.group(1))} if after else set()
+        found = [value for value in found
+                 if len(value.words) < 3 or not _capitalised_in(value.raw, run)
+                 or (set(value.words) - set(run) - DETERMINERS) & following]
+        if not found:
+            return None, [], None
+        columns = list(dict.fromkeys(value.column for value in found))
     if len(columns) > 1 and dataframe is not None and _common_noun(phrase, question):
         # "dogs" is a kind in animal_type and one pet's name in animal_name: a word written in lower
         # case is a common noun, and a column of names does not hold kinds.
@@ -1515,6 +1573,16 @@ def _pick_values(
         if kinds and len(kinds) < len(columns):
             found = [value for value in found if value.column in kinds]
             columns = kinds
+    if len(columns) > 1 and not _common_noun(phrase, question) and (named := _name_column(columns)):
+        # "England" in Area Name, Parent Name, Area Type and Category: the area of that name, not the areas
+        # whose parent it is, nor a type or category that shares the word.
+        found = [value for value in found if value.column == named]
+        columns = [named]
+    if len(columns) > 1 and (when := _event_column(columns, question)):
+        # "July is the worst month for bike theft": the month the theft happened (OCC_MONTH), not the one it
+        # was reported in (REPORT_MONTH), unless the question says reported.
+        found = [value for value in found if value.column == when]
+        columns = [when]
     if len(columns) > 1 and dataframe is not None and _state_meant(phrase, question):
         # "Starr County, Texas": the state, not Texas County, Missouri, in the column of county names.
         states = [column for column in columns if _holds_states(dataframe[column])]
@@ -1534,6 +1602,45 @@ def _pick_values(
         return chosen[0], chosen, None
     shown = _leaders([value.raw for value in found])
     return None, [], f'"{phrase}" matches several {columns[0]} values: {shown}. Name one in full.'
+
+
+# Name words of a column that refers to something else, or sorts rows into kinds, beside a column of names.
+SECONDARY_NAME_WORDS = frozenset({"parent", "type", "category", "group", "class", "kind"})
+
+
+def _name_column(columns: list[str]) -> str | None:
+    """The one column named for names (Area Name) when every other one is a parent, type or category."""
+    def words(column: str) -> set[str]:
+        return set(_norm(normalized_name(str(column))).split())
+
+    names = [column for column in columns if "name" in words(column) and not words(column) & {"parent"}]
+    others = [column for column in columns if column not in names]
+    if len(names) != 1 or not all(words(column) & SECONDARY_NAME_WORDS for column in others):
+        return None
+    return names[0]
+
+
+# Words in a column's name for when a thing happened, and for when it was dealt with afterwards.
+EVENT_WORDS = frozenset({"occ", "occurrence", "occurred", "incident", "event", "onset", "created", "opened"})
+LATER_WORDS = frozenset({
+    "report", "reported", "reporting", "closed", "resolved", "updated", "processing", "processed", "entered",
+})
+
+
+def _event_column(columns: list[str], question: str) -> str | None:
+    """Of columns that each hold a value, the one for when the thing happened, when every other one is for
+    when it was reported or closed; the reported one when the question says reported."""
+    def kinds(column: str) -> set[str]:
+        return set(_norm(normalized_name(str(column))).split())
+
+    events = [column for column in columns if kinds(column) & EVENT_WORDS]
+    later = [column for column in columns if kinds(column) & LATER_WORDS and column not in events]
+    if len(events) != 1 or len(events) + len(later) != len(columns):
+        return None
+    if re.search(r"\breport(?:ed|s|ing)?\b", question, re.IGNORECASE):
+        reported = [column for column in later if kinds(column) & {"report", "reported", "reporting"}]
+        return reported[0] if len(reported) == 1 else None
+    return events[0]
 
 
 # Nouns after a state's name that make it the name of a place within one: "Texas County".
@@ -1762,6 +1869,19 @@ def _claim_values(
                         # "is to", "for top": a query word after a cue names a value spelled just so,
                         # not "tos".
                         found = [value for value in found if value.words == words]
+                    # "bike theft" where BIKE_MAKE holds "BIKE" on two rows: a value that only repeats its own
+                    # column's name, beside other values, is a placeholder, picked only when typed as the data
+                    # spell it. A select-all option ("... - Pumpkin" holding "Pumpkin") is its column's only
+                    # value.
+                    found = [value for value in found
+                             if not set(value.words) <= set(normalized_name(str(value.column)).split())
+                             or dataframe[value.column].nunique() < 2
+                             or _typed_in_case(value, reading.question)]
+                    if not exact and re.search(r"\b(?:was|were|is|are|been|be|being)\s+$",
+                                               reading.original[:window[0][0]], re.IGNORECASE):
+                        # "Fentanyl was found in": a word after "was" is a verb, which "Found in car"
+                        # holds only in part.
+                        found = []
                 found = [value for value in found if _plain_match(value, reading.question, cued)]
                 adverb = not found and size == 1 and len(words[0]) > 4 and words[0].endswith("ly")
                 if adverb:
@@ -1885,7 +2005,7 @@ SEX_VALUES = {
 GENDER_VALUES = frozenset({
     "other", "unknown", "intersex", "not stated", "agender", "genderfluid", "gender fluid", "non binary",
     "nonbinary", "transgender", "bigender", "genderqueer", "prefer not to say", "not specified",
-    "unspecified", "not known",
+    "unspecified", "not known", "transman", "transwoman", "trans man", "trans woman", "trans", "two spirit",
 })
 
 
@@ -1937,6 +2057,11 @@ US_STATES = {
     "oklahoma": "ok", "oregon": "or", "pennsylvania": "pa", "rhode island": "ri", "south carolina": "sc",
     "south dakota": "sd", "tennessee": "tn", "texas": "tx", "utah": "ut", "vermont": "vt",
     "virginia": "va", "washington": "wa", "west virginia": "wv", "wisconsin": "wi", "wyoming": "wy",
+}
+# The territories and their postal codes, which a column of state codes may hold as well.
+US_TERRITORIES = {
+    "puerto rico": "pr", "guam": "gu", "us virgin islands": "vi", "american samoa": "as",
+    "northern mariana islands": "mp",
 }
 # The fewest postal codes a column must hold, and nothing else, to be read as a column of states.
 STATE_CODES_MIN = 10
@@ -2054,7 +2179,7 @@ def _claim_us_states(reading: _Reading, vocabulary: _Vocabulary) -> None:
     of them, is read this way; a column that spells the names out matches
     them as values.
     """
-    codes = set(US_STATES.values())
+    codes, territories = set(US_STATES.values()), set(US_TERRITORIES.values())
     columns: dict[str, list[_Value]] = defaultdict(list)
     for value in vocabulary.values:
         columns[value.column].append(value)
@@ -2066,14 +2191,15 @@ def _claim_us_states(reading: _Reading, vocabulary: _Vocabulary) -> None:
         _claim_state_codes(reading, columns[named[0]])
     held = [
         column for column, values in columns.items()
-        if len(values) >= STATE_CODES_MIN and all(" ".join(value.words) in codes for value in values)
+        if len(values) >= STATE_CODES_MIN
+        and all(" ".join(value.words) in codes | territories for value in values)
     ]
     if len(held) != 1:
         return
-    names = sorted(US_STATES, key=len, reverse=True)
-    for name in names:
+    places = {**US_STATES, **US_TERRITORIES}
+    for name in sorted(places, key=len, reverse=True):
         for match in re.finditer(rf"\b{name}\b", reading.remaining):
-            values = [value for value in columns[held[0]] if " ".join(value.words) == US_STATES[name]]
+            values = [value for value in columns[held[0]] if " ".join(value.words) == places[name]]
             if not values:
                 continue
             _add_filter(reading, values, match.start())
@@ -2365,6 +2491,10 @@ def _claim_partial_at(
         if not candidates:
             continue
         start, end = window[0][0], window[-1][1]
+        if size == 1 and len(candidates) > 1 and phrase[0] in reading.nouns:
+            # Left for _claim_entity: "bikes" names what each row of BIKE_MAKE, BIKE_TYPE and BIKE_COST is
+            # about, not one of them.
+            return 1
         if _names_a_set(reading, candidates, start, dataframe):
             # "which gene has the highest average" ranks the Gene_ columns themselves.
             reading.across = tuple(candidates)
@@ -2608,6 +2738,25 @@ def _ticked(series: pd.Series) -> pd.Series:
     return series.notna() & series.astype(str).str.strip().ne("")
 
 
+def _marks(series: pd.Series) -> tuple[str, ...] | None:
+    """The values of a column that holds only a mark or a blank ("Y" where xylazine was found), or None.
+
+    Every value must start with the same tick mark ("Y", "y", "Y (PTCH)") and
+    some rows must be blank. A blank is then a mark not made, as a share of the
+    rows with the mark would otherwise be all of them.
+    """
+    if is_numeric_dtype(series) or is_bool_dtype(series):
+        return None
+    ticked = _ticked(series)
+    if ticked.all() or not ticked.any():
+        return None
+    values = series[ticked].astype(str).unique()
+    if len(values) > GROUPING_LIMIT:
+        return None
+    firsts = {(re.findall(r"[A-Za-z]+", value) or [""])[0].lower() for value in values}
+    return tuple(sorted(values)) if len(firsts) == 1 and firsts <= TICK_MARKS else None
+
+
 def select_all_sets(dataframe: pd.DataFrame) -> list[tuple[str, tuple[str, ...]]]:
     """Columns that split one select-all question into a column per option, by question.
 
@@ -2831,6 +2980,25 @@ def _claim_conditions(
             if re.search(paired, before[:match.start()]):
                 continue
             reading.conditions.append(Condition(column, "=", 0.0 if match.group("cue") == "without" else 1.0))
+            claimed = (match.start(), end)
+        elif (_is_flag(series) or (marks := _marks(series))) and (match := FOUND_IN.match(after)):
+            # "xylazine was found in 35% of deaths": the rows where it is set.
+            if _is_flag(series):
+                reading.conditions.append(Condition(column, "=", 1.0))
+            else:
+                _add_filter(reading, [_Value(column=column, raw=mark, words=()) for mark in marks], start)
+            claimed = (start, end + match.end())
+        elif not numeric and (marks := _marks(series)) and (
+            match := re.search(rf"\b(?P<cue>{FLAG_CUES}|reported|suffered\s+from)\s+(?:a\s+|an\s+)?$", before)
+        ):
+            # "deaths with xylazine" where Xylazine holds "Y" or nothing: the rows marked, or the blank ones.
+            if match.group("cue") == "without":
+                reading.conditions.append(Condition(column, "missing"))
+                reading.notes.append(f"{column} holds only {_and_listed(marks)} or a blank; a blank is a "
+                                     "mark not made.")
+            else:
+                _add_filter(reading, [_Value(column=column, raw=mark, words=()) for mark in marks],
+                            match.start())
             claimed = (match.start(), end)
         elif not numeric and (yes := _yes_value(series)) is not None and (
             match := re.search(rf"\b(?P<cue>{FLAG_CUES}|reported|suffered\s+from)\s+(?:a\s+|an\s+)?$", before)
@@ -4076,7 +4244,7 @@ def _read_question(
     _claim_ordinal_columns(reading, dataframe, roles)
     _claim_conditions(reading, list(reading.spans), dataframe, roles, vocabulary)
     _claim_person_names(reading, dataframe)
-    nouns = reading.nouns = _value_nouns(vocabulary)
+    nouns = reading.nouns = _value_nouns(vocabulary) | _prefix_nouns(dataframe)
     _claim_values(reading, vocabulary, dataframe, exact_only=True, row_noun=roles.row_noun, nouns=nouns)
     _claim_sexes(reading, vocabulary, nouns)
     _claim_outcomes(reading, vocabulary)
@@ -5105,6 +5273,16 @@ def _count_plan(
                 **{**counting, "conditions": (*counting["conditions"], flagged)},
             )
         event = None if is_numeric_dtype(series) else outcome_event(series)
+        marks = _marks(series) if event is None else None
+        if marks and not reading.distinct and column != roles.identifier:
+            # "what share of deaths had xylazine" where Xylazine holds "Y" or nothing: the rows marked.
+            answered = ValueFilter(column, marks)
+            if _asks_share(reading) and (counting["filters"] or counting["conditions"]):
+                return QueryPlan(intent="count", aggregation="count", counted=(answered,), **counting)
+            return QueryPlan(
+                intent="count", aggregation="count",
+                **{**counting, "filters": (*counting["filters"], answered)},
+            )
         if event is not None and not reading.distinct and column != roles.identifier:
             # "what share survived" counts the rows where Survived is "Yes", as a 0/1 flag counts its 1s;
             # "what share of women survived" counts it among the women.
@@ -6604,7 +6782,8 @@ def _execute_count(
     each = (f"; each row counts {weight} cases, the number its combination of values holds"
             if weight and not plan.weight else f"; each row counts its {weight}" if weight else "")
     if plan.counted:
-        return _counted_share(plan, working, weight, each, scope)
+        marked = frozenset(item.column for item in plan.counted if _marks(dataframe[item.column]))
+        return _counted_share(plan, working, weight, each, scope, marked)
     if not (plan.filters or plan.conditions):
         if weight:
             total = int(working[weight].sum())
@@ -6630,18 +6809,21 @@ def _execute_count(
     # A blank in a select-all option column is an option not ticked, so its share is of the rows that
     # ticked any option of the question, not of those where the column holds a value.
     options = {column: members for _, members in select_all_sets(dataframe) for column in members}
+    # A blank in a column of marks ("Y" or nothing) is a mark not made, so the share is of every row.
+    marked = [column for column in recorded if column not in options and _marks(dataframe[column])]
     for column in recorded:
         if column in options:
             members = [member for member in options[column] if member in base.columns]
             base = base.loc[pd.DataFrame({member: _ticked(base[member]) for member in members}).any(axis=1)]
-        else:
+        elif column not in marked:
             base = base.loc[base[column].notna()]
-    plain = [column for column in recorded if column not in options]
+    plain = [column for column in recorded if column not in options and column not in marked]
     asked = dict.fromkeys(_split_option(column)[0] for column in recorded if column in options)
     kept = ([f"{_and_listed(plain)} recorded"] if plain else []) + [
         f'an option of "{question}" ticked' for question in asked
     ]
     recorded_text = f" with {' and '.join(kept)}" if kept else ""
+    blanks = f" (a blank {_and_listed(marked)} is a mark not made)" if marked else ""
     described = " and ".join(
         [_describe_filter(item) for item in plan.filters] + _describe_conditions(plan.conditions)
     )
@@ -6654,7 +6836,7 @@ def _execute_count(
             plan=plan,
             answer=(
                 f"{count:,} of the {total:,} cases{when}{recorded_text} ({_share_text(share)}) have "
-                f"{described}{each}."
+                f"{described}{blanks}{each}."
             ),
             calculation=(
                 f"sum({weight}) over the {len(working):,} rows with {described}, divided by "
@@ -6668,23 +6850,26 @@ def _execute_count(
     return QueryAnswer(
         question="",
         plan=plan,
-        answer=f"{len(working):,} {of} ({_share_text(share)}) have {described}.",
-        calculation=f"rows with {described}, divided by the {len(base):,} rows{recorded_text}{scope}",
+        answer=f"{len(working):,} {of} ({_share_text(share)}) have {described}{blanks}.",
+        calculation=f"rows with {described}, divided by the {len(base):,} rows{recorded_text}{scope}{blanks}",
         value=float(len(working)),
         figures=(("share_percent", share), ("denominator", float(len(base)))),
     )
 
 
 def _counted_share(
-    plan: QueryPlan, working: pd.DataFrame, weight: str | None, each: str, scope: str
+    plan: QueryPlan, working: pd.DataFrame, weight: str | None, each: str, scope: str,
+    marked: frozenset[str] = frozenset(),
 ) -> QueryAnswer:
     """The rows meeting what the plan counts, as a share of the rows its filters keep.
 
     "what share of women survived" is of the women; the base keeps the rows
     where the counted columns are recorded, and says so when that leaves some out.
+    A blank in a column of marks (``marked``) is a mark not made, so it stays in.
     """
     columns = list(dict.fromkeys(
-        item.column for item in plan.counted if getattr(item, "operator", None) != "missing"
+        item.column for item in plan.counted
+        if getattr(item, "operator", None) != "missing" and item.column not in marked
     ))
     recorded = [column for column in columns if working[column].isna().any()]
     base = working.loc[working[columns].notna().all(axis=1)] if columns else working
@@ -6695,6 +6880,8 @@ def _counted_share(
     )
     when = f" in {_when_label(plan)}" if plan.year or plan.month else ""
     kept = f", {_and_listed(recorded)} recorded" if recorded else ""
+    blanks = sorted(item.column for item in plan.counted if item.column in marked)
+    described += f" (a blank {_and_listed(blanks)} is a mark not made)" if blanks else ""
     if weight:
         count, total = int(base.loc[hits, weight].sum()), int(base[weight].sum())
         unit = "cases"
@@ -9360,7 +9547,13 @@ def _decide_total_levels(
         return plan, ()
     named = {item.column for item in (*plan.filters, *plan.conditions, *plan.counted)}
     grouped = {plan.dimension, plan.second_dimension}
-    kept = [level for level in levels if level.column not in named and level.column not in grouped]
+    picked = pd.Series(True, index=dataframe.index)
+    for item in plan.filters:
+        picked &= _value_mask(dataframe[item.column], item.values)
+    # "Vestland" is a county, so its rows are never at the country level: a level no row picked holds is
+    # left alone.
+    kept = [level for level in levels if level.column not in named and level.column not in grouped
+            and dataframe.loc[picked, level.column].astype(str).eq(level.label).any()]
     dropped = [level for level in levels if level.column in grouped]
     if not kept and not dropped:
         return plan, ()

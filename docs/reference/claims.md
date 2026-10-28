@@ -124,6 +124,7 @@ when the file can't be read, and 3 when it is unverified for any other reason.
 | `about half of` | 47.2% to 52.8%, the same way; "about" adds nothing to a fraction in words |
 | `more than half of` | above 50% |
 | `seven in ten` | 68.3% to 70.7%, as "seven tenths" is |
+| `about 12 of every 100`, `8 in every 100` | a share in percent, read with a percent's own rounding; a rate per 100,000 is not a share |
 
 `--value` with `--question` keeps its qualifier: `--value "about 25%"` stands
 for 24 to 26.
@@ -343,6 +344,12 @@ several columns ("shelter" in `at shelter` and `shelter, neuter, return`, in
 `long-beach-shelter/longbeach.csv`), as long as it is no column's name and
 no value in full. Generic folder words (data, raw, files and the like) are
 not used.
+
+A word for dying ("died", "killed") names a table whose name holds
+"deaths". A country or US state that no column of the table could hold (no
+column has three country names or ten state codes) is read as the place the
+whole table covers: "Births in Ireland rose by 20%" on a table of births
+with no column of places. The assumptions say so.
 
 In a folder, a file read without some of the claim's words comes after the
 files and joins that read all of them.

@@ -1259,6 +1259,29 @@ class RespeltLabelTests(unittest.TestCase):
         self.assertEqual(cleaned["blood"].nunique(), 4)
         self.assertEqual(cleaned["arm"].nunique(), 2)
 
+    def test_a_spelling_beside_other_values_is_a_label_of_its_own(self):
+        # The country rows sit beside "Norge" only, the county rows beside the counties.
+        frame = pd.DataFrame({
+            "geo_group": ["county"] * 96 + ["country"] * 12,
+            "region": ["Vestland", "Nordland", "Troms", "Agder", "Rogaland", "Finnmark", "Akershus",
+                       "Trondelag"] * 12 + ["Norge"] * 12,
+        })
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["geo_group"].value_counts().to_dict(), {"county": 96, "country": 12})
+
+    def test_a_typo_on_a_few_rows_still_joins_its_label(self):
+        # Fewer than ten rows: too few to tell a label of its own from a typo by what sits beside it.
+        frame = pd.DataFrame({
+            "ethnicity": ["Hispanic"] * 30 + ["Hipanic"] * 4,
+            "site": ["North"] * 30 + ["South"] * 4,
+        })
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["ethnicity"].value_counts().to_dict(), {"Hispanic": 34})
+
 
 class OneHotTests(unittest.TestCase):
     def test_columns_marking_one_level_each_are_joined_into_one_category(self):
@@ -1477,3 +1500,23 @@ class PlaceCodeTests(unittest.TestCase):
         # Readings in two units with decimals are still readings.
         readings = pd.DataFrame({"dose": ["1.5 mg", "2.0 mg", "0.5 g", "1.0 g"] * 3})
         self.assertTrue(any("dose" in note for note in ada.analyze(readings).cleaning.notes))
+
+
+class YearSpanTests(unittest.TestCase):
+    def test_single_years_beside_spans_get_a_year_column(self):
+        frame = pd.DataFrame({"Time period": ["2019", "2020", "2021", "2019 - 21", "2020 - 22"],
+                              "Value": [1.0, 2.0, 3.0, 2.0, 2.5]})
+
+        cleaned, report = clean_dataframe(frame)
+
+        # The single years become the table's dates.
+        self.assertEqual(pd.to_datetime(cleaned["Time period year"]).dt.year.tolist()[:3], [2019, 2020, 2021])
+        self.assertTrue(cleaned["Time period year"].iloc[3:].isna().all())
+        self.assertTrue(any("spans of years" in note for note in report.notes))
+
+    def test_spans_alone_get_no_year_column(self):
+        frame = pd.DataFrame({"Period": ["2019/20", "2020/21", "2021/22"], "Value": [1.0, 2.0, 3.0]})
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertNotIn("Period year", cleaned.columns)
