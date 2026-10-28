@@ -1737,7 +1737,10 @@ def _survey_codes(column: _Column) -> QualityIssue | None:
         return None
     levels = [int(value) for value in column.uniques]
     answers = [level for level in levels if level not in SURVEY_CODES]
-    scale = bool(answers) and answers == list(range(answers[0], answers[-1] + 1))
+    # Steps of one, compared pairwise: a range from the first to the last of 100,000,000 and 900,000,000
+    # would fill the memory.
+    steps = [answers[index + 1] - answers[index] for index in range(len(answers) - 1)]
+    scale = bool(answers) and all(step == 1 for step in steps)
     codes = [level for level in levels if level in SURVEY_CODES and (level > 8 or scale)]
     answers = [level for level in levels if level not in codes]
     if not codes or len(answers) < 2 or min(codes) <= max(answers) + 1:

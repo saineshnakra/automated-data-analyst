@@ -125,6 +125,16 @@ def theil_sen(positions: np.ndarray, values: np.ndarray) -> tuple[float, float]:
     return slope, intercept
 
 
+def least_squares(positions: np.ndarray, values: np.ndarray) -> float:
+    """The least-squares slope of ``values`` on ``positions``, by scipy.stats.linregress; 0 for fewer than two
+    distinct positions."""
+    positions = np.asarray(positions, dtype=float)
+    values = np.asarray(values, dtype=float)
+    if values.size < 2 or np.unique(positions).size < 2:
+        return 0.0
+    return float(stats.linregress(positions, values).slope)
+
+
 def fit_trendline(periods: pd.DatetimeIndex, values: np.ndarray, grain: str | None = None) -> TrendLine:
     """Fit a robust trendline against the calendar positions of ``periods`` at ``grain``."""
     positions = period_positions(periods, grain)

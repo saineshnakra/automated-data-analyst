@@ -83,11 +83,11 @@ from .quality import scan as scan_quality
 from .schema import ColumnRoles, detect_roles, is_identifier_name, row_summary_columns, running_total_columns
 from .sources import Source
 from .timepoints import is_timepoint_name
-from .timeseries import TREND_CONFIDENCE, period_positions, theil_sen, trend_test
+from .timeseries import TREND_CONFIDENCE, least_squares, period_positions, theil_sen, trend_test
 
 Intent = Literal[
     "aggregate", "count", "rank", "breakdown", "trend", "growth", "correlation", "compare", "correlates",
-    "describe", "columns", "crosstab",
+    "describe", "columns", "crosstab", "options",
 ]
 #: Plans answered from the column profile or the data checks rather than by combining a measure.
 ProfileIntent = Literal["missing", "duplicates", "outliers"]
@@ -307,6 +307,9 @@ ENTITY_COLUMN_WORDS = frozenset({
     "id", "ids", "subject", "participant", "patient", "individual", "animal", "specimen",
     "donor", "respondent", "person",
 })
+# Words after an entity word that still name its number: "animal id", "participant no".
+ENTITY_NUMBER_WORDS = frozenset({"id", "ids", "no", "number", "num", "code"})
+
 # Words that ask about missing values rather than name a column.
 MISSING_WORDS = ("missing", "null", "blank", "empty")
 # Words for the columns themselves. They are grammar only where the plan uses
@@ -1263,6 +1266,8 @@ class _Reading:
     distinct: bool = False
     #: The columns a "which column has the highest average" question ranks.
     across: tuple[str, ...] = ()
+    #: The option columns of the select-all question the words name (see ``select_all_sets``).
+    options: tuple[str, ...] = ()
     #: Columns of filters and conditions introduced by "for", "where", "in" and the like,
     #: which narrow the rows rather than name what a share counts.
     scoped: set[str] = field(default_factory=set)
@@ -1957,6 +1962,60 @@ def _claim_country(reading: _Reading, vocabulary: _Vocabulary) -> None:
                              "and no row is the country as a whole.")
 
 
+def _word_forms(word: str) -> set[str]:
+    """A word with its plural and its verb endings added or removed: "serve" is also "served"."""
+    forms = _word_variants(word) | {f"{word}d", f"{word}ed", f"{word}ing"}
+    for ending in ("ed", "d", "ing"):
+        if word.endswith(ending) and len(word) > len(ending) + 2:
+            forms.add(word[:-len(ending)])
+    return forms
+
+
+def _claim_select_all(reading: _Reading, dataframe: pd.DataFrame) -> None:
+    """Read a word only one select-all question's name holds as that question: "which pies" names the
+    option columns of "Which type of pie is typically served at your Thanksgiving dinner? - Pumpkin",
+    "- Apple" and the rest. The question's other words ("served", "Thanksgiving") are then read with it."""
+    sets = select_all_sets(dataframe)
+    if not sets:
+        return
+    questions = {question for question, _ in sets}
+
+    def words(text: str) -> set[str]:
+        return {word for word in _norm(text).split() if word not in QUERY_GRAMMAR and not word.isdigit()}
+
+    # Words of every other column's name, so a word that names one of them names no question.
+    outside: set[str] = set()
+    for column in dataframe.columns:
+        split = _split_option(str(column))
+        if split is None or split[0] not in questions:
+            outside |= words(str(column))
+    named = []
+    for question, members in sets:
+        own = words(question)
+        others = outside.union(*(words(other) for other in questions if other != question))
+        distinct = own - others
+        tokens = _tokens(reading.remaining)
+        if any(_word_forms(word) & distinct for _, _, word in tokens):
+            named.append((question, members, own))
+    if len(named) != 1:
+        return
+    question, members, own = named[0]
+    claimed = []
+    for start, end, word in _tokens(reading.remaining):
+        if _word_forms(word) & own:
+            reading.claim(start, end)
+            claimed.append((start, end))
+    reading.spans = {
+        column: span for column, span in reading.spans.items()
+        if not any(span[0] < end and start < span[1] for start, end in claimed)
+    }
+    reading.options = members
+    reading.notes.append(
+        f'Read the question as "{question}", which the table splits into {len(members):,} columns, one '
+        "for each option a row may tick."
+    )
+
+
 def _claim_us_states(reading: _Reading, vocabulary: _Vocabulary) -> None:
     """Filter on a state's postal code for its name: "Texas" keeps state = tx.
 
@@ -2423,17 +2482,21 @@ def _prefixed_columns(word: str, words: dict[str, tuple[str, ...]]) -> list[str]
 
 
 # Endings that turn a word into a column's name word: "fast" names fasting_ability.
-STEM_ENDINGS = ("ing", "ed", "er", "ers", "ness", "ity", "ability", "ation", "ion", "ions", "ment", "al")
+STEM_ENDINGS = (
+    "ing", "ed", "er", "ers", "or", "ors", "ness", "ity", "ability", "ation", "ion", "ions", "ment", "al",
+)
 
 
 def _stemmed_columns(word: str, words: dict[str, tuple[str, ...]]) -> list[str]:
-    """Columns with a name word that is ``word`` plus a common ending: "fast" for fasting_ability."""
+    """Columns with a name word that is ``word``, or its singular, plus a common ending: "fast" for
+    fasting_ability, "visits" for visitors."""
     if not word.isalpha() or len(word) < 4:
         return []
+    stems = {word, word[:-1]} if word.endswith("s") and len(word) > 4 else {word}
     return [
         column
         for column, names in words.items()
-        if any(name.startswith(word) and name[len(word):] in STEM_ENDINGS for name in names)
+        if any(name.startswith(stem) and name[len(stem):] in STEM_ENDINGS for name in names for stem in stems)
     ]
 
 
@@ -2461,6 +2524,49 @@ def _skeleton_columns(word: str, words: dict[str, tuple[str, ...]]) -> list[str]
 def _number(text: str) -> float:
     words = text.split()
     return -float(words[-1]) if words[0] == "minus" else float(words[-1])
+
+
+# Between a select-all question and one of its options in a column's name: "Which pies? - Pumpkin".
+OPTION_SEPARATOR = re.compile(r"\s+[-–—]\s+")
+# Fewest option columns that make a select-all question.
+MIN_OPTIONS = 3
+# Marks a survey export may write for a ticked option instead of the option's own name.
+TICK_MARKS = frozenset({"yes", "y", "x", "true", "selected", "checked", "ticked"})
+
+
+def _split_option(column: str) -> tuple[str, str] | None:
+    """A column's name as its question and its option, split at the last dash between spaces."""
+    found = list(OPTION_SEPARATOR.finditer(str(column)))
+    if not found:
+        return None
+    question, option = str(column)[:found[-1].start()].strip(), str(column)[found[-1].end():].strip()
+    return (question, option) if question and option else None
+
+
+def _ticked(series: pd.Series) -> pd.Series:
+    """The rows where a select-all option column holds its value."""
+    return series.notna() & series.astype(str).str.strip().ne("")
+
+
+def select_all_sets(dataframe: pd.DataFrame) -> list[tuple[str, tuple[str, ...]]]:
+    """Columns that split one select-all question into a column per option, by question.
+
+    A survey export names each column "Which type of pie is served? - Pumpkin"
+    and writes "Pumpkin" (or a mark such as "Yes") on the rows that ticked it,
+    leaving the rest blank. At least three text columns that share the question
+    and each hold only their option or a mark make a set. A column of free text
+    beside them ("Other (please specify)" written in) is not an option.
+    """
+    groups: dict[str, list[str]] = defaultdict(list)
+    for column in dataframe.columns:
+        split = _split_option(str(column))
+        series = dataframe[column]
+        if split is None or is_numeric_dtype(series) or is_bool_dtype(series):
+            continue
+        values = series[_ticked(series)].astype(str).str.strip().str.lower().unique()
+        if len(values) == 1 and (values[0] == split[1].lower() or values[0] in TICK_MARKS):
+            groups[split[0]].append(str(column))
+    return [(question, tuple(members)) for question, members in groups.items() if len(members) >= MIN_OPTIONS]
 
 
 def _is_flag(series: pd.Series) -> bool:
@@ -3122,6 +3228,17 @@ def _is_year(word: str, dataframe: pd.DataFrame, roles: ColumnRoles) -> bool:
     return bool((years == int(word)).any())
 
 
+def _names_entity(column: str) -> bool:
+    """Whether a column's name ends in "id", in an entity word, or in one and a word for its number:
+    "tag_id", "subject", "Patient No". "Animal Type" names a kind of animal, not each animal."""
+    words = _norm(normalized_name(column)).split()
+    if words and words[-1] in ("id", "ids"):
+        return True
+    while len(words) > 1 and words[-1] in ENTITY_NUMBER_WORDS:
+        words.pop()
+    return bool(words) and words[-1] in ENTITY_COLUMN_WORDS
+
+
 def _entity_column(noun: str, dataframe: pd.DataFrame, roles: ColumnRoles) -> str | None:
     """The column whose distinct values count ``noun``, when one repeats across rows.
 
@@ -3137,8 +3254,7 @@ def _entity_column(noun: str, dataframe: pd.DataFrame, roles: ColumnRoles) -> st
         candidates = [
             column
             for column in dataframe.columns
-            if set(_norm(normalized_name(column)).split()) & ENTITY_COLUMN_WORDS
-            and not is_datetime64_any_dtype(dataframe[column])
+            if _names_entity(str(column)) and not is_datetime64_any_dtype(dataframe[column])
         ]
     if len(candidates) != 1:
         return None
@@ -3828,6 +3944,7 @@ def _read_question(
             column: span for column, span in reading.spans.items() if q[span[0]:span[1]] != roles.row_noun
         }
     _claim_country(reading, vocabulary)
+    _claim_select_all(reading, dataframe)
     _claim_part_of_year(reading, roles)
     _unit_word_names_rows(reading, dataframe, roles)
     _claim_count_column(reading, dataframe, roles)
@@ -4105,6 +4222,9 @@ def _rule_plan(
         plan = _describe_plan(reading, dataframe, roles)
     elif reading.across:
         plan = _columns_plan(reading)
+    elif reading.options and not reading.mentioned and not set(reading.filters) & set(reading.options):
+        # "which pies do people serve": every option of the question, counted.
+        plan = QueryPlan(intent="options", aggregation="count", columns=reading.options, **_scope(reading))
     else:
         plan = _plan_from_reading(reading, dataframe, roles)
     if plan is None:
@@ -4430,8 +4550,10 @@ def _plan_from_reading(reading: _Reading, dataframe: pd.DataFrame, roles: Column
                 intent="growth", aggregation="count", dimension=rank_dimension, ascending=ascending,
                 top_n=top_n, **{**base, "measure": None},
             )
+        # "total sales rose" compares the totals, as an explicit "total" does for any intent.
+        combined = aggregation if aggregation in ("sum", "mean", "median") else default_aggregation
         return QueryPlan(
-            intent="growth", aggregation=default_aggregation, dimension=rank_dimension,
+            intent="growth", aggregation=combined, dimension=rank_dimension,
             ascending=ascending, top_n=top_n, **base,
         )
 
@@ -4492,13 +4614,12 @@ def _plan_from_reading(reading: _Reading, dataframe: pd.DataFrame, roles: Column
         )
 
     if wants_trend and roles.date:
-        if aggregation not in (None, default_aggregation):
-            # The trend executor always uses the measure's default aggregation,
-            # so "average revenue monthly" is refused (it would get sums) while
-            # "average conversion rate monthly" is answered.
+        if aggregation not in (None, default_aggregation, "sum", "mean"):
+            # The trend combines each period by a total or an average; "median revenue monthly" is refused.
             reading.refusal = _period_aggregation_reason(base["measure"], default_aggregation)
             return None
-        return QueryPlan(intent="trend", aggregation=default_aggregation, **ungrouped)
+        # "average revenue monthly" averages each month, "total milk per year" adds up each year.
+        return QueryPlan(intent="trend", aggregation=aggregation or default_aggregation, **ungrouped)
 
     if dimension and (wants_breakdown or not measure):
         grouped = _grouped_aggregation(aggregation, explicit_extreme, default_aggregation)
@@ -6001,6 +6122,9 @@ def _run_plan(plan: QueryPlan, dataframe: pd.DataFrame, roles: ColumnRoles) -> Q
     if plan.intent == "columns":
         return _execute_columns(plan, working, scope, applied)
 
+    if plan.intent == "options":
+        return _execute_options(plan, working, scope, applied)
+
     if plan.intent == "crosstab":
         return _execute_crosstab(plan, working, scope, applied)
 
@@ -6061,6 +6185,11 @@ def _execute_trend(
     """
     assert roles.date is not None
     scoped_roles = _scoped_roles(roles, plan.measure, None)
+    if plan.measure and plan.aggregation in ("sum", "mean") and (
+        plan.aggregation != metric_for(plan.measure, scoped_roles).aggregation
+    ):
+        # "total milk per year": the question says how each period's rows combine.
+        scoped_roles = replace(scoped_roles, aggregation=plan.aggregation)
     grain = plan.grain or preferred_frequency(working[roles.date])
     series = build_trend(working, scoped_roles, frequency=grain, count_column=plan.count_column)
     trend, leading = _without_leading_partial(series.frame, working[roles.date], grain)
@@ -6122,9 +6251,14 @@ def _execute_trend(
             f"from {_period_words(present.iloc[0]['Period'], grain)} to "
             f"{_period_words(present.iloc[-1]['Period'], grain)}."
         )
-        slope, slope_calculation = "", ""
+        slope, slope_calculation, slopes = "", "", ()
     else:
-        slope, slope_calculation = _trend_slope(present, grain, plan.measure, column)
+        # A slope per year means the same thing at any grain for a level; a total per month or per day
+        # changes per year in its own period's units, so it is given per year only when each period is one.
+        additive = plan.aggregation in ("sum", "count") or not plan.measure
+        slope, slope_calculation, slopes = _trend_slope(
+            present, grain, plan.measure, column, yearly_figures=grain == "Y" or not additive
+        )
     answer += slope
     if len(present) >= 4 and slope:
         peak, low = present.loc[present["Value"].idxmax()], present.loc[present["Value"].idxmin()]
@@ -6147,7 +6281,7 @@ def _execute_trend(
         table=trend,
         chart="line",
         values=_labelled_values(present["Period"].astype(str), present["Value"]),
-        figures=(("first", first), ("last", last)),
+        figures=(("first", first), ("last", last), *slopes),
     )
 
 
@@ -6195,9 +6329,11 @@ def _complete_years(present: pd.DataFrame, grain: str) -> pd.Series:
 
 
 def _trend_slope(
-    present: pd.DataFrame, grain: str, measure: str | None, column: pd.Series | None
-) -> tuple[str, str]:
-    """The Theil-Sen slope of a trend as a sentence and its calculation, per year where that makes sense."""
+    present: pd.DataFrame, grain: str, measure: str | None, column: pd.Series | None,
+    yearly_figures: bool = True,
+) -> tuple[str, str, tuple[tuple[str, float], ...]]:
+    """The Theil-Sen slope of a trend as a sentence and its calculation, per year where that makes sense,
+    with the Theil-Sen and least-squares slopes per year as figures when ``yearly_figures`` allows."""
     periods = pd.DatetimeIndex(present["Period"])
     values = present["Value"].to_numpy(dtype=float)
     yearly = _complete_years(present, grain)
@@ -6206,10 +6342,12 @@ def _trend_slope(
         slope, _ = theil_sen(positions, yearly.to_numpy())
         text = _per_year_text(slope, len(yearly), measure, column)
         verdict, tested = _slope_verdict(positions, yearly.to_numpy(), measure, column)
+        figures = (("slope_per_year", slope), ("least_squares_per_year", least_squares(positions, yearly)))
         return (
             f" The Theil-Sen trend is {text}, fitted on the yearly averages of {len(yearly)} "
             f"complete years{verdict}",
             f"Theil-Sen slope over the yearly averages of {len(yearly)} complete years{tested}",
+            figures if yearly_figures else (),
         )
     # Positions at the answer's own grain: re-inferred from the periods that
     # hold values, sparse months can read as quarters.
@@ -6220,7 +6358,15 @@ def _trend_slope(
     else:
         text = f"{_signed(slope, measure, column)} per {GRAIN_NAMES.get(grain, 'period')}"
     verdict, tested = _slope_verdict(positions, values, measure, column)
-    return f" The Theil-Sen trend is {text}{verdict}", f"Theil-Sen slope over {len(values)} periods{tested}"
+    per_year = PERIODS_PER_YEAR.get(grain)
+    figures = (
+        ("slope_per_year", slope * per_year),
+        ("least_squares_per_year", least_squares(positions, values) * per_year),
+    ) if per_year and yearly_figures else ()
+    return (
+        f" The Theil-Sen trend is {text}{verdict}", f"Theil-Sen slope over {len(values)} periods{tested}",
+        figures,
+    )
 
 
 def _slope_verdict(
@@ -6370,8 +6516,21 @@ def _execute_count(
         condition.column for condition in plan.conditions if condition.operator != "missing"
     ]
     recorded = [column for column in dict.fromkeys(filtered) if base[column].isna().any()]
+    # A blank in a select-all option column is an option not ticked, so its share is of the rows that
+    # ticked any option of the question, not of those where the column holds a value.
+    options = {column: members for _, members in select_all_sets(dataframe) for column in members}
     for column in recorded:
-        base = base.loc[base[column].notna()]
+        if column in options:
+            members = [member for member in options[column] if member in base.columns]
+            base = base.loc[pd.DataFrame({member: _ticked(base[member]) for member in members}).any(axis=1)]
+        else:
+            base = base.loc[base[column].notna()]
+    plain = [column for column in recorded if column not in options]
+    asked = dict.fromkeys(_split_option(column)[0] for column in recorded if column in options)
+    kept = ([f"{_and_listed(plain)} recorded"] if plain else []) + [
+        f'an option of "{question}" ticked' for question in asked
+    ]
+    recorded_text = f" with {' and '.join(kept)}" if kept else ""
     described = " and ".join(
         [_describe_filter(item) for item in plan.filters] + _describe_conditions(plan.conditions)
     )
@@ -6379,7 +6538,6 @@ def _execute_count(
     if weight:
         count, total = int(working[weight].sum()), int(base[weight].sum())
         share = count / total * 100 if total else 0.0
-        recorded_text = f" with {_and_listed(recorded)} recorded" if recorded else ""
         return QueryAnswer(
             question="",
             plan=plan,
@@ -6394,18 +6552,13 @@ def _execute_count(
             value=float(count),
             figures=(("share_percent", share), ("denominator", float(total))),
         )
-    of = f"of the {len(base):,} rows{when}"
-    if recorded:
-        of += f" with {_and_listed(recorded)} recorded"
+    of = f"of the {len(base):,} rows{when}{recorded_text}"
     share = len(working) / len(base) * 100 if len(base) else 0.0
     return QueryAnswer(
         question="",
         plan=plan,
         answer=f"{len(working):,} {of} ({_share_text(share)}) have {described}.",
-        calculation=(
-            f"rows with {described}, divided by the {len(base):,} rows"
-            f"{' with ' + _and_listed(recorded) + ' recorded' if recorded else ''}{scope}"
-        ),
+        calculation=f"rows with {described}, divided by the {len(base):,} rows{recorded_text}{scope}",
         value=float(len(working)),
         figures=(("share_percent", share), ("denominator", float(len(base)))),
     )
@@ -6896,6 +7049,54 @@ def _execute_columns(plan: QueryPlan, working: pd.DataFrame, scope: str, applied
         ),
         table=shown.round(6),
         chart="bar",
+    )
+
+
+def _execute_options(plan: QueryPlan, working: pd.DataFrame, scope: str, applied: list[str]) -> QueryAnswer:
+    """Count the rows that tick each option of a select-all question, the most ticked first.
+
+    A row may tick several options, so the counts add up to more than the rows
+    that answered; each share is of the rows that ticked at least one option.
+    """
+    members = [column for column in plan.columns if column in working.columns]
+    splits = {column: _split_option(column) for column in members}
+    question = next(split[0] for split in splits.values() if split)
+    ticked = pd.DataFrame({column: _ticked(working[column]) for column in members}, index=working.index)
+    answered = int(ticked.any(axis=1).sum())
+    counts = ticked.sum().astype(int)
+    if answered == 0:
+        return QueryAnswer(
+            question="", plan=plan, answer=f'No row ticks any option of "{question}"{_phrase(applied)}.',
+            calculation=f"rows with a value in any of the {len(members):,} option columns{scope}",
+        )
+    order = sorted(members, key=lambda column: (-counts[column], members.index(column)))
+    labels = {column: splits[column][1] for column in members}
+    shares = {column: counts[column] / answered * 100 for column in members}
+    table = pd.DataFrame({
+        "Option": [labels[column] for column in order],
+        "Rows": [int(counts[column]) for column in order],
+        "Share of rows answering (%)": [round(shares[column], 6) for column in order],
+    })
+    top = order[0]
+    listed = "; ".join(
+        f"{labels[column]} {int(counts[column]):,} ({_share_text(shares[column])})" for column in order[1:3]
+    )
+    answer = (
+        f'{labels[top]} is the option ticked most often for "{question}"{_phrase(applied)}: '
+        f"{int(counts[top]):,} of the {answered:,} rows that tick any option ({_share_text(shares[top])})"
+        + (f", then {listed}" if listed else "")
+        + f". A row may tick more than one, so the {len(members):,} counts add up to {int(counts.sum()):,}."
+    )
+    return QueryAnswer(
+        question="", plan=plan, answer=answer,
+        calculation=(
+            f"rows with a value in each of the {len(members):,} option columns of \"{question}\", over the "
+            f"{answered:,} rows with a value in any of them{scope}"
+        ),
+        table=table,
+        chart="bar",
+        values=tuple((labels[column], float(counts[column])) for column in order),
+        figures=(("n", float(answered)),),
     )
 
 
@@ -8732,6 +8933,11 @@ def _execute_growth(
     assert roles.date is not None
     measure = plan.measure
     scoped_roles = _scoped_roles(roles, measure, plan.dimension)
+    if measure and plan.aggregation in ("sum", "mean") and (
+        plan.aggregation != metric_for(measure, scoped_roles).aggregation
+    ):
+        # "total milk rose": the question says how the rows combine.
+        scoped_roles = replace(scoped_roles, aggregation=plan.aggregation)
     # Two years named ("from 2023 to 2024") are compared as whole years, for each group too; so is the one
     # year a change runs from ("halved since 1950"), against the latest.
     named = _named_years(plan)

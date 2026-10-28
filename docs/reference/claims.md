@@ -164,6 +164,19 @@ that the data show as a fall fails. A unit before "of" after "per" ("per mm of f
 year of age") is the second column's unit. A percentage change per unit is not a slope, and too
 few rows for a correlation give `unsupported_analysis`.
 
+A change each year ("Idaho's milk production has grown by about 500 million
+pounds a year since 1990", "fell by 2 a month", "rose by 100 a decade") is the
+slope of the trend: ADA asks for the measure per year (or per month, week or
+day) and compares the claim with the least-squares slope of the yearly values
+(`scipy.stats.linregress`) and with their Theil-Sen slope. When both agree the
+claim is verified, when neither does it fails, and when only one does it gets
+`ambiguous_intent` with both. A slope per year is given only where it means
+one thing: for a level at any grain, or for totals when each period is a year.
+Words left out keep a slope from verifying, as a slope over the rows they pick
+could differ. "added", "gained", "lost" and "shed" mark it too, and words after
+the number that name a column say what changes: "Zion has added about 80,000
+visitors a year" is the slope of `visitors`.
+
 A peak ("Cocaine use peaked at 4.9% among 20-year-olds"; also "hit its
 peak", "reached its peak") is read as the value for the group named, and
 then checked to be the highest: the same calculation is made for every value
@@ -238,7 +251,13 @@ aside; "in the twenty years to 2021" gives the years itself. "from 32 the
 year before to 61" gives no year for its first value. ", to 47,173" is a last
 value alone, and so is "to 61" after a change that states its size ("rose 91%
 to 61 in 2020"). A claim whose only numbers are its ends ("rose from 33.3%
-to 27.5%") keeps them as the numbers claimed.
+to 27.5%") keeps them as the numbers claimed. Ends that count something
+("from 147.7 billion pounds in 1990") may be totals, as a level in pounds is:
+when the averages over the rows do not give them and the totals do, and the
+claim does not say it is an average, the change is one in the total. "US milk
+production rose 46%, from 147.7 billion pounds in 1990 to 215.5 billion in
+2017" adds up the 50 states each year, while "weight rose from 150 pounds to
+180 pounds" stays an average.
 
 A change in one year ("doubled in 2020") is that year against the year before.
 When the only number is the level a change reached ("rose to 61 in 2020",
@@ -248,7 +267,8 @@ when the value did not move the way the verb says. Without one year to set
 against the year before ("rose to 61"), neither is shown and the claim gives
 `missing_context`. "fell to a record low of 0.72 in 2023" is such a level, and
 the year must also give the lowest value of the years up to it (a record high,
-the highest). "rose over 30%" is the size of the rise, not a level. The
+the highest). A record with no word of height takes it from the verb: "rose to
+a record 11.3 million" is a record high. "rose over 30%" is the size of the rise, not a level. The
 plural before the verb names what changed: "Fox rescues nearly doubled" is the
 number of rescues when no column is called rescues. A fraction before a verb needs no "of": "nearly half went on to
 college" is read as "nearly half of" is.
@@ -395,11 +415,16 @@ several numbers in it needs a check for each.
 
 A mismatch is `failed_check` only when the claim names what the column
 measures: the last word of its name, leaving out a unit or a counting word
-("order value" for `payment_value`, "250 parts" for `num_parts`), or its
-initials ("home runs" for `HR`). When the column was read from a lesser word
+("order value" for `payment_value`, "250 parts" for `num_parts`), the noun of
+it as a verb ("milk production" for `milk_produced`, even when the words also
+name the table), or its initials ("home runs" for `HR`). When the column was
+read from a lesser word
 ("deaths" for `death_height_metres`, a height), a mismatch says nothing about
 the claim, so it gets `missing_context` with `agreement: "mismatch"` and the
 question "Is the number about death_height_metres, or about another column?".
+So does a count of rows whose words were read as the table's name but not as
+its rows: "Visits to the park" in `national-park-visits/national_parks.csv`,
+whose rows are park-years, may count a column of visits.
 
 When the claim is unverified for a reason a person can resolve,
 `clarification` holds the smallest question that would let the check go
@@ -434,8 +459,12 @@ Besides the number, a check records what could make the answer misleading:
 
 - **Other spellings of a value.** When a column of more than 50 values (a
   list of names) also holds a value of two words or more inside a longer one
-  ("Sen. John McCain" for "John McCain"), the claim may mean them all, and it
-  gets `missing_context` naming them. In a column of a few categories,
+  ("Sen. John McCain" for "John McCain"), or a one-word value at the start of
+  a longer one or of an item in a list ("Norovirus Genogroup II" and
+  "Salmonella;Norovirus unknown" for "Norovirus", but not "John Smith" for
+  "Smith"), the claim may mean them all, and it gets `missing_context` naming
+  them. This holds for a value a share counts as for one that picks the rows.
+  In a column of a few categories,
   "Wheelchair Men" is a category of its own, not "Men" written another way.
   (A filter already matches a value in any capitals.) A value with
   "non", "not" or "no" before the words is the opposite, not another

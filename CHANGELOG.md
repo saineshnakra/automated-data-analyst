@@ -34,6 +34,46 @@
 
 ### Reading claims and questions
 
+- Fixed a wrong verdict: "US milk production rose 46%, from 147.7 billion
+  pounds in 1990 to 215.5 billion in 2017" failed because the change was read
+  as one in the states' average, whose ends are 2.95 and 4.31 billion. Ends
+  that count something are now totals, as a level in pounds is, and "total"
+  in a change ("total milk rose") compares the totals.
+- Fixed a wrong answer: "which pies do people serve at Thanksgiving" found no
+  rows, reading "pies" as a value of a free-text column. A select-all question
+  that a survey export splits into a column per option ("... - Pumpkin",
+  "... - Apple") is now read as one question, and the answer counts the rows
+  that tick each option. A share of one option is of the rows that ticked any.
+- Fixed a wrong verdict: "More than half of the outbreaks since 2009 were
+  norovirus" failed at 23.9%, counting only the label `Norovirus`; NORS also
+  writes it under 251 other labels ("Norovirus Genogroup II", mixtures joined
+  by ";"), which make 57%. A one-word value that starts other values of a long
+  list is now another spelling, for a share as for a filter, and the claim
+  asks which is meant. "Animal Type" no longer counts the outbreaks as kinds
+  of animal: an entity column's name must end in the entity word or an ID.
+- A change each year is read as the slope of the trend: "Idaho's milk
+  production has grown by about 500 million pounds a year since 1990" is
+  checked against the least-squares slope of the yearly values (500,640,120)
+  and the Theil-Sen slope (506,284,524), and is ambiguous when only one agrees.
+  A trend's answer now gives both slopes per year, and a trend takes "total" or
+  "average" ("total milk per year") instead of refusing a word that differs
+  from the default.
+- Fixed a wrong verdict: "Visits to Great Smoky Mountains National Park rose
+  to a record 11.3 million in 2016" failed against a count of 1 row, reading
+  "record" as `number_of_records` and "Visits" as the folder's name. "rose to
+  a record N" is now a record level, "visits" names `visitors`, and a count of
+  rows read through the table's name gives `missing_context` when it
+  disagrees.
+- "has added about 80,000 visitors a year" and "has lost ..." are slopes, with
+  the words after the number naming the column that changes.
+- "Milk production" names `milk_produced`: the noun of a verb in a column's
+  name says what it measures, so a wrong number there fails instead of asking
+  which column is meant.
+- Fixed a crash: a column of a few large whole numbers (900,000,000 pounds)
+  made the survey-code check list every number between them and run out of
+  memory. A missing date beside timed rows no longer overflows the check for
+  daily rows appended to hourly ones.
+
 - Fixed a wrong verdict: "South Korea's fertility rate fell to a record low of
   0.72 in 2023" failed because "low" picked the value Low-income countries; a
   word of degree now picks only a value spelled so. The record low is checked

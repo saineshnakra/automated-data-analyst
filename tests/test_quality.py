@@ -238,6 +238,11 @@ class SurveyCodeTests(unittest.TestCase):
         self.assertEqual([issue.columns for issue in issues], [("insurance",)])
         self.assertEqual(issues[0].rows, 4)
 
+    def test_a_few_large_whole_numbers_are_read_without_spanning_them(self):
+        # Six amounts of milk in pounds: the check must not list every whole number between them.
+        milk = pd.DataFrame({"milk_produced": [900e6, 1000e6, 100e6, 150e6, 600e6, 500e6]})
+        self.assertFalse(checks(scan(milk), "survey_code"))
+
 
 class PairTests(unittest.TestCase):
     def test_a_column_copied_into_another_within_one_group(self):

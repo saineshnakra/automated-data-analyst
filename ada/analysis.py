@@ -2116,10 +2116,12 @@ def set_aside_coarser_rows(frame: pd.DataFrame, date_column: str) -> tuple[pd.Da
     first, last = np.flatnonzero(timed)[[0, -1]]
     # A reading at midnight that keeps the rows' usual step belongs with them.
     values = dates.to_numpy().astype("int64")
+    # A missing date reads as the smallest int64, which no step reaches and subtracting would overflow.
+    missing = dates.isna().to_numpy()
     step = np.median(np.diff(values[timed][-1_000:]))
-    while last + 1 < len(frame) and values[last + 1] - values[last] == step:
+    while last + 1 < len(frame) and not missing[last + 1] and values[last + 1] - values[last] == step:
         last += 1
-    while first > 0 and values[first] - values[first - 1] == step:
+    while first > 0 and not missing[first - 1] and values[first] - values[first - 1] == step:
         first -= 1
     runs = {"last": slice(last + 1, len(frame)), "first": slice(0, first)}
     for where, rows in runs.items():

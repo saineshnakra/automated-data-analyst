@@ -804,6 +804,21 @@ class OtherSpellingTests(unittest.TestCase):
         # A filter matches a value in any capitals, so "media" and "Media" are counted together.
         self.assertEqual(ada.check_claim(guests, "There were 2 rows with group media.").status, "verified")
 
+    def test_a_one_word_value_that_starts_other_values_is_not_a_verdict(self):
+        others = [f"Agent {index}" for index in range(60)]
+        labels = (["Norovirus"] * 2 + ["Norovirus Genogroup II"] * 3 + ["Salmonella;Norovirus unknown"] * 2
+                  + others)
+        outbreaks = pd.DataFrame({"Etiology": labels, "Illnesses": range(len(labels))})
+        # Norovirus is written seven ways: 2 rows by its own label, 7 in all.
+        for claim in ("Norovirus caused 2 outbreaks.", "Norovirus made up 3% of the outbreaks."):
+            with self.subTest(claim=claim):
+                check = ada.check_claim(outbreaks, claim)
+                self.assertEqual(check.reason, "missing_context", check.message)
+                self.assertIn('"Norovirus Genogroup II"', check.message)
+        # "Smith" is not "John Smith": a one-word value must start the other.
+        names = pd.DataFrame({"name": ["Smith"] * 3 + ["John Smith"] * 2 + others})
+        self.assertTrue(ada.check_claim(names, "Smith appears 3 times.").verified)
+
     def test_a_category_holding_another_is_not_another_spelling(self):
         races = pd.DataFrame({"Category": ["Men"] * 4 + ["Wheelchair Men"] * 3 + ["Women"] * 3,
                               "Time": [130.0, 128, 129, 127, 90, 92, 91, 140, 141, 142]})
@@ -1353,7 +1368,8 @@ class NamingNumberTests(unittest.TestCase):
 
         claim = "The spell tripled, from 8.4 weeks in December 2007 to a record 25.2 weeks in June 2010."
         rest, ends = _without_ends(claim)
-        self.assertEqual(ends, (("previous", "8.4"), ("latest", "25.2")))
+        # Each end keeps its unit, which says what kind of number it is.
+        self.assertEqual(ends, (("previous", "8.4 weeks"), ("latest", "25.2 weeks")))
         self.assertIn("between 2007 and 2010", rest)
 
 
@@ -1413,6 +1429,26 @@ class RecordsAndRatesTests(unittest.TestCase):
         wrong = ada.check_claim(frame, "Korea's fertility rate rose to a record high of 2.5 in 1955.")
         self.assertEqual(wrong.reason, "failed_check")
 
+    def test_a_record_with_no_word_of_height_follows_the_verb(self):
+        frame = self.fertility()
+        # "fell to a record 2" is a record low, "rose to a record 2.5" a record high.
+        self.assertTrue(ada.check_claim(frame, "Korea's fertility rate fell to a record 2 in 1954.").verified)
+        wrong = ada.check_claim(frame, "Korea's fertility rate rose to a record 2.5 in 1955.")
+        self.assertEqual(wrong.reason, "failed_check")
+
+    def test_a_count_of_rows_read_through_the_table_s_name_proves_nothing(self):
+        rows = [{"year": year, "unit_name": park, "region": "SE", "visitors": visits}
+                for year, park, visits in ((2015, "Smoky", 10.7e6), (2016, "Smoky", 11.3e6),
+                                           (2015, "Zion", 3.6e6), (2016, "Zion", 4.3e6))]
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "park-trips" / "national_parks.csv"
+            path.parent.mkdir()
+            pd.DataFrame(rows).to_csv(path, index=False)
+            check = ada.check_claim(path, "Trips to Smoky numbered 11.3 million in 2016.")
+        # The rows are park-years; a count of them (1) says nothing about the trips the folder is named for.
+        self.assertEqual(check.reason, "missing_context", check.message)
+        self.assertIn("name the table, not its rows", check.message)
+
     def test_a_change_since_a_year_and_a_multiple_of_a_rate(self):
         frame = self.fertility()
         # 6.0 in 1950 to 2.5 in 1955: a fall of 58%, or of 3.5 points.
@@ -1466,3 +1502,109 @@ class CountOfThingsTests(unittest.TestCase):
                              "n_cats": [1, 2, 2, 3, 1, 1, 4, 2]})
         self.assertTrue(ada.check_claim(cats, "3 of the cats were neutered.").verified)
         self.assertEqual(ada.check_claim(cats, "5 of the cats were neutered.").reason, "failed_check")
+
+
+class TotalsOfEndsTests(unittest.TestCase):
+    def milk(self) -> pd.DataFrame:
+        rows = [("North", "Maine", 1990, 10e6), ("North", "Vermont", 1990, 12e6),
+                ("South", "Texas", 1990, 8e6), ("North", "Maine", 2000, 14e6),
+                ("North", "Vermont", 2000, 19e6), ("South", "Texas", 2000, 12e6)]
+        return pd.DataFrame(rows, columns=["region", "state", "year", "milk_produced"])
+
+    def test_ends_that_count_a_quantity_make_the_change_one_in_the_total(self):
+        milk = self.milk()
+        # The states total 30 and 45 million pounds; their average goes from 10 to 15 million.
+        check = ada.check_claim(milk, "Milk rose 50%, from 30 million pounds in 1990 to 45 million in 2000.")
+        self.assertTrue(check.verified, check.message)
+        self.assertTrue(any("one in the total" in item for item in check.assumptions))
+        wrong = ada.check_claim(milk, "Milk rose 50%, from 20 million pounds in 1990 to 45 million in 2000.")
+        self.assertEqual(wrong.reason, "failed_check")
+        self.assertIn("20 million pounds", wrong.message)
+
+    def test_ends_of_an_average_stay_an_average(self):
+        milk = self.milk()
+        check = ada.check_claim(
+            milk, "Average milk rose 50%, from 10 million pounds in 1990 to 15 million in 2000."
+        )
+        self.assertTrue(check.verified, check.message)
+        self.assertFalse(any("one in the total" in item for item in check.assumptions))
+
+    def test_ends_the_averages_give_stay_averages(self):
+        people = pd.DataFrame({"year": [1990, 1990, 2020, 2020], "weight": [140.0, 160, 170, 190]})
+        # The averages are 150 and 180 pounds; the totals, 300 and 360, are no one's weight.
+        check = ada.check_claim(people, "Weight rose 20%, from 150 pounds in 1990 to 180 pounds in 2020.")
+        self.assertTrue(check.verified, check.message)
+        self.assertFalse(any("one in the total" in item for item in check.assumptions))
+
+    def test_a_change_in_the_total_is_asked_with_total(self):
+        milk = self.milk()
+        answer = ada.analyze(milk).ask("total milk rose between 1990 and 2000")
+        self.assertEqual(answer.plan.aggregation, "sum")
+        self.assertEqual(dict(answer.figures)["previous"], 30e6)
+        self.assertEqual(dict(answer.figures)["latest"], 45e6)
+
+    def test_the_noun_of_a_verb_in_a_column_name_names_the_column(self):
+        rows = [("Delta States", "Arkansas", 1970, 900e6), ("Delta States", "Louisiana", 1970, 1000e6),
+                ("Delta States", "Arkansas", 2017, 100e6), ("Delta States", "Louisiana", 2017, 150e6),
+                ("North", "Maine", 1970, 600e6), ("North", "Maine", 2017, 500e6)]
+        milk = pd.DataFrame(rows, columns=["region", "state", "year", "milk_produced"])
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "state_milk_production.csv"
+            milk.to_csv(path, index=False)
+            check = ada.check_claim(
+                path, "Milk production in the Delta states has fallen by about a third since 1970."
+            )
+        # "production" names milk_produced as well as the table, so a wrong share fails rather than asks.
+        self.assertEqual(check.reason, "failed_check", check.message)
+
+
+class TimeSlopeTests(unittest.TestCase):
+    def sales(self) -> pd.DataFrame:
+        # Two shops a year; the yearly totals rise by 10 a year, with a wobble that leaves the slopes at 10.
+        rows = []
+        for index, year in enumerate(range(2000, 2010)):
+            wobble = (-1, 1)[index % 2]
+            rows += [{"year": year, "shop": "North", "sales": 100.0 + 5 * index + wobble},
+                     {"year": year, "shop": "South", "sales": 50.0 + 5 * index - wobble}]
+        return pd.DataFrame(rows)
+
+    def test_a_change_each_year_is_the_slope_of_the_yearly_values(self):
+        sales = self.sales()
+        check = ada.check_claim(sales, "Total sales have grown by about 10 a year since 2000.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("least-squares slope", check.message)
+        wrong = ada.check_claim(sales, "Total sales have grown by about 20 a year since 2000.")
+        self.assertEqual(wrong.reason, "failed_check")
+        # A fall each year that the data show as a rise fails.
+        self.assertEqual(ada.check_claim(sales, "Total sales fell by about 10 a year since 2000.").reason,
+                         "failed_check")
+        # North's sales rise by 5 a year.
+        self.assertTrue(ada.check_claim(sales, "North's sales rose by about 5 a year.").verified)
+
+    def test_the_words_after_the_number_can_name_what_changes(self):
+        sales = self.sales()
+        # "sales" after the number names the column; "added" rises and "lost" falls.
+        self.assertTrue(ada.check_claim(sales, "North has added about 5 sales a year.").verified)
+        lost = ada.check_claim(sales, "North has lost about 5 sales a year.")
+        self.assertEqual(lost.reason, "failed_check")
+
+    def test_a_change_each_decade_is_ten_years_of_slope(self):
+        check = ada.check_claim(self.sales(), "Total sales rose by about 100 a decade.")
+        self.assertTrue(check.verified, check.message)
+
+    def test_fits_that_disagree_leave_the_claim_open(self):
+        years = list(range(2000, 2010))
+        values = [10.0, 11, 12, 13, 14, 15, 16, 17, 18, 60]
+        # Theil-Sen keeps to 1 a year; least squares, pulled by the last year, gives 3.6.
+        frame = pd.DataFrame({"year": years, "value": values})
+        check = ada.check_claim(frame, "The value rose by about 1 a year.")
+        self.assertEqual(check.reason, "ambiguous_intent", check.message)
+        self.assertEqual(len(check.alternatives), 2)
+
+    def test_words_left_out_keep_a_slope_from_verifying(self):
+        check = ada.check_claim(self.sales(), "Total retail sales have grown by about 10 a year since 2000.")
+        self.assertNotEqual(check.status, "verified")
+
+    def test_one_year_has_no_slope(self):
+        frame = pd.DataFrame({"year": [2020, 2020], "value": [1.0, 2.0]})
+        self.assertNotEqual(ada.check_claim(frame, "The value rose by about 1 a year.").status, "verified")
