@@ -396,7 +396,8 @@ each word is claimed, in this order, by:
     formed from the first word of longer values ("motorcyclists" for
     Motorcycle rider and Motorcycle pillion passenger), is not every row: the
     question is refused and names the values to write instead. The last word
-    of a value is matched with its plural: "cyclists" names Pedal cyclist.
+    of a value is matched with its plural: "cyclists" names Pedal cyclist,
+    but a word for a period does not ("which months" is no "within a month").
     A plural whose singular is in several values that differ by more than a
     number ("thefts" for theft_other and theft_vehicle_motorcycle) is refused
     the same way; "probes" for probe_0 to probe_79 is not. A code of words

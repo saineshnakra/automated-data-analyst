@@ -195,6 +195,11 @@ GROWTH_WORDS = (
     "increase", "increased", "decrease", "decreased", "rose", "risen", "climbed",
     "decline", "declined", "dropped", "drop", "shrank", "fell", "fallen",
 )
+# Words for a period of time, singular and plural.
+PERIOD_WORDS = frozenset({
+    "day", "days", "week", "weeks", "month", "months", "quarter", "quarters", "year", "years", "hour",
+    "hours", "minute", "minutes", "second", "seconds", "decade", "decades",
+})
 TREND_WORDS = ("over time", "trend", "timeline", "history", "trajectory")
 CORRELATION_WORDS = (
     "correlation", "correlated", "correlate", "correlates",
@@ -2119,9 +2124,10 @@ def _values_named(
         return [*named, *others], not others
     if exact or exact_only:
         return exact, True
-    # "cyclists" names "Pedal cyclist": the last word may take or drop its plural.
+    # "cyclists" names "Pedal cyclist": the last word may take or drop its plural. A word for a period does
+    # not: "which months" is no "3 - May resume operations within a month".
     runs = [run, *((*run[:-1], form) for form in sorted(_word_variants(run[-1])) if form != run[-1])] if len(
-        run[-1]) > 2 else [run]
+        run[-1]) > 2 and run[-1] not in PERIOD_WORDS else [run]
     for words in runs:
         postings = [vocabulary.by_word.get(word) for word in words]
         if not all(postings):

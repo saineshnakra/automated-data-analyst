@@ -5352,3 +5352,15 @@ class LabourForceTests(unittest.TestCase):
     def test_people_alone_names_no_value(self):
         refusal = self.analysis.ask("total people in the third quarter of 2026")
         self.assertNotIn("persons", getattr(refusal, "message", "") or "")
+
+
+class PeriodWordTests(unittest.TestCase):
+    def test_a_period_word_does_not_reach_a_value_by_its_plural(self):
+        # Toronto's fires: "months" once picked "3 - May resume operations within a month".
+        frame = pd.DataFrame({
+            "TFS_Alarm_Time": pd.date_range("2024-01-01", periods=6, freq="MS"),
+            "Business_Impact": ["1 - No impact", "3 - May resume operations within a month"] * 3,
+        })
+        result = ada.analyze(frame).ask("which months have the most fires")
+        plan = getattr(result, "plan", None)
+        self.assertFalse(plan and any(item.column == "Business_Impact" for item in plan.filters))
