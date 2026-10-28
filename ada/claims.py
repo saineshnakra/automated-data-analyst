@@ -48,7 +48,7 @@ from typing import Any, Literal
 from .decisions import Decision, checked_choices
 from .file_io import SUPPORTED_SUFFIXES as READABLE
 from .formatting import counted, list_names, normalized_name
-from .nlq import AGE_PHRASE, DAY_PATTERN, OUTCOME_WORDS, Condition, QueryAnswer
+from .nlq import AGE_PHRASE, DAY_PATTERN, OUTCOME_WORDS, Condition, QueryAnswer, ValueFilter
 from .sources import Source
 
 #: Version of the ``ClaimCheck.to_dict`` layout. Bumped when a key changes meaning.
@@ -145,6 +145,21 @@ SLOPE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 FALLING_VERBS = ("fall", "fell", "drop", "decreas", "declin", "goes down", "went down")
+# "has grown by about 500 million pounds a year": a change for each year is the slope of the yearly trend.
+TIME_SLOPE = re.compile(
+    r"(?P<verb>\b(?:(?:has|have|had)\s+)?(?:(?:been\s+)?(?:rising|growing|increasing|climbing|falling|"
+    r"dropping|declining|decreasing)|rises|rose|risen|grows|grew|grown|increases|increased|climbs|climbed|"
+    r"falls|fell|fallen|drops|dropped|declines|declined|decreases|decreased|shrank|shrunk|adds|added|gains|"
+    r"gained|loses|lost|sheds|shed))\s+(?:by\s+)?"
+    r"(?:an\s+average\s+of\s+)?(?P<number>(?:[^.;]|(?<=\d)\.(?=\d))*?\d(?:[^.;]|(?<=\d)\.(?=\d))*?)\s+"
+    r"(?:a|per|each|every)\s+"
+    r"(?P<unit>year|month|week|day|decade)\b(?!\s+of\b)",
+    re.IGNORECASE,
+)
+# Verbs of a time slope that say it falls besides FALLING_VERBS: "has lost about 2,000 a year".
+LOSING_VERBS = ("lose", "loses", "lost", "shed", "sheds")
+# Each unit of a time slope as a share of a year.
+TIME_SLOPE_UNITS = {"year": 1.0, "decade": 0.1, "month": 12.0, "week": 52.1775, "day": 365.25}
 # Units of a slope's column besides those in UNITS: "per year of age", "per unit of dose".
 PER_UNIT_WORDS = frozenset({"year", "month", "week", "unit", "point", "level"})
 # Fractions in words: "about a quarter of", "more than half of", "two thirds of".
@@ -684,6 +699,20 @@ def _unit_after(claim: str, end: int, columns: list[str], row_noun: str | None) 
     return (" ".join(words) or None), position
 
 
+def _time_slope(claim: str) -> tuple[str, str, str, bool] | None:
+    """In a claim of a change each year ("has grown by about 500 million pounds a year"): the question of the
+    trend per that unit, the number's text, the unit and whether it falls."""
+    found = TIME_SLOPE.search(claim)
+    if not found or len(list(NUMBER_PATTERN.finditer(found.group("number")))) != 1:
+        return None
+    unit = found.group("unit").lower()
+    # A decade is ten years of the yearly trend.
+    grain = "year" if unit == "decade" else unit
+    question = re.sub(r"\s+", " ", f"{claim[:found.start()]} per {grain} {claim[found.end():]}").strip()
+    verb = found.group("verb").lower().split()[-1]
+    return question, found.group("number"), unit, verb.startswith(FALLING_VERBS) or verb in LOSING_VERBS
+
+
 def _slope_claim(claim: str) -> tuple[str, str, str, bool] | None:
     """In a slope claim: what changes, the column it changes with, the number's text, whether it falls."""
     found = SLOPE_PATTERN.match(claim)
@@ -910,6 +939,20 @@ def read_claim(
     if worded:
         question, number, problem = read_claim(worded[0], columns, row_noun)
         return question, (worded[1](number) if number is not None else None), problem
+    timed = _time_slope(claim)
+    if timed:
+        # "has grown by about 500 million pounds a year" asks for the trend per year, whose slope is checked.
+        question, written, _, _ = timed
+        item = _candidates(written, columns)[0]
+        if not item.match.group("percent"):
+            unit, unit_end = _unit_after(written, item.match.end(), columns, row_noun)
+            number = claimed_number(written[item.qualifier_start:unit_end], item.match, item.qualifier, unit)
+            named = written[unit_end:].strip()
+            if named:
+                # "has added about 80,000 visitors a year": words after the number that name a column say
+                # what changes.
+                question = re.sub(r"\bper (year|month|week|day)\b", rf"{named} per \1", question, count=1)
+            return question, number, ""
     slope = _slope_claim(claim)
     if slope:
         what, per, written, _ = slope
@@ -1148,13 +1191,20 @@ def _names_head(question: str, column: str, strict: bool = False) -> bool:
 
 # Endings that leave a word the same word: "runs" is run, "weighed" is weigh.
 INFLECTIONS = ("s", "es", "ed", "d", "ing", "er", "ers")
+# Endings that make a noun of a verb: "production" is what is produced, "collection" what is collected.
+NOUN_ENDINGS = ("tion", "ion", "tions", "ions")
 
 
 def _same_word(word: str, part: str) -> bool:
-    """Whether a question word is a column-name word, a shortening of it, or it with an inflection."""
+    """Whether a question word is a column-name word, a shortening of it, it with an inflection, or the noun
+    of it as a verb ("production" for produced)."""
     if word == part or (len(word) >= 3 and part.startswith(word)):
         return True
-    return word.startswith(part) and word[len(part):] in INFLECTIONS
+    if word.startswith(part) and word[len(part):] in INFLECTIONS:
+        return True
+    stems = [word[:-len(ending)] for ending in NOUN_ENDINGS
+             if word.endswith(ending) and len(word) > len(ending) + 3]
+    return any(part.startswith(stem) and part[len(stem):] in ("e", *INFLECTIONS) for stem in stems)
 
 
 def _candidate_columns(message: str, columns: list[str]) -> list[str]:
@@ -1418,6 +1468,18 @@ def check_claim(
             )
     assert number is not None and asked is not None
     check = _checked_dates(_checked_table(analysis, text, asked, number, source, choices, question), analysis)
+    counts = _counted_ends(check, ends, text) if ends else None
+    if counts and not _ends_hold(check, ends):
+        # "rose 46%, from 147.7 billion pounds in 1990": ends that count pounds may be totals, as a level in
+        # pounds is; the change is one in the total over the rows when the totals give those ends.
+        total = _checked_dates(
+            _checked_table(analysis, text, f"total {asked}", number, source, choices, question), analysis
+        )
+        if total.answer is not None and total.answer.plan.intent == "growth" and (
+            total.answer.plan.aggregation == "sum"
+        ) and _ends_hold(total, ends):
+            note = f"Read the change as one in the total, since the values it went between count {counts}."
+            check = replace(total, assumptions=(*total.assumptions, note))
     if ends:
         check = _checked_ends(check, ends)
     if direction:
@@ -1470,7 +1532,8 @@ def _checked_table(
 # A change and the values it went between: "rose by more than 60%, from 29,199 in 1999 to 47,173 in 2017".
 _END = (
     r"(?:(?:about|nearly|almost|around|roughly|some|just\s+over|just\s+under|more\s+than|less\s+than|over|"
-    r"under)\s+)?[$€£]?\d[\d,]*(?:\.\d+)?(?:\s*(?:%|per\s?cent|percent))?(?:\s*(?:million|billion|thousand|bn|m|k)\b)?"
+    r"under)\s+)?[$€£]?\d(?:[\d,]*\d)?(?:\.\d+)?(?:\s*(?:%|per\s?cent|percent))?"
+    r"(?:\s*(?:million|billion|thousand|bn|m|k)\b)?"
 )
 CHANGE_WORDS = re.compile(
     r"\b(?:rose|risen|rising|fell|fallen|falling|grew|grown|climbed|dropped|declined|decreased|increased|"
@@ -1486,8 +1549,9 @@ _UNIT = r"(?:\s+(?!in\b|to\b|the\b)[a-z]+)?"
 _MONTH = (r"(?:(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|"
           r"sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+)?")
 FROM_TO = re.compile(
-    rf",?\s*\bfrom\s+(?P<first>{_END}){_UNIT}(?:\s+(?:in\s+{_MONTH}(?P<y1>\d{{4}})|{YEAR_BEFORE}))?\s+to\s+"
-    rf"(?:a\s+(?:record|new\s+high|new\s+low|high|low|peak)\s+(?:of\s+)?)?(?P<last>{_END}){_UNIT}"
+    rf",?\s*\bfrom\s+(?P<first>{_END})(?P<unit1>{_UNIT})(?:\s+(?:in\s+{_MONTH}(?P<y1>\d{{4}})|{YEAR_BEFORE}))?"
+    rf"\s+to\s+(?:a\s+(?:record|new\s+high|new\s+low|high|low|peak)\s+(?:of\s+)?)?(?P<last>{_END})"
+    rf"(?P<unit2>{_UNIT})"
     rf"(?:\s+in\s+{_MONTH}(?P<y2>\d{{4}}))?",
     re.IGNORECASE,
 )
@@ -1496,8 +1560,9 @@ TO_ONLY = re.compile(rf",\s*to\s+(?P<last>{_END})(?=\s*[.!;]?\s*$)", re.IGNORECA
 LEVEL_REACHED = re.compile(
     r"\b(?:(?P<rise>rose|risen|grew|grown|climbed|increased|jumped|soared|surged|went\s+up)|"
     r"(?P<fall>fell|fallen|dropped|declined|decreased|slumped|plunged|tumbled|sank|went\s+down))"
-    rf"(?P<size>\s+(?:by\s+)?{_END})?(?P<side>\s+(?:to(?:\s+(?:a\s+)?(?P<record>(?:new|record|all-time|historic)"
-    r"\s+)+(?P<extreme>low|high)\s+of)?|below|beneath|above|past|beyond|over|under)\s+)"
+    rf"(?P<size>\s+(?:by\s+)?{_END})?(?P<side>\s+(?:to(?:\s+(?:an?\s+)?(?P<record>(?:new|record|all-time|historic)"
+    r"(?:\s+(?:new|record|all-time|historic))*)(?:\s+(?P<extreme>low|high)(?:\s+of)?)?)?|below|beneath|above|"
+    r"past|beyond|over|under)\s+)"
     rf"(?=(?P<level>{_END}))",
     re.IGNORECASE,
 )
@@ -1539,7 +1604,9 @@ def _without_ends(text: str) -> tuple[str, tuple[tuple[str, str], ...]]:
     found = next((match for match in FROM_TO.finditer(text) if not all(
         re.fullmatch(r"(?:1[5-9]|20)\d{2}", match.group(side).strip()) for side in ("first", "last"))), None)
     if found:
-        ends = (("previous", found.group("first").strip()), ("latest", found.group("last").strip()))
+        # Each end keeps its unit ("147.7 billion pounds"), which says what kind of number it is.
+        ends = (("previous", f"{found.group('first')}{found.group('unit1')}".strip()),
+                ("latest", f"{found.group('last')}{found.group('unit2')}".strip()))
         # "went from 28,000 to 5.7 million" says no more than its ends.
         rest = re.sub(r"\s*\bwent\s*$", "", text[:found.start()]) + text[found.end():]
         years = found.group("y1"), found.group("y2")
@@ -1603,6 +1670,9 @@ def _as_level(text: str) -> tuple[str, tuple[str, str | None] | None]:
     side = LEVEL_SIDES[found.group("side").split()[0].lower()]
     level = f"{text[:found.start()]}was {side}{text[found.end():]}"
     extreme = found.group("extreme").lower() if found.group("extreme") else None
+    if found.group("record") and extreme is None:
+        # "rose to a record 11.3 million" is a record high, "fell to a record 0.72" a record low.
+        extreme = "high" if found.group("rise") else "low"
     return level, ("rise" if found.group("rise") else "fall", extreme)
 
 
@@ -1646,6 +1716,43 @@ def _checked_ends(check: ClaimCheck, ends: tuple[tuple[str, str], ...]) -> Claim
         return replace(check, message=f"{check.message} Also, {'; '.join(wrong)}.",
                        assumptions=(*check.assumptions, *notes))
     return replace(check, assumptions=(*check.assumptions, *notes))
+
+
+def _ends_hold(check: ClaimCheck, ends: tuple[tuple[str, str], ...]) -> bool:
+    """Whether the answer's first and last values agree with each end the claim gives."""
+    figures = dict(check.answer.figures) if check.answer is not None else {}
+    for name, written in ends:
+        found = _candidates(written, [])
+        if figures.get(name) is None or not found:
+            return False
+        item = found[0]
+        if not claimed_number(written[item.qualifier_start:], item.match, item.qualifier, None).holds(
+            float(figures[name])
+        ):
+            return False
+    return True
+
+
+def _counted_ends(check: ClaimCheck, ends: tuple[tuple[str, str], ...], text: str) -> str | None:
+    """The plural noun the ends of a change count ("147.7 billion pounds"), when the change was read as one in
+    an average the claim does not name; None otherwise, or when an end is money or a unit of measure."""
+    answer = check.answer
+    if answer is None or answer.plan.intent != "growth" or answer.plan.aggregation not in ("mean", "median"):
+        return None
+    if AVERAGING.search(text):
+        return None
+    for _, written in ends:
+        found = _candidates(written, [])
+        noun = re.search(r"([A-Za-z]+)\s*$", written)
+        if not found or not noun:
+            continue
+        word = noun.group(1)
+        item = found[0]
+        stated = claimed_number(written[item.qualifier_start:], item.match, item.qualifier, word)
+        plural = word.lower().endswith("s") or word.lower() in IRREGULAR_PLURALS
+        if plural and not stated.percent and not _claim_unit(stated) and word.lower() not in MONEY_WORDS:
+            return word
+    return None
 
 
 def _checked_dates(check: ClaimCheck, analysis: Any) -> ClaimCheck:
@@ -2170,6 +2277,10 @@ def _otherwise(
     return None
 
 
+# Words that say a claim's number is an average: "averaged", "per", "typical".
+AVERAGING = re.compile(
+    r"\b(?:average|averages|averaged|averaging|mean|median|typical|per|each)\b", re.IGNORECASE
+)
 # Words that say how a claim's rows combine: "averaged", "in total".
 AGGREGATION_SAID = re.compile(
     r"\b(?:average|averages|averaged|averaging|mean|median|typical|typically|total|totals|totalled|totaled|"
@@ -2302,12 +2413,15 @@ def _safe_without(
     """Whether a claim read without words that name nothing can still be verified.
 
     A bound ("more than 50") holds for far more rows than the claim means, and
-    an average, a share or an extreme over every row can be near the one over
-    the rows the words pick, so only a lookup of one row, a total or a count,
-    or a slope whose left-out words only describe the column after "per" ("day
-    of sleep deprivation") may verify.
+    an average, a share, a slope over time or an extreme over every row can be
+    near the one over the rows the words pick, so only a lookup of one row, a
+    total or a count, or a slope whose left-out words only describe the column
+    after "per" ("day of sleep deprivation") may verify.
     """
     if math.isinf(number.low) or math.isinf(number.high):
+        return False
+    if answer.plan.intent == "trend":
+        # A slope over the rows the words pick can differ in size and sign from the slope over every row.
         return False
     if number.percent:
         # A share of every row can be near the share of the rows the words pick.
@@ -2378,13 +2492,16 @@ def _other_spellings(frame: Any, answer: QueryAnswer) -> tuple[str, str, list[st
 
     Another way is a longer value holding all its words in order ("Sen. John
     McCain" for "John McCain"); a filter already matches the value in any
-    capitals. Only a value of two words or more in a column of more than
-    SPELLING_MIN_VALUES values counts, as a name in a list of names does: in a
-    column of a few categories, "Wheelchair Men" is a category of its own, not
-    "Men" written another way. Returns (column, value, the other ways) for
-    the first such value.
+    capitals. A value of one word counts only where it starts the longer value
+    or an item of a list in it ("Norovirus Genogroup II" and "Clostridium
+    difficile;Norovirus unknown" for "Norovirus"), as "Smith" is not "John
+    Smith". Only a column of more than SPELLING_MIN_VALUES values is searched,
+    as a list of names is: in a column of a few categories, "Wheelchair Men" is
+    a category of its own, not "Men" written another way. Returns (column,
+    value, the other ways) for the first such value.
     """
-    for item in answer.plan.filters:
+    picked = [item for item in (*answer.plan.filters, *answer.plan.counted) if isinstance(item, ValueFilter)]
+    for item in picked:
         if item.column not in frame.columns:
             continue
         uniques = frame[item.column].dropna().astype(str).unique()
@@ -2392,19 +2509,36 @@ def _other_spellings(frame: Any, answer: QueryAnswer) -> tuple[str, str, list[st
             continue
         for value in item.values:
             words = re.findall(r"[a-z0-9]+", value.lower())
-            if len(words) < 2:
+            if not words:
                 continue
             # "non-USA" is not another way to write "USA".
             pattern = re.compile(r"(?<!non-)(?<!non )(?<!not )(?<!no )\b" + r"\W+".join(map(re.escape, words))
                                  + r"\b")
+            if len(words) == 1:
+                pattern = re.compile(rf"(?:^|[;,/|]\s*){re.escape(words[0])}\b")
             lowered = value.lower()
             others = [
                 other for other in uniques
                 if other.lower() != lowered and other not in item.values and pattern.search(other.lower())
             ]
             if others:
-                return str(item.column), value, sorted(others)
+                # The ways that start with the value come first: "Norovirus Genogroup II" before
+                # "Adenovirus;Norovirus Genogroup I".
+                return str(item.column), value, sorted(others, key=lambda other: (
+                    not other.lower().startswith(lowered), other))
     return None
+
+
+def _names_rows(phrases: Sequence[str], row_noun: str | None) -> bool:
+    """Whether any of the phrases holds the file's own noun for its rows ("characters" in marvel.csv)."""
+    from .folder import singular  # noqa: PLC0415
+
+    if not row_noun:
+        return False
+    forms = {row_noun.lower(), singular(row_noun.lower())}
+    words = {form for phrase in phrases for word in _words(phrase)
+             for form in (word.lower(), singular(word.lower()))}
+    return bool(forms & words)
 
 
 def _quoted(phrases: Sequence[str]) -> str:
@@ -2600,8 +2734,7 @@ def _check(
                            f"that kind or named for it, as the number is in {number.unit}.")
     after = re.search(rf"{re.escape(number.text)}\s+([A-Za-z]+)\b", text)
     noun = (number.unit or "").split() or ([after.group(1)] if after else [])
-    averaging = re.search(r"\b(?:average|averages|averaged|averaging|mean|median|typical|per|each)\b", text,
-                          re.IGNORECASE)
+    averaging = AVERAGING.search(text)
     if unnamed and len(noun) == 1 and not _claim_unit(number) and not averaging and (
         noun[0].lower() not in MONEY_WORDS
     ) and (noun[0].lower().endswith("s") or noun[0].lower() in IRREGULAR_PLURALS):
@@ -2650,15 +2783,16 @@ def _check(
         share = analysis.ask(_share_question(asked), decisions=choices)
         if not isinstance(share, Refusal) and share.plan.counted:
             answer, asked = share, _share_question(asked)
-    averaged = re.search(r"\b(?:average|averages|averaged|averaging|mean|median|typical|per|each)\b", text,
-                         re.IGNORECASE)
+    averaged = AVERAGING.search(text)
     noun = (number.unit or "").split()[-1:] or [""]
     if answer.plan.aggregation in ("mean", "median") and not averaged and not _claim_unit(number) and (
         noun[0].lower().endswith("s") and not number.percent
     ):
         # "1,524 Kenyans were recorded as intersex" counts people: a total, never an average.
         total = analysis.ask(f"total {asked}", decisions=choices)
-        if isinstance(total, Refusal) or total.plan.aggregation != "sum" or total.value is None:
+        if isinstance(total, Refusal) or total.plan.aggregation != "sum" or (
+            total.value is None and total.plan.intent != "trend"
+        ):
             return ClaimCheck(
                 text, "unverified", "missing_context",
                 f'"{number.text}" counts {noun[0]}, but ADA read the claim as an average '
@@ -2725,6 +2859,42 @@ def _check(
         computed, measure, sloped = (-fitted if slope[3] else fitted), y, f"the slope of {y} on {x}, from "
         notes = [f"Compared with the slope of {y} on {x}, {_plain(fitted)} {y} per {x}"
                  + ("; the claim says it falls, so the slope's sign is reversed." if slope[3] else ".")]
+    timed = _time_slope(text) if answer.plan.intent == "trend" else None
+    if timed:
+        # "grew by about 500 million pounds a year": the slope of the yearly values, by least squares and by
+        # Theil-Sen; when only one of them agrees, the claim does not say which it means.
+        _, _, unit, falling = timed
+        found = dict(answer.figures)
+        keys = (("least squares", "least_squares_per_year"), ("Theil-Sen", "slope_per_year"))
+        fits = [(name, found[key] / TIME_SLOPE_UNITS[unit] * (-1 if falling else 1))
+                for name, key in keys if key in found]
+        if not fits:
+            return ClaimCheck(
+                text, "unverified", "unsupported_analysis",
+                f"The claim states a change each {unit}, and ADA found no yearly slope for it: "
+                f"{answer.answer}",
+                claimed=number, question=asked, answer=answer, assumptions=tuple(assumptions), source=source,
+                clarification="Which column changes, and over which years?",
+            )
+        held = [number.holds(value) for _, value in fits]
+        if len(set(held)) > 1:
+            alternatives = tuple(Alternative(f"{name} slope", asked, value, agrees, answer.calculation)
+                                 for (name, value), agrees in zip(fits, held, strict=True))
+            shown = " and ".join(f"by {name} {_plain(value)}" for name, value in fits)
+            return ClaimCheck(
+                text, "unverified", "ambiguous_intent",
+                f"The change each {unit} depends on how the line is fitted: {shown}, and only one is in "
+                f"{number.interval()}. {answer.answer}",
+                claimed=number, question=asked, answer=answer, compared=fits[0][1],
+                assumptions=tuple(assumptions), alternatives=alternatives, source=source,
+                clarification="Is the change the least-squares slope or the Theil-Sen slope?",
+            )
+        computed = fits[0][1]
+        sloped = f"the least-squares slope per {unit} of the yearly values, from "
+        same = f"; the Theil-Sen slope, {_plain(fits[1][1])}, gives the same verdict" if len(fits) > 1 else ""
+        notes = [f"Compared with the least-squares slope of the yearly values, {_plain(computed)} per {unit}"
+                 + same
+                 + ("; the claim says it falls, so the slope's sign is reversed." if falling else ".")]
     figures = dict(answer.figures)
     if answer.plan.intent == "growth" and number.percent and "change_percent" not in figures and (
         figures.get("previous") and "latest" in figures
@@ -2876,6 +3046,21 @@ def _check(
         assumptions.append(
             f"Read {_quoted(named)} as the name of the table ({source.name}), not of rows in it."
         )
+    plan = answer.plan
+    counts_rows = plan.aggregation == "count" and not (plan.measure or plan.count_column or plan.weight)
+    if named and counts_rows and agreement == "mismatch" and not _names_rows(named, analysis.roles.row_noun):
+        # "Visits to the park rose to 11.3 million" in national-park-visits/national_parks.csv: the visits
+        # are a column of counts, not the park-years the rows are, so a count of rows proves nothing.
+        return ClaimCheck(
+            text, "unverified", "missing_context",
+            f"The data give {_plain(computed)}{rows} for {described}, outside {number.interval()}, but "
+            f"{_quoted(named)} name the table, not its rows, so the claim may count something the rows hold "
+            "rather than the rows.",
+            claimed=number, question=asked, answer=answer, compared=computed, agreement="mismatch",
+            assumptions=tuple(dict.fromkeys(assumptions)), warnings=tuple(dict.fromkeys(warnings)),
+            checks=tuple(checks), source=source,
+            clarification="Which column holds what the claim counts?",
+        )
     if left_out and agreement == "match" and not _safe_without(left_out, answer, number, used, slope):
         # An average or a bound over every row may agree by chance when the words left out pick some.
         words = " and ".join(f'"{phrase}"' for phrase in left_out)
@@ -2913,9 +3098,11 @@ def _check(
             note = (f"Read the claim as being about {unit_read[0]}, the only column of the kind its unit "
                     f'gives, rather than {measure}, which "{guessed}" only resembles.')
             return replace(check, assumptions=(note, *check.assumptions))
-    if agreement == "mismatch" and measure and not _names_head(asked, measure, strict=True):
+    if agreement == "mismatch" and measure and not _names_head(" ".join([asked, *named]), measure,
+                                                                  strict=True):
         # A column read from a word that does not say what it measures may be the wrong one; a
-        # mismatch there proves nothing.
+        # mismatch there proves nothing. Words that also name the table still name the column:
+        # "milk production" in state_milk_production.csv names milk_produced.
         return ClaimCheck(
             text, "unverified", "missing_context",
             f"The data give {_plain(computed)}{rows} for {described}, outside {number.interval()}, but the "

@@ -361,11 +361,15 @@ class RefusedPhrasingTests(unittest.TestCase):
         self.assertIsNone(answer_question("how many are over 50", self.frame, self.roles))
 
     def test_plans_the_executor_would_misanswer_are_refused_by_the_parser(self):
-        # These pass the phrasing check; the parser rejects the plan.
-        for question in ("average Revenue monthly", "top 0 Region by Revenue"):
-            with self.subTest(question=question):
-                self.assertFalse(unsupported_phrasing(question))
-                self.assertIsNone(answer_question(question, self.frame, self.roles))
+        # This passes the phrasing check; the parser rejects the plan.
+        self.assertFalse(unsupported_phrasing("top 0 Region by Revenue"))
+        self.assertIsNone(answer_question("top 0 Region by Revenue", self.frame, self.roles))
+
+    def test_a_trend_combines_each_period_the_way_the_question_says(self):
+        answer = answer_question("average Revenue monthly", self.frame, self.roles)
+        self.assertEqual(answer.plan.aggregation, "mean")
+        self.assertIn("mean(Revenue)", answer.calculation)
+        self.assertIsNone(answer_question("median Revenue monthly", self.frame, self.roles))
 
     def test_supported_phrasings_are_not_caught_by_the_refusal(self):
         for question in ("total revenue", "revenue over time", "top 2 region by revenue",
@@ -3953,3 +3957,101 @@ class LeadValueTests(unittest.TestCase):
         frame = pd.DataFrame({"age": range(1, 41), "distance": [float(value) for value in range(40)]})
         answer = answer_question("average At 14, distance", frame, detect_roles(frame))
         self.assertTrue(answer is None or "age = 14" not in answer.calculation)
+
+
+class SelectAllTests(unittest.TestCase):
+    PIE = "Which type of pie is served at your dinner? Please select all that apply. - "
+    SIDE = "Which side dishes are served at your dinner? Please select all that apply. - "
+
+    def poll(self) -> pd.DataFrame:
+        # Six people; the last does not answer the pie question.
+        return pd.DataFrame({
+            "RespondentID": [1, 2, 3, 4, 5, 6],
+            "What is your gender?": ["Female", "Female", "Male", "Male", "Female", "Male"],
+            self.PIE + "Pumpkin": ["Pumpkin", "Pumpkin", "Pumpkin", None, "Pumpkin", None],
+            self.PIE + "Apple": ["Apple", None, "Apple", "Apple", None, None],
+            self.PIE + "Pecan": [None, "Pecan", None, None, None, None],
+            self.PIE + "Other (please specify)": [None, None, None, "Other (please specify)", None, None],
+            self.PIE + "Other (please specify).1": [None, None, None, "Blueberry", None, None],
+            self.SIDE + "Corn": ["Corn", None, "Corn", "Corn", None, "Corn"],
+            self.SIDE + "Squash": [None, "Squash", None, None, None, "Squash"],
+            self.SIDE + "Carrots": ["Carrots", None, None, None, "Carrots", None],
+        })
+
+    def test_a_word_of_one_question_counts_each_of_its_options(self):
+        poll = self.poll()
+        answer = answer_question("which pies do people serve", poll, detect_roles(poll))
+        self.assertEqual(answer.plan.intent, "options")
+        self.assertEqual(dict(answer.values),
+                         {"Pumpkin": 4, "Apple": 3, "Pecan": 1, "Other (please specify)": 1})
+        # Five people tick a pie; the free-text twin of Other is not an option.
+        self.assertEqual(dict(answer.figures)["n"], 5)
+        self.assertEqual(list(answer.table["Option"])[:2], ["Pumpkin", "Apple"])
+        self.assertIn("more than one", answer.answer)
+
+    def test_the_rows_a_question_names_are_kept(self):
+        poll = self.poll()
+        answer = answer_question("which pies do women serve", poll, detect_roles(poll))
+        self.assertEqual(dict(answer.values)["Pumpkin"], 3)
+        self.assertEqual(dict(answer.figures)["n"], 3)
+
+    def test_a_share_of_one_option_is_of_the_rows_that_tick_any(self):
+        poll = self.poll()
+        answer = answer_question("how many people serve pumpkin pie", poll, detect_roles(poll))
+        self.assertEqual(answer.value, 4)
+        self.assertEqual(dict(answer.figures)["denominator"], 5)
+        self.assertIn("ticked", answer.answer)
+
+    def test_a_word_two_questions_share_names_neither(self):
+        poll = self.poll()
+        answer = answer_question("what is served at dinner", poll, detect_roles(poll))
+        self.assertTrue(answer is None or answer.plan.intent != "options")
+
+    def test_two_option_columns_are_no_question(self):
+        frame = pd.DataFrame({self.PIE + "Pumpkin": ["Pumpkin", None, "Pumpkin"],
+                              self.PIE + "Apple": [None, "Apple", "Apple"], "age": [30, 40, 50]})
+        self.assertEqual(nlq.select_all_sets(frame), [])
+        answer = answer_question("which pies do people serve", frame, detect_roles(frame))
+        self.assertTrue(answer is None or answer.plan.intent != "options")
+
+
+class EntityColumnTests(unittest.TestCase):
+    def test_a_kind_of_entity_does_not_number_the_rows(self):
+        outbreaks = pd.DataFrame({"Year": [2010, 2010, 2010, 2011],
+                                  "Animal Type": ["Cattle", "Cattle", None, "Poultry"],
+                                  "Illnesses": [3, 5, 2, 8]})
+        answer = answer_question("how many outbreaks in 2010", outbreaks, detect_roles(outbreaks))
+        self.assertEqual(answer.value, 3)
+        self.assertNotIn("Animal Type", answer.calculation)
+
+    def test_an_id_column_still_numbers_the_entities(self):
+        birds = pd.DataFrame({"bird_id": ["a", "a", "b", "c"], "mass": [10.0, 11, 12, 13]})
+        answer = answer_question("how many birds", birds, detect_roles(birds))
+        self.assertEqual(answer.value, 3)
+
+
+class TrendSlopeFigureTests(unittest.TestCase):
+    def test_a_yearly_trend_gives_its_slopes_per_year(self):
+        frame = pd.DataFrame({"year": list(range(2000, 2010)) * 2, "shop": ["A"] * 10 + ["B"] * 10,
+                              "sales": [float(10 * index) for index in range(10)] * 2})
+        # A column of whole years becomes the date when the table is analysed.
+        answer = ada.analyze(frame).ask("total sales per year")
+        self.assertEqual((answer.plan.intent, answer.plan.aggregation), ("trend", "sum"))
+        figures = dict(answer.figures)
+        # The yearly totals rise by 20 a year.
+        self.assertAlmostEqual(figures["least_squares_per_year"], 20.0)
+        self.assertAlmostEqual(figures["slope_per_year"], 20.0)
+
+    def test_a_monthly_total_gives_no_slope_per_year(self):
+        months = pd.date_range("2020-01-01", periods=36, freq="MS")
+        frame = pd.DataFrame({"date": months, "sales": [float(index) for index in range(36)]})
+        answer = answer_question("total sales per month", frame, detect_roles(frame))
+        # A total per month changes per year in months' units, so no slope per year is given for it.
+        self.assertNotIn("least_squares_per_year", dict(answer.figures))
+
+
+class StemTests(unittest.TestCase):
+    def test_a_plural_names_the_column_its_singular_starts(self):
+        parks = pd.DataFrame({"unit_name": ["Zion", "Zion", "Arches"], "visitors": [10.0, 20.0, 5.0]})
+        answer = answer_question("total visits for Zion", parks, detect_roles(parks))
+        self.assertEqual(answer.value, 30)

@@ -32,7 +32,7 @@ under the original wording.
 class QueryPlan:
     intent: Intent            # aggregate | count | rank | breakdown | trend | growth |
                               # correlation | compare | correlates | describe | columns |
-                              # crosstab | missing | duplicates | outliers
+                              # crosstab | options | missing | duplicates | outliers
     aggregation: Aggregation  # sum | mean | median | min | max | range | count | std | var |
                               # iqr | quantile | mode | share
     measure: str | None
@@ -84,6 +84,7 @@ A condition with `part="year"` compares the year of a date column ("since
 | `describe` | n, mean, SD, median, quartiles, range and skew, overall or per group | "Distribution of ELOVL2_6", "describe pH by site" |
 | `columns` | The numeric columns themselves, ranked by one aggregation | "Which column has the highest average?", "which gene has the highest mean?" |
 | `crosstab` | Row counts, or a measure, for each pair of groups of two groupings | "Count by crop and year", "mean risk by antibiotics and probiotics" |
+| `options` | The rows that tick each option of a select-all question split over columns | "Which pies do people serve?" |
 | `outliers` | Values outside 1.5×IQR and the values the data checks flag | "Outliers in HGB", "are there impossible values?" |
 | `duplicates` | Rows that repeat an earlier row, or values found on several rows | "How many duplicate rows?" |
 
@@ -492,7 +493,8 @@ split). A word that starts with a column's whole name word names it when the
 name word is at least three letters and a third of the word: "conductivity"
 names `Conduc`, "stations" names `STA`, "healthy" names `Crop_Health_Label`.
 A word that is a name word less a common ending ("-ing", "-ed", "-ity",
-"-ation" and a few more) names it too: "fast" names `fasting_ability`. Two to
+"-ation", "-or" and a few more) names it too, as does its singular: "fast"
+names `fasting_ability` and "visits" names `visitors`. Two to
 four words that a name shortens word by word name it, when each name word
 starts its word with three letters or more and one is whole: "life
 expectancy" names `lifeExp`, "departure delay" names `dep_delay`. Two to
@@ -596,14 +598,17 @@ says for the active measure (see
 [Concepts](../concepts.md#amounts-rates-and-levels)). A question about another
 column uses that column's own default. An explicit "total", "sum", "average",
 "mean" or "median" is honoured in a ranking or breakdown too: "total Interval
-Rain by station" sums. "Highest" asks for a ranking, so only the literal "min"
+Rain by station" sums, and a "total" or "average" in a change compares those:
+"total milk rose between 1990 and 2017" adds up every state each year. "Highest" asks for a ranking, so only the literal "min"
 and "max" ask for a per-group extreme. In an aggregate, a superlative with no
 aggregation word asks for the extreme: "the most snowfall" is the maximum.
 
-A trend whose aggregation word differs from the default ("average revenue
-monthly") is refused, because the trend executor always uses the default, and
-the reason says how the periods combine. The same holds for ranking periods
-("which month had the highest average revenue").
+A trend combines each period by the total or the average the question names
+("average revenue monthly", "total milk per year"), or by the measure's
+default; any other aggregation word ("median revenue monthly") is refused, and
+the reason says how the periods combine. A word that differs from the default
+is refused in a ranking of periods ("which month had the highest average
+revenue").
 
 A spread ("standard deviation of X", "IQR of X by site") is a sample
 statistic with n − 1, and a percentile ("90th percentile of X") uses pandas'
@@ -658,8 +663,9 @@ temperature) is refused.
 
 A noun for the rows counts rows ("how many patients are positive"), or the
 distinct values of an entity column when one repeats across rows: the
-identifier, or the one column named with an ID word such as `ID`, `subject`
-or `participant`. When a column of codes repeats and no column is named
+identifier, or the one column whose name ends in an ID word such as `ID`,
+`subject` or `participant` (`Animal Type` names a kind of animal, not each
+one). When a column of codes repeats and no column is named
 for the noun, the noun may mean the rows or the codes, and the question is
 refused with what to ask: Loblolly's 84 rows are 14 trees (`Seed`) at 6
 ages, so "how many trees" is refused rather than answered 84. A column that picks the
@@ -683,7 +689,25 @@ A count with conditions or values gives its share of the rows: "18 of the
 212,019 rows (under 0.1%) have Expected_Yield below 0." The base is the rows
 where the filtered columns are recorded, and the answer says so when that
 leaves rows out: "701 of the 4,569 rows with diabetes recorded (15.3%) have
-diabetes = 1."
+diabetes = 1." A blank in an option column of a select-all question is an
+option not ticked, so its base is the rows that ticked any option: "729 of
+the 926 rows with an option of "Which type of pie is typically served...?"
+ticked (78.7%)".
+
+A survey export splits a select-all question into a column per option, named
+"Which type of pie is typically served at your Thanksgiving dinner? Please
+select all that apply. - Pumpkin", "- Apple" and so on, each holding its
+option (or a mark such as "Yes") on the rows that ticked it and nothing
+elsewhere. At least three such columns make a question. A word only that
+question's name holds ("pies") names it, with the question's other words
+("served", "Thanksgiving"), and the answer counts the rows that tick each
+option, the most ticked first, as `options`: "Pumpkin is the option ticked
+most often: 729 of the 926 rows that tick any option (78.7%)". A row may
+tick several options, so the counts add up to more than the rows; each share
+is of the rows that ticked at least one. Values and conditions on other
+columns pick the rows ("which pies do women serve"), and a value of one
+option ("pumpkin pie") counts that option alone. A column of free text
+written in beside the options is not one of them.
 
 A share of a group is of that group. After "share of", "percentage of",
 "proportion of", "fraction of" or "rate of", the values and conditions before
@@ -875,7 +899,9 @@ Other behaviour:
   once three or more are covered, so seasons can't tilt it; per decade too
   over 20 years) with its 95% interval and Mann-Kendall p-value
   (`timeseries.trend_test`), and its peak and low. An interval that spans
-  zero is "no clear trend". Once three or more complete years are covered,
+  zero is "no clear trend". The figures hold the Theil-Sen and least-squares
+  (`timeseries.least_squares`) slopes per year, `slope_per_year` and
+  `least_squares_per_year`, for a level at any grain and for totals by year. Once three or more complete years are covered,
   the start and end it quotes are the first and last complete years'
   averages, so a seasonal series does not compare a summer with an autumn.
   It counts only the periods from the first to the last with a value, and
