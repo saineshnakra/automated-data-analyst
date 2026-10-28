@@ -335,7 +335,8 @@ COMPARISONS: tuple[tuple[Operator, str], ...] = (
     ("<", r"(?:less|lower|smaller|fewer) than|below|under"),
 )
 COMPARISON_PATTERN = "|".join(f"(?P<op{index}>{words})" for index, (_, words) in enumerate(COMPARISONS))
-LINKING_VERB = r"(?:(?:is|are|was|were)\s+)?"
+# "price below 0", "prices dropped below 0": a verb may link a column to its bound.
+LINKING_VERB = r"(?:(?:is|are|was|were|fell|dropped|went|rose|climbed|sank|stayed|stood|traded)\s+)?"
 OPERATOR_WORDS = {"=": "=", "<": "below", "<=": "at most", ">": "above", ">=": "at least"}
 # Comparison symbols become the words the condition grammar reads, since _norm drops symbols.
 SYMBOL_WORDS = (
@@ -625,6 +626,20 @@ COMPARATIVE_BOUND = re.compile(
 )
 
 
+def _inverted_names(question: str, columns) -> str:
+    """The question with "sales of light trucks" written "light truck sales" when that names one column."""
+    for column in columns:
+        words = _norm(normalized_name(str(column))).split()
+        if not 2 <= len(words) <= 4 or not all(word.isalpha() for word in words):
+            continue
+        *rest, head = words
+        found = list(re.finditer(rf"\b{head}\s+of\s+(?:the\s+)?{' '.join(rest)}(?:s|es)?\b", question,
+                                 re.IGNORECASE))
+        if len(found) == 1:
+            question = f"{question[:found[0].start()]}{' '.join(words)}{question[found[0].end():]}"
+    return question
+
+
 def _question_text(question: str) -> str:
     """The question with comparison symbols as words and a minus sign kept as "minus".
 
@@ -634,6 +649,8 @@ def _question_text(question: str) -> str:
     text = str(question)
     for symbol, words in SYMBOL_WORDS:
         text = text.replace(symbol, words)
+    # "below zero" bounds a column at 0.
+    text = re.sub(r"\b(below|above|under|over|than)\s+zero\b", r"\1 0", text, flags=re.IGNORECASE)
     text = POSTPOSED_ADJECTIVE.sub(
         lambda match: f"{DIMENSION_ADJECTIVES[match.group('adjective').lower()]} {match.group('bound')} "
         f"{match.group('number')}{match.group('unit') or ''}", text)
@@ -705,6 +722,8 @@ def _column_names(columns: list[str]) -> dict[str, tuple[str, ...]]:
         forms = [_core_name(column)]
         for spelling in spellings[1:]:
             forms += [_norm(spelling), _core_name(spelling)]
+        # "yen" names JPY in a table of exchange rates.
+        forms += list(CURRENCY_NAMES.get(str(column).strip(), ()))
         candidates[column] = [form for form in dict.fromkeys(forms) if form and form != full[column]]
     # Every run of whole words in every full name, with the columns it occurs in,
     # so finding a form inside another name is a lookup rather than a scan.
@@ -723,6 +742,23 @@ def _column_names(columns: list[str]) -> dict[str, tuple[str, ...]]:
     }
 
 
+# Names of the currencies a column titled by its ISO code holds. A name two columns share ("krone" for DKK
+# and NOK) names neither; "dollar" alone is the US dollar.
+CURRENCY_NAMES = {
+    "USD": ("dollar", "us dollar", "u s dollar"), "EUR": ("euro",),
+    "GBP": ("pound", "pound sterling", "sterling", "british pound"), "JPY": ("yen", "japanese yen"),
+    "CHF": ("franc", "swiss franc"), "CNY": ("yuan", "renminbi", "chinese yuan"),
+    "KRW": ("korean won", "south korean won"), "INR": ("rupee", "indian rupee"),
+    "SEK": ("krona", "swedish krona"), "ISK": ("krona", "icelandic krona"),
+    "NOK": ("krone", "norwegian krone"),
+    "DKK": ("krone", "danish krone"), "CZK": ("koruna", "czech koruna"), "PLN": ("zloty", "polish zloty"),
+    "HUF": ("forint", "hungarian forint"), "TRY": ("lira", "turkish lira"), "BRL": ("brazilian real",),
+    "ZAR": ("rand", "south african rand"), "MXN": ("mexican peso",), "PHP": ("philippine peso",),
+    "RUB": ("ruble", "rouble", "russian ruble"), "AUD": ("australian dollar",), "CAD": ("canadian dollar",),
+    "NZD": ("new zealand dollar",), "HKD": ("hong kong dollar",), "SGD": ("singapore dollar",),
+    "ILS": ("shekel", "israeli shekel"), "THB": ("baht", "thai baht"), "IDR": ("rupiah", "indonesian rupiah"),
+    "MYR": ("ringgit", "malaysian ringgit"), "RON": ("leu", "romanian leu"), "BGN": ("lev", "bulgarian lev"),
+}
 # A prefix that most column names share before a colon, as in "PROPERTY: YS (MPa)".
 NAME_PREFIX = re.compile(r"^\s*([^:]{1,40}):\s*(?=\S)")
 # LaTeX markup in a name: "$\mu$m", "g/cm$^3$".
@@ -2488,9 +2524,19 @@ def _claim_partial_at(
                           or _skeleton_columns(phrase[0], words))
         if not candidates and 2 <= size <= 4:
             candidates = _abbreviated_columns(phrase, words) or _initialled_columns(phrase, words)
+        start, end = window[0][0], window[-1][1]
+        beside = [column for column, (first, last) in reading.spans.items()
+                  if (last <= start and not reading.original[last:start].strip())
+                  or (first >= end and not reading.original[end:first].strip())]
+        joined = [column for column in beside
+                  if set(phrase) <= set(_norm(normalized_name(str(column))).split())]
+        if len(joined) == 1:
+            # "urban rail ridership": a word right beside a column already read, from that column's own name,
+            # is part of the same mention.
+            reading.claim(start, end)
+            return size
         if not candidates:
             continue
-        start, end = window[0][0], window[-1][1]
         if size == 1 and len(candidates) > 1 and phrase[0] in reading.nouns:
             # Left for _claim_entity: "bikes" names what each row of BIKE_MAKE, BIKE_TYPE and BIKE_COST is
             # about, not one of them.
@@ -4206,7 +4252,7 @@ def _read_question(
     any other word left over is reported as naming nothing in the table. With
     ``numbers_ok`` a leftover number is allowed, as a numbered group may be.
     """
-    q = _norm(_question_text(question))
+    q = _norm(_inverted_names(_question_text(question), dataframe.columns))
     index = _name_index(dataframe.columns)
     reading = _Reading(question=question, original=q, text=q, remaining=q, names=index.names, index=index)
     vocabulary = _vocabulary(dataframe, roles)

@@ -34,6 +34,26 @@
 
 ### Reading claims and questions
 
+- Fixed a wrong reading: "fell by more than three quarters" was read as
+  "more than 3" and "fell by two thirds" as 2, so a fall of 10% agreed with
+  the first. A change by several parts of a whole is that fraction.
+- "The euro gained about 10 yen a year" and "averaged about $1.18" read the
+  rate column the currency names (JPY, USD) in a table of exchange rates; a
+  name two columns share ("krone" for DKK and NOK) names neither.
+- "hit its all-time high on 15 July 2008, at $1.599" is checked against the
+  highest value of the column too, and fails when another row is higher.
+- "Prices in 2023 averaged five times their 2019 level" is the change from
+  2019 to 2023; "a thousand" is 1,000; "below zero" bounds a column at 0,
+  and "prices dropped below zero" links the column to its bound.
+- "sales of light trucks" names `Light truck sales`, and "urban rail
+  ridership" names `Transit Ridership - Urban Rail - Adjusted` rather than
+  asking which ridership column is meant.
+- A claim on a table of one row per date where a date repeats (BTS gives
+  April 2023 twice) is checked with the repeat counted once and twice; when
+  the verdicts differ it is ambiguous, and when they agree the check says so.
+- ", the category that takes in SUVs and pickups," is a description and is
+  left out; "Price (EUR/MWhe)" is named by "prices", the word outside its
+  brackets.
 - Fixed a cleaning error: "country" was merged into "county" as a typo, one
   letter apart, so a salmon table's national rows were counted as a county
   and "total losses of salmon in 2023" gave 214 million where there were
