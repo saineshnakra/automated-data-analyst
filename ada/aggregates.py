@@ -201,6 +201,8 @@ TOTAL_LEVEL = re.compile(
 )
 #: Fewest and most labels a column of levels with a total among them may hold.
 MIN_LEVELS, MAX_LEVELS = 3, 60
+#: Most levels a column may have when all but its total are numbers (single years of age).
+MAX_NUMBERED_LEVELS = 150
 #: How far the rows of a total level may exceed the rows of the other levels in some count, as a
 #: fraction: groups no level names ("other races") add to the total but to no level.
 LEVEL_EXCESS = 0.5
@@ -229,7 +231,10 @@ def _covers(frame: pd.DataFrame, column: object, label: str) -> bool:
         total, parts = float(values[rows].sum()), float(values[~rows & frame[column].notna()].sum())
         if parts > 0 and parts * (1 - SUM_TOLERANCE) <= total <= parts * (1 + LEVEL_EXCESS):
             return True
-        if values.isna().any() and _covers_where_given(frame, column, label, other, values):
+        # Blank counts, or parts given where no total is (a site counted for one sex only), are left out
+        # cell by cell.
+        if (values.isna().any() or total < parts) and _covers_where_given(
+                frame, column, label, other, values):
             return True
     return False
 
@@ -247,18 +252,10 @@ def _covers_where_given(frame: pd.DataFrame, column: object, label: str, other: 
     ``tolerance`` the total must come within that fraction of its parts
     either way, in nine cells of ten.
     """
-    if len(frame) > MAX_ALIGNED_ROWS:
+    aligned = _aligned(frame, column, other, values)
+    if aligned is None:
         return False
-    codes = _cell_codes(frame, column)
-    keys = [key for key in codes.columns if key != other]
-    if not keys:
-        return False
-    cells = codes.groupby([codes[key] for key in keys], sort=False).ngroup()
-    level = frame[column].astype(str)
-    table = pd.DataFrame({"cell": cells, "level": level, "value": values}).dropna(subset=["value"])
-    if table.duplicated(["cell", "level"]).any():
-        return False
-    wide = table.pivot(index="cell", columns="level", values="value")
+    wide, table, keys = aligned
     if label not in wide.columns or wide.shape[1] < 2:
         return False
     given = wide.loc[wide[label].notna()]
@@ -291,26 +288,99 @@ def _covers_where_given(frame: pd.DataFrame, column: object, label: str, other: 
     return parts > 0 and parts * (1 - SUM_TOLERANCE) <= total <= parts * (1 + LEVEL_EXCESS)
 
 
-def _cell_codes(frame: pd.DataFrame, column: object) -> pd.DataFrame:
+def _aligned(frame: pd.DataFrame, column: object, other: object, values: pd.Series, labels_only: bool = False
+             ) -> tuple[pd.DataFrame, pd.DataFrame, list] | None:
+    """The values of ``other`` with a row for each cell (the other columns' labels) and a column for each
+    level of ``column``, the long table it comes from and the key columns; None when no cell is marked.
+
+    With ``labels_only`` a number marks a cell only as a year (Year beside IncidencesAge5To9, which is a
+    count).
+    """
+    if len(frame) > MAX_ALIGNED_ROWS:
+        return None
+    codes = _cell_codes(frame, column, labels_only)
+    keys = [key for key in codes.columns if key != other]
+    if not keys:
+        return None
+    cells = codes.groupby([codes[key] for key in keys], sort=False).ngroup()
+    level = frame[column].astype(str)
+    table = pd.DataFrame({"cell": cells, "level": level, "value": values}).dropna(subset=["value"])
+    if table.duplicated(["cell", "level"]).any():
+        return None
+    return table.pivot(index="cell", columns="level", values="value"), table, keys
+
+
+def _cell_codes(frame: pd.DataFrame, column: object, labels_only: bool = False) -> pd.DataFrame:
     """The columns that mark a cell beside ``column``, each as codes of its labels, found once per table and
     column: every count column of a large table is compared on the same cells."""
-    cached = _CODES.get((id(frame), column))
+    cached = _CODES.get((id(frame), column, labels_only))
     if cached and cached[0]() is frame:
         return cached[1]
     # A code beside the column (C02076V03371 for Age Group, a DGUID for GEO) names the same level, so it
     # marks no cell.
     keys = [key for key in frame.columns if key != column
             and not (is_numeric_dtype(frame[key]) and frame[key].nunique() > len(frame) // 2)
-            and not (frame[key].nunique() > 1 and frame.groupby(key)[column].nunique().max() == 1)]
+            and not (labels_only and is_numeric_dtype(frame[key]) and not _years(frame[key]))
+            # A flag given on some rows only (EASRLower95pcConfidenceIntervalQF) marks rows, not cells.
+            and not (labels_only and frame[key].isna().mean() > 0.5)
+            and not (frame[key].nunique() > 1 and frame.groupby(key)[column].nunique().max() == 1)
+            # SexQF, "d" on the rows of Sex = All and blank on the rest, says no more than the level does.
+            and not (frame[key].nunique(dropna=False) > 1
+                     and frame.groupby(column)[key].nunique(dropna=False).max() == 1)]
     codes = pd.DataFrame({key: pd.factorize(frame[key].astype(str))[0] for key in keys}, index=frame.index)
     if len(_CODES) >= 16:
         _CODES.clear()
-    _CODES[(id(frame), column)] = (weakref.ref(frame), codes)
+    _CODES[(id(frame), column, labels_only)] = (weakref.ref(frame), codes)
     return codes
 
 
 # The cell codes of the last few columns looked at.
-_CODES: dict[tuple[int, object], tuple[weakref.ref, pd.DataFrame]] = {}
+_CODES: dict[tuple[int, object, bool], tuple[weakref.ref, pd.DataFrame]] = {}
+
+
+def _years(series: pd.Series) -> bool:
+    """Whether a numeric column holds whole years, 1800 to 2100."""
+    values = series.dropna()
+    return not values.empty and bool(((values % 1 == 0) & values.between(1800, 2100)).all())
+
+
+#: Fewest cells in which a total must be at least every other level, when the levels overlap.
+MIN_DOMINATED_CELLS = 5
+
+
+def _dominates(frame: pd.DataFrame, column: object, label: str) -> bool:
+    """Whether the rows of ``label`` are at least every other level's in the cells holding nineteen
+    twentieths of the counts, in the column of counts with the largest total: "All cancer types" beside
+    sites that overlap (Colorectal, Colon), which add up to more. A smaller count (cases under 5) may favour
+    a part the total leaves out."""
+    counts = {}
+    for other in frame.columns:
+        if other == column or is_bool_dtype(frame[other]) or not is_numeric_dtype(frame[other]):
+            continue
+        values = to_numbers(frame[other])
+        present = values.dropna()
+        if present.empty or bool((present < 0).any()) or bool((present % 1 != 0).any()) or _years(present):
+            # Counts only: a ratio or a rate of a small part can be the largest, and a year counts nothing.
+            continue
+        counts[other] = values
+    if not counts:
+        return False
+    other = max(counts, key=lambda name: float(counts[name].sum()))
+    aligned = _aligned(frame, column, other, counts[other], labels_only=True)
+    if aligned is None or label not in aligned[0].columns or aligned[0].shape[1] < 3:
+        return False
+    wide = aligned[0]
+    given = wide.loc[wide[label].notna()]
+    others = given.drop(columns=[label])
+    largest = others.max(axis=1)
+    # A cell holding few of the levels was not lined up with the rest.
+    usable = largest.notna() & (largest > 0) & (others.notna().sum(axis=1) >= others.shape[1] / 2)
+    if int(usable.sum()) < MIN_DOMINATED_CELLS:
+        return False
+    # Weighed by size: a few small cells (cases in children, where a part the total leaves out can be the
+    # largest) do not outweigh the rest.
+    dominated = given.loc[usable, label] >= largest[usable]
+    return bool(largest[usable][dominated].sum() >= 0.95 * largest[usable].sum())
 
 
 #: Levels a column of geographic levels may name: the whole, and the parts it is split into.
@@ -372,13 +442,18 @@ def total_levels(frame: pd.DataFrame) -> tuple[TotalLevel, ...]:
         if 2 <= len(labels) <= MIN_LEVELS * 2 and (whole := _level_whole(frame, column, labels)):
             wholes.append(TotalLevel(str(column), whole))
             continue
-        if not MIN_LEVELS <= len(labels) <= MAX_LEVELS:
+        # Single years of age, 0 to 115 beside "ALL", are many levels but each a number.
+        numbered = len(labels) <= MAX_NUMBERED_LEVELS and sum(
+            not re.fullmatch(r"\d+(?:\.0)?", label.strip()) for label in labels) <= 2
+        if not MIN_LEVELS <= len(labels) <= MAX_LEVELS and not numbered:
             continue
         # "Age of mother, all ages": the words every label shares say nothing of the level.
         keys = distinct_parts(labels)
         totals = [label for label in labels if TOTAL_LEVEL.fullmatch(_label_key(keys[label]))]
         if len(totals) == 1 and _covers(frame, column, totals[0]):
             found.append(TotalLevel(str(column), totals[0]))
+        elif totals and len(dominant := [label for label in totals if _dominates(frame, column, label)]) == 1:
+            found.append(TotalLevel(str(column), dominant[0]))
         elif not totals and (whole := _sum_of_others(frame, column, labels)):
             found.append(TotalLevel(str(column), whole))
     levels = (*(found if len(found) >= 2 else ()), *wholes)
@@ -390,6 +465,14 @@ def total_levels(frame: pd.DataFrame) -> tuple[TotalLevel, ...]:
 
 # The total levels of the last few tables looked at, found once per table.
 _LEVELS: dict[int, tuple[weakref.ref, tuple[TotalLevel, ...]]] = {}
+
+
+def set_total_levels(frame: pd.DataFrame, levels: tuple[TotalLevel, ...]) -> None:
+    """Record the total levels of a table ADA built itself, whose levels it knows: the "All" of a column
+    of parts made from columns that add up to a whole."""
+    if len(_LEVELS) >= 8:
+        _LEVELS.clear()
+    _LEVELS[id(frame)] = (weakref.ref(frame), levels)
 
 
 # The aggregate rows of the last few tables looked at, found once per table.
@@ -417,4 +500,4 @@ def aggregate_rows(frame: pd.DataFrame) -> AggregateRows | None:
     return best
 
 
-__all__ = ["AggregateRows", "TotalLevel", "aggregate_rows", "total_levels"]
+__all__ = ["AggregateRows", "TotalLevel", "aggregate_rows", "set_total_levels", "total_levels"]

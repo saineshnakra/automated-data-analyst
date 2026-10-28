@@ -15,6 +15,7 @@ table or as a note.
 | 2 | Normalize and de-duplicate column names | Whitespace collapsed; a blank name becomes `column_<position>`; a repeated name gets `_2`, `_3` and so on. A note names each repeated header, and says whether the two columns differ |
 | 3 | Drop empty columns | Every value missing or whitespace; a note names them |
 | 4 | Drop empty rows | Every value missing or whitespace |
+| 4a | Leave out notes below the table | Up to 10 last rows that each fill one cell with words not seen above it, one of them starting like a note ("Note:", "Source:", "Last updated"), in a table of 4 columns and 20 rows or more; a note names the first |
 | 5 | Drop exported index columns | See below |
 | 6 | Drop timezones | Timezone-aware columns keep their wall-clock time |
 | 7 | Trim text | Leading and trailing whitespace removed; empty strings become missing |
@@ -331,6 +332,10 @@ other values are words (`male`, `female`, `NA`). Among codes (values of three
 characters or fewer, or in capitals up to five letters: `EU`, `APAC`, `NA`;
 `Yes`, `No`, `NA`) it is kept as a code of its own, and `Na`, the symbol for
 sodium, is never matched. A column holding only `NA` is left as it is.
+
+A total label among numbers ("ALL" beside the single years of age 0 to 115,
+"All ages"), on two rows or more, keeps the column as labels: it is the
+level for all the others in a published table of counts, not a blank.
 
 Key columns and layout numbers are left alone. Each column gets a note with
 its count ("11,177 cells in PM held -999, a code for a missing reading far from

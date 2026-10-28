@@ -796,6 +796,53 @@ class CleaningNoteTests(unittest.TestCase):
         self.assertEqual(list(cleaned.columns), ["Value"])
         self.assertIn("2 empty columns were dropped: FT and WTE.", report.notes)
 
+    def _income(self, rows: int, footer: list[str]) -> pd.DataFrame:
+        frame = pd.DataFrame(
+            {
+                "GeoFIPS": [f"{number:02d}000" for number in range(1, rows + 1)],
+                "GeoName": [f"State {number}" for number in range(1, rows + 1)],
+                "Description": ["Personal income"] * rows,
+                "2024": [float(number) for number in range(rows)],
+                "2025": [float(number) + 1 for number in range(rows)],
+            }
+        )
+        notes = pd.DataFrame({"GeoFIPS": footer})
+        return pd.concat([frame, notes], ignore_index=True)
+
+    def test_notes_below_a_table_are_left_out_and_named(self):
+        footer = ["Note: See the included footnote file.", "Last updated: September 30, 2026",
+                  "U.S. Bureau of Economic Analysis"]
+        cleaned, report = clean_dataframe(self._income(25, footer))
+        self.assertEqual(len(cleaned), 25)
+        self.assertIn('Left out the last 3 rows, notes below the table such as '
+                      '"Note: See the included footnote file.".', report.notes)
+
+    def test_a_short_table_keeps_its_last_rows(self):
+        cleaned, report = clean_dataframe(self._income(8, ["Note: See the included footnote file."]))
+        self.assertEqual(len(cleaned), 9)
+        self.assertFalse(any("below the table" in note for note in report.notes))
+
+    def test_a_sparse_last_row_that_is_not_a_note_stays(self):
+        cleaned, _ = clean_dataframe(self._income(25, ["Puerto Rico Commonwealth"]))
+        self.assertEqual(len(cleaned), 26)
+
+    def test_a_total_label_among_numbers_keeps_the_column_as_labels(self):
+        frame = pd.DataFrame({"AGE": ["0", "1", "2", "ALL"] * 3, "VALUE": range(12)})
+        cleaned, report = clean_dataframe(frame)
+        self.assertIn("ALL", set(cleaned["AGE"]))
+        self.assertFalse(any("read as missing" in note for note in report.notes))
+
+    def test_one_total_cell_among_numbers_is_still_a_blank(self):
+        frame = pd.DataFrame({"AGE": ["0", "1", "2", "3", "ALL"], "VALUE": range(5)})
+        cleaned, _ = clean_dataframe(frame)
+        self.assertTrue(pd.api.types.is_numeric_dtype(cleaned["AGE"]))
+
+    def test_a_value_seen_above_is_not_a_note(self):
+        frame = self._income(25, ["Note: provisional"])
+        frame.loc[3, "GeoFIPS"] = "Note: provisional"
+        cleaned, _ = clean_dataframe(frame)
+        self.assertEqual(len(cleaned), 26)
+
 
 class IdentifierNameCleaningTests(unittest.TestCase):
     def test_words_containing_id_are_still_parsed_as_numbers(self):
@@ -1213,6 +1260,20 @@ class NotDetectedTests(unittest.TestCase):
 
         self.assertEqual(cleaned["Class"].tolist()[:4], ["1st", "2nd", "3rd", "Crew"])
         self.assertNotIn("Class unit", cleaned.columns)
+
+    def test_a_word_on_many_rows_beside_numbered_classes_keeps_the_classes(self):
+        # Singapore's flat types: "EXECUTIVE" is a class beside "3 ROOM" and "4 ROOM", not a failed reading.
+        types = ["3 ROOM", "4 ROOM", "5 ROOM", "EXECUTIVE"]
+        frame = pd.DataFrame({"flat_type": types * 10, "price": range(40)})
+
+        cleaned, _ = clean_dataframe(frame)
+
+        self.assertEqual(cleaned["flat_type"].tolist()[:4], ["3 ROOM", "4 ROOM", "5 ROOM", "EXECUTIVE"])
+        # One stray word among two hundred readings is a reading that failed, not a class.
+        readings = pd.DataFrame({"Level": [f"{index % 9 + 1} mg/L" for index in range(200)] + ["broken"]})
+        cleaned, _ = clean_dataframe(readings)
+        self.assertEqual(cleaned["Level"].iloc[0], 1.0)
+        self.assertTrue(np.isnan(cleaned["Level"].iloc[200]))
 
     def test_readings_in_several_units_get_a_unit_column(self):
         frame = pd.DataFrame({"Level": ["5 mg/L", "7 mg/L", "0.2 g/L", "0.3 g/L", "4.5 *10^(6) mg/L"]})

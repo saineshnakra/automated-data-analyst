@@ -264,7 +264,7 @@ class FolderClaimTests(FolderTestCase):
         check = ada.check_claim(folder, f"Total deaths were {deaths}.")
         self.assertTrue(check.verified)
         self.assertEqual(check.answer.plan.measure, "member_deaths")
-        self.assertIn("climbers.csv fit only by a lesser word", check.assumptions[0])
+        self.assertIn("events.csv", check.assumptions[0])
 
     def test_a_claim_no_single_file_holds_names_the_joins(self):
         folder = self.folder(shop())

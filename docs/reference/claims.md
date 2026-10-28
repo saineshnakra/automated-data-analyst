@@ -89,6 +89,10 @@ when the file can't be read, and 3 when it is unverified for any other reason.
    unless the subject is a measure ("The tax rate was 45% of ..."). A base
    lead may run to eleven words ("Of the 186,730 people killed or injured on
    French roads in 1958,"); its words are set aside and its count is checked.
+   A closing clause that compares the number with another figure ("about 9
+   millimetres a year, three times the long-run pace") is set aside: a wrong
+   number fails the claim, but a right one leaves it unverified, since the
+   comparison is not checked. "since records began in 1856" is from 1856.
 2. **The question.** The rest of the sentence is read as a question to
    `Analysis.ask` (see [Ask ADA](ask-ada.md)). "averaged 5050" becomes
    "average ...", and "There are 344 penguins" becomes "how many penguins",
@@ -124,6 +128,7 @@ when the file can't be read, and 3 when it is unverified for any other reason.
 | `about half of` | 47.2% to 52.8%, the same way; "about" adds nothing to a fraction in words |
 | `more than half of` | above 50% |
 | `seven in ten` | 68.3% to 70.7%, as "seven tenths" is |
+| `one day in ten` | 10% of days, unless another plural follows ("one goal in ten games") |
 | `about 12 of every 100`, `8 in every 100` | a share in percent, read with a percent's own rounding; a rate per 100,000 is not a share |
 
 `--value` with `--question` keeps its qualifier: `--value "about 25%"` stands
@@ -151,6 +156,21 @@ for 24 to 26.
    squirrel IDs is a share of the distinct IDs. A plural after the number is
    never counted when the claim speaks of an average or the plural is money:
    "averaged 18.6 dollars" is not 18.6 rows.
+   An amount of money ("valued at almost £1 billion") is never checked
+   against a count of things; the claim gets `missing_context`. In a table
+   of counts by age ("ALL" beside single years) or a cancer registry ("All
+   cancer types" over sites that overlap), a share or a total adds up the
+   counts at the total levels; "diagnoses" are the incidences for all ages,
+   "centenarians" every age from 100, and counts kept in one column per age
+   band (IncidencesAge75To79) are added across the bands the ages cover.
+   Parts kept in columns that add up to another (Good Days to Hazardous
+   Days beside Days with AQI) are read the same way: "Air quality was good
+   on 75% of the days" is the good days over all days, and so are "Air
+   quality in Maricopa County was good on ..." and "Maricopa County had
+   good air on ...", for that county's rows. When the claim's word names
+   two columns of numbers alike ("the deaths" for `Total deaths` and
+   `COVID-19 Deaths`) and the two give different verdicts, the claim gets
+   `ambiguous_intent` with both readings.
 
 ## Slopes
 
@@ -386,6 +406,15 @@ says how, not which column. A count of things on a day counts those that
 started on it when the table has a start and an end date, unless the claim
 says ended.
 
+"Half of all rail disruptions were over within 51 minutes" is the median,
+read as "The median of all rail disruptions was 51 minutes". A day written in
+words ("the first of July 2025") is read as a date. "The first of July 2025
+was the worst day of the year, with fifty-one disruptions" is checked as the
+count on that day and then against every day of its year: it fails when
+another day has more (the fewest, for the quietest day). A count of the rows'
+own noun ("fifty-one disruptions" in `disruptions-2025.csv`) counts the rows
+even when other words of the claim name the table.
+
 In a folder, a file read without some of the claim's words comes after the
 files and joins that read all of them.
 
@@ -491,6 +520,12 @@ Besides the number, a check records what could make the answer misleading:
   of the others. If one turns the verdict ("Ward 1 recorded 15 homicides in
   2024" gives 14 by `START_DATE` and 15 by `REPORT_DAT`), the claim gives
   `ambiguous_intent` with both numbers.
+- **A total with no year.** When a claimed total names no year and the total
+  over every year fails, the same total is made for each year. If one year's
+  total fits ("California recorded about 5,000 traffic deaths" gives 35,315
+  over 1982 to 1988 and 5,020 in 1984), the claim gets `missing_context`
+  naming the years that fit. "In all", "altogether" or "since 1990" says the
+  total is over the years, and it is checked as said.
 
 - **Rows left out.** Each reason rows were left out, with its count: rows
   with the measure missing, cells the data checks flag, exact repeats of

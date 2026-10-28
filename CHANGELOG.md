@@ -34,6 +34,126 @@
 
 ### Reading claims and questions
 
+- "Half of all rail disruptions were over within 51 minutes" is checked as
+  the median; "the first of July 2025" is a date; "D was the worst day of the
+  year, with fifty-one disruptions" is checked against every day of the
+  year, and fails when another day has more.
+- Fixed wrong verdicts on a table of deaths by single year of age (NISRA):
+  "ALL" and "All ages" among the ages were read as blanks, so a share of
+  people who died aged 80 or over was taken of rows. A total label in a
+  column of numbers now keeps the column as labels, ages 0 to 115 count as
+  levels beside it, a code beside its label (SEX, Sex Label) is read with
+  it, and "centenarians" are every age from 100.
+- Cancer registry tables (PHS): "All cancer types" is the total of sites
+  that overlap (Colon within Colorectal cancer), found as the level at least
+  as large as every other in the largest column of counts; "diagnoses" are
+  the incidences for all ages; "prostate cancer" is CancerSite = Prostate,
+  read from the label over its code; "melanoma" is not "Non-melanoma skin
+  cancer"; "women" is Sex = Females beside "All".
+- Counts by age band kept in columns (IncidencesAge75To79 to
+  IncidencesAllAges) are read as rows of an Age column when a question names
+  ages, so "aged 75 or over" adds up those bands.
+- "sea level" names MSL, mean sea level; "since records began in 1856" is
+  from 1856; a closing comparison ("three times the long-run pace") fails a
+  wrong number but never verifies a right one; words of a table's name that
+  name a column stay in the claim.
+- Notes printed below a table ("Last updated: ...") are left out, with a
+  note; "personal income" names "Personal income (millions of dollars)", a
+  value in sentence case, not "Per capita personal income"; "deaths
+  registered" leaves no word out; "per year" never divides by a column of
+  years.
+- "Number Of Trees" counts trees, and trees_in_camden.csv's rows are trees.
+  Such a count is 1 on most rows; n_cats, above 1 on most rows of
+  cats_uk_reference.csv, counts each cat's household, so "how many cats"
+  still counts the rows there.
+- "how many drivers" in a table whose one column of counts is Drivers adds
+  them up (19,543,658 in Texas in 2024), with no rows of totals needed.
+  Before, it was refused as a question about a measurement.
+- A claimed total that names no year is not failed by the total over every
+  year when one year's total fits it: "California recorded about 5,000
+  traffic deaths" over 1982 to 1988 gives 35,315 in all and 5,020 in 1984,
+  so ADA asks which year is meant. "In all", "altogether" or a named year
+  is checked as said.
+- Fixed a wrong verdict: "rose by about 1 a year" over a single year was
+  checked against a plain average. A change each year needs a slope over
+  time, or the claim is refused; "per year" never divides by a column of
+  years.
+- Age bands written "[70-80)" (70 to 79) or "06-11 Months" (age 0) are read
+  as ages, and "Americans under 18" or "women over 65" bound the age as
+  "people under 18" does.
+- An amount of money ("valued at almost £1 billion") is never checked
+  against a count of things.
+- "per 1,000 inhabitants" in a claim is read as the base the table already
+  gives its figures in ("Passenger cars - per thousand inhabitants"), and
+  "Germany had about 590 cars" is checked against that figure, never against
+  a count of rows; a rate per thousand is never added up over rows.
+- A highest, lowest or total over every row the claim keeps that already
+  falls short of the claim fails it, whatever words were left out, since
+  they could only keep fewer rows ("topped 8,000 vehicles an hour" against a
+  busiest hour of 7,280); a left-out span of time longer than a row keeps
+  the claim open.
+- Digits after a letter and a hyphen ("I-94") are a name, not a number.
+- Parts of a whole kept in columns that add up to it (Good Days to
+  Hazardous Days beside Days with AQI; the methods of travel beside the
+  census total) are read as rows of a Kind column when a question asks for
+  a share of one, so "good on 75% of the days" is the good days over all
+  days, added up over the rows; "across US counties" is every row, not each
+  county.
+- "Air quality was good on 75% of the days", "Air quality in Maricopa County
+  was good on 8.8% of days" and "Maricopa County had good air on fewer than
+  one day in ten" are shares of the days; "one day in ten" is 10% of days;
+  ", home to Phoenix," says what a place is.
+- Fixed a wrong verdict: on a small table, "Number of residents" with a
+  different count on every row was read as an id and counted as distinct
+  values. A column named "Number of ..." holds counts.
+- Fixed a wrong answer on a table of deaths by age (CDC): "total COVID-19
+  Deaths under 18" was read as the rows with fewer than 18 deaths. Deaths,
+  cases and admissions under an age are of people that age, and "0-05
+  Months" beside "06-11 Months" are both age 0, so "under 18" keeps every
+  age below 18.
+- "died of COVID-19" names the column "COVID-19 Deaths"; "what share of
+  COVID-19 Deaths were 65 or older" adds up the deaths of those ages over
+  all of them, for a column whose name says it counts (a plural or "count";
+  Day, a day of the month, is never added up); "between January 2020 and late June 2023" is no filter when
+  every row covers that period (Start Date and End Date the same on every
+  row), and any other span is still refused.
+- A claim whose word names two columns of numbers alike ("the deaths" for
+  Total deaths and COVID-19 Deaths) gets `ambiguous_intent` when the two
+  give different verdicts, with both readings.
+- "COVID-19 was involved in nearly one in ten deaths" is the total of
+  COVID-19 Deaths over the total of Total deaths, a column of counts that
+  never exceeds the total of its kind on a row being a part of it; "nearly
+  one in ten" stands for 9% to 10%, not 0% to 10%.
+- "the EU" in capitals names "European Union - 27 countries (from 2020)",
+  the one value whose words before a dash spell it, as "the UK" names
+  "United Kingdom"; in lower case, or with two such values, it names none.
+- A word inside a web address ("map" in ".../Domus-augustana-map.png") names
+  no value, and "on the map" says where the rows are, as "in the dataset"
+  does.
+- In a table of ONS geography codes (E06000001, W06000015), "Welsh workers"
+  are the rows whose code starts with W and "England and Wales" is every row
+  when each code starts with E or W; "drove to work" names "Driving a car or
+  van", the one part whose first word it is.
+- Fixed a wrong verdict: "Texas had more than 25 million drivers" against
+  17.8 million was verified, reading "million drivers" as the unit Drivers
+  is recorded in, since 17.8 million millions is more than 25. Only a claim
+  bounded at both ends ("about 37,528 million tonnes") is read that way.
+- "Texans", "Ohioan" and the other names for the people of a US state pick
+  that state's rows, also after a number ("More than 20 million Texans").
+- Fixed lost rows: a column of classes such as "3 ROOM", "4 ROOM" and
+  "EXECUTIVE" (Singapore's flat types) was read as numbers, leaving the
+  4,194 Executive flats blank. A word with no number on 1% of a column's
+  cells or more makes it a column of classes.
+- "four-room flats" names flat_type = 4 ROOM, a number word written in
+  digits, and "resales" counts the resales rather than naming resale_price:
+  the plural of a name's first word counts the things the rest of the name
+  measures, as "orders" does beside order_value. The first word of several
+  names ("candidates" for Candidate family name and Candidate given name)
+  still asks which column is meant.
+- "founded before the common era" is year below 0 in a table that writes
+  those years as negative numbers, and a 0/1 flag such as year_approx is no
+  column of years.
+
 - Fixed wrong answers on published tables of counts (CSO, StatCan): each
   row is a cell of counts, so a count adds up the column of counts (`VALUE`)
   instead of counting rows, a change or total adds it up unless the question
@@ -486,6 +606,9 @@
 
 ### Answers
 
+- A grouping split at its quartiles with one row in scope ("average infant
+  mortality by life expectancy for Japan") says the rows cannot be split
+  into groups. Before, the empty grouping raised an IndexError.
 - A share of a group is of that group: "what percentage of Adelie are
   female" gives 50% of the Adelie, not 21.9% of all penguins, and "what share
   of women survived" 73.2% of the women. Before, the base was every row,
