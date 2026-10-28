@@ -34,6 +34,18 @@
 
 ### Reading claims and questions
 
+- Fixed wrong answers on NOAA's storm events: the unit column ADA adds for
+  `DAMAGE_PROPERTY` ("0.00K", "1.5M") was taken as the unit of the whole
+  table, so every answer covered only the 54,231 rows in K of 69,801. A unit
+  column read off another column no longer splits the table, and the
+  fatalities file now joins the details file on `EVENT_ID` (every key found).
+- "the tracked frogs" and "the located earthquakes" pick no rows: words for
+  how the rows were gathered are read as grammar before a noun, as
+  "recorded" is; "how many cats were tracked" is still refused.
+- "the median salary" names `Annual Salary Median` rather than offering it
+  beside `Annual Salary Avg`, and "earned" in "nurses earned a median salary
+  of about $33,000" says what a column of money holds.
+
 - Fixed a wrong verdict: "US milk production rose 46%, from 147.7 billion
   pounds in 1990 to 215.5 billion in 2017" failed because the change was read
   as one in the states' average, whose ends are 2.95 and 4.31 billion. Ends

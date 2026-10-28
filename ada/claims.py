@@ -3033,6 +3033,19 @@ def _check(
                 )
             assumptions.append(f"Read {_quoted(units)} as the unit the measure is in; a change in percent is "
                                "the same in any unit.")
+    measure_values = analysis.frame[measure] if measure in analysis.frame.columns else None
+    spent = [phrase for phrase in left_out if phrase.lower() in VERB_NOUNS] if (
+        measure_values is not None and _money_column(str(measure), measure_values)
+    ) else []
+    if spent:
+        # "nurses earned a median salary of $33,150": a verb of money says what a money column holds.
+        left_out = [phrase for phrase in left_out if phrase not in spent]
+        assumptions = [item for item in assumptions if not item.startswith(LEFT_OUT_NOTE)]
+        if left_out:
+            assumptions.append(
+                f"{LEFT_OUT_NOTE} {_quoted(left_out)}, which name no column or value in the table."
+            )
+        assumptions.append(f"Read {_quoted(spent)} as what {measure} holds, a sum of money.")
     named = [phrase for phrase in left_out if _names_table(phrase, _table_name_words(source))]
     if named:
         # "Marvel's characters" in marvel-wikia-data.csv: the words name the whole table, so leaving

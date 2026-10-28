@@ -1015,6 +1015,18 @@ class LongTableTests(unittest.TestCase):
         note = next(note for note in roles.notes if note.startswith("Each row holds"))
         self.assertIn("3 different units", note)
 
+    def test_the_units_of_another_column_do_not_split_the_table(self):
+        # Storm damage written "1.50K" and "2.00M" gets a column of its units; the measure is the duration.
+        frame = pd.DataFrame({
+            "event": [f"E{index}" for index in range(40)],
+            "duration_hours": [float(index % 7 + 1) for index in range(40)],
+            "damage": ["1.50K", "2.00K", "0.50M", "3.00K", None] * 8,
+        })
+        analysis = analyze(frame)
+        self.assertIn("damage unit", analysis.frame.columns)
+        self.assertEqual(analysis.roles.table_shape, "flat")
+        self.assertEqual(len(analysis.frame), 40)
+
     def test_values_on_very_different_scales_make_a_long_table_without_units(self):
         roles = detect_roles(self.frame.drop(columns=["determinand.unit.label"]))
 

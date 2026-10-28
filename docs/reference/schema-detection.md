@@ -177,7 +177,9 @@ in µS/cm. A column qualifies as the parameter when its last word (after `label`
 `metric` or `property`, and either a unit column (`unit`, `units`, `uom`) holds
 several units or the result's typical size differs tenfold or more between
 parameters. A unit column holding several units, with no parameter column, is
-used as the parameter. A table of counts (a `Freq` column, see [Ask
+used as the parameter. The unit column ADA adds for another column's readings
+(`DAMAGE_PROPERTY unit` beside "0.00K" and "1.5M") says nothing of how the
+result is recorded, so it never splits the table. A table of counts (a `Freq` column, see [Ask
 ADA](ask-ada.md)) is never a long table: its rows count the cases with their
 values, so Accident's `result` (Died, Injured) is a category, not what `Freq`
 measures.
