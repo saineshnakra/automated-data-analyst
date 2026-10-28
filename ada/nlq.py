@@ -343,6 +343,12 @@ SYMBOL_WORDS = (
 # "average Ca for Top" filters to the contour "Top", "top 2 contours" ranks.
 # Words that point at rows rather than name them; on their own they are a value only typed as the data
 # spell it.
+# Words of degree and size, which say how much rather than which: alone, they match only a value spelled so.
+DEGREE_WORDS = frozenset({
+    "low", "lower", "lowest", "high", "higher", "highest", "record", "new", "top", "big", "bigger", "small",
+    "smaller", "large", "larger", "great", "old", "young", "good", "best", "worst", "poor", "rich", "major",
+    "minor",
+})
 DETERMINERS = frozenset({
     "the", "a", "an", "other", "others", "another", "any", "all", "some", "this", "that", "these", "those",
     "same", "such", "each", "every",
@@ -1697,6 +1703,19 @@ def _claim_values(
                         continue
                 elif not exact_only and sum(len(word) for word in ordinary) < 3:
                     continue
+                elif size == 1 and words[0] in DEGREE_WORDS:
+                    # "a record low" is no part of "Low-income countries": a word of degree names a value
+                    # spelled just so, or one whose other words follow it ("large airports", large_airport).
+                    found, exact = _values_named(words, vocabulary, exact_only=True)
+                    if not found:
+                        following = {
+                            form for _, _, word in run[index + 1:index + 4] for form in _word_variants(word)
+                        }
+                        found, exact = _values_named(words, vocabulary, exact_only=False)
+                        found = [value for value in found
+                                 if all(part in following for part in value.words if part != words[0])]
+                    if not found:
+                        continue
                 elif not exact_only and all(map(_is_number, words)):
                     # A number inside a longer value ("2020" in a race's web address) is left
                     # for the year, a condition or a count.
@@ -8713,9 +8732,11 @@ def _execute_growth(
     assert roles.date is not None
     measure = plan.measure
     scoped_roles = _scoped_roles(roles, measure, plan.dimension)
-    # Two years named ("from 2023 to 2024") are compared as whole years, for each group too.
+    # Two years named ("from 2023 to 2024") are compared as whole years, for each group too; so is the one
+    # year a change runs from ("halved since 1950"), against the latest.
     named = _named_years(plan)
-    grain = plan.grain or ("Y" if named else None)
+    since = _since_year(plan) if not named else None
+    grain = plan.grain or ("Y" if named or since else None)
     series = build_trend(working, scoped_roles, frequency=grain)
     trend = series.frame
     if len(trend) < 2:
@@ -8726,6 +8747,8 @@ def _execute_growth(
             calculation=f"growth needs at least 2 periods{scope}",
         )
     previous_period, current_period = trend.iloc[-2]["Period"], trend.iloc[-1]["Period"]
+    if since and trend.iloc[0]["Period"].year == since:
+        named = (since, int(trend.iloc[-1]["Period"].year))
     spanned = bool(named) and (trend.iloc[0]["Period"].year, trend.iloc[-1]["Period"].year) == named
     if spanned:
         previous_period = trend.iloc[0]["Period"]
@@ -8877,6 +8900,15 @@ def _named_years(plan: QueryPlan) -> tuple[int, int] | None:
     if low is None or high is None or not float(low).is_integer() or not float(high).is_integer():
         return None
     return int(low), int(high)
+
+
+def _since_year(plan: QueryPlan) -> int | None:
+    """The year a range starts from when it names no end: 1950 for "since 1950"."""
+    years = [item for item in plan.conditions if item.part == "year"]
+    low = [item.value for item in years if item.operator == ">="]
+    if len(years) != 1 or not low or not float(low[0]).is_integer():
+        return None
+    return int(low[0])
 
 
 def _ranked_move(change: float, ascending: bool) -> str:

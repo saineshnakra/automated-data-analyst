@@ -963,7 +963,8 @@ Other behaviour:
   those two years as whole years, not the last two periods in the range, and
   segments ranked by their change do the same. A change in one year ("how did
   rescues change in 2020") is that year against the year before, not the last
-  two months of the year. A change in "the number of" rows with no measure
+  two months of the year, and a change since a year ("since 1950") is that year
+  against the latest. A change in "the number of" rows with no measure
   named is a change in the row count. "rose", "risen" and
   "climbed" ask for a change as "grew" and "fell" do.
 - Growth by segment ranks amounts by percent change. It leaves out segments

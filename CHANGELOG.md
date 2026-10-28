@@ -34,6 +34,13 @@
 
 ### Reading claims and questions
 
+- Fixed a wrong verdict: "South Korea's fertility rate fell to a record low of
+  0.72 in 2023" failed because "low" picked the value Low-income countries; a
+  word of degree now picks only a value spelled so. The record low is checked
+  as the level, the fall and the lowest of the years up to it.
+- A change "since 1950" compares 1950 with the latest year, not the last two
+  years; a multiple or fraction of a rate ("halved") is in percent of the first
+  value, and any other percent of a rate is ambiguous.
 - Fixed wrong answers on DC's crime incidents: the `ANC` codes ("7D", "6C")
   were read as readings in units, and every answer then covered only the 6,693
   rows "in unit C" of 29,304. Whole numbers glued to one of several letters now

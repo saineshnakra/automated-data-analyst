@@ -246,10 +246,20 @@ When the only number is the level a change reached ("rose to 61 in 2020",
 the value that year, and then the change against the year before: it fails
 when the value did not move the way the verb says. Without one year to set
 against the year before ("rose to 61"), neither is shown and the claim gives
-`missing_context`. "rose over 30%" is the size of the rise, not a level. The
+`missing_context`. "fell to a record low of 0.72 in 2023" is such a level, and
+the year must also give the lowest value of the years up to it (a record high,
+the highest). "rose over 30%" is the size of the rise, not a level. The
 plural before the verb names what changed: "Fox rescues nearly doubled" is the
 number of rescues when no column is called rescues. A fraction before a verb needs no "of": "nearly half went on to
 college" is read as "nearly half of" is.
+
+A change in percent of a rate (a column ADA gives changes of in points) is
+taken in percent of the first value when the claim states a multiple or a
+fraction ("halved", "fell by a third"). Any other percent ("fell by 37%") may
+be either, so the claim gives `ambiguous_intent` with both numbers. A word of
+degree ("low", "high", "record", "new") picks a value only when the value is
+spelled just so, or when the value's other words follow it: "a record low" is
+not "Low-income countries", while "large airports" is still `large_airport`.
 
 A number that names rather than counts is part of the question: a rank ("No.
 1"), a chart or index ("the Hot 100", "the FTSE 100"), a day with no year

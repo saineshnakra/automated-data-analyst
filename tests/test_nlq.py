@@ -3665,6 +3665,17 @@ class DaysAndPluralRanksTests(unittest.TestCase):
         self.assertIn("showing 1", one.calculation)
 
 
+class DegreeWordTests(unittest.TestCase):
+    def test_a_word_of_degree_picks_a_value_spelled_so_or_followed_by_its_other_words(self):
+        frame = pd.DataFrame({"Entity": ["Korea", "Low-income countries"] * 2, "rate": [0.7, 4.5, 0.8, 4.6],
+                              "type": ["large_airport", "small_airport", "large_airport", "heliport"]})
+        roles = detect_roles(frame)
+        reading = nlq._read_question("average rate for Korea at a record low", frame, roles)
+        self.assertNotIn("Low-income", str(reading.filters))
+        answer = answer_question("how many rows with large airport", frame, roles)
+        self.assertEqual(answer.value, 2)
+
+
 class StateAndNounTests(unittest.TestCase):
     def test_the_most_of_a_value_counts_rows_by_period(self):
         days = ["2020-01-01", "2020-01-01", "2020-01-02"]

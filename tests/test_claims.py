@@ -1393,6 +1393,36 @@ class DateColumnTests(unittest.TestCase):
         self.assertNotEqual(check.reason, "failed_check", check.message)
 
 
+class RecordsAndRatesTests(unittest.TestCase):
+    def fertility(self) -> pd.DataFrame:
+        years = list(range(1950, 1956))
+        rows = [{"Entity": "Korea", "Year": year, "Fertility rate": rate}
+                for year, rate in zip(years, [6.0, 5.0, 4.0, 3.0, 2.0, 2.5], strict=True)]
+        rows += [{"Entity": "Low-income countries", "Year": year, "Fertility rate": 6.0} for year in years]
+        return pd.DataFrame(rows)
+
+    def test_a_record_low_is_the_level_with_the_years_up_to_it(self):
+        frame = self.fertility()
+        check = ada.check_claim(frame, "Korea's fertility rate fell to a record low of 2 in 1954.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("lowest", " ".join(check.assumptions))
+        self.assertNotIn("Low-income", check.message)
+        # 3.0 in 1953 was a record low then, whatever came after.
+        then = ada.check_claim(frame, "Korea's fertility rate fell to a record low of 3 in 1953.")
+        self.assertTrue(then.verified, then.message)
+        wrong = ada.check_claim(frame, "Korea's fertility rate rose to a record high of 2.5 in 1955.")
+        self.assertEqual(wrong.reason, "failed_check")
+
+    def test_a_change_since_a_year_and_a_multiple_of_a_rate(self):
+        frame = self.fertility()
+        # 6.0 in 1950 to 2.5 in 1955: a fall of 58%, or of 3.5 points.
+        check = ada.check_claim(frame, "Korea's fertility rate has more than halved since 1950.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("1955 − 1950", check.message)
+        plain = ada.check_claim(frame, "Korea's fertility rate fell by about 58% since 1950.")
+        self.assertEqual(plain.reason, "ambiguous_intent", plain.message)
+
+
 class RateClaimTests(unittest.TestCase):
     def test_a_rate_for_every_hundred_is_checked_as_totals(self):
         frame = pd.DataFrame({"District": [1, 1, 1, 1, 2, 2, 2, 2],
