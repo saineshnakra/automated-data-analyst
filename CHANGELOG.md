@@ -34,6 +34,151 @@
 
 ### Reading claims and questions
 
+- "More than 300,000 migrants arrived in New Zealand in 2023" in Stats NZ's
+  migration estimates adds up estimate for direction Arrivals at the TOTAL
+  sex and age: 228,001. "arrived" names Arrivals and "departed" Departures;
+  a plural that names nothing else ("migrants") in a table of counts with
+  total levels adds up its count; and standard_error, beside estimate, is
+  the uncertainty of the count, not a second count.
+- A level called a record in a year ("Net migration hit a record of about
+  126,000 in 2023") must be the highest of the years up to it, or the lowest
+  for "a record low" or a record it "fell to"; when an earlier year holds
+  it, the claim gets `failed_check` naming that year. A record in the
+  table's first year has nothing before it, and gets `missing_context`.
+- A date the figures were published on (month_of_release) is no longer
+  tried as another reading of the claim's year.
+- "March was the busiest month in 2015, with 2,259 tickets" counts March's
+  rows and checks that no month of 2015 has more. "The busiest day of the
+  year was Thursday 12 March 2015, when 159 tickets were written" is read
+  like "12 March 2015 was the busiest day".
+- A weekday that is not the date's own ("Friday 12 March 2015", a Thursday)
+  fails the claim.
+- "which month had the most tickets" counts the tickets, as "how many
+  tickets" does, and a question that only names a time ("rows in March
+  2015") counts the rows in it.
+- Year and Month make the dates when the table also holds a time of day with
+  no date (a crash's Time), so "in 2022" picks 2022's rows; a time of day is
+  never tried as another reading of a claim's year.
+- Times of day: "before 10 am", "after 6:30 pm" and "between 22:00 and
+  23:00" keep rows by the time on the date column, or on the one column of
+  times with no date. A time is never the number a claim states.
+- "Most tickets are written before 10 am" is more than half of them. With a
+  number of its own ("Most of the 20,071 tickets cost $55") "most" is left
+  as it is.
+- Australian states: "Queensland" keeps State = Qld in a column of the short
+  names (NSW, Vic, Qld and the rest). An adjective of nationality
+  ("Australian roads") is not a territory named with it.
+- "Queensland had the most deaths in 2022, with 297, more than New South
+  Wales" and "Queensland's roads were the deadliest in 2022, with 297
+  deaths" rank the states that year, not Queensland's years.
+- Money: "cents" and "dollars" are units, a unit column such as UNITS gives a
+  column's unit for the rows a claim picks, and an amount of money is never
+  a count of rows (see Units and scale in the claims reference). "price"
+  names a value in money.
+- "eggs in New Zealand" keeps the series for New Zealand, not "Overseas
+  accommodation prepaid in New Zealand", a thing there; "a dozen eggs" names
+  "Eggs, dozen".
+- A change "between September 2016 and September 2026" compares the two
+  months, and "over the past ten years" is the ten years to the table's
+  latest date. When the rows do not reach both months, no change is given.
+  "since January 2022" keeps the dates from 1 January 2022 on, and a change
+  since it compares January 2022 with the latest month.
+- "written" and "issued" after what is counted say how the rows came about.
+- "Ohio's Sherrod Brown raised about $96.5 million, the most of any Senate
+  candidate" makes the same total for every Senate candidate and holds only
+  if Brown's is the highest; "Hakeem Jeffries raised more than any other
+  House candidate, almost $23 million" is read the same way. Before, a
+  closing rank left the claim at `missing_context`.
+- "Treasury bonds still carried an average interest rate above 6%" and
+  "TIPS paid an average interest rate of 1.1%" had that rate: before a rate,
+  "still carried" and "paid" read as "had", as a rate is no payment; and
+  "interest rate" names
+  avg_interest_rate_amt, whose "amt" only says it is an amount, so a wrong
+  rate fails rather than getting `missing_context`.
+- "raised" names receipts, and a word that names a total and the rest of it
+  (Total_Receipt and Other_Receipts) names the total. "House", "Senate" and
+  "President" keep the letter a column of office codes writes (H, S, P).
+- "About 2,664 agencies began reporting to NIBRS in 2021": a verb of
+  beginning before a word of a start date's name ("nibrs" of
+  nibrs_start_date) names that date. "More agencies began reporting in 2021
+  than in any other year: 2,664" is a peak over the years.
+- Fixed a wrong verdict: a peak over the years counted the rows with no date
+  as a year of their own, so 4,061 agencies yet to start NIBRS outnumbered
+  2021's 2,664. Rows with no date are in no year.
+- "There were 5,034 film permits in 2025" in Film_Permits.csv: the table's
+  own name before its rows' noun names every row, so "film" picks no rows
+  though Category holds Film.
+- A word that fits part of a column's name ("roads" in Road User) no longer
+  turns "2,000 people died" into a count of Road User values.
+- "Eviction notices in San Francisco fell to 778 in 2020, the fewest of any
+  year since records began in 1997": the file's noun for its rows at the
+  head of a claim counts them for a level as for a change, also before
+  "in", a participle or a relative word ("Terry stops in Seattle fell",
+  "Notices citing non-payment rose"); "the fewest of any year" is a record
+  low set against every year; "citing" before a yes/no column keeps its
+  yes rows. Before, the claims guessed a column.
+- "Women make up about a third of the artists" in MoMA's Artists.csv:
+  "women" keeps Gender = female, though the column also holds labels such
+  as "transgender woman" once; other labels on under 1% of the answered rows
+  leave it a column of sexes.
+- A dash, "?" or "." among Y and N (Seattle's Frisk Flag: Y, N or "-") is a
+  missing answer, so the column is a yes/no column and "share of stops
+  frisked" is 17,280 of the 69,121 stops with an answer.
+- Fixed a crash: a share said as "two men in five" raised TypeError, because
+  a list of plurals and a map of singulars to plurals shared one name.
+- Fixed a wrong table shape: a dozen columns numbering districts and
+  neighbourhoods from 1 (Supervisor District 1 to 11) made San Francisco's
+  eviction notices a matrix of counts, measured by their row mean. A
+  column numbering a few categories from 1 is no count.
+- A change that agrees with ends that do not is made again by each other
+  date column and, when rows are counted and the ID repeats, with each ID
+  once; when one gives the change and both ends, the claim gets
+  `ambiguous_intent` ("Terry stops ... from 8,798 to 3,651": 3,670 rows by
+  Occurred Date, 3,651 stops by Reported Date).
+- A date only some rows have (Constraints Date, on 9% of the notices) or
+  the date the data are as of (data_as_of, data_loaded_at) is no longer
+  tried as another reading of a claim's year.
+- "The number of girls named Sophia fell by about a third between 2015 and
+  2021, from 525 to 342" in NYC's baby names: a change between two years
+  of a column of whole years (Year of Birth) compares those years when the
+  table has no date, and "the number of girls" or "babies" adds up the one
+  column named only as a count (Count, Freq or N) when no ID names each
+  row once. Before, it was the share of rows and failed.
+
+### Wrong verdicts removed
+
+- A claim false under ADA's reading but true under another the words allow
+  is no longer failed. A name several places share (Lincoln County in four
+  states, Washington state and the District of Columbia), each occasion of a
+  repeated design (ages 8 to 14 of each child), and another column named for
+  the same thing (Deaths and Age-adjusted Death Rate) are tried first; when
+  one agrees the claim gets `ambiguous_intent` or `missing_context`. A
+  failure through a column ADA picked because nothing else fit gets
+  `missing_context`, unless that column is the table's date and only places
+  the year ("Sweden's 2022 election"), and the things counted after a number
+  are never averaged from a column named for them: "Sudan had about 1.1
+  million refugees" adds up refugees in each reading of Sudan (hosted 1,097,128,
+  from Sudan 836,756). "casualties" is also tried as the dead alone, and a
+  sum over a column holding Net beside Arrivals and Departures, with none
+  named, is made for each of them.
+  On sets 6 to 34 this removes 16 of the 17 failed checks of claims that
+  hold under some reading.
+- A word said of two values ("neutered" of Neutered and Spayed, "no hair"
+  of No Hair and Bald) is checked with both: when the verdict rests on which
+  is meant, the claim gets `ambiguous_intent`. "About 2,000 Marvel characters
+  have no hair" failed on No Hair's 1,176; with Bald it is 2,014.
+- "The average time in space was about 1,050 hours" in the astronauts table
+  read total_eva_hrs as the only column in hours and failed. hours_mission
+  and total_hrs_sum hold hours too, so no one column is guessed and the
+  claim gets `missing_context`.
+- Rows repeated exactly: NYC's baby names give every 2014 row twice, so a
+  sum over 2014 counts each baby twice (1,156 girls named Sophia, not 578).
+  A claim on a table whose rows each hold a count, with such rows, is
+  checked with each counted once too; when the two give different verdicts
+  it gets `ambiguous_intent` with both numbers, and when only the number
+  moves the check says so. Rows that are records may repeat as separate
+  records, so a table of them is checked as it is.
+
 - Temperatures: "°C" and "°F" are units, and "Maximum Temperature (C)" is
   in degrees Celsius. "Edmonton International fell to -46.6 °C" is the
   lowest Minimum Temperature (C) at that station, "Blatchford hit 37 °C"
@@ -58,6 +203,10 @@
   again in every time zone from UTC-12 to UTC+14; when some zone turns the
   verdict ("110 incidents on 25 March 2026": 101 in UTC, 110 in Calgary's
   time), it gets `missing_context` with the range the zones give.
+- Fixed lost dates: Stats NZ writes months as numbers ("2006.10" for October
+  2006), which read as 2006.1, so its price indexes had no date column. A
+  column named for a period, month or date whose values are a year and a
+  month after the point is read as monthly dates.
 - Fixed wrong totals: in Stats NZ's migration table the date was
   month_of_release, when each estimate was published, rather than
   year_month, the month it describes, so "net migration in 2023" gave

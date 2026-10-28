@@ -373,7 +373,18 @@ def _unstated(column: str, distinct: _Distinct) -> tuple[np.ndarray, list[str]]:
     detected = _not_detected(distinct)
     placeholders = _flags(text.isin(PLACEHOLDER_LABELS))
     bare = _bare_na(distinct) & ~stated & ~detected & ~placeholders
+    marks = _flags(text.isin(BLANK_MARKS))
+    given = ~(marks | stated | detected | placeholders | bare) & distinct.values.notna().to_numpy()
+    answers = set(text[given])
+    if not (len(answers) == 2 and answers & YES_ANSWERS and answers & NO_ANSWERS):
+        marks = np.zeros_like(marks)
     notes = []
+    if marks.any():
+        # Seattle's Terry stops give Frisk Flag as Y, N or "-".
+        shown, count = _marked(distinct, marks)
+        noun, verb = ("cells", "were") if count > 1 else ("cell", "was")
+        notes.append(f'{count:,} {noun} in {column} held {" or ".join(f"{mark!r}" for mark in shown)} and '
+                     f"{verb} read as missing: the column's other values are yes and no.")
     if bare.any():
         count = int(distinct.counts[bare].sum())
         noun, verb = ("cells", "were") if count > 1 else ("cell", "was")
@@ -400,9 +411,13 @@ def _unstated(column: str, distinct: _Distinct) -> tuple[np.ndarray, list[str]]:
             f"{_missing_marker_note(column, shown, count)} {labels} for a value nobody could give, "
             "not a group of its own."
         )
-    return stated | detected | placeholders | bare, notes
+    return stated | detected | placeholders | bare | marks, notes
 
 
+# Marks for no answer in a column of yes and no: "Y", "N" and "-".
+BLANK_MARKS = frozenset({"-", "--", "—", "?", "."})
+YES_ANSWERS = frozenset({"yes", "y", "true"})
+NO_ANSWERS = frozenset({"no", "n", "false"})
 # A label this short, or in capitals up to CODE_LENGTH long, is a code ("EU", "APAC", "No").
 SHORT_LABEL = 3
 CODE_LENGTH = 5
@@ -1233,12 +1248,13 @@ def _single_years(column: str, series: pd.Series) -> pd.Series | None:
 
 
 def _year_columns(
-    frame: pd.DataFrame, requested: str | None
+    frame: pd.DataFrame, requested: str | None, clock_columns: list[str]
 ) -> tuple[str, str | None, dict[str, str]] | None:
     """Choose the year column, and the month and finer columns to go with it, to build dates from.
 
     A column the caller asked for as the date is used alone. Otherwise one is
-    found only when the table has no date column: a year-named column of whole
+    found only when the table has no date column (a column of times of day with
+    no date, ``clock_columns``, is not one): a year-named column of whole
     years in DETECTED_YEARS with at least two distinct values. A month-named
     column readable for every row with a year is paired with it, so monthly
     rows get monthly dates. Then a day, an hour, a minute and a second, by
@@ -1248,7 +1264,9 @@ def _year_columns(
     """
     if requested in frame.columns and _whole_years(frame[requested], REQUESTED_YEARS):
         return requested, None, {}
-    if any(is_datetime64_any_dtype(frame[column]) for column in frame.columns):
+    if any(
+        is_datetime64_any_dtype(frame[column]) and column not in clock_columns for column in frame.columns
+    ):
         return None
     candidates = [
         column
@@ -1870,6 +1888,33 @@ def _unread_note(column: str, unread: pd.Series) -> str:
     )
 
 
+# Name words of a column that may hold months written as numbers: "Period" in Stats NZ's files.
+YEAR_MONTH_NAMES = frozenset({"period", "month", "yearmonth", "date"})
+
+
+def _year_month_numbers(frame: pd.DataFrame) -> list[str]:
+    """Numeric columns named for a period whose values are a year and a month after the point, 1960.01 to
+    2026.12, with at least two months."""
+    found = []
+    for column in frame.columns:
+        series = frame[column]
+        if not is_numeric_dtype(series) or is_bool_dtype(series):
+            continue
+        if not set(normalized_name(str(column)).split()) & YEAR_MONTH_NAMES:
+            continue
+        values = series.dropna().astype("float64")
+        if values.empty:
+            continue
+        hundredths = values * 100
+        months = np.round(hundredths - np.floor(values) * 100)
+        whole = bool((np.abs(hundredths - np.round(hundredths)) < 1e-6).all())
+        years = np.floor(values)
+        if (whole and bool(((months >= 1) & (months <= 12)).all()) and bool(years.between(1800, 2100).all())
+                and months.nunique() >= 2):
+            found.append(str(column))
+    return found
+
+
 def clean_dataframe(
     dataframe: pd.DataFrame, *, drop_duplicates: bool = False, date: str | None = None
 ) -> tuple[pd.DataFrame, CleaningReport]:
@@ -2180,8 +2225,20 @@ def clean_dataframe(
                 f"column, {name}, and the {spans:,} rows with a span left out of it."
             )
 
+    # Stats NZ writes a month as a number, "2006.10" for October 2006, which reads as 2006.1.
+    for column in _year_month_numbers(cleaned):
+        values = cleaned[column].astype("float64")
+        years = np.floor(values)
+        months = np.round((values - years) * 100)
+        cleaned[column] = pd.to_datetime(
+            pd.DataFrame({"year": years, "month": months, "day": 1}), errors="coerce"
+        )
+        datetime_columns_inferred += 1
+        notes.append(f"{column} holds months written as numbers, 2006.10 for October 2006, so it was read as "
+                     "dates on the first day of each month.")
+
     # Runs after inference, so year columns held as text have become numbers.
-    year_columns = _year_columns(cleaned, None if elapsed else date)
+    year_columns = _year_columns(cleaned, None if elapsed else date, clock_columns)
     if year_columns:
         year, month, finer = year_columns
         dates = _built_dates(cleaned, year, month, finer)

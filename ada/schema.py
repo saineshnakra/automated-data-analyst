@@ -959,6 +959,24 @@ def _scale_items(dataframe: pd.DataFrame, numeric: list[str]) -> set[str]:
     return items
 
 
+def _numbers_categories(series: pd.Series) -> bool:
+    """Whether a column numbers a few categories from 1 on, each on many rows: San Francisco's eviction
+    notices give Supervisor District 1 to 11 and Analysis Neighborhoods 1 to 41. Counts start from 0 or spread
+    wider."""
+    values = series.dropna()
+    distinct = values.nunique()
+    if distinct < 3 or distinct > MAX_NUMBERED_CATEGORIES or len(values) < MIN_ROWS_PER_CATEGORY * distinct:
+        return False
+    return bool(values.min() == 1 and values.max() <= NUMBERED_SPREAD * distinct and (values % 1 == 0).all())
+
+
+# A column numbering categories holds at most this many, each on this many rows on average, numbered from 1 to
+# no more than this many times their count.
+MAX_NUMBERED_CATEGORIES = 200
+MIN_ROWS_PER_CATEGORY = 5
+NUMBERED_SPREAD = 1.1
+
+
 def _counts_of_things(series: pd.Series) -> bool:
     values = series.dropna()
     return not values.empty and bool((values >= 0).all() and (values % 1 == 0).all())
@@ -1247,6 +1265,7 @@ def _count_matrix_columns(dataframe: pd.DataFrame, numeric: list[str]) -> list[s
         if not is_bool_dtype(dataframe[column])
         and _counts_of_things(_sample(dataframe[column]))
         and _sample(dataframe[column]).nunique() > 2
+        and not _numbers_categories(dataframe[column])
     ]
     if len(counts) < MIN_COUNT_MATRIX_COLUMNS or len(counts) < MATRIX_SHARE * len(numeric):
         return []

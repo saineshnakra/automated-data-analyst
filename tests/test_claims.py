@@ -8,13 +8,31 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from table_helpers import air_quality, births, commuting, covid_deaths, deaths, migration, registry
+from table_helpers import (
+    air_quality,
+    baby_names,
+    births,
+    commuting,
+    covid_deaths,
+    deaths,
+    eviction_notices,
+    food_prices,
+    migration,
+    migration_estimates,
+    parking_tickets,
+    registry,
+    road_deaths,
+)
 
 import ada
 from ada.claims import (
+    NOUN_IN_FRACTION,
     NUMBER_PATTERN,
     REASONS,
+    ClaimCheck,
     _based,
+    _guessed_failure,
+    _noun_share,
     claimed_number,
     column_unit,
     read_claim,
@@ -1096,8 +1114,10 @@ class KindsBoundsAndRanksTests(unittest.TestCase):
         self.assertEqual(wrong.reason, "failed_check")
         self.assertIn("town = Northwood", wrong.message)
         self.assertTrue(ada.check_claim(towns, "Northwood had the best score of any town, at 11.9.").verified)
-        unchecked = ada.check_claim(towns, "Chorleywood's score of 9.4 was the highest of any town.")
-        self.assertEqual(unchecked.reason, "missing_context")
+        # Said after the value, the rank is checked against every town as well.
+        ranked = ada.check_claim(towns, "Chorleywood's score of 9.4 was the highest of any town.")
+        self.assertEqual(ranked.reason, "failed_check")
+        self.assertIn("Northwood", ranked.message)
 
     def test_no_row_fitting_the_words_proves_nothing(self):
         pets = pd.DataFrame({"animal_type": ["dog", "dog", "cat", "cat"],
@@ -1516,8 +1536,8 @@ class CountOfThingsTests(unittest.TestCase):
         cats = pd.DataFrame({"tag_id": [f"t{index}" for index in range(8)],
                              "condition": ["Neutered"] * 3 + ["Spayed"] * 4 + ["Not fixed"],
                              "n_cats": [1, 2, 2, 3, 1, 1, 4, 2]})
-        self.assertTrue(ada.check_claim(cats, "3 of the cats were neutered.").verified)
-        self.assertEqual(ada.check_claim(cats, "5 of the cats were neutered.").reason, "failed_check")
+        self.assertTrue(ada.check_claim(cats, "4 of the cats were spayed.").verified)
+        self.assertEqual(ada.check_claim(cats, "5 of the cats were spayed.").reason, "failed_check")
 
 
 class TotalsOfEndsTests(unittest.TestCase):
@@ -2581,3 +2601,506 @@ class TemperatureRecordClaimTests(unittest.TestCase):
         check = ada.check_claim(self.weather(), "North fell below -40 °C on more than 4 days in 2024.")
         self.assertEqual((check.reason, check.compared), ("failed_check", 3))
         self.assertIn("Minimum Temperature (C) below -40", check.message)
+
+
+class MigrationClaimTests(unittest.TestCase):
+    def test_migrants_arrived_add_up_the_estimates_at_the_total_levels(self):
+        check = ada.check_claim(migration_estimates(), "More than 200,000 migrants arrived in 2023.")
+        self.assertEqual((check.reason, check.compared), ("failed_check", 120_000))
+        check = ada.check_claim(migration_estimates(), "About 120,000 migrants arrived in 2023.")
+        self.assertTrue(check.verified, check.message)
+
+    def test_a_record_year_must_hold_the_record(self):
+        check = ada.check_claim(migration_estimates(), "Net migration hit a record of about 84,000 in 2023.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("highest in 2023", check.assumptions[-1])
+        # 2022 is the table's first year, so there is nothing before it to be a record against.
+        check = ada.check_claim(migration_estimates(), "Net migration hit a record of about 12,000 in 2022.")
+        self.assertEqual(check.reason, "missing_context")
+        self.assertIn("no year before it", check.message)
+
+
+class BusiestPeriodClaimTests(unittest.TestCase):
+    def tickets(self) -> pd.DataFrame:
+        # 6 tickets in January, 9 in March: 3 on each of 12, 13 and 14 March.
+        days = [*pd.date_range("2015-01-05", periods=3)] * 2 + [*pd.date_range("2015-03-12", periods=3)] * 3
+        return pd.DataFrame({"IssueDate": days, "OffenceAmount": [55.0] * len(days)})
+
+    def test_the_busiest_month_must_have_the_most_rows(self):
+        check = ada.check_claim(self.tickets(), "March was the busiest month in 2015, with 9 tickets.")
+        self.assertTrue(check.verified, check.message)
+        check = ada.check_claim(self.tickets(), "January was the busiest month in 2015, with 6 tickets.")
+        self.assertEqual(check.reason, "failed_check")
+        self.assertIn("March has 9", check.message)
+
+    def test_a_weekday_that_is_not_the_dates_own_fails_the_claim(self):
+        claim = "The busiest day of the year was Thursday 12 March 2015, when 3 tickets were written."
+        self.assertTrue(ada.check_claim(self.tickets(), claim).verified)
+        check = ada.check_claim(self.tickets(), claim.replace("Thursday", "Friday"))
+        self.assertEqual(check.reason, "failed_check")
+        self.assertIn("12 March 2015 was a Thursday, not a Friday", check.message)
+
+
+class LeadingGroupPeakClaimTests(unittest.TestCase):
+    def test_the_group_that_leads_is_ranked_against_the_others_that_year(self):
+        # Queensland has the most deaths in 2022 but its own peak is in 2021.
+        claim = "Queensland had the most deaths in 2022, with 6, more than New South Wales."
+        check = ada.check_claim(road_deaths(), claim)
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("State = Qld gives the highest row count of the 8 State values", check.assumptions[-1])
+        check = ada.check_claim(road_deaths(), "Victoria had the most deaths in 2022, with 4.")
+        self.assertEqual(check.reason, "failed_check")
+        self.assertIn("the peak is not at State = Vic: State = Qld gives 6", check.message)
+
+    def test_the_deadliest_place_is_the_one_with_the_most_deaths(self):
+        claim = "Queensland's roads were the deadliest in Australia in 2022, with 6 deaths."
+        self.assertTrue(ada.check_claim(road_deaths(), claim).verified)
+        check = ada.check_claim(road_deaths(), claim.replace("Queensland", "Victoria").replace("6", "4"))
+        self.assertEqual(check.reason, "failed_check")
+
+    def test_a_word_that_fits_a_column_name_does_not_make_people_a_count_of_its_values(self):
+        # "roads" fits Road User, whose 3 values are no count of the people who died.
+        check = ada.check_claim(road_deaths(), "More than 100 people died on roads in 2022.")
+        self.assertNotEqual(check.compared, 3)
+        self.assertFalse(check.verified)
+
+
+class FoodPriceClaimTests(unittest.TestCase):
+    def test_cents_a_year_of_prices_the_unit_column_gives_in_dollars(self):
+        claim = ("The average price of a dozen eggs in New Zealand has climbed by about 24 cents a year "
+                 "since 2017.")
+        check = ada.check_claim(food_prices(), claim)
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("Converted Data_value from dollars, the unit UNITS gives for these rows, to cents.",
+                      check.assumptions)
+        check = ada.check_claim(food_prices(), claim.replace("24 cents", "50 cents"))
+        self.assertEqual(check.reason, "failed_check")
+
+    def test_a_change_over_the_past_ten_years_runs_to_the_latest_month(self):
+        # A loaf went from $1.00 in September 2016 to $2.20 in September 2026.
+        claim = "The price of a white sliced loaf has more than doubled over the past ten years."
+        check = ada.check_claim(food_prices(), claim)
+        self.assertTrue(check.verified, check.message)
+        self.assertIn('Read "over the past ten years" as September 2016 to September 2026, the 10 years to '
+                      "the latest date in Period.", check.assumptions)
+        check = ada.check_claim(food_prices(), claim.replace("more than doubled", "tripled"))
+        self.assertEqual((check.reason, round(check.compared)), ("failed_check", 120))
+
+    def test_a_change_between_months_the_rows_do_not_reach_is_not_checked(self):
+        claim = ("The price of a white sliced loaf has more than doubled between September 2010 and "
+                 "September 2026.")
+        check = ada.check_claim(food_prices(), claim)
+        self.assertFalse(check.verified)
+        self.assertNotEqual(check.reason, "failed_check")
+
+    def test_an_amount_of_one_row_is_its_value_in_dollars(self):
+        check = ada.check_claim(food_prices(), "A dozen eggs cost under $3 in September 2026.")
+        self.assertEqual((check.reason, check.compared), ("failed_check", 5.4))
+        check = ada.check_claim(food_prices(), "A dozen eggs cost about $5.40 in September 2026.")
+        self.assertTrue(check.verified, check.message)
+
+
+class ParkingTicketClaimTests(unittest.TestCase):
+    def test_most_is_more_than_half(self):
+        check = ada.check_claim(parking_tickets(), "Most tickets are written before 10 am.")
+        self.assertEqual((check.reason, check.compared), ("failed_check", 30))
+        self.assertTrue(ada.check_claim(parking_tickets(), "Most tickets are written after 10 am.").verified)
+
+    def test_an_amount_of_money_is_the_total_of_the_one_column_of_amounts(self):
+        check = ada.check_claim(parking_tickets(), "The council handed out about $800 in fines in 2015.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("only column of amounts of money", " ".join(check.assumptions))
+        claim = "The council handed out more than $1,000 in fines in 2015."
+        check = ada.check_claim(parking_tickets(), claim)
+        self.assertEqual((check.reason, check.compared), ("failed_check", 796))
+
+    def test_small_whole_amounts_are_not_read_as_money(self):
+        # $55 on every row could as well be a code; the claim stays unread rather than summed.
+        tickets = parking_tickets().assign(OffenceAmount=55.0)
+        check = ada.check_claim(tickets, "The council handed out about $550 in fines in 2015.")
+        self.assertEqual(check.reason, "missing_context")
+
+
+class OtherReadingClaimTests(unittest.TestCase):
+    """A claim false under ADA's reading but true under another the words allow is never failed."""
+
+    def turbines(self) -> pd.DataFrame:
+        # Lincoln County is a county in three states: 5 turbines in CO, 2 in KS and 3 in NM.
+        rows = [("Lincoln County", "CO")] * 5 + [("Lincoln County", "KS")] * 2
+        rows += [("Lincoln County", "NM")] * 3
+        for county, state in [("Kit Carson County", "CO"), ("Logan County", "KS"), ("Otero County", "NM"),
+                              ("Elbert County", "CO"), ("Gray County", "KS")]:
+            rows += [(county, state)] * 3
+        return pd.DataFrame(rows, columns=["t_county", "t_state"]).assign(t_cap=1.5)
+
+    def test_a_name_several_places_share_is_tried_for_each(self):
+        check = ada.check_claim(self.turbines(), "Lincoln County has about 5 wind turbines.")
+        self.assertEqual(check.reason, "ambiguous_intent")
+        self.assertIn("the claim holds for CO only", check.message)
+        self.assertEqual([item.agrees for item in check.alternatives], [False, True, False, False])
+        # No one of them has 40, so the claim fails whichever is meant.
+        check = ada.check_claim(self.turbines(), "Lincoln County has about 40 wind turbines.")
+        self.assertEqual(check.reason, "failed_check")
+
+    def test_washington_may_be_the_district_of_columbia(self):
+        income = pd.DataFrame({
+            "GeoName": ["Washington", "District of Columbia", "Oregon", "Idaho", "Nevada"],
+            "Description": ["Per capita personal income (dollars)"] * 5,
+            "2025": [88944.0, 119772.0, 70000.0, 60000.0, 65000.0],
+        })
+        claim = "Washington's per capita personal income was nearly $120,000 in 2025."
+        check = ada.check_claim(income, claim)
+        self.assertEqual(check.reason, "ambiguous_intent")
+        self.assertIn("District of Columbia gives 119,772", check.message)
+        check = ada.check_claim(income, claim.replace("nearly $120,000", "about $50,000"))
+        self.assertEqual(check.reason, "failed_check")
+
+    def test_an_average_over_every_age_of_each_subject_names_no_age(self):
+        # Six children measured at 8, 10, 12 and 14: 22.5, 24.5, 26.17 and 28.5 mm, 25.42 over all.
+        distances = [[21, 23, 22, 26], [20, 24, 25, 27], [23, 22, 26, 28], [22, 25, 27, 29], [24, 26, 28, 30],
+                     [25, 27, 29, 31]]
+        rows = [{"distance": float(value), "age": age, "Subject": f"M{index:02d}"}
+                for index, values in enumerate(distances)
+                for age, value in zip((8, 10, 12, 14), values, strict=True)]
+        frame = pd.DataFrame(rows)
+        check = ada.check_claim(frame, "The average distance was 24.5 mm.")
+        self.assertEqual(check.reason, "missing_context")
+        self.assertIn("age 10 gives 24.5", check.message)
+        self.assertEqual(ada.check_claim(frame, "The average distance was 40 mm.").reason, "failed_check")
+        # Three subjects are too few to read the rows as a repeated design.
+        few = frame[frame["Subject"].isin(["M00", "M01", "M02"])]
+        self.assertEqual(ada.check_claim(few, "The average distance was 23 mm.").reason, "failed_check")
+
+    def test_the_things_after_the_number_are_counted_not_averaged(self):
+        homes = pd.DataFrame({
+            "City/Town": ["KANSAS CITY"] * 3 + ["TOPEKA"] * 4, "State": ["MO"] * 3 + ["KS"] * 4,
+            "Number of administrators who have left the nursing home": [0, 1, 2, 0, 1, 0, 3],
+        })
+        check = ada.check_claim(homes, "There are 3 nursing homes in Kansas City.")
+        self.assertEqual(check.reason, "missing_context")
+        self.assertIn('"3 nursing homes" counts nursing homes', check.message)
+
+    def test_a_count_and_a_rate_named_for_the_same_thing_are_both_tried(self):
+        # Deaths fall 10% from 1999 to 2017 and the death rate 40%.
+        frame = pd.DataFrame({"Year": [1999, 2017, 1999, 2017],
+                              "Cause Name": ["Heart disease"] * 2 + ["Cancer"] * 2,
+                              "Deaths": [1000.0, 900.0, 500.0, 600.0],
+                              "Age-adjusted Death Rate": [250.0, 150.0, 200.0, 190.0]})
+        claim = "Deaths from heart disease fell by more than a third between 1999 and 2017."
+        check = ada.check_claim(frame, claim)
+        self.assertEqual(check.reason, "ambiguous_intent")
+        self.assertIn("fit Deaths and Age-adjusted Death Rate", check.message)
+        check = ada.check_claim(frame, claim.replace("more than a third", "more than 60%"))
+        self.assertEqual(check.reason, "failed_check")
+
+    def test_a_column_named_with_a_short_form_of_the_word_is_tried(self):
+        # 4 of 100 deaths had Amphet marked and 1 Meth/Amphetamine.
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        path = Path(holder.name) / "deaths.csv"
+        pd.DataFrame({"Amphet": ["Y"] * 4 + [None] * 96, "Meth/Amphetamine": ["Y"] + [None] * 99,
+                      "Age": range(100)}).to_csv(path, index=False)
+        check = ada.check_claim(path, "Amphetamines were found in about 4% of the deaths.")
+        self.assertEqual(check.reason, "ambiguous_intent")
+        self.assertIn("fit Meth/Amphetamine and Amphet", check.message)
+        check = ada.check_claim(path, "Amphetamines were found in about 20% of the deaths.")
+        self.assertEqual(check.reason, "failed_check")
+
+    def test_a_count_is_added_up_in_each_reading_of_a_place(self):
+        # Sudan hosts 300 + 400 refugees and 200 + 100 come from it.
+        frame = pd.DataFrame({
+            "year": [2022] * 6, "coo_name": ["Chad", "Eritrea", "Sudan", "Sudan", "Syria", "Iraq"],
+            "coa_name": ["Sudan", "Sudan", "Chad", "Egypt", "Turkey", "Jordan"],
+            "refugees": [300, 400, 200, 100, 900, 50],
+        })
+        check = ada.check_claim(frame, "Sudan had about 700 refugees in 2022.")
+        self.assertEqual(check.reason, "ambiguous_intent")
+        self.assertEqual(sorted(item.value for item in check.alternatives), [300, 700])
+        check = ada.check_claim(frame, "Sudan had about 5,000 refugees in 2022.")
+        self.assertEqual(check.reason, "failed_check")
+
+    def test_casualties_may_mean_the_dead_alone(self):
+        # Pedestrians are 20 of 100 deaths and 30 of 400 killed or injured.
+        frame = pd.DataFrame({"result": ["Died", "Died", "Injured", "Injured"],
+                              "mode": ["Pedestrian", "Car", "Pedestrian", "Car"], "Freq": [20, 80, 10, 290]})
+        check = ada.check_claim(frame, "Pedestrians accounted for 20% of the casualties.")
+        self.assertEqual(check.reason, "ambiguous_intent")
+        self.assertIn('"casualties" may mean deaths alone', check.message)
+        check = ada.check_claim(frame, "Pedestrians accounted for 50% of the casualties.")
+        self.assertEqual(check.reason, "failed_check")
+
+    def test_a_word_said_of_two_values_takes_both(self):
+        # 5 neutered males and 3 spayed females: "neutered" is said of both.
+        frame = pd.DataFrame({"name": list("abcdefghij"),
+                              "condition": ["Neutered"] * 5 + ["Spayed"] * 3 + ["Not fixed"] * 2})
+        check = ada.check_claim(frame, "5 of the cats were neutered.")
+        self.assertEqual(check.reason, "ambiguous_intent")
+        self.assertEqual([item.value for item in check.alternatives], [5, 8])
+        self.assertEqual(ada.check_claim(frame, "8 of the cats were neutered.").reason, "ambiguous_intent")
+        # A number neither reading gives fails, and "spayed" names its own value alone.
+        self.assertEqual(ada.check_claim(frame, "2 of the cats were neutered.").reason, "failed_check")
+        self.assertTrue(ada.check_claim(frame, "3 of the cats were spayed.").verified)
+
+    def test_a_unit_word_inside_a_column_name_gives_its_kind(self):
+        # hours_mission and total_eva_hrs both hold hours, so neither is guessed for "200 hours".
+        frame = pd.DataFrame({"hours_mission": [100.0, 300.0, 200.0, 200.0],
+                              "total_eva_hrs": [5.0, 7.0, 9.0, 3.0], "crew": [3, 5, 2, 7]})
+        claim = "The average time in space was about 200 hours."
+        self.assertEqual(ada.check_claim(frame, claim).reason, "missing_context")
+        alone = frame[["hours_mission", "crew"]]
+        self.assertIn("mean(hours_mission)", ada.check_claim(alone, claim).message)
+        # In minutes, the column in hours cannot be compared as it is.
+        claim = "The average time in space was about 12,000 minutes."
+        self.assertEqual(ada.check_claim(alone, claim).reason, "missing_context")
+
+    def test_the_tables_own_name_before_its_rows_picks_no_rows(self):
+        # 6 permits, 2 of them in the Film category; every row is a film permit.
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        path = Path(holder.name) / "Film_Permits.csv"
+        categories = ["Film", "Film", "Television", "Television", "Commercial", "Theater"]
+        permits = pd.DataFrame({"Category": categories,
+                                "StartDateTime": pd.date_range("2025-01-01", periods=6, freq="MS")})
+        permits.to_csv(path, index=False)
+        check = ada.check_claim(path, "There were 6 film permits in 2025.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn('Read "film permits" as the table\'s own name (Film_Permits.csv)', check.assumptions[0])
+        self.assertEqual(ada.check_claim(path, "There were 9 film permits in 2025.").reason, "failed_check")
+
+    def test_net_is_never_added_to_the_flows_it_comes_from(self):
+        # Arrivals fall from 200 to 150 (25%), departures from 100 to 140, net from 100 to 10 (90%).
+        frame = pd.DataFrame({"year": [2023, 2024] * 3,
+                              "direction": ["Arrivals"] * 2 + ["Departures"] * 2 + ["Net"] * 2,
+                              "migrants": [200, 150, 100, 140, 100, 10]})
+        claim = "Total migrants fell by more than half between 2023 and 2024."
+        check = ada.check_claim(frame, claim)
+        self.assertEqual(check.reason, "ambiguous_intent")
+        self.assertIn("direction holds Net beside Arrivals and Departures", check.message)
+        self.assertEqual([item.agrees for item in check.alternatives], [False, False, True])
+        check = ada.check_claim(frame, claim.replace("more than half", "more than 95%"))
+        self.assertEqual(check.reason, "failed_check")
+
+    def test_a_failure_through_a_guessed_column_is_not_a_verdict(self):
+        guess = "Read the claim's words as declarationTitle, the only column the question fits."
+        failed = ClaimCheck("Washington has had 223 declarations.", "unverified", "failed_check",
+                            "The data give 1.", assumptions=(guess,))
+        self.assertEqual(_guessed_failure(failed).reason, "missing_context")
+        named = replace(failed, assumptions=("Read \"declarations\" as declarationTitle.",))
+        self.assertEqual(_guessed_failure(named).reason, "failed_check")
+
+    def test_a_date_guessed_from_a_word_only_places_the_year(self):
+        # "election" fits election_date, which the year 2022 picks from anyway; ParlGov gives 20.5.
+        rows = [{"country_name": country, "election_date": date, "party_name_english": party,
+                 "vote_share": share}
+                for country, dates, parties in (
+                    ("Sweden", ("2018-09-09", "2022-09-11"),
+                     {"Sweden Democrats": (17.5, 20.5), "Social Democrats": (28.3, 30.3)}),
+                    ("Norway", ("2017-09-11", "2021-09-13"),
+                     {"Labour": (27.4, 26.3), "Progress": (15.2, 11.6)}))
+                for party, shares in parties.items() for date, share in zip(dates, shares, strict=True)]
+        frame = pd.DataFrame(rows)
+        claim = "The Sweden Democrats won more than a quarter of the vote in Sweden's 2022 election."
+        self.assertEqual(ada.check_claim(frame, claim).reason, "failed_check")
+        claim = "The Sweden Democrats won about 20.5% of the vote in Sweden's 2022 election."
+        self.assertTrue(ada.check_claim(frame, claim).verified)
+
+
+class CandidateReceiptsClaimTests(unittest.TestCase):
+    def candidates(self) -> pd.DataFrame:
+        return pd.DataFrame({
+            "Cand_Name": ["JEFFRIES, HAKEEM", "HARRIS, KAMALA", "BROWN, SHERROD", "SMITH, ANN"],
+            "Cand_Office": ["H", "P", "S", "H"],
+            "Total_Receipt": [22_977_197.34, 1_175_189_365.41, 96_530_240.72, 500_000.0],
+            "Other_Receipts": [8_000.0, 0.0, 12_000.0, 0.0],
+            "Total_Disbursement": [21_000_000.0, 1_100_000_000.0, 95_000_000.0, 450_000.0],
+        })
+
+    def test_raised_is_the_total_of_receipts(self):
+        check = ada.check_claim(self.candidates(), "Hakeem Jeffries raised almost $23 million.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("Total_Receipt", check.answer.calculation)
+        check = ada.check_claim(self.candidates(), "Kamala Harris's campaign raised more than $2 billion.")
+        self.assertEqual((check.reason, check.compared), ("failed_check", 1_175_189_365.41))
+
+
+class StartDateClaimTests(unittest.TestCase):
+    def agencies(self) -> pd.DataFrame:
+        # 3 agencies started NIBRS in 2021, 2 in 2020, and 5 have not started.
+        starts = ["2021-03-01"] * 3 + ["2020-06-01"] * 2 + [None] * 5
+        return pd.DataFrame({"ori": [f"X{index}" for index in range(10)], "is_nibrs": [1] * 5 + [0] * 5,
+                             "nibrs_start_date": pd.to_datetime(starts)})
+
+    def test_a_verb_of_beginning_names_the_start_date(self):
+        check = ada.check_claim(self.agencies(), "About 3 agencies began reporting to NIBRS in 2021.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn('Read "began reporting to NIBRS" as nibrs_start_date', check.assumptions[0])
+
+    def test_more_than_in_any_other_year_is_a_peak_over_the_dated_years(self):
+        claim = "More agencies began reporting to NIBRS in 2021 than in any other year: 3."
+        self.assertTrue(ada.check_claim(self.agencies(), claim).verified)
+        # The 5 agencies with no start date are in no year.
+        check = ada.check_claim(self.agencies(), claim.replace("2021", "2020").replace("3.", "2."))
+        self.assertEqual(check.reason, "failed_check")
+        self.assertIn("year = 2021 gives 3", check.message)
+
+
+class RepeatedRowClaimTests(unittest.TestCase):
+    """NYC's baby names give every 2014 row twice; a sum over them counts each baby twice."""
+
+    def test_a_change_between_years_of_a_year_column(self):
+        claim = "The number of girls named Sophia fell by a quarter between 2015 and 2016, from 400 to 300."
+        check = ada.check_claim(baby_names(), claim)
+        self.assertTrue(check.verified, check.message)
+        self.assertEqual(check.compared, 25)
+        claim = "The number of girls named Sophia fell by half between 2015 and 2016."
+        check = ada.check_claim(baby_names(), claim)
+        self.assertEqual((check.reason, check.compared), ("failed_check", 25))
+
+    def test_repeated_rows_that_turn_the_verdict_make_the_claim_ambiguous(self):
+        check = ada.check_claim(baby_names(), "The number of babies named Sophia in 2014 was 500.")
+        self.assertEqual(check.reason, "ambiguous_intent")
+        self.assertEqual([item.value for item in check.alternatives], [1000, 500])
+        claim = "The number of girls named Sophia fell by 70% between 2014 and 2016."
+        self.assertEqual(ada.check_claim(baby_names(), claim).reason, "ambiguous_intent")
+
+    def test_repeated_rows_that_keep_the_verdict_are_noted(self):
+        check = ada.check_claim(baby_names(), "The number of babies named Sophia in 2014 was 800.")
+        self.assertEqual(check.reason, "failed_check")
+        self.assertIn("counting each once gives the same verdict (500)", " ".join(check.assumptions))
+
+    def test_repeats_outside_the_rows_used_change_nothing(self):
+        check = ada.check_claim(baby_names(), "The number of babies named Sophia in 2015 was 400.")
+        self.assertTrue(check.verified, check.message)
+        self.assertNotIn("repeated", " ".join(check.assumptions))
+
+
+class EvictionNoticeClaimTests(unittest.TestCase):
+    """Claims about the rows of Eviction_Notices.csv, whose name says each row is a notice."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.path = Path(folder.name) / "Eviction_Notices.csv"
+        eviction_notices().to_csv(self.path, index=False)
+
+    def check(self, claim: str):
+        return ada.check_claim(self.path, claim)
+
+    def test_the_files_noun_before_the_number_counts_rows(self):
+        check = self.check("Eviction notices in San Francisco fell to 2 in 2020.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("Each row counts as one of the notices.", check.assumptions)
+        check = self.check("Eviction notices in San Francisco fell to 4 in 2020.")
+        self.assertEqual(check.reason, "failed_check")
+
+    def test_a_date_on_few_rows_or_of_the_extract_is_no_other_reading(self):
+        # Constraints Date is on 1 row of 16, and data_as_of is 2025 on every row.
+        check = self.check("There were 2 eviction notices in 2020.")
+        self.assertTrue(check.verified, check.message)
+
+    def test_the_fewest_of_any_year_is_set_against_every_year(self):
+        check = self.check("Eviction notices fell to 2 in 2020, the fewest of any year since records began.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("lowest in 2020 of the 4 years.", " ".join(check.assumptions))
+        # 2019's 5 is the lowest up to 2019, a record low then, but not the fewest of any year.
+        self.assertTrue(self.check("Eviction notices fell to 5 in 2019, a record low.").verified)
+        check = self.check("Eviction notices fell to 5 in 2019, the fewest of any year.")
+        self.assertEqual(check.reason, "failed_check")
+        # A year after "since" narrows the years, so it is not read as a record.
+        self.assertNotIn("of the 4 years", " ".join(
+            self.check("Eviction notices fell to 2 in 2020, the fewest of any year since 2019.").assumptions))
+
+    def test_notices_citing_a_cause_keep_its_rows(self):
+        check = self.check("Notices citing non-payment tripled in a year, from 1 in 2020 to 3 in 2021.")
+        self.assertTrue(check.verified, check.message)
+        check = self.check("Notices citing non-payment quadrupled between 2020 and 2021.")
+        self.assertEqual(check.reason, "failed_check")
+
+
+class InterestRateClaimTests(unittest.TestCase):
+    """Average interest rates by month and security, as the Treasury's Fiscal Data gives them."""
+
+    def frame(self) -> pd.DataFrame:
+        months = pd.to_datetime(["2016-01-31", "2016-01-31", "2016-02-29", "2016-02-29"])
+        return pd.DataFrame({"record_date": months, "security_desc": ["Treasury Bonds", "TIPS"] * 2,
+                             "avg_interest_rate_amt": [4.602, 1.149, 4.590, 1.150]})
+
+    def test_a_rate_named_but_for_its_counting_words_is_named(self):
+        # "interest rate" names avg_interest_rate_amt, whose "avg" and "amt" only say how it is given.
+        claim = "Treasury bonds still carried an average interest rate above 6% in January 2016."
+        self.assertEqual(ada.check_claim(self.frame(), claim).reason, "failed_check")
+        claim = "Treasury bonds still carried an average interest rate above 4.5% in January 2016."
+        self.assertTrue(ada.check_claim(self.frame(), claim).verified)
+
+    def test_paying_a_rate_is_having_it(self):
+        claim = "TIPS paid an average interest rate of about 1.1% in January 2016."
+        self.assertTrue(ada.check_claim(self.frame(), claim).verified)
+        claim = "TIPS paid an average interest rate of more than 2% in January 2016."
+        self.assertEqual(ada.check_claim(self.frame(), claim).reason, "failed_check")
+
+
+class RankTailClaimTests(unittest.TestCase):
+    """Receipts by candidate and office, as the FEC's candidate summary gives them."""
+
+    def frame(self) -> pd.DataFrame:
+        return pd.DataFrame({
+            "Cand_Name": ["BROWN, SHERROD", "TESTER, JON", "CASEY, ROBERT", "JEFFRIES, HAKEEM",
+                          "OCASIO, ALEX", "BIDEN, JOSEPH"],
+            "Cand_Office": ["S", "S", "S", "H", "H", "P"],
+            "Total_Receipt": [96.5e6, 90.1e6, 60.0e6, 23.0e6, 15.2e6, 400.0e6],
+        })
+
+    def test_the_most_of_any_compares_the_groups_the_closing_words_keep(self):
+        claim = "Sherrod Brown raised about $96.5 million, the most of any Senate candidate."
+        check = ada.check_claim(self.frame(), claim)
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("highest for BROWN, SHERROD of the 3 Cand_Name values with Cand_Office = S",
+                      " ".join(check.assumptions))
+        # Over every office, a president's receipts are higher.
+        claim = "Sherrod Brown raised about $96.5 million, the most of any candidate."
+        check = ada.check_claim(self.frame(), claim)
+        self.assertEqual(check.reason, "failed_check")
+        self.assertIn("BIDEN, JOSEPH", check.message)
+
+    def test_the_rank_said_first_is_read_as_a_closing_rank(self):
+        claim = "Hakeem Jeffries raised more than any other House candidate, about $23 million."
+        self.assertTrue(ada.check_claim(self.frame(), claim).verified)
+        claim = "Jon Tester raised more than any other Senate candidate, about $90 million."
+        self.assertEqual(ada.check_claim(self.frame(), claim).reason, "failed_check")
+
+
+class EndsUnderOtherReadingsTests(unittest.TestCase):
+    """Terry stops: 10 in 2018 and 4 in 2025 by Occurred Date; one 2025 stop has two rows and one was
+    reported in 2026."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.path = Path(folder.name) / "Terry_Stops.csv"
+        occurred = ["2018-05-01"] * 10 + ["2025-05-01"] * 4
+        reported = ["2018-05-02"] * 10 + ["2025-05-02"] * 3 + ["2026-01-02"]
+        ids = [f"S{index}" for index in range(12)] + ["S11", "S12"]
+        pd.DataFrame({"Terry Stop ID": ids, "Occurred Date": occurred, "Reported Date": reported,
+                      "Precinct": ["North", "South"] * 7}).to_csv(self.path, index=False)
+
+    def test_ends_that_agree_under_another_reading_make_the_claim_ambiguous(self):
+        # By Occurred Date the rows give 4 in 2025; each stop once by Reported Date gives 2.
+        claim = "Terry stops fell by more than half between 2018 and 2025, from 10 to 2."
+        check = ada.check_claim(self.path, claim)
+        self.assertEqual(check.reason, "ambiguous_intent", check.message)
+        self.assertIn("each Terry Stop ID once", check.message)
+
+    def test_ends_no_reading_gives_still_fail(self):
+        claim = "Terry stops fell by more than half between 2018 and 2025, from 10 to 1."
+        self.assertEqual(ada.check_claim(self.path, claim).reason, "failed_check")
+
+
+class FractionOfPeopleTests(unittest.TestCase):
+    def test_a_plural_that_needs_no_s_is_read_in_a_fraction(self):
+        # "Two men in five" once raised TypeError: the noun is already a plural.
+        frame = pd.DataFrame({"sex": ["M", "F", "M", "F", "M"], "smoker": ["Yes", "No", "No", "No", "Yes"]})
+        check = ada.check_claim(frame, "Two men in five smoke.")
+        self.assertIn(check.status, ("verified", "unverified"))
+        self.assertEqual(_noun_share(NOUN_IN_FRACTION.search("two men in five")), "40% of men")
+        self.assertEqual(_noun_share(NOUN_IN_FRACTION.search("one person in ten")), "10% of people")
+

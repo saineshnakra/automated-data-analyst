@@ -5,7 +5,18 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from table_helpers import air_quality, births, commuting, covid_deaths, migration, registry
+from table_helpers import (
+    air_quality,
+    baby_names,
+    births,
+    commuting,
+    covid_deaths,
+    food_prices,
+    migration,
+    parking_tickets,
+    registry,
+    road_deaths,
+)
 
 import ada
 from ada import nlq, ui
@@ -3317,6 +3328,17 @@ class SexWordTests(unittest.TestCase):
         frame = pd.DataFrame({"team": ["Male", "Female", "Mixed", "Youth"], "score": [1.0, 2.0, 3.0, 4.0]})
         self.assertIsNone(answer_question("average score for women", frame, detect_roles(frame)))
 
+    def test_a_label_on_few_rows_beside_the_sexes_is_allowed(self):
+        # MoMA's Gender gives "transgender woman" once among 12,700 artists.
+        genders = ["male"] * 150 + ["female"] * 49 + ["transgender woman"]
+        frame = pd.DataFrame({"Gender": genders, "score": [1.0] * 150 + [3.0] * 50})
+        answer = answer_question("average score for women", frame, detect_roles(frame))
+        self.assertAlmostEqual(answer.value, 3.0)
+        # On 1% of the rows or more, the label makes it another column.
+        genders = ["male"] * 15 + ["female"] * 4 + ["transgender woman"]
+        frame = pd.DataFrame({"Gender": genders, "score": [1.0] * 20})
+        self.assertIsNone(answer_question("average score for women", frame, detect_roles(frame)))
+
 
 class AbbreviatedNameTests(unittest.TestCase):
     def test_a_word_reads_the_column_that_abbreviates_it(self):
@@ -4980,3 +5002,165 @@ class SurnameFirstTests(unittest.TestCase):
         answer = answer_question("Total_Receipt for Hakeem Jeffries", frame, detect_roles(frame))
         self.assertEqual(answer.plan.filters[0].values, ("JEFFRIES, HAKEEM",))
         self.assertEqual(answer.value, 22_977_197.0)
+
+
+class TimeOnlyQuestionTests(unittest.TestCase):
+    def test_a_question_that_only_names_a_time_counts_its_rows(self):
+        frame = pd.DataFrame({"IssueDate": pd.date_range("2015-02-20", periods=20), "Amount": [55.0] * 20})
+        answer = answer_question("rows in March 2015", frame, detect_roles(frame))
+        self.assertEqual((answer.plan.intent, answer.value), ("count", 11))
+
+
+class AustralianStateTests(unittest.TestCase):
+    def test_a_state_named_in_full_keeps_its_short_name(self):
+        analysis = ada.analyze(road_deaths())
+        answer = analysis.ask("how many rows in Queensland in 2022")
+        self.assertEqual(answer.value, 6)
+        self.assertIn('Read "Queensland" as State = Qld.', answer.answer)
+        self.assertEqual(analysis.ask("how many rows in New South Wales in 2022").value, 5)
+
+    def test_a_column_of_a_few_short_names_is_not_read_as_the_states(self):
+        frame = road_deaths()
+        frame = frame[frame["State"].isin(["Qld", "NSW", "Vic"])]
+        answer = ada.analyze(frame).ask("how many rows in Victoria in 2022")
+        self.assertIsInstance(answer, ada.Refusal)
+
+    def test_an_adjective_of_nationality_is_not_a_territory_named_with_it(self):
+        analysis = ada.analyze(road_deaths())
+        answer = analysis.ask("median Age of Pedestrian in Australian")
+        self.assertIsInstance(answer, ada.Refusal)
+        self.assertIn('"Australian"', answer.message)
+        answer = analysis.ask("median Age of Pedestrian in Australian Capital Territory")
+        self.assertEqual(answer.value, 70)
+
+
+class ClockTimeQuestionTests(unittest.TestCase):
+    def test_a_time_of_day_bounds_the_rows_whatever_the_day(self):
+        analysis = ada.analyze(parking_tickets())
+        answer = analysis.ask("share of rows before 10 am")
+        self.assertEqual(answer.value, 3)
+        self.assertIn("IssueDate time of day before 10:00", answer.answer)
+        self.assertEqual(analysis.ask("how many rows between 8 am and 10 am").value, 3)
+        self.assertEqual(analysis.ask("how many rows after 5 pm").value, 1)
+
+    def test_a_column_of_times_beside_year_and_month_is_the_one_bounded(self):
+        answer = ada.analyze(road_deaths()).ask("how many rows before 1 am in 2022")
+        self.assertEqual(answer.value, 8)
+        self.assertIn("Time time of day before 01:00", answer.answer)
+
+    def test_dates_with_no_times_of_day_have_none_to_bound(self):
+        days = parking_tickets().assign(IssueDate=pd.date_range("2015-03-02", periods=10))
+        answer = ada.analyze(days).ask("how many rows before 10 am")
+        self.assertIsInstance(answer, ada.Refusal)
+        self.assertIn("no times of day", answer.message)
+
+
+class PricesForAPlaceTests(unittest.TestCase):
+    def test_a_place_named_is_where_not_a_thing_there(self):
+        answer = ada.analyze(food_prices()).ask("average Data_value of eggs in New Zealand")
+        self.assertIn("Series_title_1 = Eggs, dozen", answer.answer)
+        self.assertNotIn("Overseas accommodation", answer.answer)
+        self.assertNotIn("Rents", answer.answer)
+
+    def test_a_label_written_head_first_is_named_in_full(self):
+        answer = ada.analyze(food_prices()).ask("average Data_value of a dozen eggs")
+        self.assertEqual(answer.plan.filters[0].values, ("Eggs, dozen",))
+
+    def test_a_change_between_two_months_compares_them(self):
+        analysis = ada.analyze(food_prices())
+        answer = analysis.ask("how much did white sliced loaf Data_value change between September 2016 and "
+                              "September 2026")
+        self.assertEqual(dict(answer.figures)["previous"], 1.0)
+        self.assertAlmostEqual(dict(answer.figures)["latest"], 2.2)
+        self.assertIn("versus Sep 2016", answer.answer)
+
+
+class OfficeCodeTests(unittest.TestCase):
+    def test_an_office_named_keeps_its_letter(self):
+        frame = pd.DataFrame({"Cand_Office": ["H", "H", "S", "P"], "Total_Receipt": [1.0, 2.0, 3.0, 4.0],
+                              "Other_Receipts": [0.5, 0.0, 0.0, 0.0]})
+        answer = ada.analyze(frame).ask("total receipt for House")
+        self.assertEqual(answer.value, 3.0)
+        self.assertIn('Read "House" as Cand_Office = H.', answer.answer)
+
+    def test_a_column_of_other_letters_is_no_office(self):
+        frame = pd.DataFrame({"Office": ["A", "B", "A", "B"], "Total_Receipt": [1.0, 2.0, 3.0, 4.0]})
+        self.assertIsInstance(ada.analyze(frame).ask("total receipt for House"), ada.Refusal)
+
+
+class IrregularVerbTests(unittest.TestCase):
+    def test_left_names_departures(self):
+        frame = pd.DataFrame({"year": [2025] * 4, "direction": ["Arrivals", "Departures"] * 2,
+                              "estimate": [100, 40, 50, 60]})
+        answer = ada.analyze(frame).ask("total estimate who left in 2025")
+        self.assertEqual(answer.value, 100)
+        self.assertIn("direction = Departures", answer.answer)
+        # With no departures, "left" names nothing.
+        arrivals = frame[frame["direction"] == "Arrivals"]
+        self.assertIsInstance(ada.analyze(arrivals).ask("total estimate who left in 2025"), ada.Refusal)
+
+
+class YearColumnChangeTests(unittest.TestCase):
+    """A table dated only by a column of whole years, whose rows each hold a count."""
+
+    def test_a_change_between_two_years_compares_them(self):
+        answer = ada.analyze(baby_names()).ask(
+            "How did the number of girls named Sophia change between 2015 and 2016?")
+        self.assertEqual(answer.plan.intent, "growth")
+        self.assertEqual(answer.value, -25)
+        self.assertIn("(400 → 300)", answer.answer)
+        self.assertIn('Read "girls" as the sum of Count', answer.answer)
+
+    def test_a_counted_plural_adds_up_the_column_of_counts(self):
+        analysis = ada.analyze(baby_names())
+        self.assertEqual(analysis.ask("How many babies were named Sophia in 2015?").value, 400)
+        self.assertEqual(analysis.ask("How many girls were named Sophia in 2016?").value, 300)
+        # The file's own rows are still counted as rows.
+        self.assertEqual(analysis.ask("How many names are Sophia?").value, 8)
+
+    def test_rows_with_an_id_each_are_the_things_counted(self):
+        # One row per child, with Count the number of visits: "girls" counts the rows.
+        frame = pd.DataFrame({"child_id": [1, 2, 3, 4], "Gender": ["FEMALE", "MALE", "FEMALE", "MALE"],
+                              "Count": [3, 1, 2, 5]})
+        self.assertEqual(ada.analyze(frame).ask("How many girls are there?").value, 2)
+
+    def test_one_year_has_no_change(self):
+        frame = baby_names()
+        answer = ada.analyze(frame[frame["Year of Birth"] == 2015]).ask(
+            "How did the number of girls named Sophia change between 2015 and 2016?")
+        self.assertIsNone(answer.value)
+        self.assertIn("Not enough history", answer.answer)
+
+
+class SinceAMonthTests(unittest.TestCase):
+    """Monthly rates from January 2021 to December 2022: 1.0 for 2021, then 1.5 in January 2022 rising by 0.25
+    a month to 4.25 in December."""
+
+    def frame(self) -> pd.DataFrame:
+        months = pd.date_range("2021-01-31", periods=24, freq="ME")
+        rates = [1.0] * 12 + [1.5 + 0.25 * index for index in range(12)]
+        return pd.DataFrame({"record_date": months, "rate": rates})
+
+    def test_since_a_month_keeps_the_days_from_its_first(self):
+        answer = ada.analyze(self.frame()).ask("average rate since March 2022")
+        self.assertAlmostEqual(answer.value, sum(1.5 + 0.25 * index for index in range(2, 12)) / 10)
+
+    def test_a_change_since_a_month_compares_it_with_the_latest(self):
+        answer = ada.analyze(self.frame()).ask("how did the average rate change since January 2022")
+        self.assertEqual(answer.plan.intent, "growth")
+        self.assertIn("versus Jan 2022", answer.answer)
+        self.assertAlmostEqual(dict(answer.figures)["previous"], 1.5)
+        self.assertAlmostEqual(dict(answer.figures)["latest"], 4.25)
+
+    def test_a_month_with_an_end_is_a_span(self):
+        answer = ada.analyze(self.frame()).ask("average rate from January 2022 to June 2022")
+        self.assertAlmostEqual(answer.value, sum(1.5 + 0.25 * index for index in range(6)) / 6)
+
+
+class DashedFlagTests(unittest.TestCase):
+    def test_a_yes_no_column_with_dashes_is_a_flag(self):
+        # Frisk Flag holds Y, N or "-": the dash is no answer, so the share is of the 5 rows answered.
+        frame = pd.DataFrame({"Frisk Flag": ["Y", "N", "-", "N", "Y", "N"], "Precinct": list("ABCABC")})
+        answer = ada.analyze(frame).ask("share of rows with Frisk Flag")
+        self.assertIn("2 of the 5 rows with Frisk Flag recorded (40.0%)", answer.answer)
+

@@ -316,7 +316,7 @@ each word is claimed, in this order, by:
    too ("TCD" in "Trinity College Dublin (TCD)"), the category is meant. "Men", "women", "boys" and "girls" name
    the values of the one column that holds only sexes (Male and Female, M and
    F, besides Other, Unknown or a gender such as Agender or Non-binary;
-   `GENDER_VALUES`): "women" is `Gender` = Female. Words for dying ("deaths", "killed", "dead", "fatalities") and for
+   `GENDER_VALUES`, or other labels on under 1% of the rows answered): "women" is `Gender` = Female. Words for dying ("deaths", "killed", "dead", "fatalities") and for
    surviving ("survivors", "alive") name the value that spells the same
    outcome in one column ("deaths" is `result` = Died), or the Yes or No of
    the one yes/no column named for it (`Survived`: "survivors" is Yes, "died"
@@ -408,10 +408,17 @@ each word is claimed, in this order, by:
     sold" adds up `sales` (also bought, listed, booked, ordered, delivered,
     shipped, admitted, discharged, born, installed, downloaded, registered,
     enrolled), and the totals read as counts, not money.
+    When no column is named for the plural, it adds up the one column named
+    only as a count (Count, Freq, Frequency, N) of whole numbers never
+    negative, unless an ID names each row once or the plural is the rows'
+    own noun: "how many babies were named Sophia" adds up Count in NYC's
+    baby names, a row per year, sex, ethnicity and name, and so does "the
+    number of girls", which also keeps Gender = FEMALE. "how many names"
+    still counts rows.
 16. **"missing"**, "null", "blank" or "empty" not attached to a column: a
     question about missing values. A column that holds only a mark or a
     blank ("Y" where xylazine was found, "Y (PTCH)" as a note on it) reads a
-    blank as a mark not made: "with", "had", "involving" before it, or "was
+    blank as a mark not made: "with", "had", "involving", "citing" before it, or "was
     found in", "turned up in" after it, keep its marked rows, "without"
     keeps the blank ones, and a share is of every row, not of the marked
     rows alone. The answer says so.
@@ -458,6 +465,15 @@ weekly view and `Age of testing (day)` for no daily one.
 | "where Condition is Open", "Detector is ON", "Region West" | the value of that text column |
 | "depth_km below 1 km", "depth_km above 500 metres" | `depth_km < 1`, `depth_km > 0.5`: a unit after the bound is the column's, or converts to it |
 | "less than 1 km deep", "deeper than 50 cm", "older than 30" | the adjective names the column: depth, length, height, width, weight, age, thickness |
+| "before 10 am", "after 6:30 pm", "between 22:00 and 23:00" | the time of day on the date column, whatever the day, or on the one column of times with no date: `IssueDate time of day before 10:00` |
+| "between September 2016 and September 2026", "from March 2020 to May 2021" | the days from the first month's first to the last month's last; a change over them compares the two months |
+| "over the past ten years", "in the last decade", with a word of change | the ten years to the latest date in the date column, as two months (or two years, on a table of one date a year) |
+
+A time needs "am", "pm" or a colon: "before 10" is a number. A table whose
+dates hold no times of day has no time to keep rows by, and the question is
+refused. "Queensland", "New South Wales" and the other Australian states and
+territories keep their short names (Qld, NSW) in a column that holds only
+those.
 
 A column of codes is one listed among the segments (a status, a 0/1 flag) or
 one with whole numbers and at most 50 values. "with diabetes" after a
@@ -587,7 +603,7 @@ reading the question with the matched column names removed so that
 | "most common" | `rank` of row counts for a grouping ("which Kind is most common"), or the `mode` of a number |
 | "correlation", "correlated", "relate", "related" or "relationship" | `correlation` of the two numeric columns named, in the order named |
 | "how many", "count", "number of", "share", "proportion", "percentage", "percent", "fraction" or "rate", without a growth word | `count`; a `breakdown` by count with a grouping word; a `trend` of row counts with a grain; a `share` within each group for "share of Result 1 by Gender" or "rate of target 1 by cp" |
-| A growth word, and a date column exists | `growth`; ranked by segment when one is named, or by the detected segment when the question says "which", "fastest", "slowest" or a superlative |
+| A growth word, and a date column exists, or a column of whole years the question names years of | `growth`; ranked by segment when one is named, or by the detected segment when the question says "which", "fastest", "slowest" or a superlative |
 | "which" or "what" followed by day, week, month, quarter or year, with a superlative, and a date column exists | `rank` of the periods |
 | "top N", "bottom N", or a superlative, with a grouping column | `rank` |
 | A grain, "over time", "trend", "timeline", "history", "trajectory", or the date column named after "by" | `trend` |
@@ -1039,8 +1055,11 @@ Other behaviour:
   segments ranked by their change do the same. A change in one year ("how did
   rescues change in 2020") is that year against the year before, not the last
   two months of the year, and a change since a year ("since 1950") is that year
-  against the latest. A change in "the number of" rows with no measure
-  named is a change in the row count. "rose", "risen" and
+  against the latest, as a change since a month ("since January 2022") is that
+  month against the latest month. In a table with no date, a column of whole years
+  ("Year of Birth") dates the rows when the question names its years, each
+  row as 1 January of its year. A change in "the number of" rows with no
+  measure named is a change in the row count. "rose", "risen" and
   "climbed" ask for a change as "grew" and "fell" do.
 - Growth by segment ranks amounts by percent change. It leaves out segments
   that started from zero and names them separately, since a growth rate from
