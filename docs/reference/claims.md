@@ -399,6 +399,12 @@ ahead, such as "Which column is meant: dep_delay or arr_delay?".
 
 Besides the number, a check records what could make the answer misleading:
 
+- **Another date column.** When the verdict rests on a year or a day and the
+  table has more than one date column, the same calculation is made with each
+  of the others. If one turns the verdict ("Ward 1 recorded 15 homicides in
+  2024" gives 14 by `START_DATE` and 15 by `REPORT_DAT`), the claim gives
+  `ambiguous_intent` with both numbers.
+
 - **Rows left out.** Each reason rows were left out, with its count: rows
   with the measure missing, cells the data checks flag, exact repeats of
   other rows left out of a test.

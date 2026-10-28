@@ -249,7 +249,9 @@ text column `<name> unit` holds each row's unit, so the schema treats the
 table as long by unit and never combines readings in different units (see
 [Schema detection](schema-detection.md#long-tables)). A column with more than
 12 units holds codes that start with a number (`37F-PM-1014-03`), not
-readings, and stays text.
+readings, and stays text. So does a column of whole numbers glued to one of
+three or more letters (`1A`, `6C`, `7D`, the codes of DC's Advisory
+Neighborhood Commissions): those are places, not readings in units A, C and D.
 
 **A lone token.** Weather records write `T` for a trace of rain, and instrument
 logs write `M` or `*`. When the only text left in a column after markers is one

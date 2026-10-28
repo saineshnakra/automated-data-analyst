@@ -1417,7 +1417,7 @@ def check_claim(
                 if reason == "missing_context" else "Send each number as its own claim.",
             )
     assert number is not None and asked is not None
-    check = _checked_table(analysis, text, asked, number, source, choices, question)
+    check = _checked_dates(_checked_table(analysis, text, asked, number, source, choices, question), analysis)
     if ends:
         check = _checked_ends(check, ends)
     if direction:
@@ -1643,6 +1643,57 @@ def _checked_ends(check: ClaimCheck, ends: tuple[tuple[str, str], ...]) -> Claim
         return replace(check, message=f"{check.message} Also, {'; '.join(wrong)}.",
                        assumptions=(*check.assumptions, *notes))
     return replace(check, assumptions=(*check.assumptions, *notes))
+
+
+def _checked_dates(check: ClaimCheck, analysis: Any) -> ClaimCheck:
+    """A verdict that rests on a year or a day, made again with the table's other date columns.
+
+    "Ward 1 recorded 15 homicides in 2024" counts 14 by START_DATE and 15 by
+    REPORT_DAT. When another date column turns the verdict, the claim does not
+    say which date it means, and neither verdict stands.
+    """
+    from pandas.api.types import is_datetime64_any_dtype  # noqa: PLC0415
+
+    from .nlq import execute_plan  # noqa: PLC0415
+
+    decided = check.verified or check.reason == "failed_check"
+    if not decided or check.answer is None or check.claimed is None or check.compared is None:
+        return check
+    plan, roles, frame = check.answer.plan, analysis.roles, analysis.frame
+    date = roles.date
+    conditions = [item for item in plan.conditions if isinstance(item, Condition)]
+    if date is None or not (plan.year or plan.month or any(item.column == date for item in conditions)):
+        return check
+    others = [str(column) for column in frame.columns
+              if str(column) != date and is_datetime64_any_dtype(frame[column])]
+    for other in others:
+        swapped = replace(plan, conditions=tuple(
+            replace(item, column=other) if isinstance(item, Condition) and item.column == date else item
+            for item in plan.conditions
+        ))
+        try:
+            answer = execute_plan(swapped, frame, replace(roles, date=other))
+        except (KeyError, ValueError):
+            continue
+        value, _ = _comparable(answer, check.claimed)
+        if value is None:
+            continue
+        if plan.intent == "growth" and _says_fall(check.claim, check.claimed):
+            value = -value
+        if check.claimed.holds(value) == check.verified:
+            continue
+        alternatives = (
+            Alternative(f"date={date}", check.question or "", check.compared, check.verified,
+                        check.answer.calculation),
+            Alternative(f"date={other}", check.question or "", value, not check.verified, answer.calculation),
+        )
+        return replace(
+            check, status="unverified", reason="ambiguous_intent",
+            message=f"The verdict rests on which date the claim means: by {date} the data give "
+                    f"{_plain(check.compared)}, by {other} {_plain(value)}. {check.message}",
+            alternatives=alternatives, clarification=f"Is the date {date} or {other}?",
+        )
+    return check
 
 
 def _yearly(analysis: Any, plan: Any) -> tuple[Any, str] | None:

@@ -347,7 +347,9 @@ each word is claimed, in this order, by:
     numeric column has that unit in its name. "On day 21" (also week, visit,
     cycle, session, wave, round) is the one time-point column at 21, such as
     ChickWeight's `Time`, when 21 is one of its values; this is read before
-    the conditions, so "On day 21, chicks" does not make 21 a chick. "At 14,"
+    the conditions, so "On day 21, chicks" does not make 21 a chick. A bare
+    "day 7" in a table with both a day of the week and a day of the month
+    that hold 7 (`day_of_week`, `date_of_month`) is refused, naming both. "At 14,"
     opening a clause, or "at 14" ending the question or followed by years,
     months, weeks or days, is the one numeric column of at most 12 values
     that holds 14, such as Orthodont's `age`; when two such columns hold it,
@@ -822,7 +824,10 @@ set to missing during cleaning, so those cells are not counted").
 
 **Running totals.** A column the notes set aside as a running total
 (`schema.running_total_columns`) is never summed, averaged, binned or
-correlated; its maximum and minimum are still answered.
+correlated; its maximum and minimum are still answered. A column of codes the
+notes read as categories and whose name says it numbers places or things
+(`WARD`, `DISTRICT`, `PSA`, a zip or FIPS code) is never summed either: "total
+WARD" is refused, since adding ward numbers counts nothing.
 
 Trend, growth and period-ranking answers use the same `TrendSeries` as the
 dashboard, so the timeline notes ([Periods](periods.md#timeline-adjustments))
@@ -832,7 +837,9 @@ Other behaviour:
 
 - A breakdown with up to 20 groups shows them all, largest first. With more,
   the table shows the 10 highest and the 10 lowest (`EXTREME_GROUPS`) and the
-  answer says how many groups there are. A rank shows `top_n`.
+  answer says how many groups there are. A rank shows `top_n`. A superlative
+  over a plural ("which countries have the most large airports") shows the
+  first five groups; over a singular ("which country has the most") the first.
 - A breakdown by a numeric column, an hour or a weekday lists its groups in
   their own order (timepoint 0, 1, 2...; Monday to Sunday), up to 50 of them,
   and is drawn as a line; beyond 50 it falls back to the highest and lowest.

@@ -3643,6 +3643,28 @@ class FullNamesAndBoundsTests(unittest.TestCase):
         self.assertAlmostEqual(answer.value, 44.2)
 
 
+class DaysAndPluralRanksTests(unittest.TestCase):
+    def test_a_bare_day_both_day_columns_hold_is_refused(self):
+        frame = pd.DataFrame({"date_of_month": [1, 2, 7, 7, 8], "day_of_week": [6, 7, 7, 1, 2],
+                              "births": [9083.0, 8006.0, 7400.0, 11500.0, 12000.0]})
+        roles = detect_roles(frame)
+        reading = nlq._read_question("average births on day 7", frame, roles)
+        self.assertIn("day_of_week = 7 or date_of_month = 7", reading.problem or "")
+        self.assertIsNone(answer_question("average births on day 7", frame, roles))
+        # Naming the column keeps the answer.
+        self.assertEqual(answer_question("average births on day_of_week 7", frame, roles).value, 7703)
+
+    def test_a_superlative_over_a_plural_lists_the_first_groups(self):
+        countries = ["US"] * 5 + ["CN"] * 4 + ["RU"] * 3 + ["IN"] * 2 + ["FR", "DE", "JP"]
+        frame = pd.DataFrame({"country": countries})
+        roles = detect_roles(frame)
+        several = answer_question("which countries have the most rows", frame, roles)
+        self.assertEqual(list(several.table["country"])[:3], ["US", "CN", "RU"])
+        self.assertIn("showing 5", several.calculation)
+        one = answer_question("which country has the most rows", frame, roles)
+        self.assertIn("showing 1", one.calculation)
+
+
 class StateAndNounTests(unittest.TestCase):
     def test_the_most_of_a_value_counts_rows_by_period(self):
         days = ["2020-01-01", "2020-01-01", "2020-01-02"]

@@ -1367,6 +1367,32 @@ class CountedBoundTests(unittest.TestCase):
         self.assertEqual(wrong.reason, "failed_check")
 
 
+class DateColumnTests(unittest.TestCase):
+    def test_a_verdict_another_date_column_turns_is_ambiguous(self):
+        started = pd.to_datetime(["2023-12-30", "2024-03-01", "2024-05-01", "2024-07-01"])
+        reported = pd.to_datetime(["2024-01-02", "2024-03-02", "2024-05-02", "2024-07-02"])
+        frame = pd.DataFrame({"START_DATE": started, "REPORT_DAT": reported, "WARD": [1, 1, 1, 2],
+                              "OFFENSE": ["HOMICIDE"] * 4})
+        check = ada.check_claim(frame, "Ward 1 recorded 3 homicides in 2024.")
+        self.assertEqual(check.reason, "ambiguous_intent", check.message)
+        self.assertIn("START_DATE", check.message)
+        self.assertIn("REPORT_DAT", check.message)
+        # A number no date column gives still fails.
+        wrong = ada.check_claim(frame, "Ward 1 recorded 9 homicides in 2024.")
+        self.assertEqual(wrong.reason, "failed_check")
+
+    def test_a_column_of_codes_is_never_added_up(self):
+        rows = 400
+        frame = pd.DataFrame({"WARD": ([1, 2, 3, 4, 5, 6, 7, 8] * 50)[:rows],
+                              "DISTRICT": ([1, 2, 3, 4, 5, 6, 7] * 60)[:rows],
+                              "PSA": ([101, 102, 201, 202, 301, 302, 401, 402, 501] * 50)[:rows],
+                              "XBLOCK": [397000.5 + index * 13.7 for index in range(rows)],
+                              "OFFENSE": (["THEFT", "HOMICIDE", "ROBBERY"] * 140)[:rows]})
+        check = ada.check_claim(frame, "The ward recorded 15 homicides.")
+        self.assertNotEqual(check.status, "verified")
+        self.assertNotEqual(check.reason, "failed_check", check.message)
+
+
 class RateClaimTests(unittest.TestCase):
     def test_a_rate_for_every_hundred_is_checked_as_totals(self):
         frame = pd.DataFrame({"District": [1, 1, 1, 1, 2, 2, 2, 2],
