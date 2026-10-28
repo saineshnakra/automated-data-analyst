@@ -1901,8 +1901,8 @@ def _each_checked(analysis: Any, text: str, pair: re.Match, choices: dict[str, s
 CHANGE_AND_LEVEL = re.compile(
     r"^(?P<head>.*?\b(?:rose|fell|grew|dropped|declined|increased|decreased|climbed|jumped|slipped|shrank|"
     r"slumped|plunged|soared|surged)\s+)by\s+(?P<size>[^,]+?)(?P<scope>\s+(?:in|between|from|over|since|during)\s+"
-    r"[^,]+?)?\s*,?\s+to\s+(?P<level>(?:(?:about|around|nearly|almost|roughly|some|over|under|more\s+than|"
-    r"less\s+than|just\s+over|just\s+under)\s+)?[$€£]?\d[\d,.]*(?:\s*(?:%|million|billion|thousand|bn|m|k)\b)?)"
+    r"[^,]+?)?\s*,?\s+to\s+(?!(?:1[89]|20)\d{2}(?![\d%])(?![.,]\d))(?P<level>(?:(?:about|around|nearly|"
+    r"almost|roughly|some|over|under|more\s+than|less\s+than|just\s+over|just\s+under)\s+)?[$€£]?\d[\d,.]*(?:\s*(?:%|million|billion|thousand|bn|m|k)\b)?)"
     r"(?P<rest>[^,;]*?)\s*[.!]?\s*$",
     re.IGNORECASE,
 )

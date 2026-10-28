@@ -3266,6 +3266,9 @@ class ChangeAndLevelTests(unittest.TestCase):
 
     def test_one_number_alone_is_read_as_before(self):
         self.assertTrue(ada.check_claim(self.frame, "Sales rose by about a third in 2020.").verified)
+        # "from 2019 to 2020" gives years, not a level the change reached.
+        claim = "Sales rose by about a third from 2019 to 2020."
+        self.assertTrue(ada.check_claim(self.frame, claim).verified)
 
 
 class MisreadingGuardTests(unittest.TestCase):
