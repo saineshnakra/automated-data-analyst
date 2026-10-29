@@ -298,6 +298,43 @@ class ForecastTests(unittest.TestCase):
         self.assertTrue((predicted.loc[quiet] == 0).all())
         self.assertTrue((predicted.drop(quiet) > 0).all())
 
+    def test_one_series_selling_again_does_not_stop_the_zero_rule(self):
+        frame = daily_sales(300)
+        day = (pd.to_datetime(frame["date"]) - pd.Timestamp("2020-01-01")).dt.days
+        # Store 3's bread stops after day 200 and stays at 0. Store 2's milk stops from day 215 and sells far
+        # more than before from day 270, in the last stretch of time the folds hold out.
+        frame.loc[(frame["store_nbr"] == 3) & (frame["family"] == "BREAD") & (day > 200), "sales"] = 0.0
+        milk = (frame["store_nbr"] == 2) & (frame["family"] == "MILK")
+        frame.loc[milk & day.between(215, 269), "sales"] = 0.0
+        frame.loc[milk & (day >= 270), "sales"] = 500.0
+        cut = day <= 285
+        train, test = frame[cut], frame[~cut].drop(columns="sales")
+        report = ada.model(train, test, target="sales", metric="rmsle", id_column="id")
+        self.assertIn("predict 0", report.calculation)
+        self.assertIn("in most folds", report.calculation)
+        quiet = test.loc[(test["store_nbr"] == 3) & (test["family"] == "BREAD"), "id"]
+        self.assertTrue((report.submission.set_index("id")["sales"].loc[quiet] == 0).all())
+
+    def test_two_years_of_history_give_the_same_weeks_a_year_before(self):
+        from ada.modelling import _lag_features
+        for days, yearly in ((800, True), (300, False)):
+            frame = daily_sales(days, stores=1)
+            date = pd.to_datetime(frame["date"])
+            cut = date <= date.max() - pd.Timedelta(days=16)
+            train, test = frame[cut].assign(date=date[cut]), frame[~cut].assign(date=date[~cut])
+            fit, ahead, _ = _lag_features(train, test, "date", ["store_nbr", "family"],
+                                          train["sales"].to_numpy(), 16, "sales")
+            with self.subTest(days=days):
+                self.assertEqual("sales_lag364" in fit.columns, yearly)
+                self.assertEqual("sales_year15" in ahead.columns, yearly)
+            if yearly:
+                # The value a year before is the one 364 days earlier: the same weekday, the same series.
+                rows = train.reset_index(drop=True)
+                last = rows.index[-1]
+                same = (rows["family"] == rows.loc[last, "family"]) & (
+                    rows["date"] == rows.loc[last, "date"] - pd.Timedelta(days=364))
+                self.assertEqual(fit.loc[last, "sales_lag364"], rows.loc[same, "sales"].iloc[0])
+
     def test_a_lag_is_never_nearer_than_the_horizon(self):
         from ada.modelling import _lag_features
 
