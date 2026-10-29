@@ -16,7 +16,7 @@ competitions:
   - {slug: stocks-challenge, split: train, metric: spearman, public_share: 0.18}
   - {slug: playground-series-s5e10, split: validation, metric: rmse}
   - {slug: playground-series-s5e11, split: validation, metric: auc}
-  - {slug: playground-series-s5e12, split: validation, metric: auc}
+  - {slug: playground-series-s5e12, split: train, metric: auc}
   - {slug: playground-series-s6e1, split: validation, metric: rmse}
   - {slug: playground-series-s6e2, split: validation, metric: auc}
   - {slug: playground-series-s6e3, split: validation, metric: auc}

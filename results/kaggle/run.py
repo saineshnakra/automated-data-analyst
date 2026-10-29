@@ -8,11 +8,15 @@ the leaderboard and works out the score at the top 10%. A submission is sent
 only with ``--submit`` and only when every gate passes:
 
 - every check on the submission passes and the model gave no warning;
-- the cross-validated score beats the top-10% bar by at least twice the
-  larger of the folds' standard error (the spread over the square root of the
-  folds) and the test wobble: how much the score moves between test sets the
-  size of the public leaderboard's share of the test rows, from bootstrap
-  samples of the out-of-fold predictions;
+- the competition has a scored submission of ADA's, and the cross-validated
+  score moved by that submission's gap between its leaderboard and
+  cross-validated scores beats the top-10% bar by at least twice the larger
+  of the folds' standard error (the spread over the square root of the folds)
+  and the test wobble: how much the score moves between test sets the size of
+  the public leaderboard's share of the test rows, from bootstrap samples of
+  the out-of-fold predictions. Test rows can be harder than the training
+  rows: on Playground S5E12 a cross-validated AUC of 0.731 scored 0.699, below
+  a bar of 0.704 it seemed to clear;
 - the competition got no submission in the last 24 hours, and no competition
   got one in the last 2 hours (``submissions.json`` in the cache records them).
 
@@ -28,6 +32,7 @@ import io
 import json
 import math
 import os
+import re
 import sys
 import time
 import urllib.request
@@ -91,6 +96,19 @@ def submit(slug: str, path: Path, message: str) -> str:
     return str(api.competition_submit(str(path), message, slug))
 
 
+def calibration(slug: str) -> tuple[float, float] | None:
+    """The cross-validated and public scores of ADA's latest scored submission, read from its description."""
+    from kaggle.api.kaggle_api_extended import KaggleApi  # noqa: PLC0415
+
+    api = KaggleApi()
+    api.authenticate()
+    for sent in api.competition_submissions(slug):
+        said = re.match(r"ada model.*\bcv (-?[0-9.]+)", sent.description or "")
+        if said and sent.public_score not in (None, ""):
+            return float(said.group(1)), float(sent.public_score)
+    return None
+
+
 def allowed(slug: str, log: list[dict]) -> str | None:
     """Why a submission must wait, or None."""
     now = time.time()
@@ -134,20 +152,28 @@ def main() -> None:
         public = int(item.get("public_share", 0.5) * report.rows_test)
         wobble = report.test_wobble(public)
         error = max(report.spread / math.sqrt(len(report.folds)), wobble)
-        margin = (report.score - top) if metric.higher else (top - report.score)
+        scored = calibration(slug)
+        offset = scored[1] - scored[0] if scored else 0.0
+        expected = report.score + offset
+        margin = (expected - top) if metric.higher else (top - expected)
         failed = [check.name for check in report.checks if not check.passed]
         gate = []
+        if scored is None:
+            gate.append("no scored submission yet to show how the cross-validated score maps to the "
+                        "leaderboard; send one with --first")
         if failed:
             gate.append(f"checks failed: {', '.join(failed)}")
         if report.warnings:
             gate.append(f"{len(report.warnings)} warnings")
-        if margin < 2 * error:
-            gate.append(f"cross-validated {report.score:.5f} is not clear of the top-10% bar {top:.5f} "
-                        f"by twice its uncertainty {error:.5f} (test wobble {wobble:.5f} on {public:,} rows)")
+        elif margin < 2 * error:
+            gate.append(f"cross-validated {report.score:.5f}, {expected:.5f} after the last submission's "
+                        f"leaderboard gap of {offset:+.5f}, is not clear of the top-10% bar {top:.5f} by "
+                        f"twice its uncertainty {error:.5f} (test wobble {wobble:.5f} on {public:,} rows)")
         submission = cache / f"{slug}-submission.csv"
         report.write(submission)
         entry = {
             "split": item["split"], "metric": metric.name, "cv": report.score, "sd": report.spread,
+            "leaderboard_gap": offset if scored else None,
             "bar_top10": top, "teams": teams, "wobble": wobble,
             "cv_percentile": percentile(report.score, metric.higher, slug, cache), "seconds": seconds,
             "gate": gate or ["passed"], "warnings": list(report.warnings),
