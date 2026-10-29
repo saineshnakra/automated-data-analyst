@@ -1,6 +1,6 @@
 """Score ADA's modelling mode on tabular Kaggle competitions; submit only when it should reach the top 10%.
 
-    KAGGLE_API_TOKEN=... python -I run.py ADA_CHECKOUT CACHE out.json [--only=a,b] [--submit]
+    KAGGLE_API_TOKEN=... python -I run.py ADA_CHECKOUT CACHE out.json [--only=a,b] [--submit | --first]
 
 For each competition in competitions.yml this downloads the data (the account
 must have accepted the competition's rules), runs ``ada.model`` on it, reads
@@ -16,7 +16,12 @@ only with ``--submit`` and only when every gate passes:
 - the competition got no submission in the last 24 hours, and no competition
   got one in the last 2 hours (``submissions.json`` in the cache records them).
 
-The token is read from the environment only and never written anywhere.
+With ``--first`` a competition that has never had a submission gets one when
+the checks pass and the model gave no warning, whatever its score, so every
+competition has a leaderboard score to compare with the cross-validated one.
+
+Submissions go through the ``kaggle`` package. The token is read from the
+environment only and never written anywhere.
 """
 
 import io
@@ -29,7 +34,6 @@ import urllib.request
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
 
 import pandas as pd
 import yaml
@@ -78,22 +82,13 @@ def percentile(score: float, higher: bool, slug: str, cache: Path) -> float:
     return float(100 * ahead)
 
 
-def submit(slug: str, path: Path, message: str) -> dict:
-    """Upload a submission file and submit it, in the three steps Kaggle's REST API takes."""
-    body = path.read_bytes()
-    modified = int(path.stat().st_mtime)
-    boundary = uuid4().hex
-    form = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"fileName\"\r\n\r\n{path.name}\r\n"
-            f"--{boundary}--\r\n").encode()
-    started = json.loads(request(f"competitions/submissions/url/{slug}/{len(body)}/{modified}", "POST", form,
-                                 f"multipart/form-data; boundary={boundary}"))
-    request("", "PUT", body, "application/octet-stream", url=started["createUrl"])
-    form = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"blobFileTokens\"\r\n\r\n"
-            f"{started['token']}\r\n"
-            f"--{boundary}\r\nContent-Disposition: form-data; name=\"submissionDescription\"\r\n\r\n"
-            f"{message}\r\n--{boundary}--\r\n").encode()
-    return json.loads(request(f"competitions/submissions/submit/{slug}", "POST", form,
-                              f"multipart/form-data; boundary={boundary}"))
+def submit(slug: str, path: Path, message: str) -> str:
+    """Submit a file through the ``kaggle`` package; Kaggle's REST paths for uploads are not public."""
+    from kaggle.api.kaggle_api_extended import KaggleApi  # noqa: PLC0415
+
+    api = KaggleApi()
+    api.authenticate()
+    return str(api.competition_submit(str(path), message, slug))
 
 
 def allowed(slug: str, log: list[dict]) -> str | None:
@@ -109,7 +104,7 @@ def allowed(slug: str, log: list[dict]) -> str | None:
 def main() -> None:
     checkout, cache, out = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
     only = next((arg.split("=", 1)[1].split(",") for arg in sys.argv if arg.startswith("--only=")), None)
-    send = "--submit" in sys.argv
+    send, first = "--submit" in sys.argv, "--first" in sys.argv
     sys.path.insert(0, str(checkout))
     import ada.modelling as modelling  # noqa: PLC0415
 
@@ -159,8 +154,11 @@ def main() -> None:
         }
         print(f"{slug} [{item['split']}] {metric.name} cv {report.score:.5f} (sd {report.spread:.5f}) "
               f"bar {top:.5f} -> about top {entry['cv_percentile']:.1f}%; gate: {'; '.join(entry['gate'])}")
-        if send and not gate and item["split"] != "train-only":
-            wait = allowed(slug, log)
+        sent_before = any(logged["slug"] == slug for logged in log)
+        firsts = first and not failed and not report.warnings and not sent_before
+        if (send and not gate or firsts) and item["split"] != "train-only":
+            # A first submission does not wait: Kaggle limits each competition, not the account.
+            wait = None if firsts else allowed(slug, log)
             if wait:
                 entry["submitted"] = f"held: {wait}"
             else:
