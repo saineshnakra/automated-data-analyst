@@ -50,15 +50,35 @@ when:
 - the competition got no submission in the last 24 hours, and no competition
   got one in the last 2 hours.
 
+`--first` sends one submission to each competition that has none yet, when
+the checks pass and the model gives no warning, whatever the margin, so each
+competition has a leaderboard score beside its cross-validated one.
+Submissions go through the `kaggle` package.
+
 ## Where it stands
 
 | Competition | Split | Metric | Cross-validated | Top-10% bar | About | Gate |
 |---|---|---|---|---|---|---|
-| Titanic | train | accuracy | 0.8358 (sd 0.022) | 0.7943 | top 3.4% | held: the public leaderboard's 209 rows leave a wobble of about 0.025, and the margin is under twice it |
-| Housing Prices (Kaggle Learn) | train | MAE | 14,012 (sd 1,325) | 15,010 | top 7.1% | held: the margin of 998 is under twice the test wobble of 848 on half the 1,459 test rows (1,696) |
-| Store Sales | train | RMSLE | 0.3914 (sd 0.008, 5 time-ordered folds) | 0.3872 | top 13.6% | held: not past the bar |
-| Stocks Predict challenge | train | Spearman | 0.0506 (sd 0.015) | 0.0533 | top 27% | held: not past the bar |
+| Titanic | train | accuracy | 0.8358 (sd 0.022) | 0.7943 | top 3.4% | held: the public leaderboard's 209 rows leave a wobble of about 0.025, and the margin is under twice it; sent with `--first` |
+| Housing Prices (Kaggle Learn) | train | MAE | 14,012 (sd 1,325) | 15,010 | top 7.1% | held: the margin of 998 is under twice the test wobble of 848 on half the 1,459 test rows (1,696); sent with `--first` |
+| Store Sales | train | RMSLE | 0.3914 (sd 0.008, 5 time-ordered folds) | 0.3872 | top 13.6% | held: not past the bar; sent by hand |
+| Stocks Predict challenge | train | Spearman | 0.0506 (sd 0.015) | 0.0533 | top 27% | held: not past the bar; sent by hand after it closed |
 
-No submission has been sent. The other competitions are not scored yet: their
-rules have not been accepted for the account, so their data cannot be
-downloaded.
+Public leaderboard scores of the submissions sent:
+
+| Competition | Sent | Public score | Top-10% bar | Place |
+|---|---|---|---|---|
+| Titanic | 28 Oct 2026 | 0.79665 | 0.79425 | top 9.6% of 11,692 |
+| Housing Prices (Kaggle Learn) | 28 Oct 2026 | 13,331.6 | 15,009.7 | top 4.4% of 3,855 |
+| Store Sales | 29 Oct 2026 | 0.47814 | 0.38724 | top 58% of 565 |
+| Stocks Predict challenge | 29 Oct 2026 (late) | 0.04490 (private 0.03545) | 0.05333 | top 46% of 26 |
+
+Titanic's public score is 0.039 below its cross-validated one, within twice
+the wobble of 209 rows; Housing's is 681 better, within its wobble of 848;
+Stocks' is 0.006 below, within its wobble of 0.013. Store Sales' is 0.087
+worse than its cross-validated 0.391, twenty times its wobble: the
+time-ordered folds do not score the forecast as the test is made, and that is
+the next fix.
+
+The other competitions are not scored yet: their rules have not been accepted
+for the account, so their data cannot be downloaded.
