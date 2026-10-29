@@ -93,7 +93,7 @@ instead, one feature per class.
 
 ## The model
 
-Two learners are cross-validated on the same folds:
+Three learners are cross-validated on the same folds:
 
 - LightGBM gradient boosting, stopped early on each held-out fold
   (learning rate 0.02 and 15 leaves under 20,000 rows; 0.05 and 63 leaves
@@ -106,6 +106,10 @@ Two learners are cross-validated on the same folds:
   categories with at least 5 rows one-hot; its predictions of a number are
   kept within the targets it was fitted on, as a linear model can run far
   past them where trees never do
+- XGBoost gradient boosting with depth-wise trees on the same features
+  (depth 4 under 20,000 rows, 6 above and 8 from 100,000 rows, with the
+  learning rates LightGBM takes), stopped early the same way; it is left out
+  when XGBoost is not installed
 
 When the test rows belong to groups the training rows never hold (new
 stocks, new stores, new patients), folds that mix a group's rows would score
@@ -148,8 +152,8 @@ time before it only, and the calculation says how many test rows were set so.
 
 ## Blending
 
-Their out-of-fold predictions are blended with the weight, in steps of 0.05,
-that gives the best out-of-fold score (by log loss for a metric of labels, as a
+Their out-of-fold predictions are blended with the weights, in steps of 0.05
+and adding to 1, that give the best out-of-fold score (by log loss for a metric of labels, as a
 count of right labels jumps from one weight to the next). Folds are stratified
 for classes. Under 20,000 rows, cross-validation is repeated with 3 seeds. The
 test predictions average every fold's model. A fixed seed gives the same

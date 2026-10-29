@@ -105,6 +105,32 @@ class ModelTests(unittest.TestCase):
         # Below the size, numbers stay as they are.
         self.assertNotIn("Age_value", dict(ada.model(train, test, metric="auc").features))
 
+    def test_xgboost_joins_the_blend_when_installed(self):
+        from ada import modelling
+        report = ada.model(self.train, self.test, metric="auc")
+        if modelling._xgboost_installed():
+            self.assertIn("XGBoost", report.calculation)
+        original = modelling._xgboost_installed
+        modelling._xgboost_installed = lambda: False
+        try:
+            without = ada.model(self.train, self.test, metric="auc")
+        finally:
+            modelling._xgboost_installed = original
+        self.assertNotIn("XGBoost", without.calculation)
+        self.assertGreater(without.score, 0.7)
+
+    def test_three_learners_are_weighed_together(self):
+        from ada import modelling
+        rng = np.random.default_rng(0)
+        y = rng.integers(0, 2, 400)
+        good = (y + rng.normal(0, 0.3, 400))[:, None]
+        noise = rng.random((400, 1))
+        weights = modelling._blend_weights({"lightgbm": noise, "linear": noise, "xgboost": good},
+                                           modelling.METRICS["auc"], "classification", np.array([0, 1]), y,
+                                           None)
+        self.assertEqual(weights["xgboost"], 1.0)
+        self.assertAlmostEqual(sum(weights.values()), 1.0)
+
     def test_a_probability_metric_writes_probabilities(self):
         report = ada.model(self.train, self.test, metric="Roc Auc Score")
         values = report.submission["Survived"]
