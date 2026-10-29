@@ -319,7 +319,9 @@ after; "the most of any year since 2016" is a record high set against the
 years from 2016. "hit a record high of more than 63,000 in 2022" is that
 level in 2022, and the record is checked as above. Strong verbs of change
 before "by", "to" or a percent read as plain ones: "collapsed by more than
-80%" fell by it, "soared 40%" rose; "jumped 8.95 metres" is no change. "rose over 30%" is the size of the rise, not a level. The
+80%" fell by it, "soared 40%" rose; "jumped 8.95 metres" is no change.
+"won Germany's 2021 election with 25.7% of the vote" is read as "won 25.7%
+of the vote in Germany's 2021 election". "rose over 30%" is the size of the rise, not a level. The
 plural before the verb names what changed: "Fox rescues nearly doubled" is the
 number of rescues when no column is called rescues. So does the file's noun
 for its rows at the head of the claim, before "in", a participle or a

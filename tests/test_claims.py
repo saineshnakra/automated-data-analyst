@@ -2909,6 +2909,11 @@ class OtherReadingClaimTests(unittest.TestCase):
         self.assertEqual(ada.check_claim(frame, claim).reason, "failed_check")
         claim = "The Sweden Democrats won about 20.5% of the vote in Sweden's 2022 election."
         self.assertTrue(ada.check_claim(frame, claim).verified)
+        # "won the election with N% of the vote" is the share won in that election.
+        claim = "The Social Democrats won Sweden's 2022 election with 30.3% of the vote."
+        self.assertTrue(ada.check_claim(frame, claim).verified)
+        claim = "The Social Democrats won Sweden's 2022 election with 35% of the vote."
+        self.assertEqual(ada.check_claim(frame, claim).reason, "failed_check")
 
 
 class CandidateReceiptsClaimTests(unittest.TestCase):
