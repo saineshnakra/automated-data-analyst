@@ -31,6 +31,7 @@ table or as a note.
 | 16 | Read "not stated", `ND` and placeholder labels as missing in text columns | See below |
 | 17 | Restore ranges a spreadsheet read as dates | See [Ranges read as dates](#ranges-read-as-dates) |
 | 18 | Merge label spellings and abbreviations | See [Label spellings](#label-spellings) |
+| 18a | Read a column for each year as a row for each year | See [A column for each year](#a-column-for-each-year) |
 | 19 | Build dates from years | See below |
 | 20 | Widen overflowing integers | An integer column whose total would overflow int64 becomes float64 |
 | 21 | Replace infinities | `inf` and `-inf` in float columns become missing |
@@ -93,6 +94,15 @@ Timezone offsets are dropped, keeping the wall-clock time written in the file.
 Converting to UTC first would move rows east of UTC into the previous day, and
 so into a different period. A column that mixes offsets (for example across a
 daylight-saving change) is converted to UTC, since it has no single wall clock.
+
+## Quarters
+
+A text column of quarters as statistics offices write them ("2026Q3",
+INE's "2026QIII" and "2026 T3", "Q3 2026") is read as the first day of each
+quarter, with a note, before any number is read from it; read as numbers,
+the four quarters of a year would all be 2026. A month written as Statistics
+Norway and Eurostat write it ("1993M01", "2025M1", "2025-M12") is read as the
+first day of that month the same way.
 
 ## Times with no date
 
@@ -374,6 +384,16 @@ month's number and the other number, low end first. When that range shares an
 end with another range in the column (`0-10`, `10-30`, `30-60`), the values
 are restored to it and a note says so. Otherwise they are left as written, and
 the note names the range they may have been.
+
+## A column for each year
+
+A table that gives each year in a column of its own, named by the year alone
+or the year and the same words ("1969 Deaths" to "2024 Deaths", "1960" to
+"2023"), holding numbers, with at least five such columns making up half the
+table or more, is read with a row for each year: the year in a new column,
+Year, and the figure in one column named for those words (Deaths, or Value
+when the names are years alone). A note names the columns. Year then becomes
+the date, as below. A table that already has a date is left as it is.
 
 ## Dates from years
 

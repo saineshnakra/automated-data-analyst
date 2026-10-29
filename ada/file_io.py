@@ -10,6 +10,7 @@ import pandas as pd
 from pandas.io.parsers.readers import STR_NA_VALUES
 from python_calamine import CalamineError
 
+from .numeric import to_numbers
 from .schema import is_identifier_name
 
 SUPPORTED_SUFFIXES = {".csv", ".tsv", ".txt", ".data", ".dat", ".xlsx", ".xlsm"}
@@ -218,6 +219,38 @@ def _parse_csv(contents: bytes, encoding: str, first: dict | None = None) -> pd.
     return _read_csv(contents, encoding, **options)
 
 
+# A cell of text longer than this is prose (a citation note, a list of sources), not a value.
+PROSE_LENGTH = 80
+# A sheet holds only notes when fewer than one filled cell in this many is a number.
+NOTE_NUMBER_SHARE = 0.05
+
+
+def _numbers_in(sheet: pd.DataFrame) -> int:
+    """How many cells of a sheet read without a header hold a number."""
+    return sum(int(to_numbers(sheet[column]).notna().sum()) for column in sheet.columns)
+
+
+def _data_sheet(contents: bytes) -> str | None:
+    """The worksheet to read when the first one holds only notes, or None to read the first.
+
+    The Maddison Project's workbook opens on "Notes", a citation note, and
+    keeps its data in "Full data". A first sheet with prose in it and hardly a
+    number is notes; the sheet with the most numbers is read instead.
+    """
+    with pd.ExcelFile(BytesIO(contents), engine=EXCEL_ENGINE) as workbook:
+        names = [str(name) for name in workbook.sheet_names]
+        if len(names) < 2:
+            return None
+        first = workbook.parse(names[0], header=None)
+        filled = int(first.notna().sum().sum())
+        prose = first.map(lambda value: isinstance(value, str) and len(value) > PROSE_LENGTH).to_numpy().any()
+        if not filled or not bool(prose) or _numbers_in(first) >= NOTE_NUMBER_SHARE * filled:
+            return None
+        counts = {name: _numbers_in(workbook.parse(name, header=None)) for name in names[1:]}
+    best = max(counts, key=lambda name: counts[name])
+    return best if counts[best] else None
+
+
 def read_tabular_file(
     contents: bytes,
     filename: str,
@@ -226,14 +259,17 @@ def read_tabular_file(
     """Read CSV, TSV or text bytes, or the chosen (default: first) worksheet of a workbook.
 
     A .tsv, .txt, .data or .dat file is read as tab-separated when that splits
-    its header, and otherwise as a CSV.
+    its header, and otherwise as a CSV. When no sheet is chosen and the first
+    holds only notes, the sheet with the most numbers is read, and its name is
+    kept in the frame's ``attrs["sheet"]``.
     """
     suffix = _validate(contents, filename)
     if suffix in EXCEL_SUFFIXES:
         try:
-            sheet = sheet_name if sheet_name is not None else 0
+            found = _data_sheet(contents) if sheet_name is None else None
+            sheet = sheet_name if sheet_name is not None else found or 0
             header = pd.read_excel(BytesIO(contents), engine=EXCEL_ENGINE, sheet_name=sheet, nrows=0)
-            return pd.read_excel(
+            frame = pd.read_excel(
                 BytesIO(contents),
                 engine=EXCEL_ENGINE,
                 sheet_name=sheet,
@@ -243,6 +279,9 @@ def read_tabular_file(
             )
         except CalamineError as error:
             raise ValueError("The file is not a valid Excel workbook.") from error
+        if found:
+            frame.attrs["sheet"] = found
+        return frame
 
     parse_errors: list[Exception] = []
     for encoding in _candidate_encodings(contents):

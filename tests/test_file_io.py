@@ -254,3 +254,33 @@ class ArchiveSuffixTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NotesSheetTests(unittest.TestCase):
+    """A workbook that opens on a sheet of notes, as the Maddison Project's does."""
+
+    @staticmethod
+    def workbook(first: pd.DataFrame) -> bytes:
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            first.to_excel(writer, index=False, header=False, sheet_name="Notes")
+            pd.DataFrame({"country": ["Chile", "Peru"], "year": [2021, 2022], "pop": [19.5, 33.7]}).to_excel(
+                writer, index=False, sheet_name="Full data")
+            pd.DataFrame({"Region": ["Andes"]}).to_excel(writer, index=False, sheet_name="Regions")
+        return output.getvalue()
+
+    def test_the_sheet_with_the_most_numbers_is_read_after_a_sheet_of_notes(self) -> None:
+        policy = ("Citation policy: when the data are shown in any graphical form, cite the original papers "
+                  "that were used to make the estimates, as listed on the sources sheet.")
+        notes = pd.DataFrame({0: ["Maddison Project Database (MPD) 2023", policy]})
+        frame = read_tabular_file(self.workbook(notes), "mpd.xlsx")
+        self.assertEqual(frame.columns.tolist(), ["country", "year", "pop"])
+        self.assertEqual(frame.attrs["sheet"], "Full data")
+
+    def test_a_first_sheet_with_numbers_or_no_prose_is_read(self) -> None:
+        figures = pd.DataFrame({0: ["Region", "West", "East"], 1: ["Revenue", 100, 200]})
+        self.assertEqual(read_tabular_file(self.workbook(figures), "book.xlsx").columns.tolist(),
+                         ["Region", "Revenue"])
+        titles = pd.DataFrame({0: ["Contents", "Full data"]})
+        self.assertNotIn("sheet", read_tabular_file(self.workbook(titles), "book.xlsx").attrs)
+

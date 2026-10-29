@@ -392,8 +392,32 @@ each word is claimed, in this order, by:
     reported or closed, is read in the first, unless the question says
     "reported".
     A plural formed from a one-word value ("senators" where `chamber` holds
-    senate, "democrats" for Democratic) is not every row: the question is
-    refused and names the value to write instead.
+    senate, "democrats" for Democratic), or a word for who uses a thing
+    formed from the first word of longer values ("motorcyclists" for
+    Motorcycle rider and Motorcycle pillion passenger), is not every row: the
+    question is refused and names the values to write instead. The last word
+    of a value is matched without its plural: "cyclists" names Pedal cyclist,
+    but "state" does not name United States, and a word for a period does
+    not drop its plural ("which months" is no "within a month").
+    A plural whose singular starts several values that differ by more than a
+    number ("thefts" for theft_other and theft_vehicle_motorcycle) is refused
+    the same way; "probes" for probe_0 to probe_79 is not, and neither is
+    "railways" for values that only hold the word ("garbage on the railway
+    track"). A code of words
+    joined by underscores is named by its words in any order: "motorcycle
+    thefts" names theft_vehicle_motorcycle.
+    "in Finland", where several areas hold the word ("MA1 MAINLAND FINLAND",
+    "HVA05 Southwest Finland wellbeing services county") and the column's
+    total level is the whole country ("WHOLE COUNTRY"), is that whole.
+    Short names that tables give their columns are read in full: `pop` is
+    population and `gdppc` GDP per capita; "per head" and "per person" mean
+    per capita when no column is named so. With one column called Deaths,
+    "how many people died" is "how many deaths". "unemployed people" names
+    a value written "Unemployed persons".
+    An ID that numbers events (`Crash ID`, an order, a visit) counts those
+    events only, so "how many people were killed" in a table of a row per
+    person killed counts the rows. In such a table of deaths, "died" and
+    "killed" name every row.
     A plural after "how many", "number of" or "share of" that names the one
     column of whole counts named for it with a word such as count, number or
     n ("encounters" for `encounter_count`) adds that column up: counts,
@@ -735,7 +759,9 @@ that a column of whole counts ends in is added up from that column instead
 ("how many deaths" sums `total_deaths`); when several do ("votes" in
 `candidatevotes` and `totalvotes`), the question is refused with both, since
 counting rows would count candidates. "How many
-participants per condition" counts distinct participants per condition.
+participants per condition" counts distinct participants per condition,
+while "how many deaths in each region" and "how many deaths each year" add
+up a column of counts called Deaths for each group or year.
 The word for the units, when the question names another column too, names
 the rows rather than a measure: in "the heaviest rat's weight" with a `Rat`
 column numbering 16 rats, "rat" is the rows, and "the models" names the rows
@@ -1047,6 +1073,10 @@ Other behaviour:
   measurements that are never negative and are not rates themselves; a code
   after "per" ("Claims per District") or an average asked for ("average
   quantity per transect") keeps its own reading.
+- A measure is never combined over rows whose unit column (`UNIT`, `UNITS`,
+  `Unit of measure`) holds more than one unit: Stats NZ gives "Food" as an
+  index and as two percent changes, and the answer names the units and asks
+  for one, unless it groups by the unit column.
 - Changes are given in the measure's own terms: percent for an amount or
   count, percentage points for a rate, the plain difference for a level,
   whose percent change is in the figures too. A change between two years the
@@ -1056,7 +1086,8 @@ Other behaviour:
   rescues change in 2020") is that year against the year before, not the last
   two months of the year, and a change since a year ("since 1950") is that year
   against the latest, as a change since a month ("since January 2022") is that
-  month against the latest month. In a table with no date, a column of whole years
+  month against the latest month. On monthly rows, a change "in the year to
+  September 2026" is September 2025 against September 2026. In a table with no date, a column of whole years
   ("Year of Birth") dates the rows when the question names its years, each
   row as 1 January of its year. A change in "the number of" rows with no
   measure named is a change in the row count. "rose", "risen" and

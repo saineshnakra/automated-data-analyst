@@ -201,9 +201,11 @@ def _found_in(frame: pd.DataFrame, column: object) -> AggregateRows | None:
 
 
 #: A level that stands for every other level of its column in a cross-tabulated table: "All Ages",
-#: "Both sexes", "Persons", "All races", "Total"; "All Other Transport" is one level among the rest.
+#: "Both sexes", "Both genders", "Persons", "All races", "Total", "WHOLE COUNTRY"; "All Other Transport" is
+#: one level among the rest.
 TOTAL_LEVEL = re.compile(
-    r"(?:all(?!\sothers?\b)|total)(?:\s.+)?|both sexes|persons|everyone|.+\stotal|overall"
+    r"(?:all(?!\sothers?\b)|total)(?:\s.+)?|both sexes|both genders|persons|everyone|.+\stotal|overall|"
+    r"(?:whole|entire)\s.+"
 )
 #: Fewest and most labels a column of levels with a total among them may hold.
 MIN_LEVELS, MAX_LEVELS = 3, 60
@@ -451,11 +453,16 @@ def total_levels(frame: pd.DataFrame) -> tuple[TotalLevel, ...]:
         # Single years of age, 0 to 115 beside "ALL", are many levels but each a number.
         numbered = len(labels) <= MAX_NUMBERED_LEVELS and sum(
             not re.fullmatch(r"\d+(?:\.0)?", label.strip()) for label in labels) <= 2
-        if not MIN_LEVELS <= len(labels) <= MAX_LEVELS and not numbered:
+        # Up to MAX_NUMBERED_LEVELS labels when one reads as a total: Statistics Finland's 65 causes of death
+        # beside "00-54 Total".
+        many = MAX_LEVELS < len(labels) <= MAX_NUMBERED_LEVELS and not numbered
+        if not MIN_LEVELS <= len(labels) <= MAX_LEVELS and not numbered and not many:
             continue
         # "Age of mother, all ages": the words every label shares say nothing of the level.
         keys = distinct_parts(labels)
         totals = [label for label in labels if TOTAL_LEVEL.fullmatch(_label_key(keys[label]))]
+        if many and not totals:
+            continue
         if len(totals) == 1 and _covers(frame, column, totals[0]):
             found.append(TotalLevel(str(column), totals[0]))
         elif totals and len(dominant := [label for label in totals if _dominates(frame, column, label)]) == 1:

@@ -14,7 +14,9 @@ from table_helpers import (
     births,
     commuting,
     covid_deaths,
+    crimes_by_type,
     deaths,
+    deaths_by_cause_wide,
     eviction_notices,
     food_prices,
     migration,
@@ -22,6 +24,7 @@ from table_helpers import (
     parking_tickets,
     registry,
     road_deaths,
+    road_deaths_colombia,
 )
 
 import ada
@@ -33,6 +36,7 @@ from ada.claims import (
     _based,
     _guessed_failure,
     _noun_share,
+    _plain_change,
     claimed_number,
     column_unit,
     read_claim,
@@ -2566,7 +2570,9 @@ class TableListClaimTests(unittest.TestCase):
         path = self.table("park_species.csv", pd.DataFrame(rows, columns=["ParkName", "Category"]))
         check = ada.check_claim(path, "Smoky lists 5 plant species.")
         self.assertEqual(check.reason, "missing_context")
-        self.assertIn('"lists"', check.message)
+        # Either "lists" or "plant", which picks values of Category the reading leaves out, says why.
+        self.assertTrue('"lists"' in check.message or '"plant" names values of Category' in check.message,
+                        check.message)
 
     def test_a_city_named_is_not_what_the_cities_after_the_number_count(self):
         # Two cities are called Athens; the 49 cities Athens is twinned with are in another file.
@@ -3095,6 +3101,32 @@ class EndsUnderOtherReadingsTests(unittest.TestCase):
         self.assertEqual(ada.check_claim(self.path, claim).reason, "failed_check")
 
 
+class EachOfTwoClaimTests(unittest.TestCase):
+    """Law enforcement agencies, one row each: 3 in Pennsylvania, 3 in Texas, 2 in Ohio."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.path = Path(folder.name) / "agencies.csv"
+        states = ["Pennsylvania"] * 3 + ["Texas"] * 3 + ["Ohio"] * 2
+        pd.DataFrame({"ori": [f"A{index}" for index in range(8)], "state": states,
+                      "agency_type": ["City", "County"] * 4}).to_csv(self.path, index=False)
+
+    def test_each_of_two_names_is_checked_on_its_own(self):
+        claim = "Pennsylvania and Texas each have 3 agencies, more than any other state."
+        check = ada.check_claim(self.path, claim)
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("Checked for Pennsylvania and for Texas on their own", " ".join(check.assumptions))
+        check = ada.check_claim(self.path, "Pennsylvania and Ohio each have 3 agencies.")
+        self.assertEqual(check.reason, "failed_check")
+        self.assertTrue(check.message.startswith("For Ohio:"))
+
+    def test_a_closing_rank_that_blocks_the_reading_is_checked_after(self):
+        self.assertTrue(ada.check_claim(self.path, "Texas has 3 agencies, the most of any state.").verified)
+        check = ada.check_claim(self.path, "Ohio has 2 agencies, more than any other state.")
+        self.assertEqual(check.reason, "failed_check")
+
+
 class FractionOfPeopleTests(unittest.TestCase):
     def test_a_plural_that_needs_no_s_is_read_in_a_fraction(self):
         # "Two men in five" once raised TypeError: the noun is already a plural.
@@ -3104,3 +3136,234 @@ class FractionOfPeopleTests(unittest.TestCase):
         self.assertEqual(_noun_share(NOUN_IN_FRACTION.search("two men in five")), "40% of men")
         self.assertEqual(_noun_share(NOUN_IN_FRACTION.search("one person in ten")), "10% of people")
 
+
+class QuarterlyCountClaimTests(unittest.TestCase):
+    """People by quarter and relation to work, in thousands, as Spain's INE gives them."""
+
+    def frame(self) -> pd.DataFrame:
+        relations = ["Total", "Employed persons", "Unemployed persons", "Unemployed seeking first job"]
+        quarters = (("2026QII", (42626.4, 22700.0, 2700.0, 320.0)),
+                    ("2026QIII", (42751.8, 22852.6, 2591.2, 325.3)))
+        rows = [(quarter, relation, value) for quarter, values in quarters
+                for relation, value in zip(relations, values, strict=True)]
+        return pd.DataFrame(rows, columns=["Periodo", "Relationship with the economic activity", "Total"])
+
+    def test_words_after_a_scaled_number_that_name_values_are_not_dropped(self):
+        # "unemployed" names two values; summed over every relation the quarter gives 68,519.
+        claim = "There were about 2.6 million unemployed people in the third quarter of 2026."
+        check = ada.check_claim(self.frame(), claim)
+        self.assertEqual(check.reason, "missing_context")
+        self.assertIn("unemployed", check.message)
+
+
+class NestedDeathClaimTests(unittest.TestCase):
+    """Deaths by area and cause with a column for each year: 1,080 in the whole country in 2022, the most."""
+
+    def setUp(self):
+        self.analysis = ada.analyze(deaths_by_cause_wide())
+
+    def test_hit_a_record_high_is_the_level_and_the_record(self):
+        claim = "Deaths in Finland hit a record high of about 1,080 in 2022."
+        self.assertTrue(ada.check_claim(self.analysis, claim).verified)
+        check = ada.check_claim(self.analysis, "Deaths in Finland hit a record of about 1,026 in 2023.")
+        self.assertEqual(check.reason, "failed_check")
+        self.assertIn("the record is 2022", check.message)
+
+
+class CrimeClaimTests(unittest.TestCase):
+    """Crimes by state and type: motorcycle thefts fell 65.3% from 2016 to 2023; rapes peaked in 2023."""
+
+    def setUp(self):
+        self.analysis = ada.analyze(crimes_by_type())
+
+    def test_a_coded_kind_of_crime_counts_the_one_column_of_numbers(self):
+        claim = "Motorcycle thefts in Malaysia fell by about 65% between 2016 and 2023."
+        self.assertTrue(ada.check_claim(self.analysis, claim).verified)
+        claim = "Motorcycle thefts in Malaysia fell by about 50% between 2016 and 2023."
+        self.assertEqual(ada.check_claim(self.analysis, claim).reason, "failed_check")
+
+    def test_with_a_second_column_of_numbers_the_column_is_still_a_guess(self):
+        frame = crimes_by_type().assign(victims=lambda rows: rows["crimes"] * 2)
+        claim = "Motorcycle thefts in Malaysia fell by about 65% between 2016 and 2023."
+        self.assertEqual(ada.check_claim(frame, claim).reason, "missing_context")
+
+    def test_the_most_of_any_year_since_a_year_is_set_against_the_years_from_it(self):
+        claim = "Malaysia recorded 1,950 rapes in 2023, the most of any year since 2016."
+        self.assertTrue(ada.check_claim(self.analysis, claim).verified)
+        check = ada.check_claim(self.analysis, "Malaysia recorded 1,900 rapes in 2022, the most of any year "
+                                               "since 2016.")
+        self.assertEqual(check.reason, "failed_check")
+
+    def test_strong_verbs_of_change_are_read_as_rose_and_fell(self):
+        claim = "Motorcycle thefts in Malaysia collapsed by about 65% between 2016 and 2023."
+        self.assertTrue(ada.check_claim(self.analysis, claim).verified)
+        claim = "Rapes in Malaysia soared by about 50% between 2016 and 2023."
+        self.assertEqual(ada.check_claim(self.analysis, claim).reason, "failed_check")
+        # Only before "by", "to" or a percent: a jump of 8.95 metres is no change.
+        self.assertEqual(_plain_change("Sales soared 40% in 2020"), "Sales rose 40% in 2020")
+        jump = "Powell jumped 8.95 metres in 1991"
+        self.assertEqual(_plain_change(jump), jump)
+
+
+class PlaceSpellingTests(unittest.TestCase):
+    """GDP per head by country and year, with Hong Kong written "China, Hong Kong SAR" as the Maddison Project
+    writes it."""
+
+    def test_a_place_after_a_comma_is_another_place(self):
+        countries = [f"Country {index}" for index in range(60)] + ["China", "China, Hong Kong SAR"]
+        frame = pd.DataFrame({
+            "country": [name for name in countries for _ in (1980, 2022)],
+            "year": [1980, 2022] * len(countries),
+            "gdppc": [1_000.0, 2_000.0] * 60 + [1_930.0, 19_238.0, 20_000.0, 45_000.0],
+        })
+        check = ada.check_claim(frame, "China's GDP per head rose roughly tenfold between 1980 and 2022.")
+        self.assertTrue(check.verified, check.message)
+
+
+
+class CountryNamedTownTests(unittest.TestCase):
+    """Colombia's road deaths, a row each, with a town called Colombia among the municipalities."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        path = Path(folder.name) / "colombia-road-deaths" / "homicidios.csv"
+        path.parent.mkdir()
+        road_deaths_colombia().to_csv(path, index=False)
+        self.analysis = ada.analyze(path)
+
+    def test_a_code_column_is_not_the_measure_and_the_rows_are_counted(self):
+        self.assertIsNone(self.analysis.roles.measure)
+        check = ada.check_claim(self.analysis, "Antioquia recorded more than 5 road deaths in 2024.")
+        self.assertTrue(check.verified, check.message)
+        check = ada.check_claim(self.analysis, "Antioquia recorded more than 8 road deaths in 2024.")
+        self.assertEqual(check.reason, "failed_check")
+
+    def test_a_country_named_by_a_town_is_also_read_as_the_whole_table(self):
+        check = ada.check_claim(self.analysis, "Colombia recorded more than 10 road deaths in 2024.")
+        self.assertEqual(check.reason, "ambiguous_intent")
+        self.assertEqual([item.value for item in check.alternatives], [1, 11])
+        check = ada.check_claim(self.analysis, "Colombia recorded more than 20 road deaths in 2024.")
+        self.assertEqual(check.reason, "failed_check")
+
+
+class KindsOfAWordTests(unittest.TestCase):
+    def test_values_that_only_hold_the_word_are_left_out(self):
+        # "railways" is not a choice between "garbage on the railway track" and "railway problems abroad".
+        causes = ["broken down train"] * 4 + ["garbage on the railway track", "railway problems abroad",
+                                              "person on the railway track", "damaged railway bridge"]
+        frame = pd.DataFrame({"cause": causes, "start_time": pd.date_range("2025-01-01", periods=8)})
+        claim = "Broken-down trains caused half of the disruptions on the railways in 2025."
+        check = ada.check_claim(frame, claim)
+        self.assertIn('Without "railways", which name nothing in the table, the data give 50', check.message)
+
+
+class CountryColumnTests(unittest.TestCase):
+    """Life expectancy for 35 entities, as the World Bank gives them: 12 countries and 23 regions and income
+    groups, so a fifth of the labels are not countries."""
+
+    def setUp(self):
+        countries = ["Japan", "France", "Germany", "Italy", "Spain", "Chile", "Peru", "Kenya", "Ghana",
+                     "Nepal", "Norway", "Sweden"]
+        entities = [*countries, *(f"Region {number}" for number in range(1, 24))]
+        self.frame = pd.DataFrame({"Entity": entities, "Year": [2021] * len(entities),
+                                   "Life expectancy": [84.4] + [70.0] * (len(entities) - 1)})
+
+    def test_a_country_in_a_column_of_countries_is_the_row(self):
+        check = ada.check_claim(self.frame, "Life expectancy in Japan was 84.4 years in 2021.")
+        self.assertTrue(check.verified, check.message)
+
+    def test_a_column_named_for_countries_holds_them(self):
+        frame = self.frame.rename(columns={"Entity": "Country Name"})
+        frame["Country Name"] = frame["Country Name"].where(frame["Country Name"] == "Japan", "Other")
+        frame["Country Name"] = frame["Country Name"] + frame.index.astype(str).where(
+            frame["Country Name"] != "Japan", "")
+        check = ada.check_claim(frame, "Life expectancy in Japan was 84.4 years in 2021.")
+        self.assertTrue(check.verified, check.message)
+
+
+class MoneyByUnitTests(unittest.TestCase):
+    """Personal income as BEA gives it, a Value for each state, line and year, with Unit saying what each
+    line is in: Texas had 2,319,750.7 million dollars in 2025 and $54,433 a head in Mississippi."""
+
+    def setUp(self):
+        lines = {"Personal income (millions of dollars)": ("Millions of dollars", 2_319_750.7),
+                 "Population (persons) 1/": ("Number of persons", 31_000_000.0),
+                 "Per capita personal income (dollars) 2/": ("Dollars", 54_433.0)}
+        self.frame = pd.DataFrame([
+            {"GeoName": state, "Description": line, "Unit": unit, "Year": year,
+             "Value": value * (1 if year == 2025 else 0.9) * (0.5 if state == "Ohio" else 1)}
+            for state in ("Texas", "Mississippi", "Ohio") for year in (2024, 2025)
+            for line, (unit, value) in lines.items()])
+
+    def test_an_amount_is_read_from_value_in_the_unit_of_its_rows(self):
+        check = ada.check_claim(self.frame, "Texans' personal income topped $2 trillion in 2025.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("Millions of dollars", " ".join(check.assumptions))
+        check = ada.check_claim(self.frame, "Texans' personal income topped $3 trillion in 2025.")
+        self.assertEqual(check.reason, "failed_check")
+
+    def test_a_description_says_what_value_holds(self):
+        claim = "Mississippians had a per capita personal income of about $54,000 in 2025."
+        self.assertTrue(ada.check_claim(self.frame, claim).verified)
+        claim = "Mississippians had a per capita personal income of about $45,000 in 2025."
+        self.assertEqual(ada.check_claim(self.frame, claim).reason, "failed_check")
+
+
+class ChangeAndLevelTests(unittest.TestCase):
+    """Sales by year and region: 900 in 2019 and 1,200 in 2020, up a third."""
+
+    def setUp(self):
+        self.frame = pd.DataFrame({"year": [2018, 2019, 2020] * 2, "region": ["N"] * 3 + ["S"] * 3,
+                                   "sales": [400, 500, 600, 300, 400, 600]})
+
+    def test_a_change_and_the_level_it_reached_are_each_checked(self):
+        check = ada.check_claim(self.frame, "Sales rose by about a third in 2020, to 1,200.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("Checked the change and the level it reached on their own", " ".join(check.assumptions))
+        check = ada.check_claim(self.frame, "Sales rose by 20% to 1,200 in 2020.")
+        self.assertEqual(check.reason, "failed_check")
+        self.assertTrue(check.message.startswith("The change:"))
+        check = ada.check_claim(self.frame, "Sales rose by about a third in 2020, to 1,500.")
+        self.assertTrue(check.message.startswith("The level:"))
+
+    def test_one_number_alone_is_read_as_before(self):
+        self.assertTrue(ada.check_claim(self.frame, "Sales rose by about a third in 2020.").verified)
+        # "from 2019 to 2020" gives years, not a level the change reached.
+        claim = "Sales rose by about a third from 2019 to 2020."
+        self.assertTrue(ada.check_claim(self.frame, claim).verified)
+
+
+class MisreadingGuardTests(unittest.TestCase):
+    def test_ends_ten_times_off_say_the_reading_counts_something_else(self):
+        # Widgets sold 30 and 20; the claim's 3,000 and 1,200 are another thing's counts.
+        frame = pd.DataFrame({"year": [2019, 2020] * 2, "product": ["widgets"] * 2 + ["gadgets"] * 2,
+                              "sales": [30, 20, 2900, 2000]})
+        claim = "Sales of widgets fell by more than half between 2019 and 2020, from 3,000 to 1,200."
+        check = ada.check_claim(frame, claim)
+        self.assertEqual(check.reason, "missing_context")
+        self.assertIn("The claim's ends are far from the reading's", check.message)
+        # Ends near the data's leave the failure standing.
+        check = ada.check_claim(frame, claim.replace("widgets", "gadgets"))
+        self.assertEqual(check.reason, "failed_check")
+
+    def test_a_value_averaged_over_breakdowns_is_no_verdict(self):
+        # Persons fall by 1 point a year; the mean over Persons, Male and Female falls by two thirds of one.
+        shares = {"Persons": (20, 19, 18, 17), "Male": (22, 21, 20, 19), "Female": (18, 18, 18, 18)}
+        frame = pd.DataFrame([{"Indicator Name": "Smoking prevalence", "Area Name": "England", "Sex": sex,
+                               "Time period": 2011 + index, "Value": value}
+                              for sex, values in shares.items() for index, value in enumerate(values)])
+        claim = "Smoking prevalence in England has fallen by about 3 points a year since 2011."
+        check = ada.check_claim(frame, claim)
+        self.assertEqual(check.reason, "missing_context")
+        self.assertIn("The rows averaged differ in Sex", check.message)
+        self.assertEqual(ada.check_claim(frame[frame["Sex"] == "Persons"], claim).reason, "failed_check")
+
+    def test_a_share_of_rows_in_a_table_of_values_is_no_verdict(self):
+        # California has 13.6 of the United States' 100; two rows of the eight are 25%.
+        frame = pd.DataFrame({"GeoName": ["United States", "California", "Texas", "Ohio"] * 2,
+                              "Description": ["Personal income"] * 4 + ["Population"] * 4,
+                              "Year": [2025] * 8, "Value": [100.0, 13.6, 9.0, 3.0, 340.0, 39.0, 31.0, 12.0]})
+        claim = "Californians received about 13.6% of all personal income in the United States in 2025."
+        check = ada.check_claim(frame, claim)
+        self.assertNotEqual(check.reason, "failed_check")

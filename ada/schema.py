@@ -232,9 +232,12 @@ CHECK_WORDS = frozenset({"realism", "attention", "manipulation"})
 # Head words that mark a column as a key rather than a quantity. Such columns stay
 # text through reading and cleaning, so an account number 00042 keeps its zeros.
 # Whole-word match, so "Paid Amount" is not an id.
+CODE_WORDS_ABROAD = frozenset({"codigo", "código", "codice", "cod"})
 IDENTIFIER_NAME_WORDS = frozenset({
     "id", "ids", "code", "codes", "zip", "zipcode", "postal", "postcode", "phone", "telephone",
     "mobile", "tel", "fax", "sku", "number", "no", "#", "key", "uuid", "notation", "barcode",
+    # The same in Spanish, Portuguese and Italian: CODIGO DANE, codice ISTAT.
+    *CODE_WORDS_ABROAD,
 })
 
 # Head words that name the unit a row belongs to rather than a quantity: subject 12
@@ -464,8 +467,12 @@ def is_identifier_name(name: str, columns=()) -> bool:
     (such as "Order No") stay text. "No" alone counts only with a mark ("No.",
     "No #"): a bare "NO" is as likely nitric oxide or a yes/no answer. Among
     ``columns``, "hp_number" beside "hp" is the number of hp, not a key.
+    Spanish and Italian put the word first: CODIGO DANE, codice ISTAT.
     """
     words = _head_words(name)
+    if len(words) > 1 and words[0] in CODE_WORDS_ABROAD and words[0] != "cod":
+        # "COD" first is as likely a cause of death.
+        return True
     if not words or words[-1] not in IDENTIFIER_NAME_WORDS or _bare_no(name, words):
         return False
     return not (words[-1] in NUMBER_KEY_WORDS and len(words) > 1 and " ".join(words[:-1]) in {
@@ -824,7 +831,7 @@ def _named_as_quantity(name: str) -> bool:
 def _named_as_label(name: str) -> bool:
     """Whether the name marks group labels: a status, a condition, a site, a plate row or "id_reef"."""
     words = _head_words(name)
-    keyed = len(words) > 1 and words[0] in {"id", "code"}
+    keyed = len(words) > 1 and words[0] in {"id", "code", *CODE_WORDS_ABROAD}
     return bool(words) and (
         words[-1] in LABEL_NAME_WORDS or is_entity_name(name) or is_design_name(name) or keyed
     )

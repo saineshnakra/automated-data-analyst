@@ -11,6 +11,8 @@ from table_helpers import (
     births,
     commuting,
     covid_deaths,
+    crimes_by_type,
+    deaths_by_cause_wide,
     food_prices,
     migration,
     parking_tickets,
@@ -27,6 +29,7 @@ from ada.formatting import format_number
 from ada.nlq import (
     Condition,
     QueryPlan,
+    ValueFilter,
     WholeTable,
     answer_question,
     execute_plan,
@@ -5164,3 +5167,218 @@ class DashedFlagTests(unittest.TestCase):
         answer = ada.analyze(frame).ask("share of rows with Frisk Flag")
         self.assertIn("2 of the 5 rows with Frisk Flag recorded (40.0%)", answer.answer)
 
+
+class MixedUnitTests(unittest.TestCase):
+    def test_a_measure_in_two_units_is_not_combined(self):
+        # Stats NZ gives "Food" as an index and as a percent change on the same months.
+        months = ["2025-09-30", "2025-09-30", "2026-09-30", "2026-09-30"]
+        frame = pd.DataFrame({"Period": pd.to_datetime(months),
+                              "Series_title_1": ["Food"] * 4, "UNITS": ["Index", "Percent"] * 2,
+                              "Data_value": [1354.0, 4.1, 1386.0, 2.4]})
+        answer = ada.analyze(frame).ask("average Data_value for Food")
+        self.assertIsNone(answer.value)
+        self.assertIn("UNITS holds Index and Percent", answer.answer)
+        # One unit named, the rows combine.
+        answer = ada.analyze(frame).ask("average Data_value for Food with UNITS Index")
+        self.assertAlmostEqual(answer.value, 1370.0)
+        # Grouped by the unit column, each group has one unit.
+        answer = ada.analyze(frame).ask("average Data_value by UNITS")
+        self.assertIsNotNone(answer.table)
+
+    def test_a_change_in_the_year_to_a_month_is_the_annual_change(self):
+        months = pd.date_range("2025-01-31", periods=21, freq="ME")
+        prices = [1000.5 + (7 * step) % 5 + step for step in range(21)]
+        frame = pd.DataFrame({"Period": months, "price": prices})
+        answer = ada.analyze(frame).ask("how did the price change in the year to September 2026")
+        self.assertAlmostEqual(dict(answer.figures)["previous"], prices[8])
+        self.assertAlmostEqual(dict(answer.figures)["latest"], prices[20])
+        self.assertIn('as September 2025 to September 2026', answer.answer)
+
+
+class RoadDeathTests(unittest.TestCase):
+    """A row per person killed on the roads, with the crash each was in."""
+
+    def frame(self) -> pd.DataFrame:
+        users = ["Driver", "Pedal cyclist", "Motorcycle rider", "Motorcycle pillion passenger", "Pedestrian",
+                 "Driver"]
+        return pd.DataFrame({"Crash ID": [1, 1, 2, 3, 4, 4], "Road User": users,
+                             "Year": [2020] * 6, "Age": [40, 12, 33, 31, 70, 55]})
+
+    def test_words_for_dying_name_every_row_of_a_table_of_deaths(self):
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        path = Path(holder.name) / "fatalities.csv"
+        self.frame().to_csv(path, index=False)
+        analysis = ada.analyze(path)
+        # Crash ID numbers crashes, so the people killed are the rows, not the 4 crashes.
+        self.assertEqual(analysis.ask("how many people were killed").value, 6)
+        self.assertEqual(analysis.ask("how many crashes").value, 4)
+        self.assertEqual(analysis.ask("how many cyclists died").value, 1)
+
+    def test_a_word_for_who_uses_a_thing_names_the_values_it_starts(self):
+        refusal = ada.analyze(self.frame()).ask("how many motorcyclists")
+        self.assertIsInstance(refusal, ada.Refusal)
+        self.assertIn("Motorcycle rider or Motorcycle pillion passenger", refusal.message)
+
+
+
+class SummedCountTests(unittest.TestCase):
+    """Deaths by year, region and cause, each row holding a count."""
+
+    def setUp(self):
+        frame = pd.DataFrame({
+            "Year": [2019, 2019, 2020, 2020, 2021, 2021] * 2, "Region": ["North", "South"] * 6,
+            "Cause": ["Heart"] * 6 + ["Cancer"] * 6, "Deaths": [10, 20, 30, 40, 50, 60, 1, 2, 3, 4, 5, 6],
+        })
+        self.analysis = ada.analyze(frame)
+
+    def test_how_many_in_each_group_adds_up_a_column_of_counts(self):
+        # It once counted the distinct values of Deaths: 6 in each region.
+        result = self.analysis.ask("how many deaths in each region")
+        self.assertEqual(result.plan.aggregation, "sum")
+        self.assertEqual(dict(zip(result.table["Region"], result.table["Total Deaths"], strict=True)),
+                         {"North": 99, "South": 132})
+
+    def test_how_many_each_year_adds_up_a_column_of_counts(self):
+        result = self.analysis.ask("how many deaths each year")
+        self.assertEqual((result.plan.intent, result.plan.aggregation), ("trend", "sum"))
+        self.assertEqual(list(result.table["Value"]), [33, 77, 121])
+
+    def test_a_column_numbering_things_is_still_counted(self):
+        frame = pd.DataFrame({"Ward": ["A", "A", "A", "B", "B"], "Patient": [1, 1, 2, 3, 4],
+                              "Visits": [1, 2, 1, 3, 1]})
+        result = ada.analyze(frame).ask("how many patients in each ward")
+        self.assertEqual((result.plan.aggregation, result.plan.count_column), ("count", "Patient"))
+        self.assertEqual(list(result.table["Distinct Patient"]), [2, 2])
+
+    def test_one_group_has_nothing_to_group_by(self):
+        refusal = ada.analyze(pd.DataFrame({"Region": ["North"], "Deaths": [5]})).ask(
+            "how many deaths in each region")
+        self.assertIsInstance(refusal, ada.Refusal)
+
+
+class WholeCountryTests(unittest.TestCase):
+    """Deaths by area and cause, a column for each year, areas and causes nested under their wholes."""
+
+    def setUp(self):
+        self.analysis = ada.analyze(deaths_by_cause_wide())
+
+    def test_the_country_is_its_whole_level_not_the_areas_named_for_it(self):
+        # "Finland" is in "MA1 MAINLAND FINLAND" and "HVA05 Southwest Finland ...", parts of WHOLE COUNTRY.
+        result = self.analysis.ask("deaths in Finland in 2022")
+        self.assertEqual(result.value, 1080)
+        self.assertIn(ValueFilter("Wellbeing services county", ("WHOLE COUNTRY",)), result.plan.filters)
+
+    def test_people_died_names_a_column_of_deaths(self):
+        self.assertEqual(self.analysis.ask("how many people died in Finland in 2019").value, 864)
+
+    def test_without_a_whole_the_country_is_still_refused(self):
+        frame = deaths_by_cause_wide()
+        frame = frame[frame["Wellbeing services county"] != "WHOLE COUNTRY"]
+        refusal = ada.analyze(frame).ask("deaths in Finland in 2022")
+        self.assertIsInstance(refusal, ada.Refusal)
+        self.assertIn("matches several", refusal.message)
+
+
+class ShortColumnNameTests(unittest.TestCase):
+    """GDP per head and population by country and year, named gdppc and pop as the Maddison Project does."""
+
+    def setUp(self):
+        self.analysis = ada.analyze(pd.DataFrame({
+            "country": ["Chile", "Chile", "Peru", "Peru"], "year": [2021, 2022, 2021, 2022],
+            "gdppc": [22_000.0, 23_000.0, 12_000.0, 12_500.0],
+            "pop": [19_500.0, 19_600.0, 33_500.0, 33_700.0],
+        }))
+
+    def test_population_and_gdp_per_head_name_the_short_columns(self):
+        self.assertEqual(self.analysis.ask("population of Peru in 2022").plan.measure, "pop")
+        for wording in ("GDP per head", "GDP per person", "GDP per capita"):
+            result = self.analysis.ask(f"{wording} of Chile in 2022")
+            self.assertEqual((result.plan.measure, result.value), ("gdppc", 23_000.0), wording)
+
+    def test_per_head_stays_when_a_column_is_named_so(self):
+        frame = pd.DataFrame({"country": ["Chile", "Peru"], "gdppc": [1.0, 2.0],
+                              "income per head": [3.0, 4.0]})
+        self.assertEqual(ada.analyze(frame).ask("income per head of Peru").plan.measure, "income per head")
+
+
+class CodedValueTests(unittest.TestCase):
+    """Crimes by state and type, with types written as codes ("theft_vehicle_motorcycle")."""
+
+    def setUp(self):
+        self.analysis = ada.analyze(crimes_by_type())
+
+    def test_words_name_a_code_in_any_order(self):
+        result = self.analysis.ask("how many motorcycle thefts in Malaysia in 2023")
+        self.assertIn(ValueFilter("type", ("theft_vehicle_motorcycle",)), result.plan.filters)
+        self.assertEqual(result.value, 10_400)
+
+    def test_a_count_stands_when_its_share_of_the_whole_cannot_be_read(self):
+        # The share of all crimes would add up assault and property; the count of rapes needs neither.
+        result = self.analysis.ask("how many rapes in Malaysia in 2023")
+        self.assertEqual(result.value, 1950)
+        self.assertIn("cannot be read", result.answer)
+
+    def test_a_word_shared_by_several_codes_is_refused(self):
+        # It once gave every crime, 21,440, for "thefts".
+        refusal = self.analysis.ask("how many thefts in Malaysia in 2023")
+        self.assertIsInstance(refusal, ada.Refusal)
+        self.assertIn("theft_other", refusal.message)
+
+    def test_values_that_only_hold_the_word_are_not_its_kinds(self):
+        # "railways" is not "garbage on the railway track" and "railway problems abroad".
+        causes = ["broken down train", "garbage on the railway track", "railway problems abroad",
+                  "person on the railway track"]
+        frame = pd.DataFrame({"cause": causes * 2, "minutes": range(8)})
+        vocabulary = nlq._vocabulary(frame, detect_roles(frame))
+        self.assertEqual(nlq._values_named(("railways",), vocabulary, exact_only=False), ([], False))
+        found, _ = nlq._values_named(("trains",), vocabulary, exact_only=False)
+        self.assertEqual([value.raw for value in found], ["broken down train"])
+
+
+
+class LabourForceTests(unittest.TestCase):
+    """People by sex, province and relation to work, in thousands, as Spain's INE gives them, with Both
+    genders beside Males and Females and National Total beside the provinces."""
+
+    def setUp(self):
+        relations = {"Total": 100.0, "Employed persons": 50.0, "Unemployed persons": 10.0,
+                     "Unemployed seeking first job": 2.0, "Inactive persons": 40.0}
+        rows = [{"Sex": sex, "Provinces": province, "Relationship with the economic activity": relation,
+                 "Periodo": quarter, "Total": value * share * part}
+                for quarter in ("2026QII", "2026QIII")
+                for sex, share in (("Both genders", 1.0), ("Males", 0.6), ("Females", 0.4))
+                for province, part in (("National Total", 1.0), ("28 Madrid", 0.5), ("08 Barcelona", 0.5))
+                for relation, value in relations.items()]
+        self.analysis = ada.analyze(pd.DataFrame(rows))
+
+    def test_people_names_a_value_written_with_persons(self):
+        result = self.analysis.ask("total unemployed people in the third quarter of 2026")
+        self.assertIn(ValueFilter("Relationship with the economic activity", ("Unemployed persons",)),
+                      result.plan.filters)
+        self.assertIn(ValueFilter("Sex", ("Both genders",)), result.plan.filters)
+        self.assertEqual(result.value, 10.0)
+
+    def test_people_alone_names_no_value(self):
+        refusal = self.analysis.ask("total people in the third quarter of 2026")
+        self.assertNotIn("persons", getattr(refusal, "message", "") or "")
+
+
+class PeriodWordTests(unittest.TestCase):
+    def test_a_period_word_does_not_reach_a_value_by_its_plural(self):
+        # Toronto's fires: "months" once picked "3 - May resume operations within a month".
+        frame = pd.DataFrame({
+            "TFS_Alarm_Time": pd.date_range("2024-01-01", periods=6, freq="MS"),
+            "Business_Impact": ["1 - No impact", "3 - May resume operations within a month"] * 3,
+        })
+        result = ada.analyze(frame).ask("which months have the most fires")
+        plan = getattr(result, "plan", None)
+        self.assertFalse(plan and any(item.column == "Business_Impact" for item in plan.filters))
+
+    def test_a_word_does_not_reach_a_value_by_taking_a_plural(self):
+        # "the lowest of any state" once kept GeoName = United States beside the state named.
+        frame = pd.DataFrame({"GeoName": ["United States", "Texas", "Ohio"], "Value": [1.0, 2.0, 3.0]})
+        vocabulary = nlq._vocabulary(frame, detect_roles(frame))
+        self.assertEqual(nlq._values_named(("state",), vocabulary, exact_only=False), ([], False))
+        found, _ = nlq._values_named(("states",), vocabulary, exact_only=False)
+        self.assertEqual([value.raw for value in found], ["United States"])

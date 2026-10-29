@@ -144,6 +144,87 @@
   table has no date, and "the number of girls" or "babies" adds up the one
   column named only as a count (Count, Freq or N) when no ID names each
   row once. Before, it was the share of rows and failed.
+- In a table whose rows are deaths (ardd_fatalities.csv), "died" and
+  "killed" name every row, and "deaths" names the rows as "fatalities"
+  does: "Deaths rose by about 8% between 2020 and 2022" counts them.
+- "in the year to September 2026" with a word of change, on monthly rows,
+  is September 2025 to September 2026.
+- "cyclists" names "Pedal cyclist": the last word of a value is matched with
+  its plural too. "motorcyclists" may mean Motorcycle rider or Motorcycle
+  pillion passenger, and the question asks which.
+- "Pennsylvania and Texas each have 1,477 agencies" is checked for each name
+  on its own. A closing rank whose words only name the groups ("the most of
+  any state", "more than any other state") is left out of the reading and
+  checked after, over every state.
+- A table with a column for each year ("1969 Deaths" to "2024 Deaths", as
+  Statistics Finland gives deaths by cause) is read with a row for each
+  year, so a year is a date like any other. Its areas and causes nest under
+  subtotals; "WHOLE COUNTRY" and "00-54 Total" are read as their columns'
+  totals, a column of up to 150 labels qualifies when one reads as a total,
+  and "in Finland" is the whole country rather than every area named for it.
+  "Deaths in Finland hit a record of more than 63,000 in 2022" is that
+  level, set against every year; "how many people died" names Deaths.
+- A workbook that opens on a sheet of notes (the Maddison Project's "Notes")
+  is read from the sheet with the most numbers ("Full data"), and a note says
+  so. Its short names are read in full: `pop` is population, `gdppc` GDP per
+  capita, and "GDP per head" or "per person" means per capita.
+- In a table of crime counts, "Motorcycle thefts" names
+  theft_vehicle_motorcycle, a code of words in another order, and the one
+  column of numbers, `crimes`, is what the claim counts rather than a guess.
+  "how many rapes in Malaysia in 2023" gives the count when its share of all
+  crimes cannot be read. "the most of any year since 2016" is a record set
+  against the years from 2016. "collapsed", "plunged", "soared" and other
+  strong verbs before "by", "to" or a percent read as "fell" or "rose".
+- Fixed a wrong count: "how many thefts" in a table whose types are
+  theft_other and theft_vehicle_motorcycle counted every crime; the question
+  is refused and names the kinds of theft.
+- "Australia's wheat crop grew by about a quarter in 2024-25, to 34.8 million
+  tonnes" checks the change and the level it reached as two claims, and holds
+  when both do. Before, two numbers in one claim were refused.
+- Months written "1993M01", as Statistics Norway gives them, are read as the
+  first day of each month. `CODIGO DANE` and other columns named `codigo`,
+  `codice` or `cod` are codes, not measures. In Colombia's road deaths, where
+  no column could hold a count of deaths, "more than 1,500 road deaths in
+  Antioquia" counts the rows, and "Colombia", also a town among the
+  municipalities, is read as the whole table too: when the town and the whole
+  table disagree, the claim gets `ambiguous_intent`. A column of 30 labels or
+  fewer, a column of countries and a US state are left out of this.
+- In BEA's personal income, whose Unit differs from line to line, an amount
+  of money is read from Value in the unit of the rows used: "Texans' personal
+  income topped $3 trillion in 2025" compares 2,319,750.7 million dollars,
+  and a Description with one value says what Value holds. Before, "topped $2
+  trillion" failed against 2,319,750.7.
+- The last word of a value is matched without its plural ("cyclists" names
+  Pedal cyclist), but not with one added: "the lowest of any state" no longer
+  keeps GeoName = United States beside the state named.
+- "unemployed people" names Spain's "Unemployed persons", and "Both genders"
+  is a total like "Both sexes".
+- "China" in a column of countries is not also "China, Hong Kong SAR", a
+  place after a comma, so "China's GDP per head rose roughly tenfold" is
+  checked.
+- A failed check is no verdict when the reading is likely of something else:
+  when each end the claim gives is ten times or more off the reading's ("from
+  280 to 123" read as deaths from Duty related illness, 2 and 4), and when a
+  Value column is averaged over rows that differ in a breakdown (Sex, Age,
+  Category), or a share is of the rows of a table whose rows each hold a
+  Value. These get `missing_context`.
+- Fixed a wrong count: "how many deaths in each region", where each row holds
+  a number of deaths, counted the distinct values of Deaths (6 in each
+  region). It adds them up now, as "how many deaths in 2020" did, and so does
+  "how many deaths each year", which was refused.
+- Fixed a wrong count: "how many cyclists in 2020" in a table of road deaths
+  counted 998 distinct Crash ID values. An ID that numbers events (a crash,
+  an order, a visit) counts those events only; the people in them are rows.
+- Fixed lost quarters: "2026Q3", "2026QIII" (INE), "2026 T3" and "Q3 2026"
+  were read as the number 2026, so the four quarters of a year became one
+  year four times over. They are the first day of each quarter now.
+- The words after a scaled number ("2.6 million unemployed people") are no
+  longer dropped when they name values the reading leaves out: the claim
+  gets `missing_context` rather than a total over every value.
+- Fixed a meaningless average: Stats NZ gives "Food" as an index and as two
+  percent changes, and a mean over the three rows mixed them (452.57). A
+  measure is no longer combined over rows whose unit column holds more than
+  one unit; the answer names the units.
 
 ### Wrong verdicts removed
 
