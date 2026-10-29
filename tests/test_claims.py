@@ -12,6 +12,7 @@ from table_helpers import (
     air_quality,
     baby_names,
     births,
+    cinema_tickets,
     commuting,
     covid_deaths,
     crimes_by_type,
@@ -3372,3 +3373,71 @@ class MisreadingGuardTests(unittest.TestCase):
         claim = "Californians received about 13.6% of all personal income in the United States in 2025."
         check = ada.check_claim(frame, claim)
         self.assertNotEqual(check.reason, "failed_check")
+
+
+class CinemaShareTests(unittest.TestCase):
+    """Statistics Denmark's cinema tickets, every column at every level: Danish films 37.28% of 2025's
+    tickets, American 46.64%."""
+
+    def test_a_share_of_all_tickets_is_no_rank(self):
+        claim = "Danish films took more than a third of all tickets sold in Denmark in 2025."
+        check = ada.check_claim(cinema_tickets(), claim)
+        self.assertTrue(check.verified, check.message)
+        self.assertAlmostEqual(check.compared, 37.28, places=2)
+
+    def test_a_place_beside_a_nationality_says_where(self):
+        claim = "American films sold more than half of all tickets in Denmark in 2025."
+        check = ada.check_claim(cinema_tickets(), claim)
+        self.assertEqual(check.reason, "failed_check")
+        self.assertAlmostEqual(check.compared, 46.64, places=2)
+        self.assertIn('Read "in Denmark" as where it took place', " ".join(check.assumptions))
+
+
+class ForeignCurrencyTests(unittest.TestCase):
+    """Singapore's COE premiums: Category A averaged S$102,750 over 2025."""
+
+    def setUp(self):
+        self.frame = pd.DataFrame({
+            "month": [f"2025-{month:02d}" for month in range(1, 13) for _ in range(2)],
+            "vehicle_class": ["Category A", "Category B"] * 12,
+            "premium": [100_000 + 500 * month if kind == 0 else 120_000
+                        for month in range(12) for kind in range(2)]})
+
+    def test_a_dollar_sign_with_a_country_letter_is_a_currency(self):
+        check = ada.check_claim(self.frame, "Category A premiums averaged about S$103,000 in 2025.")
+        self.assertTrue(check.verified, check.message)
+        check = ada.check_claim(self.frame, "Category A premiums averaged more than S$110,000 in 2025.")
+        self.assertEqual(check.reason, "failed_check")
+
+
+class AsMuchInYearTests(unittest.TestCase):
+    """Maize at 100 a month in 2019, 150 in 2020 and 250 in 2021: two and a half times as much."""
+
+    def setUp(self):
+        self.frame = pd.DataFrame({
+            "date": [f"{year}-{month:02d}-15" for year in (2019, 2020, 2021) for month in range(1, 13)],
+            "commodity": ["Maize (white)"] * 36, "price": [100.0] * 12 + [150.0] * 12 + [250.0] * 12})
+
+    def test_a_multiple_of_another_years_level_is_the_change_between_them(self):
+        check = ada.check_claim(self.frame, "Maize cost more than twice as much in 2021 as in 2019.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("price", check.question)
+
+    def test_a_wrong_multiple_fails_and_prices_are_never_added_up(self):
+        check = ada.check_claim(self.frame, "Maize cost more than three times as much in 2021 as in 2019.")
+        self.assertEqual(check.reason, "failed_check")
+        check = ada.check_claim(self.frame, "Maize cost twice as much in 2019 as in 2021.")
+        self.assertEqual(check.reason, "failed_check")
+
+
+class ContrastTests(unittest.TestCase):
+    """A hundred homes: 25 on their own well, 70 on the public network and 5 with none."""
+
+    def test_what_the_rows_are_not_picks_none_of_them(self):
+        frame = pd.DataFrame({"water source": ["own well"] * 25 + ["public network"] * 70 + ["none"] * 5})
+        claim = "A quarter of the homes get their water from their own well rather than the public network."
+        check = ada.check_claim(frame, claim)
+        self.assertTrue(check.verified, check.message)
+        claim = "Half of the homes get their water from their own well rather than the public network."
+        self.assertEqual(ada.check_claim(frame, claim).reason, "failed_check")
+

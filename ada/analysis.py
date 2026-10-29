@@ -1264,6 +1264,12 @@ _SINGLE_YEAR = r"(?:1[89]|20)\d{2}"
 _YEAR_SPAN = rf"{_SINGLE_YEAR}\s*(?:-|–|/|to)\s*(?:\d{{2}}|{_SINGLE_YEAR})"
 # Name words of a column that may hold years.
 _TIME_NAME_WORDS = frozenset({"year", "years", "yr", "period", "time"})
+# Name words of a column of whole years when none is named for years: StatCan's
+# REF_DATE, Eurostat's TIME_PERIOD, and "time" or "year" in the languages of
+# statistics offices (Statistics Denmark's TID, Sweden's år, Finland's Vuosi).
+# English "time" is not one: race times of 1,800 to 2,100 seconds are no years.
+_YEARS_HELD_WORDS = frozenset({"date", "period", "tid", "år", "aar", "jahr", "año", "ano", "anno", "année",
+                               "annee", "jaar", "vuosi"})
 
 
 def _single_years(column: str, series: pd.Series) -> pd.Series | None:
@@ -1312,10 +1318,10 @@ def _year_columns(
         and _whole_years(frame[column], DETECTED_YEARS)
         and frame[column].nunique() >= 2
     ] or [
-        # A date-named column of whole years (StatCan's REF_DATE) holds the years when none is named for them.
+        # A date- or time-named column of whole years holds the years when none is named for them.
         column
         for column in frame.columns
-        if set(normalized_name(column).split()) & {"date", "period"}
+        if set(normalized_name(column).split()) & _YEARS_HELD_WORDS
         and _whole_years(frame[column], DETECTED_YEARS)
         and frame[column].nunique() >= 2
     ]
@@ -2376,8 +2382,12 @@ def clean_dataframe(
     return cleaned, report
 
 
-# A column named for one year, alone or before the name of what it holds: "2024", "2024 Deaths".
-_YEAR_COLUMN = re.compile(r"^\s*(?P<year>(?:1[6-9]|20)\d{2})(?:\s*[-_: ]\s*(?P<rest>[^\d].*?))?\s*$")
+# A column named for one year, alone, before or after the name of what it holds: "2024", "2024 Deaths",
+# "Number 2024".
+_YEAR_COLUMN = re.compile(
+    r"^\s*(?:(?P<lead>[^\d\s][^\d]*?)\s*[-_: ]\s*)?(?P<year>(?:1[6-9]|20)\d{2})"
+    r"(?:\s*[-_: ]\s*(?P<rest>[^\d].*?))?\s*$"
+)
 # The fewest year columns, and the least share of the table's columns, that make a table of one column per
 # year.
 MIN_YEAR_COLUMNS = 5
@@ -2387,21 +2397,23 @@ MIN_YEAR_COLUMN_SHARE = 0.5
 def _year_wide_columns(frame: pd.DataFrame) -> tuple[list[str], list[int], str] | None:
     """The columns that each hold one year of the same figure, their years, and the figure's name, or None.
 
-    They must all be named by a year and the same words after it ("1969 Deaths" to "2024 Deaths"; "1960" to
-    "2023" for World Bank tables, whose figure is called Value), hold numbers, and be most of the table.
+    They must all be named by a year and the same words beside it ("1969 Deaths" to "2024 Deaths", "Number
+    2000" to "Number 2024"; "1960" to "2023" for World Bank tables, whose figure is called Value), hold
+    numbers, and be most of the table.
     """
     found = [(str(column), _YEAR_COLUMN.match(str(column))) for column in frame.columns]
     named = [(column, match) for column, match in found if match]
     if len(named) < MIN_YEAR_COLUMNS or len(named) < MIN_YEAR_COLUMN_SHARE * len(frame.columns):
         return None
-    rests = {(match.group("rest") or "").strip().lower() for _, match in named}
+    rests = {((match.group("lead") or "").strip().lower(), (match.group("rest") or "").strip().lower())
+             for _, match in named}
     years = [int(match.group("year")) for _, match in named]
     if len(rests) != 1 or len(set(years)) != len(years):
         return None
     columns = [column for column, _ in named]
     if not all(is_numeric_dtype(frame[column]) and not is_bool_dtype(frame[column]) for column in columns):
         return None
-    rest = (named[0][1].group("rest") or "").strip()
+    rest = (named[0][1].group("rest") or named[0][1].group("lead") or "").strip()
     return columns, years, rest or "Value"
 
 

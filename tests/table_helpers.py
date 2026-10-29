@@ -361,3 +361,40 @@ def road_deaths_colombia() -> pd.DataFrame:
              "FECHA HECHO": f"{day + 1:02d}/03/{year}", "CANTIDAD": 1}
             for year, towns in deaths.items() for town, count in towns.items() for day in range(count)]
     return pd.DataFrame(rows)
+
+
+def cinema_tickets() -> pd.DataFrame:
+    """Cinema tickets as Statistics Denmark gives them (BIO5): a row for every film category, type of film,
+    nationality and year (TID), each at every level and again at its totals, with the count in INDHOLD.
+
+    "Premiere films that year" are some of "Screened films (all)"; each "X films, all audiences" adds up
+    the adult and children's films of its kind, and "Feature films and documentaries, all audiences" both
+    kinds. Screened films, 2025: Denmark 3,674, USA 4,596 and the rest 1,584 thousand tickets, 9,854 in
+    all (Danish 37.28%, American 46.64%); 2024: 2,230, 5,770 and 1,500, 9,500 in all.
+    """
+    leaves = {
+        2025: {"Denmark": (2000, 1500, 150, 24), "USA": (2400, 2100, 80, 16),
+               "Rest of the World": (900, 600, 70, 14)},
+        2024: {"Denmark": (1200, 900, 120, 10), "USA": (3200, 2500, 60, 10),
+               "Rest of the World": (1000, 400, 90, 10)},
+    }
+    rows = []
+    for year, nations in leaves.items():
+        totals = [sum(counts[index] for counts in nations.values()) for index in range(4)]
+        for nation, (feature_adult, feature_young, documentary_adult, documentary_young) in {
+                **nations, "All countries": tuple(totals)}.items():
+            types = {
+                "Feature films and documentaries, all audiences":
+                    feature_adult + feature_young + documentary_adult + documentary_young,
+                "Feature films, all audiences": feature_adult + feature_young,
+                "Feature films, adult audience": feature_adult,
+                "Feature films, children / youth / family audience": feature_young,
+                "Documentary films, all audiences": documentary_adult + documentary_young,
+                "Documentary films, adult audience": documentary_adult,
+                "Documentary films, children / youth / family audience": documentary_young,
+            }
+            for kind, count in types.items():
+                for category, share in (("Screened films (all)", 1), ("Premiere films that year", 3)):
+                    rows.append({"BIO": "Tickets sold (1,000)", "FILMKAT": category, "TYPMAL": kind,
+                                 "NATION2": nation, "TID": year, "INDHOLD": count // share})
+    return pd.DataFrame(rows)

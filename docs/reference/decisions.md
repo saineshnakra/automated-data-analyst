@@ -81,7 +81,16 @@ column and again under its total: CDC's injury deaths under each sex and
 Other Transport"), and its rows add up to at least the other levels'
 rows in some count, and to no more than half as much again (groups no level
 names, such as other races, add to the total alone). Two or more columns must
-qualify; one total row alone is `aggregate_rows`' to find.
+qualify; one total row alone is `aggregate_rows`' to find. A year counts
+nothing, so a column of years is never the count compared.
+
+Statistics Denmark writes subtotals after a comma ("Feature films, all
+audiences", "Documentary films, all audiences", and "Feature films and
+documentaries, all audiences" over both): each reads as a total, and the one
+at least as large as every other level, cell by cell, is the column's total.
+A column of two labels qualifies when one is marked "(all)" or "(total)" and
+holds the other in nine cells of ten: "Screened films (all)" beside
+"Premiere films that year".
 
 The words every label of a column shares are set aside first, so "Age of
 mother, all ages" reads as "all ages". When some counts are blank (a total

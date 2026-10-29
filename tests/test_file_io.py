@@ -168,6 +168,24 @@ class DelimiterRescueTests(unittest.TestCase):
         self.assertEqual(list(frame.columns), ["Id", "Note"])
         self.assertTrue(frame["Note"].iloc[-2].startswith("a note\n"))
 
+    def test_semicolons_split_a_file_whose_values_hold_commas(self):
+        # Statistics Denmark: "Tickets sold (1,000)" holds a comma, so a comma read fails on a wider row.
+        raw = ("\ufeffBIO;TID;INDHOLD\r\nTickets sold (1,000);2024;9500\r\nFilms (number);2024;489\r\n"
+               "Seats (1,000, all);2024;12\r\n").encode("utf-8")
+
+        frame = read_tabular_file(raw, "BIO5.csv")
+
+        self.assertEqual(list(frame.columns), ["BIO", "TID", "INDHOLD"])
+        self.assertEqual(frame["BIO"].tolist(),
+                         ["Tickets sold (1,000)", "Films (number)", "Seats (1,000, all)"])
+
+    def test_a_title_with_a_semicolon_above_comma_rows_is_skipped(self):
+        raw = b"Source: Statistics; 2024\nDate,Region,Revenue\n2024-01-01,North,100\n2024-02-01,South,200\n"
+
+        frame = read_tabular_file(raw, "report.csv")
+
+        self.assertEqual(list(frame.columns), ["Date", "Region", "Revenue"])
+
     def test_a_report_title_above_the_header_is_skipped(self):
         raw = b"Q3 Sales Report\nDate,Region,Revenue\n2024-01-01,North,100\n2024-02-01,South,200\n"
 

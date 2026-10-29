@@ -5407,3 +5407,59 @@ class PeriodWordTests(unittest.TestCase):
         self.assertEqual(nlq._values_named(("state",), vocabulary, exact_only=False), ([], False))
         found, _ = nlq._values_named(("states",), vocabulary, exact_only=False)
         self.assertEqual([value.raw for value in found], ["United States"])
+
+
+class LabelWordingTests(unittest.TestCase):
+    """Labels written another way than a question says them: a bracketed kind, a code before the name, "self"
+    for "own" and an adjective for its adverb."""
+
+    def test_a_kind_said_first_names_a_label_with_the_kind_in_brackets(self):
+        commodities = ["Rice (imported)", "Rice (local)", "Rice (milled, local)", "Maize"]
+        frame = pd.DataFrame({"commodity": commodities * 3, "price": [10, 6, 7, 3, 11, 6, 8, 3, 12, 7, 8, 4]})
+        answer = ada.analyze(frame).ask("average price of imported rice")
+        self.assertEqual(answer.value, 11)
+        self.assertIn("Rice (imported)", answer.answer)
+
+    def test_a_name_alone_names_the_label_after_its_code(self):
+        # Statistics Sweden: "0980 Gotland" is the municipality, "09 Gotland county" the county.
+        frame = pd.DataFrame({
+            "region": [name for name in ("00 Sweden", "09 Gotland county", "0980 Gotland",
+                                         "01 Stockholm county", "0114 Upplands Väsby") for _ in range(3)],
+            "source of water": ["public water supply", "self-supply", "seasonal water supply"] * 5,
+            "homes": [700, 250, 50, 40, 50, 10, 40, 51, 10, 300, 60, 5, 30, 6, 1]})
+        answer = ada.analyze(frame).ask("total homes with their own water supply in Gotland")
+        self.assertEqual(answer.value, 51)
+        self.assertIn("0980 Gotland", answer.answer)
+
+    def test_a_single_digit_before_a_label_is_part_of_it(self):
+        frame = pd.DataFrame({"flat type": ["4 ROOM", "5 ROOM", "EXECUTIVE", "3 ROOM"] * 3,
+                              "price": range(12)})
+        self.assertIsInstance(ada.analyze(frame).ask("average price of room flats"), ada.Refusal)
+
+    def test_an_adverb_names_the_label_with_its_adjective(self):
+        frame = pd.DataFrame({"type": ["units for permanent dwelling", "units for seasonal use"] * 3,
+                              "homes": [10, 5, 11, 6, 12, 7]})
+        self.assertEqual(ada.analyze(frame).ask("total homes permanently").value, 33)
+        self.assertEqual(ada.analyze(frame).ask("total homes seasonally").value, 18)
+
+
+class ValuesInAnotherUnitTests(unittest.TestCase):
+    """WFP food prices: the brief follows 100 KG, maize is priced only by the KG, imported rice by the KG and
+    by the 50 KG bag."""
+
+    def setUp(self):
+        rows = [*[("Millet", "100 KG", 9000), ("Sorghum", "100 KG", 8000)] * 10,
+                ("Maize", "KG", 170), ("Maize", "KG", 175), ("Rice (imported)", "KG", 400),
+                ("Rice (imported)", "50 KG", 18000)]
+        self.analysis = ada.analyze(pd.DataFrame(rows, columns=["commodity", "unit", "price"]))
+
+    def test_values_held_in_one_other_unit_are_answered_there(self):
+        answer = self.analysis.ask("average price of Maize")
+        self.assertEqual(answer.value, 172.5)
+        self.assertIn("all have unit = KG", answer.answer)
+
+    def test_values_held_in_several_units_name_them(self):
+        refusal = self.analysis.ask("average price of imported rice")
+        self.assertIsInstance(refusal, ada.Refusal)
+        self.assertIn("unit KG or 50 KG", refusal.message)
+

@@ -331,8 +331,17 @@ each word is claimed, in this order, by:
    and is no value. An adjective of nationality, or its plural, names its
    country ("Belgian" is Belgium, "Venezuelans" Venezuela, "Mexican
    nationals" Mexico, "Dutch" the Netherlands; `DEMONYMS`) in the one column that holds it, or, when a
-   country of birth holds it too, in the column named for nationality. A
-   value that several columns hold is the one whose column is named right
+   country of birth holds it too, in the column named for nationality. When
+   the adjective names the column and "in" names another of its countries
+   ("American films sold half of all tickets in Denmark"), "in Denmark" says
+   where, not a second nationality, and a note says so. A kind said first
+   names a label with the kind in brackets ("imported rice" is "Rice
+   (imported)"), "own" names "self" ("their own water supply" is
+   "self-supply"), an adverb names its adjective ("permanently" is "units for
+   permanent dwelling") when six letters or more are left, and a name alone
+   names the label after its code in a column of coded labels ("Gotland" is
+   "0980 Gotland", not "09 Gotland county"); a single digit ("4 ROOM") is no
+   code. A value that several columns hold is the one whose column is named right
    after it, with only words such as "level of" between: "high
    satisfaction" and "a high level of contact" are `Sat` = High and `Cont` =
    High, and an adverb of a value followed by its column, "highly
@@ -921,6 +930,14 @@ a part that is itself a long table, a unit column named for one reading
 ("abundance unit") narrows the rows only for that reading. When no one part
 records every column named, the reason says where each is recorded. "How
 many rows per source_table" counts and ranks the parts.
+
+**Values in another unit.** When the values a question names are found only
+outside the part the brief follows, and all their rows have one value of the
+parameter, the answer comes from that part and says so: in WFP's food prices,
+where the brief follows 100 KG, "average price of Maize" is read over the KG
+rows, since every maize price is by the KG. When their rows have several
+values ("imported rice" by the KG and by the 50 KG bag), the question is
+refused with the units to choose from.
 
 **Cautions.** An answer that combines a measure's values looks them up in the
 data checks (`quality.scan`, run once per table and shared with the brief:

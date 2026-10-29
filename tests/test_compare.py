@@ -1877,3 +1877,27 @@ class RepeatedCorrelationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TransformPairCapTests(unittest.TestCase):
+    """Cumulative deaths with a column for each day: every day ranks alike with every other."""
+
+    def test_transforms_are_sought_in_at_most_the_capped_number_of_pairs(self):
+        from unittest import mock
+
+        from ada import compare
+
+        frame = pd.DataFrame({f"day {index}": np.arange(100.0) + index for index in range(40)})
+        columns = list(frame.columns)
+        ranks = np.ones((len(columns), len(columns)))
+        calls = []
+
+        def counted(*args, **kwargs):
+            calls.append(args[1:])
+            return None
+
+        with mock.patch.object(compare, "CAPPED_PAIRS", 25), mock.patch.object(compare, "find_transform",
+                                                                                counted):
+            compare._transforms(frame, columns, set(range(len(columns))), ranks, list(range(len(columns))))
+        # 780 pairs rank alike; at most 25 are tried, each both ways.
+        self.assertEqual(len(calls), 2 * 25)

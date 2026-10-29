@@ -1686,3 +1686,30 @@ class WideYearTableTests(unittest.TestCase):
         mixed = wide.rename(columns={"2024 Deaths": "2024 Births"})
         self.assertIn("2024 Births", clean_dataframe(mixed)[0].columns)
 
+    def test_the_name_of_the_figure_may_come_before_each_year(self):
+        # Statistics Sweden writes "Number 2000" to "Number 2024".
+        wide = pd.DataFrame({"region": ["00 Sweden", "0980 Gotland"], **{
+            f"Number {year}": [1000 + year, 10 + year] for year in (2000, 2005, 2010, 2015, 2020, 2024)}})
+        cleaned, report = clean_dataframe(wide)
+        self.assertEqual(cleaned.columns.tolist(), ["region", "Year", "Number"])
+        self.assertEqual(len(cleaned), 12)
+        self.assertTrue(any("Number 2000 to Number 2024 each hold one year of Number" in note
+                            for note in report.notes))
+        mixed = wide.rename(columns={"Number 2024": "Share 2024"})
+        self.assertIn("Number 2000", clean_dataframe(mixed)[0].columns)
+
+
+class TimeNamedYearTests(unittest.TestCase):
+    """Statistics Denmark calls its column of years TID, Danish for time."""
+
+    def test_a_time_named_column_of_whole_years_is_the_date(self):
+        frame = pd.DataFrame({"NATION2": ["Denmark", "USA"] * 3, "TID": [2023, 2023, 2024, 2024, 2025, 2025],
+                              "INDHOLD": [1, 2, 3, 4, 5, 6]})
+        cleaned, _ = clean_dataframe(frame)
+        self.assertTrue(is_datetime64_any_dtype(cleaned["TID"]))
+
+    def test_a_time_named_column_of_other_numbers_is_not(self):
+        frame = pd.DataFrame({"place": ["A", "B", "C"], "tid": [3, 14, 52], "count": [1, 2, 3]})
+        cleaned, _ = clean_dataframe(frame)
+        self.assertFalse(is_datetime64_any_dtype(cleaned["tid"]))
+
