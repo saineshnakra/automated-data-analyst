@@ -233,6 +233,25 @@
   reading.
 - A title line with a semicolon above comma-separated rows is skipped, rather
   than read as a header of two columns.
+- Fixed wrong verdicts: in "About a quarter of samples at Bondi Beach
+  exceeded 200 enterococci", the samples at Bondi Beach were counted out of
+  every sample in the table, so a claim of a quarter verified at 26.5% where
+  53% of Bondi's samples exceed 200, and a claim of a half failed. A verb in
+  the past tense ("exceeded", "ended") now ends what a share is of, as "had"
+  and "that" do.
+- "100 COVID-19 deaths" no longer reads "COVID" as the unit of 100, which left
+  "-19" in the question.
+- "on Saturdays", "at the weekend", "on a Saturday or Sunday" and "on
+  weekdays" pick the days of the week of the date column.
+- "aged 40 and over" reads ages in years when an age class column ("40-44")
+  sits beside them, where it read age = 40.
+- "the men's 100 metres" is the race whose Length is 100, not a number
+  claimed; "has come down by 0.013 seconds a year" is a yearly fall.
+- "per 100 mL" after a column whose name gives its values per 100 mL
+  (enterococci_cfu_100ml) says what it measures, "the median enterococci
+  count" is the median of that column, and units at the end of a column's
+  name (cfu, ml) are not the kind of quantity it holds.
+- `UID`, `FIPS`, `GEOID` and `OBJECTID` columns are codes, not measures.
 - A column that is a log or a root of another is looked for in at most 2,000
   pairs of columns, the closest first. A table with a cumulative column for
   each day (JHU's COVID-19 deaths, 1,155 columns) ranked almost every pair

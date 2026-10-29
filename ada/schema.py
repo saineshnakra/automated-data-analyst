@@ -236,6 +236,8 @@ CODE_WORDS_ABROAD = frozenset({"codigo", "código", "codice", "cod"})
 IDENTIFIER_NAME_WORDS = frozenset({
     "id", "ids", "code", "codes", "zip", "zipcode", "postal", "postcode", "phone", "telephone",
     "mobile", "tel", "fax", "sku", "number", "no", "#", "key", "uuid", "notation", "barcode",
+    # JHU's UID, a county's FIPS code, a census GEOID and a GIS export's OBJECTID.
+    "uid", "fips", "geoid", "objectid",
     # The same in Spanish, Portuguese and Italian: CODIGO DANE, codice ISTAT.
     *CODE_WORDS_ABROAD,
 })

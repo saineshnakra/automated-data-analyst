@@ -53,7 +53,7 @@ by:
 
 Three kinds of column key or label the rows, and the first found wins:
 
-1. **A key name.** One of the name's words is `id`, `uuid`, `key`, `code`
+1. **A key name.** One of the name's words is `id`, `uuid`, `uid`, `fips`, `geoid`, `objectid`, `key`, `code`
    (or `codigo`, `código`, `codice`, `cod`; `CODIGO DANE` and `codice ISTAT`
    put the word first),
    `number`, `invoice`, `order` or `barcode` (as a whole word), the last word is not a
