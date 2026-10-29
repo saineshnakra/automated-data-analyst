@@ -49,6 +49,10 @@ MIN_WORD_SHARE = 0.01
 SMALL_TABLE = 20_000
 #: From this many rows, boosting takes larger steps and stops sooner, so a fit takes minutes, not hours.
 LARGE_TABLE = 1_000_000
+#: From this many rows, trees grow larger, and numbers whose values repeat are also encoded by value.
+WIDE_TABLE = 100_000
+#: Most distinct values, as a share of the rows, a number may have to be encoded by value.
+VALUE_SHARE = 0.1
 #: A cross-validated score this close to perfect suggests a column that leaks the target.
 NEAR_PERFECT = 0.995
 #: Train-against-test AUC above which the test rows count as unlike the training rows.
@@ -508,6 +512,22 @@ def _group_folds(groups: pd.Series, folds: int, seed: int) -> list[tuple[np.ndar
     return [(rows[assigned != index], rows[assigned == index]) for index in range(folds)]
 
 
+def _id_group_sizes(ids: pd.Series) -> pd.Series | None:
+    """How many rows share the first part of a structured id ("0013" of "0013_02"), when some do.
+
+    Spaceship Titanic's PassengerId is a travel group and a place in it: the
+    id itself names one row, but its group is shared by the people who
+    travelled together.
+    """
+    text = ids.astype("string").str.strip()
+    structured = _structured_parts(text)
+    if structured is None:
+        return None
+    first = text.str.split(structured[0], n=1, regex=False).str[0]
+    sizes = first.map(first.value_counts()).astype(float)
+    return sizes if sizes.nunique() > 1 else None
+
+
 def _structured_parts(text: pd.Series) -> tuple[str, int] | None:
     """The separator and part count when nearly every value splits into the same 2 to 4 parts."""
     present = text.dropna()
@@ -641,11 +661,13 @@ def _lightgbm(task: str, classes: int, metric: Metric, rows: int, seed: int):
     import lightgbm as lgb  # noqa: PLC0415
 
     small = rows < SMALL_TABLE
-    rate = 0.02 if small else 0.1 if rows >= LARGE_TABLE else 0.05
+    wide = WIDE_TABLE <= rows < LARGE_TABLE
+    rate = 0.02 if small else 0.1 if rows >= LARGE_TABLE else 0.03 if wide else 0.05
     common = dict(
-        n_estimators=5000, learning_rate=rate, num_leaves=15 if small else 63,
-        min_child_samples=10 if small else 40, subsample=0.8, subsample_freq=1, colsample_bytree=0.7,
-        reg_lambda=1.0, random_state=seed, verbose=-1, deterministic=True, force_row_wise=True, n_jobs=4,
+        n_estimators=5000, learning_rate=rate, num_leaves=15 if small else 255 if wide else 63,
+        min_child_samples=10 if small else 100 if wide else 40, subsample=0.8, subsample_freq=1,
+        colsample_bytree=0.5 if wide else 0.7, reg_lambda=1.0, random_state=seed, verbose=-1,
+        deterministic=True, force_row_wise=True, n_jobs=4, **({"max_bin": 1023} if wide else {}),
     )
     if task == "regression":
         objective = "regression_l1" if metric.name == "mae" else "regression"
@@ -655,22 +677,32 @@ def _lightgbm(task: str, classes: int, metric: Metric, rows: int, seed: int):
 
 def _fold_matrix(X: pd.DataFrame, encode: list[str], fit_index: np.ndarray, y_fit: np.ndarray,
                  others: list[pd.DataFrame]) -> tuple[pd.DataFrame, list[pd.DataFrame]]:
-    """The features for one fold: high-cardinality text replaced by its target encoding from the fit rows."""
+    """The features for one fold: high-cardinality text replaced by its target encoding from the fit rows.
+
+    ``y_fit`` holds one column per class when there are more than two; each
+    encoded column then gives one share per class.
+    """
     if not encode:
         return X.iloc[fit_index], [frame for frame in others]
     fit = X.iloc[fit_index].copy()
     done = [frame.copy() for frame in others]
+    targets = y_fit if y_fit.ndim == 2 else y_fit[:, None]
+    order = np.arange(len(fit)) % 5
     for column in encode:
         values = fit[column]
-        # Inside the fit rows, each row's encoding comes from the other fit rows (5 inner folds).
-        inner = np.zeros(len(fit))
-        order = np.arange(len(fit)) % 5
-        for part in range(5):
-            mask = order == part
-            inner[mask] = _target_encode(values[~mask], y_fit[~mask], values[mask])
-        for frame in done:
-            frame[column] = _target_encode(values, y_fit, frame[column])
-        fit[column] = inner
+        for index in range(targets.shape[1]):
+            name = column if targets.shape[1] == 1 else f"{column}_{index}"
+            # Inside the fit rows, each row's encoding comes from the other fit rows (5 inner folds).
+            inner = np.zeros(len(fit))
+            for part in range(5):
+                mask = order == part
+                inner[mask] = _target_encode(values[~mask], targets[~mask, index], values[mask])
+            for frame in done:
+                frame[name] = _target_encode(values, targets[:, index], frame[column])
+            fit[name] = inner
+        if targets.shape[1] > 1:
+            fit = fit.drop(columns=column)
+            done = [frame.drop(columns=column) for frame in done]
     return fit, done
 
 
@@ -760,6 +792,10 @@ def model(
         dropped.insert(0, (group, "its test values never appear in training; the folds are grouped by it"))
     if identifier:
         dropped.insert(0, (identifier, "the row's id"))
+        ids = pd.concat([train_frame[identifier], test_frame[identifier]], keys=["train", "test"])
+        if (sizes := _id_group_sizes(ids)) is not None:
+            features[f"{identifier}_group_size"] = sizes
+            made.append((f"{identifier}_group_size", f"how many rows share the first part of {identifier}"))
     X, X_test = features.loc["train"].reset_index(drop=True), features.loc["test"].reset_index(drop=True)
 
     classes = None
@@ -781,14 +817,27 @@ def model(
         chosen.name == "mae" and bool((y >= 0).all()) and float(pd.Series(y).skew()) > LOG_SKEW
     )
     fitted_y = np.log1p(y) if logged else y
-    if task == "classification" and len(classes) > 2 and encode:
-        # A mean target has no meaning across several classes, so such text keeps only its other features.
-        X, X_test = X.drop(columns=encode), X_test.drop(columns=encode)
-        made = [(name, how) for name, how in made if name not in encode]
-        dropped += [(column, "text with many values; not encoded for more than two classes")
-                    for column in encode]
-        encode = []
-    encoded_y = fitted_y if task == "regression" else (y == len(classes) - 1).astype(float)
+    if len(X) >= WIDE_TABLE and not forecast:
+        # Playground tables are drawn from a smaller original, and its exact values carry signal of their own:
+        # a number whose values repeat is also encoded by each value's mean target, from the other folds.
+        for name in [str(column) for column in X.columns if is_numeric_dtype(X[column])
+                     and 3 <= X[column].nunique() <= VALUE_SHARE * len(X)]:
+            X[f"{name}_value"] = X[name].astype("string")
+            X_test[f"{name}_value"] = X_test[name].astype("string")
+            encode.append(f"{name}_value")
+            shared = pd.concat([X[f"{name}_value"], X_test[f"{name}_value"]]).value_counts()
+            X[f"{name}_value_count"] = X[f"{name}_value"].map(shared).astype(float)
+            X_test[f"{name}_value_count"] = X_test[f"{name}_value"].map(shared).astype(float)
+            made.append((f"{name}_value_count", f"how many training and test rows share {name}'s value"))
+            made.append((f"{name}_value", f"the training rows' mean target for each value of {name}, "
+                                          "from the other folds"))
+    if task == "regression":
+        encoded_y = fitted_y
+    elif len(classes) == 2:
+        encoded_y = (y == 1).astype(float)
+    else:
+        # With several classes a value is encoded by its share of each class.
+        encoded_y = (y[:, None] == np.arange(len(classes))[None, :]).astype(float)
     priors = np.bincount(y, minlength=len(classes)) / len(y) if task == "classification" else None
     time_pairs, lagged, keys = [], "", None
     if forecast:
