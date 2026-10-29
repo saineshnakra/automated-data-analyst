@@ -1887,19 +1887,17 @@ class TransformPairCapTests(unittest.TestCase):
 
         from ada import compare
 
-        rng = np.random.default_rng(0)
-        daily = rng.integers(0, 5, size=(200, 40)).cumsum(axis=1) + np.arange(200)[:, None] * 50
-        frame = pd.DataFrame(daily, columns=[f"day {index}" for index in range(40)]).astype(float)
-        frame["log of day 0"] = np.log10(frame["day 0"] + 1)
+        frame = pd.DataFrame({f"day {index}": np.arange(100.0) + index for index in range(40)})
+        columns = list(frame.columns)
+        ranks = np.ones((len(columns), len(columns)))
         calls = []
-        original = compare.find_transform
 
         def counted(*args, **kwargs):
             calls.append(args[1:])
-            return original(*args, **kwargs)
+            return None
 
         with mock.patch.object(compare, "CAPPED_PAIRS", 25), mock.patch.object(compare, "find_transform",
                                                                                 counted):
-            construction(frame, list(frame.columns))
-        self.assertLessEqual(len(calls), 2 * 25)
-        self.assertGreater(len(calls), 0)
+            compare._transforms(frame, columns, set(range(len(columns))), ranks, list(range(len(columns))))
+        # 780 pairs rank alike; at most 25 are tried, each both ways.
+        self.assertEqual(len(calls), 2 * 25)
