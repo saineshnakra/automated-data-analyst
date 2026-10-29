@@ -2016,6 +2016,9 @@ def _vocabulary(dataframe: pd.DataFrame, roles: ColumnRoles) -> _Vocabulary:
             # A web address holds words only by the way ("Domus-augustana-map.png"); none is asked for by
             # them.
             continue
+        # Statistics Sweden writes each region after its code ("0980 Gotland", "09 Gotland county"): the
+        # name alone names the value in full.
+        coded = sum(bool(CODED_LABEL.match(raw)) for raw in sample) >= CODED_SHARE * len(sample) > 0
         for raw in uniques:
             words = tuple(_norm(raw).split())
             if not words:
@@ -2023,9 +2026,17 @@ def _vocabulary(dataframe: pd.DataFrame, roles: ColumnRoles) -> _Vocabulary:
             position = len(values)
             values.append(_Value(column=column, raw=str(raw), words=words))
             by_text[" ".join(words)].append(position)
+            if coded and len(words) > 1 and CODED_LABEL.match(str(raw).strip().lower()):
+                by_text[" ".join(words[1:])].append(position)
             for word in set(words):
                 by_word[word].append(position)
     return _Vocabulary(values=values, by_text=by_text, by_word=by_word)
+
+
+# A label after a numeric code of two or more digits, and the share of a column's labels written so for the
+# name alone to name one.
+CODED_LABEL = re.compile(r"\d{2,}\s+[^\d\s]")
+CODED_SHARE = 0.8
 
 
 def _value_nouns(vocabulary: _Vocabulary) -> set[str]:
@@ -2109,12 +2120,16 @@ def _values_named(
     if any(word in DIGIT_WORDS for word in run):
         # "four room" names "4 ROOM".
         texts.add(" ".join(DIGIT_WORDS.get(word, word) for word in run))
+    if len(run) > 1 and run[0] == "own":
+        # "their own water supply" names "self-supply".
+        texts.add(f"self {run[-1]}")
     exact = [vocabulary.values[index] for text in texts for index in vocabulary.by_text.get(text, ())]
     if len(run) > 1 and not exact:
-        # "a dozen eggs" names "Eggs, dozen", a label written head first, in full.
+        # "a dozen eggs" names "Eggs, dozen" and "imported rice" names "Rice (imported)", labels written head
+        # first, in full.
         head_first = " ".join((run[-1], *run[:-1]))
         exact = [vocabulary.values[index] for index in vocabulary.by_text.get(head_first, ())
-                 if "," in vocabulary.values[index].raw]
+                 if "," in vocabulary.values[index].raw or "(" in vocabulary.values[index].raw]
     if column is not None:
         exact = [value for value in exact if value.column == column]
     nouns = _verb_nouns(run[0]) if len(run) == 1 and not exact else set()
@@ -2135,6 +2150,9 @@ def _values_named(
     # operations within a month".
     runs = [run, *((*run[:-1], form) for form in sorted(_word_variants(run[-1])) if len(form) < len(
         run[-1]))] if len(run[-1]) > 2 and run[-1] not in PERIOD_WORDS else [run]
+    if len(run) == 1 and run[0].endswith("ly") and len(run[0]) >= MIN_ADVERB_STEM + 2:
+        # "permanently lived-in houses" names "units for permanent dwelling".
+        runs.append((run[0][:-2],))
     for words in runs:
         postings = [vocabulary.by_word.get(word) for word in words]
         if not all(postings):
@@ -2165,6 +2183,9 @@ def _values_named(
     return [], False
 
 
+# Fewest letters an adverb keeps without its "-ly" for it to name a value's adjective: "permanent" for
+# "permanently", but "month" is not "monthly".
+MIN_ADVERB_STEM = 6
 # A value written as a code of words joined by underscores: "theft_vehicle_motorcycle".
 SNAKE_CODE = re.compile(r"[a-z0-9]+(?:_[a-z0-9]+)+")
 
@@ -3303,6 +3324,17 @@ def _claim_demonyms(reading: _Reading, vocabulary: _Vocabulary) -> None:
         if len(columns) != 1:
             continue
         values = [value for value in found if value.column == columns[0]]
+        # "American films sold more than half of all tickets in Denmark": the adjective names the films'
+        # country, so "in Denmark" says where they were sold, not another value of the same column.
+        known = reading.filters.get(columns[0], ())
+        placed = [raw for raw in known if raw not in {value.raw for value in values}
+                  and re.search(rf"\bin (?:the )?{re.escape(_norm(raw))}\b", reading.original)]
+        if placed and len(placed) == len(known) and columns[0] not in reading.fixed:
+            del reading.filters[columns[0]]
+            reading.notes.append(
+                f'Read "in {_listed(placed)}" as where it took place, not as {columns[0]} = '
+                f'{_listed(placed)}, since "{_raw_words(reading.question, [word])}" names {columns[0]}.'
+            )
         _add_filter(reading, values, start)
         reading.claim(start, end)
         # "Mexican nationals", "Belgian citizens": the noun says no more than the adjective.
@@ -11375,7 +11407,8 @@ def answer_question(
                            plan=replace(answer.plan, notes=(note, *answer.plan.notes)))
     plan = parse_question(question, dataframe, roles)
     if plan is None:
-        return None
+        # Values the part the brief follows does not hold may be recorded in another.
+        return None if whole is None else _value_part_answer(question, dataframe, whole, rows_not_analyzed)
     if (WHICH_QUESTION.match(question) and plan.intent == "aggregate" and plan.aggregation in ("max", "min")
             and plan.dimension is None):
         # "which national parks had the most visitors" asks for the parks, not the largest number.
@@ -11791,12 +11824,60 @@ def _part_answer(
     return replace(found, answer=found.answer + note)
 
 
+def _value_parts(question: str, dataframe: pd.DataFrame, whole: WholeTable) -> tuple[list[str], str] | None:
+    """The parts of a long table holding the rows a question's values pick, when the part the brief follows
+    holds none of them, with those values in words: maize priced only by the KG where the brief follows
+    100 KG."""
+    plan = parse_question(question, whole.frame, replace(whole.roles, focus=None))
+    if plan is None or not plan.filters or any(item.column == whole.parameter for item in plan.filters):
+        return None
+    rows = pd.Series(True, index=whole.frame.index)
+    for item in plan.filters:
+        rows &= _value_mask(whole.frame[item.column], item.values)
+    named = [item for item in plan.filters if item.column in dataframe.columns]
+    held = pd.Series(True, index=dataframe.index)
+    for item in named:
+        held &= _value_mask(dataframe[item.column], item.values)
+    if not rows.any() or held.any():
+        return None
+    parts = [str(part) for part in pd.unique(whole.frame.loc[rows, whole.parameter].dropna().astype(str))]
+    return (parts, " and ".join(_describe_filter(item) for item in plan.filters)) if parts else None
+
+
+def _value_part_answer(
+    question: str, dataframe: pd.DataFrame, whole: WholeTable, rows_not_analyzed: int
+) -> QueryAnswer | None:
+    """Answer within the one other part of a long table that holds every row the question's values pick.
+
+    "average price of Maize" where every maize price is by the KG and the brief
+    follows 100 KG is answered over the KG rows, and says so.
+    """
+    found = _value_parts(question, dataframe, whole)
+    if found is None or len(found[0]) != 1:
+        return None
+    (part,), described = found
+    answer, *_ = _answer_in_part(question, whole, part, rows_not_analyzed)
+    if answer is None:
+        return None
+    note = (
+        f" The rows with {described} all have {whole.parameter} = {part}, so this answer covers that part of "
+        f"the file, not the {whole.parameter} = {whole.focus} part the brief follows."
+    )
+    return replace(answer, answer=answer.answer + note)
+
+
 def _part_reason(question: str, dataframe: pd.DataFrame, whole: WholeTable) -> str | None:
     """Why a question can't be answered in the part of the file the brief follows, when that is the reason.
 
     A column it names may have no values there, recorded only in other parts,
-    or a single value there although the file holds several.
+    or a single value there although the file holds several. Values it names
+    may only be found in other parts, under several values of the parameter.
     """
+    found = _value_parts(question, dataframe, whole)
+    if found is not None and len(found[0]) > 1:
+        parts, described = found
+        return (f"The rows with {described} have {whole.parameter} {_listed_capped(parts, 4)}, whose values "
+                "do not combine; name one.")
     named = [column for column in _named_columns(question, whole.frame) if column != whole.parameter]
     focus = f"the {whole.parameter} = {whole.focus} part the brief follows"
     if len(parts := _named_parts(question, whole)) == 1:

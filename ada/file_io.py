@@ -120,22 +120,31 @@ def _header_line(contents: bytes, encoding: str) -> str:
     return head.decode(encoding, errors="replace")
 
 
-def _resplit_options(parsed: pd.DataFrame, contents: bytes, encoding: str) -> dict:
-    """Pick ";", tab or "|" for a one-column parse when that separator is in the header.
+def _header_separator(contents: bytes, encoding: str, beyond_commas: bool = False) -> dict:
+    """Pick ";", tab or "|" when that separator is in the header and splits the file into columns.
 
     Only the header line is checked; sniffing the body would split a one-column file
-    of sentences on their semicolons. Returns the read_csv options, empty for a comma.
+    of sentences on their semicolons. With ``beyond_commas`` the header must hold
+    the separator more often than commas. A split that leaves every column but the
+    first empty is a title line with a semicolon above comma-separated rows, not a
+    header. Returns the read_csv options, empty for a comma.
     """
-    if len(parsed.columns) != 1:
-        return {}
     header = _header_line(contents, encoding)
     for separator in (";", "\t", "|"):
-        if separator not in header:
+        if separator not in header or beyond_commas and header.count(separator) <= header.count(","):
             continue
-        candidate = _read_csv(contents, encoding, sep=separator)
-        if len(candidate.columns) > 1:
+        try:
+            candidate = _read_csv(contents, encoding, sep=separator)
+        except pd.errors.ParserError:
+            continue
+        if len(candidate.columns) > 1 and candidate.iloc[:, 1:].notna().any().any():
             return {"sep": separator}
     return {}
+
+
+def _resplit_options(parsed: pd.DataFrame, contents: bytes, encoding: str) -> dict:
+    """Pick ";", tab or "|" for a one-column parse when that separator is in the header."""
+    return _header_separator(contents, encoding) if len(parsed.columns) == 1 else {}
 
 
 # Lines above the header that an export may add (a title, a source, a date), at most.
@@ -203,8 +212,10 @@ def _parse_csv(contents: bytes, encoding: str, first: dict | None = None) -> pd.
     try:
         parsed = _read_csv(sample, encoding)
     except pd.errors.ParserError:
-        # Lines above the header fail on the first row wider than them.
-        options = _lines_above_header(sample, encoding)
+        # Lines above the header fail on the first row wider than them, and so
+        # does a file split by semicolons whose values hold commas ("Tickets sold (1,000)").
+        options = (_header_separator(sample, encoding, beyond_commas=True)
+                   or _lines_above_header(sample, encoding))
         if options:
             return _read_csv(contents, encoding, **options)
         if sample is contents:

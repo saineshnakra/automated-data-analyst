@@ -77,7 +77,7 @@ REASONS = (
     "failed_check",
 )
 
-_CURRENCY = r"(?:R\$|US\$|A\$|C\$|\$|€|£|¥|₹)"
+_CURRENCY = r"(?:R\$|US\$|A\$|C\$|S\$|NZ\$|HK\$|\$|€|£|¥|₹|₦|₩|₱)"
 _DIGITS = r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][-+]?\d+)?|\.\d+"
 NUMBER_PATTERN = re.compile(
     # Digits right after a letter are part of a word or a code ("CO2", "bondsba01", "I-94"), not a number.
@@ -353,6 +353,15 @@ TIMES_LEVEL = re.compile(
     r"(?:(?P<qualifier>about|almost|nearly|roughly|more\s+than|over|less\s+than)\s+)?"
     r"(?P<times>\d+(?:\.\d+)?|two|three|four|five|six|seven|eight|nine|ten)\s+times\s+(?:its|their|the)\s+"
     r"(?P<earlier>(?:19|20)\d{2})\s+(?:level|value|figure|average|total|rate|price)s?\b",
+    re.IGNORECASE,
+)
+# A level in one year as a multiple of another year's: "cost more than twice as much in 2021 as in 2019".
+AS_MUCH_IN = re.compile(
+    r"(?:\b(?:(?P<cost>cost|costs|sold\s+for)|was|were|is|are)\s+)?"
+    r"(?:(?P<qualifier>about|almost|nearly|roughly|more\s+than|over|less\s+than)\s+)?"
+    r"\b(?P<times>twice|thrice|\d+(?:\.\d+)?\s+times|(?:two|three|four|five|six|seven|eight|nine|ten)\s+times)\s+"
+    r"as\s+(?:much|many|high|large|big|great|expensive)\s+in\s+(?P<first>(?:19|20)\d{2})\s+as\s+in\s+"
+    r"(?P<second>(?:19|20)\d{2})\b",
     re.IGNORECASE,
 )
 # A description set off by commas after a name: ", a veterinary sedative,", ", the category that takes in
@@ -1399,6 +1408,35 @@ def _times_level(text: str) -> str:
     return f"{lead}{subject} {change} between {found.group('earlier')} and {later[0]}{tail}"
 
 
+def _as_much_in(text: str, frame: Any) -> str:
+    """A level in one year as a multiple of another year's, written as the change between the years.
+
+    "Maize cost more than twice as much in 2021 as in 2019" is "the price of
+    Maize rose by more than 100% between 2019 and 2021" (what a thing costs is
+    its price, or the table's cost); with the earlier year first, it is the
+    fall from it: "twice as much in 2019 as in 2021" fell by about 50%.
+    """
+    found = AS_MUCH_IN.search(text)
+    if not found:
+        return text
+    written = found.group("times").lower().split()[0]
+    factor = {"twice": 2.0, "thrice": 3.0}.get(written) or float(NUMBER_WORDS.get(written, written))
+    first, second = int(found.group("first")), int(found.group("second"))
+    if factor <= 1 or first == second:
+        return text
+    qualifier = re.sub(r"\s+", " ", (found.group("qualifier") or "about").lower())
+    if first > second:
+        change = f"rose by {qualifier} {(factor - 1) * 100:g}% between {second} and {first}"
+    else:
+        change = f"fell by {qualifier} {(1 - 1 / factor) * 100:g}% between {first} and {second}"
+    subject = text[:found.start()].rstrip()
+    if found.group("cost"):
+        names = {word for column in frame.columns for word in normalized_name(str(column)).split()}
+        noun = "cost" if names & {"cost", "costs"} else "price"
+        subject = f"the {noun} of {subject[:1].lower()}{subject[1:]}"
+    return f"{subject} {change}{text[found.end():]}"
+
+
 def _named(question: str, column: str) -> bool:
     """Whether the question names ``column``: one of its words, a word that shortens or lengthens one,
     or its initials."""
@@ -1974,12 +2012,13 @@ def _checked_claim(
         return ClaimCheck(text, "unverified", "failed_check", f"The claim's date and weekday disagree: "
                           f"{wrong}", source=analysis.source, clarification="Which day is meant?")
     if question is None:
-        text = _times_level(days_in_words(text))
+        text = _as_much_in(_times_level(days_in_words(text)), analysis.frame)
         text, every = _every_value(text, analysis.frame)
         text = _won_with(_plain_change(_paid_rate(_ranked_lead(text))))
         text = _half_within(_records_began(_temperature_words(text, analysis.frame)))
         text, worst = _worst_day(text)
         text, compared = _compared_tail(text)
+        text = _without_contrast(text)
         text, rate_base = _table_rate_base(text, analysis.frame)
         text, own_name = _own_name(text, analysis.source, analysis.roles.row_noun)
         text, started = _start_dates(text, analysis.frame)
@@ -2418,6 +2457,16 @@ def _compared_tail(text: str) -> tuple[str, str | None]:
     return f"{text[:found.start()].rstrip()}.", found.group("tail")
 
 
+# "rather than the public network": what the rows are not, which picks none of them.
+CONTRAST = re.compile(r",?\s+\b(?:rather\s+than|instead\s+of)\b[^,.;]*", re.IGNORECASE)
+
+
+def _without_contrast(text: str) -> str:
+    """The claim without a clause saying what its rows are not: "get their water from their own supply
+    rather than the public network" counts the houses on their own supply."""
+    return CONTRAST.sub("", text)
+
+
 def _checked_compared(check: ClaimCheck, compared: str) -> ClaimCheck:
     """A claim that also compares its number with another figure: a wrong number fails it, but a right one
     does not verify the comparison, which ADA does not check."""
@@ -2748,7 +2797,7 @@ def _checked_table(
     ):
         return _checked_extreme(check, analysis, RECORD_EXTREME.search(text))
     if question is None and check.verified and check.answer is not None and SUPERLATIVE.search(text) and (
-        AGAINST_ALL.search(text) and not _ranked(check.answer)
+        AGAINST_ALL.search(SHARE_OF_ALL.sub(" ", text)) and not _ranked(check.answer)
     ):
         # "raised about $96.5 million, the most of any Senate candidate": the same total for every candidate
         # the closing words keep.
@@ -3987,6 +4036,11 @@ SUPERLATIVE = re.compile(
 AGAINST_ALL = re.compile(
     r"\b(?:of|among)\s+(?:any|all)\b|\bthan\s+(?:in\s+)?any\b|\bon\s+record\b|\bever\b", re.IGNORECASE
 )
+# "more than a third of all cinema tickets": a share of the whole, which ranks it against nothing.
+SHARE_OF_ALL = re.compile(
+    r"(?:\b(?:half|thirds?|quarters?|fifths?|tenths?|percent|cent|share|proportion|majority)|%)\s+of\s+all\b",
+    re.IGNORECASE,
+)
 
 
 # "its all-time high", "a record low": the value claimed is the highest or lowest the table holds.
@@ -4704,6 +4758,7 @@ def _other_aggregation(
 ) -> tuple[str, QueryAnswer, float] | None:
     """The total (or the mean) over the rows, when the claim says neither and that one agrees with it."""
     from .api import Refusal  # noqa: PLC0415
+    from .metrics import is_additive_name  # noqa: PLC0415
 
     plan = answer.plan
     if AGGREGATION_SAID.search(text) or not plan.measure or plan.aggregation not in ("mean", "sum") or (
@@ -4711,6 +4766,11 @@ def _other_aggregation(
     ):
         return None
     word = "total" if plan.aggregation == "mean" else "average"
+    if word == "total" and set(normalized_name(str(plan.measure)).split()[-1:]) & PRICE_WORDS and (
+        not is_additive_name(str(plan.measure))
+    ):
+        # Prices do not add up: a year's twelve monthly prices have no total.
+        return None
     other = analysis.ask(f"{word} {asked}", decisions=choices)
     if isinstance(other, Refusal) or other.plan.measure != plan.measure or other.plan.aggregation == (
         plan.aggregation

@@ -209,6 +209,30 @@
   `daily_show_guests.csv` counted the guests, two or three on some show dates.
   When a file names its rows as people and the question counts something
   else, the question is refused with what to ask instead.
+- Statistics Denmark's files read: a semicolon-separated file whose values
+  hold commas ("Tickets sold (1,000)") no longer fails as a CSV, a column of
+  years named `TID` (or `år`, `Vuosi`) is the date, and the
+  subtotals after a comma ("Feature films, all audiences") and a label marked
+  "(all)" are total levels. Fixed a wrong total: "how many tickets sold in
+  2025" added up every type and premiere row and gave 56,874 thousand, where
+  the table gives 9,854.
+- Year columns may give the figure's name before the year ("Number 2000" to
+  "Number 2024", Statistics Sweden).
+- "American films sold more than half of all tickets in Denmark" reads "in
+  Denmark" as where, not as a second nationality; "a third of all tickets" is
+  no rank.
+- "imported rice" names "Rice (imported)", "their own water supply" names
+  "self-supply", "permanently" names "permanent", and "Gotland" names "0980
+  Gotland" in a column of coded regions.
+- A question whose values are recorded only in another unit than the one the
+  brief follows is answered in that unit ("average price of Maize", priced by
+  the KG), or refused with the units when there are several.
+- `S$`, `NZ$`, `HK$`, `₦`, `₩` and `₱` are currencies, "cost more than twice
+  as much in 2021 as in 2019" is the change between the years, and "rather
+  than ..." is set aside. A year's prices are never added up as another
+  reading.
+- A title line with a semicolon above comma-separated rows is skipped, rather
+  than read as a header of two columns.
 - "Australia's wheat crop grew by about a quarter in 2024-25, to 34.8 million
   tonnes" checks the change and the level it reached as two claims, and holds
   when both do. Before, two numbers in one claim were refused.

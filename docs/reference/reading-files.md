@@ -65,7 +65,12 @@ analyzed ("a random sample of 1,000,000 of 3,108,545 rows", "the newest
 3. Parse the opening lines with the comma separator.
 4. If that gives exactly one column and the header line contains `;`, a tab or
    `|`, use that separator. Only the header line is checked, so a one-column
-   file of sentences is not split on their semicolons.
+   file of sentences is not split on their semicolons. If the parse fails and
+   the header line holds one of them more often than commas, it is tried too:
+   Statistics Denmark separates by semicolons and writes "Tickets sold
+   (1,000)", whose comma makes a comma read fail. A split that leaves every
+   column but the first empty is a title line with a semicolon in it, not a
+   header.
 5. If there is still one column, or the parse fails on the first row wider
    than the header, look for lines above the header: a report's title, or a
    data portal's "Data Source" and "Last Updated Date" lines. The header is the

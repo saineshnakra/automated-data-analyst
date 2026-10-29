@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 import pandas as pd
-from table_helpers import deaths_by_cause_wide
+from table_helpers import cinema_tickets, deaths_by_cause_wide
 
 import ada
 from ada.aggregates import TotalLevel, aggregate_rows, total_levels
@@ -251,4 +251,28 @@ class NestedTotalTests(unittest.TestCase):
             "Cases": [30 * 65, 10 * 65, 20 * 65] + [30, 10, 20] * 65,
         })
         self.assertEqual([level.column for level in total_levels(causes)], ["Area", "Cause"])
+
+
+class MarkedTotalTests(unittest.TestCase):
+    """Statistics Denmark's cinema tickets: "Screened films (all)" holds the premieres, and each "X films, all
+    audiences" adds up its kind, under "Feature films and documentaries, all audiences"."""
+
+    def test_an_all_in_brackets_and_subtotals_after_a_comma_are_read_as_totals(self):
+        frame = ada.analyze(cinema_tickets()).frame
+        self.assertEqual(total_levels(frame), (
+            TotalLevel("FILMKAT", "Screened films (all)"),
+            TotalLevel("TYPMAL", "Feature films and documentaries, all audiences"),
+            TotalLevel("NATION2", "All countries"),
+        ))
+
+    def test_a_count_reads_each_column_at_its_total(self):
+        answer = ada.analyze(cinema_tickets()).ask("how many tickets sold in 2025")
+        self.assertEqual(answer.value, 9854)
+
+    def test_two_labels_need_the_marked_one_to_hold_the_other(self):
+        # Premieres larger than "all" in most cells: the brackets alone do not make a total.
+        frame = cinema_tickets()
+        premieres = frame["FILMKAT"] == "Premiere films that year"
+        frame.loc[premieres, "INDHOLD"] = frame.loc[premieres, "INDHOLD"] * 6
+        self.assertNotIn("FILMKAT", [level.column for level in total_levels(frame)])
 

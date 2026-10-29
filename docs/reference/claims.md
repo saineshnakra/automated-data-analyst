@@ -283,7 +283,11 @@ A multiple is a change in percent: "doubled" is a rise of about 100%, "more
 than sixfold" one of more than 500%, "tripled" about 200%, "more than two
 hundred times as many" one of more than 19,900%, and "halved" a fall of about
 50%, compared by its size as "fell by" is. "went from about 28,000 in 2021 to
-5.7 million in 2022" names a change by its ends alone.
+5.7 million in 2022" names a change by its ends alone. "cost more than twice
+as much in 2021 as in 2019" is a rise of more than 100% between 2019 and 2021
+in the price (or the table's cost); with the earlier year first it is the
+fall from it. A year's prices have no total, so the total is never offered as
+another reading of a price.
 
 The values a change went from and to are checked after the change: in "West
 Virginia's Democratic vote halved in twenty years, from 51.5% in 1996 to
@@ -548,6 +552,12 @@ said in the assumptions:
   average Lego set has 161 parts" in `sets.csv`) only describes the rows,
   and the phrase stands for every set. A word that is a value ("Gentoo
   penguins") still filters.
+
+Currency signs are `$`, `US$`, `R$`, `A$`, `C$`, `S$`, `NZ$`, `HK$`, `€`, `£`,
+`¥`, `₹`, `₦`, `₩` and `₱`, so "averaged more than S$110,000" reads
+"averaged" as the mean. A clause saying what the rows are not ("rather than
+the public network", "instead of") picks none of them and is set aside. "a
+third of all tickets" is a share of the whole, not a rank against every other.
 
 When the claim's words fit several columns and the number carries a currency
 symbol ("R$16,008,872"), the one column that holds money (a money word in its

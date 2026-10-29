@@ -207,6 +207,8 @@ TOTAL_LEVEL = re.compile(
     r"(?:all(?!\sothers?\b)|total)(?:\s.+)?|both sexes|both genders|persons|everyone|.+\stotal|overall|"
     r"(?:whole|entire)\s.+"
 )
+#: A label marked as the whole in brackets: Statistics Denmark's "Screened films (all)".
+MARKED_TOTAL = re.compile(r".*\((?:all|total)\)", re.IGNORECASE)
 #: Fewest and most labels a column of levels with a total among them may hold.
 MIN_LEVELS, MAX_LEVELS = 3, 60
 #: Most levels a column may have when all but its total are numbers (single years of age).
@@ -236,6 +238,9 @@ def _covers(frame: pd.DataFrame, column: object, label: str) -> bool:
         if other == column or is_bool_dtype(frame[other]) or not is_numeric_dtype(frame[other]):
             continue
         values = to_numbers(frame[other])
+        if _years(values.dropna()):
+            # A year counts nothing: the years of a total's rows match its parts' in any table.
+            continue
         total, parts = float(values[rows].sum()), float(values[~rows & frame[column].notna()].sum())
         if parts > 0 and parts * (1 - SUM_TOLERANCE) <= total <= parts * (1 + LEVEL_EXCESS):
             return True
@@ -356,6 +361,37 @@ def _years(series: pd.Series) -> bool:
 MIN_DOMINATED_CELLS = 5
 
 
+def _reads_as_total(label: str, key: str) -> bool:
+    """Whether a label reads as a total: its words ("All ages", "Both sexes"), the part after its last comma
+    ("Feature films, all audiences", a subtotal when several labels have it), or "(all)" after it."""
+    after = label.rsplit(",", 1)[1] if "," in label else ""
+    return bool(TOTAL_LEVEL.fullmatch(key) or TOTAL_LEVEL.fullmatch(" ".join(after.casefold().split()))
+                or MARKED_TOTAL.fullmatch(label.strip()))
+
+
+def _holds_the_other(frame: pd.DataFrame, column: object, total: str) -> bool:
+    """Whether the rows of ``total`` are at least the rows of the column's one other label in nine cells
+    of ten, in every column of counts: "Premiere films that year" are some of "Screened films (all)"."""
+    found = False
+    for other in frame.columns:
+        if other == column or is_bool_dtype(frame[other]) or not is_numeric_dtype(frame[other]):
+            continue
+        values = to_numbers(frame[other])
+        if _years(values.dropna()):
+            continue
+        aligned = _aligned(frame, column, other, values, labels_only=True)
+        if aligned is None or aligned[0].shape[1] != 2 or total not in aligned[0].columns:
+            return False
+        wide = aligned[0].dropna()
+        if len(wide) < MIN_DOMINATED_CELLS:
+            return False
+        part = wide.drop(columns=[total]).iloc[:, 0]
+        if not bool((wide[total] >= part).mean() >= 0.9) or not bool((wide[total] > part).any()):
+            return False
+        found = True
+    return found
+
+
 def _dominates(frame: pd.DataFrame, column: object, label: str) -> bool:
     """Whether the rows of ``label`` are at least every other level's in the cells holding nineteen
     twentieths of the counts, in the column of counts with the largest total: "All cancer types" beside
@@ -450,8 +486,14 @@ def total_levels(frame: pd.DataFrame) -> tuple[TotalLevel, ...]:
         if 2 <= len(labels) <= MIN_LEVELS * 2 and (whole := _level_whole(frame, column, labels)):
             wholes.append(TotalLevel(str(column), whole))
             continue
+        # Two labels, one marked as the whole and holding the other: "Screened films (all)" and "Premiere
+        # films that year".
+        marked = [label for label in labels if MARKED_TOTAL.fullmatch(label.strip())]
+        if len(labels) == 2 and len(marked) == 1 and _holds_the_other(frame, column, marked[0]):
+            found.append(TotalLevel(str(column), marked[0]))
+            continue
         # Single years of age, 0 to 115 beside "ALL", are many levels but each a number.
-        numbered = len(labels) <= MAX_NUMBERED_LEVELS and sum(
+        numbered = MIN_LEVELS <= len(labels) <= MAX_NUMBERED_LEVELS and sum(
             not re.fullmatch(r"\d+(?:\.0)?", label.strip()) for label in labels) <= 2
         # Up to MAX_NUMBERED_LEVELS labels when one reads as a total: Statistics Finland's 65 causes of death
         # beside "00-54 Total".
@@ -460,7 +502,7 @@ def total_levels(frame: pd.DataFrame) -> tuple[TotalLevel, ...]:
             continue
         # "Age of mother, all ages": the words every label shares say nothing of the level.
         keys = distinct_parts(labels)
-        totals = [label for label in labels if TOTAL_LEVEL.fullmatch(_label_key(keys[label]))]
+        totals = [label for label in labels if _reads_as_total(label, _label_key(keys[label]))]
         if many and not totals:
             continue
         if len(totals) == 1 and _covers(frame, column, totals[0]):

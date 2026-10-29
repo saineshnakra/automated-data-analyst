@@ -388,8 +388,8 @@ the note names the range they may have been.
 ## A column for each year
 
 A table that gives each year in a column of its own, named by the year alone
-or the year and the same words ("1969 Deaths" to "2024 Deaths", "1960" to
-"2023"), holding numbers, with at least five such columns making up half the
+or the year and the same words before or after it ("1969 Deaths" to "2024
+Deaths", "Number 2000" to "Number 2024", "1960" to "2023"), holding numbers, with at least five such columns making up half the
 table or more, is read with a row for each year: the year in a new column,
 Year, and the figure in one column named for those words (Deaths, or Value
 when the names are years alone). A note names the columns. Year then becomes
@@ -420,6 +420,12 @@ are kept as columns of their own, and the note says what was combined, to
 which grain, and that no time zone is attached. A date no calendar has (31
 February, hour 24) is left missing rather than rolled into the next day, and
 the note gives the number of such rows and the first one as written.
+
+When no column is named for years, a column of whole years named for a date
+or a period holds them: StatCan's `REF_DATE`, Eurostat's `TIME_PERIOD`, and the
+words for time or year of statistics offices, such as Statistics Denmark's
+`TID`, Sweden's `år` and Finland's `Vuosi`. English "time" is not one, since
+race times of 1,800 to 2,100 seconds are no years.
 
 The name and the range both matter. `model_year` holding 70 to 82 is not a
 year, and a count that happens to fall between 1800 and 2100 is not a year
