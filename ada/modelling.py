@@ -24,6 +24,7 @@ Needs the optional extra: ``pip install "automated-data-analyst[model]"``
 from __future__ import annotations
 
 import inspect
+import os
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -37,6 +38,11 @@ from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_
 
 from .formatting import normalized_name
 from .numeric import to_numbers
+
+# Waiting OpenMP threads in LightGBM and XGBoost otherwise spin. When other work holds the cores, a fit then
+# takes a hundred times longer: House Prices, 300 XGBoost trees, 101 seconds against 0.65 with passive
+# waiting. The libraries read the setting when they load; a value already set is kept.
+os.environ.setdefault("OMP_WAIT_POLICY", "PASSIVE")
 
 #: Fewest training rows a model is cross-validated on.
 MIN_MODEL_ROWS = 100

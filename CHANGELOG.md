@@ -4,6 +4,10 @@
 
 ### Predicting a column
 
+- LightGBM's and XGBoost's threads sleep while they wait (`OMP_WAIT_POLICY`
+  is set to `PASSIVE` unless already set). With other work on the cores,
+  spinning threads made a fit about a hundred times slower: 300 XGBoost trees
+  on House Prices took 101 seconds instead of 0.65.
 - A daily forecast with two years of dates also gets each series' value 364
   days before and the mean over the 15 days around it. On Store Sales, 400
   series held out over 16 to 31 August 2016 score an RMSLE of 0.3790 against
