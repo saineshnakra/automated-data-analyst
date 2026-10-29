@@ -78,11 +78,18 @@ shape of each column, never from knowledge of one competition:
 | A structured code ("B/45/P", "0013_02", "Smith, Mr. John") | Its 2 to 4 parts, as numbers or categories, when 95% of values split the same way |
 | Other text | The commonest of the column's frequent words it holds ("Mr"), its first character, how many rows share it, and its mean target in the training rows (see below) |
 | The id, a column with one value, a column with no values, a column the test table lacks | Left out, with the reason in `dropped` |
+| A structured id whose first part repeats ("0013" of "0013_02") | How many rows share that first part, the size of the group |
+| In a table of 100,000 rows or more, a number with at most a tenth as many values as rows | Also its mean target for each value (see below) and how many training and test rows share its value |
+
+A playground table is drawn from a smaller original, and the exact values it
+copied carry signal of their own; a forecast's numbers are not encoded this
+way.
 
 The mean target of a many-valued text value is computed inside each fold from
 that fold's training rows only, and within them from the other four fifths, so
 no row sees its own target. It is pulled toward the overall mean when the value
-has few rows. With more than two classes such text keeps only its other features.
+has few rows. With more than two classes a value gives its share of each class
+instead, one feature per class.
 
 ## The model
 
@@ -90,8 +97,9 @@ Two learners are cross-validated on the same folds:
 
 - LightGBM gradient boosting, stopped early on each held-out fold
   (learning rate 0.02 and 15 leaves under 20,000 rows; 0.05 and 63 leaves
-  above; 0.1 and 63 leaves, stopping after 100 rounds without gain, from a
-  million rows)
+  above; 0.03 and 255 leaves, at least 100 rows a leaf, half the features for
+  each tree and values in up to 1,023 bins, from 100,000 rows; 0.1 and 63
+  leaves, stopping after 100 rounds without gain, from a million rows)
 - a regularized linear model: ridge regression for numbers, logistic
   regression for classes, on the numbers filled with their median (with a
   flag for each missing value), logged when skewed, and scaled, and the

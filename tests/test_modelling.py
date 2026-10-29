@@ -72,6 +72,39 @@ class ModelTests(unittest.TestCase):
         self.assertIn("Name_word", names)
         self.assertIn("Name_count", names)
 
+    def test_a_structured_id_gives_the_size_of_its_group(self):
+        # "0013_02": the id names one row, and its first part a group of rows travelling together.
+        sizes = np.random.default_rng(1).choice([1, 2, 3, 4], 300)
+        groups = np.repeat(np.arange(len(sizes)), sizes)[:600]
+        frame = self.train.copy()
+        ids = [f"{group:04d}_{index:02d}" for index, group in enumerate(groups)]
+        train = frame.assign(PassengerId=ids[:450])
+        test = self.test.assign(PassengerId=ids[450:600])
+        report = ada.model(train, test, metric="accuracy")
+        self.assertIn("PassengerId_group_size", dict(report.features))
+        self.assertIn(("PassengerId", "the row's id"), report.dropped)
+        # A plain running number gives no group.
+        self.assertNotIn("PassengerId_group_size", dict(ada.model(self.train, self.test).features))
+
+    def test_a_wide_table_encodes_numbers_by_value(self):
+        # A playground table is drawn from a smaller original: a number whose values repeat is also
+        # encoded by each value's mean target and by how many rows share it. Fare is nearly unique.
+        from ada import modelling
+        train = self.train.assign(Age=np.random.default_rng(2).integers(1, 40, len(self.train)))
+        test = self.test.assign(Age=np.random.default_rng(3).integers(1, 40, len(self.test)))
+        original = modelling.WIDE_TABLE
+        modelling.WIDE_TABLE = 400
+        try:
+            features = dict(ada.model(train, test, metric="auc").features)
+        finally:
+            modelling.WIDE_TABLE = original
+        self.assertIn("Age_value", features)
+        self.assertIn("Age_value_count", features)
+        self.assertIn("Pclass_value", features)
+        self.assertNotIn("Fare_value", features)
+        # Below the size, numbers stay as they are.
+        self.assertNotIn("Age_value", dict(ada.model(train, test, metric="auc").features))
+
     def test_a_probability_metric_writes_probabilities(self):
         report = ada.model(self.train, self.test, metric="Roc Auc Score")
         values = report.submission["Survived"]

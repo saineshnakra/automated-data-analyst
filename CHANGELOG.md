@@ -4,6 +4,15 @@
 
 ### Predicting a column
 
+- In a table of 100,000 rows or more, a number whose values repeat is also
+  encoded by each value's mean target, from the other folds, and by how many
+  rows share its value, and the trees grow larger (255 leaves, learning rate
+  0.03, values in up to 1,023 bins). On Playground S6E8 the cross-validated
+  AUC rises from 0.9639 to 0.9671, and on S6E9 from 0.9418 to 0.9454.
+- With more than two classes, a many-valued text value and an encoded number
+  give their share of each class; before, such text was left out.
+- A structured id whose first part repeats ("0013" of Spaceship Titanic's
+  "0013_02") gives the size of its group.
 - `ada.model(train, test)` and `ada model` predict one column of a table from
   the others, as a tabular Kaggle competition asks: features from rules on
   the columns' shapes, LightGBM and a regularized linear model blended on
