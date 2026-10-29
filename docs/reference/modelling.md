@@ -139,16 +139,21 @@ values, which must fill at least half the grid of series by dates. Each row
 then gets its series' target from the test's reach or further back: the value
 that many days before, the value on the same weekday 1 to 4 weeks further
 back, the mean over the 7, 14, 28, 56 and 112 days ending that many days
-before, and the mean of the four same weekdays. No value is nearer than the
+before, and the mean of the four same weekdays. With two years of dates, it
+also gets the value 364 days before (the same weekday a year earlier) and the
+mean over the 15 days around that day, so a season that comes once a year
+(school supplies before September) shows. No value is nearer than the
 reach, so a held-out stretch uses only targets from before it, and the last
 test day has them all. The date's own parts are left out of the shift check,
 as a forecast's test rows are later by design.
 
 A series whose target was 0 on every day of the 28 before a fold's held-out
 stretch predicts 0 for that stretch, and one whose target was 0 on every day of
-the last 28 training days predicts 0 for the test, when that gives a better
-out-of-fold score than the model's own predictions. Each fold decides from the
-time before it only, and the calculation says how many test rows were set so.
+the last 28 training days predicts 0 for the test, when that scores better
+than the model's own predictions in most of the folds that hold such series. A
+few series that sell again in one stretch of time do not outweigh the many that
+stay at 0 in the others. Each fold decides from the time before it only, and
+the calculation says how many test rows were set so.
 
 ## Blending
 

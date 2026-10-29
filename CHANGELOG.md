@@ -4,6 +4,16 @@
 
 ### Predicting a column
 
+- A daily forecast with two years of dates also gets each series' value 364
+  days before and the mean over the 15 days around it. On Store Sales, 400
+  series held out over 16 to 31 August 2016 score an RMSLE of 0.3790 against
+  0.3823 (stores closed in that stretch aside), and school supplies, which
+  sell before September, 0.551 against 0.597.
+- A series that sold nothing for 28 days predicts 0 when that scores better in
+  most folds; before, the folds' total decided. On Store Sales the rule did not
+  hold for the test, so 114 series with no sales in the last 28 days got
+  forecasts of up to 80; in the last stretch the folds hold out, 8 of 108 such
+  series sold again, and the other folds had 2 to 13.
 - XGBoost joins LightGBM and the linear model, on the same features and
   folds, and the blend weighs all three on the out-of-fold predictions. The
   `model` extra installs it (`xgboost-cpu` on Linux). Cross-validated: House

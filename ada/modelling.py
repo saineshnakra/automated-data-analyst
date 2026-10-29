@@ -71,6 +71,8 @@ SERIES_CANDIDATES, SERIES_SIZE = 6, 3
 SERIES_COVER = 0.5
 #: Widths in days of the target's past means offered to a daily forecast.
 LAG_WINDOWS = (7, 14, 28, 56, 112)
+#: Days back to the same weekday a year earlier, for series with two years of history.
+YEAR_DAYS = 364
 # A series whose target was 0 on every day of this many before a forecast predicts 0, when that scores better.
 QUIET_DAYS = 28
 
@@ -450,6 +452,15 @@ def _lag_features(train: pd.DataFrame, test: pd.DataFrame, date: str, keys: list
     columns[f"{target}_weekday4"] = weekday
     made.append((f"{target}_weekday4", f"mean {target} on the same weekday in the 4 weeks from {week} days "
                                        f"before, {where}"))
+    if grid.shape[1] > 2 * YEAR_DAYS and horizon < YEAR_DAYS - 7:
+        # A season that comes once a year (school supplies before September) shows in the same weeks a year
+        # before, which no lag of a few weeks reaches.
+        columns[f"{target}_lag{YEAR_DAYS}"] = value_at(YEAR_DAYS)
+        made.append((f"{target}_lag{YEAR_DAYS}", f"{target} {YEAR_DAYS} days before, the same weekday a year "
+                                                 f"earlier, {where}"))
+        columns[f"{target}_year15"] = mean_before(YEAR_DAYS - 7, 15)
+        made.append((f"{target}_year15", f"mean {target} over the 15 days around the same date a year "
+                                         f"earlier, {where}"))
     frame = pd.DataFrame(columns)
     fit, ahead = frame.iloc[:len(train)], frame.iloc[len(train):]
     return fit.reset_index(drop=True), ahead.reset_index(drop=True), made
@@ -923,15 +934,22 @@ def model(
                       for _, _, fit_rows, held_rows in splits]
         trial = oof.copy()
         trial[np.concatenate(quiet_held)] = 0.0
-        before = _score(chosen, task, classes, y, scored, oof[scored], priors, logged)
-        after = _score(chosen, task, classes, y, scored, trial[scored], priors, logged)
-        if after > before if chosen.higher else after < before:
+        # Judged fold by fold: a few series that sell again in one stretch of time should not outweigh the
+        # many that stay at 0 in the others. The rule holds when it scores better in most folds.
+        better = 0
+        for (_, _, _, held_rows), quiet_rows in zip(splits, quiet_held, strict=True):
+            if not len(quiet_rows):
+                continue
+            before = _score(chosen, task, classes, y, held_rows, oof[held_rows], priors, logged)
+            after = _score(chosen, task, classes, y, held_rows, trial[held_rows], priors, logged)
+            better += 1 if (after > before if chosen.higher else after < before) else -1
+        if better > 0:
             oof = trial
             quiet_test = _quiet(train_ids, dates, y, np.arange(len(y)), size)[test_ids]
             predicted = predicted.copy()
             predicted[quiet_test] = 0.0
             quiet_note = (f"; series whose {target} was 0 on every day of the {QUIET_DAYS} before predict 0 "
-                          f"({int(quiet_test.sum()):,} test rows), as it scored better out of fold")
+                          f"({int(quiet_test.sum()):,} test rows), as it scored better in most folds")
         else:
             quiet_held = [np.zeros(0, dtype=int) for _ in splits]
     fold_scores = []
