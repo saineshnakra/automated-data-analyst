@@ -97,6 +97,17 @@ Store Sales' public score is 0.087 worse than its cross-validated 0.391,
 twenty times its wobble: the time-ordered folds do not score the forecast as
 the test is made, and that is a fix still to make.
 
-The locked test competitions (S5E7 to S5E9, S6E4 to S6E6, S6E10) are scored
-once, at the end. S6E1, S6E3, S6E4 and S6E5 wait on their rules being
-accepted for the account.
+The locked test competitions, scored once with the model of XGBoost, value
+encoding and larger trees, and not used to choose any fix:
+
+| Competition | Metric | Cross-validated | Public score | Top-10% bar | Place |
+|---|---|---|---|---|---|
+| S5E7 | accuracy | 0.9692 | 0.97571 | 0.97652 | top 31% of 4,331 |
+| S5E8 | AUC | 0.9751 | 0.97607 | 0.97710 | top 13% of 3,367 |
+| S5E9 | RMSE | 26.462 | 26.3886 | 26.3836 | top 48% of 2,583 |
+| S6E6 | balanced accuracy | 0.9668 | 0.96749 | 0.97227 | top 26% of 2,817 |
+| S6E10 | AUC | 0.9605 | 0.96007 | 0.96207 | top 48% of 3,429 |
+
+S5E9's public score is 0.005 from the bar and half the leaderboard away from
+it: on these leaderboards the middle and the top 10% are close together.
+S6E1, S6E3, S6E4 and S6E5 wait on their rules being accepted for the account.
