@@ -349,10 +349,14 @@ def crimes_by_type() -> pd.DataFrame:
 def road_deaths_colombia() -> pd.DataFrame:
     """Road deaths in Colombia, one row each as the Policía Nacional gives them: a municipality code (CODIGO
     DANE), CANTIDAD of 1 on every row, and a town called Colombia among the municipalities. 2024: 6 deaths in
-    Antioquia, 4 in Cauca and 1 in Colombia (Huila), 11 in all; 2025: 7 in Antioquia and 5 in Cauca."""
+    Antioquia, 4 in Cauca and 1 in Colombia (Huila), 11 in all; 2025: 7 in Antioquia, 5 in Cauca and one in
+    each of 30 towns of Valle del Cauca."""
     places = {"Medellín": ("ANTIOQUIA", 5001000), "Popayán": ("CAUCA", 19001000),
               "Colombia": ("HUILA", 41206000)}
-    deaths = {2024: {"Medellín": 6, "Popayán": 4, "Colombia": 1}, 2025: {"Medellín": 7, "Popayán": 5}}
+    towns = {f"Pueblo {number}": ("VALLE DEL CAUCA", 76001000 + number) for number in range(1, 31)}
+    places.update(towns)
+    deaths = {2024: {"Medellín": 6, "Popayán": 4, "Colombia": 1},
+              2025: {"Medellín": 7, "Popayán": 5, **dict.fromkeys(towns, 1)}}
     rows = [{"DEPARTAMENTO": places[town][0], "MUNICIPIO": town, "CODIGO DANE": places[town][1],
              "FECHA HECHO": f"{day + 1:02d}/03/{year}", "CANTIDAD": 1}
             for year, towns in deaths.items() for town, count in towns.items() for day in range(count)]

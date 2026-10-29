@@ -5325,6 +5325,16 @@ class CodedValueTests(unittest.TestCase):
         self.assertIsInstance(refusal, ada.Refusal)
         self.assertIn("theft_other", refusal.message)
 
+    def test_values_that_only_hold_the_word_are_not_its_kinds(self):
+        # "railways" is not "garbage on the railway track" and "railway problems abroad".
+        causes = ["broken down train", "garbage on the railway track", "railway problems abroad",
+                  "person on the railway track"]
+        frame = pd.DataFrame({"cause": causes * 2, "minutes": range(8)})
+        vocabulary = nlq._vocabulary(frame, detect_roles(frame))
+        self.assertEqual(nlq._values_named(("railways",), vocabulary, exact_only=False), ([], False))
+        found, _ = nlq._values_named(("trains",), vocabulary, exact_only=False)
+        self.assertEqual([value.raw for value in found], ["broken down train"])
+
 
 
 class LabourForceTests(unittest.TestCase):
@@ -5364,3 +5374,11 @@ class PeriodWordTests(unittest.TestCase):
         result = ada.analyze(frame).ask("which months have the most fires")
         plan = getattr(result, "plan", None)
         self.assertFalse(plan and any(item.column == "Business_Impact" for item in plan.filters))
+
+    def test_a_word_does_not_reach_a_value_by_taking_a_plural(self):
+        # "the lowest of any state" once kept GeoName = United States beside the state named.
+        frame = pd.DataFrame({"GeoName": ["United States", "Texas", "Ohio"], "Value": [1.0, 2.0, 3.0]})
+        vocabulary = nlq._vocabulary(frame, detect_roles(frame))
+        self.assertEqual(nlq._values_named(("state",), vocabulary, exact_only=False), ([], False))
+        found, _ = nlq._values_named(("states",), vocabulary, exact_only=False)
+        self.assertEqual([value.raw for value in found], ["United States"])

@@ -3247,6 +3247,69 @@ class CountryNamedTownTests(unittest.TestCase):
         self.assertEqual(check.reason, "failed_check")
 
 
+class KindsOfAWordTests(unittest.TestCase):
+    def test_values_that_only_hold_the_word_are_left_out(self):
+        # "railways" is not a choice between "garbage on the railway track" and "railway problems abroad".
+        causes = ["broken down train"] * 4 + ["garbage on the railway track", "railway problems abroad",
+                                              "person on the railway track", "damaged railway bridge"]
+        frame = pd.DataFrame({"cause": causes, "start_time": pd.date_range("2025-01-01", periods=8)})
+        claim = "Broken-down trains caused half of the disruptions on the railways in 2025."
+        check = ada.check_claim(frame, claim)
+        self.assertIn('Without "railways", which name nothing in the table, the data give 50', check.message)
+
+
+class CountryColumnTests(unittest.TestCase):
+    """Life expectancy for 35 entities, as the World Bank gives them: 12 countries and 23 regions and income
+    groups, so a fifth of the labels are not countries."""
+
+    def setUp(self):
+        countries = ["Japan", "France", "Germany", "Italy", "Spain", "Chile", "Peru", "Kenya", "Ghana",
+                     "Nepal", "Norway", "Sweden"]
+        entities = [*countries, *(f"Region {number}" for number in range(1, 24))]
+        self.frame = pd.DataFrame({"Entity": entities, "Year": [2021] * len(entities),
+                                   "Life expectancy": [84.4] + [70.0] * (len(entities) - 1)})
+
+    def test_a_country_in_a_column_of_countries_is_the_row(self):
+        check = ada.check_claim(self.frame, "Life expectancy in Japan was 84.4 years in 2021.")
+        self.assertTrue(check.verified, check.message)
+
+    def test_a_column_named_for_countries_holds_them(self):
+        frame = self.frame.rename(columns={"Entity": "Country Name"})
+        frame["Country Name"] = frame["Country Name"].where(frame["Country Name"] == "Japan", "Other")
+        frame["Country Name"] = frame["Country Name"] + frame.index.astype(str).where(
+            frame["Country Name"] != "Japan", "")
+        check = ada.check_claim(frame, "Life expectancy in Japan was 84.4 years in 2021.")
+        self.assertTrue(check.verified, check.message)
+
+
+class MoneyByUnitTests(unittest.TestCase):
+    """Personal income as BEA gives it, a Value for each state, line and year, with Unit saying what each
+    line is in: Texas had 2,319,750.7 million dollars in 2025 and $54,433 a head in Mississippi."""
+
+    def setUp(self):
+        lines = {"Personal income (millions of dollars)": ("Millions of dollars", 2_319_750.7),
+                 "Population (persons) 1/": ("Number of persons", 31_000_000.0),
+                 "Per capita personal income (dollars) 2/": ("Dollars", 54_433.0)}
+        self.frame = pd.DataFrame([
+            {"GeoName": state, "Description": line, "Unit": unit, "Year": year,
+             "Value": value * (1 if year == 2025 else 0.9) * (0.5 if state == "Ohio" else 1)}
+            for state in ("Texas", "Mississippi", "Ohio") for year in (2024, 2025)
+            for line, (unit, value) in lines.items()])
+
+    def test_an_amount_is_read_from_value_in_the_unit_of_its_rows(self):
+        check = ada.check_claim(self.frame, "Texans' personal income topped $2 trillion in 2025.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("Millions of dollars", " ".join(check.assumptions))
+        check = ada.check_claim(self.frame, "Texans' personal income topped $3 trillion in 2025.")
+        self.assertEqual(check.reason, "failed_check")
+
+    def test_a_description_says_what_value_holds(self):
+        claim = "Mississippians had a per capita personal income of about $54,000 in 2025."
+        self.assertTrue(ada.check_claim(self.frame, claim).verified)
+        claim = "Mississippians had a per capita personal income of about $45,000 in 2025."
+        self.assertEqual(ada.check_claim(self.frame, claim).reason, "failed_check")
+
+
 class ChangeAndLevelTests(unittest.TestCase):
     """Sales by year and region: 900 in 2019 and 1,200 in 2020, up a third."""
 

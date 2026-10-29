@@ -523,8 +523,15 @@ a claim in a unit that agrees once the column is read in another unit of the
 same kind ("about 40 centimetres" of 0.403, which agrees in metres), and a
 bound that would hold in such a unit ("more than 30 centimetres"). A unit
 column that gives one scale for every row (a CSO table's `UNIT` of
-"Thousand") does say: VALUE 149.2 is 149,200, in the value checked, in the
-ends of a change and in a base, and the assumption says so. In "from about
+"Thousand"), or for the rows the reading uses (BEA's `Unit` of "Millions of
+dollars" for personal income), does say: VALUE 149.2 is 149,200, in the value
+checked, in the ends of a change and in a base, and the assumption says so.
+An amount of money read as a count of rows is read from the table's one
+`Value` column when the unit column gives those rows in money: "Texans'
+personal income topped $3 trillion in 2025" is Value for Description =
+Personal income (millions of dollars), 2,319,750.7 million dollars. A
+`Description` with one value says what `Value` holds, as an `Indicator Name`
+does. In "from about
 74,000 to 149,000", "about" is said of both ends. A claim
 whose scale word is part of the unit ("37,528 million tonnes" about a column
 recorded in million tonnes) agrees, and the assumption says how it was read.
@@ -585,7 +592,9 @@ what the table is named for, and the count of rows stands.
 A country's name that a column of smaller places also holds (Colombia, a town
 in Huila, among 994 municipalities) is also read as the whole table: when the
 town and the whole table give other verdicts, the claim gets
-`ambiguous_intent` with both numbers.
+`ambiguous_intent` with both numbers. A column of 30 labels or fewer (Origin:
+USA, Japan, Europe), a column named for countries (`Country Name`), a column
+holding ten or more countries, and a US state are left as they are.
 
 A failure is no verdict, and the claim gets `missing_context`, when the
 reading is likely of something else: when every end the claim gives ("from

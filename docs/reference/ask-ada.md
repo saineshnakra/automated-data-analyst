@@ -396,11 +396,14 @@ each word is claimed, in this order, by:
     formed from the first word of longer values ("motorcyclists" for
     Motorcycle rider and Motorcycle pillion passenger), is not every row: the
     question is refused and names the values to write instead. The last word
-    of a value is matched with its plural: "cyclists" names Pedal cyclist,
-    but a word for a period does not ("which months" is no "within a month").
-    A plural whose singular is in several values that differ by more than a
+    of a value is matched without its plural: "cyclists" names Pedal cyclist,
+    but "state" does not name United States, and a word for a period does
+    not drop its plural ("which months" is no "within a month").
+    A plural whose singular starts several values that differ by more than a
     number ("thefts" for theft_other and theft_vehicle_motorcycle) is refused
-    the same way; "probes" for probe_0 to probe_79 is not. A code of words
+    the same way; "probes" for probe_0 to probe_79 is not, and neither is
+    "railways" for values that only hold the word ("garbage on the railway
+    track"). A code of words
     joined by underscores is named by its words in any order: "motorcycle
     thefts" names theft_vehicle_motorcycle.
     "in Finland", where several areas hold the word ("MA1 MAINLAND FINLAND",

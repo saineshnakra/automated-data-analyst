@@ -467,8 +467,12 @@ def is_identifier_name(name: str, columns=()) -> bool:
     (such as "Order No") stay text. "No" alone counts only with a mark ("No.",
     "No #"): a bare "NO" is as likely nitric oxide or a yes/no answer. Among
     ``columns``, "hp_number" beside "hp" is the number of hp, not a key.
+    Spanish and Italian put the word first: CODIGO DANE, codice ISTAT.
     """
     words = _head_words(name)
+    if len(words) > 1 and words[0] in CODE_WORDS_ABROAD and words[0] != "cod":
+        # "COD" first is as likely a cause of death.
+        return True
     if not words or words[-1] not in IDENTIFIER_NAME_WORDS or _bare_no(name, words):
         return False
     return not (words[-1] in NUMBER_KEY_WORDS and len(words) > 1 and " ".join(words[:-1]) in {

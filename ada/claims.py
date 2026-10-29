@@ -348,7 +348,8 @@ OPENING_BASE = re.compile(
 BY_YEAR = re.compile(r"\bby\s+(?:the\s+end\s+of\s+)?(?P<year>(?:19|20)\d{2})\b", re.IGNORECASE)
 # Name words of a column that says what a long table's value column holds on each row, and the names of
 # that value column.
-INDICATOR_WORDS = frozenset({"indicator", "measure", "statistic", "series", "variable", "metric"})
+INDICATOR_WORDS = frozenset({"indicator", "measure", "statistic", "series", "variable", "metric",
+                             "description"})
 VALUE_NAMES = frozenset({"value", "values", "obs value", "observation value", "data value", "estimate"})
 # "averaged five times their 2019 level": the later level as a multiple of an earlier year's.
 TIMES_LEVEL = re.compile(
@@ -1614,9 +1615,11 @@ def _recorded_scale(analysis: Any, answer: QueryAnswer | None) -> tuple[float, s
     """The scale a unit column gives the answer's column in, when it gives one for every row.
 
     In a CSO table whose UNIT is "Thousand" on every row, VALUE 149.2 is
-    149,200. Returns (factor, the unit as written, the unit column).
+    149,200. In BEA's income table, whose Unit differs from row to row, the
+    rows the answer uses give it: "Millions of dollars" for personal income.
+    Returns (factor, the unit as written, the unit column).
     """
-    from .nlq import UNIT_COLUMN_NAMES  # noqa: PLC0415
+    from .nlq import UNIT_COLUMN_NAMES, _apply_filters  # noqa: PLC0415
 
     if answer is None:
         return None
@@ -1628,10 +1631,36 @@ def _recorded_scale(analysis: Any, answer: QueryAnswer | None) -> tuple[float, s
         if normalized_name(str(column)) not in UNIT_COLUMN_NAMES:
             continue
         units = frame[column].dropna().astype(str).str.strip().unique()
+        if len(units) > 1:
+            rows, _ = _apply_filters(frame, answer.plan, analysis.roles)
+            units = rows[column].dropna().astype(str).str.strip().unique()
         words = re.findall(r"[a-z0-9]+", units[0].lower()) if len(units) == 1 else []
         factor = next((RECORDED_SCALES[word] for word in words if word in RECORDED_SCALES), None)
         if factor:
             return factor, str(units[0]), str(column)
+    return None
+
+
+def _money_figure(analysis: Any, answer: QueryAnswer, asked: str) -> tuple[str, str, str] | None:
+    """The table's one Value column, when a unit column gives the rows a count of rows uses in money: Unit =
+    Millions of dollars for BEA's personal income. Returns (the Value column, the unit column, the unit)."""
+    from pandas.api.types import is_numeric_dtype  # noqa: PLC0415
+
+    from .nlq import UNIT_COLUMN_NAMES, _apply_filters  # noqa: PLC0415
+
+    frame = analysis.frame
+    figures = [str(column) for column in frame.columns
+               if normalized_name(str(column)) in VALUE_NAMES and is_numeric_dtype(frame[column])]
+    if len(figures) != 1 or figures[0].lower() in asked.lower():
+        return None
+    rows, _ = _apply_filters(frame, answer.plan, analysis.roles)
+    for column in frame.columns:
+        if normalized_name(str(column)) not in UNIT_COLUMN_NAMES:
+            continue
+        units = rows[column].dropna().astype(str).str.strip().unique()
+        words = set(re.findall(r"[a-z]+", units[0].lower())) if len(units) == 1 else set()
+        if any(UNITS.get(word, ("",))[0] == "money" for word in words):
+            return figures[0], str(column), str(units[0])
     return None
 
 
@@ -3393,9 +3422,10 @@ def _checked_country_scope(check: ClaimCheck, analysis: Any) -> ClaimCheck:
 
     "Colombia recorded more than 7,500 road deaths in 2025": MUNICIPIO holds Colombia, a town in Huila with
     one death that year, and the table is of the whole country's. When the two give other verdicts, the claim
-    gets `ambiguous_intent` with both numbers.
+    gets `ambiguous_intent` with both numbers. A column of a few labels (Origin: USA, Japan, Europe) is no
+    column of smaller places, and a US state is no country.
     """
-    from .nlq import execute_plan  # noqa: PLC0415
+    from .nlq import US_STATES, execute_plan  # noqa: PLC0415
 
     settled = check.verified or check.reason == "failed_check"
     if not settled or check.answer is None or check.claimed is None:
@@ -3405,7 +3435,9 @@ def _checked_country_scope(check: ClaimCheck, analysis: Any) -> ClaimCheck:
         if not isinstance(item, ValueFilter) or len(item.values) != 1 or item.column not in frame.columns:
             continue
         named = str(item.values[0]).strip().lower()
-        if named not in countries or _holds_places(frame[item.column], countries):
+        if (named not in countries or named in US_STATES
+                or frame[item.column].nunique() <= MAX_BREAKDOWN_LABELS
+                or _holds_places(frame[item.column], countries)):
             continue
         whole = replace(plan, filters=tuple(other for other in plan.filters if other is not item),
                         counted=tuple(other for other in plan.counted if other is not item))
@@ -3496,15 +3528,21 @@ def _country_names() -> set[str]:
 
 
 def _holds_places(series: Any, places: set[str]) -> bool:
-    """Whether a column is one of the places named: three or more of them, and a fifth of its values.
-    Colombia's 994 municipalities hold Colombia, California and Florida, and are not."""
+    """Whether a column is one of the places named: named for countries (Country Name), ten or more of them,
+    or three or more and a fifth of its values. Colombia's 994 municipalities hold Colombia, California and
+    Florida, and are not."""
+    if set(normalized_name(str(series.name)).split()) & COUNTRY_NAME_WORDS:
+        return True
     values = {str(value).strip().lower() for value in series.dropna().unique()[:5_000]}
     shared = len(values & places)
-    return shared >= 3 and shared >= PLACE_COLUMN_SHARE * len(values)
+    return shared >= MIN_PLACE_VALUES or (shared >= 3 and shared >= PLACE_COLUMN_SHARE * len(values))
 
 
-# The share of a column's values that must be places for it to be a column of them.
-PLACE_COLUMN_SHARE = 0.2
+# The share of a column's values that must be places for it to be a column of them, and the number that is
+# enough on its own.
+PLACE_COLUMN_SHARE, MIN_PLACE_VALUES = 0.2, 10
+# Words in a column's name that say it holds countries.
+COUNTRY_NAME_WORDS = frozenset({"country", "countries", "nation", "nations", "economy", "economies"})
 
 
 # Words often used for a narrower thing than they mean: "casualties" for the dead alone.
@@ -5002,9 +5040,12 @@ def _holds_counts(analysis: Any) -> bool:
     """Whether some column could hold a count of what the table is named for: a numeric column with more
     than one value that is not the date, an ID or a code. Colombia's road deaths have none (CODIGO DANE is a
     code and CANTIDAD is 1 on every row), so each row is one death."""
+    from .schema import is_identifier_name  # noqa: PLC0415
+
     roles, frame = analysis.roles, analysis.frame
     return any(column not in (roles.date, roles.identifier) and column not in roles.factors
-               and frame[column].nunique() > 1 for column in roles.numeric if column in frame.columns)
+               and not is_identifier_name(str(column)) and frame[column].nunique() > 1
+               for column in roles.numeric if column in frame.columns)
 
 
 def _values_written(plan: Any, text: str) -> bool:
@@ -5661,6 +5702,12 @@ def _check(
         )
     written = NUMBER_PATTERN.search(number.text)
     if written and written.group("currency") and answer.plan.aggregation == "count" and not measure:
+        if figure := _money_figure(analysis, answer, asked):
+            # "Texans' personal income topped $3 trillion" in BEA's table of a Value for each state, line and
+            # year: Unit gives the rows kept in Millions of dollars, so the amount is their Value.
+            check = _check(analysis, text, f"{figure[0]} {asked}", number, source, choices)
+            note = f"Read the amount as {figure[0]}, which {figure[1]} gives in {figure[2]} for these rows."
+            return replace(check, assumptions=(note, *check.assumptions))
         # "values its trees at almost £1 billion": an amount of money is never a count of things.
         return ClaimCheck(
             text, "unverified", "missing_context",
@@ -5885,7 +5932,7 @@ def _check(
         after = text[text.index(number.text) + len(number.text):]
         rows_named = _names_rows(re.findall(r"[A-Za-z]+", after)[:4], analysis.roles.row_noun)
     if (named and counts_rows and agreement == "mismatch" and not _names_rows(named, analysis.roles.row_noun)
-            and not rows_named and (_holds_counts(analysis) or not _values_written(plan, text))):
+            and not rows_named and (_holds_counts(analysis) or subject or not _values_written(plan, text))):
         # "Visits to the park rose to 11.3 million" in national-park-visits/national_parks.csv: the visits
         # are a column of counts, not the park-years the rows are, so a count of rows proves nothing.
         return ClaimCheck(

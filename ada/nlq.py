@@ -2124,10 +2124,11 @@ def _values_named(
         return [*named, *others], not others
     if exact or exact_only:
         return exact, True
-    # "cyclists" names "Pedal cyclist": the last word may take or drop its plural. A word for a period does
-    # not: "which months" is no "3 - May resume operations within a month".
-    runs = [run, *((*run[:-1], form) for form in sorted(_word_variants(run[-1])) if form != run[-1])] if len(
-        run[-1]) > 2 and run[-1] not in PERIOD_WORDS else [run]
+    # "cyclists" names "Pedal cyclist": the last word may drop its plural. It does not take one ("any state"
+    # is not "United States"), and a word for a period does not drop it: "which months" is no "3 - May resume
+    # operations within a month".
+    runs = [run, *((*run[:-1], form) for form in sorted(_word_variants(run[-1])) if len(form) < len(
+        run[-1]))] if len(run[-1]) > 2 and run[-1] not in PERIOD_WORDS else [run]
     for words in runs:
         postings = [vocabulary.by_word.get(word) for word in words]
         if not all(postings):
@@ -2148,10 +2149,12 @@ def _values_named(
         # The plural taken or dropped must name one value: "probes" is not each of probe_0 to probe_79.
         if found and (words is run or len(found) == 1):
             return found, False
-        if len({tuple(word for word in value.words if word not in words and not word.isdigit())
-                for value in found}) > 1:
+        if all(value.words[:len(words)] == words for value in found) and len(
+                {tuple(word for word in value.words if word not in words and not word.isdigit())
+                 for value in found}) > 1:
             # "thefts" names theft_other and theft_vehicle_motorcycle, kinds of theft, which the question
-            # must choose between.
+            # must choose between. Values that only hold the word are not its kinds: "railways" is not
+            # "garbage on the railway track".
             return found, False
     return [], False
 

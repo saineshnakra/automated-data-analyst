@@ -56,6 +56,13 @@ class IdentifierNameTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertFalse(is_identifier_name(name))
 
+    def test_spanish_and_italian_put_the_word_first(self):
+        for name in ("CODIGO DANE", "codice ISTAT", "Código municipio"):
+            with self.subTest(name=name):
+                self.assertTrue(is_identifier_name(name))
+        # COD first is as likely a cause of death.
+        self.assertFalse(is_identifier_name("COD group"))
+
     def test_an_ordinary_measure_is_not_a_key(self):
         for name in ("Revenue", "Units Sold", "Conversion Rate", "Cost"):
             with self.subTest(name=name):

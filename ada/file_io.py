@@ -10,6 +10,7 @@ import pandas as pd
 from pandas.io.parsers.readers import STR_NA_VALUES
 from python_calamine import CalamineError
 
+from .numeric import to_numbers
 from .schema import is_identifier_name
 
 SUPPORTED_SUFFIXES = {".csv", ".tsv", ".txt", ".data", ".dat", ".xlsx", ".xlsm"}
@@ -226,7 +227,7 @@ NOTE_NUMBER_SHARE = 0.05
 
 def _numbers_in(sheet: pd.DataFrame) -> int:
     """How many cells of a sheet read without a header hold a number."""
-    return sum(int(pd.to_numeric(sheet[column], errors="coerce").notna().sum()) for column in sheet.columns)
+    return sum(int(to_numbers(sheet[column]).notna().sum()) for column in sheet.columns)
 
 
 def _data_sheet(contents: bytes) -> str | None:

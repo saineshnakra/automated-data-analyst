@@ -187,7 +187,16 @@
   no column could hold a count of deaths, "more than 1,500 road deaths in
   Antioquia" counts the rows, and "Colombia", also a town among the
   municipalities, is read as the whole table too: when the town and the whole
-  table disagree, the claim gets `ambiguous_intent`.
+  table disagree, the claim gets `ambiguous_intent`. A column of 30 labels or
+  fewer, a column of countries and a US state are left out of this.
+- In BEA's personal income, whose Unit differs from line to line, an amount
+  of money is read from Value in the unit of the rows used: "Texans' personal
+  income topped $3 trillion in 2025" compares 2,319,750.7 million dollars,
+  and a Description with one value says what Value holds. Before, "topped $2
+  trillion" failed against 2,319,750.7.
+- The last word of a value is matched without its plural ("cyclists" names
+  Pedal cyclist), but not with one added: "the lowest of any state" no longer
+  keeps GeoName = United States beside the state named.
 - "unemployed people" names Spain's "Unemployed persons", and "Both genders"
   is a total like "Both sexes".
 - "China" in a column of countries is not also "China, Hong Kong SAR", a
