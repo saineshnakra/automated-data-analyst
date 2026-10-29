@@ -233,6 +233,10 @@
   reading.
 - A title line with a semicolon above comma-separated rows is skipped, rather
   than read as a header of two columns.
+- A column that is a log or a root of another is looked for in at most 2,000
+  pairs of columns, the closest first. A table with a cumulative column for
+  each day (JHU's COVID-19 deaths, 1,155 columns) ranked almost every pair
+  alike, and its brief took over half an hour; it takes about a minute.
 - "Australia's wheat crop grew by about a quarter in 2024-25, to 34.8 million
   tonnes" checks the change and the level it reached as two claims, and holds
   when both do. Before, two numbers in one claim were refused.

@@ -4983,13 +4983,17 @@ def _transforms(
 ) -> dict[str, Derivation]:
     """Columns that are a log, a square root or another one-to-one function of another (``find_transform``).
 
-    Only pairs whose ranks agree to TRANSFORM_RANKS are checked. The later
-    column is tried as the function of the earlier first, since computed
-    columns are usually appended.
+    Only pairs whose ranks agree to TRANSFORM_RANKS are checked, at most
+    CAPPED_PAIRS of them, the closest first: a column of cumulative counts for
+    each day ranks alike with every other day. The later column is tried as
+    the function of the earlier first, since computed columns are usually
+    appended.
     """
     found: dict[str, Derivation] = {}
-    first, second = np.where(np.triu(np.abs(np.nan_to_num(spearman)) >= TRANSFORM_RANKS, k=1))
-    for i, j in zip(first, second, strict=True):
+    agreement = np.abs(np.nan_to_num(spearman))
+    first, second = np.where(np.triu(agreement >= TRANSFORM_RANKS, k=1))
+    order = np.argsort(-agreement[first, second], kind="stable")[:CAPPED_PAIRS]
+    for i, j in zip(first[order], second[order], strict=True):
         if family[i] == family[j] or columns[i] in found or columns[j] in found:
             continue
         for derived, source in ((j, i), (i, j)):
