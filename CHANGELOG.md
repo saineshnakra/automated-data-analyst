@@ -4,6 +4,11 @@
 
 ### Predicting a column
 
+- XGBoost joins LightGBM and the linear model, on the same features and
+  folds, and the blend weighs all three on the out-of-fold predictions. The
+  `model` extra installs it (`xgboost-cpu` on Linux). Cross-validated: House
+  Prices RMSLE 0.1195 to 0.1185, S6E8 AUC 0.9671 to 0.9674, S6E9 0.9454 to
+  0.9456, S6E2 0.9555 to 0.9556; Spaceship Titanic keeps LightGBM alone.
 - In a table of 100,000 rows or more, a number whose values repeat is also
   encoded by each value's mean target, from the other folds, and by how many
   rows share its value, and the trees grow larger (255 leaves, learning rate

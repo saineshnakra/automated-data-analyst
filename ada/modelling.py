@@ -27,7 +27,7 @@ import inspect
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from itertools import combinations
+from itertools import combinations, product
 from pathlib import Path
 from typing import Any
 
@@ -657,6 +657,33 @@ def _held_out(estimator: Any, X: pd.DataFrame, y: np.ndarray) -> dict:
     return {"eval_set": [(X, y)]}
 
 
+def _xgboost(task: str, classes: int, metric: Metric, rows: int, seed: int, patience: int | None):
+    """XGBoost with depth-wise trees: a second view of the same features for the blend, when installed."""
+    import xgboost as xgb  # noqa: PLC0415
+
+    small = rows < SMALL_TABLE
+    wide = WIDE_TABLE <= rows < LARGE_TABLE
+    rate = 0.02 if small else 0.1 if rows >= LARGE_TABLE else 0.03 if wide else 0.05
+    common = dict(
+        n_estimators=5000, learning_rate=rate, max_depth=4 if small else 8 if wide else 6,
+        min_child_weight=1 if small else 10, subsample=0.8, colsample_bytree=0.5 if wide else 0.7,
+        reg_lambda=1.0, tree_method="hist", max_bin=1023 if wide else 256, enable_categorical=True,
+        random_state=seed, n_jobs=4, early_stopping_rounds=patience, verbosity=0,
+    )
+    if task == "regression":
+        objective = "reg:absoluteerror" if metric.name == "mae" else "reg:squarederror"
+        return xgb.XGBRegressor(objective=objective, **common)
+    return xgb.XGBClassifier(**common)
+
+
+def _xgboost_installed() -> bool:
+    try:
+        import xgboost  # noqa: F401, PLC0415
+    except ImportError:
+        return False
+    return True
+
+
 def _lightgbm(task: str, classes: int, metric: Metric, rows: int, seed: int):
     import lightgbm as lgb  # noqa: PLC0415
 
@@ -879,7 +906,7 @@ def model(
     scored = np.unique(np.concatenate([held_rows for _, _, _, held_rows in splits]))
     gains = Counter()
     learners = {}
-    for learner in ("lightgbm", "linear"):
+    for learner in ("lightgbm", "linear", *(["xgboost"] if _xgboost_installed() else [])):
         learners[learner] = _cross_validate(learner, X, X_test, y, fitted_y, encoded_y, encode, splits, task,
                                             width, chosen, gains if learner == "lightgbm" else None,
                                             refit=forecast is not None)
@@ -940,8 +967,10 @@ def model(
     if logged:
         target_note = f"log1p({target}) fitted, predictions turned back with expm1; "
     linear = "ridge regression" if task == "regression" else "logistic regression"
-    blend = (f"{weights['lightgbm']:.2f} LightGBM gradient boosting and {weights['linear']:.2f} {linear} "
-             "(weights chosen on the out-of-fold predictions)")
+    parts = [f"{weights['lightgbm']:.2f} LightGBM gradient boosting", f"{weights['linear']:.2f} {linear}"]
+    if "xgboost" in weights:
+        parts.append(f"{weights['xgboost']:.2f} XGBoost gradient boosting")
+    blend = (f"{', '.join(parts[:-1])} and {parts[-1]} (weights chosen on the out-of-fold predictions)")
     if forecast:
         date, horizon = forecast
         reach = f"{horizon.days} days" if horizon == pd.Timedelta(days=horizon.days) else str(horizon)
@@ -1058,6 +1087,12 @@ def _cross_validate(learner: str, X: pd.DataFrame, X_test: pd.DataFrame, y: np.n
                 for name, gain in zip(fit_X.columns, shares, strict=True):
                     gains[str(name)] += float(gain)
             held_input, test_input = held_X, test_X
+        elif learner == "xgboost":
+            patience = 100 if len(X) >= LARGE_TABLE else 200
+            estimator = _xgboost(task, width, metric, len(X), repeat * 100 + index, patience)
+            estimator.fit(fit_X, fitted_y[fit_rows], eval_set=[(held_X, fitted_y[held_rows])], verbose=False)
+            trees.append(int(estimator.best_iteration) + 1)
+            held_input, test_input = held_X, test_X
         else:
             fit_matrix, (held_input, test_input) = _linear_design(fit_X, [held_X, test_X])
             if task == "regression":
@@ -1084,6 +1119,10 @@ def _cross_validate(learner: str, X: pd.DataFrame, X_test: pd.DataFrame, y: np.n
             estimator = _lightgbm(task, width, metric, len(X), 0).set_params(
                 n_estimators=max(1, round(float(np.mean(trees)))))
             estimator.fit(fit_X, fitted_y)
+        elif learner == "xgboost":
+            estimator = _xgboost(task, width, metric, len(X), 0, None).set_params(
+                n_estimators=max(1, round(float(np.mean(trees)))))
+            estimator.fit(fit_X, fitted_y, verbose=False)
         else:
             fit_matrix, (test_input,) = _linear_design(fit_X, [test_X])
             if task == "regression":
@@ -1110,17 +1149,22 @@ def _blend_weights(oofs: dict[str, np.ndarray], metric: Metric, task: str, class
     names = list(oofs)
     if metric.output == "label":
         metric = METRICS["logloss"]
-    best_weight, best_score = 1.0, None
-    for weight in np.linspace(0, 1, 21):
-        mixed = weight * oofs[names[0]] + (1 - weight) * oofs[names[1]]
+    steps = 20
+    best, best_score = {names[0]: 1.0, **{name: 0.0 for name in names[1:]}}, None
+    for parts in product(range(steps + 1), repeat=len(names) - 1):
+        if sum(parts) > steps:
+            continue
+        shares = [part / steps for part in parts]
+        weights = dict(zip(names, [1 - sum(shares), *shares], strict=True))
+        mixed = sum(weight * oofs[name] for name, weight in weights.items())
         try:
             score = _score(metric, task, classes, y, np.arange(len(y)), mixed, priors, logged)
         except ValueError:
             continue
         better = best_score is None or (score > best_score if metric.higher else score < best_score)
         if better:
-            best_weight, best_score = float(weight), score
-    return {names[0]: best_weight, names[1]: 1 - best_weight}
+            best, best_score = weights, score
+    return best
 
 
 def _score(metric: Metric, task: str, classes, y: np.ndarray, rows: np.ndarray, predicted: np.ndarray,
