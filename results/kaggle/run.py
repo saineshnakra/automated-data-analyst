@@ -165,7 +165,7 @@ def main() -> None:
             gate.append(f"checks failed: {', '.join(failed)}")
         if report.warnings:
             gate.append(f"{len(report.warnings)} warnings")
-        elif margin < 2 * error:
+        if scored is not None and margin < 2 * error:
             gate.append(f"cross-validated {report.score:.5f}, {expected:.5f} after the last submission's "
                         f"leaderboard gap of {offset:+.5f}, is not clear of the top-10% bar {top:.5f} by "
                         f"twice its uncertainty {error:.5f} (test wobble {wobble:.5f} on {public:,} rows)")
