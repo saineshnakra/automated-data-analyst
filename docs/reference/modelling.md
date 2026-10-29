@@ -119,6 +119,13 @@ groups the folds instead: each group's rows stay in one fold, the largest
 groups go first into the lightest fold, and the column is left out of the
 features. With several such columns the one with the fewest values is used.
 
+Importing ADA sets `OMP_WAIT_POLICY` to `PASSIVE` unless it is set already,
+so LightGBM's and XGBoost's threads sleep while they wait instead of spinning.
+On a machine whose cores are busy with other work, spinning threads make a fit
+about a hundred times slower: 300 XGBoost trees on House Prices take 101
+seconds instead of 0.65. The libraries read the setting when they load, so it
+has no effect if they were imported before ADA.
+
 ## Forecasts
 
 When every test date is later than every training date, the task is a

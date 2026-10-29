@@ -1,6 +1,9 @@
 import contextlib
 import io
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -211,6 +214,20 @@ def stocks(codes: list[str], rows_each: int, seed: int) -> pd.DataFrame:
         }))
     frame = pd.concat(frames, ignore_index=True)
     return frame.assign(id=np.arange(len(frame)) + 1000 * seed)
+
+
+class ThreadWaitTests(unittest.TestCase):
+    def test_boosting_threads_wait_passively_unless_told_otherwise(self):
+        # Spinning OpenMP threads make a fit on a machine with busy cores about a hundred times slower.
+        root = Path(__file__).resolve().parents[1]
+        env = {name: value for name, value in os.environ.items() if name != "OMP_WAIT_POLICY"}
+        env["PYTHONPATH"] = str(root)
+        command = [sys.executable, "-c", "import os, ada; print(os.environ['OMP_WAIT_POLICY'])"]
+        found = subprocess.run(command, env=env, capture_output=True, text=True, cwd=root)
+        self.assertEqual(found.stdout.strip(), "PASSIVE", found.stderr)
+        env["OMP_WAIT_POLICY"] = "ACTIVE"
+        found = subprocess.run(command, env=env, capture_output=True, text=True, cwd=root)
+        self.assertEqual(found.stdout.strip(), "ACTIVE", found.stderr)
 
 
 @unittest.skipUnless(HAS_EXTRA, "needs the model extra")

@@ -101,6 +101,26 @@ methods draft. See [Paper assets for a study](docs/research.md). `ada analyze`
 gives a first look at any table, and `ada app` opens the same in a browser
 (`pip install "automated-data-analyst[app]"`).
 
+## Predict a column
+
+```bash
+pip install "automated-data-analyst[model]"
+ada model titanic/ --metric accuracy --out submission.csv
+```
+
+`ada model` predicts one column of a table from the others, as a tabular
+Kaggle competition asks. The features come from rules on the columns' shapes,
+LightGBM, XGBoost and a linear model are blended on out-of-fold predictions,
+every score is cross-validated, and the submission is checked before it is
+written. See [Predicting a column](docs/reference/modelling.md).
+
+It is scored on Kaggle competitions with no code for any one of them: the
+runner passes ADA the competition's folder and the name of its metric, and
+ADA does the rest. On the 18 scored so far it places in the top 10% on 2
+(Titanic, and Housing Prices on Kaggle Learn), in the top 15% on 4 and in the
+top 30% on 9. Store Sales, a forecast of 1,782 series, is its weakest, at 58%.
+[Every score](results/kaggle/README.md).
+
 ## What it doesn't do yet
 
 Numbers that need three files joined, many phrasings ("horsepower" for `hp`,
@@ -116,11 +136,15 @@ pandas, SciPy and statsmodels; holdout cases are only scored
 
 | | ADA 0.5.0 | Now |
 |---|---|---|
-| Dev cases | 6/51 | 39/51 |
-| Holdout cases | 3/22 | 11/22 |
+| Dev cases | 6/51 | 46/51 |
+| Holdout cases | 3/22 | 18/22 |
 | Wrong verdicts on claims | | 0/35 |
-| True claims verified | 0/26 | 14/26 |
+| True claims verified | 0/26 | 23/25 |
 | False claims caught | 0/7 | 6/7 |
+
+Each change is also scored on rounds of new public data, six datasets at a
+time from statistics offices, city portals and research projects, with claims
+written as reports write them; the pull request gives the scores.
 
 ## More
 
