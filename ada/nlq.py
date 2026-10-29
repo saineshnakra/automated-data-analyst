@@ -310,6 +310,12 @@ ENTITY_NOUNS = frozenset({
     "record", "records", "observation", "observations", "reading", "readings",
     "measurement", "measurements", "entry", "entries", "row",
 })
+# Nouns for people: the rows of guests.csv are people, and so are the customers of a table of orders.
+PEOPLE_NOUNS = frozenset({
+    "customers", "clients", "users", "players", "passengers", "students", "members", "employees",
+    "visitors", "buyers", "shoppers", "people", "patients", "participants", "respondents", "athletes",
+    "drivers", "riders", "workers", "voters", "readers", "viewers", "guests", "travellers", "travelers",
+})
 # Of those, the nouns that always mean rows, whatever columns the table has.
 ROW_NOUNS = frozenset({
     "record", "records", "reading", "readings", "observation", "observations", "measurement",
@@ -6045,7 +6051,8 @@ def _rule_plan(
         plan = _plan_from_reading(reading, dataframe, roles)
     if plan is None:
         return None, reading.refusal
-    problem = _unused_part(plan, reading, dataframe, roles, rows_not_analyzed)
+    problem = _unused_part(plan, reading, dataframe, roles, rows_not_analyzed) or _other_things(
+        plan, reading, roles)
     if problem:
         return None, problem
     weighted = ()
@@ -6073,6 +6080,18 @@ def _weather_note(reading: _Reading, plan: QueryPlan) -> tuple[str, ...]:
         return ()
     side = "lowest" if word in COLD_WORDS else "highest"
     return (f'Read "{word}" as the {side} {plan.measure}; name another column to rank by it instead.',)
+
+
+def _other_things(plan: QueryPlan, reading: _Reading, roles: ColumnRoles) -> str | None:
+    """Why a count of rows does not count the things asked about: the file names its rows as people
+    (daily_show_guests.csv) and the question counts something else ("episodes"), so each row is not one."""
+    noun, own = reading.entity, roles.row_noun
+    if plan.aggregation != "count" or plan.count_column or plan.weight or plan.measure or not noun or not own:
+        return None
+    if own not in PEOPLE_NOUNS or noun in PEOPLE_NOUNS or noun in ROW_NOUNS or reading.entity_column:
+        return None
+    return (f"The rows of this table are {own}, so counting them does not count the {noun}; ask \"how many "
+            f"{own}\", or \"how many distinct <column>\" for the column that names the {noun}.")
 
 
 def _entity_note(reading: _Reading, plan: QueryPlan) -> tuple[str, ...]:

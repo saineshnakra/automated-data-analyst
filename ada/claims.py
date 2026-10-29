@@ -55,6 +55,7 @@ from .nlq import (
     LEADING_UNDER,
     MONTH_WORD,
     OUTCOME_WORDS,
+    PEOPLE_NOUNS,
     Condition,
     QueryAnswer,
     ValueFilter,
@@ -128,11 +129,6 @@ VERB_NOUNS = {
 # Nouns for what an amount of money is: "the average price of a dozen eggs" is the value, in dollars.
 PRICE_WORDS = frozenset({"price", "prices"})
 # Nouns for the people a table is about: a claim's subject, not a column ("Customers paid ...").
-PEOPLE_NOUNS = frozenset({
-    "customers", "clients", "users", "players", "passengers", "students", "members", "employees",
-    "visitors", "buyers", "shoppers", "people", "patients", "participants", "respondents", "athletes",
-    "drivers", "riders", "workers", "voters", "readers", "viewers", "guests", "travellers", "travelers",
-})
 # Verbs that add things up: in "hit 73 home runs" and "scored 3,999.5 points" the words after the
 # number name the column that is totalled, not a unit.
 TALLY_VERBS = frozenset({"hit", "hits", "scored", "scores", "earned", "earns", "collected", "recorded"})
@@ -1980,7 +1976,7 @@ def _checked_claim(
     if question is None:
         text = _times_level(days_in_words(text))
         text, every = _every_value(text, analysis.frame)
-        text = _plain_change(_paid_rate(_ranked_lead(text)))
+        text = _won_with(_plain_change(_paid_rate(_ranked_lead(text))))
         text = _half_within(_records_began(_temperature_words(text, analysis.frame)))
         text, worst = _worst_day(text)
         text, compared = _compared_tail(text)
@@ -2346,6 +2342,21 @@ STRONG_CHANGE = re.compile(
     rf"skyrocketed))(?=\s+(?:(?:by|to)\s+{_ABOUT}[$€£]?\d|{_ABOUT}\d[\d,.]*\s*(?:%|per\s*cent\b|percent\b)))",
     re.IGNORECASE,
 )
+
+
+# "won Germany's 2021 federal election with 25.7% of the vote": the share won in that election.
+WON_WITH = re.compile(
+    r"\bwon\s+(?P<what>[^,;]+?)\s+with\s+(?P<share>(?:(?:about|around|nearly|almost|roughly|just\s+over|"
+    r"just\s+under|more\s+than|less\s+than|over|under)\s+)?\d[\d.,]*\s*(?:%|per\s*cent|percent))\s+of\s+the\s+"
+    r"(?P<of>votes?|seats)\b",
+    re.IGNORECASE,
+)
+
+
+def _won_with(text: str) -> str:
+    """"won the 2021 election with 25.7% of the vote" as "won 25.7% of the vote in the 2021 election"."""
+    return WON_WITH.sub(lambda found: f"won {found.group('share')} of the {found.group('of')} in "
+                        f"{found.group('what')}", text)
 
 
 def _plain_change(text: str) -> str:

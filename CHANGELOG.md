@@ -192,6 +192,13 @@
 - Fixed a wrong count: "how many thefts" in a table whose types are
   theft_other and theft_vehicle_motorcycle counted every crime; the question
   is refused and names the kinds of theft.
+- "The SPD won Germany's 2021 election with 25.7% of the vote" is the share
+  won in that election, as "won 25.7% of the vote in Germany's 2021 election"
+  is.
+- Fixed a wrong count: "how many episodes are in the data for each year" in
+  `daily_show_guests.csv` counted the guests, two or three on some show dates.
+  When a file names its rows as people and the question counts something
+  else, the question is refused with what to ask instead.
 - "Australia's wheat crop grew by about a quarter in 2024-25, to 34.8 million
   tonnes" checks the change and the level it reached as two claims, and holds
   when both do. Before, two numbers in one claim were refused.

@@ -754,7 +754,10 @@ rows is not counted for its distinct values: "how many reviews in 2019"
 counts the rows with `review_date` = 2019, and "what share have blue eyes"
 the share with `Eye` = Blue. "Readings", "records", "samples" and other nouns in
 `ROW_NOUNS` always count rows. The answer says which: "Counted the birds as
-distinct ID values." or "Each row counts as one of the patients." A plural
+distinct ID values." or "Each row counts as one of the patients." When the
+file names its rows as people (`daily_show_guests.csv`) and the question
+counts something else ("how many episodes"), the rows are not those things,
+and the question is refused with what to ask instead. A plural
 that a column of whole counts ends in is added up from that column instead
 ("how many deaths" sums `total_deaths`); when several do ("votes" in
 `candidatevotes` and `totalvotes`), the question is refused with both, since

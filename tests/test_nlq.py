@@ -5364,6 +5364,31 @@ class LabourForceTests(unittest.TestCase):
         self.assertNotIn("persons", getattr(refusal, "message", "") or "")
 
 
+class PeopleRowsTests(unittest.TestCase):
+    """Guests of a talk show, a row each, with two guests on some show dates."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.path = Path(folder.name) / "daily_show_guests.csv"
+        pd.DataFrame({
+            "YEAR": [2015] * 5, "Show": ["1/5/15", "1/6/15", "1/6/15", "1/7/15", "1/8/15"],
+            "GoogleKnowlege_Occupation": ["actor", "actor", "singer", "comedian", "actor"],
+        }).to_csv(self.path, index=False)
+
+    def test_other_things_than_the_people_are_not_counted_as_rows(self):
+        # Five guests on four shows: counting rows gave 5 episodes.
+        refusal = ada.analyze(self.path).ask("how many episodes are in the data for each year")
+        self.assertIsInstance(refusal, ada.Refusal)
+        self.assertIn("The rows of this table are guests", refusal.message)
+
+    def test_the_people_and_their_values_are_still_counted(self):
+        analysis = ada.analyze(self.path)
+        self.assertEqual(analysis.ask("how many guests in 2015").value, 5)
+        self.assertEqual(analysis.ask("how many people in 2015").value, 5)
+        self.assertEqual(analysis.ask("how many actors in 2015").value, 3)
+
+
 class PeriodWordTests(unittest.TestCase):
     def test_a_period_word_does_not_reach_a_value_by_its_plural(self):
         # Toronto's fires: "months" once picked "3 - May resume operations within a month".
