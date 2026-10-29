@@ -231,6 +231,73 @@ class ThreadWaitTests(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_EXTRA, "needs the model extra")
+class AutoModelTests(unittest.TestCase):
+    def setUp(self):
+        frame = passengers(600)
+        self.train = frame.iloc[:450].reset_index(drop=True)
+        self.test = frame.iloc[450:].drop(columns="Survived").reset_index(drop=True)
+
+    def test_the_wider_search_adds_learners_a_second_layer_and_a_greedy_blend(self):
+        report = ada.model(self.train, self.test, metric="auc", auto=True)
+        self.assertIn("extremely randomized trees", report.calculation)
+        self.assertIn("random split points", report.calculation)
+        self.assertIn("the others' out-of-fold predictions", report.calculation)
+        self.assertIn("rounds of greedy selection", report.calculation)
+        self.assertGreater(report.score, 0.7)
+        self.assertEqual(len(report.folds), 15)
+        again = ada.model(self.train, self.test, metric="auc", auto=True)
+        self.assertEqual(report.folds, again.folds)
+        pd.testing.assert_frame_equal(report.submission, again.submission)
+
+    def test_greedy_selection_weighs_the_learners_that_help(self):
+        from ada import modelling
+        rng = np.random.default_rng(0)
+        y = rng.integers(0, 2, 400)
+        good = (y + rng.normal(0, 0.3, 400))[:, None]
+        noise = rng.random((400, 1))
+        weights = modelling._greedy_weights({"lightgbm": noise, "linear": noise, "xgboost": good},
+                                            modelling.METRICS["auc"], "classification", np.array([0, 1]), y,
+                                            None)
+        self.assertEqual(weights["xgboost"], 1.0)
+        # Two learners wrong on different rows: the mean of both beats either, so both get weight.
+        first, second = good.copy(), good.copy()
+        first[:200] = rng.random((200, 1))
+        second[200:] = rng.random((200, 1))
+        weights = modelling._greedy_weights({"first": first, "second": second}, modelling.METRICS["auc"],
+                                            "classification", np.array([0, 1]), y, None)
+        self.assertGreater(weights["first"], 0.2)
+        self.assertGreater(weights["second"], 0.2)
+        self.assertAlmostEqual(sum(weights.values()), 1.0)
+
+    def test_categories_reach_scikit_learn_as_codes_with_missing_values_kept(self):
+        from ada import modelling
+        frame = pd.DataFrame({"kind": pd.Categorical(["a", None, "b", "a"]), "size": [1.0, 2.0, None, 4.0]})
+        coded, = modelling._numeric_codes([frame])
+        self.assertEqual(coded["kind"].tolist()[0], coded["kind"].tolist()[3])
+        self.assertTrue(np.isnan(coded["kind"][1]))
+        self.assertTrue(np.isnan(coded["size"][2]))
+
+    def test_rows_the_first_fit_misses_by_far_are_left_out_of_fitting(self):
+        rng = np.random.default_rng(4)
+        rows = 400
+        size = rng.uniform(50, 300, rows)
+        frame = pd.DataFrame({"size": size, "rooms": rng.integers(1, 6, rows),
+                              "price": 1000 * size + rng.normal(0, 5000, rows)})
+        # One sale in twenty is recorded at a tenth of its price (a part share, say).
+        frame.loc[::20, "price"] /= 10
+        train, test = frame.iloc[:300], frame.iloc[300:].drop(columns="price")
+        report = ada.model(train, test, target="price", metric="rmse", auto=True)
+        self.assertIn("left out of fitting but kept in scoring", report.calculation)
+        quick = ada.model(train, test, target="price", metric="rmse")
+        self.assertNotIn("left out of fitting", quick.calculation)
+        # Thin data: a target the first fit gets exactly right has no spread to judge misses by.
+        exact = frame.assign(price=frame["rooms"] * 1000.0)
+        report = ada.model(exact.iloc[:300], exact.iloc[300:].drop(columns="price"), target="price",
+                           metric="rmse", auto=True)
+        self.assertNotIn("left out of fitting", report.calculation)
+
+
+@unittest.skipUnless(HAS_EXTRA, "needs the model extra")
 class ModelGroupTests(unittest.TestCase):
     def test_test_rows_of_new_groups_group_the_folds(self):
         train = stocks([f"code_{index}" for index in range(8)], 60, 0)
@@ -403,6 +470,10 @@ class ModelFolderTests(unittest.TestCase):
         written = pd.read_csv(root / "submission.csv")
         self.assertEqual(list(written.columns), ["PassengerId", "Transported"])
         self.assertEqual(len(written), 100)
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = main(["auto", str(root), "--metric", "accuracy", "--out", str(root / "auto.csv")])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(pd.read_csv(root / "auto.csv")), 100)
 
 
 @unittest.skipUnless(HAS_EXTRA, "needs the model extra")

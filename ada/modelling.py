@@ -79,6 +79,21 @@ SERIES_COVER = 0.5
 LAG_WINDOWS = (7, 14, 28, 56, 112)
 #: Days back to the same weekday a year earlier, for series with two years of history.
 YEAR_DAYS = 364
+#: Rounds of greedy selection that set the weights of the full search's blend; a weight is a share of them.
+ENSEMBLE_ROUNDS = 25
+#: What each learner is called in the calculation.
+LEARNER_NAMES = {
+    "lightgbm": "LightGBM gradient boosting",
+    "lightgbm_extra": "LightGBM gradient boosting with random split points",
+    "xgboost": "XGBoost gradient boosting",
+    "catboost": "CatBoost gradient boosting",
+    "extratrees": "extremely randomized trees",
+    "stacked": "LightGBM on the features and the others' out-of-fold predictions",
+}
+#: A regression on fewer rows than this also tries fitting without the rows its first fit misses by far.
+ROBUST_ROWS = WIDE_TABLE
+#: A miss is far beyond this many robust standard deviations (1.4826 times the median absolute deviation).
+FAR_MISS = 4.0
 # A series whose target was 0 on every day of this many before a forecast predicts 0, when that scores better.
 QUIET_DAYS = 28
 
@@ -701,6 +716,65 @@ def _xgboost_installed() -> bool:
     return True
 
 
+def _catboost(task: str, classes: int, metric: Metric, rows: int, seed: int, patience: int | None,
+              categories: list[str]):
+    """CatBoost with balanced trees and its own encoding of category columns: another view for the blend."""
+    import catboost  # noqa: PLC0415
+
+    small = rows < SMALL_TABLE
+    rate = 0.03 if small else 0.15 if rows >= LARGE_TABLE else 0.08
+    common = dict(
+        iterations=5000, learning_rate=rate, depth=6, l2_leaf_reg=3.0, random_seed=seed, thread_count=4,
+        cat_features=categories, allow_writing_files=False, verbose=False,
+        **({"od_type": "Iter", "od_wait": patience} if patience else {}),
+    )
+    if task == "regression":
+        return catboost.CatBoostRegressor(loss_function="MAE" if metric.name == "mae" else "RMSE", **common)
+    return catboost.CatBoostClassifier(loss_function="MultiClass" if classes > 1 else "Logloss", **common)
+
+
+def _catboost_input(frame: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """The frame with its category columns as text, missing values as their own level, and their names."""
+    categories = [str(column) for column in frame.columns
+                  if isinstance(frame[column].dtype, pd.CategoricalDtype)]
+    if not categories:
+        return frame, categories
+    frame = frame.copy()
+    for column in categories:
+        frame[column] = frame[column].astype("string").fillna("(missing)").astype(object)
+    return frame, categories
+
+
+def _extratrees(task: str, rows: int, seed: int):
+    """Extremely randomized trees: deep trees on random splits, averaged; they err unlike boosting."""
+    from sklearn.ensemble import ExtraTreesClassifier, ExtraTreesRegressor  # noqa: PLC0415
+
+    common = dict(n_estimators=300 if rows < WIDE_TABLE else 100, max_features=0.5, n_jobs=4,
+                  min_samples_leaf=1 if rows < SMALL_TABLE else 5, random_state=seed)
+    return ExtraTreesRegressor(**common) if task == "regression" else ExtraTreesClassifier(**common)
+
+
+def _numeric_codes(frames: list[pd.DataFrame]) -> list[pd.DataFrame]:
+    """The frames with each category column as its code (missing values stay missing), for scikit-learn."""
+    done = []
+    for frame in frames:
+        frame = frame.copy()
+        for column in frame.columns:
+            if isinstance(frame[column].dtype, pd.CategoricalDtype):
+                codes = frame[column].cat.codes.astype(float)
+                frame[column] = codes.where(codes >= 0)
+        done.append(frame.astype(float))
+    return done
+
+
+def _catboost_installed() -> bool:
+    try:
+        import catboost  # noqa: F401, PLC0415
+    except ImportError:
+        return False
+    return True
+
+
 def _lightgbm(task: str, classes: int, metric: Metric, rows: int, seed: int):
     import lightgbm as lgb  # noqa: PLC0415
 
@@ -759,6 +833,7 @@ def model(
     id_column: str | None = None,
     folds: int = 5,
     seed: int = 0,
+    auto: bool = False,
 ):
     """Cross-validate a model of ``target`` on ``train`` and predict it for ``test``.
 
@@ -767,6 +842,10 @@ def model(
     submission names. ``metric`` is one of ``METRICS`` or a Kaggle name for it
     ("Categorization Accuracy"); by default accuracy for classes and RMSE for
     numbers. Returns a ``ModelReport``, or a ``Refusal`` with the reason.
+
+    With ``auto`` the search is wider and takes longer: more learners and
+    settings, a second layer fitted on the first layer's out-of-fold
+    predictions, and the blend's weights set by greedy selection.
     """
     try:
         import lightgbm  # noqa: F401, PLC0415
@@ -923,12 +1002,53 @@ def model(
     scored = np.unique(np.concatenate([held_rows for _, _, _, held_rows in splits]))
     gains = Counter()
     learners = {}
-    for learner in ("lightgbm", "linear", *(["xgboost"] if _xgboost_installed() else [])):
+    extra = [name for name, installed in (("xgboost", _xgboost_installed), ("catboost", _catboost_installed))
+             if installed() and (auto or name == "xgboost")]
+    wider = ["lightgbm_extra", "extratrees"] if auto else []
+    for learner in ("lightgbm", "linear", *extra, *wider):
         learners[learner] = _cross_validate(learner, X, X_test, y, fitted_y, encoded_y, encode, splits, task,
                                             width, chosen, gains if learner == "lightgbm" else None,
                                             refit=forecast is not None)
-    weights = _blend_weights({name: found[0][scored] for name, found in learners.items()}, chosen, task,
-                             classes, y[scored], priors, logged)
+    robust_note = ""
+    if auto and task == "regression" and not forecast and len(X) < ROBUST_ROWS:
+        miss = fitted_y - learners["lightgbm"][0][:, 0]
+        centre = float(np.median(miss))
+        scale = 1.4826 * float(np.median(np.abs(miss - centre)))
+        far = np.abs(miss - centre) > FAR_MISS * scale
+        if scale > 0 and far.any():
+            trimmed = [(repeat, index, fit_rows[~far[fit_rows]], held_rows)
+                       for repeat, index, fit_rows, held_rows in splits]
+            trial_gains, trial = Counter(), {}
+            for learner in learners:
+                trial[learner] = _cross_validate(learner, X, X_test, y, fitted_y, encoded_y, encode, trimmed,
+                                                 task, width, chosen,
+                                                 trial_gains if learner == "lightgbm" else None)
+            # Judged fold by fold on every held-out row, the far ones too, each side with its own blend.
+            sides = []
+            for found in (learners, trial):
+                shares = _greedy_weights({name: result[0][scored] for name, result in found.items()}, chosen,
+                                        task, classes, y[scored], priors, logged)
+                sides.append([_score(chosen, task, classes, y, held_rows,
+                                     sum(shares[name] * found[name][2][repeat][held_rows] for name in found),
+                                     priors, logged) for repeat, _, _, held_rows in splits])
+            better = sum(1 if (after > before if chosen.higher else after < before) else -1
+                         for before, after in zip(*sides, strict=True))
+            if better > 0:
+                learners, gains, splits = trial, trial_gains, trimmed
+                robust_note = (f"; the {int(far.sum()):,} training rows the first fit missed by over "
+                               f"{FAR_MISS:g} robust standard deviations were left out of fitting but kept "
+                               "in scoring, as that scored better in most folds")
+    if auto and not forecast:
+        # The first layer's out-of-fold predictions as features; models that never saw a row made its own.
+        first = {f"{name}_p{index}": found[0][:, index] for name, found in learners.items()
+                 for index in range(width)}
+        ahead = {f"{name}_p{index}": found[1][:, index] for name, found in learners.items()
+                 for index in range(width)}
+        learners["stacked"] = _cross_validate("lightgbm", X.assign(**first), X_test.assign(**ahead), y,
+                                              fitted_y, encoded_y, encode, splits, task, width, chosen, None)
+    weights = (_greedy_weights if auto else _blend_weights)(
+        {name: found[0][scored] for name, found in learners.items()}, chosen, task, classes, y[scored],
+        priors, logged)
     oof = sum(weights[name] * learners[name][0] for name in learners)
     predicted = sum(weights[name] * learners[name][1] for name in learners)
     quiet_held, quiet_note = [np.zeros(0, dtype=int) for _ in splits], ""
@@ -991,10 +1111,10 @@ def model(
     if logged:
         target_note = f"log1p({target}) fitted, predictions turned back with expm1; "
     linear = "ridge regression" if task == "regression" else "logistic regression"
-    parts = [f"{weights['lightgbm']:.2f} LightGBM gradient boosting", f"{weights['linear']:.2f} {linear}"]
-    if "xgboost" in weights:
-        parts.append(f"{weights['xgboost']:.2f} XGBoost gradient boosting")
-    blend = (f"{', '.join(parts[:-1])} and {parts[-1]} (weights chosen on the out-of-fold predictions)")
+    parts = [f"{weight:.2f} {LEARNER_NAMES.get(name, linear)}" for name, weight in weights.items()]
+    chosen_by = (f"{ENSEMBLE_ROUNDS} rounds of greedy selection on the out-of-fold predictions" if auto
+                 else "weights chosen on the out-of-fold predictions")
+    blend = f"{', '.join(parts[:-1])} and {parts[-1]} ({chosen_by})"
     if forecast:
         date, horizon = forecast
         reach = f"{horizon.days} days" if horizon == pd.Timedelta(days=horizon.days) else str(horizon)
@@ -1010,7 +1130,7 @@ def model(
             f"{blend}, {folds}-fold {kind}cross-validation"
             + (f" repeated with {len(seeds)} seeds" if len(seeds) > 1 else "")
             + f", early stopping on each held-out fold; {target_note}test predictions averaged over the "
-            f"{folds * len(seeds)} fold models; scored with {chosen.name}"
+            f"{folds * len(seeds)} fold models{robust_note}; scored with {chosen.name}"
         )
     return ModelReport(
         target=target, task=task, metric=chosen, folds=tuple(fold_scores), score=float(np.mean(fold_scores)),
@@ -1100,8 +1220,10 @@ def _cross_validate(learner: str, X: pd.DataFrame, X_test: pd.DataFrame, y: np.n
     for repeat, index, fit_rows, held_rows in splits:
         fit_X, (held_X, test_X) = _fold_matrix(X, encode, fit_rows, encoded_y[fit_rows],
                                                [X.iloc[held_rows], X_test])
-        if learner == "lightgbm":
+        if learner in ("lightgbm", "lightgbm_extra"):
             estimator = _lightgbm(task, width, metric, len(X), repeat * 100 + index)
+            if learner == "lightgbm_extra":
+                estimator.set_params(extra_trees=True)
             patience = 100 if len(X) >= LARGE_TABLE else 200
             estimator.fit(fit_X, fitted_y[fit_rows], **_held_out(estimator, held_X, fitted_y[held_rows]),
                           callbacks=[lgb.early_stopping(patience, verbose=False)])
@@ -1117,6 +1239,16 @@ def _cross_validate(learner: str, X: pd.DataFrame, X_test: pd.DataFrame, y: np.n
             estimator.fit(fit_X, fitted_y[fit_rows], eval_set=[(held_X, fitted_y[held_rows])], verbose=False)
             trees.append(int(estimator.best_iteration) + 1)
             held_input, test_input = held_X, test_X
+        elif learner == "catboost":
+            patience = 100 if len(X) >= LARGE_TABLE else 200
+            fit_input, categories = _catboost_input(fit_X)
+            (held_input, _), (test_input, _) = _catboost_input(held_X), _catboost_input(test_X)
+            estimator = _catboost(task, width, metric, len(X), repeat * 100 + index, patience, categories)
+            estimator.fit(fit_input, fitted_y[fit_rows], eval_set=(held_input, fitted_y[held_rows]))
+            trees.append(int(estimator.get_best_iteration()) + 1)
+        elif learner == "extratrees":
+            fit_input, held_input, test_input = _numeric_codes([fit_X, held_X, test_X])
+            estimator = _extratrees(task, len(X), repeat * 100 + index).fit(fit_input, fitted_y[fit_rows])
         else:
             fit_matrix, (held_input, test_input) = _linear_design(fit_X, [held_X, test_X])
             if task == "regression":
@@ -1139,14 +1271,23 @@ def _cross_validate(learner: str, X: pd.DataFrame, X_test: pd.DataFrame, y: np.n
     if refit:
         every = np.arange(len(X))
         fit_X, (test_X,) = _fold_matrix(X, encode, every, encoded_y, [X_test])
-        if learner == "lightgbm":
+        if learner in ("lightgbm", "lightgbm_extra"):
             estimator = _lightgbm(task, width, metric, len(X), 0).set_params(
-                n_estimators=max(1, round(float(np.mean(trees)))))
+                n_estimators=max(1, round(float(np.mean(trees)))), extra_trees=learner == "lightgbm_extra")
             estimator.fit(fit_X, fitted_y)
         elif learner == "xgboost":
             estimator = _xgboost(task, width, metric, len(X), 0, None).set_params(
                 n_estimators=max(1, round(float(np.mean(trees)))))
             estimator.fit(fit_X, fitted_y, verbose=False)
+        elif learner == "catboost":
+            fit_input, categories = _catboost_input(fit_X)
+            test_X, _ = _catboost_input(test_X)
+            estimator = _catboost(task, width, metric, len(X), 0, None, categories).set_params(
+                iterations=max(1, round(float(np.mean(trees)))))
+            estimator.fit(fit_input, fitted_y)
+        elif learner == "extratrees":
+            fit_input, test_X = _numeric_codes([fit_X, test_X])
+            estimator = _extratrees(task, len(X), 0).fit(fit_input, fitted_y)
         else:
             fit_matrix, (test_input,) = _linear_design(fit_X, [test_X])
             if task == "regression":
@@ -1189,6 +1330,38 @@ def _blend_weights(oofs: dict[str, np.ndarray], metric: Metric, task: str, class
         if better:
             best, best_score = weights, score
     return best
+
+
+def _greedy_weights(oofs: dict[str, np.ndarray], metric: Metric, task: str, classes, y: np.ndarray,
+                    priors, logged: bool = False) -> dict[str, float]:
+    """Weights by greedy selection: each round adds the learner that most improves the mean so far.
+
+    A learner may be added more than once, and its weight is its share of the
+    ``ENSEMBLE_ROUNDS`` rounds. Unlike a grid, the work grows with the number
+    of learners, not as a power of it. A metric of labels is replaced by log
+    loss, as in ``_blend_weights``.
+    """
+    names = list(oofs)
+    if metric.output == "label":
+        metric = METRICS["logloss"]
+    rows, counts, total = np.arange(len(y)), Counter(), None
+    for done in range(ENSEMBLE_ROUNDS):
+        best, best_score = None, None
+        for name in names:
+            mixed = oofs[name] if total is None else (total + oofs[name]) / (done + 1)
+            try:
+                score = _score(metric, task, classes, y, rows, mixed, priors, logged)
+            except ValueError:
+                continue
+            if best_score is None or (score > best_score if metric.higher else score < best_score):
+                best, best_score = name, score
+        if best is None:
+            break
+        counts[best] += 1
+        total = oofs[best] if total is None else total + oofs[best]
+    used = sum(counts.values()) or 1
+    return {name: counts[name] / used for name in names} if counts else {names[0]: 1.0, **{
+        name: 0.0 for name in names[1:]}}
 
 
 def _score(metric: Metric, task: str, classes, y: np.ndarray, rows: np.ndarray, predicted: np.ndarray,
