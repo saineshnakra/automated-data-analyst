@@ -6,7 +6,7 @@ answers, a test table without them, and a score to beat. Every score is
 cross-validated, the features come from rules on the columns' shapes, and the
 submission is checked before it is written. Code: `ada/modelling.py`.
 
-It needs the optional extra, which adds scikit-learn and LightGBM:
+It needs the optional extra, which adds scikit-learn, LightGBM, XGBoost and CatBoost:
 
 ```bash
 pip install "automated-data-analyst[model]"
@@ -170,6 +170,45 @@ count of right labels jumps from one weight to the next). Folds are stratified
 for classes. Under 20,000 rows, cross-validation is repeated with 3 seeds. The
 test predictions average every fold's model. A fixed seed gives the same
 result on every run.
+
+## The full search: `ada auto`
+
+`ada auto` and `ada.model(..., auto=True)` read the same data and build the
+same features, then search wider. It takes longer: on a table of 600,000 rows,
+hours instead of minutes.
+
+```bash
+ada auto playground/ --metric auc --out submission.csv --jobs 2
+```
+
+- More learners on the same folds: CatBoost (balanced trees with its own
+  encoding of category columns), LightGBM with random split points, a neural
+  network with hidden layers of 256 and 128 units on the linear model's
+  numbers, and under 100,000 rows extremely randomized trees. CatBoost is left
+  out when it is not installed. A random forest and the 20 nearest training
+  rows were tried as well; across seven competitions neither earned more than
+  0.04 of a blend, and the forest took longest to fit, so they are not used.
+- A second layer: LightGBM fitted on the features and every first-layer
+  learner's out-of-fold predictions, on the same folds. A row's predictions
+  come from models that never saw it. It joins the blend only when, on its
+  own, it beats every first-layer learner on the metric; otherwise the
+  calculation gives both scores. The blend's weights for a metric of labels
+  come from log loss, and on Spaceship Titanic the second layer had the
+  better log loss and the worse accuracy.
+- The blend's weights come from 25 rounds of greedy selection: each round adds
+  the learner, the second layer among them, that most improves the
+  out-of-fold score of the mean so far, and a learner's weight is its share of
+  the rounds. A grid of weights grows as a power of the number of learners;
+  greedy selection grows with it.
+- A regression under 100,000 rows also tries fitting without the rows the
+  first LightGBM fit misses by more than 4 robust standard deviations (1.4826
+  times the median absolute deviation of its out-of-fold errors), keeping them
+  in scoring. The rule holds when it scores better in most folds; the
+  calculation says how many rows were left out. Under RMSE, where the left-out
+  rows' own errors count most, it rarely holds.
+- `--jobs N` fits N learners at once, in threads that share the cores.
+  LightGBM, XGBoost and CatBoost give the same predictions with any number of
+  threads, so the model is the same.
 
 ## Checks and warnings
 

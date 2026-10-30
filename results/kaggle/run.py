@@ -1,6 +1,6 @@
 """Score ADA's modelling mode on tabular Kaggle competitions; submit only when it should reach the top 10%.
 
-    KAGGLE_API_TOKEN=... python -I run.py ADA_CHECKOUT CACHE out.json [--only=a,b] [--submit | --first]
+    KAGGLE_API_TOKEN=... python -I run.py ADA_CHECKOUT CACHE out.json [--only=a,b] [--auto] [--submit|--first]
 
 For each competition in competitions.yml this downloads the data (the account
 must have accepted the competition's rules), runs ``ada.model`` on it, reads
@@ -23,6 +23,9 @@ only with ``--submit`` and only when every gate passes:
 With ``--first`` a competition that has never had a submission gets one when
 the checks pass and the model gave no warning, whatever its score, so every
 competition has a leaderboard score to compare with the cross-validated one.
+
+With ``--auto`` the model is ``ada.model(..., auto=True)``, the wider search
+of ``ada auto``.
 
 Submissions go through the ``kaggle`` package. The token is read from the
 environment only and never written anywhere.
@@ -122,7 +125,7 @@ def allowed(slug: str, log: list[dict]) -> str | None:
 def main() -> None:
     checkout, cache, out = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
     only = next((arg.split("=", 1)[1].split(",") for arg in sys.argv if arg.startswith("--only=")), None)
-    send, first = "--submit" in sys.argv, "--first" in sys.argv
+    send, first, auto = "--submit" in sys.argv, "--first" in sys.argv, "--auto" in sys.argv
     sys.path.insert(0, str(checkout))
     import ada.modelling as modelling  # noqa: PLC0415
 
@@ -142,7 +145,7 @@ def main() -> None:
             results[slug] = {"split": item["split"], "error": f"download: {error}"}
             print(f"{slug}: could not download ({error})")
             continue
-        report = modelling.model(folder, metric=item["metric"])
+        report = modelling.model(folder, metric=item["metric"], auto=auto)
         seconds = round(time.time() - started)
         if not isinstance(report, modelling.ModelReport):
             results[slug] = {"split": item["split"], "refused": report.message}
@@ -176,7 +179,7 @@ def main() -> None:
             "leaderboard_gap": offset if scored else None,
             "bar_top10": top, "teams": teams, "wobble": wobble,
             "cv_percentile": percentile(report.score, metric.higher, slug, cache), "seconds": seconds,
-            "gate": gate or ["passed"], "warnings": list(report.warnings),
+            "gate": gate or ["passed"], "warnings": list(report.warnings), "auto": auto,
         }
         print(f"{slug} [{item['split']}] {metric.name} cv {report.score:.5f} (sd {report.spread:.5f}) "
               f"bar {top:.5f} -> about top {entry['cv_percentile']:.1f}%; gate: {'; '.join(entry['gate'])}")
@@ -188,7 +191,8 @@ def main() -> None:
             if wait:
                 entry["submitted"] = f"held: {wait}"
             else:
-                message = f"ada model, {metric.name} cv {report.score:.5f} sd {report.spread:.5f}"
+                message = (f"ada {'auto' if auto else 'model'}, {metric.name} cv {report.score:.5f} "
+                           f"sd {report.spread:.5f}")
                 entry["submitted"] = submit(slug, submission, message)
                 log.append({"slug": slug, "at": time.time(),
                             "when": datetime.now(UTC).isoformat(timespec="seconds")})

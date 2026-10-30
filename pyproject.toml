@@ -86,11 +86,13 @@ dependencies = [
 app = ["streamlit==1.59.2", "starlette>=0.40,<1", "plotly>=5.24,<7"]
 # Optional AI layer (ada/ai_insights.py). It proposes query plans; pandas runs them.
 ai = ["openai>=2.46,<3", "pydantic>=2.11,<3"]
-# Modelling (ada/modelling.py, `ada model`): gradient boosting and cross-validation. xgboost-cpu is the
-# XGBoost project's build without GPU libraries; where it has no wheel, the full build stands in.
+# Modelling (ada/modelling.py, `ada model` and `ada auto`): gradient boosting and cross-validation; CatBoost
+# joins `ada auto`. xgboost-cpu is the XGBoost project's build without GPU libraries; where it has no wheel,
+# the full build stands in.
 model = [
     "scikit-learn>=1.5,<2", "lightgbm>=4.5,<5",
     "xgboost-cpu>=3,<4; sys_platform == 'linux'", "xgboost>=3,<4; sys_platform != 'linux'",
+    "catboost>=1.2,<2",
 ]
 # openpyxl writes the workbooks the tests read.
 dev = ["ruff>=0.8,<1", "openpyxl>=3.1,<4"]

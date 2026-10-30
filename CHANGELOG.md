@@ -4,6 +4,23 @@
 
 ### Predicting a column
 
+- `ada auto` (and `ada.model(..., auto=True)`) searches wider than `ada model`
+  on the same features and folds: CatBoost, LightGBM with random split points,
+  a neural network and, under 100,000 rows, extremely randomized trees join
+  LightGBM, XGBoost and the linear model;
+  a second layer, LightGBM on the features and the first layer's out-of-fold
+  predictions, joins the blend when it beats every first-layer learner on its
+  own; the weights come from 25 rounds of greedy selection; and a regression
+  under 100,000 rows also tries fitting without the rows the first fit misses
+  by far, kept when that scores better in most folds. `--jobs N` fits N
+  learners at once with the same result. Out-of-fold scores, `ada model`
+  against `ada auto` on the same folds: House Prices RMSLE 0.1183 to 0.1174,
+  Housing Prices (Kaggle Learn) MAE 13,624 to 13,131, Spaceship Titanic
+  accuracy 0.8077 to 0.8119, Titanic 0.8451 to 0.8462, S5E10 RMSE 0.05604 to
+  0.05599, S6E2 AUC 0.95555 to 0.95570, S5E12 AUC 0.73108 to 0.73122. It
+  takes longer: an hour or two for a Playground table of 500,000 to 700,000
+  rows, two learners at once. A random forest and nearest neighbours were
+  tried and left out; neither earned more than 0.04 of a blend.
 - LightGBM's and XGBoost's threads sleep while they wait (`OMP_WAIT_POLICY`
   is set to `PASSIVE` unless already set). With other work on the cores,
   spinning threads made a fit about a hundred times slower: 300 XGBoost trees

@@ -114,6 +114,12 @@ LightGBM, XGBoost and a linear model are blended on out-of-fold predictions,
 every score is cross-validated, and the submission is checked before it is
 written. See [Predicting a column](docs/reference/modelling.md).
 
+`ada auto` does the same with a wider search and takes longer: CatBoost,
+LightGBM with random split points, extremely randomized trees and a neural
+network join the blend, a second layer is fitted on their out-of-fold predictions, and the
+weights come from greedy selection. Each step stays only when the folds say it
+helps. `--jobs N` fits N learners at once and gives the same model.
+
 It is scored on Kaggle competitions with no code for any one of them: the
 runner passes ADA the competition's folder and the name of its metric, and
 ADA does the rest. On the 22 scored so far it places in the top 10% on 2
