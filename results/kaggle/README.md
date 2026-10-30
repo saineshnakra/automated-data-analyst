@@ -83,6 +83,8 @@ is that large:
 | S5E11 | validation | AUC | 0.9254 | 0.92542 | 0.92731 | top 19% of 3,726 |
 | S5E12 | train, after this round | AUC | 0.7308 | 0.69903 | 0.70378 | top 26% of 4,208 |
 | S6E2 | validation | AUC | 0.9555 | 0.95358 | 0.95390 | top 28% of 4,371 |
+| S6E1 | validation | RMSE | 8.6703 | 8.62682 | 8.54913 | top 17% of 4,319 |
+| S6E3 | validation | AUC | 0.9182 | 0.91607 | 0.91687 | top 16% of 4,143 |
 
 Value encoding and larger trees moved S6E8 from 0.9656 (top 51%) to 0.96847
 and S6E9 from 0.94164 (top 65%) to 0.94568 on the leaderboard; S6E7, scored
@@ -107,7 +109,11 @@ encoding and larger trees, and not used to choose any fix:
 | S5E9 | RMSE | 26.462 | 26.3886 | 26.3836 | top 48% of 2,583 |
 | S6E6 | balanced accuracy | 0.9668 | 0.96749 | 0.97227 | top 26% of 2,817 |
 | S6E10 | AUC | 0.9605 | 0.96007 | 0.96207 | top 48% of 3,429 |
+| S6E4 | balanced accuracy | 0.9791 | 0.97791 | 0.98110 | top 17% of 4,316 |
+| S6E5 | AUC | 0.9502 | 0.94983 | 0.95453 | top 34% of 3,023 |
 
 S5E9's public score is 0.005 from the bar and half the leaderboard away from
 it: on these leaderboards the middle and the top 10% are close together.
-S6E1, S6E3, S6E4 and S6E5 wait on their rules being accepted for the account.
+S6E1 and S6E3 to S6E5 were scored with the same model once their rules were
+accepted. S6E3's cross-validated AUC of 0.9182 was above the bar and its
+public score 0.0008 below it, another leaderboard harder than its folds.
