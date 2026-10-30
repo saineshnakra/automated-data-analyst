@@ -6,7 +6,7 @@ answers, a test table without them, and a score to beat. Every score is
 cross-validated, the features come from rules on the columns' shapes, and the
 submission is checked before it is written. Code: `ada/modelling.py`.
 
-It needs the optional extra, which adds scikit-learn and LightGBM:
+It needs the optional extra, which adds scikit-learn, LightGBM, XGBoost and CatBoost:
 
 ```bash
 pip install "automated-data-analyst[model]"
@@ -182,10 +182,12 @@ ada auto playground/ --metric auc --out submission.csv --jobs 2
 ```
 
 - More learners on the same folds: CatBoost (balanced trees with its own
-  encoding of category columns), LightGBM with random split points, extremely
-  randomized trees, a random forest, a neural network with hidden layers of
-  256 and 128 units on the linear model's numbers, and under 20,000 rows the
-  20 nearest training rows. CatBoost is left out when it is not installed.
+  encoding of category columns), LightGBM with random split points, a neural
+  network with hidden layers of 256 and 128 units on the linear model's
+  numbers, and under 100,000 rows extremely randomized trees. CatBoost is left
+  out when it is not installed. A random forest and the 20 nearest training
+  rows were tried as well; across seven competitions neither earned more than
+  0.04 of a blend, and the forest took longest to fit, so they are not used.
 - A second layer: LightGBM fitted on the features and every first-layer
   learner's out-of-fold predictions, on the same folds. A row's predictions
   come from models that never saw it. It joins the blend only when, on its

@@ -82,6 +82,8 @@ YEAR_DAYS = 364
 #: Threads each learner uses. With several learners fitted at once, they share the machine's cores instead;
 #: LightGBM, XGBoost and CatBoost give the same predictions with any number of threads.
 THREADS = 4
+#: The learners from the slowest to fit to the quickest, on a Playground table of 500,000 rows or more.
+SLOWEST_FIRST = ("catboost", "extratrees", "mlp", "xgboost", "lightgbm", "lightgbm_extra", "linear")
 #: Rounds of greedy selection that set the weights of the full search's blend; a weight is a share of them.
 ENSEMBLE_ROUNDS = 25
 #: What each learner is called in the calculation.
@@ -91,9 +93,7 @@ LEARNER_NAMES = {
     "xgboost": "XGBoost gradient boosting",
     "catboost": "CatBoost gradient boosting",
     "extratrees": "extremely randomized trees",
-    "randomforest": "a random forest",
     "mlp": "a neural network with hidden layers of 256 and 128 units",
-    "knn": "the 20 nearest training rows, weighted by closeness",
     "stacked": "LightGBM on the features and the others' out-of-fold predictions",
 }
 #: A regression on fewer rows than this also tries fitting without the rows its first fit misses by far.
@@ -752,31 +752,26 @@ def _catboost_input(frame: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     return frame, categories
 
 
-def _forest(learner: str, task: str, rows: int, seed: int, threads: int = THREADS):
-    """Deep trees averaged, on random splits (extra trees) or bootstrap samples; they err unlike boosting."""
-    from sklearn import ensemble  # noqa: PLC0415
+def _extratrees(task: str, rows: int, seed: int, threads: int = THREADS):
+    """Extremely randomized trees: deep trees on random splits, averaged; they err unlike boosting."""
+    from sklearn.ensemble import ExtraTreesClassifier, ExtraTreesRegressor  # noqa: PLC0415
 
-    common = dict(n_estimators=300 if rows < WIDE_TABLE else 100, max_features=0.5, n_jobs=threads,
-                  min_samples_leaf=1 if rows < SMALL_TABLE else 5, random_state=seed)
-    kind = "ExtraTrees" if learner == "extratrees" else "RandomForest"
-    return getattr(ensemble, f"{kind}{'Regressor' if task == 'regression' else 'Classifier'}")(**common)
+    leaf = 1 if rows < SMALL_TABLE else 5
+    common = dict(n_estimators=300, max_features=0.5, min_samples_leaf=leaf, n_jobs=threads,
+                  random_state=seed)
+    return ExtraTreesRegressor(**common) if task == "regression" else ExtraTreesClassifier(**common)
 
 
-def _on_design(learner: str, task: str, rows: int, seed: int, threads: int = THREADS):
-    """A neural network or nearest neighbours, on the linear model's scaled numbers and one-hot categories.
+def _mlp(task: str, rows: int, seed: int):
+    """A neural network on the linear model's scaled numbers and one-hot categories.
 
-    The network's target is scaled for fitting and turned back for its
-    predictions; it stops when a tenth of the fit rows, held aside, stop
-    improving.
+    The target is scaled for fitting and turned back for its predictions; it
+    stops when a tenth of the fit rows, held aside, stop improving.
     """
     from sklearn.compose import TransformedTargetRegressor  # noqa: PLC0415
-    from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor  # noqa: PLC0415
     from sklearn.neural_network import MLPClassifier, MLPRegressor  # noqa: PLC0415
     from sklearn.preprocessing import StandardScaler  # noqa: PLC0415
 
-    if learner == "knn":
-        common = dict(n_neighbors=20, weights="distance", n_jobs=threads)
-        return KNeighborsRegressor(**common) if task == "regression" else KNeighborsClassifier(**common)
     common = dict(hidden_layer_sizes=(256, 128), alpha=1e-4, batch_size=256 if rows < WIDE_TABLE else 1024,
                   learning_rate_init=1e-3, max_iter=200, early_stopping=True, validation_fraction=0.1,
                   n_iter_no_change=10, random_state=seed)
@@ -1036,9 +1031,8 @@ def model(
     scored = np.unique(np.concatenate([held_rows for _, _, _, held_rows in splits]))
     extra = [name for name, installed in (("xgboost", _xgboost_installed), ("catboost", _catboost_installed))
              if installed() and (auto or name == "xgboost")]
-    # Nearest neighbours compare every test row with every training row: only small tables.
-    wider = ["lightgbm_extra", "extratrees", "randomforest", "mlp"] if auto else []
-    wider += ["knn"] if auto and len(X) < SMALL_TABLE else []
+    # Extra trees earn a weight only on small tables, and on large ones take longest to fit.
+    wider = ["lightgbm_extra", *(["extratrees"] if len(X) < WIDE_TABLE else []), "mlp"] if auto else []
     learners, gains = _fit_learners(["lightgbm", "linear", *extra, *wider], jobs, X, X_test, y, fitted_y,
                                     encoded_y, encode, splits, task, width, chosen,
                                     refit=forecast is not None)
@@ -1262,8 +1256,11 @@ def _fit_learners(names: list[str], jobs: int, X: pd.DataFrame, X_test: pd.DataF
         return {name: fitted(name) for name in names}, gains
     from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
 
+    # The slowest start first, so that none is left running alone on its share of the cores at the end.
+    order = sorted(names, key=lambda name: SLOWEST_FIRST.index(name) if name in SLOWEST_FIRST else len(names))
     with ThreadPoolExecutor(jobs) as pool:
-        return dict(zip(names, pool.map(fitted, names), strict=True)), gains
+        done = dict(zip(order, pool.map(fitted, order), strict=True))
+    return {name: done[name] for name in names}, gains
 
 
 def _cross_validate(learner: str, X: pd.DataFrame, X_test: pd.DataFrame, y: np.ndarray, fitted_y: np.ndarray,
@@ -1311,14 +1308,13 @@ def _cross_validate(learner: str, X: pd.DataFrame, X_test: pd.DataFrame, y: np.n
                                   threads)
             estimator.fit(fit_input, fitted_y[fit_rows], eval_set=(held_input, fitted_y[held_rows]))
             trees.append(int(estimator.get_best_iteration()) + 1)
-        elif learner in ("extratrees", "randomforest"):
+        elif learner == "extratrees":
             fit_input, held_input, test_input = _numeric_codes([fit_X, held_X, test_X])
-            estimator = _forest(learner, task, len(X), repeat * 100 + index, threads)
+            estimator = _extratrees(task, len(X), repeat * 100 + index, threads)
             estimator.fit(fit_input, fitted_y[fit_rows])
-        elif learner in ("mlp", "knn"):
+        elif learner == "mlp":
             fit_matrix, (held_input, test_input) = _linear_design(fit_X, [held_X, test_X])
-            estimator = _on_design(learner, task, len(X), repeat * 100 + index, threads)
-            estimator.fit(fit_matrix, fitted_y[fit_rows])
+            estimator = _mlp(task, len(X), repeat * 100 + index).fit(fit_matrix, fitted_y[fit_rows])
         else:
             fit_matrix, (held_input, test_input) = _linear_design(fit_X, [held_X, test_X])
             if task == "regression":
@@ -1355,12 +1351,12 @@ def _cross_validate(learner: str, X: pd.DataFrame, X_test: pd.DataFrame, y: np.n
             estimator = _catboost(task, width, metric, len(X), 0, None, categories, threads).set_params(
                 iterations=max(1, round(float(np.mean(trees)))))
             estimator.fit(fit_input, fitted_y)
-        elif learner in ("extratrees", "randomforest"):
+        elif learner == "extratrees":
             fit_input, test_X = _numeric_codes([fit_X, test_X])
-            estimator = _forest(learner, task, len(X), 0, threads).fit(fit_input, fitted_y)
-        elif learner in ("mlp", "knn"):
+            estimator = _extratrees(task, len(X), 0, threads).fit(fit_input, fitted_y)
+        elif learner == "mlp":
             fit_matrix, (test_X,) = _linear_design(fit_X, [test_X])
-            estimator = _on_design(learner, task, len(X), 0, threads).fit(fit_matrix, fitted_y)
+            estimator = _mlp(task, len(X), 0).fit(fit_matrix, fitted_y)
         else:
             fit_matrix, (test_input,) = _linear_design(fit_X, [test_X])
             if task == "regression":
