@@ -270,7 +270,8 @@ each word is claimed, in this order, by:
    column is named for it ("the fourth quarter" is `quarter` = 4).
    Ages written out ("30- to 34-year-olds", "aged 50 and over", "people 65
    and older", "65+", "20-year-olds") keep the rows of those ages in the one
-   column named for age: as conditions on a column of numbers, or as the
+   column named for age (ages in years before an age class beside them):
+   as conditions on a column of numbers, or as the
    bands that make them up exactly on a column of bands ("50-64" and "65+"
    for "50 and over"; up to the oldest band the table has, so "50 and over"
    is 50-54, 55-59 and 60-64 in a table of working ages). "in their fifties"
@@ -376,7 +377,12 @@ each word is claimed, in this order, by:
     months, weeks or days, is the one numeric column of at most 12 values
     that holds 14, such as Orthodont's `age`; when two such columns hold it,
     neither is read. An ordinal before a column's name ("the fourth quarter")
-    is that column's value (`quarter` = 4) when the column holds it.
+    is that column's value (`quarter` = 4) when the column holds it. A
+    distance ("the 100 metres", in metres, kilometres, miles or yards) is
+    the one numeric column named for a length, distance, event or race that
+    holds it: `Length` = 100. "on Saturdays", "at the weekend", "on a
+    Saturday or Sunday" and "on weekdays" pick the days of the week of the
+    date column.
 13. **Numbers**: the N of "top N" and "bottom N", a year (1900 to 2099, or an
     earlier year the date or year column holds), and a
     number that is a column's whole name ("correlation between 1001 and 1").
@@ -818,7 +824,9 @@ is the sentence's own one: "share of victims who died were men" is of the
 victims who died, while in "share of victims were men who died" the men who
 died are counted over every victim. A verb after "and" or "or" joins what
 is counted. With no verb, a value written as a past tense after the others
-is what is counted: "share of male victims died" is of the male victims. A
+is what is counted: "share of male victims died" is of the male victims; so
+is what follows a verb in the past tense: "share of samples at Bondi Beach
+exceeded 200 enterococci" is of the samples at Bondi Beach. A
 yes/no outcome is counted among the rest: "what share of women survived" is
 344 of the 470 women (73.2%). Values side by side with no verb between them
 ("share of female Adelie") are counted together, over every row.

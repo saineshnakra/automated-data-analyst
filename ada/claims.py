@@ -162,7 +162,7 @@ TIME_SLOPE = re.compile(
     r"(?P<verb>\b(?:(?:has|have|had)\s+)?(?:(?:been\s+)?(?:rising|growing|increasing|climbing|falling|"
     r"dropping|declining|decreasing)|rises|rose|risen|grows|grew|grown|increases|increased|climbs|climbed|"
     r"falls|fell|fallen|drops|dropped|declines|declined|decreases|decreased|shrank|shrunk|adds|added|gains|"
-    r"gained|loses|lost|sheds|shed))\s+(?:by\s+)?"
+    r"gained|loses|lost|sheds|shed|(?:come|came|comes|gone|went|goes|go)\s+(?:down|up)))\s+(?:by\s+)?"
     r"(?:an\s+average\s+of\s+)?(?P<number>(?:[^.;]|(?<=\d)\.(?=\d))*?\d(?:[^.;]|(?<=\d)\.(?=\d))*?)\s+"
     r"(?:a|per|each|every)\s+"
     r"(?P<unit>year|month|week|day|decade)\b(?!\s+of\b)",
@@ -771,6 +771,12 @@ def _candidates(claim: str, columns: list[str]) -> list[_Candidate]:
             previous and previous.group(1).lower() in FILTER_WORDS and following
             and any(_abbreviates(following.group(1).lower(), part) for part in column_words)
         )
+        # "the men's Olympic 100 metres": a distance named as an event picks the rows of the column of its
+        # kind.
+        kind = UNITS.get(following.group(1).lower(), (None,))[0] if following else None
+        filter_like = filter_like or bool(
+            kind and kind in column_words and re.search(r"(?:\bthe|['’]s)(?:\s+[A-Z][a-z]+)*\s*$", before)
+        )
         ordinal = plain and re.match(r"(?:st|nd|rd|th)\b", claim[match.end():], re.IGNORECASE) is not None
         # "on May 22, 2011", "aged 50 and over" and "from 2023 to 2024" pick rows; "6.5 out of 10" gives
         # the scale.
@@ -800,6 +806,9 @@ def _unit_after(claim: str, end: int, columns: list[str], row_noun: str | None) 
         word = match.group(1).rstrip(".")
         if word.lower() in ADJECTIVE_NOUNS:
             break
+        # "100 COVID-19 deaths": a word joined by a hyphen to what follows is part of a name, not a unit.
+        if claim[end + match.end():end + match.end() + 1] == "-":
+            break
         # "73 HR" names the HR column, not hours: a column's own name is no unit.
         known_unit = word.lower() in UNITS and not words and word.lower() not in exact
         # "565 boys named Jack": a participle after the noun starts what picks the rows.
@@ -827,7 +836,9 @@ def _time_slope(claim: str) -> tuple[str, str, str, bool] | None:
     grain = "year" if unit == "decade" else unit
     question = re.sub(r"\s+", " ", f"{claim[:found.start()]} per {grain} {claim[found.end():]}").strip()
     verb = found.group("verb").lower().split()[-1]
-    return question, found.group("number"), unit, verb.startswith(FALLING_VERBS) or verb in LOSING_VERBS
+    # "has come down by 0.013 seconds a year" falls.
+    return question, found.group("number"), unit, verb.startswith(FALLING_VERBS) or verb in LOSING_VERBS or (
+        verb == "down")
 
 
 def _slope_claim(claim: str) -> tuple[str, str, str, bool] | None:
@@ -1494,6 +1505,9 @@ def _names_head(question: str, column: str, strict: bool = False) -> bool:
     parts = re.findall(r"[a-z]+", normalized_name(re.sub(r"\([^)]*\)", " ", str(column)).strip() or column))
     if len(parts) > 1 and column_unit(column) == parts[-1]:
         parts = parts[:-1]
+    # enterococci_cfu_100ml: units after the quantity ("cfu", "ml") say how it is measured, not what it is.
+    while len(parts) > 1 and (parts[-1] in UNITS or parts[-1] in TRAILING_UNIT_WORDS):
+        parts = parts[:-1]
     parts = [part for part in parts if part not in COUNTING_WORDS] or parts
     sides = {word: side for side, forms in OUTCOME_WORDS.items() for word in forms}
     if parts and parts[-1] in sides and any(sides.get(word) == sides[parts[-1]] for word in words):
@@ -1504,6 +1518,12 @@ def _names_head(question: str, column: str, strict: bool = False) -> bool:
     return not parts or any(_abbreviates(word, parts[-1]) for word in words)
 
 
+# Units of measure a column's name may end in beside those in UNITS: colony-forming units, most probable
+# number, parts per million or billion.
+TRAILING_UNIT_WORDS = frozenset({
+    "cfu", "mpn", "ppm", "ppb", "ml", "l", "mg", "g", "kg", "mcg", "ug", "mm", "cm", "m", "km", "mmol",
+    "umol",
+})
 # Endings that leave a word the same word: "runs" is run, "weighed" is weigh.
 INFLECTIONS = ("s", "es", "ed", "d", "ing", "er", "ers")
 # Endings that make a noun of a verb: "production" is what is produced, "collection" what is collected.
@@ -2018,7 +2038,7 @@ def _checked_claim(
         text = _half_within(_records_began(_temperature_words(text, analysis.frame)))
         text, worst = _worst_day(text)
         text, compared = _compared_tail(text)
-        text = _without_contrast(text)
+        text = _named_unit(_without_contrast(text), analysis.frame)
         text, rate_base = _table_rate_base(text, analysis.frame)
         text, own_name = _own_name(text, analysis.source, analysis.roles.row_noun)
         text, started = _start_dates(text, analysis.frame)
@@ -2455,6 +2475,24 @@ def _compared_tail(text: str) -> tuple[str, str | None]:
     if not found:
         return text, None
     return f"{text[:found.start()].rstrip()}.", found.group("tail")
+
+
+# Units a column's name may end in after an amount ("enterococci_cfu_100ml"), with the words a claim may use.
+NAMED_UNIT_WORDS = {
+    "ml": r"ml|millilit(?:re|er)s?", "l": r"l|lit(?:re|er)s?", "g": r"g|grams?", "kg": r"kg|kilograms?",
+    "km": r"km|kilomet(?:re|er)s?", "m": r"m|met(?:re|er)s?",
+}
+
+
+def _named_unit(text: str, frame: Any) -> str:
+    """The claim without "per 100 mL" when a column's own name gives its values per 100 mL
+    (enterococci_cfu_100ml): the phrase says what the column measures, not rows to pick."""
+    for column in frame.columns:
+        for amount, unit in re.findall(r"(?<![a-z0-9])(\d+)\s?(ml|l|g|kg|km|m)(?![a-z0-9])",
+                                       normalized_name(str(column)).lower()):
+            words = NAMED_UNIT_WORDS[unit]
+            text = re.sub(rf"\s*\bper\s+{amount}\s*(?:{words})\b\.?", " ", text, flags=re.IGNORECASE)
+    return re.sub(r"\s+([.,;])", r"\1", re.sub(r"\s{2,}", " ", text)).strip()
 
 
 # "rather than the public network": what the rows are not, which picks none of them.

@@ -1401,6 +1401,10 @@ def _age_column(
     if len(named) > 1 and _same_values(dataframe, named):
         # AGE beside "Single year of age", the same years written twice: the shorter name stands for both.
         named = [min(named, key=lambda name: len(str(name)))]
+    exact = [name for name in named if _is_measurement(dataframe[name])]
+    if len(named) > 1 and len(exact) == 1:
+        # age beside age_class ("40-44"): the ages in years settle any bound exactly, where a band may cut it.
+        named = exact
     if len(named) != 1:
         return None
     column = named[0]
@@ -1798,7 +1802,8 @@ def unsupported_phrasing(question: str, columns=(), dataframe: pd.DataFrame | No
     ``dataframe``, a span of time that is the one period every row covers is
     one period, not two.
     """
-    q = _norm(question)
+    # "on a Saturday or Sunday" is the weekend, not two separate questions.
+    q = WEEKEND_PHRASE.sub(" at the weekend ", _norm(question))
     period = _own_period(dataframe) if dataframe is not None else None
     for match in reversed(_own_period_spans(q, period) if period else []):
         q = f"{q[:match.start()]} {q[match.end():]}"
@@ -4285,8 +4290,20 @@ def _unit_words(column: str) -> set[str]:
     return words
 
 
+# Units of distance, and the name words of a column of distances: "the 100 metres" is the race whose Length is
+# 100.
+DISTANCE_UNITS = frozenset({
+    "metre", "metres", "meter", "meters", "km", "kilometre", "kilometres", "kilometer", "kilometers", "mile",
+    "miles", "yard", "yards",
+})
+DISTANCE_NAMES = frozenset({"length", "distance", "event", "race"})
+
+
 def _claim_unit_conditions(reading: _Reading, dataframe: pd.DataFrame, roles: ColumnRoles) -> None:
-    """Read "at 28 days" as a column whose unit is days being 28, when one numeric column has that unit."""
+    """Read "at 28 days" as a column whose unit is days being 28, when one numeric column has that unit.
+
+    A distance ("the 100 metres") picks the one column of distances that holds it as a value.
+    """
     index = reading.index or _name_index(dataframe.columns)
     units = {column: index.units[column] for column in roles.numeric if column in index.units}
     pattern = rf"\b(?:(?:at|after|on|for|of|with)\s+)?(?P<number>{NUMBER})\s+(?P<unit>[a-z]+)\b"
@@ -4298,6 +4315,11 @@ def _claim_unit_conditions(reading: _Reading, dataframe: pd.DataFrame, roles: Co
             continue
         variants = _word_variants(match.group("unit"))
         columns = [column for column, words in units.items() if words & variants]
+        if not columns and match.group("unit") in DISTANCE_UNITS:
+            number = _number(match.group("number"))
+            columns = [column for column in roles.numeric if column in dataframe.columns
+                       and set(_norm(normalized_name(str(column))).split()) & DISTANCE_NAMES
+                       and (to_numbers(dataframe[column]) == number).any()]
         if len(columns) != 1:
             continue
         reading.conditions.append(Condition(columns[0], "=", _number(match.group("number"))))
@@ -5229,6 +5251,53 @@ def _claim_days(reading: _Reading, roles: ColumnRoles) -> None:
         reading.claim(*match.span())
 
 
+# The days of the week, Monday first as pandas numbers them.
+WEEKDAY_NAMES = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+# "at the weekend", "on a Saturday or Sunday": days 5 and 6; "on weekdays": 0 to 4; "on Saturdays": one day.
+WEEKEND_PHRASE = re.compile(
+    r"\b(?:(?:on|at|over)\s+(?:the\s+)?weekends?|on\s+(?:a\s+)?saturdays?\s+(?:or|and)\s+(?:a\s+)?"
+    r"sundays?)\b")
+WORKDAY_PHRASE = re.compile(r"\b(?:on|during)\s+(?:a\s+)?(?:weekdays?|working\s+days?)\b")
+ONE_DAY_PHRASE = re.compile(rf"\bon\s+(?:a\s+)?(?P<day>{'|'.join(WEEKDAY_NAMES)})s?\b")
+
+
+def _claim_weekdays(reading: _Reading, roles: ColumnRoles) -> None:
+    """Read "on Saturdays", "at the weekend" and "on weekdays" as days of the week of the date column."""
+    for pattern, operator, value in ((WEEKEND_PHRASE, ">=", 5.0), (WORKDAY_PHRASE, "<=", 4.0),
+                                     (ONE_DAY_PHRASE, "=", None)):
+        for match in list(pattern.finditer(reading.remaining)):
+            if not roles.date:
+                reading.flag("This table has no date column to tell the days of the week from.")
+            else:
+                day = float(WEEKDAY_NAMES.index(match.group("day"))) if value is None else value
+                reading.conditions.append(Condition(roles.date, operator, day, part="weekday"))
+                reading.scoped.add(roles.date)
+            reading.claim(*match.span())
+
+
+# A summary before a column's name and "count": "the median enterococci count" is the median of the column.
+MEASURED_COUNT = re.compile(
+    r"\b(?P<summary>mean|median|average|typical|highest|lowest|maximum|minimum)\s+"
+    r"(?P<words>(?:[a-z0-9]+\s+){1,3}?)counts?\b")
+
+
+def _measured_count(q: str, dataframe: pd.DataFrame, roles: ColumnRoles) -> str:
+    """The normalized question without "count" after a summary and the words naming a numeric column whose
+    name has no word of counting: in "the median enterococci count" the count is the column's own value
+    (enterococci_cfu_100ml), not a number of rows."""
+
+    def kept(found: re.Match) -> str:
+        words = set(found.group("words").split())
+        named = [column for column in roles.numeric if column in dataframe.columns
+                 and words <= set(_norm(normalized_name(str(column))).split())
+                 and not set(_norm(normalized_name(str(column))).split()) & COUNT_NAME_WORDS]
+        if len(named) != 1:
+            return found.group()
+        return f"{found.group('summary')} {found.group('words').strip()}"
+
+    return MEASURED_COUNT.sub(kept, q)
+
+
 # A span of time from one month or year to another: "between january 2020 and late june 2023", "from 2020 to
 # mid 2023".
 PERIOD_SPAN = re.compile(
@@ -5719,6 +5788,7 @@ def _read_question(
     q = _agent_nouns(_norm(_inverted_names(_question_text(question), dataframe.columns)), vocabulary)
     q = _population_words(_died_of(q, dataframe.columns), dataframe.columns)
     q = _persons_words(_per_capita_words(q, dataframe.columns), vocabulary)
+    q = _measured_count(q, dataframe, roles)
     q, year_to = _year_to_month(q, dataframe, roles)
     q, relative = _relative_years(q, dataframe, roles)
     index = _name_index(dataframe.columns)
@@ -5753,6 +5823,7 @@ def _read_question(
     _claim_clock(reading, dataframe, roles)
     _claim_month_of_year(reading, dataframe, roles)
     _claim_days(reading, roles)
+    _claim_weekdays(reading, roles)
     _claim_ages(reading, dataframe, roles)
     _claim_year_ranges(reading, dataframe, roles)
     _claim_fillers(reading)
@@ -7018,6 +7089,11 @@ def _share_base(reading: _Reading, counting: dict) -> tuple[dict, tuple] | None:
             if word and (word.group().endswith("ed") or word.group() in PAST_FORMS):
                 starts.append(places[id(item)])
                 break
+        # "share of samples at Bondi Beach exceeded 200 enterococci": a verb in the past tense ends the base.
+        for word in re.finditer(r"[a-z]+", text[anchor.end():]):
+            token = word.group()
+            if (len(token) > 4 and token.endswith("ed") and token != "hundred") or token in PAST_FORMS:
+                starts.append(anchor.end() + word.start())
     for start in starts:
         counted = tuple(item for item in items if (places[id(item)] or -1) >= start)
         if counted and len(counted) < len(items):
@@ -7364,6 +7440,9 @@ def _condition_mask(series: pd.Series, condition: Condition) -> pd.Series:
     if is_datetime64_any_dtype(series) and condition.part == "clock":
         # "before 10 am": minutes after midnight, whatever the day.
         values = (series.dt.hour * 60 + series.dt.minute + series.dt.second / 60).astype(float)
+    elif is_datetime64_any_dtype(series) and condition.part == "weekday":
+        # "at the weekend": the day of the week, Monday 0 to Sunday 6.
+        values = series.dt.dayofweek.astype(float)
     elif is_datetime64_any_dtype(series) and condition.part == "date":
         # "on April 27, 2011": the day, as days since 1970, whatever the time of day.
         days = series.dt.tz_localize(None) if series.dt.tz is not None else series
@@ -7411,6 +7490,10 @@ def _describe_condition(condition: Condition) -> str:
         return f'{condition.column} {TEXT_OPERATORS[condition.operator]} "{condition.text}"'
     if condition.part == "year":
         return f"{condition.column} {YEAR_OPERATOR_WORDS[condition.operator]} {_number_text(condition.value)}"
+    if condition.part == "weekday":
+        days = [name.title() for number, name in enumerate(WEEKDAY_NAMES)
+                if _condition_mask(pd.Series([float(number)]), replace(condition, part=None)).iloc[0]]
+        return f"{condition.column} on a {_listed(days)}"
     if condition.part == "clock":
         return (f"{condition.column} time of day {CLOCK_OPERATOR_WORDS[condition.operator]} "
                 f"{_condition_value(condition)}")

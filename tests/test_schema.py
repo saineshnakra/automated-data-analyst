@@ -1382,3 +1382,10 @@ class ClockTimeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GeographicCodeNameTests(unittest.TestCase):
+    def test_uid_fips_geoid_and_objectid_are_codes(self):
+        for name in ("UID", "FIPS", "GEOID", "OBJECTID", "fips_code"):
+            self.assertTrue(is_identifier_name(name), name)
+        self.assertFalse(is_identifier_name("Population"))

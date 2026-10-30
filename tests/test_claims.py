@@ -3441,3 +3441,58 @@ class ContrastTests(unittest.TestCase):
         claim = "Half of the homes get their water from their own well rather than the public network."
         self.assertEqual(ada.check_claim(frame, claim).reason, "failed_check")
 
+
+
+class HyphenatedNameTests(unittest.TestCase):
+    """Deaths by state: Arizona 100 in 2021."""
+
+    def test_a_name_joined_by_a_hyphen_is_no_unit(self):
+        frame = pd.DataFrame({"state": ["Arizona", "Ohio", "Texas"] * 2, "year": [2021] * 3 + [2022] * 3,
+                              "deaths": [100, 200, 300, 50, 60, 70]})
+        check = ada.check_claim(frame, "Arizona had 300 COVID-19 deaths in 2021.")
+        self.assertEqual(check.reason, "failed_check")
+        self.assertNotIn("-19", check.question)
+
+
+class EventDistanceTests(unittest.TestCase):
+    """Olympic winning times: the 100 metres from 10.8 s in 1900 down by 0.0125 s every four years."""
+
+    def setUp(self):
+        years = list(range(1900, 2020, 4))
+        self.frame = pd.DataFrame({
+            "Year": years * 2, "Length": [100] * len(years) + [400] * len(years), "Sex": "men",
+            "Time": [10.8 - 0.0125 * (year - 1900) for year in years]
+            + [50 - 0.05 * (year - 1900) for year in years]})
+
+    def test_a_distance_after_the_names_the_race(self):
+        claim = "The time in the men's 100 metres has come down by about 0.0125 seconds a year."
+        check = ada.check_claim(self.frame, claim)
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("Length = 100", check.message)
+
+    def test_a_wrong_yearly_fall_fails(self):
+        claim = "The time in the men's 100 metres has come down by about 0.05 seconds a year."
+        check = ada.check_claim(self.frame, claim)
+        self.assertEqual(check.reason, "failed_check")
+
+
+class ShareBaseVerbTests(unittest.TestCase):
+    """Water samples: 53 of Bondi Beach's 100 above 200 enterococci per 100 mL, 26.5% of all 200."""
+
+    def setUp(self):
+        counts = np.random.default_rng(1).integers(0, 400, 200)
+        self.frame = pd.DataFrame({"swim_site": ["Coogee Beach", "Bondi Beach"] * 100,
+                                   "date": pd.date_range("2020-01-01", periods=200, freq="W"),
+                                   "enterococci_cfu_100ml": counts})
+
+    def test_a_past_tense_verb_ends_the_base(self):
+        claim = "About a quarter of samples at Bondi Beach exceeded 200 enterococci per 100 mL."
+        check = ada.check_claim(self.frame, claim)
+        self.assertEqual(check.reason, "failed_check")
+        self.assertAlmostEqual(check.compared, 53.0)
+
+    def test_a_unit_the_column_name_gives_is_set_aside(self):
+        claim = "The median enterococci count at Coogee Beach is above 300 per 100 millilitres."
+        check = ada.check_claim(self.frame, claim)
+        self.assertEqual(check.reason, "failed_check")
+        self.assertIn("median(enterococci_cfu_100ml)", check.message)
