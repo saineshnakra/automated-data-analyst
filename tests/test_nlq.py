@@ -5463,3 +5463,41 @@ class ValuesInAnotherUnitTests(unittest.TestCase):
         self.assertIsInstance(refusal, ada.Refusal)
         self.assertIn("unit KG or 50 KG", refusal.message)
 
+
+
+class WeekdayTests(unittest.TestCase):
+    """Ten weeks of daily sales from Monday 1 January 2024: ten of each day, 1 on Mondays to 7 on Sundays."""
+
+    def setUp(self):
+        self.analysis = ada.analyze(pd.DataFrame({
+            "date": pd.date_range("2024-01-01", periods=70, freq="D"), "sales": [1, 2, 3, 4, 5, 6, 7] * 10}))
+
+    def test_days_of_the_week_pick_rows(self):
+        self.assertEqual(self.analysis.ask("how many rows on Saturdays").value, 10)
+        self.assertEqual(self.analysis.ask("how many rows at the weekend").value, 20)
+        self.assertEqual(self.analysis.ask("how many rows on a Saturday or Sunday").value, 20)
+        self.assertEqual(self.analysis.ask("how many rows on weekdays").value, 50)
+        self.assertEqual(self.analysis.ask("total sales on Mondays").value, 10)
+        self.assertEqual(self.analysis.ask("total sales at the weekend").value, 130)
+
+    def test_a_table_with_no_date_cannot_pick_a_day(self):
+        refusal = ada.analyze(pd.DataFrame({"site": ["A", "B"] * 5, "sales": [3, 1] * 5})).ask(
+            "how many rows on Saturdays")
+        self.assertIsInstance(refusal, ada.Refusal)
+
+
+class AgeInYearsTests(unittest.TestCase):
+    """Lifters with an age in years and an age class beside it: 3 of 6 aged 40 and over."""
+
+    def test_ages_in_years_settle_a_bound_the_classes_cut(self):
+        frame = pd.DataFrame({"name": list("abcdef"), "age": [23.5, 38.0, 41.5, 40.0, 61.0, 35.0],
+                              "age_class": ["20-23", "35-39", "40-44", "40-44", "60-64", "35-39"]})
+        answer = ada.analyze(frame).ask("how many rows were aged 40 and over")
+        self.assertEqual(answer.value, 3)
+
+
+class MeasuredCountTests(unittest.TestCase):
+    def test_a_summary_of_a_column_named_with_count_is_the_column(self):
+        frame = pd.DataFrame({"site": ["A", "B"] * 3, "enterococci_cfu_100ml": [10, 20, 30, 40, 50, 60]})
+        answer = ada.analyze(frame).ask("median enterococci count at A")
+        self.assertEqual(answer.value, 30)
