@@ -99,6 +99,40 @@ Store Sales' public score is 0.087 worse than its cross-validated 0.391,
 twenty times its wobble: the time-ordered folds do not score the forecast as
 the test is made, and that is a fix still to make.
 
+## `ada auto`
+
+Each train and validation competition got one more submission from `ada auto`
+(`run.py --auto`), the wider search: CatBoost, LightGBM with random split
+points, a neural network, a second layer when it beats every first-layer
+learner, greedy blend weights and, for a regression under 100,000 rows, the
+outlier rule. Kaggle ranks a team by its best public score, so the place is
+the better of the two.
+
+| Competition | Test rows | Metric | `ada model` | `ada auto` | Place |
+|---|---|---|---|---|---|
+| Housing Prices (Kaggle Learn) | 1,459 | MAE | 13,331.6 | 12,602.8 | top 2.0% of 3,855 |
+| S6E2 | 270,000 | AUC | 0.95358 | 0.95384 | top 13.5% of 4,371 |
+| S5E10 | 172,585 | RMSE | 0.05563 | 0.05550 | top 14.3% of 4,083 |
+| S6E3 | 254,655 | AUC | 0.91607 | 0.91612 | top 15.4% of 4,143 |
+| S6E1 | 270,000 | RMSE | 8.62682 | 8.61700 | top 16.6% of 4,319 |
+| S5E11 | 254,569 | AUC | 0.92542 | 0.92572 | top 18.1% of 3,726 |
+| S6E8 | 296,302 | AUC | 0.96847 | 0.96882 | top 30.1% of 3,532 |
+| S6E7 | 295,753 | balanced accuracy | 0.94972 | 0.94990 | top 35% of 3,356 |
+| S6E9 | 286,571 | AUC | 0.94568 | 0.94581 | top 37.8% of 3,576 |
+| S5E12 | 300,000 | AUC | 0.69903 | 0.69883 | top 26% of 4,208 |
+| Titanic | 418 | accuracy | 0.79665 | 0.78947 | top 9.6% of 11,692 |
+| Spaceship Titanic | 4,277 | accuracy | 0.80804 | 0.80570 | top 15.6% of 1,791 |
+| House Prices | 1,459 | RMSLE | 0.12119 | 0.12247 | top 14.4% of 4,613 |
+
+On the Playground tables, with 170,000 to 300,000 test rows, eight of nine
+scored better and S5E12, whose test rows follow the columns differently from
+its training rows, held. Titanic, Spaceship Titanic and House Prices scored
+worse by less than their test wobble: on a few hundred to a few thousand
+public rows, chance moves the score more than the gain. The Stocks Predict
+challenge was not sent, as its test rows are told apart from the training
+rows. Store Sales, a forecast, was not run: its folds, not its learners, are
+what is still to fix.
+
 The locked test competitions, scored once with the model of XGBoost, value
 encoding and larger trees, and not used to choose any fix:
 

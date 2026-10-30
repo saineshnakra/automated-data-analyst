@@ -122,9 +122,10 @@ helps. `--jobs N` fits N learners at once and gives the same model.
 
 It is scored on Kaggle competitions with no code for any one of them: the
 runner passes ADA the competition's folder and the name of its metric, and
-ADA does the rest. On the 22 scored so far it places in the top 10% on 2
-(Titanic, and Housing Prices on Kaggle Learn), in the top 15% on 4 and in the
-top 30% on 12. Store Sales, a forecast of 1,782 series, is its weakest, at 58%.
+ADA does the rest. On the 22 scored so far, with `ada auto` where it was
+run, it places in the top 10% on 2 (Titanic, and Housing Prices on Kaggle
+Learn, at 2%), in the top 15% on 6 and in the top 30% on 13. Store Sales, a
+forecast of 1,782 series, is its weakest, at 58%.
 [Every score](results/kaggle/README.md).
 
 ## What it doesn't do yet
