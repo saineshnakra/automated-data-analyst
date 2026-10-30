@@ -241,11 +241,13 @@ class AutoModelTests(unittest.TestCase):
         report = ada.model(self.train, self.test, metric="auc", auto=True)
         self.assertIn("extremely randomized trees", report.calculation)
         self.assertIn("random split points", report.calculation)
-        self.assertIn("the others' out-of-fold predictions", report.calculation)
+        # The second layer joins the blend, or the calculation says how it scored and that it was left out.
+        self.assertRegex(report.calculation, r"the others' out-of-fold predictions|second layer, .* left out")
         self.assertIn("rounds of greedy selection", report.calculation)
         self.assertGreater(report.score, 0.7)
         self.assertEqual(len(report.folds), 15)
-        again = ada.model(self.train, self.test, metric="auc", auto=True)
+        # Learners fitted side by side give the same model as one after another.
+        again = ada.model(self.train, self.test, metric="auc", auto=True, jobs=3)
         self.assertEqual(report.folds, again.folds)
         pd.testing.assert_frame_equal(report.submission, again.submission)
 
@@ -280,15 +282,17 @@ class AutoModelTests(unittest.TestCase):
     def test_rows_the_first_fit_misses_by_far_are_left_out_of_fitting(self):
         rng = np.random.default_rng(4)
         rows = 400
-        size = rng.uniform(50, 300, rows)
-        frame = pd.DataFrame({"size": size, "rooms": rng.integers(1, 6, rows),
-                              "price": 1000 * size + rng.normal(0, 5000, rows)})
-        # One sale in twenty is recorded at a tenth of its price (a part share, say).
-        frame.loc[::20, "price"] /= 10
+        size, age = rng.uniform(50, 300, rows), rng.integers(0, 80, rows)
+        frame = pd.DataFrame({"size": size, "rooms": rng.integers(1, 6, rows), "age": age,
+                              "price": 1000 * size - 500 * age + rng.normal(0, 5000, rows)})
+        # One sale in twenty-five is recorded wrongly, at minus three or six times its price.
+        wrong = rng.random(rows) < 0.04
+        frame.loc[wrong, "price"] *= rng.choice([-3, 6], wrong.sum())
         train, test = frame.iloc[:300], frame.iloc[300:].drop(columns="price")
-        report = ada.model(train, test, target="price", metric="rmse", auto=True)
+        # Under absolute error each normal row's gain counts; under RMSE the wrong rows' errors outweigh it.
+        report = ada.model(train, test, target="price", metric="mae", auto=True)
         self.assertIn("left out of fitting but kept in scoring", report.calculation)
-        quick = ada.model(train, test, target="price", metric="rmse")
+        quick = ada.model(train, test, target="price", metric="mae")
         self.assertNotIn("left out of fitting", quick.calculation)
         # Thin data: a target the first fit gets exactly right has no spread to judge misses by.
         exact = frame.assign(price=frame["rooms"] * 1000.0)

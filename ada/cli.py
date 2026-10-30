@@ -199,7 +199,7 @@ def _model(args: argparse.Namespace) -> int:
     from .modelling import model  # noqa: PLC0415
 
     report = model(args.train, args.test, target=args.target, metric=args.metric, id_column=args.id,
-                   folds=args.folds, seed=args.seed, auto=args.command == "auto")
+                   folds=args.folds, seed=args.seed, auto=args.command == "auto", jobs=args.jobs)
     if isinstance(report, Refusal):
         if args.json:
             print(json.dumps({"schema_version": 1, "status": "refused", "code": report.code,
@@ -563,6 +563,8 @@ def build_parser() -> argparse.ArgumentParser:
         modelled.add_argument("--id", help="the column that names each row (default: found)")
         modelled.add_argument("--folds", type=int, default=5, help="cross-validation folds (default: 5)")
         modelled.add_argument("--seed", type=int, default=0, help="the random seed (default: 0)")
+        modelled.add_argument("--jobs", type=int, default=1,
+                              help="learners fitted at once, sharing the cores (default: 1)")
         modelled.add_argument("--out", help="write the submission to this CSV file")
         modelled.add_argument("--json", action="store_true", help="machine-readable result")
     with_source("check", "flag periods outside the expected band; for cron")
