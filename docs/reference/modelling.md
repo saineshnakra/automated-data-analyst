@@ -118,6 +118,10 @@ training, with at least one value per fold and two rows per value on average,
 groups the folds instead: each group's rows stay in one fold, the largest
 groups go first into the lightest fold, and the column is left out of the
 features. With several such columns the one with the fewest values is used.
+When no column does but the first part of a structured id never appears in
+training ("0013" of "0013_02", and some first parts repeat), the folds keep
+the rows of each first part together the same way: Spaceship Titanic's test
+passengers travel in groups no training passenger is in.
 
 Importing ADA sets `OMP_WAIT_POLICY` to `PASSIVE` unless it is set already,
 so LightGBM's and XGBoost's threads sleep while they wait instead of spinning.

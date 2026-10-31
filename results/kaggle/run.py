@@ -142,13 +142,13 @@ def main() -> None:
         try:
             folder = download(slug, cache)
         except Exception as error:  # noqa: BLE001 - reported per competition
-            results[slug] = {"split": item["split"], "error": f"download: {error}"}
+            results[slug] = {"error": f"download: {error}"}
             print(f"{slug}: could not download ({error})")
             continue
         report = modelling.model(folder, metric=item["metric"], auto=auto)
         seconds = round(time.time() - started)
         if not isinstance(report, modelling.ModelReport):
-            results[slug] = {"split": item["split"], "refused": report.message}
+            results[slug] = {"refused": report.message}
             print(f"{slug}: refused: {report.message}")
             continue
         top, teams = bar(slug, metric.higher, cache)
@@ -175,17 +175,17 @@ def main() -> None:
         submission = cache / f"{slug}-submission.csv"
         report.write(submission)
         entry = {
-            "split": item["split"], "metric": metric.name, "cv": report.score, "sd": report.spread,
+            "metric": metric.name, "cv": report.score, "sd": report.spread,
             "leaderboard_gap": offset if scored else None,
             "bar_top10": top, "teams": teams, "wobble": wobble,
             "cv_percentile": percentile(report.score, metric.higher, slug, cache), "seconds": seconds,
             "gate": gate or ["passed"], "warnings": list(report.warnings), "auto": auto,
         }
-        print(f"{slug} [{item['split']}] {metric.name} cv {report.score:.5f} (sd {report.spread:.5f}) "
+        print(f"{slug} {metric.name} cv {report.score:.5f} (sd {report.spread:.5f}) "
               f"bar {top:.5f} -> about top {entry['cv_percentile']:.1f}%; gate: {'; '.join(entry['gate'])}")
         sent_before = any(logged["slug"] == slug for logged in log)
         firsts = first and not failed and not report.warnings and not sent_before
-        if (send and not gate or firsts) and item["split"] != "train-only":
+        if send and not gate or firsts:
             # A first submission does not wait: Kaggle limits each competition, not the account.
             wait = None if firsts else allowed(slug, log)
             if wait:
