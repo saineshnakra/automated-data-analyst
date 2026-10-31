@@ -2,7 +2,7 @@
 name: ada
 description: Compute and check numbers from CSV or Excel tables with ADA (the automated-data-analyst Python package). It computes every number in pandas, SciPy and statsmodels with the calculation and rows behind it, checks a number stated about a table (verified, or unverified with a reason), maps a folder of related files and how they join, or refuses with a reason instead of guessing. Use when someone wants a number from a data file, wants a number in a report or an answer checked against the data, wants to know what is in a file or folder, compare groups, test a relationship or a trend, or make a paper's tables, figures and methods draft from research data with a rebuild that can be verified.
 license: MIT
-compatibility: Needs Python 3.11 or newer and `pip install automated-data-analyst` 0.6.0 or later (0.5.0 for the study workflow only).
+compatibility: Needs Python 3.11 or newer and `pip install automated-data-analyst` 0.7.0 or later (0.5.0 for the study workflow only).
 metadata:
   homepage: https://github.com/saineshnakra/automated-data-analyst
   docs: https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/research.md
@@ -30,6 +30,8 @@ Pick the mode from what the person wants:
   questions, then `ada ask` and `ada claim` on the folder or a file.
 - **A paper or report from a study** (groups, subjects, time points, planned
   analyses): the study workflow below.
+- **A prediction** (a Kaggle-style folder, or "predict this column"):
+  "Predicting a column" below.
 - **Just what is in a file**: `ada analyze data.csv`, or in Python
   `ada.analyze("data.csv")`. See "First look" at the end.
 
@@ -100,6 +102,23 @@ A question or claim about a folder (`ada ask data/ "..."`, `ada claim data/
 link ADA is sure of, and the answer says which join it used. Confirm a link
 in the answers file, or pass `--decide join_links=all`, only when the person
 agrees the link is right.
+
+## Predicting a column
+
+```bash
+pip install "automated-data-analyst[model]"
+ada model titanic/ --metric accuracy --out submission.csv --json   # a folder with train.csv, test.csv and a sample
+ada model train.csv test.csv --target price --metric rmsle --json
+ada auto titanic/ --metric accuracy --out submission.csv           # a wider search; takes longer
+ada model train.csv test.csv --target price --explain --json       # a readable model, with what it costs
+```
+
+Report the cross-validated score with its spread over the folds and the
+`calculation`, pass on every check that failed and every warning (a column
+that gives the target away, test rows unlike the training rows), and say the
+score is cross-validated, not a test score. With `--explain`, report the
+model chosen, its coefficients with their 95% intervals, the effect curves
+that matter, and the three comparisons as ADA states them.
 
 ## The study workflow
 

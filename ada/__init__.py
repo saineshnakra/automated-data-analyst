@@ -13,6 +13,7 @@ only when it is imported, so ``import ada`` stays quick. Streamlit, plotly and
 the optional AI layer are extras and are imported only when used.
 """
 
+from . import tools
 from .api import (
     DEFAULT_ROW_LIMIT,
     MAX_FILE_BYTES,
@@ -35,7 +36,7 @@ from .joins import ask_folder
 from .modelling import ModelReport, model
 from .sources import Source
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 __all__ = [
     "DEFAULT_ROW_LIMIT",
@@ -62,4 +63,5 @@ __all__ = [
     "sample",
     "samples",
     "scan",
+    "tools",
 ]

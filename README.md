@@ -1,4 +1,4 @@
-# ADA: Automated Data Analyst
+# ADA: the math arm for LLMs
 
 [![CI](https://github.com/saineshnakra/automated-data-analyst/actions/workflows/ci.yml/badge.svg)](https://github.com/saineshnakra/automated-data-analyst/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/automated-data-analyst?color=635bff)](https://pypi.org/project/automated-data-analyst/)
@@ -6,26 +6,49 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-20a779.svg)](https://github.com/saineshnakra/automated-data-analyst/blob/main/LICENSE)
 [![Stars](https://img.shields.io/github/stars/saineshnakra/automated-data-analyst?style=flat&logo=github&color=f5b731)](https://github.com/saineshnakra/automated-data-analyst/stargazers)
 [![Agent skill: Claude Code and Codex](https://img.shields.io/badge/agent%20skill-Claude%20Code%20%C2%B7%20Codex-0e0f13)](#use-it-from-claude-code-or-codex)
+[![Tool calling: Ollama, vLLM, llama.cpp, LM Studio](https://img.shields.io/badge/tool%20calling-Ollama%20%C2%B7%20vLLM%20%C2%B7%20llama.cpp%20%C2%B7%20LM%20Studio-0e0f13)](docs/llm-tools.md)
 
 <p align="center">
   <a href="https://github.com/saineshnakra/automated-data-analyst"><b>⭐ Star ADA</b></a> if it saves you an afternoon ·
   <a href="https://automated-data-analyst.streamlit.app/example-study">Try it in the browser</a> ·
   <a href="https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/README.md">Docs</a> ·
-  <a href="https://github.com/saineshnakra/automated-data-analyst/blob/main/CHANGELOG.md">What's new in 0.6.0</a>
+  <a href="https://github.com/saineshnakra/automated-data-analyst/blob/main/CHANGELOG.md">What's new in 0.7.0</a>
   <br>
   <sub>Read this in <a href="https://readme-i18n.com/saineshnakra/automated-data-analyst?lang=zh">中文</a> · <a href="https://readme-i18n.com/saineshnakra/automated-data-analyst?lang=ja">日本語</a> · <a href="https://readme-i18n.com/saineshnakra/automated-data-analyst?lang=ko">한국어</a> · <a href="https://readme-i18n.com/saineshnakra/automated-data-analyst?lang=es">Español</a> · <a href="https://readme-i18n.com/saineshnakra/automated-data-analyst?lang=pt">Português</a> · <a href="https://readme-i18n.com/saineshnakra/automated-data-analyst?lang=de">Deutsch</a> · <a href="https://readme-i18n.com/saineshnakra/automated-data-analyst?lang=fr">Français</a> · <a href="https://readme-i18n.com/saineshnakra/automated-data-analyst?lang=ru">Русский</a></sub>
 </p>
 
-ADA computes numbers from data files and checks numbers stated about them.
-Every number comes from pandas, SciPy or statsmodels, with the calculation and
-the rows behind it. A stated number is verified against the data, or reported
-unverified with the reason and the one question that would settle it. It is a
-Python package and a command line, for people and for coding agents such as
-Claude Code and Codex.
+ADA (Automated Data Analyst) is the part of a language model that does the
+math. Point it at CSV or Excel data and ask in plain words: it computes the
+answer with pandas, SciPy and statsmodels and returns the number with its
+calculation and the rows behind it, or refuses with the reason. It checks
+numbers stated about the data too: verified, or unverified with the reason
+and the one question that would settle it.
+
+A model never has to do arithmetic in its head again. That helps Claude and
+Codex, and it helps open-source models most: a small local model run with
+Ollama, llama.cpp, vLLM or LM Studio only has to pick the tool and read the
+answer. ADA is a Python package, a command line and a set of tool
+definitions any model with function calling can use.
 
 ```bash
 pip install automated-data-analyst     # Python 3.11 or newer
 ```
+
+## Give a language model a math arm
+
+```python
+from ada import tools
+
+tools.definitions()                    # four tools for function calling: ask, check a claim, scan, model
+tools.run("ada_check_claim", {"path": "flights.csv", "claim": "The average departure delay was about 13 minutes."})
+```
+
+`tools.definitions()` is in the format OpenAI-compatible servers take, local
+ones included (`tools.definitions("anthropic")` for the Anthropic API), and
+`tools.run` runs the tool the model picks and returns JSON to send back.
+`ada tools` prints the same definitions for any other client.
+[ADA as the math tool of a language model](docs/llm-tools.md) has a complete
+loop with a local model, the Anthropic API and shell commands.
 
 ## Check a number
 
@@ -120,9 +143,14 @@ network join the blend, a second layer is fitted on their out-of-fold prediction
 weights come from greedy selection. Each step stays only when the folds say it
 helps. `--jobs N` fits N learners at once and gives the same model.
 
+`--explain` predicts with a model a person can read instead, a linear or an
+additive one, with its coefficients and 95% intervals, each column's effect
+curve, and what explaining costs against the full search, fold by fold.
+
 It is scored on Kaggle competitions with no code for any one of them: the
 runner passes ADA the competition's folder and the name of its metric, and
-ADA does the rest. On the 22 scored so far, with `ada auto` where it was
+ADA does the rest. Each competition is also split inside itself, the way its
+test is made, so a change is measured on all 22 without a submission. On the 22 scored so far, with `ada auto` where it was
 run, it places in the top 10% on 2 (Titanic, and Housing Prices on Kaggle
 Learn, at 2%), in the top 15% on 6 and in the top 30% on 13. Store Sales, a
 forecast of 1,782 series, is its weakest, at 58%.
@@ -138,15 +166,15 @@ reason. See [Not covered yet](docs/reference/claims.md#not-covered-yet).
 ## Progress
 
 73 cases on 20 public datasets, each expected value computed separately with
-pandas, SciPy and statsmodels; holdout cases are only scored
-([details](results/verification/README.md)).
+pandas, SciPy and statsmodels; a fifth of each dataset's cases are holdout
+cases, only scored ([details](results/verification/README.md)).
 
 | | ADA 0.5.0 | Now |
 |---|---|---|
-| Dev cases | 6/51 | 46/51 |
-| Holdout cases | 3/22 | 18/22 |
+| Dev cases | 9/58 | 50/58 |
+| Holdout cases | 0/15 | 14/15 |
 | Wrong verdicts on claims | | 0/35 |
-| True claims verified | 0/26 | 23/25 |
+| True claims verified | 0/25 | 23/25 |
 | False claims caught | 0/7 | 6/7 |
 
 Each change is also scored on rounds of new public data, six datasets at a

@@ -4,45 +4,62 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "automated-data-analyst"
-version = "0.6.0"
-description = "Compute and check numbers from CSV and Excel tables: every number computed by pandas, SciPy and statsmodels with its calculation, claims about the data verified or unverified with a reason, a map of a folder of files, and a paper's tables and figures from research data. A skill for Claude Code and Codex."
+version = "0.7.0"
+description = "The math arm for LLMs: compute and check numbers from CSV and Excel data with pandas, SciPy and statsmodels, each with its calculation, or refused with a reason. Tool definitions for Claude, Codex and open-source models (Ollama, vLLM, llama.cpp, LM Studio), cross-validated Kaggle-style models, and paper tables and figures."
 requires-python = ">=3.11"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Sainesh Nakra" }]
 keywords = [
-    "data-analysis",
-    "fact-checking",
-    "claim-verification",
-    "ai-data-analyst",
-    "research",
-    "reproducible-research",
-    "reproducibility",
-    "research-data",
-    "statistics",
-    "publication-figures",
-    "scientific-figures",
-    "methods-section",
-    "data-dictionary",
-    "provenance",
-    "mixed-models",
-    "paper",
-    "exploratory-data-analysis",
-    "eda",
-    "data-profiling",
-    "csv",
-    "excel",
-    "pandas",
-    "anomaly-detection",
-    "forecasting",
-    "tabular-data",
+    "llm",
+    "llm-tools",
+    "llm-math",
+    "tool-calling",
+    "function-calling",
+    "ai-agents",
+    "agent-tools",
     "agent-skills",
     "claude-skills",
     "claude-code",
     "codex",
-    "ai-agents",
-    "llm",
+    "ollama",
+    "vllm",
+    "llama-cpp",
+    "local-llm",
+    "open-source-llm",
+    "hallucination",
+    "fact-checking",
+    "claim-verification",
+    "data-analysis",
+    "ai-data-analyst",
+    "statistics",
+    "pandas",
+    "scipy",
+    "statsmodels",
+    "csv",
+    "excel",
+    "tabular-data",
+    "exploratory-data-analysis",
+    "eda",
+    "data-profiling",
+    "machine-learning",
+    "automl",
+    "kaggle",
+    "gradient-boosting",
+    "explainable-ai",
+    "interpretable-ml",
+    "research",
+    "reproducible-research",
+    "reproducibility",
+    "research-data",
+    "publication-figures",
+    "methods-section",
+    "data-dictionary",
+    "provenance",
+    "mixed-models",
+    "anomaly-detection",
+    "forecasting",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -57,7 +74,9 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Scientific/Engineering :: Mathematics",
     "Topic :: Scientific/Engineering :: Visualization",
 ]
 
@@ -102,7 +121,8 @@ ada = "ada.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/saineshnakra/automated-data-analyst"
-Documentation = "https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/research.md"
+Documentation = "https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/README.md"
+"LLM tools" = "https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/llm-tools.md"
 Demo = "https://automated-data-analyst.streamlit.app/"
 Results = "https://github.com/saineshnakra/automated-data-analyst/blob/main/results/README.md"
 Source = "https://github.com/saineshnakra/automated-data-analyst"

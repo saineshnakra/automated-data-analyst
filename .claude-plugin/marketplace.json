@@ -1,6 +1,6 @@
 {
   "name": "automated-data-analyst",
-  "description": "The ADA skill: paper tables, figures and a methods draft from research data, traceable to the data.",
+  "description": "The ADA skill: the math arm for Claude Code and Codex. Every number computed in code with its calculation, checked against the data, or refused with a reason.",
   "owner": {
     "name": "Sainesh Nakra"
   },
@@ -9,7 +9,15 @@
       "name": "automated-data-analyst",
       "source": "./plugins/automated-data-analyst",
       "category": "data",
-      "tags": ["research", "statistics", "reproducibility", "figures", "tables", "methods"]
+      "tags": [
+        "llm-tools",
+        "fact-checking",
+        "statistics",
+        "data-analysis",
+        "research",
+        "reproducibility",
+        "machine-learning"
+      ]
     }
   ],
   "renames": {

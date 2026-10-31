@@ -1,6 +1,36 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 (2026-10-31)
+
+ADA is now the math arm for language models. `ada.tools` gives any model with
+function calling four tools, to compute an answer, check a stated number, map
+a folder and predict a column, in the format OpenAI-compatible servers take,
+local open-source ones included, and in the Anthropic API's. A model picks
+the tool and reads the answer; ADA does the arithmetic with pandas, SciPy and
+statsmodels and shows the calculation, or refuses with the reason. `ada model`
+and `ada auto` predict a column with cross-validated models, Kaggle style,
+and `--explain` predicts with a model a person can read and says what that
+costs. Claims are read in many more of the ways reports write them, with no
+wrong verdicts on the 35 evaluation claims.
+
+```bash
+pip install --upgrade automated-data-analyst
+ada tools      # the tool definitions, for any model with function calling
+ada skill      # the updated skill for Claude Code and Codex
+```
+
+### Tools for language models
+
+- `ada.tools.definitions()` gives the definitions of `ada_ask`,
+  `ada_check_claim`, `ada_scan` and `ada_model` for function calling, in the
+  format OpenAI-compatible servers take (Ollama, llama.cpp's server, vLLM and
+  LM Studio among them), or with `"anthropic"` in the Anthropic API's.
+  `ada.tools.run(name, arguments)` runs the one a model calls, from a dict or
+  the JSON text a model sends, and returns JSON-safe data to send back; a
+  problem with the call comes back as an error for the model to read. `root`
+  limits the files a model may name to one folder. `tools.SYSTEM_PROMPT`
+  tells the model to take every number from the tools. `ada tools` prints the
+  definitions. [docs/llm-tools.md](docs/llm-tools.md) has complete loops.
 
 ### Evaluation
 

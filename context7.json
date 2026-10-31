@@ -1,11 +1,26 @@
 {
   "$schema": "https://context7.com/schema/context7.json",
   "projectTitle": "ADA (automated-data-analyst)",
-  "description": "Compute and check numbers from CSV and Excel tables in Python: every number computed by pandas, SciPy and statsmodels with its calculation and rows, a check of any number stated about a table (verified, or unverified with a reason), a map of a folder of related files, and a paper's tables, figures and methods draft built from a study.yml that ada verify rebuilds. Works as a skill in Claude Code and Codex.",
-  "folders": ["docs", "ada/skills"],
-  "excludeFolders": ["results", "tests", "tools", "assets", ".github", "plugins"],
-  "excludeFiles": ["CODE_OF_CONDUCT.md", "SECURITY.md", "ROADMAP.md"],
+  "description": "The math arm for LLMs: compute and check numbers from CSV and Excel tables in Python, every number computed by pandas, SciPy and statsmodels with its calculation and rows, or refused with a reason. Tool definitions for function calling (ada.tools) for Claude, Codex and open-source models run with Ollama, vLLM, llama.cpp or LM Studio; a check of any number stated about a table; a map of a folder of files; cross-validated models that predict a column (ada model, ada auto, --explain); and a paper's tables, figures and methods draft built from a study.yml that ada verify rebuilds.",
+  "folders": [
+    "docs",
+    "ada/skills"
+  ],
+  "excludeFolders": [
+    "results",
+    "tests",
+    "tools",
+    "assets",
+    ".github",
+    "plugins"
+  ],
+  "excludeFiles": [
+    "CODE_OF_CONDUCT.md",
+    "SECURITY.md",
+    "ROADMAP.md"
+  ],
   "rules": [
+    "Give a language model ADA's tools with ada.tools.definitions() (or 'anthropic' style) and run its calls with ada.tools.run(name, arguments, root=folder); send back the JSON it returns.",
     "Let ADA compute the numbers: report what it prints, with the calculation and rows it names, instead of computing or estimating them yourself.",
     "Check every number you state about a data file with ada claim (or ada.check_claim) and report verified or unverified with ADA's reason; never call a whole answer verified because one number was.",
     "When a check comes back missing_context or ambiguous_intent, ask the person ADA's clarification question instead of choosing a reading.",
