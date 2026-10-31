@@ -214,6 +214,44 @@ ada auto playground/ --metric auc --out submission.csv --jobs 2
   LightGBM, XGBoost and CatBoost give the same predictions with any number of
   threads, so the model is the same.
 
+## Readable models: `--explain`
+
+`ada model --explain` and `ada auto --explain` (`ada.model(..., explain=True)`)
+predict with a model a person can read, and say what that costs against the
+full search on the same folds.
+
+```bash
+ada auto data/ --metric auc --explain --out submission.csv
+```
+
+- Two readable models are fitted: the linear model (ridge regression, or
+  logistic regression for classes) and an additive model, LightGBM with one
+  split a tree, so each tree reads one column and each column's effect adds
+  up on its own. The one with the better out-of-fold score makes the
+  predictions.
+- The linear model's coefficients come from statsmodels on every training
+  row: ordinary least squares with heteroscedasticity-robust (HC3) errors for
+  numbers, logistic regression for two classes. Numbers are scaled to a
+  standard deviation of 1, so a coefficient is the change for one standard
+  deviation; each category's most common level is the reference. The 12 terms
+  with the largest z are shown with their 95% intervals and p-values. Columns
+  that repeat others exactly are left out, and the report says how many. For
+  more than two classes there is a table for each class, so none is shown.
+- The additive model's effect curves come from one more fit on every row,
+  stopped early on every tenth row: each column's contribution to each
+  prediction, read by LightGBM, averaged in ten bands of a number's values (or
+  at each value when it has ten or fewer) and at a category's most common
+  levels. A column's share is the spread of its contributions over all the
+  columns'. A number's curve "bends" when a straight line explains under 90%
+  of it. Effects are in the units the model fits: the target (log1p of it
+  when the target is logged) or log-odds.
+- Three comparisons, each the mean difference of two models' fold scores and
+  its standard error over the folds, called clear only beyond twice the
+  error:
+  - effects bend: the additive model against the linear one;
+  - columns act together: the full LightGBM against the additive model;
+  - cost of explaining: the full blend against the readable model.
+
 ## Checks and warnings
 
 | Check | Passes when |

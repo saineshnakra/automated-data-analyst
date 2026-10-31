@@ -95,7 +95,10 @@ LEARNER_NAMES = {
     "extratrees": "extremely randomized trees",
     "mlp": "a neural network with hidden layers of 256 and 128 units",
     "stacked": "LightGBM on the features and the others' out-of-fold predictions",
+    "additive": "an additive model (LightGBM with one split a tree, so each column's effect adds up alone)",
 }
+#: LightGBM settings of the additive model: one split a tree, so each tree reads one column.
+ADDITIVE = {"max_depth": 1, "num_leaves": 2, "learning_rate": 0.1, "colsample_bytree": 1.0}
 #: A regression on fewer rows than this also tries fitting without the rows its first fit misses by far.
 ROBUST_ROWS = WIDE_TABLE
 #: A miss is far beyond this many robust standard deviations (1.4826 times the median absolute deviation).
@@ -214,6 +217,8 @@ class ModelReport:
     out_of_fold_predictions: pd.DataFrame | None = field(default=None, repr=False)
     #: Whether the model was fitted on log(1 + target), so its predictions are turned back with expm1.
     logged: bool = False
+    #: With ``explain``, the readable model, its coefficients and effect curves, and what explaining costs.
+    explanation: Any = None
 
     def test_wobble(self, rows: int | None = None, draws: int = 200, seed: int = 0) -> float:
         """How much the score moves between test sets of ``rows`` rows (default: the test table's).
@@ -262,6 +267,7 @@ class ModelReport:
             "checks": [check.to_dict() for check in self.checks],
             "importances": [{"feature": name, "share": share} for name, share in self.importances],
             "warnings": list(self.warnings),
+            **({"explanation": self.explanation.to_dict()} if self.explanation is not None else {}),
         }
 
     def __str__(self) -> str:
@@ -273,6 +279,8 @@ class ModelReport:
             f"  features: {len(self.features)} from {self.rows_train:,} training rows; "
             + ", ".join(f"{name} {share:.0%}" for name, share in self.importances[:5]),
         ]
+        if self.explanation is not None:
+            lines.extend(self.explanation.lines())
         lines.extend(f"  dropped: {column} ({reason})" for column, reason in self.dropped)
         lines.extend(f"  check: {'passed' if check.passed else 'FAILED'} {check.name}: {check.detail}"
                      for check in self.checks)
@@ -881,6 +889,7 @@ def model(
     seed: int = 0,
     auto: bool = False,
     jobs: int = 1,
+    explain: bool = False,
 ):
     """Cross-validate a model of ``target`` on ``train`` and predict it for ``test``.
 
@@ -895,6 +904,11 @@ def model(
     predictions, and the blend's weights set by greedy selection. ``jobs``
     learners are fitted at once, sharing the machine's cores; the results are
     the same with any number.
+
+    With ``explain`` the predictions come from a model a person can read, a
+    linear or an additive one, and the report gives its coefficients and
+    effect curves and compares it fold by fold with the full blend (see
+    ``ada.explain``).
     """
     try:
         import lightgbm  # noqa: F401, PLC0415
@@ -1108,6 +1122,11 @@ def model(
     weights = (_greedy_weights if auto else _blend_weights)(
         {name: found[0][scored] for name, found in learners.items()}, chosen, task, classes, y[scored],
         priors, logged)
+    explanation = None
+    if explain:
+        explanation, learners, weights = _explained(learners, weights, jobs, X, X_test, y, fitted_y,
+                                                    encoded_y, encode, splits, task, width, chosen, classes,
+                                                    priors, logged, forecast is not None, target)
     oof = sum(weights[name] * learners[name][0] for name in learners)
     predicted = sum(weights[name] * learners[name][1] for name in learners)
     quiet_held, quiet_note = [np.zeros(0, dtype=int) for _ in splits], ""
@@ -1148,6 +1167,8 @@ def model(
     oof_frame["target"] = y[scored]
     total = sum(gains.values()) or 1.0
     importances = tuple((name, gain / total) for name, gain in gains.most_common(10))
+    if explanation is not None and explanation.effects:
+        importances = tuple((effect.column, effect.share) for effect in explanation.effects[:10])
 
     submission = _submission(test_frame, identifier, target, sample, chosen, task, classes, predicted, priors,
                              logged)
@@ -1176,7 +1197,9 @@ def model(
     parts = [f"{weight:.2f} {LEARNER_NAMES.get(name, linear)}" for name, weight in weights.items()]
     chosen_by = (f"{ENSEMBLE_ROUNDS} rounds of greedy selection on the out-of-fold predictions" if auto
                  else "weights chosen on the out-of-fold predictions")
-    blend = f"{', '.join(parts[:-1])} and {parts[-1]} ({chosen_by})"
+    blend = f"{', '.join(parts[:-1])} and {parts[-1]} ({chosen_by})" if len(parts) > 1 else (
+        f"{LEARNER_NAMES.get(next(iter(weights)), linear)}, the readable model with the better out-of-fold "
+        "score")
     if forecast:
         date, horizon = forecast
         reach = f"{horizon.days} days" if horizon == pd.Timedelta(days=horizon.days) else str(horizon)
@@ -1199,8 +1222,64 @@ def model(
         spread=float(np.std(fold_scores)), out_of_fold=out_of_fold, rows_train=len(X), rows_test=len(X_test),
         calculation=calculation, features=tuple(made), dropped=tuple(dropped), checks=tuple(checks),
         importances=importances, submission=submission, warnings=tuple(warnings),
-        out_of_fold_predictions=oof_frame, logged=logged,
+        out_of_fold_predictions=oof_frame, logged=logged, explanation=explanation,
     )
+
+
+def _explained(learners: dict, weights: dict, jobs: int, X: pd.DataFrame, X_test: pd.DataFrame, y: np.ndarray,
+               fitted_y: np.ndarray, encoded_y: np.ndarray, encode: list[str], splits: list, task: str,
+               width: int, metric: Metric, classes, priors, logged: bool, refit: bool, target: str):
+    """The readable model that takes the full blend's place, and its ``Explanation``.
+
+    The additive model is fitted on the same folds; the linear one is the full
+    search's own. Each is scored fold by fold against the others.
+    """
+    from . import explain  # noqa: PLC0415
+
+    readable, _ = _fit_learners(["additive"], jobs, X, X_test, y, fitted_y, encoded_y, encode, splits, task,
+                                width, metric, refit=refit)
+    readable = {"linear": learners["linear"], **readable}
+
+    def per_fold(found: dict, shares: dict) -> list[float]:
+        return [_score(metric, task, classes, y, held_rows,
+                       sum(shares[name] * found[name][2][repeat][held_rows] for name in shares), priors,
+                       logged) for repeat, _, _, held_rows in splits]
+
+    scores = {name: per_fold(readable, {name: 1.0}) for name in readable}
+    full = per_fold(learners, weights)
+    gbm = per_fold(learners, {"lightgbm": 1.0})
+    best = (max if metric.higher else min)(readable, key=lambda name: np.mean(scores[name]))
+    names = {"linear": "the linear model", "additive": "the additive model"}
+    comparisons = (
+        explain.compare("effects bend", names["additive"], names["linear"], scores["additive"],
+                        scores["linear"], metric.higher, "the effects are not straight lines"),
+        explain.compare("columns act together", "LightGBM", names["additive"], gbm, scores["additive"],
+                        metric.higher, "some columns' effects depend on others"),
+        explain.compare("cost of explaining", "the full blend", names[best], full, scores[best],
+                        metric.higher, "the readable model gives up this much"),
+    )
+    every = np.arange(len(X))
+    matrix, _ = _fold_matrix(X, encode, every, encoded_y, [])
+    unit = (f"log1p({target})" if logged else str(target)) if task == "regression" else "log-odds"
+    effects, effects_note = (), ""
+    if width > 1:
+        effects_note = "the additive model of several classes has a curve for each class; none are drawn"
+    else:
+        # The curves come from one additive model on every row, stopped early on every tenth row.
+        stop = every % 10 == 0
+        estimator = _lightgbm(task, width, metric, len(X), 0).set_params(**ADDITIVE)
+        import lightgbm as lgb  # noqa: PLC0415
+
+        estimator.fit(matrix[~stop], fitted_y[~stop], **_held_out(estimator, matrix[stop], fitted_y[stop]),
+                      callbacks=[lgb.early_stopping(100, verbose=False)])
+        rows = every[:: max(1, len(X) // explain.EFFECT_ROWS)]
+        contributions = estimator.predict(matrix.iloc[rows], pred_contrib=True, raw_score=True)[:, :-1]
+        effects = explain.effects(np.asarray(contributions), X.iloc[rows], list(matrix.columns))
+    terms, terms_note = explain.coefficients(matrix, fitted_y if task == "regression" else y, task, width,
+                                             encode)
+    explanation = explain.Explanation(names[best], unit, terms, terms_note, effects, effects_note,
+                                      comparisons)
+    return explanation, {best: readable[best]}, {best: 1.0}
 
 
 def _labels(predicted: np.ndarray, metric: Metric, priors: np.ndarray) -> np.ndarray:
@@ -1308,10 +1387,12 @@ def _cross_validate(learner: str, X: pd.DataFrame, X_test: pd.DataFrame, y: np.n
     for repeat, index, fit_rows, held_rows in splits:
         fit_X, (held_X, test_X) = _fold_matrix(X, encode, fit_rows, encoded_y[fit_rows],
                                                [X.iloc[held_rows], X_test])
-        if learner in ("lightgbm", "lightgbm_extra"):
+        if learner in ("lightgbm", "lightgbm_extra", "additive"):
             estimator = _lightgbm(task, width, metric, len(X), repeat * 100 + index, threads)
             if learner == "lightgbm_extra":
                 estimator.set_params(extra_trees=True)
+            if learner == "additive":
+                estimator.set_params(**ADDITIVE)
             patience = 100 if len(X) >= LARGE_TABLE else 200
             estimator.fit(fit_X, fitted_y[fit_rows], **_held_out(estimator, held_X, fitted_y[held_rows]),
                           callbacks=[lgb.early_stopping(patience, verbose=False)])
@@ -1364,9 +1445,10 @@ def _cross_validate(learner: str, X: pd.DataFrame, X_test: pd.DataFrame, y: np.n
     if refit:
         every = np.arange(len(X))
         fit_X, (test_X,) = _fold_matrix(X, encode, every, encoded_y, [X_test])
-        if learner in ("lightgbm", "lightgbm_extra"):
+        if learner in ("lightgbm", "lightgbm_extra", "additive"):
             estimator = _lightgbm(task, width, metric, len(X), 0, threads).set_params(
-                n_estimators=max(1, round(float(np.mean(trees)))), extra_trees=learner == "lightgbm_extra")
+                n_estimators=max(1, round(float(np.mean(trees)))), extra_trees=learner == "lightgbm_extra",
+                **(ADDITIVE if learner == "additive" else {}))
             estimator.fit(fit_X, fitted_y)
         elif learner == "xgboost":
             estimator = _xgboost(task, width, metric, len(X), 0, None, threads).set_params(

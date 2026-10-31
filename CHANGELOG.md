@@ -4,6 +4,13 @@
 
 ### Predicting a column
 
+- `--explain` on `ada model` and `ada auto` predicts with a readable model,
+  the linear one or an additive one (LightGBM with one split a tree), with
+  the linear model's coefficients and 95% intervals from statsmodels, the
+  additive model's effect curves, and three fold-by-fold comparisons: whether
+  effects bend, whether columns act together, and what explaining costs
+  against the full blend. On Titanic the additive model gives up 0.009
+  accuracy ± 0.005 against the full blend.
 - The folds keep together the rows that share the first part of a structured
   id ("0013" of "0013_02") when no test row's first part is in training, as
   for Spaceship Titanic's travel groups.

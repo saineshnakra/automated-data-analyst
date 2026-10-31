@@ -199,7 +199,8 @@ def _model(args: argparse.Namespace) -> int:
     from .modelling import model  # noqa: PLC0415
 
     report = model(args.train, args.test, target=args.target, metric=args.metric, id_column=args.id,
-                   folds=args.folds, seed=args.seed, auto=args.command == "auto", jobs=args.jobs)
+                   folds=args.folds, seed=args.seed, auto=args.command == "auto", jobs=args.jobs,
+                   explain=args.explain)
     if isinstance(report, Refusal):
         if args.json:
             print(json.dumps({"schema_version": 1, "status": "refused", "code": report.code,
@@ -565,6 +566,9 @@ def build_parser() -> argparse.ArgumentParser:
         modelled.add_argument("--seed", type=int, default=0, help="the random seed (default: 0)")
         modelled.add_argument("--jobs", type=int, default=1,
                               help="learners fitted at once, sharing the cores (default: 1)")
+        modelled.add_argument("--explain", action="store_true",
+                              help="predict with a model a person can read (linear or additive), with its "
+                                   "coefficients, effect curves and what it costs against the full search")
         modelled.add_argument("--out", help="write the submission to this CSV file")
         modelled.add_argument("--json", action="store_true", help="machine-readable result")
     with_source("check", "flag periods outside the expected band; for cron")
