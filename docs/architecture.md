@@ -43,9 +43,9 @@ with the `app` extra, and the OpenAI client and Pydantic with the `ai` extra.
 | Layer | Files | Rule |
 |---|---|---|
 | Presentation | `app.py`, `ada/ui.py`, `ada/home.py` | Draws results. Does not calculate. |
-| Public interface | `ada/api.py`, `ada/cli.py` | Wraps the engine for Python and the shell. No analysis of its own. |
+| Public interface | `ada/api.py`, `ada/cli.py`, `ada/tools.py` | Wraps the engine for Python, the shell and language models' tool calls. No analysis of its own. |
 | Orchestration | `ada/pipeline.py` | Sequences cleaning, role detection and the row limit. |
-| Engine | `analysis.py`, `schema.py`, `claims.py`, `folder.py`, `aggregates.py`, `decisions.py`, `joins.py`, `metrics.py`, `aggregation.py`, `timeseries.py`, `anomalies.py`, `forecasting.py`, `survival.py`, `timepoints.py`, `compare.py`, `quality.py`, `business_insights.py`, `nlq.py`, `autovis.py`, `selection.py` | Functions over DataFrames. No network, no global state. |
+| Engine | `analysis.py`, `schema.py`, `claims.py`, `folder.py`, `aggregates.py`, `decisions.py`, `joins.py`, `metrics.py`, `aggregation.py`, `timeseries.py`, `anomalies.py`, `forecasting.py`, `survival.py`, `timepoints.py`, `compare.py`, `quality.py`, `business_insights.py`, `nlq.py`, `autovis.py`, `selection.py`, `modelling.py`, `explain.py` | Functions over DataFrames. No network, no global state. |
 | Input | `ada/file_io.py`, `ada/numeric.py`, `ada/sources.py`, `ada/demo_data.py` | Parses and validates input and records where it came from. No analysis. |
 | Output formatting | `ada/formatting.py` | Decides how a value is displayed, never what it is. |
 | Optional AI | `ada/ai_insights.py` | The only module that makes a network call. `app.py` imports it inside a `try`, so a missing dependency disables the AI features and nothing else. |
@@ -58,7 +58,10 @@ with the `app` extra, and the OpenAI client and Pydantic with the `ai` extra.
 | `ada/ui.py` | Render functions, Plotly styling, the chart palette |
 | `ada/home.py` | The home page for researchers, and the example study built with `ada.research` on the server |
 | `ada/api.py` | `analyze`, `Analysis`, `Refusal` and its codes, `sample`, `read_file` |
-| `ada/cli.py` | The `ada` command: `analyze`, `schema`, `ask`, `claim`, `scan`, `check`, `init`, `build`, `verify`, `preview`, `share`, `demo`, `skill`, `samples`, `app` |
+| `ada/cli.py` | The `ada` command: `analyze`, `schema`, `ask`, `claim`, `scan`, `model`, `auto`, `check`, `init`, `build`, `verify`, `preview`, `share`, `demo`, `skill`, `tools`, `samples`, `app` |
+| `ada/tools.py` | `definitions` and `run`: the tools a language model calls (`ada_ask`, `ada_check_claim`, `ada_scan`, `ada_model`), for OpenAI-compatible servers and the Anthropic API |
+| `ada/modelling.py` | `model`: features from the columns' shapes, folds made like the test, cross-validated learners, the blend, the checks on the submission |
+| `ada/explain.py` | The readable models of `--explain`: coefficients from statsmodels, effect curves, and the fold-by-fold comparisons |
 | `ada/claims.py` | `check_claim`: reads a claim's number and interval, asks the question, compares, and returns `ClaimCheck` with its reason |
 | `ada/sources.py` | `Source`: the file, its sha256, rows and columns an answer was computed from |
 | `ada/folder.py` | `scan`: profiles every table in a folder, proposes links from their key values, and lists the questions to confirm |

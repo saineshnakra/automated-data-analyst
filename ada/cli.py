@@ -439,6 +439,13 @@ def _skill(args: argparse.Namespace) -> int:
     return EXIT_QUIET
 
 
+def _tools(args: argparse.Namespace) -> int:
+    from .tools import definitions  # noqa: PLC0415
+
+    print(json.dumps(definitions(args.style), indent=2))
+    return EXIT_QUIET
+
+
 def _samples(_: argparse.Namespace) -> int:
     for name, path in sorted(samples().items()):
         print(f"{name:22} {path}")
@@ -587,6 +594,13 @@ def build_parser() -> argparse.ArgumentParser:
                        help="check without writing; exit 1 if any skill file is missing or differs")
     skill.add_argument("--force", action="store_true", help="replace skill files that differ")
 
+    tooled = subcommands.add_parser(
+        "tools", help="print ADA's tool definitions for function calling, so any language model can use ADA"
+    )
+    tooled.add_argument("--style", choices=["openai", "anthropic"], default="openai",
+                        help="openai (also Ollama, vLLM, llama.cpp and LM Studio) or anthropic "
+                             "(default: openai)")
+
     subcommands.add_parser("samples", help="list the bundled datasets")
     subcommands.add_parser("app", help="launch the browser app (from a source checkout)")
     return parser
@@ -602,7 +616,7 @@ def main(argv: list[str] | None = None) -> int:
         "share": _share, "demo": _demo,
         "analyze": _analyze, "schema": _schema, "ask": _ask, "claim": _claim, "scan": _scan, "model": _model,
         "auto": _model,
-        "check": _check, "skill": _skill, "samples": _samples, "app": _app, None: _status,
+        "check": _check, "skill": _skill, "tools": _tools, "samples": _samples, "app": _app, None: _status,
     }[command]
     try:
         return handler(args)

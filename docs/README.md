@@ -1,6 +1,7 @@
 # ADA documentation
 
-ADA computes numbers from tables and checks numbers stated about them. `ada
+ADA is the math arm for language models and the people who check them: it
+computes numbers from tables and checks numbers stated about them. `ada
 ask` answers a question with the calculation and the rows behind it, `ada
 claim` checks a stated number and says verified, or unverified with a reason
 (see [Checking claims](reference/claims.md)), and `ada scan` maps a folder of
@@ -19,6 +20,7 @@ repository root, and the bundled sample files are in `ada/samples/`.
 
 | # | Page | Contents |
 |---|---|---|
+| 0 | [ADA as the math tool of a language model](llm-tools.md) | Tool definitions for function calling, a loop with a local open-source model and with the Anthropic API, the shell commands, and what comes back |
 | 1 | [Concepts](concepts.md) | The terms ADA uses: measure, segment, period, evidence, plan |
 | 2 | [What ADA does](features.md) | Everything each step does, in detail |
 | 3 | [How it works](how-it-works.md) | The path from uploaded file to dashboard |
@@ -44,6 +46,8 @@ follows and its edge cases.
 | [Checking claims](reference/claims.md) | `ada/claims.py` | How a stated number is checked against the table: verified, or unverified with a reason |
 | [Decisions](reference/decisions.md) | `ada/decisions.py`, `ada/aggregates.py` | The choices an answer rests on (World and region rows, a total row), ADA's defaults and how a caller picks another |
 | [Reading a folder of tables](reference/folder.md) | `ada/folder.py` | Profiles each table in a folder, proposes the keys that join them and lists what to confirm |
+| [Predicting a column](reference/modelling.md) | `ada/modelling.py`, `ada/explain.py` | `ada model`, `ada auto` and `--explain`: the features, the folds, the learners, the blend, the checks and the readable models |
+| [Tools for language models](llm-tools.md) | `ada/tools.py` | The four tools a model calls, their definitions and the runner |
 | [Formatting](reference/formatting.md) | `ada/formatting.py` | How numbers and dates are displayed |
 | [Choosing the chart](reference/autovis.md) | `ada/autovis.py` | How Explore picks a chart form, and the colour rules |
 | [Selecting a slice](reference/selection.md) | `ada/selection.py` | How a selection on the Explore chart becomes a filter, and how the slice is compared with the whole |

@@ -12,6 +12,13 @@ rows; a segment name can appear inside an evidence sentence. See
 No. A key adds two optional features: a query planner for questions the rules
 cannot parse, and a written AI summary of the evidence.
 
+**Can a local open-source model use ADA?**
+Yes. `ada.tools.definitions()` gives ADA's tools in the format
+OpenAI-compatible servers take, Ollama, llama.cpp's server, vLLM and LM
+Studio among them, and `ada.tools.run(name, arguments)` runs the one the
+model calls. The model picks the tool and reads the answer; ADA does the
+arithmetic. See [ADA as the math tool of a language model](llm-tools.md).
+
 **What files can I analyze?**
 CSV (comma, semicolon, tab or pipe separated), XLSX and XLSM, one worksheet at
 a time. The app accepts files up to 25 MB and analyzes up to 1,000,000 rows. See

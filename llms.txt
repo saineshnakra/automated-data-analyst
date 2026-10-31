@@ -1,6 +1,16 @@
 # ADA (automated-data-analyst)
 
-> ADA is a Python package and command-line tool that computes numbers from CSV, TSV and Excel tables with pandas, SciPy and statsmodels, shows the calculation and the rows behind each one, and checks a number stated about a table: verified, or unverified with one of six reasons (missing_context, ambiguous_intent, inaccessible_data, unsupported_analysis, conflicting_evidence, failed_check) and the one question that would let the check go ahead. It maps a folder of related files and the keys that join them, and makes a paper's assets from research data (audit, dictionary, tables, figures, methods draft) that `ada verify` rebuilds and checks. MIT licence, Python 3.11+.
+> ADA is the math arm for LLMs: a Python package, command-line tool and set of function-calling tool definitions that compute numbers from CSV, TSV and Excel tables with pandas, SciPy and statsmodels, show the calculation and the rows behind each one, and check a number stated about a table: verified, or unverified with one of six reasons (missing_context, ambiguous_intent, inaccessible_data, unsupported_analysis, conflicting_evidence, failed_check) and the one question that would let the check go ahead. A language model (Claude, Codex, or an open-source model run with Ollama, llama.cpp, vLLM or LM Studio) calls ADA instead of doing arithmetic itself. ADA also maps a folder of related files and the keys that join them, fits cross-validated models that predict a column (Kaggle style, with a readable model on request), and makes a paper's assets from research data (audit, dictionary, tables, figures, methods draft) that `ada verify` rebuilds and checks. MIT licence, Python 3.11+.
+
+Give a language model ADA's tools (function calling):
+
+```
+from ada import tools
+tools.definitions()                 # OpenAI-compatible: Ollama, llama.cpp server, vLLM, LM Studio; "anthropic" for the Anthropic API
+tools.run(name, arguments, root="data")   # runs ada_ask, ada_check_claim, ada_scan or ada_model; returns JSON to send back
+```
+
+`tools.SYSTEM_PROMPT` tells the model to take every number from the tools. `ada tools` prints the definitions.
 
 Check a number, compute an answer, or map a folder:
 
@@ -11,6 +21,14 @@ ada scan data/                     # each file, how they join, what to confirm
 ```
 
 From Python: `ada.check_claim(path, claim)`, `ada.analyze(path).ask(question)` (an answer with `.to_dict()`, or a falsy refusal with `code` and `message`), `ada.scan(folder)`. A check covers one number, as read; unverified is not false, and only `failed_check` with `agreement: "mismatch"` says the data give a different number.
+
+Predict a column (needs `pip install "automated-data-analyst[model]"`):
+
+```
+ada model titanic/ --metric accuracy --out submission.csv   # cross-validated LightGBM, XGBoost and a linear model, blended
+ada auto titanic/ --metric accuracy --jobs 2                # a wider search: CatBoost, a neural network, a second layer
+ada model train.csv test.csv --target price --explain       # a linear or additive model with coefficients and effect curves
+```
 
 Install with `pip install automated-data-analyst`. For a paper, in the folder that holds a study's data:
 
@@ -29,6 +47,8 @@ For AI coding assistants: `ada skill` writes ADA's SKILL.md (Agent Skills format
 ## Docs
 
 - [README](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/README.md): what ADA does, with examples
+- [ADA as the math tool of a language model](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/docs/llm-tools.md): tool definitions for function calling, a loop with a local open-source model and with the Anthropic API, and what comes back
+- [Predicting a column](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/docs/reference/modelling.md): `ada model`, `ada auto` and `--explain`
 - [Paper assets for a study](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/docs/research.md): `ada init`, `ada build` and `ada verify`, the study.yml format, the tests used and every file written
 - [Checking claims](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/docs/reference/claims.md): how a stated number is read, the interval it stands for, the six reasons and the JSON record
 - [Reading a folder of tables](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/docs/reference/folder.md): file profiles, proposed links and the questions to confirm
@@ -40,5 +60,6 @@ For AI coding assistants: `ada skill` writes ADA's SKILL.md (Agent Skills format
 - [Concepts](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/docs/concepts.md): terms used in the first-look report
 - [How it works](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/docs/how-it-works.md): the steps from upload to report
 - [Credits](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/docs/credits.md): the libraries and methods behind each calculation, and how to cite them
+- [Kaggle competitions](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/results/kaggle/README.md): `ada model` and `ada auto` scored on 22 tabular competitions, with a holdout inside each
 - [Tested on 60 research datasets](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/results/README.md): how the first look did on real data, and what it still gets wrong
 - [PyPI](https://pypi.org/project/automated-data-analyst/): releases

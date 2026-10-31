@@ -1,8 +1,8 @@
 {
   "name": "automated-data-analyst",
   "displayName": "Automated Data Analyst",
-  "version": "0.6.0",
-  "description": "Data analysis where every number comes from the ADA Python package (pandas, SciPy, statsmodels) with its calculation: a check of any number stated about a table, a first look at any CSV or Excel table or folder of them, and a paper's data audit, tables, figures and methods draft built from a study.yml and verified.",
+  "version": "0.7.0",
+  "description": "The math arm for Claude Code and Codex: every number from the ADA Python package (pandas, SciPy, statsmodels) with its calculation. Compute and check numbers in CSV and Excel data, map a folder of files, predict a column with cross-validated models, and build a paper's tables and figures.",
   "author": {
     "name": "Sainesh Nakra",
     "url": "https://sainesh.com/"
@@ -11,8 +11,12 @@
   "repository": "https://github.com/saineshnakra/automated-data-analyst",
   "license": "MIT",
   "keywords": [
+    "llm-tools",
+    "fact-checking",
     "data-analysis",
     "statistics",
+    "machine-learning",
+    "kaggle",
     "research",
     "reproducible-research",
     "csv",
@@ -24,6 +28,6 @@
     "publication-figures"
   ],
   "icon": "./assets/logo.png",
-  "documentationUrl": "https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/research.md",
+  "documentationUrl": "https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/README.md",
   "supportUrl": "https://github.com/saineshnakra/automated-data-analyst/issues"
 }
