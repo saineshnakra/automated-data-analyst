@@ -8,7 +8,9 @@
 #   folder   relate the files in a folder; expected links and what must be confirmed first
 # tests: the error category a failure counts against
 #   reading | interpretation | calculation | design | evidence | refusal | usability
-# split: dev cases may be used to diagnose and fix; holdout cases are only scored.
+# split: which root a dataset's files are under. The cases are split inside each dataset:
+#   run.py holds out a fifth of them, chosen by a hash of their ids; dev cases may be used to
+#   diagnose and fix, holdout cases are only scored.
 
 datasets:
   penguins:

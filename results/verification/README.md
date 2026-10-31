@@ -7,14 +7,14 @@ script that runs ADA on them and scores the automatic checks.
 
 | File | Contents |
 |---|---|
-| `cases.yml` | The datasets (source, licence, split) and the cases: what to read, ask or check, and what the answer must be |
+| `cases.yml` | The datasets (source, licence, data root) and the cases: what to read, ask or check, and what the answer must be |
 | `run.py` | Runs a checkout of ADA on the cases and saves what it returned with the automatic checks |
 | `reference_*.py` | The independent calculations the expected values come from |
 | `datasets.sha256` | The checksum of every data file used |
 
 ## Datasets
 
-| Dataset | Split | Files | Source | What it tests |
+| Dataset | Data root | Files | Source | What it tests |
 |---|---|---|---|---|
 | Palmer penguins | dev | 2 | [palmerpenguins](https://github.com/allisonhorst/palmerpenguins) (CC0) | `NA` as missing, a pooled correlation that reverses within species |
 | nycflights13 | dev | 5 | [Rdatasets](https://vincentarelbundock.github.io/Rdatasets/) (CC0) | 336,776 rows, ambiguous columns, keys with unmatched values |
@@ -42,13 +42,19 @@ No data was subset or synthesised; the Lego files were downloaded as
 files are not in this repository; fetch them from the sources and check them
 against `datasets.sha256`.
 
-**Dev and holdout.** Dev cases may be used to find and fix problems; holdout
-cases are only scored. Whenever a holdout failure led to a fix, its dataset
-moved to dev and fresh datasets joined the holdout, their cases written from
-a `reference_*.py` script before ADA read them. That happened four times:
-Olist (a crash), then Formula 1 and the World Bank file, then Lego and
-Gapminder, then the Himalayan folder and Titanic. The holdout scored below is
-the last one: two original datasets and five fresh ones.
+**Dev and holdout.** The cases are split inside each dataset: `run.py` holds
+out a fifth of every dataset's cases, those with the lowest SHA-256 hash of
+their id, and the rest are dev (a dataset of one or two cases has no holdout
+case). Dev cases may be used to find and fix problems; holdout cases are only
+scored. That makes 58 dev and 15 holdout cases, and every dataset of three
+or more cases is in both. A dataset's split in `cases.yml` now only says
+which data root its files are under.
+
+Until this version whole datasets were held out, and whenever a holdout
+failure led to a fix, its dataset moved to dev and fresh datasets joined the
+holdout. That happened four times: Olist (a crash), then Formula 1 and the
+World Bank file, then Lego and Gapminder, then the Himalayan folder and
+Titanic.
 
 ## Results
 
@@ -60,30 +66,30 @@ scored with the same harness on the same cases.
 
 | Split | Category | Cases | ADA 0.5.0 | Now |
 |---|---|---|---|---|
-| dev | reading | 5 | 1 | 5 |
-| dev | interpretation | 11 | 1 | 9 |
-| dev | calculation | 6 | 2 | 5 |
-| dev | design | 6 | 2 | 5 |
-| dev | evidence (claims) | 21 | 0 | 13 |
+| dev | reading | 6 | 1 | 5 |
+| dev | interpretation | 15 | 1 | 10 |
+| dev | calculation | 6 | 3 | 6 |
+| dev | design | 7 | 4 | 6 |
+| dev | evidence (claims) | 22 | 0 | 21 |
 | dev | refusal | 2 | 0 | 2 |
-| dev | all | 51 | 6 | 39 |
-| holdout | reading | 1 | 0 | 1 |
-| holdout | interpretation | 6 | 0 | 2 |
-| holdout | calculation | 3 | 1 | 1 |
-| holdout | design | 2 | 2 | 2 |
-| holdout | evidence (claims) | 10 | 0 | 5 |
-| holdout | all | 22 | 3 | 11 |
+| dev | all | 58 | 9 | 50 |
+| holdout | interpretation | 2 | 0 | 2 |
+| holdout | calculation | 3 | 0 | 3 |
+| holdout | design | 1 | 0 | 1 |
+| holdout | evidence (claims) | 9 | 0 | 8 |
+| holdout | all | 15 | 0 | 14 |
 
-**Claims.** Of 35 claims, 26 are true and 7 false by the reference values (2
-expect a clarifying question). Now: no wrong verdicts, meaning no true claim
-comes back `failed_check` and no false claim comes back `verified`. 14 of the
-26 true claims are verified, and 6 of the 7 false ones are caught as
-`failed_check`; the rest come back unverified with a reason. ADA 0.5.0 had
-no claim checking. During the work two wrong verdicts appeared and were
-fixed. One read "member deaths" as the heights at which climbers died. The
-other compared "52.9% of the people are female" with the share of rows in a
-table of counts (50%). It was a fresh holdout case, and the fix for tables
-of counts, made on Titanic, verified it without looking at it.
+**Claims.** Of 35 claims, 25 are true and 7 false by the reference values; 2
+expect a clarifying question and 1 a request for context. Now: no wrong
+verdicts, meaning no true claim comes back `failed_check` and no false claim
+comes back `verified`. 23 of the 25 true claims are verified, and 6 of the 7
+false ones are caught as `failed_check`; the rest come back unverified with
+a reason. ADA 0.5.0 had no claim checking. During the work two wrong
+verdicts appeared and were fixed. One read "member deaths" as the heights at
+which climbers died. The other compared "52.9% of the people are female"
+with the share of rows in a table of counts (50%). It was a fresh holdout
+case, and the fix for tables of counts, made on Titanic, verified it without
+looking at it.
 
 **Rows that add up others.** Since World and region rows are left out by
 default (see [Decisions](../../docs/reference/decisions.md)), OWID's "total
@@ -93,7 +99,7 @@ holdout claim changed the other way: "The average net forest conversion was
 World rows. It was verified; it now comes back `ambiguous_intent`, because
 leaving the World rows out gives -28,994.14 and the data cannot say which the
 claim meant. With `--decide aggregate_rows=keep` it is verified. The case
-still expects `verified` and is counted as a miss.
+now expects that answer.
 
 **Joins.** A claim about a folder that no single file answers is now tried on
 two files joined along a link the scan is sure of. "Barry Bonds hit 73 home
@@ -112,20 +118,20 @@ alone, and 2 are wrong (World Bank income groups to country names, Formula
 changes the same scan proposed 98 links over 9 folders, 57 of them wrong,
 mostly whole-number ids that overlapped by chance.
 
-**What still fails**, by kind:
+**What still fails**: 9 cases, 1 of them holdout.
 
-- **Phrasing** (most misses): "horsepower" for `hp`, "rentals" for `cnt`,
-  "released", "won", "lost ... to pasture", slopes ("rises by 10.5 per day"),
-  "what share have blue eyes" (read as the Eye column, counted), and claims
-  with several numbers ("4 cylinders ... 26.7 mpg").
-- **Columns**: a year column that is not read as a date (chocolate's
-  `review_date`), and a value found in two columns ("U.S.A." as company
-  location and bean origin), which is asked about rather than guessed.
+- **Phrasing**: "horsepower" for `hp` and "rentals" growth on the bike
+  table, read as no named column, so both come back unverified rather than
+  checked against a guessed one; "one season" for a player's stints in a
+  year; and a Formula 1 claim naming both grid and position.
+- **Columns**: a value found in two columns ("U.S.A." as company location
+  and bean origin), which is asked about rather than guessed, and the World
+  Bank file, whose years as columns are read as 17,290 rows of a long table
+  instead of 266 countries.
+- **Links between files**: the composite links of Formula 1, the Himalayan
+  members and Brazil's forest losses.
 
-The holdout improves less than dev (3 to 11 of 22 against 6 to 39 of 51):
-the fixes are general, but unseen phrasings and layouts still defeat the
-reader often. The misses come back unverified or refused with a reason
-rather than wrong.
+The misses come back unverified or refused with a reason rather than wrong.
 
 ## Running it
 
@@ -135,5 +141,8 @@ python -I reference_dev.py /path/to/dev-data
 ```
 
 Each dataset is a folder named as in `cases.yml` (`penguins`, `nycflights13`,
-...) under the dev or holdout root. `--split all` runs both, and `--only`
-takes a comma-separated list of case ids.
+...) under the dev or holdout root, as its `split` there says; both roots
+are needed, as every dataset of three or more cases has cases of both
+splits. `--split dev` runs the dev cases, `--split holdout` the holdout
+ones, `--split all` both, and `--only` takes a comma-separated list of case
+ids.
