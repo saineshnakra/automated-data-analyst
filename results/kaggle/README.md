@@ -50,6 +50,45 @@ is in, so a holdout of random rows scored 0.8166 accuracy, where the
 leaderboard gave 0.8080. Holding out whole groups gives 0.8087. The folds
 of `ada.model` now keep such groups together too.
 
+## Holdout scores
+
+`ada model` of this version on each competition's holdout. The cross-validated
+score is on the other rows; the standard error is from 200 bootstrap samples
+of the held-out rows.
+
+| Competition | Metric | Held out | Cross-validated | Holdout | Standard error |
+|---|---|---|---|---|---|
+| Titanic | accuracy | 178 rows | 0.83123 | 0.83146 | 0.02790 |
+| House Prices | RMSLE | 292 rows | 0.11858 | 0.11957 | 0.00998 |
+| Spaceship Titanic | accuracy | 1,725 rows | 0.80626 | 0.80870 | 0.00892 |
+| S6E7 | balanced accuracy | 138,018 rows | 0.95002 | 0.95155 | 0.00095 |
+| S6E8 | AUC | 138,274 rows | 0.96712 | 0.96731 | 0.00039 |
+| S6E9 | AUC | 133,733 rows | 0.94493 | 0.94674 | 0.00066 |
+| Housing Prices (Kaggle Learn) | MAE | 292 rows | 14,067 | 15,406 | 1,102 |
+| Store Sales | RMSLE | 28,512 rows | 0.39397 | 0.39944 | 0.00287 |
+| Stocks Predict challenge | Spearman | 1,935 rows | 0.04716 | 0.00626 | 0.02451 |
+| S5E10 | RMSE | 103,551 rows | 0.05609 | 0.05599 | 0.00017 |
+| S5E11 | AUC | 118,799 rows | 0.92561 | 0.92484 | 0.00106 |
+| S5E12 | AUC | 140,000 rows | 0.73006 | 0.73346 | 0.00133 |
+| S6E1 | RMSE | 126,000 rows | 8.68793 | 8.64713 | 0.01747 |
+| S6E2 | AUC | 126,000 rows | 0.95560 | 0.95513 | 0.00051 |
+| S6E3 | AUC | 118,839 rows | 0.91796 | 0.91788 | 0.00088 |
+| S6E10 | AUC | 139,927 rows | 0.96015 | 0.96073 | 0.00054 |
+| S6E4 | balanced accuracy | 126,000 rows | 0.97840 | 0.97987 | 0.00085 |
+| S6E5 | AUC | 87,828 rows | 0.94995 | 0.95018 | 0.00072 |
+| S6E6 | balanced accuracy | 115,469 rows | 0.96619 | 0.96667 | 0.00058 |
+| S5E7 | accuracy | 3,705 rows | 0.96986 | 0.96707 | 0.00280 |
+| S5E8 | AUC | 150,000 rows | 0.97466 | 0.97483 | 0.00039 |
+| S5E9 | RMSE | 104,833 rows | 26.46421 | 26.45598 | 0.05137 |
+
+On 19 of the 22 the holdout score is within twice its standard error of the
+cross-validated one. S6E1, S6E9 and S5E12 are 2.3 to 2.7 standard errors
+apart, and on each the holdout is the better. The held-out rows come from
+the training table, so they can be easier than the test rows: S5E12's
+holdout AUC is 0.733 and its leaderboard score 0.699. A holdout score is for
+comparing two versions of ADA on the same rows, not for guessing a
+leaderboard place; a submission stays the last check.
+
 Three other competitions the account has entered are not used: House Price
 Prediction Project (two teams and no test table), Home Credit Credit Risk
 Model Stability (submissions only through notebooks) and Stocks Return
@@ -115,8 +154,10 @@ test rows differ in how the target follows the columns, not only in where
 they lie.
 
 Store Sales' public score is 0.087 worse than its cross-validated 0.391,
-twenty times its wobble: the time-ordered folds do not score the forecast as
-the test is made, and that is a fix still to make.
+twenty times its wobble. That submission came before the yearly lags and the
+rule for series that sell nothing (#135). The holdout of the last 16 training
+days, cut as the test is, scores the current model 0.399 against its
+cross-validated 0.394; a new submission is what will tell.
 
 ## `ada auto`
 
@@ -151,6 +192,16 @@ public rows, chance moves the score more than the gain. The Stocks Predict
 challenge was not sent, as its test rows are told apart from the training
 rows. Store Sales, a forecast, was not run: its folds, not its learners, are
 what is still to fix.
+
+Two ideas from the top Playground solutions were tried and not kept. A
+linear second layer (logistic regression on the learners' log-odds, or ridge
+regression, with negative weights allowed) scored within 0.00001 of the
+greedy weights on the saved out-of-fold predictions of seven competitions:
+with learners this alike, how they are weighed matters little. CatBoost given
+the repeated-value columns as categories of its own, instead of their target
+encoding, gained 0.00024 holdout AUC on S6E8 and nothing on S6E2, and took
+three to nine times as long; without its combinations of categories it lost
+on both.
 
 The locked test competitions, scored once with the model of XGBoost, value
 encoding and larger trees, and not used to choose any fix:
