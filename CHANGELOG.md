@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Evaluation
+
+- The claim-verification cases are split inside each dataset: a fifth of
+  every dataset's cases, chosen by a hash of their ids, are holdout cases
+  (15 of 73), instead of whole datasets held out. Now 50 of 58 dev cases and
+  14 of 15 holdout cases pass, against 9 and 0 for ADA 0.5.0.
+
 ### Predicting a column
 
 - `ada auto` (and `ada.model(..., auto=True)`) searches wider than `ada model`

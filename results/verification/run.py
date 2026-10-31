@@ -5,8 +5,13 @@
 
 Numbers are compared with the expected values in cases.yml. Criteria written as `must:` are
 left for a written verdict, with ADA's full output saved beside them.
+
+Each dataset's cases are split inside it: a fifth of them, chosen by a hash of their ids, are
+holdout cases, and the rest dev. A dataset of one or two cases has no holdout case. A dataset's
+own `split` only says which root its files are under.
 """
 
+import hashlib
 import json
 import math
 import re
@@ -30,6 +35,21 @@ import ada  # noqa: E402
 
 spec = yaml.safe_load(cases_path.read_text())
 datasets = spec["datasets"]
+
+
+def case_splits(cases):
+    """Each case's split: in every dataset, the fifth of its cases with the lowest id hash hold out."""
+    ids = {}
+    for case in cases:
+        ids.setdefault(case["dataset"], []).append(case["id"])
+    held = set()
+    for names in ids.values():
+        ordered = sorted(names, key=lambda name: hashlib.sha256(name.encode()).digest())
+        held.update(ordered[:round(0.2 * len(names))])
+    return {case["id"]: "holdout" if case["id"] in held else "dev" for case in cases}
+
+
+SPLITS = case_splits(spec["cases"])
 
 
 def folder_of(name):
@@ -203,7 +223,7 @@ RUNNERS = {"profile": run_profile, "compute": run_compute, "claim": run_claim, "
 
 results = []
 for case in spec["cases"]:
-    case_split = datasets[case["dataset"]]["split"]
+    case_split = SPLITS[case["id"]]
     if split != "all" and case_split != split:
         continue
     if only and case["id"] not in only:
