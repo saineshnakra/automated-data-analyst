@@ -15,21 +15,40 @@ written anywhere.
 
 ## Splits
 
-The competitions are split as the claim cases are: train competitions may be
-used to find and fix problems; validation ones are scored each round, and one
-whose failure leads to a fix moves to train; test ones are locked and scored
-once, at the end.
+Each competition is split inside itself. `holdout.py` holds out training
+rows the way the competition's test rows differ from them, models the rest
+with `ada.model`, cross-validated as usual, and scores its predictions for
+the held-out rows with the competition's metric:
 
-| Split | Competitions |
-|---|---|
-| train | Titanic, House Prices, Spaceship Titanic, Playground S6E7 to S6E9 and S5E12, Housing Prices (Kaggle Learn), Store Sales, Stocks Predict challenge |
-| validation | Playground S5E10, S5E11 and S6E1 to S6E3 |
-| test | Playground S5E7 to S5E9, S6E4 to S6E6 and S6E10 |
+- when every test date comes after the training dates, the holdout is the
+  last stretch of training dates as long as the test's (Store Sales: 16
+  days);
+- when a column's test values never appear in training, a fifth of that
+  column's values (the Stocks Predict challenge: 3 of its 14 stocks);
+- when the first part of a structured id never appears in training, a
+  fifth of those groups (Spaceship Titanic: 1,243 of 6,217 travel groups);
+- otherwise a fifth of the rows.
 
-Housing Prices (Kaggle Learn), Store Sales, the Stocks Predict challenge and
-S5E12 moved to train when their runs led to fixes: numbers read as text in one
-table, forecasts, test rows from new groups, and the gap between
-cross-validated and leaderboard scores.
+Values and rows are chosen by a hash of their text, so the same data always
+gives the same split. Every competition may be used to find and fix
+problems: a change is kept when it moves the holdout scores, and a
+submission is the last check.
+
+```bash
+python -I results/kaggle/holdout.py . CACHE holdout.json --only=titanic [--auto]
+```
+
+Until this version whole competitions were set aside: train ones were used
+to find problems, validation ones were scored each round, and test ones
+were locked and scored once. The tables below come from those rounds. It
+left seven competitions out of every change, and a change was judged on a
+leaderboard score whose public share can be a few hundred rows.
+
+Splitting each competition the way its test is made also found a leak:
+Spaceship Titanic's test passengers travel in groups no training passenger
+is in, so a holdout of random rows scored 0.8166 accuracy, where the
+leaderboard gave 0.8080. Holding out whole groups gives 0.8087. The folds
+of `ada.model` now keep such groups together too.
 
 Three other competitions the account has entered are not used: House Price
 Prediction Project (two teams and no test table), Home Credit Credit Risk

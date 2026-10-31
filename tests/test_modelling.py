@@ -325,6 +325,30 @@ class ModelGroupTests(unittest.TestCase):
         report = ada.model(train, test, target="y", metric="rmse", id_column="id")
         self.assertNotIn("grouped", report.calculation)
 
+    def test_new_groups_in_a_structured_id_group_the_folds(self):
+        # Spaceship Titanic's test passengers travel in groups ("0013" of "0013_02") no training passenger
+        # is in.
+        groups = np.repeat(np.arange(300), 2)
+        ids = [f"{group:04d}_{index % 2 + 1:02d}" for index, group in enumerate(groups)]
+        train, test = passengers(450).assign(PassengerId=ids[:450]), passengers(150, seed=1)
+        test = test.drop(columns="Survived")
+        report = ada.model(train, test.assign(PassengerId=ids[450:]), metric="accuracy")
+        self.assertIn("grouped cross-validation (the rows sharing the first part of PassengerId kept in one "
+                      "fold", report.calculation)
+        shared = test.assign(PassengerId=[f"{group:04d}_09" for group in groups[:150]])
+        self.assertNotIn("grouped", ada.model(train, shared, metric="accuracy").calculation)
+
+    def test_structured_ids_need_repeated_groups_and_one_a_fold(self):
+        from ada.modelling import _new_id_groups
+
+        train = pd.Series(["0001_01", "0001_02", "0002_01", "0003_01", "0004_01", "0005_01"])
+        test = pd.Series(["0009_01", "0009_02"])
+        self.assertEqual(_new_id_groups(train, test, 5).tolist(),
+                         ["0001", "0001", "0002", "0003", "0004", "0005"])
+        self.assertIsNone(_new_id_groups(train, test, 6))
+        self.assertIsNone(_new_id_groups(pd.Series([f"{index:04d}_01" for index in range(6)]), test, 5))
+        self.assertIsNone(_new_id_groups(train, pd.Series(["0001_03"]), 5))
+
     def test_each_fold_holds_whole_groups(self):
         from ada.modelling import _group_folds
 

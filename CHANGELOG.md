@@ -4,6 +4,14 @@
 
 ### Predicting a column
 
+- The folds keep together the rows that share the first part of a structured
+  id ("0013" of "0013_02") when no test row's first part is in training, as
+  for Spaceship Titanic's travel groups.
+- `results/kaggle/holdout.py` splits each Kaggle competition inside itself,
+  the way its test rows differ from its training rows (the last stretch of
+  time, a fifth of new groups, or a fifth of the rows), models the rest and
+  scores the held-out rows with the competition's metric. Whole competitions
+  are no longer set aside as validation and test sets.
 - `ada auto` (and `ada.model(..., auto=True)`) searches wider than `ada model`
   on the same features and folds: CatBoost, LightGBM with random split points,
   a neural network and, under 100,000 rows, extremely randomized trees join

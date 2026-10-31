@@ -550,6 +550,26 @@ def _group_folds(groups: pd.Series, folds: int, seed: int) -> list[tuple[np.ndar
     return [(rows[assigned != index], rows[assigned == index]) for index in range(folds)]
 
 
+def _new_id_groups(train_ids: pd.Series, test_ids: pd.Series, folds: int) -> pd.Series | None:
+    """The first part of each training row's structured id, when no test id's first part is among them.
+
+    Spaceship Titanic's test passengers travel in groups no training passenger
+    belongs to, so folds that split a group score the model on groups it has
+    seen, which the test never does. Some first parts repeat, or there is no
+    group to keep together, and there is one for each fold at least.
+    """
+    train_text, test_text = train_ids.astype("string").str.strip(), test_ids.astype("string").str.strip()
+    structured = _structured_parts(pd.concat([train_text, test_text]))
+    if structured is None:
+        return None
+    first, first_test = (text.str.split(structured[0], n=1, regex=False).str[0]
+                         for text in (train_text, test_text))
+    count = first.nunique()
+    if first.isna().any() or count < folds or count == len(first) or set(first_test.dropna()) & set(first):
+        return None
+    return first.reset_index(drop=True)
+
+
 def _id_group_sizes(ids: pd.Series) -> pd.Series | None:
     """How many rows share the first part of a structured id ("0013" of "0013_02"), when some do.
 
@@ -935,6 +955,8 @@ def model(
     if group is not None:
         skip.add(group)
         shared.remove(group)
+    id_groups = (_new_id_groups(train_frame[identifier], test_frame[identifier], folds)
+                 if identifier and group is None and not forecast else None)
     only_train = [str(column) for column in train_frame.columns
                   if column not in test_frame.columns and column != target]
     both = pd.concat([train_frame[shared], test_frame[shared]], keys=["train", "test"])
@@ -1022,6 +1044,8 @@ def model(
             pairs = time_pairs
         elif group is not None:
             pairs = _group_folds(train_frame[group].reset_index(drop=True), folds, repeat)
+        elif id_groups is not None:
+            pairs = _group_folds(id_groups, folds, repeat)
         else:
             splitter = (StratifiedKFold(folds, shuffle=True, random_state=repeat) if task == "classification"
                         else KFold(folds, shuffle=True, random_state=repeat))
@@ -1141,7 +1165,10 @@ def model(
                         f"it is known before {target} is.")
     if rows_missing:
         warnings.append(f"Left out {rows_missing:,} training rows with {target} missing.")
-    kind = f"{group}-grouped " if group is not None else "stratified " if task == "classification" else ""
+    kind = (f"{group}-grouped " if group is not None else "grouped " if id_groups is not None
+            else "stratified " if task == "classification" else "")
+    id_note = (f" (the rows sharing the first part of {identifier} kept in one fold, as no test row's is in "
+               "training)" if id_groups is not None else "")
     target_note = ""
     if logged:
         target_note = f"log1p({target}) fitted, predictions turned back with expm1; "
@@ -1162,7 +1189,7 @@ def model(
         )
     else:
         calculation = (
-            f"{blend}, {folds}-fold {kind}cross-validation"
+            f"{blend}, {folds}-fold {kind}cross-validation{id_note}"
             + (f" repeated with {len(seeds)} seeds" if len(seeds) > 1 else "")
             + f", early stopping on each held-out fold; {target_note}test predictions averaged over the "
             f"{folds * len(seeds)} fold models{robust_note}{stack_note}; scored with {chosen.name}"
