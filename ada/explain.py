@@ -20,6 +20,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from .numeric import to_numbers
+
 #: Rows the effect curves are read from at most, taken evenly through the training rows.
 EFFECT_ROWS = 50_000
 #: Bands each number's effect curve is read in, and the most levels shown for a category.
@@ -154,7 +156,7 @@ def effects(contributions: np.ndarray, frame: pd.DataFrame, columns: list[str]) 
             points = tuple((str(level), float(means[level])) for level in common)
             found.append(Effect(str(column), share, "a level each", points))
             continue
-        numbers = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
+        numbers = to_numbers(values).to_numpy(dtype=float)
         present = np.isfinite(numbers)
         if present.sum() < 2:
             continue
@@ -206,7 +208,7 @@ def coefficients(frame: pd.DataFrame, y: np.ndarray, task: str, classes: int,
                 blocks.append((text == level).to_numpy(dtype=float))
                 names.append(f"{column} = {level} (against {counts.index[0]})")
             continue
-        numbers = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
+        numbers = to_numbers(values).to_numpy(dtype=float)
         if not np.isfinite(numbers).any():
             continue
         filled = np.where(np.isfinite(numbers), numbers, np.nanmedian(numbers))
