@@ -9,7 +9,7 @@ from decimal import Decimal, localcontext
 from ada import tools
 from ada.api import REFUSAL_CODES, Refusal
 from ada.cli import main
-from ada.compute import MAX_STEPS, compute, repeating
+from ada.compute import MAX_STEPS, check_arithmetic, compute, repeating
 
 
 def value(expression: str, **options) -> str:
@@ -273,6 +273,37 @@ class StepTests(unittest.TestCase):
         self.assertEqual(data["status"], "computed")
         self.assertEqual((data["value"], data["repeating"], data["exact"]), ("1/7", "0.(142857)", True))
         json.dumps(data)
+
+
+class CheckArithmeticTests(unittest.TestCase):
+    """The equations in a worked answer, checked one by one."""
+
+    def test_a_slip_is_found_with_the_right_value(self):
+        found = check_arithmetic("Points: 204 + 160 + 330 = 700. Then 726 × 1.10 = 800.")
+        self.assertEqual([(item.expression, item.computed, item.correct) for item in found],
+                         [("204 + 160 + 330", "694", False), ("726 × 1.10", "798.6", False)])
+
+    def test_right_equations_pass_including_rounded_ones(self):
+        found = check_arithmetic("2 / 2 = 1 and 2 + 1 = 3; water (2/3) * 10 = 6.67 litres; 22/7 = 3.14; "
+                                 "1,200 * 3 = 3,600; average (60 + 57 + 54 + 51) / 4 = 55.5.")
+        self.assertEqual(len(found), 6)
+        self.assertTrue(all(item.correct for item in found))
+        self.assertFalse(check_arithmetic("22/7 = 3.15")[0].correct)
+
+    def test_written_operators(self):
+        found = check_arithmetic("3 x 4 = 12, $15 \\times 4 = $60, 2^10 = 1000.")
+        self.assertEqual([item.correct for item in found], [True, True, False])
+
+    def test_what_is_not_an_operation_on_numbers_is_skipped(self):
+        self.assertEqual(check_arithmetic("x = 5, so y = 2x = 10. No equations here."), [])
+        self.assertEqual(check_arithmetic(""), [])
+        # 6/2(1+2) reads two ways, so it is not judged.
+        self.assertEqual(check_arithmetic("6/2(1+2) = 9"), [])
+
+    def test_the_result_as_data(self):
+        item = check_arithmetic("7 * 8 = 54")[0]
+        self.assertEqual(item.to_dict(), {"expression": "7 * 8", "stated": "54", "computed": "56",
+                                          "correct": False})
 
 
 class ToolTests(unittest.TestCase):

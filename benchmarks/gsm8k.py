@@ -1,15 +1,24 @@
-"""GSM8K with and without ADA: does a small local model get more grade-school word problems right when it
-sends its arithmetic to ``ada_compute``?
+"""GSM8K with and without ADA: does a small local model get more grade-school word problems right with ADA's
+exact arithmetic?
 
     curl -L -o test.jsonl https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/test.jsonl
     ollama pull qwen3:1.7b
     python benchmarks/gsm8k.py test.jsonl --model qwen3:1.7b --problems 100 --out results.jsonl
 
-Each problem is asked twice with the same model, settings and prompt: once with no tools, once with
-``ada_compute`` offered. The model ends its reply with "Answer: <number>", and that number is compared with
-the answer after "####" in the data. Temperature is 0 and thinking is off, so a run repeats.
+It reads GSM-Hard too (the same problems with larger numbers, ``gsmhardv2.jsonl`` from the PAL repository),
+whose answers are floating-point results and are matched to within 0.001.
 
-It talks to Ollama's own API (``/api/chat``) on this computer, with the standard library only.
+Each problem is solved three ways with the same model and settings:
+
+- ``none``: the model alone.
+- ``tool``: the model may call ``ada_compute`` for any arithmetic step.
+- ``check``: the model alone, then ADA checks every equation it wrote (``ada.compute.check_arithmetic``).
+  When one is wrong, the model is told which, with the right value, and answers again. When none is, the
+  answer stands, so this condition never changes a reply ADA finds nothing wrong with.
+
+The model ends its reply with a line "Answer: <number>", and that number is compared with the answer after
+"####" in the data. Temperature is 0 and thinking is off, so a run repeats. It talks to Ollama's own API
+(``/api/chat``) on this computer, with the standard library only.
 """
 
 from __future__ import annotations
@@ -26,15 +35,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ada import tools  # noqa: E402
+from ada.compute import check_arithmetic  # noqa: E402
 
 PROMPT = (
-    "Solve the math word problem. Think step by step, then end your reply with one line: "
-    "Answer: <the final number>."
+    "Solve the math word problem. Think step by step. End your reply with a last line that starts with "
+    "\"Answer:\" followed by the final number alone."
 )
 TOOL_PROMPT = (
-    PROMPT + " Do no arithmetic in your head: for every calculation, call ada_compute with an expression "
-    "made of the numbers, such as (16 - 3 - 4) * 2, and use the value it returns."
+    PROMPT + " You can call ada_compute to work out any arithmetic step exactly: write the expression with "
+    "the numbers from your reasoning, and use the value it returns."
 )
+CONDITIONS = ("none", "tool", "check")
 #: Tool-calling rounds before the model must answer.
 ROUNDS = 8
 ANSWER = re.compile(r"answer\s*[:=]?\s*\**\s*\$?\s*(-?[\d,]*\.?\d+)", re.IGNORECASE)
@@ -80,18 +91,41 @@ def solve(base: str, model: str, question: str, with_ada: bool) -> dict:
         requested = message.get("tool_calls") or []
         messages.append({key: message[key] for key in ("role", "content", "tool_calls") if message.get(key)})
         if not requested:
-            return {"reply": message.get("content", ""), "calls": calls}
+            return {"reply": message.get("content", ""), "calls": calls, "messages": messages}
         for call in requested:
             function = call.get("function") or {}
             result = tools.run(function.get("name", ""), function.get("arguments") or {}, brief=True)
             calls.append({"arguments": function.get("arguments"), "result": result})
             messages.append({"role": "tool", "content": json.dumps(result)})
-    return {"reply": "", "calls": calls}
+    return {"reply": "", "calls": calls, "messages": messages}
+
+
+def checked(base: str, model: str, alone: dict) -> dict:
+    """The model's own answer, checked by ADA; when an equation in it is wrong, the model answers again."""
+    checks = check_arithmetic(alone["reply"])
+    wrong = [item for item in checks if not item.correct]
+    if not wrong:
+        return {"reply": alone["reply"], "calls": [], "checks": [item.to_dict() for item in checks]}
+    errors = "; ".join(f"{item.expression} is {item.computed}, not {item.stated}" for item in wrong)
+    messages = alone["messages"] + [{"role": "user", "content": (
+        f"ADA checked the arithmetic in your answer and found errors: {errors}. Correct every step that uses "
+        "these numbers, then end with a last line that starts with \"Answer:\" followed by the final number "
+        "alone.")}]
+    message = chat(base, model, messages, [])
+    return {"reply": message.get("content", ""), "calls": [], "checks": [item.to_dict() for item in checks],
+            "first_reply": alone["reply"]}
+
+
+def problem(row: dict) -> tuple[str, Fraction, Fraction]:
+    """The question, the answer and how far from it still counts as right, from a GSM8K or GSM-Hard row."""
+    if "target" in row:
+        return row["input"], Fraction(str(row["target"])), Fraction(1, 1000)
+    return row["question"], Fraction(row["answer"].split("####")[-1].strip().replace(",", "")), Fraction(0)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("data", help="GSM8K test.jsonl")
+    parser.add_argument("data", help="GSM8K test.jsonl, or GSM-Hard gsmhardv2.jsonl")
     parser.add_argument("--model", default="qwen3:1.7b")
     parser.add_argument("--base-url", default="http://localhost:11434")
     parser.add_argument("--problems", type=int, default=100, help="the first N problems (default: 100)")
@@ -105,28 +139,36 @@ def main() -> int:
         # A run that stopped picks up where it left off.
         for line in out.read_text(encoding="utf-8").splitlines():
             record = json.loads(line)
-            done[(record["index"], record["with_ada"])] = record
+            done[(record["index"], record["condition"])] = record
     with out.open("a", encoding="utf-8") as handle:
         for index, row in enumerate(rows):
-            gold = Fraction(row["answer"].split("####")[-1].strip().replace(",", ""))
-            for with_ada in (False, True):
-                if (index, with_ada) in done:
+            question, gold, tolerance = problem(row)
+            alone = None
+            for condition in CONDITIONS:
+                if (index, condition) in done:
                     continue
                 started = time.monotonic()
-                solved = solve(args.base_url, args.model, row["question"], with_ada)
+                if condition == "check":
+                    alone = alone or solve(args.base_url, args.model, question, False)
+                    solved = checked(args.base_url, args.model, alone)
+                else:
+                    solved = solve(args.base_url, args.model, question, condition == "tool")
+                    if condition == "none":
+                        alone = solved
                 given = final_number(solved["reply"])
-                record = {"index": index, "with_ada": with_ada, "gold": str(gold),
-                          "given": None if given is None else str(given), "correct": given == gold,
+                record = {"index": index, "condition": condition, "gold": str(gold),
+                          "given": None if given is None else str(given),
+                          "correct": given is not None and abs(given - gold) <= tolerance,
                           "seconds": round(time.monotonic() - started, 1), "tool_calls": len(solved["calls"]),
-                          "reply": solved["reply"], "calls": solved["calls"]}
-                done[(index, with_ada)] = record
+                          "reply": solved["reply"], "calls": solved["calls"],
+                          **{key: solved[key] for key in ("checks", "first_reply") if key in solved}}
+                done[(index, condition)] = record
                 handle.write(json.dumps(record) + "\n")
                 handle.flush()
-    for with_ada in (False, True):
-        records = [done[(index, with_ada)] for index in range(len(rows)) if (index, with_ada) in done]
+    for condition in CONDITIONS:
+        records = [done[(index, condition)] for index in range(len(rows)) if (index, condition) in done]
         correct = sum(record["correct"] for record in records)
-        label = "with ada_compute" if with_ada else "no tools"
-        print(f"{args.model}, {label}: {correct}/{len(records)} correct")
+        print(f"{args.model}, {condition}: {correct}/{len(records)} correct")
     return 0
 
 

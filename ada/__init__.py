@@ -32,7 +32,7 @@ from .api import (
     samples,
 )
 from .claims import ClaimCheck, check_claim
-from .compute import Computation, compute
+from .compute import Checked, Computation, check_arithmetic, compute
 from .decisions import Decision, UnknownDecision
 from .folder import FolderScan, scan
 from .joins import ask_folder
@@ -47,6 +47,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "AdaError",
     "Analysis",
+    "Checked",
     "ClaimCheck",
     "Computation",
     "Decision",
@@ -59,6 +60,7 @@ __all__ = [
     "__version__",
     "analyze",
     "ask_folder",
+    "check_arithmetic",
     "check_claim",
     "compute",
     "read_file",

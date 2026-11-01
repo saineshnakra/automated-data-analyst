@@ -1066,3 +1066,65 @@ def _result(expression: str, reading: str, number: Number, digits: int, steps: l
     decimal = _decimal_text(_approx_wide(number, digits), digits)
     return Computation(expression, reading, fraction, True, decimal, False, digits, repeating(number),
                        fraction, steps, assumptions)
+
+
+# --- Checking written arithmetic ------------------------------------------------------------------------
+
+#: A number as people write it in a worked answer: 1,234.5 or 0.25.
+_WRITTEN = r"\d(?:[\d,]*\d)?(?:\.\d+)?"
+#: "a op b ... = c": an operation on written numbers and the value stated for it.
+_EQUATION = re.compile(
+    rf"(?<![\w.^/])((?:\(\s*)*{_WRITTEN}%?(?:\s*\)\s*)*(?:\s*[-+*/×÷x^]\s*\(?\s*{_WRITTEN}%?\s*\)?)+)"
+    rf"\s*=\s*(-?{_WRITTEN})(?![\d.]*\s*[-+*/×÷^(])"
+)
+#: How worked answers write operators: LaTeX, the multiplication sign, the letter x between numbers.
+_WRITTEN_OPERATORS = (("\\times", "*"), ("\\cdot", "*"), ("\\div", "/"), ("$", ""), ("\\(", ""), ("\\)", ""))
+
+
+@dataclass(frozen=True)
+class Checked:
+    """One equation written in a text, with ADA's value for its left side.
+
+    ``correct`` is true when the stated value is the computed one, or the computed one rounded to as many
+    decimal places as the stated value has (7.33 for 22/3 is correct; 7.3 is too, to one place).
+    """
+
+    expression: str
+    stated: str
+    computed: str
+    correct: bool
+
+    def to_dict(self) -> dict:
+        return {"expression": self.expression, "stated": self.stated, "computed": self.computed,
+                "correct": self.correct}
+
+
+def check_arithmetic(text: str) -> list[Checked]:
+    """Find each equation written in ``text`` ("204 + 160 + 330 = 700") and check it with exact arithmetic.
+
+    Only operations on written numbers are checked; an equation with a name in it (x = 5) is skipped, as is
+    one ADA cannot read or refuses. Use it to check a worked answer a language model wrote: an equation that
+    comes back with ``correct`` false is an arithmetic slip, with the right value beside it.
+    """
+    plain = text
+    for written, operator in _WRITTEN_OPERATORS:
+        plain = plain.replace(written, operator)
+    checked = []
+    for left, stated in _EQUATION.findall(plain):
+        expression = re.sub(r"(?<=\d)\s*x\s*(?=[\d(])", "*", left).replace(",", "")
+        if expression.count("(") != expression.count(")"):
+            continue
+        result = compute(expression)
+        if isinstance(result, Refusal):
+            continue
+        claimed = Fraction(Decimal(stated.replace(",", "")))
+        places = len(stated.split(".")[1]) if "." in stated else 0
+        correct = abs(_exact_value(result) - claimed) <= Fraction(1, 2) / 10 ** places
+        checked.append(Checked(left.strip(), stated, result.value, correct))
+    return checked
+
+
+def _exact_value(result: Computation) -> Fraction:
+    if result.fraction:
+        return Fraction(result.fraction)
+    return Fraction(Decimal(result.decimal))

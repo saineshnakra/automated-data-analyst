@@ -125,6 +125,27 @@ is refused at 20 digits and answered at 40.
 | `exp(x)`, `ln(x)`, `log10(x)`, `log2(x)`, `log(x, base)` | e^x and logarithms |
 | `pi`, `e` | The constants |
 
+## Checking written arithmetic
+
+`ada.check_arithmetic(text)` finds each equation written in a text, such as a
+worked answer a language model gave, and checks it:
+
+```python
+ada.check_arithmetic("Points: 204 + 160 + 330 = 700. Water: (2/3) * 10 = 6.67 litres.")
+# [Checked(expression='204 + 160 + 330', stated='700', computed='694', correct=False),
+#  Checked(expression='(2/3) * 10', stated='6.67', computed='20/3', correct=True)]
+```
+
+A stated value is correct when it is the exact value, or the exact value
+rounded to as many decimal places as it has. Only operations on written
+numbers are checked: `x = 5` is skipped, and so is anything `compute`
+refuses. `×`, `x` between numbers, `\times`, `\cdot`, `\div`, `$` and
+thousands separators are read as written.
+
+This lets a model reason in its own words and still get its arithmetic
+checked: hand it back each equation that comes back `correct=False`, with the
+right value, and ask it to fix the steps that used it.
+
 ## Safety
 
 Nothing is run as Python code. A small grammar reads numbers, the operators
