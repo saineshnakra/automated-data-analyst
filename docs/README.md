@@ -20,7 +20,7 @@ repository root, and the bundled sample files are in `ada/samples/`.
 
 | # | Page | Contents |
 |---|---|---|
-| 0 | [ADA as the math tool of a language model](llm-tools.md) | Tool definitions for function calling, a loop with a local open-source model and with the Anthropic API, the shell commands, and what comes back |
+| 0 | [ADA as the math tool of a language model](llm-tools.md) | Setups for Ollama (`ada chat`), apps that take MCP servers (`ada mcp`), Open WebUI and your own code; which local models work; what comes back |
 | 1 | [Concepts](concepts.md) | The terms ADA uses: measure, segment, period, evidence, plan |
 | 2 | [What ADA does](features.md) | Everything each step does, in detail |
 | 3 | [How it works](how-it-works.md) | The path from uploaded file to dashboard |

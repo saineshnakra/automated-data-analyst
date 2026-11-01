@@ -54,7 +54,7 @@ from .pipeline import apply_focus, focus_options, prepare_analysis
 from .quality import QualityIssue, quality_frame
 from .quality import scan as scan_quality
 from .schema import ColumnRoles
-from .sources import Source
+from .sources import Source, without_file_name
 from .sources import describe as describe_source
 from .timepoints import is_timepoint_name
 
@@ -550,6 +550,7 @@ class Analysis:
         ``{"aggregate_rows": "keep"}``; the answer's ``decisions`` list each one
         taken, and an unknown key or option raises ``UnknownDecision``.
         """
+        question = without_file_name(question, self.source)
         if unsupported_phrasing(question, self.frame.columns, self.frame):
             return Refusal(
                 "unsupported_phrasing",

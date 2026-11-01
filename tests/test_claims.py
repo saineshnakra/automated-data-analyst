@@ -3496,3 +3496,56 @@ class ShareBaseVerbTests(unittest.TestCase):
         check = ada.check_claim(self.frame, claim)
         self.assertEqual(check.reason, "failed_check")
         self.assertIn("median(enterococci_cfu_100ml)", check.message)
+
+
+class GroupRankClaimTests(unittest.TestCase):
+    """A group said to have the highest or lowest value holds only if no other group's is higher or lower."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.directory = tempfile.TemporaryDirectory()
+        rows = [("Adelie", "Torgersen", 38.8)] * 6 + [("Gentoo", "Biscoe", 47.5)] * 5 + \
+            [("Chinstrap", "Dream", 48.8)] * 3 + [("Gentoo", "Dream", 47.5)]
+        cls.path = Path(cls.directory.name) / "penguins.csv"
+        pd.DataFrame(rows, columns=["species", "island", "bill_length_mm"]).to_csv(cls.path, index=False)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.directory.cleanup()
+
+    def check(self, claim):
+        return ada.check_claim(self.path, claim)
+
+    def test_a_right_number_for_a_group_that_does_not_lead_fails(self):
+        check = self.check("Adelie has the highest average bill_length_mm, at 38.8.")
+        self.assertEqual(check.reason, "failed_check")
+        self.assertIn("species = Chinstrap gives 48.8, the highest of the 3 species values", check.message)
+        lowest = self.check("Adelie has the lowest average bill_length_mm, at 38.8.")
+        self.assertTrue(lowest.verified, lowest.message)
+        self.assertIn("gives the lowest mean(bill_length_mm)", lowest.assumptions[-1])
+
+    def test_a_count_of_rows_is_ranked_too(self):
+        self.assertTrue(self.check("Torgersen has the most penguins, with 6.").verified)
+        self.assertEqual(self.check("Dream has the most penguins, with 4.").reason, "failed_check")
+
+    def test_a_ranking_with_no_number_is_checked(self):
+        self.assertTrue(self.check("Chinstrap has the highest average bill_length_mm.").verified)
+        failed = self.check("The species with the highest average bill_length_mm is Adelie.")
+        self.assertEqual(failed.reason, "failed_check")
+        self.assertEqual(failed.claim, "The species with the highest average bill_length_mm is Adelie.")
+        self.assertEqual(self.check("The island with the fewest penguins is Biscoe.").reason, "failed_check")
+        self.assertEqual(self.check("Biscoe has the fewest penguins.").reason, "failed_check")
+
+    def test_a_tie_for_the_lead_holds_and_says_so(self):
+        frame = pd.DataFrame({"city": ["Oslo", "Lima", "Rome"] * 2, "price": [5.0, 5.0, 1.0] * 2})
+        check = ada.check_claim(frame, "Oslo has the highest average price.")
+        self.assertTrue(check.verified, check.message)
+        self.assertIn("tied with Lima", check.message)
+
+    def test_thin_data_with_one_group_is_not_ranked(self):
+        frame = pd.DataFrame({"city": ["Oslo"] * 4, "price": [1.0, 2.0, 3.0, 4.0]})
+        check = ada.check_claim(frame, "Oslo has the highest average price.")
+        self.assertFalse(check.verified)
+        self.assertNotEqual(check.reason, "failed_check")
+        numbered = ada.check_claim(frame, "Oslo has the highest average price, at 2.5.")
+        self.assertEqual(numbered.reason, "missing_context")

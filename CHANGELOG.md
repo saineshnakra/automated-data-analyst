@@ -1,5 +1,102 @@
 # Changelog
 
+## Unreleased
+
+Any local model that can call tools can now use ADA in one step: `ada chat`
+talks to Ollama (or LM Studio, llama.cpp, vLLM) with ADA's tools, and `ada
+mcp` plugs ADA into apps that take MCP servers. ADA takes small models' usual
+slips in stride: qwen3:0.6b, a 523 MB model, answers all five test questions
+about penguins.csv with ADA's numbers. Claims that a group leads the others
+are now checked against every group.
+
+```bash
+ollama pull qwen3:1.7b && ada chat penguins.csv      # chat with a local model that uses ADA
+ada mcp                                              # ADA as an MCP server, for LM Studio, Jan, Open WebUI and more
+```
+
+### Local models and apps
+
+- `ada chat DATA` chats with a model on any OpenAI-compatible server, Ollama
+  at `http://localhost:11434/v1` by default (`--base-url` for LM Studio,
+  llama.cpp's server or vLLM, `--model` to pick one). The model is told the
+  data files and their columns; each tool call and ADA's result are printed
+  above the answer; `ada chat DATA "question"` asks once, `--json` prints the
+  calls too. Errors say what to do: start Ollama, pull the model, or pick one
+  with tool calling. `ada.chat.chat()` and `ada.chat.Chat` do the same in
+  Python. It needs only the standard library.
+- `ada mcp` serves ADA's tools over the Model Context Protocol on standard
+  input and output, as LM Studio, Jan, Claude Desktop, Cursor, VS Code, Cline,
+  Claude Code, Codex and terminal clients for Ollama start it; `ada mcp
+  --http` serves Streamable HTTP at `http://127.0.0.1:8000/mcp`, for Open
+  WebUI. `--root` sets the folder the tools may read. A web page on another
+  host is refused. It needs only the standard library, and it is checked
+  against the official MCP client on both transports.
+- `python -m ada` runs the command, and `automated-data-analyst` is a second
+  name for it, so `uvx automated-data-analyst mcp` works too.
+- `ada tools --style mcp` prints the definitions in the form an MCP server
+  lists them, with titles and read-only hints.
+
+### Tools for language models
+
+- The instructions and the tools' descriptions say which tool to use when:
+  `ada_ask` to find a number, `ada_check_claim` only for a statement to check,
+  `ada_model` only to predict new rows. Before, small models checked made-up
+  claims instead of asking.
+- `tools.run(..., brief=True)` keeps what a model needs: the status, the
+  answer or message, the calculation, the file and rows used, and any
+  assumption, warning or question. A claim gets a `verdict` of "true",
+  "false" or "cannot tell", since "unverified" reads as "unknown" to a small
+  model.
+- Slips are taken in stride where only one reading is possible: a file named
+  without its folder, from the top of the disk ("/penguins.csv") or without
+  its extension is the one file of that name under `root`; a call that leaves
+  out the path, or calls it `file`, gets the file its text names, or the only
+  data file; a statement sent to `ada_ask` is checked as a claim, and a
+  question sent to `ada_check_claim` is answered; `~` in a path is the home
+  folder.
+- A brief answer that names only the leading group ends with every group's
+  value ("Each: Biscoe 168; Dream 124; Torgersen 52."), so a model asked for
+  each one does not ask again.
+- In `ada chat`, a call the model makes a second time gets the first result
+  with a nudge to answer, and the last round offers no tools, so the model
+  answers with what it has. Long chats drop their oldest turns first, to fit
+  the 4,096 tokens Ollama gives a model by default.
+- When a call leaves out a path, names one that does not exist or names one
+  outside `root`, the error lists the data files under `root`.
+- A question or claim that names its own file ("In data/penguins.csv the
+  average flipper length is 210") is read without the file's name. Before,
+  "csv" counted as a word that names nothing in the table, so the claim came
+  back unverified for missing context instead of failed.
+
+### Claims and questions
+
+- A claim that a group has the highest or lowest value is checked against
+  every group of its column. "Adelie has the highest average bill length, at
+  38.8" was verified because Adelie's average is 38.8; it now fails, since
+  Chinstrap's is 48.8. The same holds for counts ("Dream has the most
+  penguins") and with no number at all ("The species with the highest average
+  bill length is Adelie"), which before came back as stating no number.
+- A question whose only numeric column is a condition is refused with the
+  columns it could mean, instead of averaging the table's main measure: "the
+  average flipper length is 210" averaged body mass for the rows with flipper
+  length 210. With one numeric column left, that column is used. A question
+  that averages the very column it fixes to one value is refused too.
+- A row named in the singular by the table's own noun ("the average mass of a
+  Gentoo penguin" in penguins.csv) is read as the plural is, instead of being
+  refused.
+- A word for a size picks the column of that size: "the longest bills" is
+  bill_length_mm, not bill_depth_mm, and "the deepest bills" bill_depth_mm.
+  After such a word, or after "average", the plural of a part names its size
+  ("average flippers" is flipper_length_mm); "member deaths" still counts the
+  deaths, not death_height_metres.
+- A total of the table's main measure that the question also fixes to one
+  value counts the rows instead: "Ward 1 recorded 3 homicides" added up the
+  ward's code (1 + 1 + 1), which matched by chance.
+- A failed check says the data's number lies outside the claim's range ("The
+  data give 200.92 for mean(flipper_length_mm), outside 209.5 to 210.5, the
+  range the claim's 210 stands for"), which small models read the wrong way
+  round before.
+
 ## 0.7.0 (2026-10-31)
 
 ADA is now the math arm for language models. `ada.tools` gives any model with

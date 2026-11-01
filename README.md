@@ -7,6 +7,7 @@
 [![Stars](https://img.shields.io/github/stars/saineshnakra/automated-data-analyst?style=flat&logo=github&color=f5b731)](https://github.com/saineshnakra/automated-data-analyst/stargazers)
 [![Agent skill: Claude Code and Codex](https://img.shields.io/badge/agent%20skill-Claude%20Code%20%C2%B7%20Codex-0e0f13)](#use-it-from-claude-code-or-codex)
 [![Tool calling: Ollama, vLLM, llama.cpp, LM Studio](https://img.shields.io/badge/tool%20calling-Ollama%20%C2%B7%20vLLM%20%C2%B7%20llama.cpp%20%C2%B7%20LM%20Studio-0e0f13)](docs/llm-tools.md)
+[![MCP server](https://img.shields.io/badge/MCP-server-0e0f13)](docs/llm-tools.md#apps-that-take-mcp-servers)
 
 <p align="center">
   <a href="https://github.com/saineshnakra/automated-data-analyst"><b>⭐ Star ADA</b></a> if it saves you an afternoon ·
@@ -36,6 +37,45 @@ pip install automated-data-analyst     # Python 3.11 or newer
 
 ## Give a language model a math arm
 
+**Chat with a local model.** With [Ollama](https://ollama.com) running:
+
+```bash
+ollama pull qwen3:1.7b       # any model with tool calling works
+ada chat penguins.csv        # ask in plain words; the model asks ADA for every number
+```
+
+```console
+$ ada chat penguins.csv
+ADA chat: qwen3:1.7b at http://localhost:11434/v1, reading penguins.csv. Ask about the data; Ctrl-D or 'exit' leaves.
+> Which species has the longest bills on average?
+  ADA ada_ask(path="penguins.csv", question="average bill_length_mm by species")
+    -> answered: Chinstrap has the highest average bill_length_mm of any species, at 48.83 (n = 68). The species groups do differ (Welch ANOVA, p < 0.001; η² = 0.71). Based on the 342 rows with bill_length_mm recorded, of 344 rows. Each: Chinstrap 48.83; Gentoo 47.50; Adelie 38.79.
+The species with the longest average bill length is **Chinstrap**, with an average of **48.83 mm** (n = 68). This result is based on the mean calculation of `bill_length_mm` grouped by species, sorted in descending order. The data spans 342 rows, and the values are as follows:
+- **Chinstrap**: 48.83 mm
+- **Gentoo**: 47.50 mm
+- **Adelie**: 38.79 mm
+
+The p-value indicates significant differences between species (p < 0.001), confirming the observed trends.
+```
+
+The model, 1.4 GB on four processor cores with no GPU, picked the tool; ADA
+computed every number and showed how. Each tool call and its result are
+printed above the answer.
+
+**Add ADA to an app that takes MCP servers**: LM Studio, Jan, Claude Desktop,
+Cursor, VS Code, Cline and others. Put this in its `mcp.json`:
+
+```json
+{"mcpServers": {"ada": {"command": "uvx", "args": ["--from", "automated-data-analyst", "ada", "mcp"]}}}
+```
+
+For Open WebUI, run `ada mcp --http` and add `http://127.0.0.1:8000/mcp` as
+an MCP (Streamable HTTP) server under External Tools.
+
+**In your own code**, `ada.chat.chat(question, "penguins.csv", model=...)`
+runs the whole loop, or give the model `tools.definitions()` and run its
+calls with `tools.run`:
+
 ```python
 from ada import tools
 
@@ -43,12 +83,9 @@ tools.definitions()                    # four tools for function calling: ask, c
 tools.run("ada_check_claim", {"path": "flights.csv", "claim": "The average departure delay was about 13 minutes."})
 ```
 
-`tools.definitions()` is in the format OpenAI-compatible servers take, local
-ones included (`tools.definitions("anthropic")` for the Anthropic API), and
-`tools.run` runs the tool the model picks and returns JSON to send back.
-`ada tools` prints the same definitions for any other client.
-[ADA as the math tool of a language model](docs/llm-tools.md) has a complete
-loop with a local model, the Anthropic API and shell commands.
+[ADA as the math tool of a language model](docs/llm-tools.md) has the setup
+for each app, which local models work, a loop with the Anthropic API and
+what comes back.
 
 ## Check a number
 

@@ -63,7 +63,7 @@ from .nlq import (
     cube_measure,
     days_in_words,
 )
-from .sources import Source
+from .sources import Source, without_file_name
 
 #: Version of the ``ClaimCheck.to_dict`` layout. Bumped when a key changes meaning.
 CLAIM_SCHEMA_VERSION = 1
@@ -1192,7 +1192,7 @@ def read_claim(
             return f"correlation between {per} and {what}", number, ""
     candidates = _candidates(claim, columns)
     if not candidates:
-        return None, None, "The claim states no number to check."
+        return None, None, NO_NUMBER
     plain = [item for item in candidates if not (item.year_like or item.filter_like or item.ordinal)]
     # The years of a range ("from 2023 to 2024") pick rows and are never the number claimed; nor is a year
     # after "in" or "since" ("rose in 2020").
@@ -1203,7 +1203,7 @@ def read_claim(
         and not (item.year_like and YEAR_PREPOSITION.search(claim[:item.match.start()]))
     ]
     if not usable:
-        return None, None, "The claim states no number to check."
+        return None, None, NO_NUMBER
     cued = [item for item in usable if item.cue or item.qualifier]
     chosen = cued[0] if cued else usable[-1]
     # Any other number left in the question would be read as part of it ("... and 3700 g" as a filter).
@@ -2032,6 +2032,7 @@ def _checked_claim(
         return ClaimCheck(text, "unverified", "failed_check", f"The claim's date and weekday disagree: "
                           f"{wrong}", source=analysis.source, clarification="Which day is meant?")
     if question is None:
+        text = without_file_name(text, analysis.source)
         text = _as_much_in(_times_level(days_in_words(text)), analysis.frame)
         text, every = _every_value(text, analysis.frame)
         text = _won_with(_plain_change(_paid_rate(_ranked_lead(text))))
@@ -2051,6 +2052,8 @@ def _checked_claim(
         # "Of the 4,526 applicants, 38.8% were admitted": the lead names the base, checked below.
         body, base = _based(_without_peak(text))
         asked, number, problem = read_claim(body, columns, analysis.roles.row_noun)
+        if problem == NO_NUMBER and (ranked := _numberless_rank(analysis, said, text)) is not None:
+            return ranked
         if problem:
             reason = "unsupported_analysis" if "more than one number" in problem else "missing_context"
             return ClaimCheck(
@@ -2834,6 +2837,12 @@ def _checked_table(
         check.answer.plan.measure
     ):
         return _checked_extreme(check, analysis, RECORD_EXTREME.search(text))
+    settled = check.verified or check.reason == "failed_check"
+    if question is None and settled and check.answer is not None and (
+        leads := GROUP_SUPERLATIVE.search(text)
+    ) and not AGAINST_ALL.search(SHARE_OF_ALL.sub(" ", text)) and not _ranked(check.answer):
+        # "Adelie has the highest average bill length, at 38.8" holds only if no other species' is higher.
+        return _checked_group_rank(check, analysis, leads.group("word").lower())
     if question is None and check.verified and check.answer is not None and SUPERLATIVE.search(text) and (
         AGAINST_ALL.search(SHARE_OF_ALL.sub(" ", text)) and not _ranked(check.answer)
     ):
@@ -4326,6 +4335,131 @@ def _without_peak(text: str) -> str:
     return f"{text[:found.start()]}{joined}{after}"
 
 
+def _by_group(analysis: Any, plan: Any, group: Any, counted: bool) -> tuple[Any, str]:
+    """The plan's calculation made for every value of the group's column, with the plan's other filters, and
+    what each value is ("row count", "mean(bill_length_mm)")."""
+    from .nlq import _apply_filters  # noqa: PLC0415
+
+    others = replace(plan, filters=tuple(item for item in plan.filters if item is not group))
+    rows, _ = _apply_filters(analysis.frame, others, analysis.roles)
+    column = group.column
+    if counted:
+        return rows.groupby(rows[column].astype(str)).size(), "row count"
+    values = rows.groupby(rows[column].astype(str))[plan.measure].agg(plan.aggregation).dropna()
+    return values, f"{plan.aggregation}({plan.measure})"
+
+
+# "Chinstrap has the highest average bill_length_mm": a group said to lead its column's other groups.
+GROUP_SUPERLATIVE = re.compile(
+    r"\b(?:has|had|have|is|was|are|were|gets|got|shows|showed|records|recorded|scores|scored)\s+the\s+"
+    r"(?P<word>highest|lowest|largest|smallest|biggest|greatest|most|fewest|least)\s+(?P<what>\S.*?)\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+# "The species with the highest average bill_length_mm is Chinstrap": the same claim with the group last.
+GROUP_SUPERLATIVE_LAST = re.compile(
+    r"^\s*(?:the\s+)?(?P<kind>[\w'-]+(?:\s+[\w'-]+){0,2})\s+with\s+the\s+(?P<word>highest|lowest|largest|"
+    r"smallest|biggest|greatest|most|fewest|least)\s+(?P<what>.+?)\s+(?:is|was|are|were)\s+(?P<name>[^,.;]+?)"
+    r"\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+LOW_RANK_WORDS = frozenset({"lowest", "smallest", "fewest", "least"})
+NO_NUMBER = "The claim states no number to check."
+
+
+def _rank_group(analysis: Any, plan: Any) -> tuple[Any, bool] | None:
+    """The one filter of a plan that names a group ("species = Adelie"), and whether the plan counts rows;
+    None when the plan has no such filter or makes no calculation that can be made for each group."""
+    groups = [item for item in plan.filters
+              if len(item.values) == 1 and analysis.frame[item.column].nunique(dropna=True) > 1]
+    counted = plan.measure is None and plan.aggregation == "count" and not plan.counted
+    combined = plan.measure is not None and plan.aggregation in ("mean", "sum", "median", "max", "min")
+    if len(groups) != 1 or plan.conditions or not (counted or combined):
+        return None
+    return groups[0], counted
+
+
+def _rank_verdict(analysis: Any, plan: Any, word: str) -> tuple[bool, str, float] | None:
+    """Whether the plan's group gives the highest (or, for "lowest" and "fewest", the lowest) value of its
+    column's groups, the sentence that says so, and the group's value."""
+    found = _rank_group(analysis, plan)
+    if found is None:
+        return None
+    group, counted = found
+    by_group, how = _by_group(analysis, plan, group, counted)
+    column, named = group.column, str(group.values[0])
+    if by_group.empty or named not in by_group.index or len(by_group) < 2:
+        return None
+    low = word in LOW_RANK_WORDS
+    best = float(by_group.min() if low else by_group.max())
+    leader = str(by_group.idxmin() if low else by_group.idxmax())
+    side = "lowest" if low else "highest"
+    value = float(by_group[named])
+    if value == best:
+        tied = [str(name) for name, item in by_group.items() if float(item) == best and str(name) != named]
+        also = f", tied with {', '.join(tied)}" if tied else ""
+        return True, (f"{column} = {named} gives the {side} {how} of the {len(by_group)} {column} values: "
+                      f"{_plain(value)}{also}."), value
+    return False, (f"{column} = {named} gives {_plain(value)} for {how}, but {column} = {leader} gives "
+                   f"{_plain(best)}, the {side} of the {len(by_group)} {column} values."), value
+
+
+def _checked_group_rank(check: ClaimCheck, analysis: Any, word: str) -> ClaimCheck:
+    """A value for a group the claim also calls the highest or lowest of its column's groups, checked for
+    that too: a value that disagrees fails as it is, and a value that agrees fails when another group leads.
+    """
+    verdict = _rank_verdict(analysis, check.answer.plan, word)
+    if verdict is None:
+        if check.verified:
+            return replace(
+                check, status="unverified", reason="missing_context",
+                message=f"The claim also says it is the {word}, which ADA could not check: {check.message}",
+                clarification=f"The {word} of which groups, and for which one?",
+            )
+        return check
+    leads, sentence, _ = verdict
+    if leads:
+        return replace(check, assumptions=(*check.assumptions, sentence)) if check.verified else check
+    if check.reason == "failed_check":
+        return replace(check, message=f"{check.message} {sentence}")
+    return replace(check, status="unverified", reason="failed_check", message=f"{check.message} {sentence}",
+                   clarification=None)
+
+
+def _numberless_rank(analysis: Any, said: str, text: str) -> ClaimCheck | None:
+    """A claim that a group leads the others, with no number: "Chinstrap has the highest average
+    bill_length_mm", "The island with the most penguins is Dream". The group's value is computed, then the
+    same calculation for every group of its column; the claim holds when the group's is the highest (or
+    lowest). None when the claim says no such thing or the calculation can't be made for each group."""
+    from .api import Refusal  # noqa: PLC0415
+
+    last = GROUP_SUPERLATIVE_LAST.match(text)
+    if last is not None:
+        text = f"{last.group('name')} has the {last.group('word')} {last.group('what')}."
+    found = GROUP_SUPERLATIVE.search(text)
+    if found is None:
+        return None
+    subject = re.sub(r"^\s*the\s+", "", text[:found.start()], flags=re.IGNORECASE).strip(" ,")
+    word, what = found.group("word").lower(), found.group("what")
+    if not subject:
+        return None
+    # "the most penguins" counts them; "the most bill_length_mm" or "the highest average" names a measure.
+    counted = word in ("most", "fewest") and not re.match(
+        r"(?:average|mean|median|total|sum|number|share|percentage|proportion|rate)\b", what, re.IGNORECASE)
+    asked = f"how many {what} for {subject}" if counted else f"{what} for {subject}"
+    answer = analysis.ask(asked)
+    if isinstance(answer, Refusal) or answer.plan.intent not in ("aggregate", "count"):
+        return None
+    verdict = _rank_verdict(analysis, answer.plan, word)
+    if verdict is None:
+        return None
+    leads, sentence, value = verdict
+    return ClaimCheck(
+        said, "verified" if leads else "unverified", None if leads else "failed_check", sentence,
+        question=asked, answer=answer, compared=value, agreement="match" if leads else "mismatch",
+        source=analysis.source,
+    )
+
+
 def _checked_peak(check: ClaimCheck, analysis: Any, text: str = "") -> ClaimCheck:
     """A value for a group, checked to be the highest of its column's groups too.
 
@@ -4335,8 +4469,6 @@ def _checked_peak(check: ClaimCheck, analysis: Any, text: str = "") -> ClaimChec
     value that disagrees for that group fails as it is. Without one group, the
     value checked is not the peak, so neither verdict stands.
     """
-    from .nlq import _apply_filters  # noqa: PLC0415
-
     answer = check.answer
     plan = answer.plan if answer is not None else None
     # A filter on a column with one value in the whole table ("area = Mount Vesuvius") is no group.
@@ -4397,14 +4529,8 @@ def _checked_peak(check: ClaimCheck, analysis: Any, text: str = "") -> ClaimChec
         column, named = "year", str(plan.year)
     else:
         group = groups[0]
-        others = replace(plan, filters=tuple(item for item in plan.filters if item is not group))
-        rows, _ = _apply_filters(analysis.frame, others, analysis.roles)
         column, named = group.column, str(group.values[0])
-        if counted:
-            by_group, how = rows.groupby(rows[column].astype(str)).size(), "row count"
-        else:
-            by_group = rows.groupby(rows[column].astype(str))[plan.measure].agg(plan.aggregation).dropna()
-            how = f"{plan.aggregation}({plan.measure})"
+        by_group, how = _by_group(analysis, plan, group, counted)
     if by_group.empty or named not in by_group.index:
         return check
     top = by_group.idxmax()
@@ -6237,8 +6363,8 @@ def _check(
     if agreement == "mismatch":
         reason = "failed_check"
         message = (
-            f"The data give {_plain(computed)}{rows} for {described}; the claim's {number.text} stands for "
-            f"{number.interval()}."
+            f"The data give {_plain(computed)}{rows} for {described}, outside {number.interval()}, the range "
+            f"the claim's {number.text} stands for."
         )
         per_row = dict(answer.figures).get("per_row")
         if per_row is not None and number.holds(per_row) and answer.plan.per:
