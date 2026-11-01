@@ -711,6 +711,23 @@ statistic with n − 1, and a percentile ("90th percentile of X") uses pandas'
 linear interpolation. Both work in aggregates, rankings and breakdowns, and
 are refused in a trend.
 
+A question whose numeric columns are only conditions names nothing to average:
+"average where flipper_length_mm is 210" is refused with the numeric columns it
+could mean, instead of averaging the table's main measure, and so is "the
+average flipper_length_mm is 210", which states a number rather than asking
+for one and is a claim to check. With only one numeric column left, that column
+is averaged. A question that averages the column it fixes to one value ("the
+average mass is 4000") is refused too, as the answer would be that value.
+A total of the table's main measure that the question also fixes to one value
+counts the rows instead, and says so: "total homicides Ward 1" in a table whose
+only number is WARD counts the homicides rather than adding up the ward's code.
+
+A word for a size right before a word several columns share picks the column
+of that size: "the longest bills" is bill_length_mm, not bill_depth_mm;
+"deepest" picks a depth, "tallest" a height, "heaviest" a weight or mass.
+After such a word, or after "average", "mean" or "median", the plural of a
+part names its size: "average flippers" is flipper_length_mm.
+
 A correlation question is refused unless it names exactly two numeric columns.
 It is also refused when it names a column to group by or a grain ("by
 species", "per month"), since that asks for one correlation per group. A

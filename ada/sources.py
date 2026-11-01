@@ -8,6 +8,7 @@ a temporary path, so the same file gives the same record on every run.
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -55,3 +56,24 @@ def describe(name: str, *, path: str | Path | None = None, contents: bytes | Non
         columns=columns,
         sheet=sheet,
     )
+
+
+def without_file_name(text: str, source: Source | None) -> str:
+    """The text without a mention of the table's own file.
+
+    "In data/penguins.csv the average body mass" is "the average body mass": a
+    file name with its extension names no column or value of the table read
+    from it. Language models put the file in the question or claim they pass on.
+    """
+    if source is None or not source.name or "." not in Path(source.name).name:
+        return text
+    name = re.escape(Path(source.name).name)
+    pattern = re.compile(
+        r"(?:\b(?:in|from|of|within|for|across)\s+(?:the\s+)?(?:file\s+|table\s+)?)?[\"'`]?(?<![\w.-])"
+        rf"(?:[\w.~-]*[/\\])*{name}(?!\w)[\"'`]?(?:\s+(?:file|table|dataset))?\s*,?",
+        re.IGNORECASE,
+    )
+    stripped = pattern.sub(" ", text)
+    if stripped == text:
+        return text
+    return re.sub(r"\s+([.,;:!?])", r"\1", re.sub(r"\s{2,}", " ", stripped)).strip()

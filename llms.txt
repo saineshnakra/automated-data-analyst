@@ -10,7 +10,15 @@ tools.definitions()                 # OpenAI-compatible: Ollama, llama.cpp serve
 tools.run(name, arguments, root="data")   # runs ada_ask, ada_check_claim, ada_scan or ada_model; returns JSON to send back
 ```
 
-`tools.SYSTEM_PROMPT` tells the model to take every number from the tools. `ada tools` prints the definitions.
+`tools.SYSTEM_PROMPT` tells the model which tool to use when and to take every number from them. `ada tools` prints the definitions.
+
+Chat with a local model that uses ADA, or plug ADA into an app that takes MCP servers:
+
+```
+ada chat penguins.csv               # Ollama by default (ollama pull qwen3:1.7b); --base-url for LM Studio, llama.cpp, vLLM
+ada mcp                             # MCP over stdio: {"mcpServers": {"ada": {"command": "uvx", "args": ["--from", "automated-data-analyst", "ada", "mcp"]}}}
+ada mcp --http                      # Streamable HTTP at http://127.0.0.1:8000/mcp, for Open WebUI
+```
 
 Check a number, compute an answer, or map a folder:
 
@@ -47,7 +55,7 @@ For AI coding assistants: `ada skill` writes ADA's SKILL.md (Agent Skills format
 ## Docs
 
 - [README](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/README.md): what ADA does, with examples
-- [ADA as the math tool of a language model](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/docs/llm-tools.md): tool definitions for function calling, a loop with a local open-source model and with the Anthropic API, and what comes back
+- [ADA as the math tool of a language model](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/docs/llm-tools.md): setups for Ollama, LM Studio, Open WebUI, Jan, Claude Desktop, Cursor, VS Code, Claude Code and Codex (`ada chat`, `ada mcp`), tool definitions for function calling, which local models work, and what comes back
 - [Predicting a column](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/docs/reference/modelling.md): `ada model`, `ada auto` and `--explain`
 - [Paper assets for a study](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/docs/research.md): `ada init`, `ada build` and `ada verify`, the study.yml format, the tests used and every file written
 - [Checking claims](https://raw.githubusercontent.com/saineshnakra/automated-data-analyst/main/docs/reference/claims.md): how a stated number is read, the interval it stands for, the six reasons and the JSON record

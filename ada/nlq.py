@@ -3576,10 +3576,15 @@ def _claim_partial_at(
             # "resales" are the sales, not resale_price, a price of each: the plural of a name's first word
             # counts the things the rest of the name measures. The first word of several names ("candidates"
             # for Candidate family name and Candidate given name) is left to ask which is meant.
+            # "the longest flippers" or "average flippers" still names flipper_length_mm: the word before
+            # asks for a size of each, which the rest of the name is.
+            before = re.search(r"\b([a-z]+)\s+$", reading.original[:window[0][0]].lower())
+            sized = bool(before) and (before.group(1) in SIZE_WORDS or before.group(1) in AVERAGE_NAME_WORDS)
             kept = [column for column in candidates
                     if not (len(words[column]) > 1 and phrase[0] != words[column][0]
                             and phrase[0] in _word_variants(words[column][0])
-                            and not set(words[column][1:]) <= COUNT_NAME_WORDS)]
+                            and not set(words[column][1:]) <= COUNT_NAME_WORDS
+                            and not (sized and set(words[column][1:]) & SIZE_NAME_WORDS))]
             if not kept:
                 return 1
             candidates = kept
@@ -3638,6 +3643,13 @@ def _claim_partial_at(
                 reading.notes.append(f'Read "{word} {_raw_words(reading.question, list(phrase))}" as '
                                      f"{column}, the one column named for the {word}, not {others}.")
                 reading.claim(at, at + len(word))
+            candidates = [column]
+        if len(candidates) > 1 and (sized := _sized(reading.original[:start], candidates)) is not None:
+            # "the longest bills" names bill_length_mm, not bill_depth_mm: the word says which size.
+            column, word = sized
+            others = _listed_capped([other for other in candidates if other != column])
+            reading.notes.append(f'Read "{word} {_raw_words(reading.question, list(phrase))}" as {column}, '
+                                 f"not {others}.")
             candidates = [column]
         flags = [column for column in candidates if _is_flag(dataframe[column])]
         if len(candidates) > 1 and len(flags) == 1 and all(
@@ -4784,7 +4796,9 @@ def _claim_entity(
         described = plural and re.match(
             r"\s+(?:with|where|whose|having|that\s+have|which\s+have)\s+\S", reading.original[end:]
         )
-        rows = word == roles.row_noun or word in nouns
+        # "a Gentoo penguin" in penguins.csv names a row as "Gentoo penguins" does.
+        own = roles.row_noun is not None and word in _word_variants(roles.row_noun)
+        rows = own or word in nouns
         # In a table of counts the first plural noun left over names the cases counted: "female
         # applicants". A second one ("people who were cyclists") is a word the table may not hold.
         cases = plural and counts and reading.entity is None
@@ -4803,7 +4817,7 @@ def _claim_entity(
             continue
         reading.claim(start, end)
         if reading.entity is None:
-            reading.entity = word
+            reading.entity = roles.row_noun if own else word
             reading.entity_column = None if rows else _entity_column(word, dataframe, roles)
             reading.weight = None if reading.entity_column else _count_column(word, dataframe)
             settled = rows or reading.entity_column or reading.weight
@@ -6154,8 +6168,9 @@ def _rule_plan(
         plan = _plan_from_reading(reading, dataframe, roles)
     if plan is None:
         return None, reading.refusal
+    plan = _counted_not_summed(plan, roles)
     problem = _unused_part(plan, reading, dataframe, roles, rows_not_analyzed) or _other_things(
-        plan, reading, roles)
+        plan, reading, roles) or _measure_only_filtered(plan, reading, roles)
     if problem:
         return None, problem
     weighted = ()
@@ -6183,6 +6198,95 @@ def _weather_note(reading: _Reading, plan: QueryPlan) -> tuple[str, ...]:
         return ()
     side = "lowest" if word in COLD_WORDS else "highest"
     return (f'Read "{word}" as the {side} {plan.measure}; name another column to rank by it instead.',)
+
+
+def _counted_not_summed(plan: QueryPlan, roles: ColumnRoles) -> QueryPlan:
+    """A total of the table's main measure that the question also fixes to one value, as a count of rows.
+
+    "total homicides Ward 1 in 2024" in a table whose only number is WARD would add up the ward's own code
+    (1 + 1 + 1); the rows are the homicides, so they are counted.
+    """
+    if plan.intent != "aggregate" or plan.aggregation != "sum" or not plan.measure or (
+            plan.measure != roles.measure):
+        return plan
+    fixed = next((item for item in plan.conditions
+                  if item.column == plan.measure and item.operator == "="), None)
+    if fixed is None:
+        return plan
+    note = (f"Counted the rows: the question fixes {plan.measure} to {_number_text(fixed.value)}, so adding "
+            f"{plan.measure} up would count nothing.")
+    return replace(plan, intent="count", aggregation="count", measure=None, notes=(*plan.notes, note))
+
+
+# Words a column's name uses for a size of each thing a row describes: flipper_length_mm, body_mass_g.
+SIZE_NAME_WORDS = frozenset({"length", "depth", "height", "width", "weight", "mass", "diameter", "thickness",
+                             "girth", "wingspan"})
+# Words that average each thing's size: "average flippers" is the average flipper length.
+AVERAGE_NAME_WORDS = frozenset({"average", "mean", "median", "avg", "typical"})
+# Words for a size, and the word a column's name uses for that size: "longest" is a length.
+SIZE_WORDS = {
+    "longest": ("length",), "shortest": ("length", "height"), "longer": ("length",), "shorter": ("length",),
+    "deepest": ("depth",), "deeper": ("depth",), "shallowest": ("depth",), "tallest": ("height",),
+    "taller": ("height",), "widest": ("width",), "wider": ("width",), "narrowest": ("width",),
+    "heaviest": ("weight", "mass"), "heavier": ("weight", "mass"), "lightest": ("weight", "mass"),
+    "oldest": ("age",), "youngest": ("age",),
+}
+
+
+def _sized(before: str, candidates: list[str]) -> tuple[str, str] | None:
+    """The one column a size word just before a phrase picks, and the word: "longest" before "bills" picks
+    bill_length_mm of bill_length_mm and bill_depth_mm. None when no such word comes right before, or it
+    fits no column or several."""
+    found = re.search(r"\b([a-z]+)\s+$", before.lower())
+    sizes = SIZE_WORDS.get(found.group(1)) if found else None
+    if not sizes:
+        return None
+    fitting = [column for column in candidates
+               if any(size in _norm(normalized_name(str(column))).split() for size in sizes)]
+    return (fitting[0], found.group(1)) if len(fitting) == 1 else None
+
+
+def _measure_only_filtered(plan: QueryPlan, reading: _Reading, roles: ColumnRoles) -> str | None:
+    """Why a question whose numeric column is only a condition names nothing to average.
+
+    "average where flipper_length_mm is 210" in penguins.csv uses flipper_length_mm for the rows, so the
+    table's main measure would be averaged though three numeric columns could be meant; with only one
+    numeric column left, that column is the one meant. "The average mass is 5000" in a table whose only
+    number is mass would count the rows with mass = 5000, which is no average at all.
+    """
+    if plan.intent not in ("aggregate", "count"):
+        return None
+    fixed = next((item for item in plan.conditions
+                  if item.column == plan.measure and item.operator == "="), None)
+    if fixed is not None and plan.aggregation != "count":
+        # "The average mass is 4000": the mean of the rows whose mass is 4000 gives back 4000 itself.
+        return (f"{plan.measure} is both what the question takes the {plan.aggregation} of and a condition "
+                f"on the rows ({plan.measure} = {_number_text(fixed.value)}), which gives back the "
+                f"condition's own value. To check a number stated for {plan.measure}, check it as a claim.")
+    if plan.measure in reading.spans:
+        return None
+    filtered = [column for column in roles.numeric if column in reading.consumed]
+    if not filtered or plan.measure in reading.consumed:
+        return None
+    left = [column for column in roles.numeric if column not in reading.consumed]
+    # A column called "std" or "mean" is named by its word, which asks for no aggregation.
+    named = {word for column in reading.spans for word in _norm(str(column)).split()}
+    asked = [word for word in AGGREGATION_WORDS if word not in SUPERLATIVE_WORDS and word not in named
+             and re.search(rf"\b{word}\b", reading.original)]
+    if plan.aggregation == "count" and not plan.measure:
+        # "total homicides" counts them; "average" or "median" asks for something no count gives.
+        averaged = [word for word in asked if AGGREGATION_WORDS[word] != "sum"]
+        if not averaged:
+            return None
+        word = averaged[0]
+    elif plan.measure and len(left) >= 2:
+        word = next((word for word in asked if AGGREGATION_WORDS[word] == plan.aggregation), plan.aggregation)
+    else:
+        return None
+    named = (f": name one of {_and_listed(left)}, as in \"{word} {left[0]} where {filtered[0]} ...\""
+             if left else "")
+    return (f"{filtered[0]} is read as a condition on the rows, so the question names no column to take the "
+            f"{word} of{named}. To check a number stated for {filtered[0]}, check it as a claim.")
 
 
 def _other_things(plan: QueryPlan, reading: _Reading, roles: ColumnRoles) -> str | None:

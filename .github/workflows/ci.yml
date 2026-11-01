@@ -72,6 +72,14 @@ jobs:
           /tmp/venv/bin/ada scan . --json > scan.json
           /tmp/venv/bin/python -c "import json; assert json.load(open('scan.json'))['links'][0]['to'] == 'regions.order_id'"
           /tmp/venv/bin/ada skill --print | grep -q 'ada claim'
+      - name: Serve the tools over MCP with the installed command
+        run: |
+          cd "$(mktemp -d)"
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | /tmp/venv/bin/ada mcp > mcp.out
+          /tmp/venv/bin/python -c "import json; replies = [json.loads(line) for line in open('mcp.out')]; assert replies[1]['result']['tools'][0]['name'] == 'ada_ask'"
+          /tmp/venv/bin/automated-data-analyst --version
+          /tmp/venv/bin/python -m ada --version
       - name: Build and verify a small study with the installed command
         run: |
           cd "$(mktemp -d)"

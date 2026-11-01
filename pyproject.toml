@@ -24,6 +24,11 @@ keywords = [
     "claude-code",
     "codex",
     "ollama",
+    "lm-studio",
+    "open-webui",
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
     "vllm",
     "llama-cpp",
     "local-llm",
@@ -118,6 +123,7 @@ dev = ["ruff>=0.8,<1", "openpyxl>=3.1,<4"]
 
 [project.scripts]
 ada = "ada.cli:main"
+automated-data-analyst = "ada.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/saineshnakra/automated-data-analyst"

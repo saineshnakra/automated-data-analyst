@@ -5501,3 +5501,74 @@ class MeasuredCountTests(unittest.TestCase):
         frame = pd.DataFrame({"site": ["A", "B"] * 3, "enterococci_cfu_100ml": [10, 20, 30, 40, 50, 60]})
         answer = ada.analyze(frame).ask("median enterococci count at A")
         self.assertEqual(answer.value, 30)
+
+
+class FilteredMeasureTests(unittest.TestCase):
+    """A question whose numeric column is only a condition names nothing to average, unless one is left."""
+
+    def setUp(self):
+        rng = np.random.default_rng(5)
+        self.frame = pd.DataFrame({"species": rng.choice(["Adelie", "Gentoo"], 60),
+                                   "flipper": rng.integers(180, 230, 60), "bill": rng.normal(44, 5, 60),
+                                   "mass": rng.normal(4200, 400, 60)})
+
+    def test_another_column_is_not_averaged_in_its_place(self):
+        for question in ("average flipper is 210", "average where flipper is 210", "max where flipper > 200"):
+            refusal = ada.analyze(self.frame).ask(question)
+            self.assertIsInstance(refusal, ada.Refusal, question)
+            self.assertIn("flipper is read as a condition on the rows", refusal.message)
+            self.assertIn("check it as a claim", refusal.message)
+
+    def test_a_named_measure_or_the_only_one_left_is_answered(self):
+        named = ada.analyze(self.frame).ask("average mass where flipper is 210")
+        self.assertNotIsInstance(named, ada.Refusal)
+        two = self.frame[["species", "flipper", "mass"]]
+        only = ada.analyze(two).ask("average where flipper > 200")
+        self.assertNotIsInstance(only, ada.Refusal)
+        self.assertAlmostEqual(only.value, two.loc[two["flipper"] > 200, "mass"].mean(), places=6)
+
+    def test_a_total_of_the_column_a_question_fixes_counts_the_rows(self):
+        frame = pd.DataFrame({"WARD": [1, 1, 2, 2, 2], "OFFENSE": ["THEFT"] * 5})
+        answer = ada.analyze(frame).ask("total thefts Ward 2")
+        self.assertEqual(answer.value, 3.0)
+        self.assertIn("Counted the rows: the question fixes WARD to 2", answer.answer)
+
+    def test_thin_data_whose_only_number_is_the_condition_is_not_counted_for_an_average(self):
+        one = self.frame[["species", "mass"]]
+        refusal = ada.analyze(one).ask("The average mass is 4000.")
+        self.assertIsInstance(refusal, ada.Refusal)
+        self.assertIn("mass is both what the question takes the mean of and a condition on the rows (mass = "
+                      "4000)", refusal.message)
+        counted = ada.analyze(one).ask("how many where mass > 4000")
+        self.assertEqual(counted.value, float((one["mass"] > 4000).sum()))
+
+
+class SizeWordTests(unittest.TestCase):
+    """A word for a size picks the column of that size, and the plural of a part names its size."""
+
+    def setUp(self):
+        rng = np.random.default_rng(6)
+        self.frame = pd.DataFrame({"species": rng.choice(["Adelie", "Gentoo"], 80),
+                                   "bill_length_mm": rng.normal(44, 5, 80),
+                                   "bill_depth_mm": rng.normal(17, 2, 80),
+                                   "flipper_length_mm": rng.normal(200, 14, 80)})
+
+    def test_longest_and_deepest_pick_the_length_and_the_depth(self):
+        analysis = ada.analyze(self.frame)
+        longest = analysis.ask("which species has the longest bills on average")
+        self.assertEqual(longest.plan.measure, "bill_length_mm")
+        self.assertIn('Read "longest bills" as bill_length_mm, not bill_depth_mm.', longest.answer)
+        self.assertEqual(analysis.ask("which species has the deepest bills").plan.measure, "bill_depth_mm")
+
+    def test_without_a_size_word_the_question_asks_which(self):
+        refusal = ada.analyze(self.frame).ask("average bills by species")
+        self.assertIsInstance(refusal, ada.Refusal)
+        self.assertIn("bill_length_mm or bill_depth_mm", refusal.message)
+
+    def test_the_plural_of_a_part_names_its_size(self):
+        answer = ada.analyze(self.frame).ask("average flippers by species")
+        self.assertEqual(answer.plan.measure, "flipper_length_mm")
+        sales = pd.DataFrame({"resale_price": [100.0, 200.0, 300.0], "town": ["A", "B", "A"]})
+        # "resales" still counts the sales rather than naming the price of each.
+        counted = ada.analyze(sales).ask("how many resales")
+        self.assertNotEqual(getattr(getattr(counted, "plan", None), "measure", None), "resale_price")

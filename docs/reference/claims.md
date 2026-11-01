@@ -235,6 +235,17 @@ without them and the rank is checked after, over every state; each of its
 words must name a value, the group column or the rows. Otherwise, unless the
 answer itself ranks the groups, it gets `missing_context`.
 
+A group said to "have the highest" (or the lowest, largest, smallest, most,
+fewest) value, with no "of any", is ranked the same way: "Adelie has the
+highest average bill_length_mm, at 38.8" is checked for Adelie's mean, then
+the mean is made for every species, and the claim fails when another species'
+is higher, though 38.8 is right for Adelie. A tie for the lead holds and says
+so. With no number ("Chinstrap has the highest average bill_length_mm", "The
+island with the most penguins is Dream"), the group's value is computed and
+ranked the same way, and the verdict rests on the rank alone. When the claim
+names no single group, or its column has one value, the rank can't be checked
+and a verified value becomes `missing_context`.
+
 "Sales rose by about a third in 2020, to 1,200" gives the size of a change
 and the level it reached: each is checked as its own claim ("rose by about a
 third in 2020" and "rose to 1,200 in 2020"), and the claim holds when both

@@ -446,6 +446,74 @@ def _tools(args: argparse.Namespace) -> int:
     return EXIT_QUIET
 
 
+def _chat(args: argparse.Namespace) -> int:
+    from .chat import Chat, ChatError, shown  # noqa: PLC0415
+
+    try:
+        session = Chat(args.data, model=args.model, base_url=args.base_url)
+    except ChatError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_ERROR
+
+    def show(call) -> None:
+        if not args.json:
+            print(shown(call), file=sys.stderr if args.question else sys.stdout, flush=True)
+
+    def answer(question: str) -> int:
+        try:
+            reply = session.ask(question, on_call=show)
+        except ChatError as error:
+            print(f"error: {error}", file=sys.stderr)
+            return EXIT_ERROR
+        print(json.dumps(reply.to_dict(), indent=2, ensure_ascii=False) if args.json else reply.answer)
+        return EXIT_QUIET
+
+    if args.question:
+        return answer(" ".join(args.question))
+    print(f"ADA chat: {session.model} at {session.base_url}, reading {args.data}. Ask about the data; "
+          "Ctrl-D or 'exit' leaves.")
+    while True:
+        try:
+            question = input("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return EXIT_QUIET
+        if question.lower() in ("exit", "quit"):
+            return EXIT_QUIET
+        if question and answer(question) == EXIT_ERROR:
+            return EXIT_ERROR
+
+
+def _mcp(args: argparse.Namespace) -> int:
+    from .mcp import http_server, serve_stdio  # noqa: PLC0415
+
+    root = Path(args.root).expanduser() if args.root else None
+    if root is not None and not root.is_dir():
+        print(f"error: {args.root} is not a folder", file=sys.stderr)
+        return EXIT_ERROR
+    if not args.http:
+        for stream in (sys.stdin, sys.stdout):
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8")
+        serve_stdio(root)
+        return EXIT_QUIET
+    server = http_server(root, host=args.host, port=args.port, allowed_origins=tuple(args.allow_origin or ()))
+    from .mcp import Server  # noqa: PLC0415
+
+    print(f"ADA's MCP server is at http://{args.host}:{server.server_address[1]}/mcp, reading files under "
+          f"{Server(root).root}. Ctrl-C stops it.", file=sys.stderr, flush=True)
+    if args.host not in ("127.0.0.1", "localhost", "::1"):
+        print(f"It listens on {args.host}: anything that can reach this computer on port "
+              f"{server.server_address[1]} can read the tables under that folder.", file=sys.stderr)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return EXIT_QUIET
+
+
 def _samples(_: argparse.Namespace) -> int:
     for name, path in sorted(samples().items()):
         print(f"{name:22} {path}")
@@ -597,9 +665,39 @@ def build_parser() -> argparse.ArgumentParser:
     tooled = subcommands.add_parser(
         "tools", help="print ADA's tool definitions for function calling, so any language model can use ADA"
     )
-    tooled.add_argument("--style", choices=["openai", "anthropic"], default="openai",
-                        help="openai (also Ollama, vLLM, llama.cpp and LM Studio) or anthropic "
+    tooled.add_argument("--style", choices=["openai", "anthropic", "mcp"], default="openai",
+                        help="openai (also Ollama, vLLM, llama.cpp and LM Studio), anthropic or mcp "
                              "(default: openai)")
+
+    chatted = subcommands.add_parser(
+        "chat", help="chat with a local model (Ollama, LM Studio, llama.cpp) that uses ADA for every number",
+        description="Chat with a model that calls ADA's tools: ADA computes every number, the model answers "
+                    "with them. Works with any OpenAI-compatible server; the default is Ollama on this "
+                    "computer. The model needs tool calling, such as qwen3, llama3.1 or mistral.",
+    )
+    chatted.add_argument("data", nargs="?", default=".",
+                         help="a data file or a folder of them (default: here)")
+    chatted.add_argument("question", nargs="*", help="ask one question and stop, instead of chatting")
+    chatted.add_argument("--model", help="the model (default: ADA_MODEL, else the server's only model, else "
+                                         "qwen3:1.7b)")
+    chatted.add_argument("--base-url", help="the server's OpenAI-compatible API (default: ADA_BASE_URL, else "
+                                            "Ollama at http://localhost:11434/v1)")
+    chatted.add_argument("--json", action="store_true", help="print the answer and every tool call as JSON")
+
+    served = subcommands.add_parser(
+        "mcp", help="run ADA as an MCP server, for LM Studio, Open WebUI, Jan, Claude Desktop, Cursor and "
+                    "others",
+        description="Serve ADA's tools over the Model Context Protocol: over standard input and output by "
+                    "default, as apps start it from their settings, or over HTTP with --http.",
+    )
+    served.add_argument("--root", help="the folder the tools may read (default: the folder the server starts "
+                                       "in, or your home folder when that is the top of the disk)")
+    served.add_argument("--http", action="store_true", help="serve Streamable HTTP at /mcp instead of stdio")
+    served.add_argument("--host", default="127.0.0.1", help="the address to listen on with --http "
+                                                            "(default: 127.0.0.1)")
+    served.add_argument("--port", type=int, default=8000, help="the port with --http (default: 8000)")
+    served.add_argument("--allow-origin", action="append", metavar="ORIGIN",
+                        help="a web page origin allowed to call the HTTP server (repeatable)")
 
     subcommands.add_parser("samples", help="list the bundled datasets")
     subcommands.add_parser("app", help="launch the browser app (from a source checkout)")
@@ -616,7 +714,8 @@ def main(argv: list[str] | None = None) -> int:
         "share": _share, "demo": _demo,
         "analyze": _analyze, "schema": _schema, "ask": _ask, "claim": _claim, "scan": _scan, "model": _model,
         "auto": _model,
-        "check": _check, "skill": _skill, "tools": _tools, "samples": _samples, "app": _app, None: _status,
+        "check": _check, "skill": _skill, "tools": _tools, "chat": _chat, "mcp": _mcp, "samples": _samples,
+        "app": _app, None: _status,
     }[command]
     try:
         return handler(args)
