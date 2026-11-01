@@ -30,6 +30,9 @@ def main(path: str) -> int:
     fixed = [index for index in complete if checked[index] and not alone[index]]
     broke = [index for index in complete if alone[index] and not checked[index]]
     print(f"  check: {len(flagged)} answers had a wrong equation; fixed {len(fixed)}, broke {len(broke)}")
+    equations = [item for index in complete for item in by[index]["check"].get("checks", [])]
+    slips = sum(not item["correct"] for item in equations)
+    print(f"  check: {len(equations)} equations written in the model's own answers, {slips} wrong")
     used = [index for index in complete if by[index]["tool"]["tool_calls"]]
     print(f"  tool: called on {len(used)} problems")
     stuck = sum(1 for row in rows if row.get("error"))
