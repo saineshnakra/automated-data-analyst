@@ -330,7 +330,11 @@ class _Parser:
                 written = ",".join(groups)
                 text = "".join(groups)
                 self.assumptions.append(f"{written} is read as {text}, with commas between thousands.")
-        return _Node("number", Fraction(Decimal(text)), text=text)
+        written = Decimal(text)
+        if written and abs(written.adjusted()) > MAX_DIGITS:
+            _refuse("too_large", f"{text} has more than {MAX_DIGITS:,} digits; ADA keeps exact numbers up "
+                                 f"to {MAX_DIGITS:,} digits.")
+        return _Node("number", Fraction(written), text=text)
 
     def call(self, name: str, key: str) -> _Node:
         if key not in FUNCTION_NAMES:
@@ -546,8 +550,24 @@ class _Evaluator:
             node = node.children[0]
         total = self.value(node)
         for link in reversed(spine):
-            total = self.binary(link.value, total, self.value(link.children[1]))
+            right = link.children[1]
+            if link.value in ("+", "-") and right.kind == "percent":
+                self.percent_change(total, link.value, right)
+            total = self.binary(link.value, total, self.value(right))
         return total
+
+    def percent_change(self, base: Number, sign: str, percent: _Node) -> None:
+        """100 + 10% is 100.1 to a programming language and 110 to most people: refuse with both."""
+        inner = self.value(percent.children[0])
+        rate = inner / 100 if isinstance(inner, Fraction) else _approx(inner) / 100
+        factor = 1 + rate if sign == "+" else 1 - rate
+        added = base + rate if sign == "+" else base - rate
+        number, word = shown(base, self.digits), "plus" if sign == "+" else "minus"
+        _refuse("ambiguous_expression",
+                f"{number} {sign} {show(percent)} reads two ways: "
+                f"{number} {sign} {shown(rate, self.digits)} = {shown(added, self.digits)}, "
+                f"or {number} {word} {show(percent)} of itself = {shown(base * factor, self.digits)}. "
+                f"Write {number} * {shown(factor, self.digits)} for the second.")
 
     def limit_factorial(self, n: int) -> None:
         digits = math.lgamma(n + 1) / math.log(10) if n > 1 else 1
@@ -665,16 +685,27 @@ class _Evaluator:
     def call_abs(self, arguments, written):
         return abs(arguments[0])
 
+    def settled(self, value: Decimal, boundary: Decimal, written: str) -> None:
+        """An approximate value carries about ``digits`` + ``GUARD_DIGITS`` correct digits; one that close
+        to a whole number (or a halfway point) cannot be rounded honestly."""
+        tolerance = Decimal(1).scaleb(value.adjusted() - (self.digits + GUARD_DIGITS) + 3)
+        if abs(value - boundary) < tolerance:
+            _refuse("needs_more_digits",
+                    f"{written}: the value is too close to {_decimal_text(boundary, self.digits)} to tell "
+                    f"which side it falls on at {self.digits} significant digits. Ask for more digits.")
+
     def call_floor(self, arguments, written):
         value = arguments[0]
         if isinstance(value, Fraction):
             return Fraction(math.floor(value))
+        self.settled(value, value.to_integral_value(), written)
         return Fraction(int(value.to_integral_value(rounding=ROUND_FLOOR)))
 
     def call_ceil(self, arguments, written):
         value = arguments[0]
         if isinstance(value, Fraction):
             return Fraction(math.ceil(value))
+        self.settled(value, value.to_integral_value(), written)
         return Fraction(int(value.to_integral_value(rounding=ROUND_CEILING)))
 
     def call_round(self, arguments, written):
@@ -683,7 +714,16 @@ class _Evaluator:
             _refuse("too_large", f"{written}: round to at most {MAX_DIGITS_ASKED} places.")
         value = arguments[0]
         if isinstance(value, Decimal):
-            return Fraction(value.quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP))
+            if places > self.digits + GUARD_DIGITS - 3 - max(value.adjusted(), 0):
+                _refuse("needs_more_digits",
+                        f"{written}: an approximate value is known to about {self.digits} significant "
+                        "digits, too few for that many places. Ask for more digits.")
+            step = Decimal(1).scaleb(-places)
+            halfway = (value / step).to_integral_value(rounding=ROUND_FLOOR) * step + step / 2
+            self.settled(value, halfway, written)
+            with localcontext() as context:
+                context.prec = max(context.prec, value.adjusted() + places + 3)
+                return Fraction(value.quantize(step, rounding=ROUND_HALF_UP))
         # The exact fraction is compared with the halfway point, so 2.675 rounds to 2.68, not 2.67.
         scale = Fraction(10) ** places
         scaled = abs(value) * scale

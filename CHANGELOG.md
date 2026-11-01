@@ -32,10 +32,11 @@ ada compute "1/3 + 1/6"                # 0.5 = 1/2
 - Each operation is a step written with its values, and each convention the
   reading rests on is listed: -2^2 is -4, 2^3^2 is 2^9, 20% of 50 is 10.
 - An expression that reads two ways is refused with both values: 6/2(1+2)
-  is 9 or 1, `17 % 5` is a remainder or a percent, `log(8)` has no base. So
-  are division by zero, values that are not real numbers, names ADA doesn't
-  know, and numbers too large to keep exactly. Five refusal codes join
-  `ada.REFUSAL_CODES`.
+  is 9 or 1, `17 % 5` is a remainder or a percent, `100 + 10%` is 100.1 or
+  110, `log(8)` has no base. So are division by zero, values that are not
+  real numbers, names ADA doesn't know, numbers too large to keep exactly,
+  and rounding an approximate value too close to a whole number to tell. Six
+  refusal codes join `ada.REFUSAL_CODES`.
 - Nothing is run as Python: a small grammar reads numbers, + - * / // ^ mod !
   %, parentheses and 20 functions (roots, rounding, gcd, lcm, comb, perm,
   logarithms, pi, e).

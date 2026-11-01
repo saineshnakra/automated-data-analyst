@@ -83,11 +83,12 @@ instead. `ada compute` exits with 3.
 
 | Code | When | Example |
 |---|---|---|
-| `ambiguous_expression` | The expression reads two ways with two values; the message gives both | `6/2(1+2)` is 9 or 1; `17 % 5` is a remainder or a percent; `log(8)` is base 10 or base e |
+| `ambiguous_expression` | The expression reads two ways with two values; the message gives both | `6/2(1+2)` is 9 or 1; `17 % 5` is a remainder or a percent; `100 + 10%` is 100.1 or 110; `log(8)` is base 10 or base e |
 | `invalid_expression` | A name ADA does not know, a missing operator, a wrong argument | `x + 1`, `2 3`, `factorial(2.5)` |
 | `division_by_zero` | A division, remainder or negative power of zero | `1/0`, `5 mod 0`, `0^-1` |
 | `not_a_real_number` | The value is not a real number | `sqrt(-4)`, `(-8)^(1/3)`, `ln(0)` |
 | `too_large` | An exact number would pass 10,000 digits, or the expression is longer than 2,000 characters or nests more than 100 levels deep | `2^100000`, `10000!` |
+| `needs_more_digits` | An approximate value is too close to a whole number (or a halfway point) to round, floor or ceil at the digits asked for | `floor(exp(pi*sqrt(163)))` at 20 digits; at 40 it is 262537412640768743 |
 
 A missing multiplication sign is read only when every reading gives the same
 value: `2(3+4)` is 14 either way, but `6/2(1+2)` is (6/2)*(1+2) = 9 or
@@ -95,7 +96,14 @@ value: `2(3+4)` is 14 either way, but `6/2(1+2)` is (6/2)*(1+2) = 9 or
 
 A percent sign between two numbers is refused. Programming languages read
 `17 % 5` as the remainder, 2, and a person may mean 17% of 5, 0.85. Write
-`17 mod 5` or `17% of 5`.
+`17 mod 5` or `17% of 5`. Adding or taking away a percent is refused too: to
+a calculator `100 + 10%` is 100.1, to most people it is 110. Write
+`100 * 1.1` for the second.
+
+`round`, `floor` and `ceil` of an approximate value give an exact result
+only when the approximation settles it. A value within the last few digits
+of a whole number, such as e^(pi·sqrt(163)) = 262537412640768743.99999999999925…,
+is refused at 20 digits and answered at 40.
 
 ## Operators and functions
 

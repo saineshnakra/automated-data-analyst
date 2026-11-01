@@ -200,6 +200,23 @@ class RefusalTests(unittest.TestCase):
         message = refused(self, "17 % 5", "ambiguous_expression").message
         self.assertIn("17 mod 5", message)
 
+    def test_adding_a_percent_is_ambiguous(self):
+        message = refused(self, "100 + 10%", "ambiguous_expression").message
+        self.assertIn("= 100.1", message)
+        self.assertIn("= 110", message)
+        self.assertIn("150", refused(self, "200 - 25%", "ambiguous_expression").message)
+        self.assertEqual(value("100 * 10%"), "10")           # a percent of a number reads one way
+        self.assertEqual(value("10% + 5"), "5.1")
+
+    def test_rounding_an_approximate_value_too_close_to_tell(self):
+        # e^(pi*sqrt(163)) is 262537412640768743.99999999999925...: 20 digits cannot say which side of the
+        # whole number it falls, 40 can.
+        refused(self, "floor(exp(pi*sqrt(163)))", "needs_more_digits")
+        self.assertEqual(compute("floor(exp(pi*sqrt(163)))", digits=40).value, "262537412640768743")
+        refused(self, "round(sqrt(2), 40)", "needs_more_digits")
+        self.assertEqual(value("round(sqrt(2), 3)"), "1.414")
+        self.assertEqual(value("floor(sqrt(2) * 100)"), "141")
+
     def test_log_without_a_base_is_ambiguous(self):
         message = refused(self, "log(8)", "ambiguous_expression").message
         self.assertIn("log10", message)
@@ -228,6 +245,7 @@ class RefusalTests(unittest.TestCase):
         refused(self, "10000!", "too_large")
         refused(self, "2^2^2^2^2", "too_large")
         refused(self, "comb(100000, 50000)", "too_large")
+        refused(self, "1e10000000", "too_large")
         refused(self, "1" * 3000, "too_large")
         refused(self, "-" * 150 + "1", "too_large")
 

@@ -90,6 +90,7 @@ REFUSAL_CODES = (
     "division_by_zero",
     "not_a_real_number",
     "too_large",
+    "needs_more_digits",
     "unknown",
 )
 
