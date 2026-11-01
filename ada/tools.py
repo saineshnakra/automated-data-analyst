@@ -5,6 +5,7 @@
                                        # llama.cpp's server and LM Studio)
     tools.definitions("anthropic")     # the same for the Anthropic Messages API
     tools.run("ada_check_claim", {"path": "flights.csv", "claim": "The average delay was 13 minutes."})
+    tools.run("ada_compute", {"expression": "0.15 * (1200 - 300)"})
 
 The model asks and ADA does the math: every number comes from pandas, SciPy
 or statsmodels with its calculation, or comes back refused with the reason.
@@ -25,17 +26,19 @@ from typing import Any
 
 #: Instructions to give the model with the tools.
 SYSTEM_PROMPT = (
-    "You answer questions about data files (CSV, TSV, Excel) with ADA's tools. Never compute, estimate or "
-    "make up a number yourself.\n"
+    "You answer questions about numbers and data files (CSV, TSV, Excel) with ADA's tools. Never compute, "
+    "estimate or make up a number yourself.\n"
     "- To find a number (a count, average, total, share, change, ranking, group comparison, correlation or "
     "trend), call ada_ask with the file's path and the user's question whole, keeping every value and group "
     "it names.\n"
     "- When the user gives a statement to check, call ada_check_claim with the file's path and the "
     "statement.\n"
     "- When you do not know which file or column to use, call ada_scan.\n"
-    "Answer with the numbers the tool returns and its calculation, and work out no new ones from them (no "
-    "sums, differences or percentages): ask the tool. When a tool refuses or cannot tell, say so, give its "
-    "reason and ask the user the question it gives."
+    "- For arithmetic on numbers you have (from the user, the question or a tool's result), call ada_compute "
+    "with one expression, such as 0.15*(1200 - 300) or 7/12*100.\n"
+    "Answer with the numbers the tools return and their calculation, and work out no new ones in your "
+    "head (no sums, differences or percentages): ask ada_compute. When a tool refuses or cannot tell, say "
+    "so, give its reason and ask the user the question it gives."
 )
 
 _PATH = {"type": "string", "description": "The path of the data file (CSV, TSV or Excel), or of a folder of "
@@ -88,12 +91,33 @@ _TOOLS = (
         ),
         "parameters": {"type": "object", "properties": {"path": _PATH}, "required": ["path"]},
     },
+    {
+        "name": "ada_compute",
+        "title": "Compute an arithmetic expression exactly",
+        "description": (
+            "Compute an arithmetic expression exactly and show each step: + - * / ^, parentheses, mod, "
+            "percent (20% of 50), factorial (5!), sqrt, root, abs, floor, ceil, round, gcd, lcm, comb, perm, "
+            "min, max, exp, ln, log10, log2, log(x, base), pi and e. Fractions stay exact (1/3 + 1/6 = 1/2). "
+            "Use it for every calculation on numbers you already have; write the numbers, not words or "
+            "letters. An expression that reads two ways is refused with both readings."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "expression": {"type": "string", "description": "One arithmetic expression, such as "
+                                                                "(1200 - 300) * 0.15 or comb(10, 3) / 2^10."},
+                "digits": {"type": "integer", "description": "Significant digits for a result that is not "
+                                                            "exact, such as sqrt(2) (default 20)."},
+            },
+            "required": ["expression"],
+        },
+    },
 )
 
 #: The tools' names.
 NAMES = tuple(tool["name"] for tool in _TOOLS)
 #: The tools that only read: all of them, since none writes a file.
-READ_ONLY = frozenset({"ada_ask", "ada_check_claim", "ada_scan"})
+READ_ONLY = frozenset({"ada_compute", "ada_ask", "ada_check_claim", "ada_scan"})
 
 
 def definitions(style: str = "openai") -> list[dict]:
@@ -232,13 +256,24 @@ def run(name: str, arguments: dict | str, root: str | Path | None = None, brief:
         if not isinstance(given, dict):
             raise ValueError("the arguments are a JSON object, such as {\"path\": ..., \"question\": ...}")
         inner = given.get("parameters", given.get("arguments"))
-        if isinstance(inner, dict) and not given.keys() & {"path", "question", "claim", "train"}:
+        if isinstance(inner, dict) and not given.keys() & {"path", "question", "claim", "expression"}:
             # {"type": "function", "parameters": {...}}: the arguments wrapped as the call itself.
             given = dict(inner)
         if not given.get("path") and (alias := next((key for key in PATH_ALIASES if given.get(key)), None)):
             # {"file": "penguins.csv"}: another name small models give the path.
             given["path"] = given[alias]
-        if name == "ada_ask":
+        if name == "ada_compute":
+            from .compute import DIGITS, compute  # noqa: PLC0415
+
+            if not given.get("expression") and (alias := next(
+                    (key for key in EXPRESSION_ALIASES if isinstance(given.get(key), str)), None)):
+                # {"expr": "2 + 2"}: another name models give the expression.
+                given["expression"] = given[alias]
+            digits = str(given.get("digits", DIGITS))
+            digits = int(digits) if digits.isdigit() else DIGITS
+            computed = compute(_text(given, "expression"), digits=digits)
+            result = computed if isinstance(computed, Refusal) else computed.to_dict()
+        elif name == "ada_ask":
             question = _text(given, "question")
             result = _ask(_inside(given.get("path"), base, "path", text=question), question)
         elif name == "ada_check_claim":
@@ -266,6 +301,8 @@ def _text(given: dict, name: str) -> str:
     return value
 
 
+#: Other names models give the expression argument.
+EXPRESSION_ALIASES = ("expr", "input", "formula", "calculation", "math", "query", "question", "text")
 #: Other names models give the path argument.
 PATH_ALIASES = ("file", "file_path", "filepath", "filename", "file_name", "data", "dataset", "table", "csv")
 
@@ -313,6 +350,8 @@ def _shown(value: Any) -> str:
     return f"{value:,.0f}" if float(value).is_integer() else f"{value:,.2f}"
 
 
+#: Steps of a computation a brief result keeps.
+BRIEF_STEPS = 12
 #: The verdict a brief claim result gives, in the words a person would use.
 VERDICTS = {"verified": "true", "failed_check": "false"}
 
@@ -358,9 +397,10 @@ def brief(result: dict) -> dict:
                          **({"problem": item["problem"]} if item.get("problem") else {})}
                         for item in result["files"]]
         out["links"] = result.get("links") or []
-    if "score" in result:
-        out.update({key: result[key] for key in ("target", "task", "metric", "score", "spread", "rows")
-                    if key in result})
-        out["importances"] = (result.get("importances") or [])[:5]
-        out["failed_checks"] = [item for item in result.get("checks") or [] if not item.get("passed")]
+    if status == "computed":
+        out.update({key: result[key] for key in ("value", "exact") if key in result})
+        steps = result.get("steps") or []
+        if steps:
+            out["steps"] = steps[:BRIEF_STEPS] + ([f"… and {len(steps) - BRIEF_STEPS} more steps"]
+                                                  if len(steps) > BRIEF_STEPS else [])
     return out

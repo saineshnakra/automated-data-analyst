@@ -47,7 +47,8 @@ follows and its edge cases.
 | [Checking claims](reference/claims.md) | `ada/claims.py` | How a stated number is checked against the table: verified, or unverified with a reason |
 | [Decisions](reference/decisions.md) | `ada/decisions.py`, `ada/aggregates.py` | The choices an answer rests on (World and region rows, a total row), ADA's defaults and how a caller picks another |
 | [Reading a folder of tables](reference/folder.md) | `ada/folder.py` | Profiles each table in a folder, proposes the keys that join them and lists what to confirm |
-| [Tools for language models](llm-tools.md) | `ada/tools.py`, `ada/mcp.py`, `ada/chat.py` | The three tools a model calls, their definitions, the runner, the MCP server and `ada chat` |
+| [Exact arithmetic](reference/compute.md) | `ada/compute.py` | Expressions computed exactly with each step, the conventions stated, and refusals for what reads two ways |
+| [Tools for language models](llm-tools.md) | `ada/tools.py`, `ada/mcp.py`, `ada/chat.py` | The four tools a model calls, their definitions, the runner, the MCP server and `ada chat` |
 | [Formatting](reference/formatting.md) | `ada/formatting.py` | How numbers and dates are displayed |
 | [Choosing the chart](reference/autovis.md) | `ada/autovis.py` | How a chart form is chosen for a set of columns |
 | [Selecting a slice](reference/selection.md) | `ada/selection.py` | How a selection on a chart becomes a filter, and how the slice is compared with the whole |
