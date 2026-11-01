@@ -7,7 +7,9 @@ talks to Ollama (or LM Studio, llama.cpp, vLLM) with ADA's tools, and `ada
 mcp` plugs ADA into apps that take MCP servers. ADA takes small models' usual
 slips in stride: qwen3:0.6b, a 523 MB model, answers all five test questions
 about penguins.csv with ADA's numbers. Claims that a group leads the others
-are now checked against every group.
+are now checked against every group. The research workflow, the modelling
+mode and the browser app move to their own package, ADA Lab (`pip install
+ada-lab`), so ADA installs without Matplotlib or python-docx.
 
 ```bash
 ollama pull qwen3:1.7b && ada chat penguins.csv      # chat with a local model that uses ADA
@@ -98,6 +100,25 @@ ada mcp                                              # ADA as an MCP server, for
   data give 200.92 for mean(flipper_length_mm), outside 209.5 to 210.5, the
   range the claim's 210 stands for"), which small models read the wrong way
   round before.
+
+### ADA Lab
+
+The research workflow, the modelling mode and the browser app move to their
+own package, [ADA Lab](https://github.com/saineshnakra/ada-lab) (`pip install
+ada-lab`), with their history. ADA keeps to computing and checking numbers for
+people and language models, and installs without Matplotlib or python-docx.
+
+- `ada init`, `ada build`, `ada verify`, `ada preview`, `ada share`, `ada
+  demo`, `ada research`, `ada model`, `ada auto` and `ada app` run ADA Lab's
+  commands when it is installed, and otherwise say how to install it. ADA Lab
+  also has its own command, `ada-lab`.
+- `ada.model`, `ada.ModelReport` and `ada.research` reach ADA Lab the same
+  way; `from ada_lab import research` and `ada_lab.model(...)` are the new
+  names.
+- The `ada_model` tool is gone from `ada.tools`, `ada chat` and `ada mcp`;
+  every tool left only reads.
+- The `app`, `ai` and `model` extras are gone; ADA Lab has them.
+- `ada` with no command prints its help.
 
 ## 0.7.0 (2026-10-31)
 

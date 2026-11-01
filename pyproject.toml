@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "automated-data-analyst"
 version = "0.8.0"
-description = "The math arm for LLMs: compute and check numbers from CSV and Excel data with pandas, SciPy and statsmodels, each with its calculation, or refused with a reason. An MCP server and tool calling for Claude, Codex and local models (ada chat for Ollama; LM Studio, Open WebUI, llama.cpp, vLLM), cross-validated Kaggle-style models, and paper tables and figures."
+description = "The math arm for LLMs: compute and check numbers from CSV and Excel data with pandas, SciPy and statsmodels, each with its calculation, or refused with a reason. Tool definitions, an MCP server and a chat command for Claude, Codex and open-source models (Ollama, vLLM, llama.cpp, LM Studio)."
 requires-python = ">=3.11"
 readme = "README.md"
 license = "MIT"
@@ -48,28 +48,12 @@ keywords = [
     "exploratory-data-analysis",
     "eda",
     "data-profiling",
-    "machine-learning",
-    "automl",
-    "kaggle",
-    "gradient-boosting",
-    "explainable-ai",
-    "interpretable-ml",
-    "research",
-    "reproducible-research",
-    "reproducibility",
-    "research-data",
-    "publication-figures",
-    "methods-section",
-    "data-dictionary",
-    "provenance",
-    "mixed-models",
     "anomaly-detection",
     "forecasting",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
-    "Framework :: Matplotlib",
     "Intended Audience :: Science/Research",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
@@ -82,16 +66,14 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Scientific/Engineering :: Information Analysis",
     "Topic :: Scientific/Engineering :: Mathematics",
-    "Topic :: Scientific/Engineering :: Visualization",
 ]
 
 # python-calamine is a core dependency so .xlsx files work out of the box, and
 # fast on large sheets. scipy supplies the distributions behind the group
 # comparisons, correlation tests and rate tests; statsmodels the
-# false-discovery-rate adjustment, the rate interval, the joint model and the
-# study analyses; ruptures the change-point search. PyYAML reads study.yml,
-# Matplotlib draws the paper figures and python-docx writes the Word tables.
-# docs/credits.md says what each is used for.
+# false-discovery-rate adjustment, the rate interval and the joint model;
+# ruptures the change-point search; PyYAML the answers files `ada scan
+# --template` writes. docs/credits.md says what each is used for.
 dependencies = [
     "pandas>=2.2,<3",
     "numpy>=1.26,<3",
@@ -100,24 +82,9 @@ dependencies = [
     "statsmodels>=0.14.2,<1",
     "ruptures>=1.1.10,<2",
     "PyYAML>=6,<7",
-    "matplotlib>=3.8,<4",
-    "python-docx>=1.1,<2",
 ]
 
 [project.optional-dependencies]
-# Only the Streamlit app (app.py, ada/ui.py) needs these.
-# starlette<1: Streamlit 1.59 cannot serve images or downloads on Starlette 1.x.
-app = ["streamlit==1.59.2", "starlette>=0.40,<1", "plotly>=5.24,<7"]
-# Optional AI layer (ada/ai_insights.py). It proposes query plans; pandas runs them.
-ai = ["openai>=2.46,<3", "pydantic>=2.11,<3"]
-# Modelling (ada/modelling.py, `ada model` and `ada auto`): gradient boosting and cross-validation; CatBoost
-# joins `ada auto`. xgboost-cpu is the XGBoost project's build without GPU libraries; where it has no wheel,
-# the full build stands in.
-model = [
-    "scikit-learn>=1.5,<2", "lightgbm>=4.5,<5",
-    "xgboost-cpu>=3,<4; sys_platform == 'linux'", "xgboost>=3,<4; sys_platform != 'linux'",
-    "catboost>=1.2,<2",
-]
 # openpyxl writes the workbooks the tests read.
 dev = ["ruff>=0.8,<1", "openpyxl>=3.1,<4"]
 
@@ -129,18 +96,17 @@ automated-data-analyst = "ada.cli:main"
 Homepage = "https://github.com/saineshnakra/automated-data-analyst"
 Documentation = "https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/README.md"
 "LLM tools" = "https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/llm-tools.md"
-Demo = "https://automated-data-analyst.streamlit.app/"
-Results = "https://github.com/saineshnakra/automated-data-analyst/blob/main/results/README.md"
+"ADA Lab" = "https://github.com/saineshnakra/ada-lab"
 Source = "https://github.com/saineshnakra/automated-data-analyst"
 Issues = "https://github.com/saineshnakra/automated-data-analyst/issues"
 Changelog = "https://github.com/saineshnakra/automated-data-analyst/blob/main/CHANGELOG.md"
 
 [tool.setuptools]
-packages = ["ada", "ada.research"]
+packages = ["ada"]
 
 [tool.setuptools.package-data]
 # Read from inside the package at runtime. skills/ada/SKILL.md is what `ada skill` installs.
-ada = ["assets/*.css", "samples/*.csv", "samples/*.md", "skills/ada/SKILL.md", "skills/ada/agents/openai.yaml"]
+ada = ["samples/*.csv", "samples/*.md", "skills/ada/SKILL.md", "skills/ada/agents/openai.yaml"]
 
 [tool.ruff]
 line-length = 110
@@ -151,5 +117,3 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.lint.per-file-ignores]
 "app.py" = ["E501"]
-"ada/ui.py" = ["E501"]
-"ada/home.py" = ["E501"]

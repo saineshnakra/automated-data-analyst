@@ -1,9 +1,9 @@
 # Reading files
 
-**Code:** `ada/file_io.py`; app limits in `app.py` · **Tests:** `tests/test_file_io.py`
+**Code:** `ada/file_io.py` · **Tests:** `tests/test_file_io.py`
 
-Turns uploaded bytes into a DataFrame and rejects anything it cannot read. No
-analysis happens here.
+Turns a file, or its bytes, into a DataFrame and rejects anything it cannot
+read. No analysis happens here.
 
 ## Accepted formats
 
@@ -20,17 +20,16 @@ An empty file is rejected with "The uploaded file is empty."
 
 | Limit | Value | Where | Behaviour |
 |---|---|---|---|
-| File size | 25 MB | `MAX_UPLOAD_BYTES` in `app.py` | The app refuses the upload with a message |
-| Rows analyzed | 1,000,000 | `MAX_ANALYSIS_ROWS` in `app.py`, `DEFAULT_ROW_LIMIT` in `ada/api.py` | A table with a date keeps its most recent rows; one without is sampled at random. The app, `print(report)` and every answer say which rows were analyzed |
+| Rows analyzed | 1,000,000 | `DEFAULT_ROW_LIMIT` in `ada/api.py` | A table with a date keeps its most recent rows; one without is sampled at random. `print(report)` and every answer say which rows were analyzed |
 
-The file-size limit is the app's; the library does not enforce it
-(`ada.MAX_FILE_BYTES` records the value). Raise either limit when you run ADA
-on your own hardware: `ada.analyze(..., row_limit=...)` in Python.
+`ada.MAX_FILE_BYTES` (25 MB) records the hosted app's upload limit; the
+library does not enforce it. Raise the row limit with
+`ada.analyze(..., row_limit=...)`.
 
 Cleaning, not the number of rows, sets how long a file takes: a 700,000-row
 file is cleaned in under 3 seconds, and analyzing all of it rather than a
-quarter adds about half a second. So the limit is high enough that a file the
-app accepts is analyzed whole.
+quarter adds about half a second. So the limit is high enough that a 25 MB
+file is analyzed whole.
 
 Above the limit, exports are usually written oldest first, so keeping the first
 rows of a long file would analyze the oldest periods and forecast months the
@@ -97,8 +96,8 @@ Two parsing rules apply to CSV and Excel alike:
 ## Excel parsing
 
 `list_excel_sheets` returns the worksheet names, or an empty list for a CSV.
-When a workbook has more than one sheet, `app.py` shows a picker and passes the
-choice through. With no choice, the first sheet is read, unless it holds only
+`sheet=` in `ada.analyze` (`--sheet` on the command line) picks one. With no
+choice, the first sheet is read, unless it holds only
 notes: a first sheet with a cell of prose (over 80 characters) and fewer than
 one number in twenty filled cells, as the Maddison Project's "Notes" sheet is.
 Then the sheet with the most numbers is read ("Full data"), its name is kept
@@ -132,4 +131,4 @@ is not a valid Excel workbook." rather than a raw `BadZipFile` or `KeyError`.
 Adding a format means adding its suffix to `SUPPORTED_SUFFIXES`, a branch in
 `read_tabular_file`, and validation as strict as the existing formats. Every
 error path raises `ValueError` with a message a non-technical user can act on;
-the app shows these messages as they are.
+the command line prints these messages as they are.

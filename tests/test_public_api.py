@@ -429,18 +429,6 @@ class SkillTests(unittest.TestCase):
         self.assertTrue(named)
         self.assertLessEqual(named, set(commands))
 
-    def test_the_skills_study_file_is_a_valid_study(self):
-        from ada.research import load
-
-        text = self.SKILL.read_text(encoding="utf-8")
-        example = text.split("```yaml\n")[1].split("```")[0]
-        folder = Path(tempfile.mkdtemp())
-        (folder / "study.yml").write_text("study:\n  title: Example\n" + example, encoding="utf-8")
-
-        study = load(folder / "study.yml")
-
-        self.assertEqual((study.design, study.subject, study.time), ("repeated", "Mouse", "Week"))
-
     def test_print_writes_the_skill_to_stdout(self):
         for flags in ((), ("--force",)):
             with self.subTest(flags=flags):

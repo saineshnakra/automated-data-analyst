@@ -8,9 +8,9 @@ calculations.
 ## The rule
 
 Formatting changes how a value looks, never what it is. The module holds no
-state, and every surface that displays a number (the dashboard, evidence
-cards, Ask ADA answers, the Markdown report) calls the same functions, so a
-figure reads the same everywhere.
+state, and every surface that displays a number (the brief, evidence cards,
+Ask ADA answers, the Markdown report) calls the same functions, so a figure
+reads the same everywhere.
 
 ## `format_number(value, column=None, *, compact=True, column_values=None, extra_decimals=0)`
 
@@ -176,9 +176,7 @@ too.
 
 Tables show such times the same way. `show_undated(frame)` writes every
 column of them as clock times (`15:06:28`, `day 2 00:15:00`) for display, and
-is applied to `Analysis.segments()` (its `From` and `To`), the app's answer
-tables, the Explore table and the cleaned-data preview. An Explore chart with
-such a time axis is labelled by the clock, like the trend chart.
+is applied to `Analysis.segments()` (its `From` and `To`).
 
 ## Known gaps
 

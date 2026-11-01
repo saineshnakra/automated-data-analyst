@@ -34,7 +34,6 @@ can't be readings blanked (see
 | The brief's summary | A "Check these first" line when an issue touches the measure or the group the headline names, covers 10% or more of the table (copied rows, simulated-looking data), or covers a quarter or more of a column; never a description of the table, and issues still in the data before codes cleaning set to missing |
 | The leading-group card | When the leading group's average rests on flagged values, a sentence saying so, with the group's median |
 | The relationship, comparison and outlier cards | How many flagged cells were left out of their calculation |
-| The app's Data tab | A **Data checks** table |
 | Ask ADA | "outliers in X" and "are there impossible values" list the flagged values; any answer that uses flagged values, or names a flagged group, adds a caution |
 
 The card, the summary line and the leading-group sentence are described in
@@ -578,11 +577,11 @@ kinds of code to missing:
 A cleaning note per column says how many cells and which value. The issues
 `blank_codes` returns are kept on the cleaning report (`blanked_codes`), and
 `scan(frame, roles, blanked=...)` ranks them with the rest, so
-`Analysis.quality()` and the app's Data checks still list each code, with a
-detail saying cleaning set those cells to missing. A value that only looks
-like a code, such as a price of 9,999 among prices up to 3,000, stays, and so
-does a converted blank found by its frequency (`-17.78` in a temperature
-column), which the checks report for the reader to judge.
+`Analysis.quality()` still lists each code, with a detail saying cleaning set
+those cells to missing. A value that only looks like a code, such as a price
+of 9,999 among prices up to 3,000, stays, and so does a converted blank found
+by its frequency (`-17.78` in a temperature column), which the checks report
+for the reader to judge.
 
 ## Speed
 

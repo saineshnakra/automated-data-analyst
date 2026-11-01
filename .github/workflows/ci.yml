@@ -29,8 +29,6 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Compile
         run: python -m compileall -q app.py ada tools tests
-      - name: Import the app
-        run: python -c "import app"
 
   package:
     runs-on: ubuntu-latest
@@ -53,7 +51,7 @@ jobs:
           /tmp/venv/bin/ada --version
           /tmp/venv/bin/ada analyze - > /dev/null
           /tmp/venv/bin/ada skill --print | grep -q '^name: ada$'
-          /tmp/venv/bin/python -c "import ada, sys; ada.analyze(ada.sample()); assert 'streamlit' not in sys.modules"
+          /tmp/venv/bin/python -c "import ada, sys; ada.analyze(ada.sample()); assert not {'streamlit', 'matplotlib'} & set(sys.modules)"
       - name: Check a claim, answer a question and scan a folder with the installed command
         run: |
           cd "$(mktemp -d)"
@@ -80,17 +78,8 @@ jobs:
           /tmp/venv/bin/python -c "import json; replies = [json.loads(line) for line in open('mcp.out')]; assert replies[1]['result']['tools'][0]['name'] == 'ada_ask'"
           /tmp/venv/bin/automated-data-analyst --version
           /tmp/venv/bin/python -m ada --version
-      - name: Build and verify a small study with the installed command
+      - name: Point a moved command to ADA Lab
         run: |
-          cd "$(mktemp -d)"
-          /tmp/venv/bin/python - <<'PY'
-          import numpy as np
-          import pandas as pd
-
-          rng = np.random.default_rng(1)
-          scores = rng.normal(50, 5, 24).round(1)
-          pd.DataFrame({"Group": np.repeat(["Control", "Treated"], 12), "Score": scores}).to_csv("data.csv", index=False)
-          PY
-          /tmp/venv/bin/ada init data.csv --yes
-          /tmp/venv/bin/ada build
-          /tmp/venv/bin/ada verify
+          status=0; /tmp/venv/bin/ada build 2> moved.txt || status=$?
+          test "$status" -eq 2
+          grep -q "pip install ada-lab" moved.txt

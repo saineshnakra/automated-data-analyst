@@ -33,7 +33,6 @@ SYSTEM_PROMPT = (
     "- When the user gives a statement to check, call ada_check_claim with the file's path and the "
     "statement.\n"
     "- When you do not know which file or column to use, call ada_scan.\n"
-    "- Call ada_model only when asked to predict a column for new rows.\n"
     "Answer with the numbers the tool returns and its calculation, and work out no new ones from them (no "
     "sums, differences or percentages): ask the tool. When a tool refuses or cannot tell, say so, give its "
     "reason and ask the user the question it gives."
@@ -89,38 +88,11 @@ _TOOLS = (
         ),
         "parameters": {"type": "object", "properties": {"path": _PATH}, "required": ["path"]},
     },
-    {
-        "name": "ada_model",
-        "title": "Predict a column",
-        "description": (
-            "Train cross-validated models (gradient boosting and a linear model) to predict one column of a "
-            "table for new rows, as a tabular Kaggle competition asks. Use it only when asked to predict "
-            "values for new rows, never for counts, averages or other questions about the data. Returns the "
-            "cross-validated score, how it was computed, the features and the checks on the predictions. "
-            "Needs automated-data-analyst[model]."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "train": {"type": "string", "description": "The training table, or a folder holding "
-                                                           "train.csv, test.csv and a sample submission."},
-                "test": {"type": "string", "description": "The table to predict for, when train is a file."},
-                "target": {"type": "string", "description": "The column to predict (default: the one the "
-                                                            "test table lacks)."},
-                "metric": {"type": "string", "description": "accuracy, balanced_accuracy, f1, auc, "
-                                                            "logloss, map@3, rmse, rmsle, mae or spearman."},
-                "explain": {"type": "boolean", "description": "Predict with a model a person can read, "
-                                                              "with its coefficients and effect curves."},
-                "out": {"type": "string", "description": "Write the predictions to this CSV file."},
-            },
-            "required": ["train"],
-        },
-    },
 )
 
 #: The tools' names.
 NAMES = tuple(tool["name"] for tool in _TOOLS)
-#: The tools that only read: every one but ada_model, which may write its predictions.
+#: The tools that only read: all of them, since none writes a file.
 READ_ONLY = frozenset({"ada_ask", "ada_check_claim", "ada_scan"})
 
 
@@ -276,8 +248,6 @@ def run(name: str, arguments: dict | str, root: str | Path | None = None, brief:
             from .folder import scan  # noqa: PLC0415
 
             result = scan(_inside(given.get("path"), base, "path")).to_dict()
-        elif name == "ada_model":
-            result = _model(given, base)
         else:
             return {"status": "error",
                     "message": f"no tool called {name!r}; the tools are {', '.join(NAMES)}"}
@@ -334,24 +304,6 @@ def _claim(path: Path, claim: str, asked: bool = True) -> dict:
         if answer.get("status") == "answered":
             return {**answer, "note": "This asks for a number instead of stating one, so ADA answered it."}
     return check
-
-
-def _model(given: dict, base: Path | None):
-    from .api import Refusal  # noqa: PLC0415
-    from .modelling import model  # noqa: PLC0415
-
-    train = _inside(given.get("train"), base, "train")
-    test = _inside(given["test"], base, "test") if given.get("test") else None
-    out = _inside(given["out"], base, "out", must_exist=False) if given.get("out") else None
-    report = model(train, test, target=given.get("target"), metric=given.get("metric"),
-                   explain=bool(given.get("explain")))
-    if isinstance(report, Refusal):
-        return report
-    result = report.to_dict()
-    if out is not None:
-        report.write(out)
-        result["written"] = str(out)
-    return result
 
 
 def _shown(value: Any) -> str:

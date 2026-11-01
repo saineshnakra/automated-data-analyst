@@ -14,13 +14,6 @@ from ada import tools
 from ada.cli import main
 from ada.sources import Source, without_file_name
 
-try:
-    import lightgbm  # noqa: F401
-    import sklearn  # noqa: F401
-    HAS_EXTRA = True
-except ImportError:
-    HAS_EXTRA = False
-
 
 def sales(rows: int = 200, seed: int = 0) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
@@ -46,8 +39,7 @@ class DefinitionTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in found], list(tools.NAMES))
         self.assertTrue(all("inputSchema" in item and item["title"] for item in found))
         hints = {item["name"]: item["annotations"]["readOnlyHint"] for item in found}
-        self.assertEqual(hints, {"ada_ask": True, "ada_check_claim": True, "ada_scan": True,
-                                 "ada_model": False})
+        self.assertEqual(hints, {"ada_ask": True, "ada_check_claim": True, "ada_scan": True})
 
     def test_anthropic_style(self):
         found = tools.definitions("anthropic")
@@ -141,22 +133,6 @@ class RunTests(unittest.TestCase):
         message = tools.run("ada_scan", {}, root=self.root)["message"]
         self.assertTrue(message.endswith(", among others."))
         self.assertEqual(message.count(".csv"), tools.LISTED_FILES)
-
-
-    @unittest.skipUnless(HAS_EXTRA, "needs the model extra")
-    def test_model_writes_its_predictions_inside_the_folder(self):
-        rng = np.random.default_rng(2)
-        rows = 400
-        x = rng.normal(0, 1, rows)
-        frame = pd.DataFrame({"id": np.arange(rows), "x": x.round(3), "y": 2 * x + rng.normal(0, 0.5, rows)})
-        frame[:300].to_csv(self.root / "train.csv", index=False)
-        frame[300:].drop(columns="y").to_csv(self.root / "test.csv", index=False)
-        result = tools.run("ada_model", {"train": "train.csv", "test": "test.csv", "target": "y",
-                                         "metric": "rmse", "out": "predictions.csv"}, root=self.root)
-        self.assertLess(result["score"], 1.0)
-        self.assertEqual(len(pd.read_csv(self.root / "predictions.csv")), 100)
-        refused = tools.run("ada_model", {"train": "sales.csv", "target": "price"}, root=self.root)
-        self.assertEqual(refused["status"], "refused")
 
 
 class FileNameTests(unittest.TestCase):

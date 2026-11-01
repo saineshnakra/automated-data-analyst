@@ -1,16 +1,11 @@
 """The ``ada`` command.
 
-For a research study, run these in the folder that holds the data:
+Give a language model ADA's tools:
 
-    ada init data/measurements.csv     # answer a few questions; writes study.yml
-    ada build                          # tables, figures, methods and more in paper-assets/
-    ada verify                         # rebuild and check every number still matches
-    ada share                          # copy what may be shared into share/
-
-To try it on an example study first: ``ada demo``. ``ada build`` counts the analyses
-study.yml asks for, fitted and refused; ``ada build --strict`` exits with 1 when any
-was refused, so a manuscript build cannot pass without them. ``ada skill`` installs
-the skill that tells AI coding assistants how to use ADA.
+    ada chat penguins.csv              # chat with a local model that asks ADA for every number
+    ada mcp                            # serve the tools over MCP, for LM Studio, Jan, Claude Desktop and more
+    ada tools --style anthropic        # print the tool definitions for function calling
+    ada skill                          # install the skill that tells Claude Code and Codex how to use ADA
 
 For a first look at any table:
 
@@ -22,12 +17,14 @@ For a first look at any table:
     ada check metrics.csv --measure signups --frequency W
     ada check rainfall.csv --measure "Rainfall (mm)" --aggregation sum
     ada samples
-    ada app
+
+``ada init``, ``ada build``, ``ada verify``, ``ada model``, ``ada app`` and the other
+commands of the research workflow, the modelling mode and the browser app are in ADA
+Lab (``pip install ada-lab``); ``ada`` hands them to it when it is installed.
 
 ``ada claim`` checks one number someone states about a table and says verified, or
-unverified with the reason (see ``ada.claims``). It is not ``ada verify``, which
-rebuilds a study's paper assets and compares them, nor ``ada check``, which watches
-a measure for unusual periods. It reports through its exit code too:
+unverified with the reason (see ``ada.claims``). It is not ``ada check``, which
+watches a measure for unusual periods. It reports through its exit code too:
 
     0  verified
     1  unverified: the data give a different number, or a check on the analysis failed
@@ -82,6 +79,9 @@ EXIT_QUIET = 0
 EXIT_FLAGGED = 1
 EXIT_ERROR = 2
 EXIT_COULD_NOT_LOOK = 3
+
+#: Commands that moved to ADA Lab (the ada-lab package); ``ada`` hands them to it when it is installed.
+MOVED_COMMANDS = ("init", "build", "verify", "preview", "share", "demo", "research", "model", "auto", "app")
 
 DECIDE_HELP = (
     "pick another option for a choice the answer rests on, such as aggregate_rows=keep; "
@@ -195,27 +195,6 @@ def _claim(args: argparse.Namespace) -> int:
     return EXIT_ERROR if check.reason == "inaccessible_data" else EXIT_COULD_NOT_LOOK
 
 
-def _model(args: argparse.Namespace) -> int:
-    from .modelling import model  # noqa: PLC0415
-
-    report = model(args.train, args.test, target=args.target, metric=args.metric, id_column=args.id,
-                   folds=args.folds, seed=args.seed, auto=args.command == "auto", jobs=args.jobs,
-                   explain=args.explain)
-    if isinstance(report, Refusal):
-        if args.json:
-            print(json.dumps({"schema_version": 1, "status": "refused", "code": report.code,
-                              "message": report.message}, indent=2))
-        else:
-            print(f"refused ({report.code}): {report.message}", file=sys.stderr)
-        return EXIT_COULD_NOT_LOOK
-    if args.out:
-        report.write(args.out)
-    print(json.dumps(report.to_dict(), indent=2) if args.json else report)
-    if args.out and not args.json:
-        print(f"\nWrote {report.rows_test:,} predictions to {args.out}.")
-    return EXIT_QUIET
-
-
 def _scan(args: argparse.Namespace) -> int:
     try:
         found = scan(args.folder, answers=args.answers)
@@ -244,124 +223,6 @@ def _check(args: argparse.Namespace) -> int:
         key = f"anomaly:{item.period:%Y-%m-%d}"
         print(f"{key}  {item.value:,.2f}, {item.direction} the expected {item.expected:,.2f}")
     return EXIT_FLAGGED
-
-
-def _init(args: argparse.Namespace) -> int:
-    from .research import init  # noqa: PLC0415
-
-    try:
-        path = init(args.file, study_path=args.study, sheet=args.sheet, interactive=not args.yes,
-                    overwrite=args.force)
-    except (FileNotFoundError, FileExistsError) as error:
-        print(f"error: {error}", file=sys.stderr)
-        return EXIT_ERROR
-    print(f"\nWrote {path}. Read it through, fill in anything blank, then run `ada build`.")
-    return EXIT_QUIET
-
-
-def _build(args: argparse.Namespace) -> int:
-    from .research import build  # noqa: PLC0415
-
-    built = build(args.study, out=Path(args.out) if args.out else None)
-    checks = sum(1 for finding in built.findings if finding.status == "check")
-    print(f"Built {len(built.assets)} assets in {built.out}")
-    for asset in built.assets:
-        if asset.section in ("main", "supplement"):
-            print(f"  {asset.number:12} {asset.title}")
-    # Counted apart from the notes, so a build can't look complete while an analysis never ran.
-    requested, refused = len(built.results), built.refused
-    if requested:
-        fitted = requested - len(refused)
-        print(f"\nAnalyses: {requested} requested, {fitted} fitted, {len(refused)} refused.")
-    else:
-        print("\nAnalyses: none requested in the study file.")
-    for ident, reason in refused.items():
-        print(f"  refused  {ident}: {reason}")
-    if checks:
-        print(f"\nThe data audit lists {checks} item(s) to check: {built.out / 'audit' / 'data-audit.md'}")
-    changed = [change for change in built.changes if change.status != "new"]
-    if changed:
-        print(f"\n{len(changed)} asset(s) changed since the last build; see {built.out / 'CHANGES.md'}")
-    listed = {f"Analysis {ident} was not fitted: {reason}" for ident, reason in refused.items()}
-    for warning in built.warnings:
-        if warning not in listed:
-            print(f"note: {warning}")
-    if args.strict and refused:
-        print(
-            f"error: --strict: {len(refused)} of {requested} requested analyses "
-            f"{'was' if len(refused) == 1 else 'were'} refused ({', '.join(refused)}). "
-            "The assets were written, but without the refused analyses.",
-            file=sys.stderr,
-        )
-        return EXIT_FLAGGED
-    return EXIT_QUIET
-
-
-def _verify(args: argparse.Namespace) -> int:
-    from .research.verify import verify  # noqa: PLC0415
-
-    report = verify(args.study, rtol=args.rtol, atol=args.atol, out=args.out)
-    print(json.dumps(report.to_dict(), indent=2) if args.json else report.text())
-    return EXIT_QUIET if report.ok else EXIT_FLAGGED
-
-
-def _preview(args: argparse.Namespace) -> int:
-    from .research.package import preview  # noqa: PLC0415
-
-    print(preview(args.study))
-    return EXIT_QUIET
-
-
-def _share(args: argparse.Namespace) -> int:
-    from .research.package import share  # noqa: PLC0415
-
-    shared = share(args.study, out=args.out)
-    print(shared.text())
-    return EXIT_QUIET if shared.ok else EXIT_FLAGGED
-
-
-def _demo(args: argparse.Namespace) -> int:
-    import shlex  # noqa: PLC0415
-
-    from .research.example import write_example  # noqa: PLC0415
-
-    try:
-        files = write_example(args.folder, overwrite=args.force)
-    except FileExistsError as error:
-        print(f"error: {error}", file=sys.stderr)
-        return EXIT_ERROR
-    folder = Path(args.folder)
-    print(f"Wrote an example study to {folder}/: sixteen mice on two diets, weighed weekly (simulated data).")
-    for path in files:
-        print(f"  {path.relative_to(folder).as_posix()}")
-    print(f"\nNext:\n    cd {shlex.quote(str(folder))} && ada build\n"
-          "then open paper-assets/README.md. `ada preview` lists what may be shared, and `ada share` "
-          "copies it.")
-    return EXIT_QUIET
-
-
-def _status(_: argparse.Namespace) -> int:
-    """With no command: say where this folder stands and what to run next."""
-    study = Path("study.yml")
-    if not study.is_file():
-        print("No study.yml here. To make paper assets for a study, run this in its folder:\n"
-              "    ada init path/to/data.csv\n"
-              "then `ada build`. To try it on an example study: `ada demo`.\n"
-              "For a quick look at any table: `ada analyze file.csv`.\n"
-              "`ada --help` lists every command.")
-        return EXIT_QUIET
-    from .research import load  # noqa: PLC0415
-    from .research.provenance import read_manifest  # noqa: PLC0415
-
-    loaded = load(study)
-    record = read_manifest(loaded.out_dir)
-    print(f"{loaded.title}: {loaded.data_path}, {loaded.design} design, {len(loaded.analyses)} analyses")
-    if record is None:
-        print("Not built yet. Run `ada build`.")
-    else:
-        print(f"{len(record['assets'])} assets in {loaded.output.dir}/ from ADA {record['ada']}. "
-              "Run `ada verify` to check they are current, or `ada build` to rebuild.")
-    return EXIT_QUIET
 
 
 #: Where each assistant looks for skills, in the project folder or the home folder: Claude Code reads
@@ -520,69 +381,15 @@ def _samples(_: argparse.Namespace) -> int:
     return EXIT_QUIET
 
 
-def _app(_: argparse.Namespace) -> int:
-    """Launch the Streamlit app from a source checkout (needs the [app] extra)."""
-    entry = Path(__file__).resolve().parent.parent / "app.py"
-    if not entry.is_file():
-        print(
-            "The app runs from a source checkout:\n"
-            "    git clone https://github.com/saineshnakra/automated-data-analyst\n"
-            "    cd automated-data-analyst && pip install -e '.[app]' && ada app",
-            file=sys.stderr,
-        )
-        return EXIT_ERROR
-    try:
-        from streamlit.web import cli as streamlit_cli  # noqa: PLC0415
-    except ImportError:
-        print("The app needs Streamlit: pip install -e '.[app]'", file=sys.stderr)
-        return EXIT_ERROR
-    sys.argv = ["streamlit", "run", str(entry)]
-    streamlit_cli.main()
-    return EXIT_QUIET
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ada",
-        description="Paper assets for a study (init, build, verify) and a first look at any table (analyze).",
+        description="Compute and check numbers from CSV and Excel data, for people and language models.",
+        epilog="The research workflow (init, build, verify, preview, share, demo), the modelling mode "
+               "(model, auto) and the browser app (app) are in ADA Lab: pip install ada-lab.",
     )
     parser.add_argument("--version", action="version", version=f"ada {__version__}")
     subcommands = parser.add_subparsers(dest="command", metavar="COMMAND")
-
-    def research_commands(group) -> None:
-        init = group.add_parser(
-            "init", help="describe a study: writes study.yml from the data and your answers"
-        )
-        init.add_argument("file", help="the study's data file (CSV, TSV or Excel)")
-        init.add_argument("--sheet", help="the worksheet to read from an Excel file")
-        init.add_argument("--study", default="study.yml", help="where to write the study file")
-        init.add_argument("--yes", action="store_true", help="accept every suggestion without asking")
-        init.add_argument("--force", action="store_true", help="replace an existing study file")
-        built = group.add_parser("build", help="make the paper assets: tables, figures, methods and records")
-        built.add_argument("--study", default="study.yml", help="the study file")
-        built.add_argument("--out", help="the output folder (default: output.dir in the study file)")
-        built.add_argument(
-            "--strict", action="store_true", help="exit with status 1 if any analysis in the study is refused"
-        )
-        check = group.add_parser("verify", help="rebuild in a scratch folder and check every asset matches")
-        check.add_argument("--study", default="study.yml", help="the study file")
-        check.add_argument("--out", help="the output folder to check (default: output.dir in the study file)")
-        check.add_argument("--rtol", type=float, default=1e-9, help="relative tolerance for numbers (1e-9)")
-        check.add_argument("--atol", type=float, default=1e-12, help="absolute tolerance for numbers (1e-12)")
-        check.add_argument("--json", action="store_true", help="machine-readable output")
-        shown = group.add_parser("preview", help="list what would be shared, and anything that should not be")
-        shown.add_argument("--study", default="study.yml", help="the study file")
-        shared = group.add_parser("share", help="copy the files that may be shared into share/")
-        shared.add_argument("--study", default="study.yml", help="the study file")
-        shared.add_argument("--out", help="the folder to write (default: share/ beside the study file)")
-        demo = group.add_parser("demo", help="write a small example study to try ada build on")
-        demo.add_argument("folder", nargs="?", default="ada-demo",
-                          help="where to write it (default: ada-demo)")
-        demo.add_argument("--force", action="store_true", help="write into a folder that is not empty")
-
-    research_commands(subcommands)
-    research = subcommands.add_parser("research", help="the same research commands, under one name")
-    research_commands(research.add_subparsers(dest="research_command", metavar="COMMAND", required=True))
 
     def with_source(name: str, help_text: str):
         sub = subcommands.add_parser(name, help=help_text)
@@ -625,27 +432,6 @@ def build_parser() -> argparse.ArgumentParser:
     scanned.add_argument("--answers", help="a YAML file of answers given before (see --template)")
     scanned.add_argument("--template", help="write the questions and proposed answers to this YAML file")
     scanned.add_argument("--json", action="store_true", help="machine-readable result")
-    for name, about in (
-        ("model", "cross-validate a model of one column and predict it for a test table (Kaggle style)"),
-        ("auto", "the same with a wider search: more learners and settings, a second layer and a greedy "
-                 "blend; takes longer"),
-    ):
-        modelled = subcommands.add_parser(name, help=about)
-        modelled.add_argument("train", help="the training table, or a folder with train.csv, test.csv and a "
-                                            "sample submission")
-        modelled.add_argument("test", nargs="?", help="the test table, when train is a file")
-        modelled.add_argument("--target", help="the column to predict (default: the one the test lacks)")
-        modelled.add_argument("--metric", help="accuracy, f1, auc, logloss, map@3, rmse, rmsle or mae")
-        modelled.add_argument("--id", help="the column that names each row (default: found)")
-        modelled.add_argument("--folds", type=int, default=5, help="cross-validation folds (default: 5)")
-        modelled.add_argument("--seed", type=int, default=0, help="the random seed (default: 0)")
-        modelled.add_argument("--jobs", type=int, default=1,
-                              help="learners fitted at once, sharing the cores (default: 1)")
-        modelled.add_argument("--explain", action="store_true",
-                              help="predict with a model a person can read (linear or additive), with its "
-                                   "coefficients, effect curves and what it costs against the full search")
-        modelled.add_argument("--out", help="write the submission to this CSV file")
-        modelled.add_argument("--json", action="store_true", help="machine-readable result")
     with_source("check", "flag periods outside the expected band; for cron")
 
     skill = subcommands.add_parser(
@@ -700,26 +486,40 @@ def build_parser() -> argparse.ArgumentParser:
                         help="a web page origin allowed to call the HTTP server (repeatable)")
 
     subcommands.add_parser("samples", help="list the bundled datasets")
-    subcommands.add_parser("app", help="launch the browser app (from a source checkout)")
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    from .research.study import StudyError  # noqa: PLC0415
+def _moved(argv: list[str]) -> int:
+    """Hand a command that moved to ADA Lab to it when it is installed, or say how to get it."""
+    try:
+        from ada_lab.cli import main as lab_main  # noqa: PLC0415
+    except ImportError:
+        print(
+            f"`ada {argv[0]}` is in ADA Lab now, with the research workflow, the modelling mode and the "
+            f"browser app:\n    pip install ada-lab\n"
+            f"then run `ada-lab {argv[0]}` (or `ada {argv[0]}` again).",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+    return lab_main(argv, prog="ada")
 
-    args = build_parser().parse_args(argv)
-    command = getattr(args, "research_command", None) or args.command
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] in MOVED_COMMANDS:
+        return _moved(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.command is None:
+        parser.print_help()
+        return EXIT_QUIET
     handler = {
-        "init": _init, "build": _build, "verify": _verify, "preview": _preview,
-        "share": _share, "demo": _demo,
-        "analyze": _analyze, "schema": _schema, "ask": _ask, "claim": _claim, "scan": _scan, "model": _model,
-        "auto": _model,
-        "check": _check, "skill": _skill, "tools": _tools, "chat": _chat, "mcp": _mcp, "samples": _samples,
-        "app": _app, None: _status,
-    }[command]
+        "analyze": _analyze, "schema": _schema, "ask": _ask, "claim": _claim, "scan": _scan, "check": _check,
+        "skill": _skill, "tools": _tools, "chat": _chat, "mcp": _mcp, "samples": _samples,
+    }[args.command]
     try:
         return handler(args)
-    except (AdaError, StudyError) as error:
+    except AdaError as error:
         print(f"error: {error}", file=sys.stderr)
         return EXIT_ERROR
 

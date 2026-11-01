@@ -1,7 +1,7 @@
 {
   "$schema": "https://context7.com/schema/context7.json",
   "projectTitle": "ADA (automated-data-analyst)",
-  "description": "The math arm for LLMs: compute and check numbers from CSV and Excel tables in Python, every number computed by pandas, SciPy and statsmodels with its calculation and rows, or refused with a reason. Tool definitions for function calling (ada.tools) for Claude, Codex and open-source models run with Ollama, vLLM, llama.cpp or LM Studio; a check of any number stated about a table; a map of a folder of files; cross-validated models that predict a column (ada model, ada auto, --explain); and a paper's tables, figures and methods draft built from a study.yml that ada verify rebuilds.",
+  "description": "The math arm for LLMs: compute and check numbers from CSV and Excel tables in Python, every number computed by pandas, SciPy and statsmodels with its calculation and rows, or refused with a reason. Tool definitions for function calling (ada.tools) for Claude, Codex and open-source models run with Ollama, vLLM, llama.cpp or LM Studio; an MCP server (ada mcp) and a chat command (ada chat); a check of any number stated about a table; and a map of a folder of files.",
   "folders": [
     "docs",
     "ada/skills"
@@ -24,8 +24,6 @@
     "Let ADA compute the numbers: report what it prints, with the calculation and rows it names, instead of computing or estimating them yourself.",
     "Check every number you state about a data file with ada claim (or ada.check_claim) and report verified or unverified with ADA's reason; never call a whole answer verified because one number was.",
     "When a check comes back missing_context or ambiguous_intent, ask the person ADA's clarification question instead of choosing a reading.",
-    "For a folder of files, run ada scan first and confirm the proposed links, row meanings and units with the person before combining files.",
-    "Before writing study.yml, ask the researcher what one row is, which column identifies a subject or cluster, the design and which analyses were planned; do not guess them.",
-    "Run ada build and then ada verify after any change to study.yml or the data, and never edit the files in paper-assets/ by hand."
+    "For a folder of files, run ada scan first and confirm the proposed links, row meanings and units with the person before combining files."
   ]
 }

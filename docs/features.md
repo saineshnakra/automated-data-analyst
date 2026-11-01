@@ -43,7 +43,7 @@ hold the exact rules and thresholds.
   is read as its largest one, and a matrix of sample or channel columns is
   measured by its row mean (or each row's spread, when the rows are centred).
   Override any role with
-  `ada.analyze(df, measure="OD600")` or in the app.
+  `ada.analyze(df, measure="OD600")` or `--measure` on the command line.
 - **Knows what can be added up**: money and counts are summed; rates
   (`Viability %`, `Churn Rate`), measured levels (`Water Temp (°C)`, `pH`,
   `Concentration (mg/L)`), per-unit prices and anything it doesn't recognise as
@@ -52,8 +52,8 @@ hold the exact rules and thresholds.
   "total" (`nitrates_total`, all forms of nitrate). Averages get no totals
   and no "share of total", and a change in a rate is reported in percentage
   points.
-  When the name misleads, `aggregation="sum"` or `"mean"` (or **Combine rows
-  by** in the app) says how the measure combines.
+  When the name misleads, `aggregation="sum"` or `"mean"` (`--aggregation` on
+  the command line) says how the measure combines.
 - **Prints readings in full**: `K` and `M` are kept for money and large
   counts, so a heart rate of 1,111 is not shown as `1.1K`; very small or very
   large readings use scientific notation (`3.624e+11`). A `$` needs both a
@@ -63,10 +63,10 @@ hold the exact rules and thresholds.
   average resting on fewer than 30 rows says so.
 - **Builds a timeline**: picks a period grain the data can fill, down to the
   hour, minute or second for a sensor log, drops a final period the data only
-  partly covers, and notes both under the chart. A `Year` column (with a
-  `Month` column, if there is one) counts as a date. Clock times with no date
-  are read as times of day, never given today's date, and a column of elapsed
-  seconds or minutes can be the time axis.
+  partly covers, and notes both. A `Year` column (with a `Month` column, if
+  there is one) counts as a date. Clock times with no date are read as times
+  of day, never given today's date, and a column of elapsed seconds or
+  minutes can be the time axis.
 - **Compares like with like**: the latest change is measured on the groups
   that reported in both periods, a series with a yearly cycle is set against
   the same time of year, and a group's figure says when it covers only part
@@ -167,12 +167,13 @@ hold the exact rules and thresholds.
   record doesn't decide, says when one record makes or hides a correlation,
   and when it is stronger, weaker or reversed within groups.
   Ask about a pair and it reports the same figures for that pair.
-- **Analyzes a slice you select**: draw a box or lasso on the Explore chart, or
-  click some bars, and get the same analysis for those rows beside the whole.
+- **Analyzes a slice of a chart**: a box, a lasso or a few bars selected on a
+  chart become a filter, and those rows get the same analysis beside the
+  whole.
 
-The web app accepts files up to 25 MB. By default up to 1,000,000 rows are
-analyzed (`row_limit=` changes that): the newest rows of a table with a date,
-or a random sample of one without, and every answer says which.
+By default up to 1,000,000 rows are analyzed (`row_limit=` changes that): the
+newest rows of a table with a date, or a random sample of one without, and
+every answer says which.
 
-See [How it works](how-it-works.md) for the steps from upload to report, and
+See [How it works](how-it-works.md) for the steps from a file to a report, and
 the [Reference](README.md#reference) for one page per step.

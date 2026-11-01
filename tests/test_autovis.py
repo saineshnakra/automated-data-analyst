@@ -4,9 +4,7 @@ from dataclasses import replace
 import numpy as np
 import pandas as pd
 
-from ada import ui
 from ada.autovis import MAX_SERIES, ChartSpec, fold_small_series, recommend_chart
-from ada.pipeline import prepare_analysis
 from ada.schema import detect_roles
 
 
@@ -171,85 +169,6 @@ class FoldSmallSeriesTests(unittest.TestCase):
         folded = fold_small_series(frame, "Product", "Revenue")
 
         self.assertIn("Other", set(folded["Product"]))
-
-
-class ExploreFrameTests(unittest.TestCase):
-    def test_the_other_series_of_an_average_is_weighted_by_rows(self):
-        day = pd.Timestamp("2024-01-01")
-        rows = [(day, f"Big{i}", 10.0) for i in range(MAX_SERIES) for _ in range(99)]
-        rows += [(day, "Small", 47.0)] * 5 + [(day, "Rest", 10.0)] * 99
-        frame = pd.DataFrame(rows, columns=["Date", "Site", "pH"])
-        spec = ChartSpec(form="line", x="Date", y="pH", color="Site", aggregation="mean", rationale="")
-        plotted = ui._explore_frame(frame, spec)
-        other = plotted.loc[plotted["Site"].astype(str).str.startswith("Other"), "pH"]
-        # 5 rows at 47 and 99 at 10, not the mean of the two series means (28.5).
-        self.assertAlmostEqual(float(other.iloc[0]), (5 * 47 + 99 * 10) / 104)
-
-    def test_a_category_named_records_can_be_explored(self):
-        frame = pd.DataFrame(
-            {"Date": pd.date_range("2024-01-01", periods=60), "Records": ["x", "y", "z"] * 20,
-             "Revenue": np.arange(60.0)}
-        )
-        prepared = prepare_analysis(frame, row_limit=1000)
-
-        spec = recommend_chart(prepared.dataframe, ["Records"])
-        shown = ui._explore_frame(prepared.dataframe, spec)
-
-        self.assertEqual(len(shown), 3)
-
-
-class ExploreDateAxisTests(unittest.TestCase):
-    def monthly(self, periods: int, **columns) -> pd.DataFrame:
-        frame = pd.DataFrame({
-            "Date": pd.date_range("1958-03-01", periods=periods, freq="MS"),
-            "pH": np.linspace(7.0, 8.0, periods),
-        })
-        return frame.assign(**columns)
-
-    def test_a_long_monthly_series_is_drawn_by_quarter_from_its_first_reading(self):
-        frame = self.monthly(750)
-        spec = recommend_chart(frame, ["Date", "pH"])
-
-        rows, caption = ui._fit_date_axis(frame, spec)
-        shown = ui._explore_frame(rows, spec)
-
-        self.assertLessEqual(len(shown), ui.EXPLORE_POINTS)
-        self.assertEqual(shown["Date"].min(), pd.Timestamp("1958-01-01"))
-        self.assertEqual(shown["Date"].max(), pd.Timestamp("2020-07-01"))
-        self.assertIn("each point is one quarter", caption)
-
-    def test_a_short_series_is_drawn_as_it_is(self):
-        frame = self.monthly(120)
-        spec = recommend_chart(frame, ["Date", "pH"])
-
-        rows, caption = ui._fit_date_axis(frame, spec)
-
-        self.assertIs(rows, frame)
-        self.assertIsNone(caption)
-
-    def test_a_range_too_long_even_for_years_says_how_much_is_shown(self):
-        frame = self.monthly(360)
-        spec = recommend_chart(frame, ["Date", "pH"])
-
-        rows, caption = ui._fit_date_axis(frame, spec, limit=10)
-        shown = ui._explore_frame(rows, spec, limit=10)
-
-        # March 1958 to February 1988 touches 31 calendar years.
-        self.assertEqual(caption, "Showing the latest 10 of 31 years; earlier ones are not drawn.")
-        self.assertEqual(shown["Date"].dt.year.tolist(), list(range(1979, 1989)))
-
-    def test_every_series_keeps_its_older_dates(self):
-        frame = pd.concat(
-            [self.monthly(300, Site=site) for site in ("North", "South", "East")], ignore_index=True
-        )
-        spec = recommend_chart(frame, ["Date", "pH", "Site"])
-
-        rows, caption = ui._fit_date_axis(frame, spec)
-        shown = ui._explore_frame(rows, spec)
-
-        self.assertIsNone(caption)
-        self.assertEqual(shown["Date"].nunique(), 300)
-        self.assertEqual(len(shown), 900)
 
 
 class AggregationDefaultTests(unittest.TestCase):

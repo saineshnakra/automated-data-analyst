@@ -1,11 +1,13 @@
 # Selecting a slice on a chart
 
-**Code:** `ada/selection.py`, run by `pipeline.analyze_selection` and drawn by `ui.render_explore` · **Tests:** `tests/test_selection.py`
+**Code:** `ada/selection.py`, run by `pipeline.analyze_selection` · **Tests:** `tests/test_selection.py`
 
-On the Explore tab you can select part of a chart (a cluster in a scatter, a
-few months on a trend, some bars) and ADA analyzes just those rows beside the
-whole view. The drill-down dropdown filters by one value; a selection filters
-by what you drew.
+On the Explore tab of the browser app in ADA Lab, a reader can select part of
+a chart (a cluster in a scatter, a few months on a trend, some bars), and ADA
+analyzes just those rows beside the whole view. This module turns the
+selection into filters over the rows and compares the slice with the whole;
+it draws nothing. The drill-down filters by one value; a selection filters by
+what was drawn.
 
 A selection is a filter you chose, not a grouping ADA found, and the panel
 words it that way ("the slice you picked", "records you selected").

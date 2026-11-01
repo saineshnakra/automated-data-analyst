@@ -94,8 +94,7 @@ python tools/calibrate_anomalies.py
 
 Run it after changing the fit, the scale estimator or the target false-alarm
 rate, and paste the output into `CRITICAL_VALUES`. The script uses a fixed
-seed, so the table is reproducible. It is not imported by the app or the
-package.
+seed, so the table is reproducible. It is not imported by the package.
 
 ## Known limitation: heavy tails
 
