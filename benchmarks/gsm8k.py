@@ -24,6 +24,7 @@ The model ends its reply with a line "Answer: <number>", and that number is comp
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import re
 import sys
@@ -48,6 +49,8 @@ TOOL_PROMPT = (
 CONDITIONS = ("none", "tool", "check")
 #: Tool-calling rounds before the model must answer.
 ROUNDS = 8
+#: The longest reply, in tokens: a small model sometimes repeats itself until it is stopped.
+MAX_TOKENS = 2048
 ANSWER = re.compile(r"answer\s*[:=]?\s*\**\s*\$?\s*(-?[\d,]*\.?\d+)", re.IGNORECASE)
 NUMBER = re.compile(r"-?[\d,]*\.?\d+")
 
@@ -59,7 +62,7 @@ def compute_tool() -> dict:
 
 def chat(base: str, model: str, messages: list[dict], offered: list[dict]) -> dict:
     body = {"model": model, "messages": messages, "stream": False, "think": False,
-            "options": {"temperature": 0, "seed": 0, "num_ctx": 8192}}
+            "options": {"temperature": 0, "seed": 0, "num_ctx": 8192, "num_predict": MAX_TOKENS}}
     if offered:
         body["tools"] = offered
     request = urllib.request.Request(f"{base}/api/chat", data=json.dumps(body).encode(),
@@ -148,20 +151,24 @@ def main() -> int:
                 if (index, condition) in done:
                     continue
                 started = time.monotonic()
-                if condition == "check":
-                    alone = alone or solve(args.base_url, args.model, question, False)
-                    solved = checked(args.base_url, args.model, alone)
-                else:
-                    solved = solve(args.base_url, args.model, question, condition == "tool")
-                    if condition == "none":
-                        alone = solved
+                try:
+                    if condition == "check":
+                        alone = alone or solve(args.base_url, args.model, question, False)
+                        solved = checked(args.base_url, args.model, alone)
+                    else:
+                        solved = solve(args.base_url, args.model, question, condition == "tool")
+                        if condition == "none":
+                            alone = solved
+                except (OSError, http.client.HTTPException) as error:
+                    # A reply that never ends or a dropped connection counts as no answer.
+                    solved = {"reply": "", "calls": [], "error": str(error)}
                 given = final_number(solved["reply"])
                 record = {"index": index, "condition": condition, "gold": str(gold),
                           "given": None if given is None else str(given),
                           "correct": given is not None and abs(given - gold) <= tolerance,
                           "seconds": round(time.monotonic() - started, 1), "tool_calls": len(solved["calls"]),
                           "reply": solved["reply"], "calls": solved["calls"],
-                          **{key: solved[key] for key in ("checks", "first_reply") if key in solved}}
+                          **{key: solved[key] for key in ("checks", "first_reply", "error") if key in solved}}
                 done[(index, condition)] = record
                 handle.write(json.dumps(record) + "\n")
                 handle.flush()
