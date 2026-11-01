@@ -71,11 +71,10 @@ earlier", or "worse than ..., so do not rely on this forecast".
 forecast that won, and `Forecast.summary` puts the projection and the backtest
 in one sentence.
 
-The dashboard does not draw a forecast whose backtest is worse than no change
-or than last year's same period.
-It says why under the chart, with a toggle to draw it anyway, since a dashed
-line that lost to "no change" on held-out periods would still look like a
-prediction.
+A forecast whose backtest is worse than no change or than last year's same
+period is stated with that verdict (`Forecast.reliable` is false), so a front
+end can leave it undrawn: a dashed line that lost to "no change" on held-out
+periods would still look like a prediction.
 
 `periods_without_mape` counts held-out periods whose actual value is zero.
 They are excluded from MAPE, since a percentage error against zero is
@@ -93,7 +92,7 @@ undefined.
 | History never negative | Forecast and lower band clamped at 0, unless the measure is a level |
 | Held-out values of zero | Excluded from MAPE, counted separately |
 | No variation in history | Zero-width band, stated in `method` |
-| Backtest worse than no change (MASE above 1) or than last year's same period (seasonal MASE above 1) | Stated plainly; not drawn on the dashboard unless asked for |
+| Backtest worse than no change (MASE above 1) or than last year's same period (seasonal MASE above 1) | Stated plainly; `Forecast.reliable` is false |
 | Grain finer than a day | Forecast in seconds, minutes or hours, labelled by the clock |
 
 `ada.Analysis.forecast()` returns a `Refusal` with code `thin_history` where

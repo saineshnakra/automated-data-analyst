@@ -21,7 +21,7 @@ from table_helpers import (
 )
 
 import ada
-from ada import nlq, ui
+from ada import nlq
 from ada.business_insights import describe_correlation, measure_correlation
 from ada.demo_data import make_demo_data
 from ada.file_io import list_sample_datasets as samples
@@ -994,9 +994,10 @@ class NumericGroupingTests(unittest.TestCase):
     def test_the_chart_follows_the_table_order(self):
         frame, roles = timepoint_frame()
 
-        figure = ui._chat_answer_figure(answer_question("mean signal by timepoint", frame, roles))
+        answer = answer_question("mean signal by timepoint", frame, roles)
 
-        self.assertEqual(list(figure.data[0].x), list(range(20)))
+        self.assertEqual(answer.chart, "line")
+        self.assertEqual(list(answer.table.iloc[:, 0]), list(range(20)))
 
 
 class NumericCountTests(unittest.TestCase):
@@ -1061,7 +1062,6 @@ class CorrelationTests(unittest.TestCase):
 
         self.assertEqual(answer.chart, "scatter")
         self.assertEqual(list(answer.table.columns), ["x", "y"])
-        self.assertEqual(ui._chat_answer_figure(answer).data[0].mode, "markers")
 
     def test_a_filter_narrows_the_pairs(self):
         answer = answer_question("correlation between x and y for Alpha", self.frame, self.roles)

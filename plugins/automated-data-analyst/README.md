@@ -15,22 +15,14 @@ output and the data.
   in a report or in the assistant's own answer, and says verified, or
   unverified with the reason and the one question that would settle it. The
   assistant says which of its numbers are verified and which are not.
+- **An answer computed from the data.** `ada ask` answers a question about a
+  table or a folder with the number, its calculation and the rows used, or
+  refuses with the reason.
+- **A map of a folder.** `ada scan` lists the files, the keys that join them
+  and the questions to settle before an analysis.
 - **A first look at any table.** ADA reads a CSV or Excel file and reports
   what is in it: data-quality issues with their rows, group comparisons,
   relationships and trends, each with the test and the arithmetic.
-- **A paper's assets from a study.** The assistant asks the researcher what
-  only they know (what one row is, which column identifies a subject, the
-  design, which analyses were planned), writes a `study.yml`, and runs
-  `ada build`. That makes a data audit, a data dictionary, a record of every
-  exclusion, descriptive and results tables in CSV, Word and LaTeX, figures
-  with their source data and captions, and a methods draft.
-- **A check of the build.** `ada verify` rebuilds everything from
-  `study.yml` and the data in a scratch folder and compares every number.
-
-The design decides the test: Welch's t-test or ANOVA for independent groups,
-a paired t-test, or a linear mixed model for repeated or clustered data.
-Designs ADA doesn't support, such as crossover trials or survival outcomes,
-are refused rather than approximated.
 
 ## Requirements
 
@@ -47,10 +39,10 @@ pip install automated-data-analyst
 - The skill has the assistant run `pip install automated-data-analyst`,
   which downloads ADA and its dependencies from PyPI, and then `ada`
   commands on files in your project.
-- ADA's command line runs on your machine and makes no network calls. Your
-  data is not sent anywhere by the plugin or by ADA.
-- ADA writes its output to `study.yml` and `paper-assets/` in the study
-  folder, and `ada share` copies only the files a study allows to `share/`.
+- The `ada` commands the skill uses run on your machine and make no network
+  calls. Your data is not sent anywhere by the plugin or by ADA.
+- ADA writes a file only when a command is told to, such as the answers file
+  `ada scan --template` writes.
 
 ## Install
 
@@ -76,12 +68,12 @@ Without the plugin, `ada skill` writes the same skill into
 Ask in your own words, for example:
 
 - "Use ADA to look at data/results.csv and tell me what is in it."
-- "Set up a study from data/assay.csv and build the paper's tables and figures."
+- "Check the numbers in my report against data/results.csv."
 - "Check my data for problems before I analyze it."
 
 ## Links
 
-- [Documentation for the study workflow](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/research.md)
+- [Documentation](https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/README.md)
 - [Source code](https://github.com/saineshnakra/automated-data-analyst)
 - [Issues](https://github.com/saineshnakra/automated-data-analyst/issues)
 - [ADA on PyPI](https://pypi.org/project/automated-data-analyst/)

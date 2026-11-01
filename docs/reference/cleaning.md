@@ -487,7 +487,7 @@ joined.
 count for each operation: empty rows, empty columns and index columns removed,
 text columns whose values trimming changed, numeric and datetime columns
 inferred, identical rows found and removed, unreadable date values and
-infinite values. Its `notes` hold the sentences shown above the dashboard
+infinite values. Its `notes` hold the sentences that say what cleaning did
 (a two-row header, repeated headers, dropped empty columns, date-order
 assumptions, timezones, unreadable dates, missing-value codes set to missing,
 dates read from whole numbers, dates built from years, missing-value markers,
@@ -495,12 +495,11 @@ values past a detection limit, lone tokens, unreadable numbers, "not stated"
 phrases, `ND` and placeholder labels, ranges read as dates, merged label
 spellings, widened columns, infinities, identical rows). Its `blanked_codes`
 hold the data-check issues for the codes set to missing, which
-`Analysis.quality()` and the app's data checks list beside the rest.
+`Analysis.quality()` lists beside the rest.
 `pipeline.prepare_analysis` adds what schema detection concluded about the
 columns (see [Schema detection](schema-detection.md#notes)).
 
-`pipeline.cleaning_audit_frame` turns the counts into the table shown in the
-app.
+`pipeline.cleaning_audit_frame` turns the counts into a table.
 
 ## Edge cases
 

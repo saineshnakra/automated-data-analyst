@@ -7,12 +7,14 @@ git clone https://github.com/saineshnakra/automated-data-analyst.git
 cd automated-data-analyst
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -e ".[app,ai,dev,model]"
-streamlit run app.py
+pip install -e ".[dev]"
+ada analyze -                    # a first look at a bundled sample
 ```
 
-Python 3.11 or later. No API key is needed; the app opens with a built-in demo
-dataset.
+Python 3.11 or later. No API key is needed. The browser app, the research
+workflow and the modelling mode are developed in
+[ADA Lab](https://github.com/saineshnakra/ada-lab); `app.py` here only runs
+ADA Lab's app for the hosted demo.
 
 ## Checks
 
@@ -25,7 +27,7 @@ python -m compileall -q app.py ada tools tests
 ```
 
 Ruff config lives in `pyproject.toml`: line length 110, rule sets `E`, `F`, `I`,
-`UP`, `B`, with `E501` relaxed for `app.py` and `ada/ui.py`.
+`UP`, `B`, with `E501` relaxed for `app.py`.
 
 ## Running one test file
 
@@ -50,21 +52,25 @@ python -m unittest discover -s tests -p "test_nlq.py" -v
 | `test_business_insights.py` | Evidence, KPIs, recommendations, rate shares, number formatting |
 | `test_significance.py` | Correlation intervals and rank divergence |
 | `test_nlq.py` | Question parsing, refused phrasings and plan execution |
-| `test_ai_insights.py` | Typed output, plan validation and the privacy contract |
-| `test_autovis.py` | Chart-form choice, series folding, the Explore frame |
+| `test_autovis.py` | Chart-form choice and series folding |
 | `test_public_api.py` | The `ada` package API and the `ada` command |
 | `test_selection.py` | Chart selections as filters, their wording, and the slice-versus-whole comparison |
-| `test_app.py` | Rendering smoke tests, and that the app survives without the AI layer |
+| `test_claims.py` | Reading a claim's number and interval, the six reasons, `ada claim` |
+| `test_folder.py` | `ada scan`: file profiles, proposed links, the questions and the answers file |
+| `test_tools.py` | Tool definitions, `run`, paths kept inside the root, small models' slips |
+| `test_mcp.py` | The MCP server over standard input and output and over HTTP |
+| `test_chat.py` | `ada chat` against a fake model server |
+| `test_moved.py` | The commands and names that moved to ADA Lab |
 
-Tests use fake clients for anything model-related, so the suite needs no network
-and no API credits.
+Tests of `ada chat` use a fake model server on this computer, so the suite
+needs no network and no API credits.
 
 ## CI
 
 `.github/workflows/ci.yml` runs on every push to `main` and every pull request.
-On Python 3.11, 3.12 and 3.13 it runs `ruff check .`, the unit suite,
-`compileall` and an import of `app.py`. A second job builds the wheel, installs
-it without the app extras and runs the `ada` command.
+On Python 3.11, 3.12 and 3.13 it runs `ruff check .`, the unit suite and
+`compileall`. A second job builds the wheel, installs it, and runs `ada
+claim`, `ada ask`, `ada scan` and `ada mcp` from it.
 
 ## Releasing
 
@@ -87,8 +93,8 @@ version.
 ## Conventions
 
 **Where code goes.** See [Architecture](architecture.md). In short:
-calculations in the engine modules, never in a Streamlit callback; presentation
-in `ada/ui.py`; `app.py` orchestrates and holds session state.
+calculations in the engine modules, never in the command line, the tools or
+the MCP server, which only wrap the engine.
 
 **Data in tests.** Synthetic only. Never commit customer or employer data.
 `ada/demo_data.py` is seeded, so it produces the same dataset every run.
@@ -96,8 +102,8 @@ in `ada/ui.py`; `app.py` orchestrates and holds session state.
 **Every analytical rule gets a test**, including the case where it degrades:
 short history, one segment, all zeros, missing dates, negative values.
 
-**Every displayed number carries its calculation.** If you add something to the
-screen, add the string that explains how it was computed.
+**Every reported number carries its calculation.** If you add a number to
+what ADA reports, add the string that explains how it was computed.
 
 **Formatting never changes values.** See [Formatting](reference/formatting.md).
 
@@ -113,16 +119,3 @@ Explain, in the body:
 
 Keep pull requests focused. Avoid unrelated formatting churn, and do not add a
 dependency without a concrete product need.
-
-## Optional: running with an API key
-
-Not required for development. To exercise the AI layer, either enter a key in
-the app's session-only sidebar field, or set it in the environment:
-
-```toml
-# .streamlit/secrets.toml (gitignored; never commit it)
-OPENAI_API_KEY = "your-key"
-```
-
-Do not put an owner-funded key on a public deployment without authentication and
-spending controls.

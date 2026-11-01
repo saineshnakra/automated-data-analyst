@@ -1,16 +1,17 @@
-"""ADA: paper assets for a study, and a first look at any table.
-
-    from ada import research
-    research.build("study.yml")         # the same as `ada build`
+"""ADA: compute and check numbers from CSV and Excel data, for people and language models.
 
     import ada
-    report = ada.analyze("measurements.csv")
-    print(report)
+    answer = ada.analyze("measurements.csv")
+    check = ada.check_claim("flights.csv", "The average dep_delay was 12.64 minutes.")
 
-The core depends on pandas, numpy, scipy, statsmodels, ruptures and
-python-calamine. ``ada.research`` brings in Matplotlib, python-docx and PyYAML
-only when it is imported, so ``import ada`` stays quick. Streamlit, plotly and
-the optional AI layer are extras and are imported only when used.
+    from ada import tools
+    tools.definitions()                 # tool definitions for function calling
+    tools.run("ada_ask", {"path": "orders.csv", "question": "total revenue by region"})
+
+The core depends on pandas, numpy, scipy, statsmodels, ruptures, python-calamine
+and PyYAML. The research workflow, the modelling mode and the browser app are in
+ADA Lab (``pip install ada-lab``); ``ada.model`` and ``ada.research`` reach it
+when it is installed.
 """
 
 from . import tools
@@ -33,7 +34,6 @@ from .claims import ClaimCheck, check_claim
 from .decisions import Decision, UnknownDecision
 from .folder import FolderScan, scan
 from .joins import ask_folder
-from .modelling import ModelReport, model
 from .sources import Source
 
 __version__ = "0.7.0"
@@ -48,7 +48,6 @@ __all__ = [
     "ClaimCheck",
     "Decision",
     "FolderScan",
-    "ModelReport",
     "NothingToAnalyze",
     "Refusal",
     "Source",
@@ -58,10 +57,28 @@ __all__ = [
     "analyze",
     "ask_folder",
     "check_claim",
-    "model",
     "read_file",
     "sample",
     "samples",
     "scan",
     "tools",
 ]
+
+
+#: Names that moved to ADA Lab, with the module there that holds each.
+MOVED = {"model": "ada_lab", "ModelReport": "ada_lab", "research": "ada_lab.research"}
+
+
+def __getattr__(name: str):
+    """Reach ``ada.model``, ``ada.ModelReport`` and ``ada.research`` in ADA Lab, or say how to install it."""
+    if name not in MOVED:
+        raise AttributeError(f"module 'ada' has no attribute {name!r}")
+    import importlib  # noqa: PLC0415
+
+    try:
+        module = importlib.import_module(MOVED[name])
+    except ImportError as error:
+        raise ImportError(
+            f"ada.{name} is in ADA Lab now: pip install ada-lab, then use ada_lab.{name}."
+        ) from error
+    return module if name == "research" else getattr(module, name)

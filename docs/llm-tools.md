@@ -147,7 +147,7 @@ for call in reply.calls:
 
 `ada.chat.Chat(data, model=..., base_url=...)` keeps a conversation over
 several questions. To run the loop yourself, `ada.tools.definitions()` gives
-the four tools in the format OpenAI-compatible servers take, and
+the three tools in the format OpenAI-compatible servers take, and
 `ada.tools.run(name, arguments)` runs the one the model picks:
 
 | Tool | What it does |
@@ -155,7 +155,8 @@ the four tools in the format OpenAI-compatible servers take, and
 | `ada_ask` | computes an answer from a file or folder: a count, mean, share, change, ranking, group comparison, correlation or trend |
 | `ada_check_claim` | checks a statement against the data: true, false or cannot tell, with the reason |
 | `ada_scan` | lists the tables in a folder, their columns and the keys that join them |
-| `ada_model` | predicts a column with cross-validated models (needs `automated-data-analyst[model]`) |
+
+All three only read; none writes a file.
 
 ```python
 import json
@@ -227,7 +228,7 @@ Every tool result of a turn goes back in one user message, as above.
 
 ## How a call goes
 
-1. The app sends the question, ADA's instructions and the four tool
+1. The app sends the question, ADA's instructions and the three tool
    definitions to the model.
 2. The model answers with a tool call instead of a number:
    `ada_ask(path="penguins.csv", question="average bill_length_mm by species")`.
@@ -282,7 +283,6 @@ directly. `ada skill` installs the instructions that tell them to
 ada ask flights.csv "average dep_delay by origin" --json
 ada claim flights.csv "The average departure delay was about 13 minutes." --json   # exit 0 verified, 1 failed check
 ada scan data/ --json
-ada model titanic/ --metric accuracy --out submission.csv --json
 ```
 
 ## What comes back
@@ -306,5 +306,4 @@ such as a column the data do not have.
 
 Every number in a result comes from pandas, SciPy or statsmodels, so what the
 model reports can be checked against the data and the calculation it names.
-See [Checking claims](reference/claims.md), [Ask ADA](reference/ask-ada.md)
-and [Predicting a column](reference/modelling.md).
+See [Checking claims](reference/claims.md) and [Ask ADA](reference/ask-ada.md).

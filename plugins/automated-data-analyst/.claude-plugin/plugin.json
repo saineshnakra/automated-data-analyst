@@ -2,7 +2,7 @@
   "name": "automated-data-analyst",
   "displayName": "Automated Data Analyst",
   "version": "0.7.0",
-  "description": "The math arm for Claude Code and Codex: every number from the ADA Python package (pandas, SciPy, statsmodels) with its calculation. Compute and check numbers in CSV and Excel data, map a folder of files, predict a column with cross-validated models, and build a paper's tables and figures.",
+  "description": "The math arm for Claude Code and Codex: every number from the ADA Python package (pandas, SciPy, statsmodels) with its calculation. Compute and check numbers in CSV and Excel data, and map a folder of files.",
   "author": {
     "name": "Sainesh Nakra",
     "url": "https://sainesh.com/"
@@ -13,19 +13,14 @@
   "keywords": [
     "llm-tools",
     "fact-checking",
+    "claim-verification",
     "data-analysis",
     "statistics",
-    "machine-learning",
-    "kaggle",
-    "research",
-    "reproducible-research",
     "csv",
     "excel",
     "pandas",
     "scipy",
-    "statsmodels",
-    "mixed-models",
-    "publication-figures"
+    "statsmodels"
   ],
   "icon": "./assets/logo.png",
   "documentationUrl": "https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/README.md",

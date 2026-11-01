@@ -45,7 +45,7 @@ class QueryPlan:
     year: int | None
     month: int | None
     grain: str | None         # s | min | h | D | W | M | Q | Y
-    source: str               # "rules", or "ai" for the optional planner
+    source: str               # "rules", or "ai" for a plan from ADA Lab's optional planner
     conditions: tuple[Condition, ...]  # "pH below 5.5", "OBJECT is 0", "eCO2 missing"
     time_part: str | None     # "hour", "weekday", "month", "quarter" or "season" of the year,
                               # or "year", of the date column in `dimension`
@@ -650,8 +650,8 @@ reading the question with the matched column names removed so that
 | A measure with an aggregation word or a superlative, or a measure named on its own | `aggregate` |
 | Only conditions or values | `count` |
 
-If none match, `parse_question` returns `None`. That triggers the AI planner
-(when a key is set) or the suggestion list.
+If none match, `parse_question` returns `None`, and the question is refused
+with a reason and suggestions (see [below](#when-the-rules-cannot-parse)).
 
 A segment with "by year", or with a part of the date ("average PM2.5 by
 station and month of the year"), is a `crosstab` of the date part by the
@@ -926,14 +926,14 @@ swapped or stuck readings) and names them: "As in the brief, 12 values the
 data checks flag are left out (WS(m/s) and WD(degree) swapped on 12 rows
 ...)". So a figure Ask gives matches the one in the brief.
 Given `rows_not_analyzed` (`answer_question`, `execute_plan` and
-`rephrase_hint` take it; `Analysis.ask` and the app pass the rows the row limit
-left out), the rows are named for what they are: "Based on the 1,000,000
+`rephrase_hint` take it; `Analysis.ask` passes the rows the row limit left
+out), the rows are named for what they are: "Based on the 1,000,000
 sampled rows (of 3,108,545)." for a table sampled at random, or "the newest"
 rows for a dated one.
 
 **A long table's focus.** When the brief follows one parameter of a long table
-(pH, ammonia and temperature on separate rows), `Analysis.ask` and the app
-pass every row as a `WholeTable`. A question that names another parameter
+(pH, ammonia and temperature on separate rows), `Analysis.ask` passes every
+row as a `WholeTable`. A question that names another parameter
 ("average result for pH") is answered from its rows, and one that groups by
 the parameter lists each one's value without ranking them, since they are in
 different units. Any other answer ends: "This covers the 5,400 rows with
@@ -990,7 +990,7 @@ notes read as categories and whose name says it numbers places or things
 WARD" is refused, since adding ward numbers counts nothing.
 
 Trend, growth and period-ranking answers use the same `TrendSeries` as the
-dashboard, so the timeline notes ([Periods](periods.md#timeline-adjustments))
+brief, so the timeline notes ([Periods](periods.md#timeline-adjustments))
 are appended to the calculation text.
 
 Other behaviour:
@@ -1144,16 +1144,15 @@ Other behaviour:
 
 ## When the rules cannot parse
 
-1. **The AI planner**, if an API key is set. It receives column names, types
-   and roles, never rows, and returns the same `QueryPlan` shape. Its filter
-   values are matched with `matching_values`, the same matching as above. The
-   app describes the plan in one sentence and runs it only after the user
-   approves. See [The optional AI layer](ai-layer.md).
-2. **Suggested questions** from `suggested_questions`: up to four starter
-   questions built from the detected roles, each answerable by the rules.
+`answer_question` returns `None`, and `Analysis.ask` returns a refusal. The
+reason from `rephrase_hint` is appended to the refusal message, and
+`suggested_questions` gives up to four starter questions built from the
+detected roles, each answerable by the rules.
 
-The reason from `rephrase_hint` is shown above the suggestions and appended to
-the refusal message.
+ADA Lab's browser app can pass such a question to its optional AI planner. The
+planner returns the same `QueryPlan` shape (`source="ai"`); its filter values
+are matched with `matching_values`, the same matching as above, and the plan
+runs only after the user approves it.
 
 ## Edge cases
 
@@ -1189,8 +1188,9 @@ the refusal message.
    the columns any plan field names, so a new field needs no change there.
 5. Test both parsing and execution, and that a question naming a part the
    shape leaves out is refused.
-6. Check that the `calculation` string describes what ran, and that
-   `describe_query_plan` in `ada/ai_insights.py` still matches.
+6. Check that the `calculation` string describes what ran. ADA Lab's
+   `describe_query_plan` words a plan for its app, so a new plan field needs a
+   matching change there.
 
 Shares of a total ("what % of revenue is Enterprise") and date ranges finer
 than a year ("since March 2020") are on the [roadmap](../../ROADMAP.md).

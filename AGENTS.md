@@ -1,31 +1,34 @@
 # Working on ADA
 
-ADA is a Python package (`ada/`) with a command line (`ada`), a research
-workflow (`ada/research/`: `ada init`, `ada build`, `ada verify`) and a
-Streamlit app (`app.py`, `ada/ui.py`, `ada/home.py`).
+ADA is a Python package (`ada/`) with a command line (`ada`), tool
+definitions for language models (`ada/tools.py`), an MCP server
+(`ada/mcp.py`) and a chat command (`ada/chat.py`).
 [docs/architecture.md](docs/architecture.md) says which module does what.
+The research workflow, the modelling mode and the browser app are in
+[ADA Lab](https://github.com/saineshnakra/ada-lab); `app.py` here only runs
+ADA Lab's app for the hosted demo.
 
 ## Setup and checks
 
 ```bash
-pip install -e ".[app,ai,dev,model]"
+pip install -e ".[dev]"
 ruff check .
 python -m unittest discover -s tests
 ```
 
-One test file: `python -m unittest discover -s tests -p "test_research_build.py"`.
+One test file: `python -m unittest discover -s tests -p "test_claims.py"`.
 CI runs the same checks on Python 3.11, 3.12 and 3.13, plus a job that builds
-the wheel and runs `ada init`, `ada build` and `ada verify` from it.
+the wheel and runs `ada claim`, `ada ask`, `ada scan` and `ada mcp` from it.
 
 ## Conventions
 
-- Calculations live in the engine modules and `ada/research/`, never in the
-  app; the app only draws results.
+- Calculations live in the engine modules, never in the command line, the
+  tools or the MCP server; those only wrap the engine.
 - Every number comes from pandas, SciPy or statsmodels and is shown with its
   calculation. When something can't be computed honestly, refuse with a
   reason instead of guessing.
-- Builds are byte-stable: the same study.yml and data give the same files.
-  Don't put dates, temporary paths or random state in outputs.
+- Results are deterministic: the same data and question give the same
+  answer. Don't put dates, temporary paths or random state in outputs.
 - Code is formatted by hand: ruff check only, line length 110. Don't run
   `ruff format`.
 - Tests use `unittest`. A new rule needs a test, including how it behaves on
