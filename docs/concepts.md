@@ -5,7 +5,8 @@ The terms used throughout the docs.
 ## Column roles
 
 ADA assigns columns to four roles before it analyzes a file. All four are
-detected automatically and can be overridden in the app or in `ada.analyze`.
+detected automatically and can be overridden in `ada.analyze` or on the
+command line.
 
 | Role | Meaning | Example columns |
 |---|---|---|
@@ -72,11 +73,10 @@ column is a reading, with no money or count among at least two of them.
 The name can mislead either way: rainfall is often reported as a monthly
 total, and a column called `income` may hold income per person. To choose how
 the measure combines, pass `aggregation="sum"` or `aggregation="mean"` to
-`ada.analyze`, `--aggregation sum|mean` on the command line, or pick Total or
-Average under **Combine rows by** in the app's "Tune ADA's schema detection"
-panel. Every chart, card and answer then combines the measure that way; other
-columns keep their own rule. A measure told to sum is treated as an amount,
-and one told to average as a level.
+`ada.analyze`, or `--aggregation sum|mean` on the command line. Every trend,
+card and answer then combines the measure that way; other columns keep their
+own rule. A measure told to sum is treated as an amount, and one told to
+average as a level.
 
 An averaged measure has no total, so ADA quotes no shares, concentration card
 or "Other segments" bar for it. A change is reported as a percentage for an
@@ -105,12 +105,12 @@ Two adjustments are made before any calculation:
   zero for a summed measure, and left empty for an averaged one, which has
   nothing to average.
 
-Both are reported in a note under the chart. See [Periods](reference/periods.md).
+Both are reported in the trend's notes. See [Periods](reference/periods.md).
 
 ## Trend series
 
 The measure per period, plus the notes about those adjustments
-(`TrendSeries` in `ada/aggregation.py`). It is the input to the trend chart,
+(`TrendSeries` in `ada/aggregation.py`). It is the input to the trend,
 anomaly detection, the forecast and Ask ADA's trend answers.
 
 ## Trendline
@@ -143,15 +143,10 @@ the measure, grouping, filters and aggregation. pandas executes the plan
 locally, and the answer shows the calculation. No generated code runs. See
 [Ask ADA](reference/ask-ada.md).
 
-## Deterministic path and optional AI
+## Computed, not generated
 
-- **Deterministic path.** Everything is computed in-process with pandas, with
-  no network call and no API key. On the hosted demo, the uploaded file is sent
-  to the Streamlit server and analyzed there.
-- **Optional AI.** Two features that need an API key: a query planner for
-  questions the rules cannot parse, and a written AI summary. They receive
-  column names, types and already-computed evidence, which can include the
-  segment names an evidence sentence mentions. They do not receive rows. A
-  planned query runs only after the user approves it.
-
-See [The optional AI layer](reference/ai-layer.md) and [Privacy](privacy.md).
+Everything is computed in-process with pandas, SciPy and statsmodels, with no
+network call and no API key. A language model that uses ADA through `ada
+chat`, `ada mcp` or `ada.tools` picks the tool and reads the answer, and ADA
+computes the numbers. See [ADA as the math tool of a language
+model](llm-tools.md) and [Privacy](privacy.md).

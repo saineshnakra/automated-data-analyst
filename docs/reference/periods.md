@@ -82,7 +82,8 @@ averaged, and for the `aggregation` override that sets it by hand.
 ## Timeline adjustments
 
 Both are made before any calculation and recorded on the `TrendSeries` as
-`notes`, which the app shows under the chart.
+`notes` (`report.trend().notes`); trend answers append them to their
+calculation.
 
 ### Excluding a partial trailing period
 

@@ -10,5 +10,5 @@ maxUploadSize = 25
 headless = true
 # The file watcher stays on. With it off, Streamlit re-runs app.py on each
 # deploy but never reloads a module it has already imported, so a symbol added
-# to file_io.py or ai_insights.py raises "cannot import name" from app.py for
+# to a module such as file_io.py raises "cannot import name" from app.py for
 # the life of the server process. That is what took the public app down.

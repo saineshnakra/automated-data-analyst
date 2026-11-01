@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/saineshnakra/automated-data-analyst"><b>⭐ Star ADA</b></a> if it saves you an afternoon ·
-  <a href="https://automated-data-analyst.streamlit.app/example-study">Try it in the browser</a> ·
+  <a href="https://automated-data-analyst.streamlit.app/">Try it in the browser</a> ·
   <a href="https://github.com/saineshnakra/automated-data-analyst/blob/main/docs/README.md">Docs</a> ·
   <a href="https://github.com/saineshnakra/automated-data-analyst/blob/main/CHANGELOG.md">What's new in 0.7.0</a>
   <br>
@@ -79,7 +79,7 @@ calls with `tools.run`:
 ```python
 from ada import tools
 
-tools.definitions()                    # four tools for function calling: ask, check a claim, scan, model
+tools.definitions()                    # three tools for function calling: ask, check a claim, scan
 tools.run("ada_check_claim", {"path": "flights.csv", "claim": "The average departure delay was about 13 minutes."})
 ```
 
@@ -134,6 +134,10 @@ subject once when several rows come from one, says when groups reverse a
 pooled figure, adds up the count column of a table of counts, and gives a
 reason instead of a number when the data are too thin.
 
+`ada analyze data.csv` takes a first look at any table: problems in the data,
+which groups differ, what relates to what and changes over time, each with
+its calculation.
+
 ## Use it from Claude Code or Codex
 
 ```bash
@@ -145,53 +149,6 @@ It also installs as a plugin ([how](plugins/automated-data-analyst/README.md)).
 The [skill](ada/skills/ada/SKILL.md) has the assistant let ADA do the
 arithmetic, check every number it states with `ada claim`, and ask you ADA's
 question instead of choosing a reading.
-
-## Paper assets for a study
-
-```bash
-ada demo mice && cd mice           # an example study to try first
-ada init data/measurements.csv     # asks about the study; writes study.yml
-ada build                          # writes paper-assets/
-ada verify                         # rebuilds and compares every number
-```
-
-`ada build` makes a data audit, a data dictionary, a record of every
-exclusion, results tables in Word, LaTeX and CSV, figures with captions and a
-methods draft. See [Paper assets for a study](docs/research.md). `ada analyze`
-gives a first look at any table, and `ada app` opens the same in a browser
-(`pip install "automated-data-analyst[app]"`).
-
-## Predict a column
-
-```bash
-pip install "automated-data-analyst[model]"
-ada model titanic/ --metric accuracy --out submission.csv
-```
-
-`ada model` predicts one column of a table from the others, as a tabular
-Kaggle competition asks. The features come from rules on the columns' shapes,
-LightGBM, XGBoost and a linear model are blended on out-of-fold predictions,
-every score is cross-validated, and the submission is checked before it is
-written. See [Predicting a column](docs/reference/modelling.md).
-
-`ada auto` does the same with a wider search and takes longer: CatBoost,
-LightGBM with random split points, extremely randomized trees and a neural
-network join the blend, a second layer is fitted on their out-of-fold predictions, and the
-weights come from greedy selection. Each step stays only when the folds say it
-helps. `--jobs N` fits N learners at once and gives the same model.
-
-`--explain` predicts with a model a person can read instead, a linear or an
-additive one, with its coefficients and 95% intervals, each column's effect
-curve, and what explaining costs against the full search, fold by fold.
-
-It is scored on Kaggle competitions with no code for any one of them: the
-runner passes ADA the competition's folder and the name of its metric, and
-ADA does the rest. Each competition is also split inside itself, the way its
-test is made, so a change is measured on all 22 without a submission. On the 22 scored so far, with `ada auto` where it was
-run, it places in the top 10% on 2 (Titanic, and Housing Prices on Kaggle
-Learn, at 2%), in the top 15% on 6 and in the top 30% on 13. Store Sales, a
-forecast of 1,782 series, is its weakest, at 58%.
-[Every score](results/kaggle/README.md).
 
 ## What it doesn't do yet
 
@@ -217,6 +174,14 @@ cases, only scored ([details](results/verification/README.md)).
 Each change is also scored on rounds of new public data, six datasets at a
 time from statistics offices, city portals and research projects, with claims
 written as reports write them; the pull request gives the scores.
+
+## ADA Lab
+
+The research workflow (paper tables, figures and a methods draft from a
+study.yml), the modelling mode (`ada model`) and the browser app are in
+[ADA Lab](https://github.com/saineshnakra/ada-lab): `pip install ada-lab`.
+With it installed, `ada init`, `ada build`, `ada model` and `ada app` run
+from the `ada` command too.
 
 ## More
 

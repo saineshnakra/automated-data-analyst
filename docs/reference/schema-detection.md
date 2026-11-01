@@ -4,7 +4,7 @@
 **Tests:** `tests/test_schema.py`
 
 Decides what the columns of an unfamiliar file mean. Everything downstream
-depends on it, and the user can correct it in the app.
+depends on it, and the user can correct it (see [Overriding](#overriding)).
 
 The output is a `ColumnRoles`:
 
@@ -202,8 +202,7 @@ common parameter recorded in one unit is the `focus`, and a note names it and
 the next most common ones. `ada.analyze` applies the focus, so the brief, the
 answers and the source name cover that parameter only; naming a `dimension`
 skips it. The grouping chosen within the focus rows comes first in
-`dimensions`, so it takes over once the focus is applied. In the app the
-drill-down starts on the focus and offers no "all values" option.
+`dimensions`, so it takes over once the focus is applied.
 
 ### Matrices
 
@@ -465,28 +464,28 @@ summary-statistics table, running totals set aside, an outcome to explain and
 the readings left out because they restate it, groupings swapped for a twin
 or splitting the rows alike, a long or stacked table's focus, and a matrix,
 with the summary it follows.
-`pipeline.prepare_analysis` adds them to the cleaning notes, so the app, `ada
-schema` and `to_dict()["cleaning_notes"]` list them too.
+`pipeline.prepare_analysis` adds them to the cleaning notes, so `ada schema`
+and `to_dict()["cleaning_notes"]` list them too.
 
 ## Overriding
-
-In the app, `pipeline.apply_role_selection` builds a new `ColumnRoles` from the
-"Tune ADA's schema detection" dropdowns. `"None"` clears a role. Changing the
-measure clears `measure_alternatives`, and changing the grouping clears the
-`focus`. The dashboard re-renders without re-reading or re-cleaning the file.
 
 In Python, pass `date=`, `measure=` or `dimension=` to `ada.analyze`. On the
 command line, `ada schema FILE` prints the detected roles, and `--date`,
 `--measure` and `--dimension` override them. A date override may name a
 column of whole years (1000 to 2999), which is read as 1 January of each year.
 
-How the measure combines is overridden the same way: **Combine rows by**
-(Total or Average) in the app, `aggregation="sum"` or `"mean"` in
-`ada.analyze`, and `--aggregation` on the command line. It is stored on
-`ColumnRoles.aggregation`, and every module reads it through
+How the measure combines is overridden the same way: `aggregation="sum"` or
+`"mean"` in `ada.analyze`, and `--aggregation` on the command line. It is
+stored on `ColumnRoles.aggregation`, and every module reads it through
 `metrics.metric_for`, which applies it only to the active measure. `ada schema`
 prints the measure with how it combines, for example `Resolution Hours
 (mean)`.
+
+`pipeline.apply_role_selection` builds a new `ColumnRoles` from a chosen date,
+measure and grouping, for a front end that offers the choice, such as the
+browser app in ADA Lab. `"None"` clears a role. Changing the measure clears
+`measure_alternatives`, and changing the grouping clears the `focus`. The file
+is not read or cleaned again.
 
 ## Edge cases
 

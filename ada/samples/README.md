@@ -15,7 +15,6 @@ Each one exercises a different part of the analysis.
 
 ## Using them
 
-- In the app, choose **Try a sample dataset**.
 - In Python, `ada.sample("Lab Measurements")` returns a DataFrame and
   `ada.samples()` lists the files. With no name, `ada.sample()` loads Ecommerce
   Orders.
@@ -62,4 +61,4 @@ The files are installed with the package.
 
 The committed files are the version of record; the repository has no script
 that regenerates them. `ada/demo_data.py` shows the fixed-seed approach the
-built-in demo uses, if you want to build a sample of your own the same way.
+tests use, if you want to build a sample of your own the same way.

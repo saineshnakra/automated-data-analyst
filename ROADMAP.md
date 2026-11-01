@@ -3,6 +3,11 @@
 The roadmap favors depth of analysis over more chart types. Each item is scoped
 so one contributor can take it from start to finish.
 
+The browser app (the Explore tab, dashboards, chart controls and templates)
+and the optional AI planner are in
+[ADA Lab](https://github.com/saineshnakra/ada-lab), which builds on this
+package; the items below that concern them belong there.
+
 ## Shipped
 
 - Calibrated anomaly threshold: a residual band per history length with a 5%

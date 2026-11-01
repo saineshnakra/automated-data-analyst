@@ -2,18 +2,18 @@
 
 ## Overview
 
-ADA is a pure-Python analysis engine (the `ada` package) with two front ends: a
-Streamlit app (`app.py` at the repository root) and a Python API with a command
-line (`ada/api.py`, `ada/cli.py`). The engine does not import Streamlit, so it
-runs from a script or a test with no browser and no API key.
+ADA is a pure-Python analysis engine (the `ada` package) with a Python API, a
+command line and tools for language models (`ada/api.py`, `ada/cli.py`,
+`ada/tools.py`, `ada/mcp.py`, `ada/chat.py`). It runs from a script or a test
+with no browser and no API key.
 
 ```
-   app.py  (Streamlit page, session state)      ada/cli.py  (the ada command)
-      │                                              │
-   ada/ui.py  (components, Plotly styling)       ada/api.py  (ada.analyze, Analysis, Refusal)
-      │                                              │   ada/claims.py  (ada.check_claim)
-      │                                              │
-      └──────────────────┬───────────────────────────┘
+   ada/cli.py  (the ada command)      ada/tools.py, ada/mcp.py, ada/chat.py  (language models)
+        │                                  │
+        └────────────────┬─────────────────┘
+                         │
+   ada/api.py  (ada.analyze, Analysis, Refusal)   ada/claims.py  (ada.check_claim)
+   ada/folder.py  (ada.scan)                      ada/joins.py  (ada.ask_folder)
                          │
                   ada/pipeline.py  (cleaning, roles, row limit, drill-down)
                          │
@@ -28,43 +28,41 @@ runs from a script or a test with no browser and no API key.
                               formatting.py
 
  compare.py      group comparisons and the relationship scan (used by business_insights.py and nlq.py)
- autovis.py      chart-form choice for the Explore tab (used by ui.py)
- ai_insights.py  optional; the only module that makes a network call
+ autovis.py      chart-form choice for a set of columns
+ selection.py    a selection on a chart turned into filters
 ```
 
-Only `app.py`, `ada/ui.py`, `ada/home.py` and the `ada app` subcommand import Streamlit, and
-`ada app` imports it only when run. The installed package depends on pandas,
-numpy, scipy, statsmodels, ruptures and python-calamine; Streamlit and Plotly come
-with the `app` extra, and the OpenAI client and Pydantic with the `ai` extra.
+The installed package depends on pandas, numpy, scipy, statsmodels, ruptures,
+python-calamine and PyYAML.
 [Credits](credits.md) says what each library does for ADA and how to cite it.
+
+The research workflow, the modelling mode, the browser app and the optional AI
+layer are in ADA Lab, which builds on this package. `app.py` at the repository
+root only runs ADA Lab's app, for the hosted demo. The commands and names that
+moved (`ada init`, `ada build`, `ada model`, `ada app`, `ada.model`,
+`ada.research` and the rest) are listed in `MOVED_COMMANDS` in `ada/cli.py` and
+`MOVED` in `ada/__init__.py`, which hand them to ADA Lab when it is installed.
 
 ## Layers
 
 | Layer | Files | Rule |
 |---|---|---|
-| Presentation | `app.py`, `ada/ui.py`, `ada/home.py` | Draws results. Does not calculate. |
 | Public interface | `ada/api.py`, `ada/cli.py`, `ada/tools.py`, `ada/mcp.py`, `ada/chat.py` | Wraps the engine for Python, the shell and language models' tool calls. No analysis of its own. |
 | Orchestration | `ada/pipeline.py` | Sequences cleaning, role detection and the row limit. |
-| Engine | `analysis.py`, `schema.py`, `claims.py`, `folder.py`, `aggregates.py`, `decisions.py`, `joins.py`, `metrics.py`, `aggregation.py`, `timeseries.py`, `anomalies.py`, `forecasting.py`, `survival.py`, `timepoints.py`, `compare.py`, `quality.py`, `business_insights.py`, `nlq.py`, `autovis.py`, `selection.py`, `modelling.py`, `explain.py` | Functions over DataFrames. No network, no global state. |
+| Engine | `analysis.py`, `schema.py`, `claims.py`, `folder.py`, `aggregates.py`, `decisions.py`, `joins.py`, `metrics.py`, `aggregation.py`, `timeseries.py`, `anomalies.py`, `forecasting.py`, `survival.py`, `timepoints.py`, `compare.py`, `quality.py`, `business_insights.py`, `nlq.py`, `autovis.py`, `selection.py` | Functions over DataFrames. No network, no global state. |
 | Input | `ada/file_io.py`, `ada/numeric.py`, `ada/sources.py`, `ada/demo_data.py` | Parses and validates input and records where it came from. No analysis. |
 | Output formatting | `ada/formatting.py` | Decides how a value is displayed, never what it is. |
-| Optional AI | `ada/ai_insights.py` | Calls a hosted model for the app. `app.py` imports it inside a `try`, so a missing dependency disables the AI features and nothing else. |
 | Network | `ada/chat.py`, `ada/mcp.py` | `chat` calls the model server it is pointed at, on this computer by default; `mcp --http` listens on 127.0.0.1 unless told otherwise. Nothing else opens a connection, and both use only the standard library. |
 
 ## Module responsibilities
 
 | File | Owns |
 |---|---|
-| `app.py` | Streamlit page setup and the three pages (home, example study, first look), session state, sidebar, upload flow, the Ask ADA approval step |
-| `ada/ui.py` | Render functions, Plotly styling, the chart palette |
-| `ada/home.py` | The home page for researchers, and the example study built with `ada.research` on the server |
 | `ada/api.py` | `analyze`, `Analysis`, `Refusal` and its codes, `sample`, `read_file` |
-| `ada/cli.py` | The `ada` command: `analyze`, `schema`, `ask`, `claim`, `scan`, `model`, `auto`, `check`, `init`, `build`, `verify`, `preview`, `share`, `demo`, `skill`, `tools`, `chat`, `mcp`, `samples`, `app` |
-| `ada/tools.py` | `definitions`, `run` and `brief`: the tools a language model calls (`ada_ask`, `ada_check_claim`, `ada_scan`, `ada_model`), for OpenAI-compatible servers, the Anthropic API and MCP, and the slips of small models it takes in stride |
+| `ada/cli.py` | The `ada` command: `analyze`, `schema`, `ask`, `claim`, `scan`, `check`, `skill`, `tools`, `chat`, `mcp`, `samples`; the commands that moved to ADA Lab are handed to it |
+| `ada/tools.py` | `definitions`, `run` and `brief`: the tools a language model calls (`ada_ask`, `ada_check_claim`, `ada_scan`), all read-only, for OpenAI-compatible servers, the Anthropic API and MCP, and the slips of small models it takes in stride |
 | `ada/mcp.py` | `Server`, `serve_stdio` and `http_server`: the Model Context Protocol over standard input and output or Streamable HTTP, on the standard library |
 | `ada/chat.py` | `Chat` and `chat`: a conversation with a model on an OpenAI-compatible server (Ollama by default) that calls ADA's tools; `ada chat` |
-| `ada/modelling.py` | `model`: features from the columns' shapes, folds made like the test, cross-validated learners, the blend, the checks on the submission |
-| `ada/explain.py` | The readable models of `--explain`: coefficients from statsmodels, effect curves, and the fold-by-fold comparisons |
 | `ada/claims.py` | `check_claim`: reads a claim's number and interval, asks the question, compares, and returns `ClaimCheck` with its reason |
 | `ada/sources.py` | `Source`: the file, its sha256, rows and columns an answer was computed from |
 | `ada/folder.py` | `scan`: profiles every table in a folder, proposes links from their key values, and lists the questions to confirm |
@@ -86,18 +84,18 @@ with the `app` extra, and the OpenAI client and Pydantic with the `ai` extra.
 | `ada/quality.py` | The data checks: impossible values, codes, caps, fill values, extreme values, swapped, copied and stuck columns, copied rows, simulated-looking data, patterns in missing data; setting clear missing-value codes to missing during cleaning; the frame statistics are computed on |
 | `ada/business_insights.py` | Evidence cards, KPIs, recommendations, the executive brief |
 | `ada/nlq.py` | Question to `QueryPlan` to local execution |
-| `ada/autovis.py` | Chart form for a set of columns, and the sentence explaining it |
-| `ada/selection.py` | Turns a selection on the Explore chart into filters, states them in words, and compares the slice with the whole |
+| `ada/autovis.py` | Chart form for a set of columns, and the sentence explaining it; draws nothing |
+| `ada/selection.py` | Turns a selection on a chart into filters, states them in words, and compares the slice with the whole |
 | `ada/formatting.py` | `format_number`, `format_period`, `normalized_name` |
-| `ada/ai_insights.py` | Typed Responses API calls for the query planner and the AI summary |
-| `ada/demo_data.py` | A seeded synthetic sales dataset, used by the tests and by the app when the bundled samples are missing |
-| `tools/` | Offline calibration script, not imported by the app or the package |
+| `ada/demo_data.py` | A seeded synthetic sales dataset, used by the tests |
+| `app.py` | Runs ADA Lab's browser app for the hosted demo; no analysis of its own |
+| `tools/` | Offline calibration scripts, not imported by the package |
 
 ## Design rules
 
 **1. One module defines a period.**
-`ada/aggregation.py` chooses the grain and the timeline adjustments. The trend
-chart, anomaly detection, the forecast and Ask ADA all read the same
+`ada/aggregation.py` chooses the grain and the timeline adjustments. The
+trend, anomaly detection, the forecast and Ask ADA all read the same
 `TrendSeries`, so they agree on what a period is.
 
 **2. Formatting does not change values.**
@@ -105,32 +103,32 @@ chart, anomaly detection, the forecast and Ask ADA all read the same
 reinterpret stored data, so a display change cannot alter a result.
 
 **3. Calculations live in the engine.**
-A number computed inside a Streamlit callback can only be tested by running the
-app. Engine functions can be tested directly.
+The command line, the tools and the MCP server only pass a request to the
+engine and its result back, so every number can be tested by calling an engine
+function directly.
 
 **4. Evidence and recommendations are separate types.**
 Evidence is calculated; recommendations are interpretation. They are separate
-dataclasses (`Evidence`, `Recommendation`) and are rendered and worded
+dataclasses (`Evidence`, `Recommendation`) and are reported and worded
 differently. See [Concepts](concepts.md#evidence-vs-recommendation).
 
-**5. Raw rows are not sent to a model.**
-`ada/ai_insights.py` builds its payloads from the column schema and
-already-computed evidence. Model output is parsed into Pydantic models, and a
-model-produced query plan is validated, shown to the user for approval, and run
-by the same local executor as a rule-parsed plan. Generated code is never
-executed. See [Privacy](privacy.md).
+**5. A model picks a tool; ADA does the arithmetic.**
+A language model calls `ada_ask`, `ada_check_claim` or `ada_scan` with a path
+and a question or claim. ADA turns the question or claim into a `QueryPlan`,
+runs it with pandas and returns the result with its calculation. Generated
+code is never executed. See [Privacy](privacy.md).
 
 **6. Each analytical rule has a test**, including the degraded cases: short
 history, all-zero series, a single segment, missing dates.
 
-**7. Everything except the AI features works without an API key.**
+**7. Nothing needs an API key.**
 
-## Dependency injection at the model boundary
+## Testing the model boundary
 
-`generate_ai_narrative` and `plan_query_with_ai` accept a `client` argument and
-construct an `OpenAI` client only when it is `None`. The expected shape is a
-`Protocol` (`_Client`, `_Responses`). Tests pass a fake client and inspect the
-exact request, with no network access or API credits.
+`ada chat` reaches a model only through `Chat._request`, at the `base_url` it
+is given. `tests/test_chat.py` points it at a fake OpenAI-compatible server on
+127.0.0.1 and inspects the exact requests, with no network access and no
+model.
 
 ## Where to add things
 
@@ -138,10 +136,9 @@ exact request, with no network access or API credits.
 |---|---|---|
 | An evidence card | `ada/business_insights.py` | A `calculation` string and a test |
 | A question shape | `ada/nlq.py` | Extend `QueryPlan` only if needed; test parsing and execution |
-| A dashboard chart | `ada/ui.py` | Build its frame in `ada/aggregation.py`, not in the render function |
-| An Explore chart form | `ada/autovis.py` | A matching branch in `ui._explore_figure` |
+| A chart form | `ada/autovis.py` | A rationale sentence and a test asserting the form for a representative selection |
 | A file format | `ada/file_io.py` | Validation at least as strict as the existing formats |
 | A detection heuristic | `ada/schema.py` | A synthetic fixture that fails without it |
 | A public API method | `ada/api.py` | A `Refusal` code from `REFUSAL_CODES` for each case it cannot answer |
-| Anything model-related | `ada/ai_insights.py` | A test showing no cell values enter the payload |
+| A tool for language models | `ada/tools.py` | A definition in `_TOOLS` and a branch in `run`; `ada mcp` and `ada chat` take their tools from there |
 | A change to the AI skill | `ada/skills/ada/` | The same change in `plugins/automated-data-analyst/skills/ada/`; a test checks the two match |

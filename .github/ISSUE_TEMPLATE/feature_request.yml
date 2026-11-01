@@ -14,7 +14,7 @@ body:
     id: proposal
     attributes:
       label: Proposed behavior
-      description: Explain what ADA should do from upload to result.
+      description: Explain what ADA should do from file to result.
     validations:
       required: true
   - type: textarea

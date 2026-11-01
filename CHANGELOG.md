@@ -97,6 +97,25 @@ ada mcp                                              # ADA as an MCP server, for
   range the claim's 210 stands for"), which small models read the wrong way
   round before.
 
+### ADA Lab
+
+The research workflow, the modelling mode and the browser app move to their
+own package, [ADA Lab](https://github.com/saineshnakra/ada-lab) (`pip install
+ada-lab`), with their history. ADA keeps to computing and checking numbers for
+people and language models, and installs without Matplotlib or python-docx.
+
+- `ada init`, `ada build`, `ada verify`, `ada preview`, `ada share`, `ada
+  demo`, `ada research`, `ada model`, `ada auto` and `ada app` run ADA Lab's
+  commands when it is installed, and otherwise say how to install it. ADA Lab
+  also has its own command, `ada-lab`.
+- `ada.model`, `ada.ModelReport` and `ada.research` reach ADA Lab the same
+  way; `from ada_lab import research` and `ada_lab.model(...)` are the new
+  names.
+- The `ada_model` tool is gone from `ada.tools`, `ada chat` and `ada mcp`;
+  every tool left only reads.
+- The `app`, `ai` and `model` extras are gone; ADA Lab has them.
+- `ada` with no command prints its help.
+
 ## 0.7.0 (2026-10-31)
 
 ADA is now the math arm for language models. `ada.tools` gives any model with

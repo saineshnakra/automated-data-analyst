@@ -18,9 +18,9 @@ body:
     attributes:
       label: Reproduction steps
       placeholder: |
-        1. Open...
-        2. Upload a synthetic file with...
-        3. Select...
+        1. Make a synthetic file with...
+        2. Run `ada ask data.csv "..."`...
+        3. See...
     validations:
       required: true
   - type: dropdown
@@ -33,17 +33,18 @@ body:
         - Periods, anomalies or forecast
         - Evidence or recommendations
         - Ask ADA
-        - Dashboard or Explore tab
+        - Checking claims (ada claim)
+        - Reading a folder (ada scan)
+        - Tools for language models (ada.tools, ada chat, ada mcp)
         - Python API or ada command
-        - Optional AI features
-        - Deployment or documentation
+        - Documentation
     validations:
       required: true
   - type: input
     id: environment
     attributes:
-      label: Browser and environment
-      placeholder: Chrome 128 on the hosted app, or Python 3.12 locally
+      label: Environment
+      placeholder: ADA 0.7.0, Python 3.12 on macOS
   - type: textarea
     id: sample
     attributes:

@@ -1,6 +1,11 @@
--r requirements.txt
+# What the checks need: ADA's own dependencies (pip install -e . installs them too), ruff, and openpyxl for
+# the workbooks the tests write.
+pandas>=2.2,<3
+numpy>=1.26,<3
+python-calamine>=0.4,<1
+scipy>=1.11,<2
+statsmodels>=0.14.2,<1
+ruptures>=1.1.10,<2
+PyYAML>=6,<7
 ruff>=0.8,<1
 openpyxl>=3.1,<4
-# The model extra, so the modelling tests run.
-scikit-learn>=1.5,<2
-lightgbm>=4.5,<5

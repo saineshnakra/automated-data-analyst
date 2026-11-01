@@ -5,12 +5,11 @@ a sentence such as "The average departure delay was 12.64 minutes", written by
 a person or by an AI assistant. The result is `verified`, or `unverified` with
 one of six reasons. Code: `ada/claims.py`.
 
-This is separate from the other two checks in ADA:
+This is separate from the other check in ADA:
 
 | Command | Checks |
 |---|---|
 | `ada claim FILE "..."` | One number stated about a table, against that table |
-| `ada verify` | That a study's assets rebuild the same from `study.yml` and the data |
 | `ada check FILE` | Whether the latest period of a series is unusual (anomaly detection) |
 
 ## Using it

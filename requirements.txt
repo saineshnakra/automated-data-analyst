@@ -1,16 +1,3 @@
-streamlit==1.59.2
-# Streamlit 1.59 serves images and downloads through Starlette, and on Starlette 1.x they fail with a
-# server error, so the app keeps to the 0.x line until Streamlit supports it.
-starlette>=0.40,<1
-pandas>=2.2,<3
-numpy>=1.26,<3
-plotly>=5.24,<7
-python-calamine>=0.4,<1
-scipy>=1.11,<2
-statsmodels>=0.14.2,<1
-ruptures>=1.1.10,<2
-PyYAML>=6,<7
-matplotlib>=3.8,<4
-python-docx>=1.1,<2
-openai>=2.46,<3
-pydantic>=2.11,<3
+# What the browser app at automated-data-analyst.streamlit.app needs; Streamlit Community Cloud installs
+# this file. The app is in ADA Lab now, and app.py runs it from the ada-lab package.
+ada-lab[app,ai] @ git+https://github.com/saineshnakra/ada-lab@main

@@ -15,5 +15,5 @@
 - [ ] `ruff check .`
 - [ ] `python -m unittest discover -s tests`
 - [ ] New or changed analytical behaviour has tests
-- [ ] UI changes include screenshots
+- [ ] Changes to what ADA prints include an example
 - [ ] No credentials, private data or build output committed
