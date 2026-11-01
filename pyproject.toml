@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "automated-data-analyst"
-version = "0.7.0"
-description = "The math arm for LLMs: compute and check numbers from CSV and Excel data with pandas, SciPy and statsmodels, each with its calculation, or refused with a reason. Tool definitions for Claude, Codex and open-source models (Ollama, vLLM, llama.cpp, LM Studio), cross-validated Kaggle-style models, and paper tables and figures."
+version = "0.8.0"
+description = "The math arm for LLMs: compute and check numbers from CSV and Excel data with pandas, SciPy and statsmodels, each with its calculation, or refused with a reason. An MCP server and tool calling for Claude, Codex and local models (ada chat for Ollama; LM Studio, Open WebUI, llama.cpp, vLLM), cross-validated Kaggle-style models, and paper tables and figures."
 requires-python = ">=3.11"
 readme = "README.md"
 license = "MIT"

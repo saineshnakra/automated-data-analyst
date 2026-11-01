@@ -16,7 +16,7 @@ Chat with a local model that uses ADA, or plug ADA into an app that takes MCP se
 
 ```
 ada chat penguins.csv               # Ollama by default (ollama pull qwen3:1.7b); --base-url for LM Studio, llama.cpp, vLLM
-ada mcp                             # MCP over stdio: {"mcpServers": {"ada": {"command": "uvx", "args": ["--from", "automated-data-analyst", "ada", "mcp"]}}}
+ada mcp                             # MCP over stdio: {"mcpServers": {"ada": {"command": "uvx", "args": ["automated-data-analyst", "mcp"]}}}
 ada mcp --http                      # Streamable HTTP at http://127.0.0.1:8000/mcp, for Open WebUI
 ```
 

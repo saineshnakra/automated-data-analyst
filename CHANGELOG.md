@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 (2026-11-01)
 
 Any local model that can call tools can now use ADA in one step: `ada chat`
 talks to Ollama (or LM Studio, llama.cpp, vLLM) with ADA's tools, and `ada
@@ -32,7 +32,9 @@ ada mcp                                              # ADA as an MCP server, for
   host is refused. It needs only the standard library, and it is checked
   against the official MCP client on both transports.
 - `python -m ada` runs the command, and `automated-data-analyst` is a second
-  name for it, so `uvx automated-data-analyst mcp` works too.
+  name for it, so `uvx automated-data-analyst mcp` starts the MCP server with
+  nothing installed first. ADA is listed in the official MCP Registry as
+  `io.github.saineshnakra/automated-data-analyst`.
 - `ada tools --style mcp` prints the definitions in the form an MCP server
   lists them, with titles and read-only hints.
 
