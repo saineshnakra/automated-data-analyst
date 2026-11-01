@@ -305,6 +305,66 @@ class CheckArithmeticTests(unittest.TestCase):
         self.assertEqual(item.to_dict(), {"expression": "7 * 8", "stated": "54", "computed": "56",
                                           "correct": False})
 
+    # The cases below are from small models' worked answers to GSM8K problems.
+
+    def test_a_chain_checks_its_last_step(self):
+        found = check_arithmetic("5,000 * (1 + 0.025) = 5,000 * 1.025 = 5,125")
+        self.assertEqual([(item.expression, item.stated, item.correct) for item in found],
+                         [("5,000 * 1.025", "5,125", True)])
+        # A running total is written as a chain too.
+        self.assertTrue(check_arithmetic("3 * 4 = 12 + 1 = 13")[0].correct)
+        found = check_arithmetic("\\text{Salary} = 40,000 \\times (1 + 0.30) = 40,000 \\times 1.30 = 52,000")
+        self.assertEqual([(item.expression, item.correct) for item in found], [("40,000 * 1.30", True)])
+
+    def test_part_of_a_longer_expression_is_skipped(self):
+        self.assertEqual(check_arithmetic("16 friends * (1 - 1/4) = 16 friends * 3/4 = 12 guests"), [])
+        self.assertEqual(check_arithmetic("30 bees * 1/2 = 15 bees."), [])
+        self.assertEqual(check_arithmetic("We know that S = 2B and S + B + 2 + 2 = 28."), [])
+        self.assertEqual(check_arithmetic("2x + 15 - 5 = 2x + 10"), [])
+        self.assertEqual(check_arithmetic("15 - 5 = 2x"), [])
+        self.assertEqual(check_arithmetic("$50,000/year * 20 years = $1,000,000"), [])
+        self.assertEqual(check_arithmetic("7/13 = 120/x"), [])
+
+    def test_lists_and_lines(self):
+        # A list marker is not a minus sign, and an equation does not run across lines.
+        found = check_arithmetic("Half of 80 is 40\n   - 40 + 20 = 60\n"
+                                 "   - 25% of 80 is 20\n   - 80 + 20 = 100")
+        self.assertEqual([(item.expression, item.correct) for item in found],
+                         [("40 + 20", True), ("80 + 20", True)])
+        self.assertEqual(check_arithmetic("5\n- 3 = 12"), [])
+        found = check_arithmetic("So the total is **3 * 4 = 12** apples (that is 5 * 6 = 30) "
+                                 "and 2 * 3 = 6 (cups)")
+        self.assertEqual([item.correct for item in found], [True, True, True])
+
+    def test_rates_currency_and_misplaced_commas(self):
+        found = check_arithmetic("- Total monthly payment: $450 + $300 + $750 = $1,500/month")
+        self.assertEqual([(item.stated, item.correct) for item in found], [("1,500", True)])
+        found = check_arithmetic("Increase = 10\\% \\times 726 = 0.10 \\times 726 = 72.60")
+        self.assertEqual([(item.expression, item.correct) for item in found], [("0.10 * 726", True)])
+        self.assertEqual(check_arithmetic("she sells 4933828 / 13 = 373, 846.92 eggs"), [])
+        self.assertEqual(check_arithmetic("581,3040 + 1,764,912 + 12 = 583,0694"), [])
+
+    def test_percent_and_cut_off_values(self):
+        found = check_arithmetic("1/4 = 25% and 0.25 * 100 = 25%, but 1/4 = 30%.")
+        self.assertEqual([item.correct for item in found], [True, True, False])
+        # A value cut off to the places written is accepted, as a rounded one is.
+        self.assertTrue(check_arithmetic("160 / 6 = 26.666")[0].correct)
+        self.assertTrue(check_arithmetic("726 + 72.6 = 798")[0].correct)
+        self.assertFalse(check_arithmetic("160 / 6 = 26.665")[0].correct)
+
+    def test_signs(self):
+        self.assertTrue(check_arithmetic("Answer: -3 + 5 = 2")[0].correct)
+        self.assertTrue(check_arithmetic("3 - 5 = -2")[0].correct)
+        self.assertTrue(check_arithmetic("2**3 = 8")[0].correct)
+        self.assertFalse(check_arithmetic("13 - 4933828 = 0 eggs")[0].correct)
+
+    def test_slips_from_model_answers_are_found(self):
+        text = ("Total time for Team 2 = $60 + 57 + 54 + 51 = 232$ seconds.\n"
+                "New salary = 726 + 72.60 = 800.60\n"
+                "Net earnings per year: 2256855 x $1.5 = $337.40625")
+        self.assertEqual([(item.computed, item.correct) for item in check_arithmetic(text)],
+                         [("222", False), ("798.6", False), ("3385282.5", False)])
+
 
 class ToolTests(unittest.TestCase):
     def test_the_tool_returns_the_value_and_steps(self):

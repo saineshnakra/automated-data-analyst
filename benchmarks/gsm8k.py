@@ -11,7 +11,8 @@ whose answers are floating-point results and are matched to within 0.001.
 Each problem is solved three ways with the same model and settings:
 
 - ``none``: the model alone.
-- ``tool``: the model may call ``ada_compute`` for any arithmetic step.
+- ``tool``: the model may call ``ada_compute`` for any arithmetic step. A call written out as text instead of
+  made is made for it, as ``ada chat`` does.
 - ``check``: the model alone, then ADA checks every equation it wrote (``ada.compute.check_arithmetic``).
   When one is wrong, the model is told which, with the right value, and answers again. When none is, the
   answer stands, so this condition never changes a reply ADA finds nothing wrong with.
@@ -36,6 +37,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ada import tools  # noqa: E402
+from ada.chat import _written_call  # noqa: E402
 from ada.compute import check_arithmetic  # noqa: E402
 
 PROMPT = (
@@ -92,6 +94,11 @@ def solve(base: str, model: str, question: str, with_ada: bool) -> dict:
     for round_ in range(ROUNDS + 1):
         message = chat(base, model, messages, offered if round_ < ROUNDS else [])
         requested = message.get("tool_calls") or []
+        written = None if requested or not offered else _written_call(message.get("content", ""))
+        if written is not None and written[0] == "ada_compute":
+            # A small model sometimes writes the call out as text; ada chat makes it.
+            requested = [{"function": {"name": written[0], "arguments": written[1]}}]
+            message = {"role": "assistant", "content": "", "tool_calls": requested}
         messages.append({key: message[key] for key in ("role", "content", "tool_calls") if message.get(key)})
         if not requested:
             return {"reply": message.get("content", ""), "calls": calls, "messages": messages}
@@ -106,7 +113,8 @@ def solve(base: str, model: str, question: str, with_ada: bool) -> dict:
 def checked(base: str, model: str, alone: dict) -> dict:
     """The model's own answer, checked by ADA; when an equation in it is wrong, the model answers again."""
     checks = check_arithmetic(alone["reply"])
-    wrong = [item for item in checks if not item.correct]
+    # A model that repeats itself writes the same slip many times; it is named once.
+    wrong = list({(item.expression, item.stated): item for item in checks if not item.correct}.values())
     if not wrong:
         return {"reply": alone["reply"], "calls": [], "checks": [item.to_dict() for item in checks]}
     errors = "; ".join(f"{item.expression} is {item.computed}, not {item.stated}" for item in wrong)

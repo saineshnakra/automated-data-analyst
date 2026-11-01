@@ -137,10 +137,26 @@ ada.check_arithmetic("Points: 204 + 160 + 330 = 700. Water: (2/3) * 10 = 6.67 li
 ```
 
 A stated value is correct when it is the exact value, or the exact value
-rounded to as many decimal places as it has. Only operations on written
-numbers are checked: `x = 5` is skipped, and so is anything `compute`
-refuses. `×`, `x` between numbers, `\times`, `\cdot`, `\div`, `$` and
-thousands separators are read as written.
+rounded or cut off to as many decimal places as it has: for 22/3, 7.33, 7.3
+and 7 are all correct. A stated percent may mean either reading, so
+`1/4 = 25%` and `0.25 * 100 = 25%` both pass.
+
+Only an operation whose whole left side is written out is checked, so a
+flag means a slip, not a misreading:
+
+| Written | Checked |
+|---|---|
+| `5,000 * (1 + 0.025) = 5,000 * 1.025 = 5,125` | The last step, `5,000 * 1.025 = 5,125`. A running total such as `3 * 4 = 12 + 1 = 13` is written the same way, so earlier steps are not compared |
+| `S + B + 2 + 2 = 28`, `16 friends * 3/4 = 12` | Nothing: the left side goes on to the left |
+| `15 - 5 = 2x`, `7/13 = 120/x` | Nothing: the right side goes on |
+| `$450 + $300 + $750 = $1,500/month` | `450 + 300 + 750 = 1,500` |
+| `- 40 + 20 = 60` | `40 + 20 = 60`: a list marker is not a minus sign |
+| `**3 * 4 = 12**`, `(that is 3 * 4 = 12)` | `3 * 4 = 12` |
+| `4933828 / 13 = 373, 846.92` | Nothing: the comma is misplaced |
+
+An equation is read within one line. `x = 5` is skipped, and so is anything
+`compute` refuses. `×`, `x` between numbers, `·`, `\times`, `\cdot`, `\div`,
+`\%`, currency signs and thousands separators are read as written.
 
 This lets a model reason in its own words and still get its arithmetic
 checked: hand it back each equation that comes back `correct=False`, with the

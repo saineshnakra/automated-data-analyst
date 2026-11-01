@@ -43,6 +43,11 @@ ada compute "1/3 + 1/6"                # 0.5 = 1/2
 - `ada_compute` is the fourth tool in `ada.tools`, `ada chat` and `ada mcp`,
   and the instructions tell a model to send every calculation to it,
   including sums and percentages of numbers another tool returned.
+- `ada.check_arithmetic(text)` checks each equation in a worked answer, so a
+  model can reason in its own words and get each slip back with the right
+  value. Only an operation written out in full is checked: in
+  `S + B + 2 + 2 = 28` or `16 friends * 3/4 = 12` nothing is, and in a chain
+  only the last step is, so a flag is a slip and not a misreading.
 
 ### Local models and apps
 

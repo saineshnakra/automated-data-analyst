@@ -1070,23 +1070,28 @@ def _result(expression: str, reading: str, number: Number, digits: int, steps: l
 
 # --- Checking written arithmetic ------------------------------------------------------------------------
 
-#: A number as people write it in a worked answer: 1,234.5 or 0.25.
-_WRITTEN = r"\d(?:[\d,]*\d)?(?:\.\d+)?"
-#: "a op b ... = c": an operation on written numbers and the value stated for it.
-_EQUATION = re.compile(
-    rf"(?<![\w.^/])((?:\(\s*)*{_WRITTEN}%?(?:\s*\)\s*)*(?:\s*[-+*/×÷x^]\s*\(?\s*{_WRITTEN}%?\s*\)?)+)"
-    rf"\s*=\s*(-?{_WRITTEN})(?![\d.]*\s*[-+*/×÷^(])"
-)
-#: How worked answers write operators: LaTeX, the multiplication sign, the letter x between numbers.
-_WRITTEN_OPERATORS = (("\\times", "*"), ("\\cdot", "*"), ("\\div", "/"), ("$", ""), ("\\(", ""), ("\\)", ""))
+#: A number as people write it in a worked answer: 1,234.5 or 0.25. Commas only between groups of three.
+_WRITTEN = r"\d{1,3}(?:,\d{3})+(?:\.\d+)?(?!\d|,\d)|\d+(?:\.\d+)?"
+#: One piece of a line of a worked answer. Words and other signs end an expression.
+_TOKEN = re.compile(rf"(?P<number>{_WRITTEN})|(?P<space>[ \t]+)|(?P<op>\*\*|[-+*/×÷^−])|(?P<open>\()"
+                    r"|(?P<close>\))|(?P<percent>%)|(?P<equals>=)|(?P<word>[^\W\d_]+)|(?P<other>.)")
+_ARITHMETIC = {"number", "space", "op", "open", "close", "percent", "equals"}
+#: How worked answers write operators and numbers: LaTeX, signs, currency.
+_WRITTEN_OPERATORS = (("\\times", "*"), ("\\cdot", "*"), ("\\div", "/"), ("\\%", "%"), ("\\left(", "("),
+                      ("\\right)", ")"), ("\\(", ""), ("\\)", ""), ("$", ""), ("€", ""), ("£", ""),
+                      ("·", "*"), ("²", "^2"), ("³", "^3"))
+#: Markdown bold (**15**), kept as a power only between numbers (2**3).
+_BOLD = re.compile(r"(?<![\d)])\*\*|\*\*(?![\d(])")
+#: A list marker at the start of a line: "- ", "* ", "1. ", "2) ".
+_BULLET = re.compile(r"^[ \t]*(?:[-*+•]|\d+[.)])[ \t]+")
 
 
 @dataclass(frozen=True)
 class Checked:
     """One equation written in a text, with ADA's value for its left side.
 
-    ``correct`` is true when the stated value is the computed one, or the computed one rounded to as many
-    decimal places as the stated value has (7.33 for 22/3 is correct; 7.3 is too, to one place).
+    ``correct`` is true when the stated value is the computed one, or the computed one rounded or cut off to
+    as many decimal places as the stated value has: for 22/3, 7.33, 7.3 and 7 are correct; 7.34 is not.
     """
 
     expression: str
@@ -1102,26 +1107,167 @@ class Checked:
 def check_arithmetic(text: str) -> list[Checked]:
     """Find each equation written in ``text`` ("204 + 160 + 330 = 700") and check it with exact arithmetic.
 
-    Only operations on written numbers are checked; an equation with a name in it (x = 5) is skipped, as is
-    one ADA cannot read or refuses. Use it to check a worked answer a language model wrote: an equation that
-    comes back with ``correct`` false is an arithmetic slip, with the right value beside it.
+    Only operations on written numbers are checked, and only where the whole operation is written out:
+
+    - An equation is read within one line.
+    - One whose left side goes on to the left (``S + B + 2 + 2 = 28``, ``16 friends * 3/4 = 12``) is
+      skipped, as is one whose stated value goes on into a longer expression (``15 - 5 = 2x``).
+    - In a chain (``5,000 * (1 + 0.025) = 5,000 * 1.025 = 5,125``) the last step is checked, since a running
+      total (``3 * 4 = 12 + 1 = 13``) is written the same way.
+    - A number with a misplaced comma (``373, 846.92``) and an expression ADA refuses or cannot read are
+      skipped.
+
+    Use it to check a worked answer a language model wrote: an equation that comes back with ``correct``
+    false is an arithmetic slip, with the right value beside it.
     """
     plain = text
     for written, operator in _WRITTEN_OPERATORS:
         plain = plain.replace(written, operator)
+    plain = _BOLD.sub("", plain)
     checked = []
-    for left, stated in _EQUATION.findall(plain):
-        expression = re.sub(r"(?<=\d)\s*x\s*(?=[\d(])", "*", left).replace(",", "")
-        if expression.count("(") != expression.count(")"):
-            continue
-        result = compute(expression)
-        if isinstance(result, Refusal):
-            continue
-        claimed = Fraction(Decimal(stated.replace(",", "")))
-        places = len(stated.split(".")[1]) if "." in stated else 0
-        correct = abs(_exact_value(result) - claimed) <= Fraction(1, 2) / 10 ** places
-        checked.append(Checked(left.strip(), stated, result.value, correct))
+    for line in plain.splitlines():
+        tokens = [[match.lastgroup, match.group()] for match in _TOKEN.finditer(_BULLET.sub("", line))]
+        _read_times_signs(tokens)
+        start = 0
+        while start < len(tokens):
+            if tokens[start][0] not in _ARITHMETIC:
+                start += 1
+                continue
+            end = start
+            while end < len(tokens) and tokens[end][0] in _ARITHMETIC:
+                end += 1
+            item = _checked_run(tokens, start, end)
+            if item is not None:
+                checked.append(item)
+            start = end
     return checked
+
+
+def _read_times_signs(tokens: list[list[str]]) -> None:
+    """The letter x between two numbers (3 x 4) is a multiplication sign."""
+    for index, (kind, value) in enumerate(tokens):
+        if kind != "word" or value not in ("x", "X"):
+            continue
+        before = [token for token in tokens[:index] if token[0] != "space"]
+        after = [token for token in tokens[index + 1:] if token[0] != "space"]
+        if before and after and before[-1][0] in ("number", "close") and after[0][0] in ("number", "open"):
+            tokens[index][0] = "op"
+
+
+def _checked_run(tokens: list[list[str]], start: int, end: int) -> Checked | None:
+    """Check the last step of the equation in ``tokens[start:end]``, a run of numbers and operators."""
+    run = tokens[start:end]
+    following = tokens[end:]
+    # "$1,500/month": a rate, not a division by what follows.
+    rate = (run[-1][0] == "op" and run[-1][1] == "/" and bool(following) and following[0][0] == "word"
+            and len(following[0][1]) > 1)
+    if rate:
+        run = run[:-1]
+    # "= 2x" or "= 12km": the stated value runs into a name.
+    if not rate and following and following[0][0] == "word" and run[-1][0] == "number":
+        return None
+    # "= 373, 846.92" or "= 583,0694": a number with a misplaced comma.
+    if following and following[0][1] == "," and len(following) > 1:
+        attached = following[1][0] == "number"
+        spaced = (following[1][0] == "space" and len(following) > 2 and following[2][0] == "number"
+                  and re.fullmatch(r"\d{3}(?:\.\d+)?", following[2][1]))
+        if attached or spaced:
+            return None
+    # "= 16 friends * 3/4": the stated value starts a longer expression.
+    rest = [token for token in following if token[0] != "space"]
+    if len(rest) > 1 and rest[0][0] == "word" and rest[1][0] == "op":
+        return None
+    terms = [[]]
+    for token in run:
+        if token[0] == "equals":
+            terms.append([])
+        else:
+            terms[-1].append(token)
+    terms = [_strip_spaces(term) for term in terms]
+    if len(terms) < 2:
+        return None
+    left, stated = terms[-2], terms[-1]
+    # "= 12 (the apples)": an aside after the value.
+    while stated and stated[-1][0] == "open":
+        stated = _strip_spaces(stated[:-1])
+    stated = _drop_unmatched(stated, "close")
+    if not _is_number(stated):
+        return None
+    if len(terms) == 2:
+        # The first expression of a run must start it: not "B + 2 + 2" or "x2 + 3".
+        before = tokens[start - 1] if start > 0 else None
+        if before is not None and before[0] == "word" and run[0][0] != "space":
+            return None
+        if before is not None and before[1] in ".,_\\" and run[0][0] != "space":
+            return None
+        if left and left[0][0] == "op":
+            unary = (left[0][1] in "-−" and len(left) > 1 and left[1][0] in ("number", "open")
+                     and (before is None or before[0] not in ("word", "number")))
+            if not unary:
+                return None
+        left = _drop_unmatched(left, "open")
+    if not any(token[0] == "op" for token in left):
+        return None
+    written = "".join(token[1] for token in left)
+    if written.count("(") != written.count(")"):
+        return None
+    expression = "".join("*" if token[0] == "op" and token[1] in "xX" else token[1] for token in left)
+    result = compute(expression.replace(",", ""))
+    if isinstance(result, Refusal):
+        return None
+    shown = "".join(token[1] for token in stated)
+    number = next(token[1] for token in stated if token[0] == "number").replace(",", "")
+    claimed = Fraction(Decimal(number)) * (-1 if stated[0][1] in "-−" else 1)
+    places = len(number.split(".")[1]) if "." in number else 0
+    value = _exact_value(result)
+    # "1/4 = 25%" and "0.25 * 100 = 25%" are both written; either reading is accepted.
+    readings = [(claimed, places)] + ([(claimed / 100, places + 2)] if stated[-1][0] == "percent" else [])
+    correct = any(_written_as(value, reading, shown_places) for reading, shown_places in readings)
+    return Checked(written.strip(), shown, result.value, correct)
+
+
+def _written_as(value: Fraction, claimed: Fraction, places: int) -> bool:
+    """Whether ``claimed`` is ``value`` rounded or cut off to ``places`` decimal places."""
+    if abs(value - claimed) <= Fraction(1, 2) / 10 ** places:
+        return True
+    scaled = value * 10 ** places
+    cut = math.floor(scaled) if scaled >= 0 else math.ceil(scaled)
+    return Fraction(cut, 10 ** places) == claimed
+
+
+def _strip_spaces(term: list[list[str]]) -> list[list[str]]:
+    while term and term[0][0] == "space":
+        term = term[1:]
+    while term and term[-1][0] == "space":
+        term = term[:-1]
+    return term
+
+
+def _drop_unmatched(term: list[list[str]], kind: str) -> list[list[str]]:
+    """Drop a parenthesis opened before the equation or closed after it: "(so 3 * 4 = 12)"."""
+    opened = sum(token[0] == "open" for token in term)
+    closed = sum(token[0] == "close" for token in term)
+    if kind == "open":
+        while term and term[0][0] in ("open", "space") and opened > closed:
+            opened -= term[0][0] == "open"
+            term = term[1:]
+    else:
+        while term and term[-1][0] in ("close", "space") and closed > opened:
+            closed -= term[-1][0] == "close"
+            term = term[:-1]
+    return term
+
+
+def _is_number(term: list[list[str]]) -> bool:
+    """A written value: a number, with a minus sign before it or a percent sign after it."""
+    kinds = [token[0] for token in term]
+    if kinds and kinds[0] == "op":
+        if term[0][1] not in "-−":
+            return False
+        kinds = kinds[1:]
+    if kinds and kinds[-1] == "percent":
+        kinds = kinds[:-1]
+    return kinds == ["number"]
 
 
 def _exact_value(result: Computation) -> Fraction:
