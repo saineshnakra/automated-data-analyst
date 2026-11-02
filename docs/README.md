@@ -48,6 +48,7 @@ follows and its edge cases.
 | [Decisions](reference/decisions.md) | `ada/decisions.py`, `ada/aggregates.py` | The choices an answer rests on (World and region rows, a total row), ADA's defaults and how a caller picks another |
 | [Reading a folder of tables](reference/folder.md) | `ada/folder.py` | Profiles each table in a folder, proposes the keys that join them and lists what to confirm |
 | [Exact arithmetic](reference/compute.md) | `ada/compute.py` | Expressions computed exactly with each step, the conventions stated, and refusals for what reads two ways |
+| [Benchmarks](../benchmarks/README.md) | `benchmarks/gsm8k.py` | GSM8K and GSM-Hard with small local models: alone, with `ada_compute`, and with their arithmetic checked |
 | [Tools for language models](llm-tools.md) | `ada/tools.py`, `ada/mcp.py`, `ada/chat.py` | The four tools a model calls, their definitions, the runner, the MCP server and `ada chat` |
 | [Formatting](reference/formatting.md) | `ada/formatting.py` | How numbers and dates are displayed |
 | [Choosing the chart](reference/autovis.md) | `ada/autovis.py` | How a chart form is chosen for a set of columns |

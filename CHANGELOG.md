@@ -48,6 +48,11 @@ ada compute "1/3 + 1/6"                # 0.5 = 1/2
   value. Only an operation written out in full is checked: in
   `S + B + 2 + 2 = 28` or `16 friends * 3/4 = 12` nothing is, and in a chain
   only the last step is, so a flag is a slip and not a misreading.
+- `benchmarks/gsm8k.py` measures both on GSM8K and GSM-Hard with three small
+  local models, on GitHub's runners. Over six runs of 200 problems, checking
+  a model's own arithmetic turned 32 wrong answers right and one right
+  answer wrong; offering `ada_compute` did not help, and made llama3.2:1b
+  worse on GSM8K. See [benchmarks](benchmarks/README.md).
 
 ### Local models and apps
 

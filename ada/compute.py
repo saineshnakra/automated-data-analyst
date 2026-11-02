@@ -1084,6 +1084,11 @@ _WRITTEN_OPERATORS = (("\\times", "*"), ("\\cdot", "*"), ("\\div", "/"), ("\\%",
 _BOLD = re.compile(r"(?<![\d)])\*\*|\*\*(?![\d(])")
 #: A list marker at the start of a line: "- ", "* ", "1. ", "2) ".
 _BULLET = re.compile(r"^[ \t]*(?:[-*+•]|\d+[.)])[ \t]+")
+#: Words after a number that scale it: "10 million".
+_SCALE_WORDS = {"hundred", "thousand", "million", "billion", "trillion", "hundreds", "thousands", "millions",
+                "billions"}
+#: Words before an equation that make it a condition rather than a claim.
+_CONDITION_WORDS = {"if", "unless", "whether"}
 
 
 @dataclass(frozen=True)
@@ -1176,6 +1181,12 @@ def _checked_run(tokens: list[list[str]], start: int, end: int) -> Checked | Non
     # "= 16 friends * 3/4": the stated value starts a longer expression.
     rest = [token for token in following if token[0] != "space"]
     if len(rest) > 1 and rest[0][0] == "word" and rest[1][0] == "op":
+        return None
+    # "= 10 million": the value is scaled by a word.
+    if rest and rest[0][1].lower() in _SCALE_WORDS:
+        return None
+    # "only possible if 240 + 3,516,571 = 0": a condition, not a claim.
+    if start > 0 and tokens[start - 1][0] == "word" and tokens[start - 1][1].lower() in _CONDITION_WORDS:
         return None
     terms = [[]]
     for token in run:

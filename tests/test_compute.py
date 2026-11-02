@@ -352,6 +352,14 @@ class CheckArithmeticTests(unittest.TestCase):
         self.assertTrue(check_arithmetic("726 + 72.6 = 798")[0].correct)
         self.assertFalse(check_arithmetic("160 / 6 = 26.665")[0].correct)
 
+    def test_conditions_and_scale_words_are_skipped(self):
+        text = "This is only possible if 240 + 3,516,571 = 0, which is not true."
+        self.assertEqual(check_arithmetic(text), [])
+        self.assertEqual(check_arithmetic("2 * 5,000,000 = 10 million"), [])
+        # A short unit after the value is not a scale word.
+        self.assertFalse(check_arithmetic("7930843 / 2 = 3975421.5 M&Ms.")[0].correct)
+        self.assertTrue(check_arithmetic("So 3 * 4 = 12, and if that holds")[0].correct)
+
     def test_signs(self):
         self.assertTrue(check_arithmetic("Answer: -3 + 5 = 2")[0].correct)
         self.assertTrue(check_arithmetic("3 - 5 = -2")[0].correct)

@@ -15,6 +15,7 @@ Exact arithmetic with every step, for any numbers a model has:
 ```
 import ada
 ada.compute("0.15 * (1200 - 300)").value   # "135"; 0.1 + 0.2 is exactly 0.3; 6/2(1+2) is refused as ambiguous
+ada.check_arithmetic(reply)   # each equation written in a worked answer, checked; correct=False marks a slip, with the right value
 ```
 
 `ada compute "EXPRESSION"` does the same in a shell.

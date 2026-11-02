@@ -153,6 +153,8 @@ flag means a slip, not a misreading:
 | `- 40 + 20 = 60` | `40 + 20 = 60`: a list marker is not a minus sign |
 | `**3 * 4 = 12**`, `(that is 3 * 4 = 12)` | `3 * 4 = 12` |
 | `4933828 / 13 = 373, 846.92` | Nothing: the comma is misplaced |
+| `only possible if 240 + 3,516,571 = 0` | Nothing: after if, unless or whether it is a condition, not a claim |
+| `2 * 5,000,000 = 10 million` | Nothing: the value is scaled by a word |
 
 An equation is read within one line. `x = 5` is skipped, and so is anything
 `compute` refuses. `×`, `x` between numbers, `·`, `\times`, `\cdot`, `\div`,

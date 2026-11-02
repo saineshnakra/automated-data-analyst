@@ -127,6 +127,12 @@ anything that isn't a real number. A model writes the expression and reads
 the answer instead of carrying digits itself. See
 [Exact arithmetic](docs/reference/compute.md).
 
+`ada.check_arithmetic(text)` checks each equation in a worked answer, so a
+model can reason in its own words and be told each slip with the right
+value. With three small local models on GSM8K and GSM-Hard, that turned 32
+wrong answers right and one right answer wrong
+([benchmarks](benchmarks/README.md)).
+
 ## Compute an answer, or map a folder
 
 ```bash
