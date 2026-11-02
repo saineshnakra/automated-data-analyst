@@ -85,6 +85,12 @@ REFUSAL_CODES = (
     "no_target",
     "too_few_rows",
     "unknown_metric",
+    "ambiguous_expression",
+    "invalid_expression",
+    "division_by_zero",
+    "not_a_real_number",
+    "too_large",
+    "needs_more_digits",
     "unknown",
 )
 

@@ -7,8 +7,18 @@ Give a language model ADA's tools (function calling):
 ```
 from ada import tools
 tools.definitions()                 # OpenAI-compatible: Ollama, llama.cpp server, vLLM, LM Studio; "anthropic" for the Anthropic API
-tools.run(name, arguments, root="data")   # runs ada_ask, ada_check_claim or ada_scan (all read-only); returns JSON to send back
+tools.run(name, arguments, root="data")   # runs ada_ask, ada_check_claim, ada_scan or ada_compute (all read-only); returns JSON to send back
 ```
+
+Exact arithmetic with every step, for any numbers a model has:
+
+```
+import ada
+ada.compute("0.15 * (1200 - 300)").value   # "135"; 0.1 + 0.2 is exactly 0.3; 6/2(1+2) is refused as ambiguous
+ada.check_arithmetic(reply)   # each equation written in a worked answer, checked; correct=False marks a slip, with the right value
+```
+
+`ada compute "EXPRESSION"` does the same in a shell.
 
 `tools.SYSTEM_PROMPT` tells the model which tool to use when and to take every number from them. `ada tools` prints the definitions.
 

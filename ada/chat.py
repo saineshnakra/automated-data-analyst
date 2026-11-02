@@ -108,7 +108,7 @@ def _call_in(value: Any) -> tuple[str, dict] | None:
 
 
 #: The arguments a call written as broken JSON can still be read for.
-WRITTEN_FIELDS = re.compile(r'"(path|question|claim|train|test|target|metric)"\s*:\s*"((?:[^"\\]|\\.)*)"')
+WRITTEN_FIELDS = re.compile(r'"(path|question|claim|expression)"\s*:\s*"((?:[^"\\]|\\.)*)"')
 
 
 def _written_call(text: str) -> tuple[str, dict] | None:
@@ -122,7 +122,7 @@ def _written_call(text: str) -> tuple[str, dict] | None:
             continue
         if (call := _call_in(value)) is not None:
             return call
-    named = re.search(r'"(ada_(?:ask|check_claim|scan|model))"', text)
+    named = re.search(r'"(ada_(?:ask|check_claim|scan|compute))"', text)
     fields = dict(WRITTEN_FIELDS.findall(text))
     if named and fields:
         return named.group(1), fields

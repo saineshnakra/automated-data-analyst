@@ -1,6 +1,7 @@
 """ADA: compute and check numbers from CSV and Excel data, for people and language models.
 
     import ada
+    ada.compute("0.1 + 0.2")            # exactly 0.3, with its steps
     answer = ada.analyze("measurements.csv")
     check = ada.check_claim("flights.csv", "The average dep_delay was 12.64 minutes.")
 
@@ -31,6 +32,7 @@ from .api import (
     samples,
 )
 from .claims import ClaimCheck, check_claim
+from .compute import Checked, Computation, check_arithmetic, compute
 from .decisions import Decision, UnknownDecision
 from .folder import FolderScan, scan
 from .joins import ask_folder
@@ -45,7 +47,9 @@ __all__ = [
     "SCHEMA_VERSION",
     "AdaError",
     "Analysis",
+    "Checked",
     "ClaimCheck",
+    "Computation",
     "Decision",
     "FolderScan",
     "NothingToAnalyze",
@@ -56,7 +60,9 @@ __all__ = [
     "__version__",
     "analyze",
     "ask_folder",
+    "check_arithmetic",
     "check_claim",
+    "compute",
     "read_file",
     "sample",
     "samples",

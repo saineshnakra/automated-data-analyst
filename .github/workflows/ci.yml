@@ -75,7 +75,7 @@ jobs:
           cd "$(mktemp -d)"
           printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' \
             '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | /tmp/venv/bin/ada mcp > mcp.out
-          /tmp/venv/bin/python -c "import json; replies = [json.loads(line) for line in open('mcp.out')]; assert replies[1]['result']['tools'][0]['name'] == 'ada_ask'"
+          /tmp/venv/bin/python -c "import json; replies = [json.loads(line) for line in open('mcp.out')]; names = [tool['name'] for tool in replies[1]['result']['tools']]; assert names[0] == 'ada_ask' and 'ada_compute' in names"
           /tmp/venv/bin/automated-data-analyst --version
           /tmp/venv/bin/python -m ada --version
       - name: Point a moved command to ADA Lab
