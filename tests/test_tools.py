@@ -39,7 +39,8 @@ class DefinitionTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in found], list(tools.NAMES))
         self.assertTrue(all("inputSchema" in item and item["title"] for item in found))
         hints = {item["name"]: item["annotations"]["readOnlyHint"] for item in found}
-        self.assertEqual(hints, {"ada_ask": True, "ada_check_claim": True, "ada_scan": True})
+        self.assertEqual(hints, {"ada_compute": True, "ada_ask": True, "ada_check_claim": True,
+                                 "ada_scan": True})
 
     def test_anthropic_style(self):
         found = tools.definitions("anthropic")

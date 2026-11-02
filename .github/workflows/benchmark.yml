@@ -1,0 +1,62 @@
+name: Benchmark
+
+# GSM8K and GSM-Hard with a small local model, with and without ADA (benchmarks/gsm8k.py), on GitHub's
+# runners. Run it by hand from the Actions tab, or by pushing a branch named benchmark/<anything>. Each
+# model and dataset is its own job; the summary is in the log and the results are an artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      problems:
+        description: "How many problems from the start of each dataset"
+        default: "200"
+  push:
+    branches: ["benchmark/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        dataset: [gsm8k, gsmhard]
+        model: ["qwen3:1.7b", "qwen2.5:1.5b", "llama3.2:1b"]
+    env:
+      PROBLEMS: ${{ github.event.inputs.problems || '200' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ADA
+        run: python -m pip install -e .
+      - name: Download the dataset and check it
+        run: |
+          if [ "${{ matrix.dataset }}" = gsm8k ]; then
+            curl -fsSL -o data.jsonl https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/test.jsonl
+            echo "3730d312f6e3440559ace48831e51066acaca737f6eabec99bccb9e4b3c39d14  data.jsonl" | sha256sum -c
+          else
+            curl -fsSL -o data.jsonl https://raw.githubusercontent.com/reasoning-machines/pal/main/datasets/gsmhardv2.jsonl
+            echo "2032b0188a49ac0ec38cbe1e695e7d62d6dddc44bbb64f920728aca710e9ddef  data.jsonl" | sha256sum -c
+          fi
+      - name: Install Ollama and the model
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          (ollama serve > ollama.log 2>&1 &)
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:11434/api/tags > /dev/null && break; sleep 2; done
+          ollama pull "${{ matrix.model }}"
+          ollama --version
+      - name: Run the benchmark
+        run: python benchmarks/gsm8k.py data.jsonl --model "${{ matrix.model }}" --problems "$PROBLEMS" --out results.jsonl
+      - name: Summary
+        if: always()
+        run: python benchmarks/summary.py results.jsonl
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ${{ matrix.dataset }}-${{ matrix.model == 'qwen3:1.7b' && 'qwen3-1.7b' || matrix.model == 'qwen2.5:1.5b' && 'qwen2.5-1.5b' || 'llama3.2-1b' }}
+          path: results.jsonl

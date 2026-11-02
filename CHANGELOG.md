@@ -14,6 +14,46 @@ ollama pull qwen3:1.7b && ada chat penguins.csv      # chat with a local model t
 ada mcp                                              # ADA as an MCP server, for LM Studio, Jan, Open WebUI and more
 ```
 
+### Exact arithmetic
+
+A model no longer has to carry digits itself: `ada compute`, `ada.compute()`
+and the new `ada_compute` tool work out an expression exactly and show each
+step. It is the first step of ADA as a math tool for language models.
+
+```bash
+ada compute "0.15 * (1200 - 300)"      # 135
+ada compute "1/3 + 1/6"                # 0.5 = 1/2
+```
+
+- Integers and fractions stay exact up to 10,000 digits: 0.1 + 0.2 is 0.3,
+  (1/3)*3 is 1, sqrt(16/9) is 4/3, log(8, 2) is 3. Only a value that is not
+  rational (sqrt(2), pi, most logarithms) is approximate, to the significant
+  digits asked for, and marked so.
+- Each operation is a step written with its values, and each convention the
+  reading rests on is listed: -2^2 is -4, 2^3^2 is 2^9, 20% of 50 is 10.
+- An expression that reads two ways is refused with both values: 6/2(1+2)
+  is 9 or 1, `17 % 5` is a remainder or a percent, `100 + 10%` is 100.1 or
+  110, `log(8)` has no base. So are division by zero, values that are not
+  real numbers, names ADA doesn't know, numbers too large to keep exactly,
+  and rounding an approximate value too close to a whole number to tell. Six
+  refusal codes join `ada.REFUSAL_CODES`.
+- Nothing is run as Python: a small grammar reads numbers, + - * / // ^ mod !
+  %, parentheses and 20 functions (roots, rounding, gcd, lcm, comb, perm,
+  logarithms, pi, e).
+- `ada_compute` is the fourth tool in `ada.tools`, `ada chat` and `ada mcp`,
+  and the instructions tell a model to send every calculation to it,
+  including sums and percentages of numbers another tool returned.
+- `ada.check_arithmetic(text)` checks each equation in a worked answer, so a
+  model can reason in its own words and get each slip back with the right
+  value. Only an operation written out in full is checked: in
+  `S + B + 2 + 2 = 28` or `16 friends * 3/4 = 12` nothing is, and in a chain
+  only the last step is, so a flag is a slip and not a misreading.
+- `benchmarks/gsm8k.py` measures both on GSM8K and GSM-Hard with three small
+  local models, on GitHub's runners. Over six runs of 200 problems, checking
+  a model's own arithmetic turned 32 wrong answers right and one right
+  answer wrong; offering `ada_compute` did not help, and made llama3.2:1b
+  worse on GSM8K. See [benchmarks](benchmarks/README.md).
+
 ### Local models and apps
 
 - `ada chat DATA` chats with a model on any OpenAI-compatible server, Ollama

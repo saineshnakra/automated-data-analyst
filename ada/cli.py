@@ -1,5 +1,14 @@
 """The ``ada`` command.
 
+Compute an expression exactly, with every step:
+
+    ada compute "0.15 * (1200 - 300)"        # 135; fractions stay exact, so 1/3 + 1/6 is 1/2
+    ada compute "comb(52, 5)" --json
+
+``ada compute`` exits 0 with the value, or 3 when the expression cannot be
+computed honestly (division by zero, an expression that reads two ways, a name
+it does not know), with the reason.
+
 Give a language model ADA's tools:
 
     ada chat penguins.csv              # chat with a local model that asks ADA for every number
@@ -375,6 +384,37 @@ def _mcp(args: argparse.Namespace) -> int:
     return EXIT_QUIET
 
 
+def _compute(args: argparse.Namespace) -> int:
+    from .compute import compute  # noqa: PLC0415
+
+    result = compute(" ".join(args.expression), digits=args.digits)
+    if isinstance(result, Refusal):
+        if args.json:
+            print(json.dumps({"schema_version": 1, "status": "refused", "code": result.code,
+                              "message": result.message}, indent=2))
+        else:
+            print(f"refused ({result.code}): {result.message}", file=sys.stderr)
+        return EXIT_COULD_NOT_LOOK
+    print(json.dumps(result.to_dict(), indent=2) if args.json else result)
+    return EXIT_QUIET
+
+
+def _compute_arguments(argv: list[str]) -> list[str]:
+    """``ada compute -2^2``: everything but compute's own options is the expression, even when it starts with
+    a minus sign that would read as an option."""
+    options, expression, rest = [], [], iter(argv[1:])
+    for item in rest:
+        if item in ("--json", "-h", "--help"):
+            options.append(item)
+        elif item == "--digits":
+            options += [item, next(rest, "")]
+        elif item.startswith("--digits="):
+            options.append(item)
+        elif item != "--":
+            expression.append(item)
+    return ["compute", *options, "--", *expression] if expression else ["compute", *options]
+
+
 def _samples(_: argparse.Namespace) -> int:
     for name, path in sorted(samples().items()):
         print(f"{name:22} {path}")
@@ -485,6 +525,18 @@ def build_parser() -> argparse.ArgumentParser:
     served.add_argument("--allow-origin", action="append", metavar="ORIGIN",
                         help="a web page origin allowed to call the HTTP server (repeatable)")
 
+    computed = subcommands.add_parser(
+        "compute", help="compute an arithmetic expression exactly, with every step",
+        description="Compute an arithmetic expression exactly: fractions stay fractions, every step is "
+                    "shown, and an expression that reads two ways is refused with both readings. It knows "
+                    "+ - * / // ^ mod ! %, parentheses, sqrt, root, abs, floor, ceil, round, gcd, lcm, comb, "
+                    "perm, min, max, exp, ln, log10, log2, log(x, base), pi and e.",
+    )
+    computed.add_argument("expression", nargs="+", help='the expression, such as "2^10 + 3/4"')
+    computed.add_argument("--digits", type=int, default=20,
+                          help="significant digits for a result that is not exact (default: 20)")
+    computed.add_argument("--json", action="store_true", help="machine-readable result")
+
     subcommands.add_parser("samples", help="list the bundled datasets")
     return parser
 
@@ -508,6 +560,8 @@ def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv and argv[0] in MOVED_COMMANDS:
         return _moved(argv)
+    if argv and argv[0] == "compute":
+        argv = _compute_arguments(argv)
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command is None:
@@ -515,7 +569,8 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_QUIET
     handler = {
         "analyze": _analyze, "schema": _schema, "ask": _ask, "claim": _claim, "scan": _scan, "check": _check,
-        "skill": _skill, "tools": _tools, "chat": _chat, "mcp": _mcp, "samples": _samples,
+        "skill": _skill, "tools": _tools, "chat": _chat, "mcp": _mcp, "compute": _compute,
+        "samples": _samples,
     }[args.command]
     try:
         return handler(args)

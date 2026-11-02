@@ -79,7 +79,7 @@ calls with `tools.run`:
 ```python
 from ada import tools
 
-tools.definitions()                    # three tools for function calling: ask, check a claim, scan
+tools.definitions()                    # four tools for function calling: ask, check a claim, scan, compute
 tools.run("ada_check_claim", {"path": "flights.csv", "claim": "The average departure delay was about 13 minutes."})
 ```
 
@@ -110,6 +110,28 @@ assumptions listed. `unverified` is not false: only the reason `failed_check`
 says the data give a different number. `--json` gives the whole record, and
 `ada.check_claim(...)` does the same in Python. See
 [Checking claims](docs/reference/claims.md) for the reasons, intervals and units.
+
+## Do the arithmetic exactly
+
+```bash
+ada compute "0.15 * (1200 - 300)"      # 135, with each step
+ada compute "1/3 + 1/6"                # 0.5 = 1/2: fractions stay exact
+ada compute "6/2(1+2)"                 # refused: it reads as 9 or as 1
+```
+
+`ada compute`, `ada.compute()` and the `ada_compute` tool work out an
+expression with exact fractions and integers, write each step with the
+values it combined, and state each convention they rely on (-2^2 is -4).
+An expression that reads two ways is refused with both values, and so is
+anything that isn't a real number. A model writes the expression and reads
+the answer instead of carrying digits itself. See
+[Exact arithmetic](docs/reference/compute.md).
+
+`ada.check_arithmetic(text)` checks each equation in a worked answer, so a
+model can reason in its own words and be told each slip with the right
+value. With three small local models on GSM8K and GSM-Hard, that turned 32
+wrong answers right and one right answer wrong
+([benchmarks](benchmarks/README.md)).
 
 ## Compute an answer, or map a folder
 

@@ -147,7 +147,7 @@ for call in reply.calls:
 
 `ada.chat.Chat(data, model=..., base_url=...)` keeps a conversation over
 several questions. To run the loop yourself, `ada.tools.definitions()` gives
-the three tools in the format OpenAI-compatible servers take, and
+the four tools in the format OpenAI-compatible servers take, and
 `ada.tools.run(name, arguments)` runs the one the model picks:
 
 | Tool | What it does |
@@ -155,8 +155,9 @@ the three tools in the format OpenAI-compatible servers take, and
 | `ada_ask` | computes an answer from a file or folder: a count, mean, share, change, ranking, group comparison, correlation or trend |
 | `ada_check_claim` | checks a statement against the data: true, false or cannot tell, with the reason |
 | `ada_scan` | lists the tables in a folder, their columns and the keys that join them |
+| `ada_compute` | computes an arithmetic expression exactly, with each step: fractions stay exact, and an expression that reads two ways is refused with both readings (see [Exact arithmetic](reference/compute.md)) |
 
-All three only read; none writes a file.
+All four only read; none writes a file.
 
 ```python
 import json

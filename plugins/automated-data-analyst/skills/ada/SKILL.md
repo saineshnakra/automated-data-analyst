@@ -39,6 +39,22 @@ A paper's tables, figures and methods draft from a study, or a prediction for
 a Kaggle-style folder, are in ADA Lab (`pip install ada-lab`; see
 https://github.com/saineshnakra/ada-lab).
 
+## Arithmetic on numbers you already have
+
+Do not add, multiply, divide or take percentages in your head. Write the
+expression and let ADA compute it exactly:
+
+```bash
+ada compute "0.15 * (1200 - 300)"      # 135, with each step
+ada compute "1/3 + 1/6" --json         # value 0.5, fraction 1/2, exact: true
+```
+
+Fractions stay exact, each step is shown, and the conventions used are
+listed (-2^2 is -4). An expression that reads two ways (`6/2(1+2)`, `17 % 5`,
+`log(8)`) is refused with both readings: write the parentheses or the
+function you mean. Report the value with its steps, and say "approximately"
+when `exact` is false.
+
 ## Computing and checking numbers
 
 Compute with `ada ask`, and check every number you state about the data with
