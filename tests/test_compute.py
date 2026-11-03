@@ -360,6 +360,17 @@ class CheckArithmeticTests(unittest.TestCase):
         self.assertFalse(check_arithmetic("7930843 / 2 = 3975421.5 M&Ms.")[0].correct)
         self.assertTrue(check_arithmetic("So 3 * 4 = 12, and if that holds")[0].correct)
 
+    def test_suppositions_and_contradictions_drawn_on_purpose_are_skipped(self):
+        # From MATH-500 replies: the writer knows these are false.
+        self.assertEqual(check_arithmetic("0 + 0 = 2 \\Rightarrow \\text{No solution}"), [])
+        self.assertEqual(check_arithmetic("5 + 3 = 9, which is a contradiction."), [])
+        self.assertEqual(check_arithmetic("so 3 + 4 = 8, which is impossible"), [])
+        self.assertEqual(check_arithmetic("Suppose 2 + 2 = 5. Then"), [])
+        self.assertEqual(check_arithmetic("Assume 3 * 4 = 13 and see what follows."), [])
+        # A slip with no such word after it is still found.
+        self.assertFalse(check_arithmetic("2 + 2 = 5, so the answer is 5")[0].correct)
+        self.assertFalse(check_arithmetic("(4)^2 + (1)^2 = 25,")[0].correct)
+
     def test_signs(self):
         self.assertTrue(check_arithmetic("Answer: -3 + 5 = 2")[0].correct)
         self.assertTrue(check_arithmetic("3 - 5 = -2")[0].correct)

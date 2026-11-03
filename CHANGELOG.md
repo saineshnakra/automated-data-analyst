@@ -69,6 +69,13 @@ ada compute "3(x + 2) - x"                 # 2x + 6
   whose solutions are known: x + y = s with xy = p, lines and circles, and
   three numbers from the sums of their products.
 
+### Checking a model's arithmetic
+
+- `ada.check_arithmetic` skips an equation the writer knows is false: a
+  supposition ("Suppose 2 + 2 = 5") and a contradiction drawn on purpose
+  ("0 + 0 = 2 ⇒ no solution", "which is impossible"). Found in MATH-500
+  replies.
+
 ### LangChain and LangGraph
 
 `ada.tools.langchain()` gives ADA's four tools as LangChain tools, with the
