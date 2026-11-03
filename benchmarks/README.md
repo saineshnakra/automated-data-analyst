@@ -243,3 +243,9 @@ number. The `resume` input takes an earlier run's id, and each shard
 starts from that run's results for the same shard. A run with five samples
 can then build on a run with one, as long as it uses the same subjects,
 parts and conditions.
+
+When a run picks up earlier results, a `check` record whose reply ADA now
+reads differently is made again, with ADA as it checks now. This happens
+when `check_arithmetic` finds a slip it did not find before. The check
+starts from the model's reply alone, which is in the results, so the model
+is asked again only to correct a slip.
