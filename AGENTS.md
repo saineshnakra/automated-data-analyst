@@ -24,7 +24,7 @@ the wheel and runs `ada claim`, `ada ask`, `ada scan` and `ada mcp` from it.
 
 - Calculations live in the engine modules, never in the command line, the
   tools or the MCP server; those only wrap the engine.
-- Every number comes from pandas, SciPy or statsmodels and is shown with its
+- Every number comes from pandas, SciPy, statsmodels or SymPy and is shown with its
   calculation. When something can't be computed honestly, refuse with a
   reason instead of guessing.
 - Results are deterministic: the same data and question give the same

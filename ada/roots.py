@@ -6,9 +6,10 @@ written.
     roots, steps = real_roots([Fraction(1), Fraction(-3), Fraction(1)], "x")   # x^2 - 3x + 1
     [root.value for root in roots]        # ["(3 - sqrt(5))/2", "(3 + sqrt(5))/2"]
 
-Coefficients run from the constant term up. A root comes back as a whole number or fraction, as
-a + b*sqrt(m) from the quadratic formula, as root(t, n) when the polynomial is a*x^n + c, and otherwise as a
-decimal to the digits asked for, with an interval where the polynomial changes sign: a root lies inside it.
+Coefficients run from the constant term up. The polynomial is factored over the rationals with SymPy, and
+each factor's roots come back as a whole number or fraction, as a + b*sqrt(m) from the quadratic formula, as
+root(t, n) when the factor is a*x^n + c, and otherwise as a decimal to the digits asked for, with an interval
+where the polynomial changes sign: a root lies inside it.
 Every exact root is put back into the polynomial with exact arithmetic, and the check is one of the steps.
 Each value is written so that ``ada.compute`` reads it back.
 """
@@ -22,13 +23,13 @@ from fractions import Fraction
 from .compute import DIGITS, _decimal_text, _exact_decimal, _refuse, _terminates, compute
 
 #: The highest power of a polynomial whose roots are looked for.
-MAX_ROOT_DEGREE = 30
-#: Whole numbers up to this size are split into prime factors to list rational candidates and simplify roots.
-FACTOR_LIMIT = 10 ** 12
+MAX_ROOT_DEGREE = 100
+#: Whole numbers up to this size are split into primes to simplify a square root.
+FACTOR_LIMIT = 10 ** 30
 #: Halvings of an interval before ADA stops narrowing a root.
 MAX_HALVINGS = 2000
-#: Above this many rational candidates, only those near a real root are tried.
-MAX_CANDIDATES = 25_000
+#: Up to this degree, Sturm's theorem counts the real roots too, as a check on SymPy's count.
+STURM_DEGREE = 30
 
 Coefficients = list  # list[Fraction], constant term first
 
@@ -88,6 +89,14 @@ def _divmod(top: Coefficients, bottom: Coefficients) -> tuple[Coefficients, Coef
     return _trim(quotient), _trim(remainder)
 
 
+def _times(first: Coefficients, second: Coefficients) -> Coefficients:
+    product = [Fraction(0)] * (len(first) + len(second) - 1)
+    for i, a in enumerate(first):
+        for j, b in enumerate(second):
+            product[i + j] += a * b
+    return product
+
+
 def _monic(p: Coefficients) -> Coefficients:
     p = _trim(p)
     return [value / p[-1] for value in p]
@@ -110,32 +119,6 @@ def _primitive(p: Coefficients) -> Coefficients:
     return [Fraction(value // common) for value in whole]
 
 
-def _minus(first: Coefficients, second: Coefficients) -> Coefficients:
-    length = max(len(first), len(second))
-    return _trim([(first[i] if i < len(first) else 0) - (second[i] if i < len(second) else 0)
-                  for i in range(length)])
-
-
-def _square_free(p: Coefficients) -> list[tuple[Coefficients, int]]:
-    """Yun's method: p as a product of factors with no repeated root, each with how many times it appears."""
-    p = _monic(p)
-    derivative = _derivative(p)
-    common = _gcd(p, derivative)
-    rest, _ = _divmod(p, common)
-    other, _ = _divmod(derivative, common)
-    difference = _minus(other, _derivative(rest))
-    factors, times = [], 1
-    while _degree(rest) > 0:
-        factor = _gcd(rest, difference)
-        if _degree(factor) > 0:
-            factors.append((factor, times))
-        rest, _ = _divmod(rest, factor)
-        other, _ = _divmod(difference, factor)
-        difference = _minus(other, _derivative(rest))
-        times += 1
-    return factors
-
-
 def _factor_text(text: str, times: int) -> str:
     wrapped = f"({text})" if " " in text else text
     return f"{wrapped}^{times}" if times > 1 else wrapped
@@ -152,30 +135,39 @@ def polynomial_text(p: Coefficients, letter: str) -> str:
 
 
 def _factor(n: int) -> dict[int, int] | None:
-    """The prime factors of |n| by trial division, or None when |n| is too large to factor this way."""
+    """The prime factors of |n|, from SymPy, or None when |n| is too large to factor quickly."""
     n = abs(n)
     if n > FACTOR_LIMIT:
         return None
-    factors: dict[int, int] = {}
-    divisor = 2
-    while divisor * divisor <= n:
-        while n % divisor == 0:
-            factors[divisor] = factors.get(divisor, 0) + 1
-            n //= divisor
-        divisor += 1 if divisor == 2 else 2
-    if n > 1:
-        factors[n] = factors.get(n, 0) + 1
-    return factors
+    from sympy import factorint  # noqa: PLC0415
+
+    return {int(prime): int(power) for prime, power in factorint(n).items()}
 
 
-def _divisors(n: int) -> list[int] | None:
-    factors = _factor(n)
-    if factors is None:
-        return None
-    divisors = [1]
-    for prime, power in factors.items():
-        divisors = [d * prime ** k for d in divisors for k in range(power + 1)]
-    return sorted(divisors)
+def factor_over_rationals(p: Coefficients) -> list[tuple[Coefficients, int]]:
+    """p as a product of polynomials that do not factor further over the rationals, each with whole-number
+    coefficients and how many times it appears, from SymPy's factor_list; lowest degree first.
+
+    The factors are multiplied back together with exact arithmetic and must give p's whole-number form
+    (``_primitive``) exactly, or the factoring is refused.
+    """
+    from sympy import Poly, Rational, Symbol  # noqa: PLC0415
+
+    symbol = Symbol("x")
+    poly = Poly([Rational(value.numerator, value.denominator) for value in reversed(_trim(p))], symbol)
+    factors = []
+    for factor, times in poly.factor_list()[1]:
+        coefficients = [Fraction(int(value.p), int(value.q)) for value in reversed(factor.all_coeffs())]
+        factors.append((_primitive(coefficients), int(times)))
+    product = [Fraction(1)]
+    for factor, times in factors:
+        for _ in range(times):
+            product = _times(product, factor)
+    if _trim(product) != _primitive(p):
+        _refuse("unsupported_expression", "The factors SymPy gives do not multiply back to the polynomial, "
+                                          "so ADA gives no answer.")
+    return sorted(factors, key=lambda item: (len(item[0]), [abs(value) for value in reversed(item[0])],
+                                             list(reversed(item[0]))))
 
 
 def _square_part(n: int) -> tuple[int, int]:
@@ -252,8 +244,9 @@ def real_roots(coefficients: Coefficients, letter: str = "x",
                digits: int = DIGITS) -> tuple[list[Root], list[str]]:
     """The real roots of a polynomial, smallest first, with the steps that found and checked them.
 
-    A root that comes from a repeated factor carries its multiplicity. A
-    polynomial of degree above ``MAX_ROOT_DEGREE`` is refused as too large.
+    The polynomial is factored over the rationals first (SymPy's factor_list), so a root that comes from a
+    repeated factor carries its multiplicity, and a quadratic factor gives exact square roots wherever it
+    sits. A polynomial of degree above ``MAX_ROOT_DEGREE`` is refused as too large.
     """
     p = _trim([Fraction(value) for value in coefficients])
     if _degree(p) < 1:
@@ -263,106 +256,32 @@ def real_roots(coefficients: Coefficients, letter: str = "x",
                              f"roots of polynomials up to degree {MAX_ROOT_DEGREE}.")
     steps: list[str] = []
     found: list[tuple[Fraction, Root]] = []
-    factors = _square_free(p)
+    factors = factor_over_rationals(p)
+    text = polynomial_text(_primitive(p), letter)
     if len(factors) > 1 or factors[0][1] > 1:
-        written = " * ".join(_factor_text(polynomial_text(_primitive(factor), letter), times)
+        written = " * ".join(_factor_text(polynomial_text(factor, letter), times)
                              for factor, times in factors)
-        steps.append(f"Repeated factors: {polynomial_text(_primitive(p), letter)} = {written}, up to a whole "
-                     "number.")
+        steps.append(f"Factor over the rationals: {text} = {written}.")
+    elif _degree(p) > 2:
+        steps.append(f"{text} does not factor over the rationals.")
     for factor, times in factors:
-        for sort_key, root in _roots_of_square_free(_primitive(factor), letter, digits, steps):
+        for sort_key, root in _roots_of_factor(factor, letter, digits, steps):
             found.append((sort_key, Root(root.value, root.exact, root.decimal, times, root.bracket)))
     found.sort(key=lambda item: item[0])
     return [root for _, root in found], steps
 
 
-def _roots_of_square_free(p: Coefficients, letter: str, digits: int, steps: list[str]):
-    """(sort key, Root) pairs for a whole-number polynomial with no repeated root."""
-    text = polynomial_text(p, letter)
-    results = []
-    # A root of 0 first: x^k divides out.
-    while p and p[0] == 0:
-        results.append((Fraction(0), Root("0", True, "0")))
-        steps.append(f"{letter} = 0 is a root." if text == letter else
-                     f"{letter} = 0 is a root of {text}, since it has no constant term.")
-        p = p[1:]
-    if _degree(p) < 1:
-        return results
-    rational, p = _rational_roots(p, letter, steps)
-    results += [(value, Root(_number_text(value), True, _decimal_of(_number_text(value), digits)))
-                for value in rational]
+def _roots_of_factor(p: Coefficients, letter: str, digits: int, steps: list[str]):
+    """(sort key, Root) pairs for a whole-number polynomial that does not factor over the rationals."""
     degree = _degree(p)
     if degree == 1:
         value = -p[0] / p[1]
-        results.append((value, Root(_number_text(value), True, _decimal_of(_number_text(value), digits))))
-    elif degree == 2:
-        results += _quadratic(p, letter, digits, steps)
-    elif degree >= 3:
-        results += _binomial(p, letter, digits, steps) if all(value == 0 for value in p[1:-1]) else \
-            _isolated(p, letter, digits, steps)
-    return results
-
-
-def _rational_roots(p: Coefficients, letter: str, steps: list[str]) -> tuple[list[Fraction], Coefficients]:
-    """Rational roots p/q, with p dividing the constant term and q the leading coefficient, divided out."""
-    tops, bottoms = _divisors(int(p[0])), _divisors(int(p[-1]))
-    text = polynomial_text(p, letter)
-    if tops is None or bottoms is None:
-        steps.append(f"The coefficients of {text} are too large to list its rational candidates, so none is "
-                     "looked for.")
-        return [], p
-    if len(tops) * len(bottoms) * 2 > MAX_CANDIDATES:
-        candidates = _candidates_near_roots(p, bottoms)
-        steps.append(f"Rational roots of {text} = 0 are among ±(divisors of {int(abs(p[0]))})/(divisors of "
-                     f"{int(p[-1])}); there are too many to try each, so only those inside a narrow interval "
-                     "around each real root are tried.")
-        listed = False
-    else:
-        candidates = sorted({sign * Fraction(top, bottom)
-                             for top in tops for bottom in bottoms for sign in (1, -1)})
-        listed = True
-    roots = [value for value in candidates if _evaluate(p, value) == 0]
-    if listed and len(candidates) <= 24:
-        shown = ", ".join(_number_text(value) for value in candidates)
-        steps.append(f"Rational roots of {text} = 0 are among ±(divisors of {int(abs(p[0]))})/(divisors of "
-                     f"{int(p[-1])}): {shown}.")
-    elif listed:
-        steps.append(f"Rational roots of {text} = 0 are among the {len(candidates)} fractions ±(divisors of "
-                     f"{int(abs(p[0]))})/(divisors of {int(p[-1])}).")
-    if roots:
-        steps.append(", ".join(f"{letter} = {_number_text(value)}" for value in roots)
-                     + f" make{'s' if len(roots) == 1 else ''} it 0.")
-        for value in roots:
-            p, _ = _divmod(p, [-value, Fraction(1)])
-        if _degree(p) > 0:
-            steps.append(f"Dividing those out leaves {polynomial_text(_primitive(p), letter)} = 0.")
-        p = _primitive(p) if _degree(p) > 0 else p
-    elif _degree(p) > 1:
-        steps.append("None of them makes it 0.")
-    return roots, p
-
-
-def _candidates_near_roots(p: Coefficients, bottoms: list[int]) -> list[Fraction]:
-    """The fractions top/bottom, bottom dividing the leading coefficient, inside a narrow interval around each
-    real root: two such fractions with a given bottom are at least 1/bottom apart."""
-    sequence = _sturm(_trim(p))
-    bound = 1 + max(abs(value / p[-1]) for value in p[:-1])
-    width = Fraction(1, 2 * max(bottoms))
-    candidates = set()
-    pending = [(-bound, bound)]
-    while pending:
-        low, high = pending.pop()
-        inside = _sign_changes(sequence, low) - _sign_changes(sequence, high)
-        if inside == 0:
-            continue
-        if high - low > width:
-            middle = (low + high) / 2
-            pending += [(low, middle), (middle, high)]
-            continue
-        for bottom in bottoms:
-            for top in range(math.floor(low * bottom), math.ceil(high * bottom) + 1):
-                candidates.add(Fraction(top, bottom))
-    return sorted(candidates)
+        return [(value, Root(_number_text(value), True, _decimal_of(_number_text(value), digits)))]
+    if degree == 2:
+        return _quadratic(p, letter, digits, steps)
+    if all(value == 0 for value in p[1:-1]):
+        return _binomial(p, letter, digits, steps)
+    return _isolated(p, letter, digits, steps)
 
 
 def _quadratic(p: Coefficients, letter: str, digits: int, steps: list[str]):
@@ -447,26 +366,31 @@ def _sign_changes(sequence: list[Coefficients], x: Fraction) -> int:
 
 
 def _isolated(p: Coefficients, letter: str, digits: int, steps: list[str]):
-    """Real roots counted by Sturm's theorem, each found by halving an interval where p changes sign."""
-    sequence = _sturm(p)
-    bound = 1 + max(abs(value / p[-1]) for value in p[:-1])
-    count = _sign_changes(sequence, -bound) - _sign_changes(sequence, bound)
+    """Real roots isolated by SymPy (and counted by Sturm's theorem as a check, up to ``STURM_DEGREE``), each
+    narrowed by halving an interval where p changes sign."""
+    from sympy import Poly, Rational, Symbol  # noqa: PLC0415
+
     text = polynomial_text(p, letter)
-    if count == 0:
-        steps.append(f"{text} = 0 has no rational root, and Sturm's theorem counts no real root between "
-                     f"-{_number_text(bound)} and {_number_text(bound)}, where every root lies.")
+    poly = Poly([Rational(int(value)) for value in reversed(p)], Symbol("x"))
+    intervals = [(Fraction(int(low.p), int(low.q)), Fraction(int(high.p), int(high.q)))
+                 for (low, high), _ in poly.intervals()]
+    how = "isolated by SymPy"
+    if _degree(p) <= STURM_DEGREE:
+        sequence = _sturm(p)
+        bound = 1 + max(abs(value / p[-1]) for value in p[:-1])
+        count = _sign_changes(sequence, -bound) - _sign_changes(sequence, bound)
+        if count != len(intervals):
+            _refuse("unsupported_expression",
+                    f"Sturm's theorem counts {count} real roots of {text} = 0 and SymPy isolates "
+                    f"{len(intervals)}; since the two disagree, ADA gives no answer.")
+        how = "counted by Sturm's theorem and isolated by SymPy"
+    if not intervals:
+        steps.append(f"{text} = 0 has no real root ({how}).")
         return []
-    intervals, pending = [], [(-bound, bound)]
-    while pending:
-        low, high = pending.pop()
-        inside = _sign_changes(sequence, low) - _sign_changes(sequence, high)
-        if inside == 1:
-            intervals.append((low, high))
-        elif inside > 1:
-            middle = (low + high) / 2
-            pending += [(low, middle), (middle, high)]
     results = []
     for low, high in sorted(intervals):
+        if _evaluate(p, low) * _evaluate(p, high) > 0:
+            _refuse("needs_more_digits", f"A root of {text} = 0 could not be bracketed at {digits} digits.")
         low, high = _narrowed(p, low, high, digits)
         middle = (low + high) / 2
         decimal = _decimal_text(_as_decimal(middle, digits + 5), digits)
@@ -475,9 +399,9 @@ def _isolated(p: Coefficients, letter: str, digits: int, steps: list[str]):
         if not (_evaluate(p, Fraction(shown_low)) * _evaluate(p, Fraction(shown_high)) < 0):
             _refuse("needs_more_digits", f"A root of {text} = 0 could not be bracketed at {digits} digits.")
         results.append((middle, Root(decimal, False, decimal, bracket=(shown_low, shown_high))))
-    steps.append(f"{text} = 0 has no rational root, and Sturm's theorem counts {count} real root"
-                 f"{'' if count == 1 else 's'}; each is found by halving an interval where {text} changes "
-                 f"sign, to {digits} significant digits.")
+    count = len(results)
+    steps.append(f"{text} = 0 has {count} real root{'' if count == 1 else 's'}, {how}; each is found by "
+                 f"halving an interval where {text} changes sign, to {digits} significant digits.")
     for _, root in results:
         steps.append(f"Check {letter} ≈ {root.value}: {text} changes sign between {root.bracket[0]} and "
                      f"{root.bracket[1]}, so a root lies between them.")
