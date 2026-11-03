@@ -62,9 +62,10 @@ def compute_tool() -> dict:
     return next(item for item in tools.definitions("openai") if item["function"]["name"] == "ada_compute")
 
 
-def chat(base: str, model: str, messages: list[dict], offered: list[dict]) -> dict:
+def chat(base: str, model: str, messages: list[dict], offered: list[dict],
+         max_tokens: int = MAX_TOKENS) -> dict:
     body = {"model": model, "messages": messages, "stream": False, "think": False,
-            "options": {"temperature": 0, "seed": 0, "num_ctx": 8192, "num_predict": MAX_TOKENS}}
+            "options": {"temperature": 0, "seed": 0, "num_ctx": 8192, "num_predict": max_tokens}}
     if offered:
         body["tools"] = offered
     request = urllib.request.Request(f"{base}/api/chat", data=json.dumps(body).encode(),
@@ -86,13 +87,16 @@ def final_number(text: str) -> Fraction | None:
         return None
 
 
-def solve(base: str, model: str, question: str, with_ada: bool) -> dict:
+def solve(base: str, model: str, question: str, with_ada: bool,
+          prompts: tuple[str, str] = (PROMPT, TOOL_PROMPT), max_tokens: int = MAX_TOKENS) -> dict:
+    """The model's reply to one problem, with ada_compute offered when ``with_ada``; ``prompts`` are the
+    system prompts without and with the tool."""
     offered = [compute_tool()] if with_ada else []
-    messages = [{"role": "system", "content": TOOL_PROMPT if with_ada else PROMPT},
+    messages = [{"role": "system", "content": prompts[1] if with_ada else prompts[0]},
                 {"role": "user", "content": question}]
     calls = []
     for round_ in range(ROUNDS + 1):
-        message = chat(base, model, messages, offered if round_ < ROUNDS else [])
+        message = chat(base, model, messages, offered if round_ < ROUNDS else [], max_tokens)
         requested = message.get("tool_calls") or []
         written = None if requested or not offered else _written_call(message.get("content", ""))
         if written is not None and written[0] == "ada_compute":
