@@ -5,6 +5,7 @@ import random
 import unittest
 from decimal import Decimal, localcontext
 from fractions import Fraction
+from unittest import mock
 
 import numpy as np
 
@@ -33,8 +34,10 @@ class ExactRootTests(unittest.TestCase):
     def test_rational_roots(self):
         found, steps = roots_of(6, -5, 1)                        # x^2 - 5x + 6
         self.assertEqual(values(found), ["2", "3"])
-        self.assertIn("x = 2, x = 3 make it 0.", steps)
-        self.assertEqual(values(roots_of(-2, 3, 2)[0]), ["-2", "0.5"])   # 2x^2 + 3x - 2
+        self.assertEqual(steps, ["Factor over the rationals: x^2 - 5x + 6 = (x - 2) * (x - 3)."])
+        found, steps = roots_of(-2, 3, 2)                        # 2x^2 + 3x - 2
+        self.assertEqual(values(found), ["-2", "0.5"])
+        self.assertEqual(steps, ["Factor over the rationals: 2x^2 + 3x - 2 = (x + 2) * (2x - 1)."])
         self.assertEqual(values(roots_of(-6, 11, -6, 1)[0]), ["1", "2", "3"])
 
     def test_the_quadratic_formula_with_a_square_root(self):
@@ -60,7 +63,7 @@ class ExactRootTests(unittest.TestCase):
     def test_repeated_roots_carry_their_multiplicity(self):
         found, steps = roots_of(4, -4, 1)                        # (x - 2)^2
         self.assertEqual([(root.value, root.multiplicity) for root in found], [("2", 2)])
-        self.assertTrue(steps[0].startswith("Repeated factors"))
+        self.assertEqual(steps[0], "Factor over the rationals: x^2 - 4x + 4 = (x - 2)^2.")
         found, _ = roots_of(-2, 5, -3, -1, 1)                   # (x - 1)^3 (x + 2)
         self.assertEqual([(root.value, root.multiplicity) for root in found], [("-2", 1), ("1", 3)])
         found, _ = roots_of(0, 0, -2, 1)                         # x^2 (x - 2)
@@ -74,10 +77,24 @@ class ExactRootTests(unittest.TestCase):
         self.assertEqual(values(roots_of(3, 0, 0, 0, 1)[0]), [])             # x^4 = -3
 
 
-    def test_too_many_candidates_to_try_each(self):
+    def test_large_coefficients_factor(self):
         result = solve("(720720x - 963761198400)(963761198400x + 1) = 0")
         self.assertEqual([root["value"] for root in result.roots], ["-1/963761198400", "1337220"])
-        self.assertTrue(any("too many to try each" in step for step in result.steps))
+
+    def test_a_quadratic_factor_gives_exact_roots_wherever_it_sits(self):
+        found, steps = roots_of(2, 2, -1, -3, 0, 1)             # (x^2 - 2)(x^3 - x - 1)
+        self.assertEqual([(root.value, root.exact) for root in found],
+                         [("-sqrt(2)", True), ("1.324717957244746026", False), ("sqrt(2)", True)])
+        self.assertIn("Factor over the rationals: x^5 - 3x^3 - x^2 + 2x + 2 = (x^2 - 2) * (x^3 - x - 1).",
+                      steps)
+
+    def test_high_degree(self):
+        found, steps = roots_of(1, -3, *([0] * 58), 1)          # x^60 - 3x + 1
+        self.assertEqual([root.exact for root in found], [False, False])
+        self.assertTrue(any("isolated by SymPy" in step for step in steps))
+        for root in found:
+            low, high = (Fraction(end) for end in root.bracket)
+            self.assertLess((low ** 60 - 3 * low + 1) * (high ** 60 - 3 * high + 1), 0)
 
 
 class ApproximateRootTests(unittest.TestCase):
@@ -110,6 +127,14 @@ class RootRefusalTests(unittest.TestCase):
     def test_limits(self):
         refused(solve(f"x^{MAX_ROOT_DEGREE + 1} = x + 1"), "too_large")
         refused(solve("x^2 + x*y = 1"), "unsupported_expression")
+
+    def test_factors_that_do_not_multiply_back_are_refused(self):
+        from sympy import Poly, Symbol
+
+        wrong = (1, [(Poly([1, -2], Symbol("x")), 1), (Poly([1, -4], Symbol("x")), 1)])   # (x - 2)(x - 4)
+        with mock.patch("sympy.Poly.factor_list", return_value=wrong):
+            message = refused(solve("x^2 - 5x + 6 = 0"), "unsupported_expression")
+        self.assertIn("do not multiply back", message)
 
 
 class SolveTests(unittest.TestCase):

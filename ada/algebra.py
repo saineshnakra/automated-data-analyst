@@ -668,29 +668,13 @@ def _not_zero_all(polynomial: Polynomial) -> list[str]:
     coefficients = [Fraction(0)] * (polynomial.degree() + 1)
     for power, value in _one_letter_coefficients(polynomial, letter).items():
         coefficients[power] = value
-    rest = [Fraction(1)]
-    for factor, _ in rooting._square_free(coefficients):
-        rest = _times_coefficients(rest, factor)
-    found = []
-    while rest and rest[0] == 0:
-        found.append(Fraction(0))
-        rest = rest[1:]
-    if rooting._degree(rest) > 0:
-        quiet: list[str] = []
-        rational, rest = rooting._rational_roots(rooting._primitive(rest), letter, quiet)
-        found += rational
-    conditions = [f"{letter} ≠ {_number_text(value)}" for value in sorted(found)]
-    if rooting._degree(rest) > 0:
-        conditions.append(f"{rooting.polynomial_text(rooting._primitive(rest), letter)} ≠ 0")
-    return conditions
-
-
-def _times_coefficients(first: list[Fraction], second: list[Fraction]) -> list[Fraction]:
-    product = [Fraction(0)] * (len(first) + len(second) - 1)
-    for i, a in enumerate(first):
-        for j, b in enumerate(second):
-            product[i + j] += a * b
-    return product
+    ruled_out, rest = [], []
+    for factor, _ in rooting.factor_over_rationals(coefficients):
+        if rooting._degree(factor) == 1:
+            ruled_out.append(-factor[0] / factor[1])
+        else:
+            rest.append(f"{rooting.polynomial_text(factor, letter)} ≠ 0")
+    return [f"{letter} ≠ {_number_text(value)}" for value in sorted(ruled_out)] + rest
 
 
 def _not_zero(polynomial: Polynomial) -> str:

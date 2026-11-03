@@ -20,6 +20,7 @@ ADA is MIT-licensed and depends only on permissively licensed libraries.
 | [ruptures](https://centre-borelli.github.io/ruptures-docs/) | BSD-2-Clause | Binary segmentation (`Binseg`) to find a lasting change in the level of the measure's period series |
 | [python-calamine](https://github.com/dimastbk/python-calamine) | MIT | Reading `.xlsx` and `.xlsm` workbooks through pandas, built on the Rust [calamine](https://github.com/tafia/calamine) crate (MIT) |
 | [PyYAML](https://pyyaml.org) | MIT | Reading the answers file that `ada scan --template` writes and `--answers` takes |
+| [SymPy](https://www.sympy.org) | BSD-3-Clause | For `ada.solve`: factoring a polynomial over the rationals (`Poly.factor_list`), splitting whole numbers into primes (`factorint`) and isolating real roots (`Poly.intervals`); ADA writes each root, checks it and states the steps |
 
 `ada chat` and `ada mcp` use only the Python standard library. The research
 workflow, the modelling mode and the browser app, with the libraries they use
@@ -46,6 +47,9 @@ in [ADA Lab](https://github.com/saineshnakra/ada-lab).
 - **ruptures:** Truong, C., Oudre, L. and Vayatis, N. (2020). Selective review
   of offline change point detection methods. *Signal Processing* 167, 107299.
   https://doi.org/10.1016/j.sigpro.2019.107299
+- **SymPy:** Meurer, A., Smith, C. P., Paprocki, M. et al. (2017). SymPy:
+  symbolic computing in Python. *PeerJ Computer Science* 3, e103.
+  https://doi.org/10.7717/peerj-cs.103
 
 ## Methods
 

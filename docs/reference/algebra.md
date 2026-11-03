@@ -95,13 +95,17 @@ One equation in one unknown, once denominators are multiplied away and
 everything is moved to one side, is a polynomial = 0. `solve` gives its real
 roots, smallest first, in `roots`; `kind` is `one`, `several` or `none`.
 
-| The polynomial | How its roots are found | Written as |
+First the polynomial is factored over the rationals with SymPy, and the
+factoring is a step: "Factor over the rationals: x^2 - 5x + 6 = (x - 2) *
+(x - 3)." A factor repeated k times gives a root that carries multiplicity k.
+Then each factor's roots are found:
+
+| The factor | How its roots are found | Written as |
 |---|---|---|
-| A factor repeated | Yun's method splits it off (a greatest common divisor with the derivative), and the root carries its multiplicity | `x = 2 (twice)` |
-| Rational roots | Every fraction ±p/q, p dividing the constant term and q the leading coefficient, is tried | `2`, `0.5`, `1/3` |
-| What is left is a quadratic | The quadratic formula, with square factors taken out of the root | `(3 - sqrt(5))/2`, `-2*sqrt(2)` |
-| What is left is a*x^n + c | x^n = t, so x = root(t, n), and its negative when n is even | `root(2, 3)` |
-| Anything else | Sturm's theorem counts the real roots exactly; each is found by halving an interval where the polynomial changes sign, to 20 significant digits | `x ≈ 1.324717957244746026` |
+| Degree 1 | Its root is a whole number or a fraction | `2`, `0.5`, `1/3` |
+| A quadratic | The quadratic formula, with square factors taken out of the root | `(3 - sqrt(5))/2`, `-2*sqrt(2)` |
+| a*x^n + c | x^n = t, so x = root(t, n), and its negative when n is even | `root(2, 3)` |
+| Anything else | SymPy isolates each real root in an interval with rational ends; up to degree 30, Sturm's theorem counts the roots again and a different count is refused. Each interval is halved until the root is known to 20 significant digits | `x ≈ 1.324717957244746026` |
 
 Every exact value is written so `compute` reads it back, and its decimal
 comes from `compute`. Each exact root is checked by putting it into the
@@ -120,10 +124,9 @@ make it zero are divided out of the polynomial before its roots are found:
 `x/(x^2 - 1) = 1/(x^2 - 1)` has no solution. A condition on a divisor in one
 letter lists each value ruled out: `x ≠ -3, x ≠ 1`.
 
-Polynomials up to degree 30 are solved (`MAX_ROOT_DEGREE`). Whole numbers up
-to 10^12 are split into primes to list rational candidates and simplify
-roots; beyond that, no rational root is looked for, and the roots are found
-by halving.
+Polynomials up to degree 100 are solved (`MAX_ROOT_DEGREE`). Whole numbers up
+to 10^30 are split into primes to take square factors out of a root; a root
+of a larger number stays as it is.
 
 ## Checking a solution
 
@@ -141,12 +144,12 @@ again. `values` is a dict, `{"x": 4}` or `{"x": "7/2"}`, or text, `"x = 6, y =
 | `ambiguous_expression` | A side reads two ways | `6/2x = 3`, `x + 10%` |
 | `invalid_expression` | A name ADA does not know, no = sign, no letter to solve for | `cost = 5`, `2 + 2 = 4` |
 | `division_by_zero` | An expression divides by something that is always zero | `x/(x - x)` |
-| `too_large` | More than 2,000 terms once multiplied out, a power above 200, more than 50 equations, or a polynomial equation above degree 30 | `(x + y + z + 1)^60`, `x^40 = x + 1` |
+| `too_large` | More than 2,000 terms once multiplied out, a power above 200, more than 50 equations, or a polynomial equation above degree 100 | `(x + y + z + 1)^60`, `x^101 = x + 1` |
 
 "Linear in the unknowns" means each unknown appears to the first power and no
 two are multiplied together, once denominators are multiplied away. Other
 letters, as in `a*x + b = c` solved for x, may appear anywhere. One equation
-in one unknown may have any power up to 30, but then it must be the only
+in one unknown may have any power up to 100, but then it must be the only
 letter.
 
 ## How the results are tested

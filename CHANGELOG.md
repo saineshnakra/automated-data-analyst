@@ -20,12 +20,20 @@ ada compute "3(x + 2) - x"                 # 2x + 6
   elimination, with fractions kept exact and each step written as the
   equation it gives. "No solution" and "infinitely many" are answers, with
   the reason or the free letters.
-- A polynomial equation in one unknown gives its real roots, smallest
-  first, each with how many times it is a root: rational roots by the
-  rational root test, roots like (3 + sqrt(5))/2 by the quadratic formula,
-  root(2, 3) for x^3 = 2, and other roots to 20 digits with an interval
-  where the polynomial changes sign. Exact roots are checked by exact
-  substitution; complex roots of a quadratic are named in the steps.
+- A polynomial equation in one unknown, up to degree 100, gives its real
+  roots, smallest first, each with how many times it is a root. The
+  polynomial is factored over the rationals with SymPy and the factoring is
+  a step; then a factor of degree 1 gives a whole number or a fraction, a
+  quadratic factor gives roots like (3 + sqrt(5))/2 wherever it sits,
+  a*x^n + c gives root(2, 3) for x^3 = 2, and any other factor's roots come
+  to 20 digits with an interval where the polynomial changes sign. Exact
+  roots are checked by exact substitution; complex roots of a quadratic are
+  named in the steps.
+- SymPy is a new dependency. It factors polynomials and whole numbers and
+  isolates real roots; ADA reads the question, refuses what reads two ways,
+  writes each root, checks it and states the steps. Up to degree 30,
+  Sturm's theorem counts the real roots again, and a count that differs from
+  SymPy's is refused.
 - A letter in a denominator is multiplied away and the value that would make
   it zero is ruled out: `(x^2 - 1)/(x - 1) = 2` has no solution.
 - Every solution is put back into each equation as the last step, and
