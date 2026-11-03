@@ -188,6 +188,41 @@ in 21 of the 442 replies written alone, 15 of them with a wrong final
 answer, so the `check` condition is the next run, with `prompt` and `schema`
 to find which half of the tool does the harm.
 
+Run [41716634251](https://github.com/saineshnakra/automated-data-analyst/actions/runs/41716634251)
+on commit f2620ed, the same 221 problems under all five conditions. Each
+condition is compared with the model alone on the same problems, with the
+exact McNemar p:
+
+| Model | Alone | `tool` | `prompt` | `schema` | `check` |
+|---|---|---|---|---|---|
+| qwen2.5:1.5b | 125 (56.6%) | 102 (p = 0.003) | 126 (p = 1) | 100 (p = 0.001) | 124 (p = 1) |
+| qwen3:1.7b | 155 (70.1%) | 139 (p = 0.03) | 148 (p = 0.32) | 140 (p = 0.03) | 162 (p = 0.04) |
+
+- **The tool's definition is what does the harm.** With the tool offered
+  under the plain prompt (`schema`), both models lose as much as with the
+  whole tool. With the tool's prompt and no tool (`prompt`), they are level
+  with the model alone.
+- **A run does not repeat exactly on another runner, even at temperature 0
+  with seed 0.** qwen3:1.7b alone got 161 right in run 1 and 155 in run 2.
+  The replies it gave alone inside `check`, asked for a second time in the
+  same run, got 160. A difference of a few problems between two conditions
+  is within this.
+- **So `check` is judged against its own first reply**, the one ADA checked:
+  - ADA found a wrong equation in 8 of qwen3:1.7b's replies. Told which,
+    the model turned 2 wrong answers right and none wrong. Most of the gain
+    over the model alone in the table is the second asking, not the check.
+  - In qwen2.5:1.5b's replies ADA found one in 12. The model fixed none
+    and turned one right answer wrong.
+- **ADA now finds more.** It reads LaTeX (#164) and checks steps with
+  letters (#166). In the same first replies it finds a wrong equation in 17
+  of qwen3:1.7b's (13 with a wrong final answer) and 26 of qwen2.5:1.5b's
+  (21 wrong), against 8 and 12 before.
+
+Since #162, `check` starts from the reply the model gave alone, so the
+comparison no longer includes a second asking. The next runs turn thinking
+on, for all 500 problems, and vote over several samples, with and without
+the replies ADA finds a wrong equation in.
+
 ### Run it
 
 On GitHub: Actions, Benchmark MATH, Run workflow. Each model, condition
