@@ -83,11 +83,12 @@ from ada import tools
 
 tools.definitions()                    # four tools for function calling: ask, check a claim, scan, compute
 tools.run("ada_check_claim", {"path": "flights.csv", "claim": "The average departure delay was about 13 minutes."})
+tools.langchain(root="data")           # the same tools for LangChain and LangGraph: pip install "automated-data-analyst[langchain]"
 ```
 
 [ADA as the math tool of a language model](docs/llm-tools.md) has the setup
-for each app, which local models work, a loop with the Anthropic API and
-what comes back.
+for each app, which local models work, loops with the Anthropic API,
+LangChain and LangGraph, and what comes back.
 
 ## Check a number
 

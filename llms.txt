@@ -8,6 +8,7 @@ Give a language model ADA's tools (function calling):
 from ada import tools
 tools.definitions()                 # OpenAI-compatible: Ollama, llama.cpp server, vLLM, LM Studio; "anthropic" for the Anthropic API
 tools.run(name, arguments, root="data")   # runs ada_ask, ada_check_claim, ada_scan or ada_compute (all read-only); returns JSON to send back
+tools.langchain(root="data")   # the four tools as LangChain tools, for LangChain agents and LangGraph (pip install "automated-data-analyst[langchain]")
 ```
 
 Exact arithmetic with every step, for any numbers a model has:
