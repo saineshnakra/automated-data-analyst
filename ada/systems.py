@@ -214,6 +214,13 @@ def _eliminate(polynomials: list, unknowns: list[str], bound: int, steps: list[s
             bases.append(basis)
             if number == 0 and list(basis.exprs) == [1]:
                 return [], [basis]
+            if number == 0 and not basis.is_zero_dimensional and len(polynomials) == 1:
+                letter = "x" if "x" in unknowns else unknowns[-1]
+                _refuse("unsupported_expression",
+                        f"One equation in {', '.join(unknowns[:-1])} and {unknowns[-1]} has infinitely many "
+                        "solutions. To solve "
+                        "it for one letter with the others as known values, name that letter: \"solve ... "
+                        f"for {letter}\", or unknowns=\"{letter}\" in Python.")
             if number == 0 and not basis.is_zero_dimensional:
                 _refuse("unsupported_expression",
                         "The equations leave infinitely many solutions, counting complex ones, so there is "

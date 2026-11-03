@@ -102,8 +102,10 @@ _TOOLS = (
             "min, max, exp, ln, log10, log2, log(x, base), pi and e. Fractions stay exact (1/3 + 1/6 = 1/2). "
             "Use it for every calculation on numbers you already have. It also solves equations with "
             "one-letter unknowns, one or several separated by ;, linear (x + y = 10; x - y = 2) or with "
-            "powers (x^2 - 5x + 6 = 0, or x*y = 6; x + y = 5), and checks the answer by putting it back. An "
-            "expression that reads two ways is refused with both readings."
+            "powers (x^2 - 5x + 6 = 0, or x*y = 6; x + y = 5), and checks the answer by putting it back. "
+            "\"solve a*x^2 + b*x + c = 0 for x\" solves for one letter with the others as known values, and "
+            "lists the conditions the answer needs. An expression that reads two ways is refused with both "
+            "readings."
         ),
         "parameters": {
             "type": "object",

@@ -18,7 +18,7 @@ import ada
 ada.compute("0.15 * (1200 - 300)").value   # "135"; 0.1 + 0.2 is exactly 0.3; 6/2(1+2) is refused as ambiguous
 ada.check_arithmetic(reply)   # each equation written in a worked answer, checked; correct=False marks a slip, with the right value
 ada.solve("x + y = 10; x - y = 2").values   # {"x": "6", "y": "4"}: linear equations and systems, exact, each step, checked by putting the values back
-ada.solve("x^2 - 3x + 1 = 0").answer   # "x = (3 - sqrt(5))/2 ≈ 0.38… or x = (3 + sqrt(5))/2 ≈ 2.61…": polynomial equations in one unknown, real roots exact where they can be written; systems of polynomial equations such as "x*y = 6; x + y = 5" give each real solution
+ada.solve("x^2 - 3x + 1 = 0").answer   # "x = (3 - sqrt(5))/2 ≈ 0.38… or x = (3 + sqrt(5))/2 ≈ 2.61…": polynomial equations in one unknown, real roots exact where they can be written; systems of polynomial equations such as "x*y = 6; x + y = 5" give each real solution; "solve a*x^2 + b*x + c = 0 for x" gives the quadratic formula with its conditions
 ```
 
 `ada compute "EXPRESSION"` does the same in a shell, and solves an equation given one: `ada compute "2x + 3 = 11"`.
