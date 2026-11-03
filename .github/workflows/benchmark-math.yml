@@ -13,6 +13,9 @@ on:
       problems:
         description: "How many problems of those subjects, from the start (empty for all)"
         default: ""
+      conditions:
+        description: "Conditions, as a JSON list (none, tool, check, prompt, schema)"
+        default: '["none", "tool", "check", "prompt", "schema"]'
 
 permissions:
   contents: read
@@ -25,7 +28,7 @@ jobs:
       fail-fast: false
       matrix:
         model: ["qwen3:1.7b", "qwen2.5:1.5b"]
-        condition: [none, tool]
+        condition: ${{ fromJSON(github.event.inputs.conditions || '["none", "tool", "check", "prompt", "schema"]') }}
         shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v4
