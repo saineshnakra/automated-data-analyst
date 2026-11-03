@@ -14,6 +14,7 @@ import re
 from decimal import Decimal
 from fractions import Fraction
 
+from .algebra import _read
 from .api import Refusal
 from .compute import (
     _BOLD,
@@ -24,6 +25,7 @@ from .compute import (
     Checked,
     Computation,
     _exact_value,
+    _Refused,
     _written_as,
     compute,
 )
@@ -59,15 +61,21 @@ _NAMES = re.compile(r"(?<![A-Za-z])(?:sqrt|root|comb|pi)(?![A-Za-z])")
 _NUMBER = re.compile(r"-?\d+(?:\.\d+)?%?")
 _OPERATION = re.compile(r"[-+*/^!%]|(?<![A-Za-z])(?:sqrt|root|comb)\(")
 _WORD = re.compile(r"(?<![\\A-Za-z])[A-Za-z]+")
+_RUN = re.compile(r"[A-Za-z]+")
+#: Not a product of letters: a function at a value, f(2) or p(x), and a derivative, \\frac{d}{dx}.
+_NOT_A_PRODUCT = re.compile(r"(?<![A-Za-z\\])[fghpqFGHPQ]\s*\(|\\[dtc]?frac\s*\{\s*d"
+                            r"|(?<![A-Za-z])d/d[A-Za-z]")
 
 
 class _Unreadable(Exception):
     """A sign ADA does not read as arithmetic."""
 
 
-def to_plain(latex: str) -> str | None:
+def to_plain(latex: str, letters: bool = False) -> str | None:
     """The expression ``ada.compute`` takes for a side of an equation written in LaTeX, or None when the
-    side has a letter or a sign ADA does not read: ``\\frac{1}{2}\\sqrt{8}`` gives ``((1)/(2))sqrt(8)``."""
+    side has a sign ADA does not read, or a letter unless ``letters``: ``\\frac{1}{2}\\sqrt{8}`` gives
+    ``((1)/(2))sqrt(8)``, and with letters ``\\frac{xy}{2}`` gives ``((x*y)/(2))``, as LaTeX writes a
+    product."""
     text = latex.replace("{,}", "").replace(",\\!", "").replace("−", "-").replace("·", "*")
     text = re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", text)
     if not text.strip() or _TWO_WAYS.search(text):
@@ -76,8 +84,15 @@ def to_plain(latex: str) -> str | None:
         plain = _Reader(text).read()
     except _Unreadable:
         return None
-    if re.search(r"[A-Za-z_&#$]", _NAMES.sub("", plain)):
+    rest = _NAMES.sub("", plain)
+    if re.search(r"[_&#$]", rest) or re.search(r"[A-Za-z]", rest) and not letters:
         return None
+    if letters:
+        # Three letters or more in a row are a word, such as a unit ("3 bolts"), not a product.
+        if _NOT_A_PRODUCT.search(text) or any(len(run) > 2 for run in _RUN.findall(rest)):
+            return None
+        plain = _RUN.sub(lambda run: run.group() if _NAMES.fullmatch(run.group()) else "*".join(run.group()),
+                         plain)
     return " ".join(plain.split())
 
 
@@ -177,8 +192,9 @@ class _Reader:
         raise _Unreadable
 
 
-def check_line(line: str) -> list[Checked]:
-    """Check every step written in LaTeX on one line of a worked answer."""
+def check_line(line: str, numbers: bool = True) -> list[Checked]:
+    """Check every step written in LaTeX on one line of a worked answer; with ``numbers`` false, only the
+    steps with letters, for a line whose numbers are checked as plain text."""
     line = _BOLD.sub("", line)
     displayed = not _DELIMITERS.search(line)
     # A line of a displayed block that starts with an operator goes on from the line before: "+ \frac{3}{10}".
@@ -198,7 +214,7 @@ def check_line(line: str) -> list[Checked]:
         if kind == "math":
             before = " ".join(item[1] for item in pieces[:index])
             after = " ".join(item[1] for item in pieces[index + 1:])
-            checked += _checked_clause(text, before, after, continued and index == 0)
+            checked += _checked_clause(text, before, after, continued and index == 0, numbers)
     return checked
 
 
@@ -235,7 +251,8 @@ def _sides(math: str) -> list[str]:
     return sides + [math[start:]]
 
 
-def _checked_clause(math: str, before: str, after: str, continued: bool) -> list[Checked]:
+def _checked_clause(math: str, before: str, after: str, continued: bool, numbers: bool = True
+                    ) -> list[Checked]:
     """Check each step of one chain of equations; ``continued`` when its first side goes on from the line
     before."""
     sides = [side.replace("&", " ") for side in _sides(math)]
@@ -256,10 +273,40 @@ def _checked_clause(math: str, before: str, after: str, continued: bool) -> list
                 left = None
         if index == len(sides) - 2:
             stated = _start_of(stated, after)
-        item = _checked_step(left, stated, first=index == 0, last=index == len(sides) - 2)
+        last = index == len(sides) - 2
+        item = _checked_step(left, stated, first=index == 0, last=last) if numbers else None
+        # A step with letters after the first of a chain: "S = (p - 1) - (q - 1) = p - q". The first step may
+        # define a name or be an equation to solve; the steps after it rewrite one expression.
+        if item is None and index > 0:
+            item = _checked_identity(sides[index], sides[index + 1])
         if item is not None:
             checked.append(item)
     return checked
+
+
+def _checked_identity(left: str, stated: str) -> Checked | None:
+    """Check a step whose sides have letters as an identity, true for every value of the letters, when both
+    sides have the same letters, each to the same power: a step that lowers a power, such as x \\cdot x^2 =
+    x(3x - 1), puts in what an equation says rather than rewriting."""
+    plain_left, plain_stated = to_plain(left, letters=True), to_plain(stated, letters=True)
+    if plain_left is None or plain_stated is None:
+        return None
+    try:
+        one, other = _read(plain_left, DIGITS)[0], _read(plain_stated, DIGITS)[0]
+        difference = one - other
+    except (_Refused, ArithmeticError, ValueError, OverflowError, RecursionError):
+        return None
+    names = set(one.letters())
+    if not names or names != set(other.letters()):
+        return None
+    if any(_power(one, name) != _power(other, name) for name in names):
+        return None
+    return Checked(" ".join(left.split()), " ".join(stated.split()), str(one), difference.is_zero())
+
+
+def _power(value, name: str) -> int:
+    """The power of one letter in a quotient of polynomials: the top's less the bottom's."""
+    return value.numerator.degree((name,)) - value.denominator.degree((name,))
 
 
 def _words(side: str) -> list[re.Match]:

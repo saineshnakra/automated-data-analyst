@@ -1160,6 +1160,9 @@ def check_arithmetic(text: str) -> list[Checked]:
             # Fractions, roots, braced powers, binomials and boxed answers: read as LaTeX, every step.
             checked += check_line(line)
             continue
+        if line.count("=") > 1 and re.search(r"[A-Za-z]", line):
+            # Steps with letters in a chain, "(x + 1)^2 = x^2 + 2x + 1 = ...", checked as identities.
+            checked += check_line(line, numbers=False)
         for written, operator in _WRITTEN_OPERATORS:
             line = line.replace(written, operator)
         line = _BOLD.sub("", line)
