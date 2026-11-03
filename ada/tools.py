@@ -101,9 +101,9 @@ _TOOLS = (
             "percent (20% of 50), factorial (5!), sqrt, root, abs, floor, ceil, round, gcd, lcm, comb, perm, "
             "min, max, exp, ln, log10, log2, log(x, base), pi and e. Fractions stay exact (1/3 + 1/6 = 1/2). "
             "Use it for every calculation on numbers you already have. It also solves equations with "
-            "one-letter unknowns, one or several separated by ; (x + y = 10; x - y = 2), when each unknown "
-            "is to the first power, and checks the answer by putting it back. An expression that reads two "
-            "ways is refused with both readings."
+            "one-letter unknowns: linear ones, one or several separated by ; (x + y = 10; x - y = 2), and "
+            "one equation in one unknown with powers (x^2 - 5x + 6 = 0), and checks the answer by putting it "
+            "back. An expression that reads two ways is refused with both readings."
         ),
         "parameters": {
             "type": "object",

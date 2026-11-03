@@ -57,9 +57,10 @@ function you mean. Report the value with its steps, and say "approximately"
 when `exact` is false.
 
 To solve equations, write them with one-letter unknowns and give them to the
-same command: it solves linear equations and systems exactly, rules out values
-that divide by zero, and ends with a check that puts the answer back. "No
-solution" and "every value works" are answers, not errors.
+same command: it solves linear equations and systems, and polynomial
+equations in one unknown, exactly; rules out values that divide by zero; and
+ends with a check. "No solution" and "every value works" are answers, not
+errors. A root marked ≈ has no exact form: report it as approximate.
 
 ## Computing and checking numbers
 
