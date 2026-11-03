@@ -16,8 +16,11 @@ Each problem is solved under one condition, with the same model and settings:
 - ``prompt`` and ``schema``: the two halves of ``tool``, to tell which one changes the answers: the tool's
   system prompt with no tool offered, and the tool offered with the plain system prompt.
 
-One run does one condition, and ``--shard 0/4`` takes every fourth problem from the first, so conditions and
-shards can run side by side on separate machines. ``--subjects`` keeps the problems
+One run does one condition, or several separated by commas (``none,check`` asks once and checks that reply),
+and ``--shard 0/4`` takes every fourth problem from the first, so conditions and
+shards can run side by side on separate machines. ``--think`` turns on a thinking model's thinking (Qwen3's),
+with the sampling its makers recommend for it (temperature 0.6, top-p 0.95, top-k 20; seed 0, so a run
+repeats) and room for a long trace. ``--subjects`` keeps the problems
 of the subjects named (by default Algebra and Intermediate Algebra, the subjects ADA's algebra covers).
 
 The model ends with its answer in \\boxed{}, as MATH's solutions do. Math-Verify, the grader made for MATH,
@@ -55,6 +58,9 @@ SETTINGS = {"none": (False, PROMPT), "tool": (True, TOOL_PROMPT), "check": (Fals
 SUBJECTS = ("Algebra", "Intermediate Algebra")
 #: The longest reply, in tokens: MATH's worked solutions run longer than GSM8K's.
 MAX_TOKENS = 3072
+#: With thinking on: the longest reply, thinking included, and the settings Qwen3 recommends for it.
+THINK_TOKENS = 14336
+THINK_OPTIONS = {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "num_ctx": 16384}
 
 
 def grade(gold: str, reply: str) -> tuple[str | None, bool]:
@@ -70,9 +76,14 @@ def grade(gold: str, reply: str) -> tuple[str | None, bool]:
         return shown, False
 
 
-def solved_under(condition: str, base: str, model: str, question: str) -> dict:
+def solved_under(condition: str, base: str, model: str, question: str, think: bool = False,
+                 alone: dict | None = None) -> dict:
+    """The reply under one condition. ``check`` starts from ``alone``, the model's reply on its own, when it
+    is given, rather than asking again for the same reply."""
     offered, system = SETTINGS[condition]
-    alone = solve(base, model, question, offered, (system, system), MAX_TOKENS)
+    tokens, options = (THINK_TOKENS, THINK_OPTIONS) if think else (MAX_TOKENS, None)
+    if alone is None or condition != "check":
+        alone = solve(base, model, question, offered, (system, system), tokens, think, options)
     if condition != "check":
         return alone
     checks = check_arithmetic(alone["reply"])
@@ -84,7 +95,7 @@ def solved_under(condition: str, base: str, model: str, question: str) -> dict:
     messages = alone["messages"] + [{"role": "user", "content": (
         f"ADA checked the arithmetic in your answer and found errors: {errors}. Correct every step that uses "
         "these numbers, then put the final answer in \\boxed{}.")}]
-    message = chat(base, model, messages, [], MAX_TOKENS)
+    message = chat(base, model, messages, [], tokens, think, options)
     return {"reply": message.get("content", ""), "calls": [], "checks": [item.to_dict() for item in checks],
             "first_reply": alone["reply"]}
 
@@ -98,29 +109,41 @@ def chosen(rows: list[dict], subjects: list[str], problems: int | None, shard: s
 def run(args: argparse.Namespace) -> int:
     rows = [json.loads(line) for line in Path(args.data).read_text(encoding="utf-8").splitlines() if line]
     rows = chosen(rows, args.subjects, args.problems, args.shard)
+    conditions = args.condition.split(",")
     out = Path(args.out)
     done = set()
     if out.exists():
         # A run that stopped picks up where it left off.
-        done = {json.loads(line)["id"] for line in out.read_text(encoding="utf-8").splitlines() if line}
+        for line in out.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                record = json.loads(line)
+                done.add((record["id"], record["condition"]))
     with out.open("a", encoding="utf-8") as handle:
         for row in rows:
-            if row["unique_id"] in done:
-                continue
-            started = time.monotonic()
-            try:
-                solved = solved_under(args.condition, args.base_url, args.model, row["problem"])
-            except (OSError, http.client.HTTPException) as error:
-                # A reply that never ends or a dropped connection counts as no answer.
-                solved = {"reply": "", "calls": [], "error": str(error)}
-            given, correct = grade(row["answer"], solved["reply"])
-            record = {"id": row["unique_id"], "subject": row["subject"], "level": row["level"],
-                      "condition": args.condition, "model": args.model, "gold": row["answer"], "given": given,
-                      "correct": correct, "seconds": round(time.monotonic() - started, 1),
-                      "tool_calls": len(solved["calls"]), "reply": solved["reply"], "calls": solved["calls"],
-                      **{key: solved[key] for key in ("checks", "first_reply", "error") if key in solved}}
-            handle.write(json.dumps(record) + "\n")
-            handle.flush()
+            alone = None
+            for condition in conditions:
+                if (row["unique_id"], condition) in done:
+                    continue
+                started = time.monotonic()
+                try:
+                    solved = solved_under(condition, args.base_url, args.model, row["problem"], args.think,
+                                          alone)
+                except (OSError, http.client.HTTPException) as error:
+                    # A reply that never ends or a dropped connection counts as no answer.
+                    solved = {"reply": "", "calls": [], "error": str(error)}
+                if condition == "none" and "error" not in solved:
+                    alone = solved
+                given, correct = grade(row["answer"], solved["reply"])
+                record = {"id": row["unique_id"], "subject": row["subject"], "level": row["level"],
+                          "condition": condition, "model": args.model, "think": args.think,
+                          "gold": row["answer"], "given": given, "correct": correct,
+                          "seconds": round(time.monotonic() - started, 1),
+                          "thinking_chars": len(solved.get("thinking", "")),
+                          "tool_calls": len(solved["calls"]), "reply": solved["reply"],
+                          "calls": solved["calls"],
+                          **{key: solved[key] for key in ("checks", "first_reply", "error") if key in solved}}
+                handle.write(json.dumps(record) + "\n")
+                handle.flush()
     return 0
 
 
@@ -134,7 +157,8 @@ def summary(paths: list[str]) -> int:
         for line in Path(path).read_text(encoding="utf-8").splitlines():
             if line.strip():
                 record = json.loads(line)
-                by[(record["model"], record["id"])][record["condition"]] = record
+                model = record["model"] + (" (thinking)" if record.get("think") else "")
+                by[(model, record["id"])][record["condition"]] = record
     for model in sorted({model for model, _ in by}):
         problems = [conditions for (name, _), conditions in sorted(by.items()) if name == model]
         alone = [conditions for conditions in problems if "none" in conditions]
@@ -176,7 +200,10 @@ def main() -> int:
     parser.add_argument("data", nargs="?", help="MATH-500 test.jsonl")
     parser.add_argument("--model", default="qwen3:1.7b")
     parser.add_argument("--base-url", default="http://localhost:11434")
-    parser.add_argument("--condition", choices=CONDITIONS, default="none")
+    parser.add_argument("--condition", default="none",
+                        help="one of " + ", ".join(CONDITIONS) + ", or several separated by commas; with "
+                             "none and check together, check starts from the reply none got")
+    parser.add_argument("--think", action="store_true", help="turn on a thinking model's thinking")
     parser.add_argument("--subjects", nargs="+", default=list(SUBJECTS))
     parser.add_argument("--problems", type=int, help="the first N problems of those subjects (default: all)")
     parser.add_argument("--shard", default="0/1", help="part/parts: every parts-th problem from part")
@@ -187,6 +214,9 @@ def main() -> int:
         return summary(args.summary)
     if not (args.data and args.out):
         parser.error("give the data file and --out, or --summary with results files")
+    unknown = [name for name in args.condition.split(",") if name not in CONDITIONS]
+    if unknown:
+        parser.error(f"unknown condition {unknown[0]}; the conditions are {', '.join(CONDITIONS)}")
     return run(args)
 
 

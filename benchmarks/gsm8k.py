@@ -62,16 +62,18 @@ def compute_tool() -> dict:
     return next(item for item in tools.definitions("openai") if item["function"]["name"] == "ada_compute")
 
 
-def chat(base: str, model: str, messages: list[dict], offered: list[dict],
-         max_tokens: int = MAX_TOKENS) -> dict:
-    body = {"model": model, "messages": messages, "stream": False, "think": False,
-            "options": {"temperature": 0, "seed": 0, "num_ctx": 8192, "num_predict": max_tokens}}
+def chat(base: str, model: str, messages: list[dict], offered: list[dict], max_tokens: int = MAX_TOKENS,
+         think: bool = False, options: dict | None = None) -> dict:
+    """One reply from Ollama. ``options`` are added to the settings (temperature 0, seed 0)."""
+    body = {"model": model, "messages": messages, "stream": False, "think": think,
+            "options": {"temperature": 0, "seed": 0, "num_ctx": 8192, "num_predict": max_tokens,
+                        **(options or {})}}
     if offered:
         body["tools"] = offered
     request = urllib.request.Request(f"{base}/api/chat", data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"})
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(request, timeout=900) as response:
+    with opener.open(request, timeout=3600 if think else 900) as response:
         return json.loads(response.read())["message"]
 
 
@@ -88,15 +90,16 @@ def final_number(text: str) -> Fraction | None:
 
 
 def solve(base: str, model: str, question: str, with_ada: bool,
-          prompts: tuple[str, str] = (PROMPT, TOOL_PROMPT), max_tokens: int = MAX_TOKENS) -> dict:
+          prompts: tuple[str, str] = (PROMPT, TOOL_PROMPT), max_tokens: int = MAX_TOKENS,
+          think: bool = False, options: dict | None = None) -> dict:
     """The model's reply to one problem, with ada_compute offered when ``with_ada``; ``prompts`` are the
-    system prompts without and with the tool."""
+    system prompts without and with the tool, and ``think`` turns on a thinking model's thinking."""
     offered = [compute_tool()] if with_ada else []
     messages = [{"role": "system", "content": prompts[1] if with_ada else prompts[0]},
                 {"role": "user", "content": question}]
     calls = []
     for round_ in range(ROUNDS + 1):
-        message = chat(base, model, messages, offered if round_ < ROUNDS else [], max_tokens)
+        message = chat(base, model, messages, offered if round_ < ROUNDS else [], max_tokens, think, options)
         requested = message.get("tool_calls") or []
         written = None if requested or not offered else _written_call(message.get("content", ""))
         if written is not None and written[0] == "ada_compute":
@@ -105,7 +108,8 @@ def solve(base: str, model: str, question: str, with_ada: bool,
             message = {"role": "assistant", "content": "", "tool_calls": requested}
         messages.append({key: message[key] for key in ("role", "content", "tool_calls") if message.get(key)})
         if not requested:
-            return {"reply": message.get("content", ""), "calls": calls, "messages": messages}
+            return {"reply": message.get("content", ""), "calls": calls, "messages": messages,
+                    "thinking": message.get("thinking", "")}
         for call in requested:
             function = call.get("function") or {}
             result = tools.run(function.get("name", ""), function.get("arguments") or {}, brief=True)

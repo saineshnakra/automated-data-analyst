@@ -16,6 +16,18 @@ on:
       conditions:
         description: "Conditions, as a JSON list (none, tool, check, prompt, schema)"
         default: '["none", "tool", "check", "prompt", "schema"]'
+      models:
+        description: "Ollama models, as a JSON list"
+        default: '["qwen3:1.7b", "qwen2.5:1.5b"]'
+      shards:
+        description: "Shards to run, as a JSON list from 0 (one job each)"
+        default: "[0, 1, 2, 3]"
+      parts:
+        description: "How many shards the problems are split into"
+        default: "4"
+      think:
+        description: "Turn on a thinking model's thinking (true or false)"
+        default: "false"
 
 permissions:
   contents: read
@@ -27,9 +39,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        model: ["qwen3:1.7b", "qwen2.5:1.5b"]
+        model: ${{ fromJSON(github.event.inputs.models || '["qwen3:1.7b", "qwen2.5:1.5b"]') }}
         condition: ${{ fromJSON(github.event.inputs.conditions || '["none", "tool", "check", "prompt", "schema"]') }}
-        shard: [0, 1, 2, 3]
+        shard: ${{ fromJSON(github.event.inputs.shards || '[0, 1, 2, 3]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -55,11 +67,13 @@ jobs:
         env:
           SUBJECTS: ${{ github.event.inputs.subjects || 'Algebra,Intermediate Algebra' }}
           PROBLEMS: ${{ github.event.inputs.problems }}
+          PARTS: ${{ github.event.inputs.parts || '4' }}
+          THINK: ${{ github.event.inputs.think || 'false' }}
         run: |
           IFS=',' read -ra subjects <<< "$SUBJECTS"
           python benchmarks/math500.py math500.jsonl --model "${{ matrix.model }}" \
-            --condition "${{ matrix.condition }}" --shard "${{ matrix.shard }}/4" --subjects "${subjects[@]}" \
-            ${PROBLEMS:+--problems "$PROBLEMS"} --out results.jsonl
+            --condition "${{ matrix.condition }}" --shard "${{ matrix.shard }}/$PARTS" --subjects "${subjects[@]}" \
+            ${PROBLEMS:+--problems "$PROBLEMS"} $([ "$THINK" = true ] && echo --think) --out results.jsonl
       - uses: actions/upload-artifact@v4
         if: always()
         with:
