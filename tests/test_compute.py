@@ -458,6 +458,39 @@ class LatexTests(unittest.TestCase):
         self.assertEqual(check_arithmetic("\\frac{14}{2} = 2x"), [])
         self.assertEqual(check_arithmetic("\\frac{1}{2} \\cdot S + 2 = 28"), [])
 
+    def test_steps_with_letters_are_checked_as_identities(self):
+        self.assertEqual(self.checked("S = (p - 1) - (q - 1) = p - q"),
+                         [("(p - 1) - (q - 1)", "p - q", True)])
+        self.assertEqual(self.checked("S = x^2 + y^2 = (x+y)^2 - 2xy"),
+                         [("x^2 + y^2", "(x+y)^2 - 2xy", True)])
+        # Slips from MATH-500 replies, with LaTeX and without.
+        self.assertEqual(self.checked("T = 4c + 4c + 4c + 4c + 4c = 5c"),
+                         [("4c + 4c + 4c + 4c + 4c", "5c", False)])
+        self.assertEqual(self.checked("P = (-1)(-2)(-3)(-r) = -6r"), [("(-1)(-2)(-3)(-r)", "-6r", False)])
+        found = check_arithmetic("f(x) = \\frac{x^2}{2} + \\frac{x}{2} - 1 = \\frac{x^2 + x - 2}{2} = "
+                                 "\\frac{(x+1)(x-2)}{2}")
+        self.assertEqual([item.correct for item in found], [True, False])
+        self.assertEqual(found[1].computed, "0.5x^2 + 0.5x - 1")
+        # A line of a displayed block that starts with =.
+        self.assertEqual(self.checked("= x + x = 2x"), [("x + x", "2x", True)])
+
+    def test_what_may_not_be_an_identity_is_skipped(self):
+        # The first step may be an equation to solve; the next rewrites one side.
+        line = "b + 5 = \\frac{7}{3} \\cdot \\frac{3b - 12}{4} = \\frac{7(3b - 12)}{12}"
+        self.assertEqual(self.checked(line),
+                         [("\\frac{7}{3} \\cdot \\frac{3b - 12}{4}", "\\frac{7(3b - 12)}{12}", True)])
+        self.assertEqual(check_arithmetic("3x + 2 = x + 10"), [])
+        # A step that lowers a power puts in what an equation says, here x^2 = 3x - 1.
+        self.assertEqual(self.checked("x^3 = x \\cdot x^2 = x(3x - 1) = 3x^2 - x"),
+                         [("x(3x - 1)", "3x^2 - x", True)])
+        # Other letters on each side, a function at a value, a derivative, and words.
+        self.assertEqual(self.checked("S = (x+y)^2 - 2xy = 25 - 12"), [])
+        self.assertEqual(check_arithmetic("f(3) = 2 - 2f(2) = 2 - 2(-1 - 2f(1)) = 4 + 4f(1)"), [])
+        self.assertEqual(self.checked("y = \\frac{d}{dx}(x^3) = 3x^2 = x^2 + 2x^2"),
+                         [("3x^2", "x^2 + 2x^2", True)])
+        self.assertEqual(check_arithmetic("2 bolts + 1 bolt = 3 bolts = 3 bolts"), [])
+        self.assertEqual(self.checked("= x + x = 2xy"), [])
+
     def test_thin_and_unusual_input(self):
         self.assertEqual(check_arithmetic("\\frac{1}{2}"), [])
         self.assertEqual(check_arithmetic("$$\\frac{}{}$$ = "), [])

@@ -84,6 +84,13 @@ ada compute "3(x + 2) - x"                 # 2x + 6
   skipped. On run 1's MATH-500 replies, the replies with a slip found go
   from 8 to 17 of 221 for qwen3:1.7b and from 13 to 21 for qwen2.5:1.5b;
   14 and 17 of them have a wrong final answer.
+- `ada.check_arithmetic` checks steps with letters as identities: each step
+  after the first of a chain whose two sides have the same letters, each to
+  the same power (`S = (p - 1) - (q - 1) = p - q`). ADA's algebra multiplies
+  both sides out exactly. A first step, a single step, a step that lowers a
+  power, a function at a value, a derivative and a word are not checked this
+  way. With it, the replies with a slip found in run 1 are 18 of 221 for
+  qwen3:1.7b and 29 for qwen2.5:1.5b; 15 and 24 have a wrong final answer.
 
 ### LangChain and LangGraph
 

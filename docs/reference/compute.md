@@ -190,7 +190,25 @@ ada.check_arithmetic(r"\sqrt{27} = \sqrt{9 \cdot 3} = 3\sqrt{2}")
 | `\pm`, `^\circ`, `\overline`, a letter | Nothing: ADA does not read the side |
 
 Conditions, contradictions and words that scale a value are skipped as in
-plain text. On the MATH-500 replies of two small models, the LaTeX reading
+plain text.
+
+### Steps with letters
+
+A step after the first of a chain, with letters on both sides, is checked
+as an identity: true for every value of the letters. ADA's algebra
+multiplies both sides out exactly and takes one from the other, so
+`S = (p - 1) - (q - 1) = p - q` passes and `T = 4c + 4c + 4c + 4c + 4c = 5c`
+is a slip, with 20c beside it. `xy` is read as x × y, as LaTeX writes a
+product. This holds on lines with LaTeX and on plain lines alike.
+
+| Written | Checked |
+|---|---|
+| `f(x) = \frac{x^2 + x - 2}{2} = \frac{(x+1)(x-2)}{2}` | The second step: a slip, (x + 1)(x - 2) is x^2 - x - 2 |
+| `b + 5 = \frac{7}{3} \cdot \frac{3b - 12}{4} = \frac{7(3b - 12)}{12}` | The second step only: the first may be an equation to solve, and the steps after it rewrite one side |
+| `3x + 2 = x + 10` | Nothing: a single step may be an equation to solve |
+| `x^3 = x \cdot x^2 = x(3x - 1) = 3x^2 - x` | The last step only: x \cdot x^2 = x(3x - 1) lowers the power of x, so it puts in what an equation says |
+| `(x+y)^2 - 2xy = 25 - 12` | Nothing: the letters are not the same on both sides |
+| `2 - 2f(2)`, `\frac{d}{dx}(x^3)`, `3 bolts` | Nothing: a function at a value, a derivative and a word are not products of letters | On the MATH-500 replies of two small models, the LaTeX reading
 checks about 3,100 steps; of the steps it flags, all but a handful are slips
 on reading them, and it doubles the replies with a slip found, most of which
 have a wrong final answer.
