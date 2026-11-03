@@ -135,14 +135,22 @@ A run that stops picks up where it left off.
 
 ## MATH-500 with small local models
 
-Does a small model get more competition problems right when it can call
-ADA for exact arithmetic and algebra? `benchmarks/math500.py` solves each
-problem two ways, with the same model and settings:
+Does a small model get more competition problems right with ADA?
+`benchmarks/math500.py` solves each problem under one of five conditions,
+with the same model and settings:
 
-- **Alone**: the model works the problem and puts its answer in \boxed{}.
-- **With `ada_compute`**: the model may call ADA's tool for arithmetic,
-  simplifying an expression with letters, or solving equations (`x^2 - 5x
-  + 6 = 0`, `x*y = 6; x + y = 5`, `solve a*x^2 + b*x + c = 0 for x`).
+- **Alone** (`none`): the model works the problem and puts its answer in
+  \boxed{}.
+- **With `ada_compute`** (`tool`): the model may call ADA's tool for
+  arithmetic, simplifying an expression with letters, or solving equations
+  (`x^2 - 5x + 6 = 0`, `x*y = 6; x + y = 5`, `solve a*x^2 + b*x + c = 0 for
+  x`), and the system prompt says so.
+- **Alone, then checked** (`check`): the model's own answer, checked by
+  `ada.check_arithmetic`. When an equation in it is wrong, the model is told
+  which, with the right value, and answers once more; otherwise the answer
+  stands.
+- **The tool's prompt only** (`prompt`) and **the tool only** (`schema`):
+  the two halves of `tool`, to tell which one changes the answers.
 
 | | |
 |---|---|
@@ -151,11 +159,41 @@ problem two ways, with the same model and settings:
 | Settings | Temperature 0, seed 0, thinking off, up to 3,072 tokens a reply, up to 8 rounds of tool calls |
 | Test | Each condition's answers on the same problems, compared with an exact McNemar test on the problems where the two disagree |
 
+### Results
+
+Run [41691859618](https://github.com/saineshnakra/automated-data-analyst/actions/runs/41691859618)
+on commit 8f4c150, the 221 Algebra and Intermediate Algebra problems, alone
+and with the tool:
+
+| Model | Alone | With `ada_compute` | Right only with the tool | Right only alone | Exact McNemar p |
+|---|---|---|---|---|---|
+| qwen2.5:1.5b | 127 (57.5%) | 100 (45.2%) | 13 | 40 | 0.0003 |
+| qwen3:1.7b | 161 (72.9%) | 141 (63.8%) | 13 | 33 | 0.005 |
+
+Offering the tool makes both models worse, and not through the tool's
+answers:
+
+- qwen3:1.7b called the tool on 4 problems, and got all 4 right with and
+  without it. Every one of its 33 losses and 13 gains is on a problem where
+  it made no call. What changed is the prompt and the tool's definition in
+  the context: its replies got shorter (a mean of 1,654 characters against
+  2,185).
+- qwen2.5:1.5b called it on 24 problems. Offered the tool, it stopped putting
+  its answer in \boxed{} in a third of its replies (124 boxed against 197
+  alone), and 18 of its 40 losses are replies with no boxed answer.
+
+This agrees with GSM8K, where the tool was a wash or worse for small models
+and checking their answers helped. `check_arithmetic` finds a wrong equation
+in 21 of the 442 replies written alone, 15 of them with a wrong final
+answer, so the `check` condition is the next run, with `prompt` and `schema`
+to find which half of the tool does the harm.
+
 ### Run it
 
 On GitHub: Actions, Benchmark MATH, Run workflow. Each model, condition
-and shard is its own job, so the 16 jobs run side by side; the last job
-puts the shards together and prints the summary, by subject and level.
+and shard is its own job, so they run side by side; the last job puts the
+shards together and prints each condition against the model alone, by
+subject and level. The `conditions` input picks which to run.
 
 On your own computer, with Ollama:
 
@@ -164,8 +202,8 @@ curl -L -o math500.jsonl https://huggingface.co/datasets/HuggingFaceH4/MATH-500/
 pip install "math-verify[antlr4_13_2]==0.9.0"
 ollama pull qwen3:1.7b
 python benchmarks/math500.py math500.jsonl --model qwen3:1.7b --condition none --out none.jsonl
-python benchmarks/math500.py math500.jsonl --model qwen3:1.7b --condition tool --out tool.jsonl
-python benchmarks/math500.py --summary none.jsonl tool.jsonl
+python benchmarks/math500.py math500.jsonl --model qwen3:1.7b --condition check --out check.jsonl
+python benchmarks/math500.py --summary none.jsonl check.jsonl
 ```
 
 `--subjects` picks other subjects, `--problems` the first N of them, and

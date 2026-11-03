@@ -7,9 +7,17 @@ call ada_compute for exact arithmetic and algebra?
     python benchmarks/math500.py math500.jsonl --model qwen3:1.7b --condition none --out none.jsonl
     python benchmarks/math500.py --summary none.jsonl tool.jsonl
 
-Each problem is solved with the model alone (``none``) or with ``ada_compute`` offered (``tool``), with the
-same model and settings. One run does one condition, and ``--shard 0/4`` takes every fourth problem from the
-first, so conditions and shards can run side by side on separate machines. ``--subjects`` keeps the problems
+Each problem is solved under one condition, with the same model and settings:
+
+- ``none``: the model alone.
+- ``tool``: ``ada_compute`` offered, with a system prompt that says what it does.
+- ``check``: the model alone, then ADA checks every equation it wrote (``ada.compute.check_arithmetic``). When
+  one is wrong, the model is told which, with the right value, and answers again; otherwise the answer stands.
+- ``prompt`` and ``schema``: the two halves of ``tool``, to tell which one changes the answers: the tool's
+  system prompt with no tool offered, and the tool offered with the plain system prompt.
+
+One run does one condition, and ``--shard 0/4`` takes every fourth problem from the first, so conditions and
+shards can run side by side on separate machines. ``--subjects`` keeps the problems
 of the subjects named (by default Algebra and Intermediate Algebra, the subjects ADA's algebra covers).
 
 The model ends with its answer in \\boxed{}, as MATH's solutions do. Math-Verify, the grader made for MATH,
@@ -27,9 +35,11 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path[:0] = [str(Path(__file__).resolve().parent), str(Path(__file__).resolve().parents[1])]
 
-from gsm8k import solve  # noqa: E402
+from gsm8k import chat, solve  # noqa: E402
+
+from ada.compute import check_arithmetic  # noqa: E402
 
 PROMPT = "Solve the problem. Think step by step. Put the final answer in \\boxed{}."
 TOOL_PROMPT = (
@@ -38,7 +48,10 @@ TOOL_PROMPT = (
     "one or several separated by ; (x^2 - 5x + 6 = 0, x*y = 6; x + y = 5, solve a*x^2 + b*x + c = 0 for x). "
     "Use the values it returns."
 )
-CONDITIONS = ("none", "tool")
+CONDITIONS = ("none", "tool", "check", "prompt", "schema")
+#: For each condition: whether ada_compute is offered, and the system prompt.
+SETTINGS = {"none": (False, PROMPT), "tool": (True, TOOL_PROMPT), "check": (False, PROMPT),
+            "prompt": (False, TOOL_PROMPT), "schema": (True, PROMPT)}
 SUBJECTS = ("Algebra", "Intermediate Algebra")
 #: The longest reply, in tokens: MATH's worked solutions run longer than GSM8K's.
 MAX_TOKENS = 3072
@@ -57,6 +70,25 @@ def grade(gold: str, reply: str) -> tuple[str | None, bool]:
         return shown, False
 
 
+def solved_under(condition: str, base: str, model: str, question: str) -> dict:
+    offered, system = SETTINGS[condition]
+    alone = solve(base, model, question, offered, (system, system), MAX_TOKENS)
+    if condition != "check":
+        return alone
+    checks = check_arithmetic(alone["reply"])
+    # A model that repeats itself writes the same slip many times; it is named once.
+    wrong = list({(item.expression, item.stated): item for item in checks if not item.correct}.values())
+    if not wrong:
+        return {**alone, "checks": [item.to_dict() for item in checks]}
+    errors = "; ".join(f"{item.expression} is {item.computed}, not {item.stated}" for item in wrong)
+    messages = alone["messages"] + [{"role": "user", "content": (
+        f"ADA checked the arithmetic in your answer and found errors: {errors}. Correct every step that uses "
+        "these numbers, then put the final answer in \\boxed{}.")}]
+    message = chat(base, model, messages, [], MAX_TOKENS)
+    return {"reply": message.get("content", ""), "calls": [], "checks": [item.to_dict() for item in checks],
+            "first_reply": alone["reply"]}
+
+
 def chosen(rows: list[dict], subjects: list[str], problems: int | None, shard: str) -> list[dict]:
     rows = [row for row in rows if row["subject"] in subjects][:problems]
     part, parts = (int(value) for value in shard.split("/"))
@@ -71,15 +103,13 @@ def run(args: argparse.Namespace) -> int:
     if out.exists():
         # A run that stopped picks up where it left off.
         done = {json.loads(line)["id"] for line in out.read_text(encoding="utf-8").splitlines() if line}
-    prompts = (PROMPT, TOOL_PROMPT)
     with out.open("a", encoding="utf-8") as handle:
         for row in rows:
             if row["unique_id"] in done:
                 continue
             started = time.monotonic()
             try:
-                solved = solve(args.base_url, args.model, row["problem"], args.condition == "tool", prompts,
-                               MAX_TOKENS)
+                solved = solved_under(args.condition, args.base_url, args.model, row["problem"])
             except (OSError, http.client.HTTPException) as error:
                 # A reply that never ends or a dropped connection counts as no answer.
                 solved = {"reply": "", "calls": [], "error": str(error)}
@@ -88,15 +118,15 @@ def run(args: argparse.Namespace) -> int:
                       "condition": args.condition, "model": args.model, "gold": row["answer"], "given": given,
                       "correct": correct, "seconds": round(time.monotonic() - started, 1),
                       "tool_calls": len(solved["calls"]), "reply": solved["reply"], "calls": solved["calls"],
-                      **({"error": solved["error"]} if "error" in solved else {})}
+                      **{key: solved[key] for key in ("checks", "first_reply", "error") if key in solved}}
             handle.write(json.dumps(record) + "\n")
             handle.flush()
     return 0
 
 
 def summary(paths: list[str]) -> int:
-    """Accuracy per model and condition, by subject and level, on the problems both conditions finished, with
-    an exact McNemar test on the problems where the two disagree."""
+    """Accuracy per model and condition, each condition against the model alone on the problems both finished,
+    by subject and level, with an exact McNemar test on the problems where the two disagree."""
     from scipy.stats import binomtest  # noqa: PLC0415
 
     by = defaultdict(dict)
@@ -106,31 +136,37 @@ def summary(paths: list[str]) -> int:
                 record = json.loads(line)
                 by[(record["model"], record["id"])][record["condition"]] = record
     for model in sorted({model for model, _ in by}):
-        pairs = [conditions for (name, _), conditions in sorted(by.items())
-                 if name == model and all(condition in conditions for condition in CONDITIONS)]
-        if not pairs:
-            print(f"{model}: no problem has both conditions yet.")
-            continue
-        print(f"{model}: {len(pairs)} problems")
-        for condition in CONDITIONS:
-            right = sum(pair[condition]["correct"] for pair in pairs)
-            print(f"  {condition:5} {right}/{len(pairs)} = {100 * right / len(pairs):.1f}%")
-        groups = defaultdict(list)
-        for pair in pairs:
-            groups[(pair["none"]["subject"], pair["none"]["level"])].append(pair)
-        for (subject, level), items in sorted(groups.items()):
-            counts = ", ".join(f"{condition} {sum(item[condition]['correct'] for item in items)}"
-                               for condition in CONDITIONS)
-            print(f"    {subject}, level {level}: {len(items)} problems; {counts}")
-        gained = sum(pair["tool"]["correct"] and not pair["none"]["correct"] for pair in pairs)
-        lost = sum(pair["none"]["correct"] and not pair["tool"]["correct"] for pair in pairs)
-        p = binomtest(gained, gained + lost, 0.5).pvalue if gained + lost else 1.0
-        print(f"  tool against none: right only with the tool {gained}, only without it {lost}; "
-              f"exact McNemar p = {p:.3g}")
-        used = sum(1 for pair in pairs if pair["tool"]["tool_calls"])
-        calls = sum(pair["tool"]["tool_calls"] for pair in pairs)
-        print(f"  tool: called on {used} problems, {calls} calls")
-        failed = sum(1 for pair in pairs for condition in CONDITIONS if pair[condition].get("error"))
+        problems = [conditions for (name, _), conditions in sorted(by.items()) if name == model]
+        alone = [conditions for conditions in problems if "none" in conditions]
+        right = sum(conditions["none"]["correct"] for conditions in alone)
+        print(f"{model}: alone {right}/{len(alone)} = {100 * right / max(len(alone), 1):.1f}%")
+        for condition in CONDITIONS[1:]:
+            pairs = [conditions for conditions in alone if condition in conditions]
+            if not pairs:
+                continue
+            base = sum(pair["none"]["correct"] for pair in pairs)
+            with_it = sum(pair[condition]["correct"] for pair in pairs)
+            gained = sum(pair[condition]["correct"] and not pair["none"]["correct"] for pair in pairs)
+            lost = sum(pair["none"]["correct"] and not pair[condition]["correct"] for pair in pairs)
+            p = binomtest(gained, gained + lost, 0.5).pvalue if gained + lost else 1.0
+            print(f"  {condition:6} {with_it}/{len(pairs)} = {100 * with_it / len(pairs):.1f}% "
+                  f"(alone {base}); right only with it {gained}, only alone {lost}; "
+                  f"exact McNemar p = {p:.3g}")
+            groups = defaultdict(list)
+            for pair in pairs:
+                groups[(pair["none"]["subject"], pair["none"]["level"])].append(pair)
+            for (subject, level), items in sorted(groups.items()):
+                print(f"    {subject}, level {level}: {len(items)} problems; alone "
+                      f"{sum(item['none']['correct'] for item in items)}, {condition} "
+                      f"{sum(item[condition]['correct'] for item in items)}")
+            calls = [pair[condition]["tool_calls"] for pair in pairs]
+            if any(calls):
+                print(f"    tool called on {sum(1 for value in calls if value)} problems, {sum(calls)} calls")
+            if condition == "check":
+                flagged = sum(1 for pair in pairs
+                              if any(not item["correct"] for item in pair["check"].get("checks", [])))
+                print(f"    answers with a wrong equation: {flagged}")
+        failed = sum(1 for conditions in problems for record in conditions.values() if record.get("error"))
         print(f"  replies that never ended or failed: {failed}")
     return 0
 
