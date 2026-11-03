@@ -784,7 +784,7 @@ def _solution_text(solution: dict) -> str:
 def _root_text(name: str, root: dict) -> str:
     if not root["exact"]:
         line = f"{name} ≈ {root['value']}"
-    elif root["decimal"] != root["value"]:
+    elif root["decimal"] not in (None, root["value"]):
         line = f"{name} = {root['value']} ≈ {root['decimal']}"
     else:
         line = f"{name} = {root['value']}"
@@ -974,10 +974,9 @@ def _solve_polynomial(equation: _Equation, unknown: str, zero: Polynomial, digit
     from . import roots as rooting  # noqa: PLC0415
 
     if set(zero.letters()) - {unknown}:
-        others = " and ".join(sorted(set(zero.letters()) - {unknown}))
-        _refuse("unsupported_expression",
-                f"{equation.written} has {unknown} to a power above 1 and also {others}. ADA solves such an "
-                f"equation when {unknown} is its only letter.")
+        from .formulas import solve_with_letters  # noqa: PLC0415
+
+        return solve_with_letters(equation, unknown, zero, digits, steps)
     coefficients = [Fraction(0)] * (zero.degree() + 1)
     for power, value in _one_letter_coefficients(zero, unknown).items():
         coefficients[power] = value

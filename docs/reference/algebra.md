@@ -128,6 +128,57 @@ Polynomials up to degree 100 are solved (`MAX_ROOT_DEGREE`). Whole numbers up
 to 10^30 are split into primes to take square factors out of a root; a root
 of a larger number stays as it is.
 
+## Powers of the unknown with other letters
+
+With `unknowns` naming one letter, an equation with powers of it and other
+letters in its coefficients is solved for that letter, the others treated as
+known. In the command line and the tool, write "solve ... for x".
+
+```python
+ada.solve("a*x^2 + b*x + c = 0", unknowns="x").answer
+# 'x = (-b - sqrt(-4a*c + b^2))/(2a) or x = (-b + sqrt(-4a*c + b^2))/(2a) (when a ≠ 0, -4a*c + b^2 ≥ 0)'
+ada.solve("x^2 - (a + b)x + a*b = 0", unknowns="x").answer   # 'x = a or x = b'
+ada.solve("h = v*t - g*t^2/2", unknowns="t").answer
+# 't = (v - sqrt(-2g*h + v^2))/g or t = (v + sqrt(-2g*h + v^2))/g (when g ≠ 0, -2g*h + v^2 ≥ 0)'
+```
+
+SymPy factors the polynomial over the rationals, the other letters
+included, and ADA multiplies the factors back to check them. Each factor
+gives its roots:
+
+| The factor | Its roots | Example |
+|---|---|---|
+| Only other letters, such as a in a(x^2 - 1) | None: when it is 0 every x works, so the answer takes it ≠ 0 | `a ≠ 0` |
+| Degree 1 in x | One, a quotient of the other letters | `x = a`, `x = -c/b` |
+| Degree 2 in x | Two, by the quadratic formula, with square factors taken out of the root | `a - sqrt(b)`, `-a*sqrt(2)` |
+| A*x^n + C | x^n = -C/A, so x = root(-C/A, n), and its negative when n is even | `root(a, 3)`, `±root(3a, 4)` |
+| No other letters | Its real roots, as in "Powers above 1" | `-sqrt(2)`, `1.3247…` |
+
+Roots that are numbers come first, smallest first; then the others, in the
+order of their factors.
+
+What each answer needs is listed in `conditions`:
+
+- The leading coefficient is not 0 (`a ≠ 0`). When it is 0 the equation has
+  a lower power of x, and the steps say to solve it again with that value.
+- The number under a square root, or under an even root, is not negative
+  (`b ≥ 0`). A condition that always holds, such as a^2 + 1 ≥ 0, is left
+  out. A pair such as a ≠ 0 and a ≥ 0 is written a > 0. When the number is
+  negative for every value of the letters, as in x^2 + a^2 + 1 = 0, there is
+  no real root.
+- Denominators are not 0 (`x ≠ a`). A factor whose roots make a denominator
+  zero for every value of the letters is dropped, with a step that says so.
+
+**The check.** Each root is put into its factor with exact arithmetic and must
+give 0: a quotient by multiplying out, a root of the quadratic formula with
+sqrt(R)^2 = R, root(t, n) with root(t, n)^n = t. "Check x = a - sqrt(b) in
+x^2 - 2a*x + a^2 - b, with sqrt(b)^2 = b: it gives exactly 0, which holds."
+
+Refused: a factor of degree 3 or more in x that is not A*x^n + C (`x^3 + a*x
++ 1 = 0`), and a quadratic with a real root only for some values of the
+letters (`x^2 + a^2 = 0`, where only a = 0 gives one). The limits are 6
+letters (`MAX_LETTERS`) and a total power of 30 (`MAX_POWER`).
+
 ## Systems with powers
 
 Several equations, or several unknowns, with a power above 1 or two
@@ -194,18 +245,19 @@ again. `values` is a dict, `{"x": 4}` or `{"x": "7/2"}`, or text, `"x = 6, y =
 
 | Code | When | Example |
 |---|---|---|
-| `unsupported_expression` | A system with powers that has infinitely many solutions, or letters besides the unknowns; a power above 1 of an unknown with another letter; or a function, power or remainder with a letter in it | `x^2 + y^2 = 1`, `x*y = a; x + y = 1` for x and y, `a*x^2 = 1` for x, `sqrt(x)`, `2^x`, `x > 3` |
+| `unsupported_expression` | A system with powers that has infinitely many solutions, or letters besides the unknowns; a factor of degree 3 or more in the unknown with other letters, other than A*x^n + C; or a function, power or remainder with a letter in it | `x^2 + y^2 = 1`, `x*y = a; x + y = 1` for x and y, `x^3 + a*x + 1 = 0` for x, `sqrt(x)`, `2^x`, `x > 3` |
 | `missing_value` | `check_solution` has no value for a letter | `check_solution("x + y = 3", {"x": 1})` |
 | `ambiguous_expression` | A side reads two ways | `6/2x = 3`, `x + 10%` |
 | `invalid_expression` | A name ADA does not know, no = sign, no letter to solve for | `cost = 5`, `2 + 2 = 4` |
 | `division_by_zero` | An expression divides by something that is always zero | `x/(x - x)` |
-| `too_large` | More than 2,000 terms once multiplied out, a power above 200, more than 50 equations, a polynomial equation above degree 100, or a system with powers that has more than 6 unknowns or could have more than 36 solutions | `(x + y + z + 1)^60`, `x^101 = x + 1`, `x^7 = 2; y^6 = 3` |
+| `too_large` | More than 2,000 terms once multiplied out, a power above 200, more than 50 equations, a polynomial equation above degree 100, an equation with other letters above a total power of 30 or with more than 6 letters, or a system with powers that has more than 6 unknowns or could have more than 36 solutions | `(x + y + z + 1)^60`, `x^101 = x + 1`, `x^7 = 2; y^6 = 3` |
 
 "Linear in the unknowns" means each unknown appears to the first power and no
 two are multiplied together, once denominators are multiplied away. Other
 letters, as in `a*x + b = c` solved for x, may appear anywhere. One equation
-in one unknown may have any power up to 100, and a system with powers any
-number of equations, but then the unknowns must be the only letters.
+in one unknown may have any power up to 100, with other letters as in
+"Powers of the unknown with other letters". A system with powers may have
+any number of equations, but then the unknowns must be the only letters.
 
 ## How the results are tested
 
@@ -233,3 +285,7 @@ independent of it:
   x + y + z, xy + yz + zx and xyz.
 - A system with no exact solution is checked against mpmath's roots to 50
   digits: each interval must hold the value.
+- 40 quadratics x^2 + (pa + q)x + (ra + s) = 0 are solved for x with a as a
+  letter; at three values of a, the formula's roots worked out by step 1's
+  arithmetic must match the same equation solved with numbers to 18 digits,
+  and numpy's roots to six places.

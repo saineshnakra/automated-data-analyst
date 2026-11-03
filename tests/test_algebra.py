@@ -174,8 +174,8 @@ class SolveRefusalTests(unittest.TestCase):
     def test_not_linear_with_infinitely_many_solutions(self):
         message = refused(solve("x^2 + y = 1"), "unsupported_expression")
         self.assertIn("infinitely many solutions", message)
-        # A power above 1 with another letter known is not solved for the unknown.
-        refused(solve("a*x^2 = 1", unknowns="x"), "unsupported_expression")
+        # A cubic in the unknown with another letter in it, not of the form A*x^3 + C, is not solved.
+        refused(solve("x^3 + a*x + 1 = 0", unknowns="x"), "unsupported_expression")
 
     def test_what_is_not_an_equation(self):
         refused(solve("2x + 3"), "invalid_expression")

@@ -61,7 +61,10 @@ same command: it solves linear equations and systems, polynomial equations
 in one unknown, and systems of polynomial equations (`x*y = 6; x + y = 5`),
 exactly; rules out values that divide by zero; and
 ends with a check. "No solution" and "every value works" are answers, not
-errors. A root marked ≈ has no exact form: report it as approximate.
+errors. A root marked ≈ has no exact form: report it as approximate. To
+solve a formula for one letter, name it: `ada compute "solve h = v*t -
+g*t^2/2 for t"`. Report the `conditions` with the answer (g ≠ 0, the number
+under a root not negative).
 
 ## Computing and checking numbers
 

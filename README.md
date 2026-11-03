@@ -137,8 +137,10 @@ systems of polynomial equations with finitely many solutions, with fractions
 kept exact, values that would divide by zero ruled out, and each answer
 checked as the last step. `x^2 - 3x + 1 = 0` gives (3 - sqrt(5))/2 and
 (3 + sqrt(5))/2, and `x*y = 6; x + y = 5` gives x = 2, y = 3 or x = 3, y = 2;
-a value with no exact form comes with an interval it lies in.
-`ada.solve("d = r*t", unknowns="t")` rearranges a formula. See
+a value with no exact form comes with an interval it lies in. A formula is
+solved for one of its letters: `solve h = v*t - g*t^2/2 for t` gives t = (v ±
+sqrt(-2g*h + v^2))/g with the conditions it needs (g ≠ 0, and the number under
+the root not negative). See
 [Algebra](docs/reference/algebra.md).
 
 `ada.check_arithmetic(text)` checks each equation in a worked answer, so a
