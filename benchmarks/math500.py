@@ -23,9 +23,14 @@ with the sampling its makers recommend for it (temperature 0.6, top-p 0.95, top-
 repeats) and room for a long trace. ``--subjects`` keeps the problems
 of the subjects named (by default Algebra and Intermediate Algebra, the subjects ADA's algebra covers).
 
+``--samples 5`` asks up to five times, with seeds 0 to 4, and takes the answer most replies give, two ways:
+every reply's answer, and only the answers of replies ADA finds no wrong equation in. Asking stops as soon
+as more asks cannot change either vote, so the votes are those of all five replies.
+
 The model ends with its answer in \\boxed{}, as MATH's solutions do. Math-Verify, the grader made for MATH,
 compares it with the answer in the data as mathematics, so 14/3 and \\frac{14}{3} agree. Math-Verify grades
 the benchmark only; ADA does not depend on it. Temperature is 0 and thinking is off, so a run repeats.
+Two replies give the same answer when Math-Verify finds them equal, so the votes use no gold answer.
 """
 
 from __future__ import annotations
@@ -35,7 +40,7 @@ import http.client
 import json
 import sys
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 sys.path[:0] = [str(Path(__file__).resolve().parent), str(Path(__file__).resolve().parents[1])]
@@ -76,19 +81,75 @@ def grade(gold: str, reply: str) -> tuple[str | None, bool]:
         return shown, False
 
 
+def wrong_equations(checks: list) -> list:
+    """The equations ADA found wrong, each once: a model that repeats itself writes the same slip many
+    times."""
+    return list({(item.expression, item.stated): item for item in checks if not item.correct}.values())
+
+
+def answer_of(reply: str, parsed: dict) -> list:
+    """The answer Math-Verify reads from a reply, parsed once."""
+    from math_verify import parse  # noqa: PLC0415
+
+    if reply not in parsed:
+        parsed[reply] = parse(reply)
+    return parsed[reply]
+
+
+def agreeing(record: dict, earlier: list[dict], parsed: dict) -> int | None:
+    """The sample whose answer this reply gives: the first earlier sample, among those that start a group of
+    equal answers, that Math-Verify finds equal to it, else its own; None when it gives no answer."""
+    given = answer_of(record["reply"], parsed)
+    if not given:
+        return None
+    from math_verify import verify  # noqa: PLC0415
+
+    for other in earlier:
+        if other.get("agrees_with") == other["sample"]:
+            try:
+                if verify(answer_of(other["reply"], parsed), given):
+                    return other["sample"]
+            except Exception:  # noqa: BLE001, S112 - answers Math-Verify cannot compare count as different
+                continue
+    return record["sample"]
+
+
+def counted(records: list[dict], ada: bool) -> list[dict]:
+    """The replies that vote: those with an answer and, with ``ada``, no equation ADA found wrong."""
+    answered = [record for record in records if record.get("agrees_with") is not None]
+    return [record for record in answered if not record.get("wrong_equations")] if ada else answered
+
+
+def vote(records: list[dict], ada: bool = False) -> dict | None:
+    """The first reply to give the answer most replies give; a tie goes to the answer given first. With
+    ``ada``, only replies ADA found no wrong equation in vote, unless it found one in every reply."""
+    voters = counted(records, ada) or counted(records, False)
+    counts = Counter(record["agrees_with"] for record in voters)
+    if not counts:
+        return None
+    first = min(counts, key=lambda sample: (-counts[sample], sample))
+    return next(record for record in records if record["sample"] == first)
+
+
+def decided(records: list[dict], remaining: int, ada: bool = False) -> bool:
+    """Whether ``remaining`` more replies cannot change the vote."""
+    counts = sorted(Counter(record["agrees_with"] for record in counted(records, ada)).values(), reverse=True)
+    counts += [0, 0]
+    return counts[0] > counts[1] + remaining
+
+
 def solved_under(condition: str, base: str, model: str, question: str, think: bool = False,
-                 alone: dict | None = None) -> dict:
+                 alone: dict | None = None, seed: int = 0) -> dict:
     """The reply under one condition. ``check`` starts from ``alone``, the model's reply on its own, when it
     is given, rather than asking again for the same reply."""
     offered, system = SETTINGS[condition]
-    tokens, options = (THINK_TOKENS, THINK_OPTIONS) if think else (MAX_TOKENS, None)
+    tokens, options = (THINK_TOKENS, {**THINK_OPTIONS, "seed": seed}) if think else (MAX_TOKENS, None)
     if alone is None or condition != "check":
         alone = solve(base, model, question, offered, (system, system), tokens, think, options)
     if condition != "check":
         return alone
     checks = check_arithmetic(alone["reply"])
-    # A model that repeats itself writes the same slip many times; it is named once.
-    wrong = list({(item.expression, item.stated): item for item in checks if not item.correct}.values())
+    wrong = wrong_equations(checks)
     if not wrong:
         return {**alone, "checks": [item.to_dict() for item in checks]}
     errors = "; ".join(f"{item.expression} is {item.computed}, not {item.stated}" for item in wrong)
@@ -106,44 +167,85 @@ def chosen(rows: list[dict], subjects: list[str], problems: int | None, shard: s
     return rows[part::parts]
 
 
+def asked(args: argparse.Namespace, row: dict, condition: str, sample: int, alone: dict | None
+          ) -> tuple[dict, dict]:
+    """One reply under one condition with one seed, graded and checked, and the reply as ``solve`` gave it."""
+    started = time.monotonic()
+    try:
+        solved = solved_under(condition, args.base_url, args.model, row["problem"], args.think, alone, sample)
+    except (OSError, http.client.HTTPException) as error:
+        # A reply that never ends or a dropped connection counts as no answer.
+        solved = {"reply": "", "calls": [], "error": str(error)}
+    given, correct = grade(row["answer"], solved["reply"])
+    record = {"id": row["unique_id"], "subject": row["subject"], "level": row["level"],
+              "condition": condition, "model": args.model, "think": args.think, "sample": sample,
+              "samples": args.samples, "gold": row["answer"], "given": given, "correct": correct,
+              "seconds": round(time.monotonic() - started, 1),
+              "thinking_chars": len(solved.get("thinking", "")), "tool_calls": len(solved["calls"]),
+              "wrong_equations": len(wrong_equations(check_arithmetic(solved["reply"]))),
+              "reply": solved["reply"], "calls": solved["calls"],
+              **{key: solved[key] for key in ("checks", "first_reply", "error") if key in solved}}
+    return record, solved
+
+
+def settled(earlier: dict[str, list[dict]], conditions: list[str], remaining: int) -> bool:
+    """Whether ``remaining`` more samples cannot change any vote: each condition's, and for the model alone
+    also the vote of the replies ADA found no wrong equation in."""
+    votes = [(condition, False) for condition in conditions] + [("none", True)] * ("none" in conditions)
+    return all(decided(earlier[condition], remaining, ada) for condition, ada in votes)
+
+
+def completed(records: list[dict], parsed: dict) -> bool:
+    """Gives records written before samples were voted on their sample number, the count of equations ADA
+    finds wrong and the sample they agree with; whether any record lacked them."""
+    groups = defaultdict(list)
+    for record in records:
+        groups[record["id"], record["condition"]].append(record)
+    missing = False
+    for group in groups.values():
+        before = []
+        for record in sorted(group, key=lambda item: item.get("sample", 0)):
+            if "agrees_with" not in record:
+                missing = True
+                record.setdefault("sample", 0)
+                record.setdefault("wrong_equations", len(wrong_equations(check_arithmetic(record["reply"]))))
+                record["agrees_with"] = agreeing(record, before, parsed)
+            before.append(record)
+    return missing
+
+
 def run(args: argparse.Namespace) -> int:
     rows = [json.loads(line) for line in Path(args.data).read_text(encoding="utf-8").splitlines() if line]
     rows = chosen(rows, args.subjects, args.problems, args.shard)
     conditions = args.condition.split(",")
     out = Path(args.out)
-    done = set()
-    if out.exists():
-        # A run that stopped picks up where it left off.
-        for line in out.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                record = json.loads(line)
-                done.add((record["id"], record["condition"]))
+    parsed = {}
+    # A run that stopped, or an earlier run's results, picks up where it left off.
+    records = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()
+               if line.strip()] if out.exists() else []
+    if completed(records, parsed):
+        out.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+    previous = defaultdict(list)
+    for record in records:
+        previous[record["id"], record["condition"]].append(record)
     with out.open("a", encoding="utf-8") as handle:
         for row in rows:
-            alone = None
-            for condition in conditions:
-                if (row["unique_id"], condition) in done:
-                    continue
-                started = time.monotonic()
-                try:
-                    solved = solved_under(condition, args.base_url, args.model, row["problem"], args.think,
-                                          alone)
-                except (OSError, http.client.HTTPException) as error:
-                    # A reply that never ends or a dropped connection counts as no answer.
-                    solved = {"reply": "", "calls": [], "error": str(error)}
-                if condition == "none" and "error" not in solved:
-                    alone = solved
-                given, correct = grade(row["answer"], solved["reply"])
-                record = {"id": row["unique_id"], "subject": row["subject"], "level": row["level"],
-                          "condition": condition, "model": args.model, "think": args.think,
-                          "gold": row["answer"], "given": given, "correct": correct,
-                          "seconds": round(time.monotonic() - started, 1),
-                          "thinking_chars": len(solved.get("thinking", "")),
-                          "tool_calls": len(solved["calls"]), "reply": solved["reply"],
-                          "calls": solved["calls"],
-                          **{key: solved[key] for key in ("checks", "first_reply", "error") if key in solved}}
-                handle.write(json.dumps(record) + "\n")
-                handle.flush()
+            earlier = {condition: sorted(previous[row["unique_id"], condition],
+                                         key=lambda item: item["sample"]) for condition in conditions}
+            for sample in range(args.samples):
+                if args.samples > 1 and settled(earlier, conditions, args.samples - sample):
+                    break
+                alone = None
+                for condition in conditions:
+                    if any(record["sample"] == sample for record in earlier[condition]):
+                        continue
+                    record, solved = asked(args, row, condition, sample, alone)
+                    if condition == "none" and "error" not in solved:
+                        alone = solved
+                    record["agrees_with"] = agreeing(record, earlier[condition], parsed)
+                    earlier[condition].append(record)
+                    handle.write(json.dumps(record) + "\n")
+                    handle.flush()
     return 0
 
 
@@ -153,12 +255,15 @@ def summary(paths: list[str]) -> int:
     from scipy.stats import binomtest  # noqa: PLC0415
 
     by = defaultdict(dict)
+    sampled = defaultdict(lambda: defaultdict(list))
     for path in paths:
         for line in Path(path).read_text(encoding="utf-8").splitlines():
             if line.strip():
                 record = json.loads(line)
                 model = record["model"] + (" (thinking)" if record.get("think") else "")
-                by[(model, record["id"])][record["condition"]] = record
+                sampled[(model, record["id"])][record["condition"]].append(record)
+                if record.get("sample", 0) == 0:
+                    by[(model, record["id"])][record["condition"]] = record
     for model in sorted({model for model, _ in by}):
         problems = [conditions for (name, _), conditions in sorted(by.items()) if name == model]
         alone = [conditions for conditions in problems if "none" in conditions]
@@ -192,7 +297,55 @@ def summary(paths: list[str]) -> int:
                 print(f"    answers with a wrong equation: {flagged}")
         failed = sum(1 for conditions in problems for record in conditions.values() if record.get("error"))
         print(f"  replies that never ended or failed: {failed}")
+        voted([conditions for (name, _), conditions in sorted(sampled.items()) if name == model], binomtest)
     return 0
+
+
+def voted(problems: list[dict], binomtest) -> None:
+    """For runs with several samples, on the problems whose votes are settled: the vote of every answer and
+    the vote of the answers ADA found no wrong equation in, against the first sample alone."""
+    finished = []
+    for conditions in problems:
+        for records in conditions.values():
+            records.sort(key=lambda record: record.get("sample", 0))
+        size = max(record.get("samples", 1) for records in conditions.values() for record in records)
+        if size < 2 or "none" not in conditions:
+            continue
+        asked = len(conditions["none"])
+        if asked >= size or settled(conditions, list(conditions), size - asked):
+            finished.append(conditions)
+    if not finished:
+        return
+    first = [conditions["none"][0]["correct"] for conditions in finished]
+
+    def right(chosen: dict | None) -> bool:
+        return bool(chosen and chosen["correct"])
+
+    def line(label: str, values: list[bool], against: list[bool], against_label: str) -> None:
+        gained = sum(value and not other for value, other in zip(values, against, strict=True))
+        lost = sum(other and not value for value, other in zip(values, against, strict=True))
+        p = binomtest(gained, gained + lost, 0.5).pvalue if gained + lost else 1.0
+        share = 100 * sum(values) / len(values)
+        print(f"    {label}: {sum(values)}/{len(values)} = {share:.1f}%; right only with it {gained}, "
+              f"only with {against_label} {lost}; exact McNemar p = {p:.3g}")
+
+    size = max(record.get("samples", 1) for conditions in finished for record in conditions["none"])
+    asked = sum(len(conditions["none"]) for conditions in finished) / len(finished)
+    print(f"  votes of up to {size} samples, on {len(finished)} problems ({asked:.2f} samples each):")
+    print(f"    first sample: {sum(first)}/{len(first)} = {100 * sum(first) / len(first):.1f}%")
+    every = [right(vote(conditions["none"])) for conditions in finished]
+    line("vote of every answer", every, first, "the first sample")
+    line("vote of the answers ADA found no wrong equation in", [right(vote(conditions["none"], True))
+                                                                for conditions in finished],
+         every, "the vote of every answer")
+    if all("check" in conditions for conditions in finished):
+        line("vote of the checked answers", [right(vote(conditions["check"])) for conditions in finished],
+             every, "the vote of every answer")
+    some = sum(any(record["correct"] for record in conditions["none"]) for conditions in finished)
+    print(f"    some sample right: {some}/{len(finished)} = {100 * some / len(finished):.1f}%")
+    failed = sum(1 for conditions in finished for records in conditions.values() for record in records
+                 if record.get("error"))
+    print(f"    replies that never ended or failed, in every sample: {failed}")
 
 
 def main() -> int:
@@ -204,6 +357,8 @@ def main() -> int:
                         help="one of " + ", ".join(CONDITIONS) + ", or several separated by commas; with "
                              "none and check together, check starts from the reply none got")
     parser.add_argument("--think", action="store_true", help="turn on a thinking model's thinking")
+    parser.add_argument("--samples", type=int, default=1,
+                        help="ask up to this many times, with seeds 0, 1, ..., and vote (needs --think)")
     parser.add_argument("--subjects", nargs="+", default=list(SUBJECTS))
     parser.add_argument("--problems", type=int, help="the first N problems of those subjects (default: all)")
     parser.add_argument("--shard", default="0/1", help="part/parts: every parts-th problem from part")
@@ -217,6 +372,9 @@ def main() -> int:
     unknown = [name for name in args.condition.split(",") if name not in CONDITIONS]
     if unknown:
         parser.error(f"unknown condition {unknown[0]}; the conditions are {', '.join(CONDITIONS)}")
+    if args.samples < 1 or (args.samples > 1 and not args.think):
+        parser.error("--samples is 1 or more, and above 1 needs --think: with thinking off, temperature is 0 "
+                     "and every sample gives the same reply")
     return run(args)
 
 

@@ -219,3 +219,27 @@ models, which shards to run and into how many parts the problems are split,
 and whether thinking is on: all 500 problems with thinking on take
 `subjects` set to every subject and around 20 parts, so each job stays
 under the six-hour limit.
+
+### Votes of several samples
+
+With thinking on, a reply depends on the seed. `--samples 5` asks up to five
+times, with seeds 0 to 4, and takes the answer most replies give, in two
+ways:
+
+- the vote of every reply's answer;
+- the vote of the answers of replies `check_arithmetic` finds no wrong
+  equation in. When it finds one in every reply, every reply votes.
+
+Two answers are the same when Math-Verify finds them equal, so the votes
+use no gold answer. A tie goes to the answer given first. Asking stops as
+soon as more replies cannot change a vote: with five samples, three equal
+answers with no wrong equation settle it. So the votes are the votes of all
+five replies, at less cost. With `none,check`, the checked answers vote too.
+
+The summary compares each vote with the first sample alone, the one
+`--samples 1` gives. It also counts the problems where some sample is
+right, the most any vote can reach. On GitHub, the `samples` input sets the
+number. The `resume` input takes an earlier run's id, and each shard
+starts from that run's results for the same shard. A run with five samples
+can then build on a run with one, as long as it uses the same subjects,
+parts and conditions.

@@ -28,9 +28,16 @@ on:
       think:
         description: "Turn on a thinking model's thinking (true or false)"
         default: "false"
+      samples:
+        description: "Ask up to this many times with different seeds and vote (above 1 needs thinking on)"
+        default: "1"
+      resume:
+        description: "An earlier run's id: each shard starts from that run's results for the same shard"
+        default: ""
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   run:
@@ -63,17 +70,28 @@ jobs:
       - name: Name the results
         id: name
         run: echo "slug=$(echo '${{ matrix.model }}' | tr ':.' '--')" >> "$GITHUB_OUTPUT"
+      - name: Start from an earlier run's results
+        if: github.event.inputs.resume != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: math-${{ steps.name.outputs.slug }}-${{ matrix.condition }}-${{ matrix.shard }}
+          run-id: ${{ github.event.inputs.resume }}
+          github-token: ${{ github.token }}
       - name: Run the benchmark
+        # A step that runs out of time still leaves its results for the upload, and for a later run to resume.
+        timeout-minutes: 325
         env:
           SUBJECTS: ${{ github.event.inputs.subjects || 'Algebra,Intermediate Algebra' }}
           PROBLEMS: ${{ github.event.inputs.problems }}
           PARTS: ${{ github.event.inputs.parts || '4' }}
           THINK: ${{ github.event.inputs.think || 'false' }}
+          SAMPLES: ${{ github.event.inputs.samples || '1' }}
         run: |
           IFS=',' read -ra subjects <<< "$SUBJECTS"
           python benchmarks/math500.py math500.jsonl --model "${{ matrix.model }}" \
             --condition "${{ matrix.condition }}" --shard "${{ matrix.shard }}/$PARTS" --subjects "${subjects[@]}" \
-            ${PROBLEMS:+--problems "$PROBLEMS"} $([ "$THINK" = true ] && echo --think) --out results.jsonl
+            ${PROBLEMS:+--problems "$PROBLEMS"} $([ "$THINK" = true ] && echo --think) --samples "$SAMPLES" \
+            --out results.jsonl
       - uses: actions/upload-artifact@v4
         if: always()
         with:
