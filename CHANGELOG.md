@@ -13,6 +13,7 @@ tool for language models.
 ada compute "x + y = 10; x - y = 2"        # x = 6, y = 4
 ada compute "solve d = r*t for t"          # t = d/r, when r ≠ 0
 ada compute "x^2 - 3x + 1 = 0"             # x = (3 - sqrt(5))/2 or x = (3 + sqrt(5))/2
+ada compute "x*y = 6; x + y = 5"           # (x = 2, y = 3) or (x = 3, y = 2)
 ada compute "3(x + 2) - x"                 # 2x + 6
 ```
 
@@ -29,8 +30,16 @@ ada compute "3(x + 2) - x"                 # 2x + 6
   to 20 digits with an interval where the polynomial changes sign. Exact
   roots are checked by exact substitution; complex roots of a quadratic are
   named in the steps.
-- SymPy is a new dependency. It factors polynomials and whole numbers and
-  isolates real roots; ADA reads the question, refuses what reads two ways,
+- A system of polynomial equations with finitely many solutions gives each
+  real solution: `x*y = 6; x + y = 5` gives (x = 2, y = 3) or (x = 3, y = 2).
+  SymPy's Gröbner basis brings it down to one equation in one letter with
+  each unknown a polynomial in that letter. Values are exact where the root
+  is, like (1 - sqrt(7))/4 and root(2, 3)^2 + 1, and otherwise come to 20
+  digits inside an interval worked out with exact fractions. Each solution
+  is checked by dividing every equation, with the unknowns put in, by the
+  factor its root comes from. `Solution.solutions` lists them.
+- SymPy is a new dependency. It factors polynomials and whole numbers,
+  isolates real roots and eliminates unknowns; ADA reads the question, refuses what reads two ways,
   writes each root, checks it and states the steps. Up to degree 30,
   Sturm's theorem counts the real roots again, and a count that differs from
   SymPy's is refused.
@@ -41,12 +50,14 @@ ada compute "3(x + 2) - x"                 # 2x + 6
 - Expressions with letters are multiplied out with like terms collected, and
   the result reads back as the same expression.
 - Two refusal codes join `ada.REFUSAL_CODES`: `unsupported_expression` (a
-  system that is not linear in its unknowns, or a function of a letter) and
+  system with infinitely many solutions, or a function of a letter) and
   `missing_value`.
 - Among the tests: 120 systems built around a known solution, 80 random
   expressions checked against step 1's arithmetic, 60 polynomials built from
-  their roots, and 80 cubics whose number of real roots is checked against
-  the discriminant and whose roots are checked against numpy.
+  their roots, 80 cubics whose number of real roots is checked against
+  the discriminant and whose roots are checked against numpy, and 92 systems
+  whose solutions are known: x + y = s with xy = p, lines and circles, and
+  three numbers from the sums of their products.
 
 ### LangChain and LangGraph
 

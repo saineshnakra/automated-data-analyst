@@ -171,10 +171,9 @@ class SolveForALetterTests(unittest.TestCase):
 
 
 class SolveRefusalTests(unittest.TestCase):
-    def test_not_linear_with_more_than_one_unknown(self):
+    def test_not_linear_with_infinitely_many_solutions(self):
         message = refused(solve("x^2 + y = 1"), "unsupported_expression")
-        self.assertIn("x^2", message)
-        refused(solve("x*y = 6; x + y = 5"), "unsupported_expression")
+        self.assertIn("infinitely many solutions", message)
         # A power above 1 with another letter known is not solved for the unknown.
         refused(solve("a*x^2 = 1", unknowns="x"), "unsupported_expression")
 
@@ -273,8 +272,10 @@ class WorkOutTests(unittest.TestCase):
         self.assertEqual((result["status"], result["values"], result["kind"]),
                          ("solved", {"x": "6", "y": "4"}, "one"))
         self.assertEqual(result["answer"], "x = 6, y = 4")
-        not_linear = tools.run("ada_compute", {"expression": "x*y = 6; x + y = 5"})
-        self.assertEqual(not_linear["code"], "unsupported_expression")
+        system = tools.run("ada_compute", {"expression": "x*y = 6; x + y = 5"}, brief=True)
+        self.assertEqual((system["kind"], system["answer"]), ("several", "(x = 2, y = 3) or (x = 3, y = 2)"))
+        curve = tools.run("ada_compute", {"expression": "x^2 + y^2 = 1"})
+        self.assertEqual(curve["code"], "unsupported_expression")
         simplified = tools.run("ada_compute", {"expression": "(x + 1)^2"}, brief=True)
         self.assertEqual((simplified["status"], simplified["result"]), ("simplified", "x^2 + 2x + 1"))
 
@@ -285,7 +286,7 @@ class WorkOutTests(unittest.TestCase):
         self.assertEqual((code, json.loads(out.getvalue())["values"]), (0, {"x": "6", "y": "4"}))
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            code = main(["compute", "x*y = 6; x + y = 5"])
+            code = main(["compute", "x^2 + y^2 = 1"])
         self.assertEqual(code, 3)
         self.assertIn("unsupported_expression", err.getvalue())
 

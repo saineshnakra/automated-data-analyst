@@ -533,9 +533,9 @@ def build_parser() -> argparse.ArgumentParser:
                     "shown, and an expression that reads two ways is refused with both readings. It knows "
                     "+ - * / // ^ mod ! %, parentheses, sqrt, root, abs, floor, ceil, round, gcd, lcm, comb, "
                     "perm, min, max, exp, ln, log10, log2, log(x, base), pi and e. With an = sign it solves "
-                    "linear equations in one-letter unknowns (several separated by ;) and polynomial "
-                    "equations in one unknown, and checks the answer by putting it back; an expression with "
-                    "letters is multiplied out.",
+                    "equations in one-letter unknowns (several separated by ;): linear ones, a polynomial "
+                    "equation in one unknown, or polynomial equations with finitely many solutions, and "
+                    "checks the answer by putting it back; an expression with letters is multiplied out.",
     )
     computed.add_argument("expression", nargs="+", help='the expression, such as "2^10 + 3/4"')
     computed.add_argument("--digits", type=int, default=20,
