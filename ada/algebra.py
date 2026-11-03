@@ -650,13 +650,47 @@ def _check_text(text: Any) -> Refusal | None:
 
 
 def _conditions(denominators: list[Polynomial]) -> list[str]:
-    seen, conditions = set(), []
+    conditions: list[str] = []
     for denominator in denominators:
-        text = _not_zero(denominator)
-        if text not in seen:
-            seen.add(text)
-            conditions.append(text)
+        conditions += _not_zero_all(denominator)
+    return _unique(conditions)
+
+
+def _not_zero_all(polynomial: Polynomial) -> list[str]:
+    """What must not be 0 for a divisor in one letter: each rational root ruled out ("x ≠ 1, x ≠ -3"), and
+    what is left of it; a divisor in more letters as it is."""
+    letters = polynomial.letters()
+    if len(letters) != 1 or polynomial.degree() == 1:
+        return [_not_zero(polynomial)]
+    from . import roots as rooting  # noqa: PLC0415
+
+    letter = letters[0]
+    coefficients = [Fraction(0)] * (polynomial.degree() + 1)
+    for power, value in _one_letter_coefficients(polynomial, letter).items():
+        coefficients[power] = value
+    rest = [Fraction(1)]
+    for factor, _ in rooting._square_free(coefficients):
+        rest = _times_coefficients(rest, factor)
+    found = []
+    while rest and rest[0] == 0:
+        found.append(Fraction(0))
+        rest = rest[1:]
+    if rooting._degree(rest) > 0:
+        quiet: list[str] = []
+        rational, rest = rooting._rational_roots(rooting._primitive(rest), letter, quiet)
+        found += rational
+    conditions = [f"{letter} ≠ {_number_text(value)}" for value in sorted(found)]
+    if rooting._degree(rest) > 0:
+        conditions.append(f"{rooting.polynomial_text(rooting._primitive(rest), letter)} ≠ 0")
     return conditions
+
+
+def _times_coefficients(first: list[Fraction], second: list[Fraction]) -> list[Fraction]:
+    product = [Fraction(0)] * (len(first) + len(second) - 1)
+    for i, a in enumerate(first):
+        for j, b in enumerate(second):
+            product[i + j] += a * b
+    return product
 
 
 def _not_zero(polynomial: Polynomial) -> str:
@@ -680,12 +714,16 @@ class Solution:
     """What a set of equations says about its unknowns.
 
     ``kind`` is "one" (a single value for each unknown, in ``values``),
-    "none" (no values work; ``reason`` says why) or "many" (``free`` lists the
-    unknowns that can take any value, and ``values`` gives the others in terms
-    of them). ``values`` are exact; ``decimals`` gives a decimal for each value
-    that is a fraction. ``conditions`` lists what must not be 0, such as a
-    denominator or a letter divided by. The last steps put the values back into
-    each equation.
+    "several" (one unknown with more than one value, in ``roots``), "none" (no
+    values work; ``reason`` says why) or "many" (``free`` lists the unknowns
+    that can take any value, and ``values`` gives the others in terms of
+    them). ``values`` are exact; ``decimals`` gives a decimal for each value
+    that is a fraction. For an equation in one unknown with a power above 1,
+    ``roots`` lists each real root smallest first, with whether it is exact,
+    its decimal, how many times it is a root and, for a root with no exact
+    form, an interval where the equation changes sign. ``conditions`` lists
+    what must not be 0, such as a denominator or a letter divided by. The last
+    steps check the values in the equations.
     """
 
     equations: list[str]
@@ -699,11 +737,16 @@ class Solution:
     reason: str | None = None
     steps: list[str] = field(default_factory=list)
     assumptions: list[str] = field(default_factory=list)
+    roots: list[dict] = field(default_factory=list)
 
     @property
     def answer(self) -> str:
         if self.kind == "none":
             return f"No solution: {self.reason}"
+        if self.roots:
+            name = self.unknowns[0]
+            line = " or ".join(_root_text(name, root) for root in self.roots)
+            return line + (f" (when {', '.join(self.conditions)})" if self.conditions else "")
         values = ", ".join(f"{name} = {value}" + (f" ≈ {self.decimals[name]}" if name in self.decimals
                                                   else "") for name, value in self.values.items())
         if self.kind == "one":
@@ -727,7 +770,19 @@ class Solution:
                 "reading": list(self.reading), "unknowns": list(self.unknowns), "kind": self.kind,
                 "answer": self.answer, "values": dict(self.values), "decimals": dict(self.decimals),
                 "free": list(self.free), "conditions": list(self.conditions), "reason": self.reason,
-                "steps": list(self.steps), "assumptions": list(self.assumptions)}
+                "roots": [dict(root) for root in self.roots], "steps": list(self.steps),
+                "assumptions": list(self.assumptions)}
+
+
+def _root_text(name: str, root: dict) -> str:
+    if not root["exact"]:
+        line = f"{name} ≈ {root['value']}"
+    elif root["decimal"] != root["value"]:
+        line = f"{name} = {root['value']} ≈ {root['decimal']}"
+    else:
+        line = f"{name} = {root['value']}"
+    times = root["multiplicity"]
+    return line + ({1: "", 2: " (twice)"}.get(times, f" ({times} times)"))
 
 
 @dataclass
@@ -851,6 +906,8 @@ def _solve(parsed: list[_Equation], unknowns: list[str], digits: int) -> Solutio
         steps.append(f"{label}{equation.written}")
         steps += equation.steps
         zero = _cleared(equation)
+        if zero.degree(known) > 1 and len(parsed) == 1 and len(unknowns) == 1:
+            return _solve_polynomial(equation, unknowns[0], zero, digits, steps)
         if zero.degree(known) > 1:
             names = " and ".join(unknowns)
             _refuse("unsupported_expression",
@@ -897,6 +954,68 @@ def _solve(parsed: list[_Equation], unknowns: list[str], digits: int) -> Solutio
             values[name] = value
     kind = "many" if free else "one"
     return _finish(parsed, unknowns, kind, values, free, conditions_polynomials, None, steps, digits)
+
+
+def _solve_polynomial(equation: _Equation, unknown: str, zero: Polynomial, digits: int,
+                      steps: list[str]) -> Solution:
+    """One equation in one unknown with a power above 1: its real roots, exact where they can be written."""
+    from . import roots as rooting  # noqa: PLC0415
+
+    if set(zero.letters()) - {unknown}:
+        others = " and ".join(sorted(set(zero.letters()) - {unknown}))
+        _refuse("unsupported_expression",
+                f"{equation.written} has {unknown} to a power above 1 and also {others}. ADA solves such an "
+                f"equation when {unknown} is its only letter.")
+    coefficients = [Fraction(0)] * (zero.degree() + 1)
+    for power, value in _one_letter_coefficients(zero, unknown).items():
+        coefficients[power] = value
+    below = list(dict.fromkeys(side.denominator for side in (equation.left, equation.right)
+                               if not side.is_polynomial()))
+    how = (f"Multiply both sides by {' and '.join(_operand(Quotient(item)) for item in below)} and move "
+           "everything to one side") if below else "Move everything to one side"
+    collected = f"{rooting.polynomial_text(coefficients, unknown)} = 0"
+    if collected != equation.written:
+        steps.append(f"{how}: {collected}")
+    # A value that makes a denominator zero is not a solution, so its factor is divided out first.
+    for denominator in dict.fromkeys(equation.denominators):
+        divisor = [Fraction(0)] * (denominator.degree() + 1)
+        for power, value in _one_letter_coefficients(denominator, unknown).items():
+            divisor[power] = value
+        common = rooting._gcd(coefficients, divisor)
+        while rooting._degree(common) > 0:
+            coefficients, _ = rooting._divmod(coefficients, common)
+            steps.append(f"The values of {unknown} that make {denominator} zero are not solutions, since the "
+                         f"equation divides by it; dividing out {rooting.polynomial_text(common, unknown)} "
+                         f"leaves {rooting.polynomial_text(coefficients, unknown)} = 0.")
+            common = rooting._gcd(coefficients, divisor)
+    conditions = _conditions(equation.denominators)
+    reading = [equation.reading]
+    if rooting._degree(coefficients) < 1:
+        reason = ("every candidate value makes a denominator zero." if coefficients else
+                  "the equation holds for every value except those that make a denominator zero.")
+        if not coefficients:
+            return Solution([equation.written], reading, [unknown], "many", {}, {}, [unknown], conditions,
+                            reason, _capped(steps), _unique(equation.assumptions))
+        return Solution([equation.written], reading, [unknown], "none", reason=reason, steps=_capped(steps),
+                        assumptions=_unique(equation.assumptions))
+    found, root_steps = rooting.real_roots(coefficients, unknown, digits)
+    steps += root_steps
+    for root in found:
+        if root.exact and "sqrt" not in root.value and "root" not in root.value:
+            steps += _checks([equation], {unknown: Quotient.number(Fraction(root.value))})
+    if not found:
+        return Solution([equation.written], reading, [unknown], "none",
+                        reason=f"no real number solves {equation.written}.", steps=_capped(steps),
+                        assumptions=_unique(equation.assumptions))
+    listed = [root.to_dict() for root in found]
+    if len(found) == 1:
+        root = found[0]
+        decimals = {unknown: root.decimal} if root.exact and root.decimal != root.value else {}
+        return Solution([equation.written], reading, [unknown], "one", {unknown: root.value}, decimals,
+                        conditions=conditions, steps=_capped(steps),
+                        assumptions=_unique(equation.assumptions), roots=listed)
+    return Solution([equation.written], reading, [unknown], "several", conditions=conditions,
+                    steps=_capped(steps), assumptions=_unique(equation.assumptions), roots=listed)
 
 
 def _highest_term(polynomial: Polynomial, letters: tuple[str, ...]) -> str:

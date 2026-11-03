@@ -1,6 +1,6 @@
 # Algebra
 
-**Code:** `ada/algebra.py` · **Tests:** `tests/test_algebra.py`
+**Code:** `ada/algebra.py`, `ada/roots.py` · **Tests:** `tests/test_algebra.py`, `tests/test_roots.py`
 
 A language model sets up equations well enough and then slips while solving
 them: it moves a term without changing its sign, or divides one side and not
@@ -12,6 +12,7 @@ equations it came from.
 ada compute "2x + 3 = 11"                  # x = 4
 ada compute "x + y = 10; x - y = 2"        # x = 6, y = 4
 ada compute "solve d = r*t for t"          # t = d/r, when r ≠ 0
+ada compute "x^2 - 3x + 1 = 0"             # x = (3 - sqrt(5))/2 or x = (3 + sqrt(5))/2
 ada compute "3(x + 2) - x"                 # 2x + 6
 ```
 
@@ -88,6 +89,42 @@ condition that it is not 0.
 values put in and both sides worked out: "Check 2x + 3 = 11 with x = 4: 11 =
 11, which holds."
 
+## Powers above 1
+
+One equation in one unknown, once denominators are multiplied away and
+everything is moved to one side, is a polynomial = 0. `solve` gives its real
+roots, smallest first, in `roots`; `kind` is `one`, `several` or `none`.
+
+| The polynomial | How its roots are found | Written as |
+|---|---|---|
+| A factor repeated | Yun's method splits it off (a greatest common divisor with the derivative), and the root carries its multiplicity | `x = 2 (twice)` |
+| Rational roots | Every fraction ±p/q, p dividing the constant term and q the leading coefficient, is tried | `2`, `0.5`, `1/3` |
+| What is left is a quadratic | The quadratic formula, with square factors taken out of the root | `(3 - sqrt(5))/2`, `-2*sqrt(2)` |
+| What is left is a*x^n + c | x^n = t, so x = root(t, n), and its negative when n is even | `root(2, 3)` |
+| Anything else | Sturm's theorem counts the real roots exactly; each is found by halving an interval where the polynomial changes sign, to 20 significant digits | `x ≈ 1.324717957244746026` |
+
+Every exact value is written so `compute` reads it back, and its decimal
+comes from `compute`. Each exact root is checked by putting it into the
+polynomial with exact arithmetic, numbers of the form a + b*sqrt(m)
+included, so "it gives exactly 0, which holds" is a calculation, not a
+rounding. A root with no exact form is marked `exact: false` and comes with
+its `bracket`: an interval, rounded outwards, where the polynomial changes
+sign, so a root lies inside it.
+
+A quadratic with a negative discriminant has no real root; its complex roots
+are named in the steps (`x^2 + 1 = 0`: ±i) and `kind` is `none`.
+
+When the equation divides by an expression in the unknown, the values that
+make it zero are divided out of the polynomial before its roots are found:
+`1/x + 1/x^2 = 1` gives (1 ± sqrt(5))/2, when x ≠ 0, and
+`x/(x^2 - 1) = 1/(x^2 - 1)` has no solution. A condition on a divisor in one
+letter lists each value ruled out: `x ≠ -3, x ≠ 1`.
+
+Polynomials up to degree 30 are solved (`MAX_ROOT_DEGREE`). Whole numbers up
+to 10^12 are split into primes to list rational candidates and simplify
+roots; beyond that, no rational root is looked for, and the roots are found
+by halving.
+
 ## Checking a solution
 
 `ada.check_solution(equations, values)` puts the values in and works out both
@@ -99,22 +136,32 @@ again. `values` is a dict, `{"x": 4}` or `{"x": "7/2"}`, or text, `"x = 6, y =
 
 | Code | When | Example |
 |---|---|---|
-| `unsupported_expression` | An equation is not linear in the unknowns, or a function, power or remainder has a letter in it | `x^2 = 4`, `x*y = 6`, `sqrt(x)`, `2^x`, `x > 3` |
+| `unsupported_expression` | Several equations or unknowns that are not linear, a power above 1 with another letter, or a function, power or remainder with a letter in it | `x*y = 6; x + y = 5`, `x^2 + y = 1`, `sqrt(x)`, `2^x`, `x > 3` |
 | `missing_value` | `check_solution` has no value for a letter | `check_solution("x + y = 3", {"x": 1})` |
 | `ambiguous_expression` | A side reads two ways | `6/2x = 3`, `x + 10%` |
 | `invalid_expression` | A name ADA does not know, no = sign, no letter to solve for | `cost = 5`, `2 + 2 = 4` |
 | `division_by_zero` | An expression divides by something that is always zero | `x/(x - x)` |
-| `too_large` | More than 2,000 terms once multiplied out, a power above 200, or more than 50 equations | `(x + y + z + 1)^60` |
+| `too_large` | More than 2,000 terms once multiplied out, a power above 200, more than 50 equations, or a polynomial equation above degree 30 | `(x + y + z + 1)^60`, `x^40 = x + 1` |
 
 "Linear in the unknowns" means each unknown appears to the first power and no
 two are multiplied together, once denominators are multiplied away. Other
-letters, as in `a*x + b = c` solved for x, may appear anywhere.
+letters, as in `a*x + b = c` solved for x, may appear anywhere. One equation
+in one unknown may have any power up to 30, but then it must be the only
+letter.
 
 ## How the results are tested
 
-Beyond the examples, two tests check the algebra against something
-independent of it. 120 systems of one to four equations are built around a
-chosen solution (from a matrix that can always be solved), and `solve` must
-give that solution back. 80 random expressions are simplified, and the
-simplified and written forms must agree, by step 1's arithmetic, at three
-values of x.
+Beyond the examples, these tests check the algebra against something
+independent of it:
+
+- 120 systems of one to four equations are built around a chosen solution
+  (from a matrix that can always be solved), and `solve` must give that
+  solution back.
+- 80 random expressions are simplified, and the simplified and written forms
+  must agree, by step 1's arithmetic, at three values of x.
+- 60 polynomials are built from three chosen rational roots and a random
+  quadratic, and `real_roots` must give exactly those roots, the quadratic's
+  checked against the formula worked out with Python's decimal module.
+- 80 random cubics: the number of real roots must match the sign of the
+  cubic's discriminant (three when it is positive, one when negative), and
+  each root must match numpy's to six decimal places.
