@@ -246,6 +246,9 @@ def run(args: argparse.Namespace) -> int:
                     earlier[condition].append(record)
                     handle.write(json.dumps(record) + "\n")
                     handle.flush()
+                    # One line a reply, so a job's log shows how far it has got.
+                    print(f"{record['id']} {condition} sample {sample}: "
+                          f"{'right' if record['correct'] else 'wrong'}, {record['seconds']} s", flush=True)
     return 0
 
 
