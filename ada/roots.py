@@ -248,27 +248,34 @@ def real_roots(coefficients: Coefficients, letter: str = "x",
     repeated factor carries its multiplicity, and a quadratic factor gives exact square roots wherever it
     sits. A polynomial of degree above ``MAX_ROOT_DEGREE`` is refused as too large.
     """
+    steps: list[str] = []
+    found = [(sort_key, Root(root.value, root.exact, root.decimal, times, root.bracket))
+             for _, times, pairs in factored_roots(coefficients, letter, digits, steps)
+             for sort_key, root in pairs]
+    found.sort(key=lambda item: item[0])
+    return [root for _, root in found], steps
+
+
+def factored_roots(coefficients: Coefficients, letter: str, digits: int,
+                   steps: list[str]) -> list[tuple[Coefficients, int, list[tuple[Fraction, Root]]]]:
+    """The polynomial's factors over the rationals, each with how many times it appears and its real roots as
+    (sort key, Root) pairs, in the order SymPy's factors are sorted; the steps are added to ``steps``."""
     p = _trim([Fraction(value) for value in coefficients])
     if _degree(p) < 1:
         _refuse("invalid_expression", "The polynomial has no letter, so it has no roots to find.")
     if _degree(p) > MAX_ROOT_DEGREE:
         _refuse("too_large", f"{polynomial_text(p, letter)} = 0 has degree {_degree(p)}; ADA looks for the "
                              f"roots of polynomials up to degree {MAX_ROOT_DEGREE}.")
-    steps: list[str] = []
-    found: list[tuple[Fraction, Root]] = []
     factors = factor_over_rationals(p)
     text = polynomial_text(_primitive(p), letter)
     if len(factors) > 1 or factors[0][1] > 1:
         written = " * ".join(_factor_text(polynomial_text(factor, letter), times)
                              for factor, times in factors)
-        steps.append(f"Factor over the rationals: {text} = {written}.")
+        if written != text:
+            steps.append(f"Factor over the rationals: {text} = {written}.")
     elif _degree(p) > 2:
         steps.append(f"{text} does not factor over the rationals.")
-    for factor, times in factors:
-        for sort_key, root in _roots_of_factor(factor, letter, digits, steps):
-            found.append((sort_key, Root(root.value, root.exact, root.decimal, times, root.bracket)))
-    found.sort(key=lambda item: item[0])
-    return [root for _, root in found], steps
+    return [(factor, times, _roots_of_factor(factor, letter, digits, steps)) for factor, times in factors]
 
 
 def _roots_of_factor(p: Coefficients, letter: str, digits: int, steps: list[str]):
@@ -293,16 +300,14 @@ def _quadratic(p: Coefficients, letter: str, digits: int, steps: list[str]):
                      "no real number is a root. Its roots are the complex numbers "
                      f"{_complex(a, b, discriminant)}.")
         return []
-    k, m = _square_part(discriminant.numerator * discriminant.denominator)
-    radical = Fraction(k, discriminant.denominator) / (2 * a)
-    rational = -b / (2 * a)
-    both = _surd_text(rational, radical, m)
-    both = both.replace(" + ", " ± ", 1) if rational else f"±{both}"
+    lower, upper = quadratic_surds(p)
+    both = _surd_text(upper.rational, upper.radical, upper.m)
+    both = both.replace(" + ", " ± ", 1) if upper.rational else f"±{both}"
     steps.append(f"{text} = 0 by the quadratic formula: the discriminant b^2 - 4ac = "
                  f"{_number_text(discriminant)}, so {letter} = (-b ± sqrt(b^2 - 4ac))/(2a) = {both}.")
     results = []
-    for sign in (-1, 1):
-        surd = _Surd(rational, sign * radical, m)
+    for surd in (lower, upper):
+        m = surd.m
         written = _surd_text(surd.rational, surd.radical, m)
         check = _evaluate_surd(p, surd)
         holds = check.rational == 0 and check.radical == 0
@@ -311,6 +316,17 @@ def _quadratic(p: Coefficients, letter: str, digits: int, steps: list[str]):
         value = Fraction(_decimal_of(written, digits + 5))
         results.append((value, Root(written, True, _decimal_of(written, digits))))
     return results
+
+
+def quadratic_surds(p: Coefficients) -> tuple[_Surd, _Surd]:
+    """The two roots of a*x^2 + b*x + c with a positive discriminant, as a + b*sqrt(m), the minus sign
+    first: the smaller root when a > 0."""
+    c, b, a = p
+    discriminant = b * b - 4 * a * c
+    k, m = _square_part(discriminant.numerator * discriminant.denominator)
+    radical = Fraction(k, discriminant.denominator) / (2 * a)
+    rational = -b / (2 * a)
+    return _Surd(rational, -radical, m), _Surd(rational, radical, m)
 
 
 def _complex(a: Fraction, b: Fraction, discriminant: Fraction) -> str:

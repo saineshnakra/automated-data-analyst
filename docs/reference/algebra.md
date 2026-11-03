@@ -128,6 +128,61 @@ Polynomials up to degree 100 are solved (`MAX_ROOT_DEGREE`). Whole numbers up
 to 10^30 are split into primes to take square factors out of a root; a root
 of a larger number stays as it is.
 
+## Systems with powers
+
+Several equations, or several unknowns, with a power above 1 or two
+unknowns multiplied together are a system of polynomial equations. When
+the system has finitely many solutions and no letters other than the
+unknowns, `solve` gives its real solutions in `solutions`, ordered by the
+unknowns' values; `kind` is `one`, `several` or `none`.
+
+```python
+ada.solve("x*y = 6; x + y = 5").answer
+# '(x = 2, y = 3) or (x = 3, y = 2)'
+ada.solve("x^2 + y^2 = 1; x + y = 1/2").answer
+# '(x = (1 - sqrt(7))/4 ≈ -0.41143782776614764763, y = (1 + sqrt(7))/4 ≈ ...) or (...)'
+ada.solve("x^3 = 2; y = x^2 + 1").values
+# {'x': 'root(2, 3)', 'y': 'root(2, 3)^2 + 1'}
+```
+
+How it is solved:
+
+1. SymPy eliminates the unknowns with a Gröbner basis in lex order. This
+   leaves one equation in one letter, g = 0, with every other unknown a
+   polynomial in that letter: "Eliminate x with a Gröbner basis (SymPy, lex
+   order): y^2 - 5y + 6 = 0, with x = -y + 5." For a system with up to 16
+   solutions, each unknown is tried as the letter, and the one whose g has
+   the fewest factors without exact roots is kept. A solution counted more
+   than once (x^2 = 0, y^2 = 0) is first counted once, by adding the
+   equations the unknowns satisfy with each root once.
+   When no unknown tells the solutions apart (x + y + z = 6, xy + yz + zx =
+   11, xyz = 6 has six), the letter is a combination such as u = x + 3y + 7z.
+2. The real roots of g are found as in "Powers above 1".
+3. Each unknown is worked out at each root. It is exact when the root is a
+   fraction, a + b*sqrt(m) or root(t, n), and is written so `compute` reads
+   it back. Otherwise it comes to 20 significant digits, with an interval
+   worked out with exact fractions (`brackets`) that holds the value.
+
+Each entry in `solutions` has the `values`, whether each is `exact`, their
+`decimals` and the `brackets` of the values with no exact form. A single
+solution also fills `values` and `decimals`, as for a linear system.
+
+**The check.** ADA writes each unknown as its polynomial in the letter and
+puts it into every equation. The result must leave no remainder when divided
+by the factor of g the root comes from, so the equation holds at every root
+of that factor. This is exact arithmetic, whatever the roots look like.
+Solutions that are fractions are also put back into each equation as
+numbers. A factor whose roots make a denominator zero is dropped, with a
+step that says so.
+
+"No solution" says why: the equations contradict each other (eliminating
+leaves 1 = 0), or g has no real root, so every solution is complex.
+
+Limits: up to 6 unknowns (`MAX_UNKNOWNS`), and at most 36 solutions by
+Bezout's bound, the product of the equations' powers (`MAX_SOLUTIONS`): two
+equations up to the 6th power, three cubics and a quartic, or six
+quadratics. Larger systems can take minutes to eliminate.
+
 ## Checking a solution
 
 `ada.check_solution(equations, values)` puts the values in and works out both
@@ -139,18 +194,18 @@ again. `values` is a dict, `{"x": 4}` or `{"x": "7/2"}`, or text, `"x = 6, y =
 
 | Code | When | Example |
 |---|---|---|
-| `unsupported_expression` | Several equations or unknowns that are not linear, a power above 1 with another letter, or a function, power or remainder with a letter in it | `x*y = 6; x + y = 5`, `x^2 + y = 1`, `sqrt(x)`, `2^x`, `x > 3` |
+| `unsupported_expression` | A system with powers that has infinitely many solutions, or letters besides the unknowns; a power above 1 of an unknown with another letter; or a function, power or remainder with a letter in it | `x^2 + y^2 = 1`, `x*y = a; x + y = 1` for x and y, `a*x^2 = 1` for x, `sqrt(x)`, `2^x`, `x > 3` |
 | `missing_value` | `check_solution` has no value for a letter | `check_solution("x + y = 3", {"x": 1})` |
 | `ambiguous_expression` | A side reads two ways | `6/2x = 3`, `x + 10%` |
 | `invalid_expression` | A name ADA does not know, no = sign, no letter to solve for | `cost = 5`, `2 + 2 = 4` |
 | `division_by_zero` | An expression divides by something that is always zero | `x/(x - x)` |
-| `too_large` | More than 2,000 terms once multiplied out, a power above 200, more than 50 equations, or a polynomial equation above degree 100 | `(x + y + z + 1)^60`, `x^101 = x + 1` |
+| `too_large` | More than 2,000 terms once multiplied out, a power above 200, more than 50 equations, a polynomial equation above degree 100, or a system with powers that has more than 6 unknowns or could have more than 36 solutions | `(x + y + z + 1)^60`, `x^101 = x + 1`, `x^7 = 2; y^6 = 3` |
 
 "Linear in the unknowns" means each unknown appears to the first power and no
 two are multiplied together, once denominators are multiplied away. Other
 letters, as in `a*x + b = c` solved for x, may appear anywhere. One equation
-in one unknown may have any power up to 100, but then it must be the only
-letter.
+in one unknown may have any power up to 100, and a system with powers any
+number of equations, but then the unknowns must be the only letters.
 
 ## How the results are tested
 
@@ -168,3 +223,13 @@ independent of it:
 - 80 random cubics: the number of real roots must match the sign of the
   cubic's discriminant (three when it is positive, one when negative), and
   each root must match numpy's to six decimal places.
+- 40 systems x + y = s, xy = p must give the roots of t^2 - st + p, worked
+  out with Python's decimal module, or no solution when s^2 < 4p; each exact
+  solution is put into both equations by step 1's arithmetic and must agree
+  to 30 digits.
+- 40 lines and circles must meet in two points, one or none, as the line's
+  distance from the centre says.
+- 12 sets of three whole numbers must come back, in every order, from
+  x + y + z, xy + yz + zx and xyz.
+- A system with no exact solution is checked against mpmath's roots to 50
+  digits: each interval must hold the value.

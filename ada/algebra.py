@@ -1,18 +1,18 @@
-"""Algebra with exact fractions: expressions with letters simplified, and linear equations solved step by
-step.
+"""Algebra with exact fractions: expressions with letters simplified, and equations solved step by step.
 
     import ada
     ada.simplify("3(x + 2) - x")                  # 2x + 6
     ada.solve("2x + 3 = 11")                      # x = 4
     ada.solve("x + y = 10; x - y = 2")            # x = 6, y = 4
     ada.solve("d = r*t", unknowns="t")            # t = d/r, if r is not 0
+    ada.solve("x*y = 6; x + y = 5")               # (x = 2, y = 3) or (x = 3, y = 2)
     ada.check_solution("2x + 3 = 11", {"x": 4})   # 2(4) + 3 = 11 holds
 
 A letter is a variable: one letter, such as x or y, with e kept as the constant. Coefficients are fractions,
 so nothing is rounded. Every solution is put back into the equations it came from, and that check is the last
-step. ``solve`` solves equations that are linear in the unknowns: each unknown to the first power, no two
-multiplied together. Other letters may appear in the coefficients, as in a formula solved for one of its
-letters.
+step. Equations linear in the unknowns (each to the first power, no two multiplied together) may have other
+letters in their coefficients, as in a formula solved for one of its letters; equations with powers of the
+unknowns go to ``roots.py`` (one unknown) or ``systems.py`` (several).
 """
 
 from __future__ import annotations
@@ -705,9 +705,13 @@ class Solution:
     that is a fraction. For an equation in one unknown with a power above 1,
     ``roots`` lists each real root smallest first, with whether it is exact,
     its decimal, how many times it is a root and, for a root with no exact
-    form, an interval where the equation changes sign. ``conditions`` lists
-    what must not be 0, such as a denominator or a letter divided by. The last
-    steps check the values in the equations.
+    form, an interval where the equation changes sign. For several unknowns
+    with equations that are not linear, ``solutions`` lists each real
+    solution, ordered by the unknowns' values: its ``values``, whether each is
+    ``exact``, its ``decimals`` and, for a value with no exact form, the
+    interval it lies in (``brackets``). ``conditions`` lists what must not be
+    0, such as a denominator or a letter divided by. The last steps check the
+    values in the equations.
     """
 
     equations: list[str]
@@ -722,11 +726,16 @@ class Solution:
     steps: list[str] = field(default_factory=list)
     assumptions: list[str] = field(default_factory=list)
     roots: list[dict] = field(default_factory=list)
+    solutions: list[dict] = field(default_factory=list)
 
     @property
     def answer(self) -> str:
         if self.kind == "none":
             return f"No solution: {self.reason}"
+        if self.solutions:
+            texts = [_solution_text(solution) for solution in self.solutions]
+            line = texts[0] if len(texts) == 1 else " or ".join(f"({text})" for text in texts)
+            return line + (f" (when {', '.join(self.conditions)})" if self.conditions else "")
         if self.roots:
             name = self.unknowns[0]
             line = " or ".join(_root_text(name, root) for root in self.roots)
@@ -754,8 +763,22 @@ class Solution:
                 "reading": list(self.reading), "unknowns": list(self.unknowns), "kind": self.kind,
                 "answer": self.answer, "values": dict(self.values), "decimals": dict(self.decimals),
                 "free": list(self.free), "conditions": list(self.conditions), "reason": self.reason,
-                "roots": [dict(root) for root in self.roots], "steps": list(self.steps),
-                "assumptions": list(self.assumptions)}
+                "roots": [dict(root) for root in self.roots],
+                "solutions": [{key: dict(value) for key, value in solution.items()}
+                              for solution in self.solutions],
+                "steps": list(self.steps), "assumptions": list(self.assumptions)}
+
+
+def _solution_text(solution: dict) -> str:
+    parts = []
+    for name, value in solution["values"].items():
+        if not solution["exact"][name]:
+            parts.append(f"{name} ≈ {value}")
+        elif solution["decimals"][name] != value:
+            parts.append(f"{name} = {value} ≈ {solution['decimals'][name]}")
+        else:
+            parts.append(f"{name} = {value}")
+    return ", ".join(parts)
 
 
 def _root_text(name: str, root: dict) -> str:
@@ -786,14 +809,17 @@ class _Equation:
 
 def solve(equations: str | list[str], unknowns: str | list[str] | None = None,
           digits: int = DIGITS) -> Solution | Refusal:
-    """Solve equations that are linear in the unknowns, exactly, step by step.
+    """Solve equations exactly, step by step.
 
     ``equations`` is one equation, several separated by ``;`` or new lines, or a
     list. The unknowns are every letter, unless ``unknowns`` names some ("t",
     or ["x", "y"]); the other letters are then treated as known, so
-    ``solve("d = r*t", unknowns="t")`` gives t = d/r. Returns a
-    :class:`Solution`, or a ``Refusal`` when an equation cannot be read or is
-    not linear in the unknowns.
+    ``solve("d = r*t", unknowns="t")`` gives t = d/r. Equations linear in the
+    unknowns are solved by elimination; one equation in one unknown with
+    powers gives its real roots (``roots.py``); a system of polynomial
+    equations with finitely many solutions, and no other letters, gives its
+    real solutions (``systems.py``). Returns a :class:`Solution`, or a
+    ``Refusal`` when the equations cannot be read or solved.
     """
     try:
         parsed = _equations(equations, digits)
@@ -884,20 +910,22 @@ def _solve(parsed: list[_Equation], unknowns: list[str], digits: int) -> Solutio
     steps: list[str] = []
     numbered = len(parsed) > 1
     known = tuple(unknowns)
+    zeros = [_cleared(equation) for equation in parsed]
+    if any(zero.degree(known) > 1 for zero in zeros):
+        for index, equation in enumerate(parsed, 1):
+            steps.append(f"({index}) {equation.written}" if numbered else equation.written)
+            steps += equation.steps
+        if len(parsed) == 1 and len(unknowns) == 1:
+            return _solve_polynomial(parsed[0], unknowns[0], zeros[0], digits, steps)
+        from .systems import solve_system  # noqa: PLC0415
+
+        return solve_system(parsed, unknowns, zeros, digits, steps)
     rows = []
     for index, equation in enumerate(parsed, 1):
         label = f"({index}) " if numbered else ""
         steps.append(f"{label}{equation.written}")
         steps += equation.steps
-        zero = _cleared(equation)
-        if zero.degree(known) > 1 and len(parsed) == 1 and len(unknowns) == 1:
-            return _solve_polynomial(equation, unknowns[0], zero, digits, steps)
-        if zero.degree(known) > 1:
-            names = " and ".join(unknowns)
-            _refuse("unsupported_expression",
-                    f"{equation.written} is not linear in {names}: once multiplied out it has "
-                    f"{_highest_term(zero, known)}. ADA solves equations where each unknown appears to the "
-                    "first power and no two unknowns are multiplied together.")
+        zero = zeros[index - 1]
         row = [*(_coefficient(zero, name, known) for name in unknowns), -_coefficient(zero, None, known)]
         first = next((entry for entry in row[:-1] if not entry.is_zero()), None)
         if first is not None and _leading(first.numerator)[1] < 0:
@@ -1000,11 +1028,6 @@ def _solve_polynomial(equation: _Equation, unknown: str, zero: Polynomial, digit
                         assumptions=_unique(equation.assumptions), roots=listed)
     return Solution([equation.written], reading, [unknown], "several", conditions=conditions,
                     steps=_capped(steps), assumptions=_unique(equation.assumptions), roots=listed)
-
-
-def _highest_term(polynomial: Polynomial, letters: tuple[str, ...]) -> str:
-    monomial = max(polynomial.terms, key=lambda item: sum(power for name, power in item if name in letters))
-    return str(Polynomial({monomial: polynomial.terms[monomial]}))
 
 
 def _coefficient(polynomial: Polynomial, name: str | None, unknowns: tuple[str, ...]) -> Quotient:

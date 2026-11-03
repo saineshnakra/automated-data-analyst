@@ -132,10 +132,12 @@ the answer instead of carrying digits itself. See
 [Exact arithmetic](docs/reference/compute.md).
 
 Given an equation, the same command and tool solve it: linear equations and
-systems in one-letter unknowns, and polynomial equations in one unknown, with
-fractions kept exact, values that would divide by zero ruled out, and each
-answer checked as the last step. `x^2 - 3x + 1 = 0` gives (3 - sqrt(5))/2 and
-(3 + sqrt(5))/2; a root with no exact form comes with an interval it lies in.
+systems in one-letter unknowns, polynomial equations in one unknown, and
+systems of polynomial equations with finitely many solutions, with fractions
+kept exact, values that would divide by zero ruled out, and each answer
+checked as the last step. `x^2 - 3x + 1 = 0` gives (3 - sqrt(5))/2 and
+(3 + sqrt(5))/2, and `x*y = 6; x + y = 5` gives x = 2, y = 3 or x = 3, y = 2;
+a value with no exact form comes with an interval it lies in.
 `ada.solve("d = r*t", unknowns="t")` rearranges a formula. See
 [Algebra](docs/reference/algebra.md).
 
