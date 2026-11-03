@@ -51,6 +51,7 @@ jobs:
           /tmp/venv/bin/ada --version
           /tmp/venv/bin/ada analyze - > /dev/null
           /tmp/venv/bin/ada skill --print | grep -q '^name: ada$'
+          /tmp/venv/bin/ada compute "x + y = 10; x - y = 2" --json | grep -q '"y": "4"'
           /tmp/venv/bin/python -c "import ada, sys; ada.analyze(ada.sample()); assert not {'streamlit', 'matplotlib'} & set(sys.modules)"
       - name: Check a claim, answer a question and scan a folder with the installed command
         run: |

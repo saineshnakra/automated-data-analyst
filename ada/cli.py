@@ -1,9 +1,11 @@
 """The ``ada`` command.
 
-Compute an expression exactly, with every step:
+Compute an expression or solve equations exactly, with every step:
 
     ada compute "0.15 * (1200 - 300)"        # 135; fractions stay exact, so 1/3 + 1/6 is 1/2
     ada compute "comb(52, 5)" --json
+    ada compute "x + y = 10; x - y = 2"      # x = 6, y = 4, checked by putting them back
+    ada compute "3(x + 2) - x"               # 2x + 6
 
 ``ada compute`` exits 0 with the value, or 3 when the expression cannot be
 computed honestly (division by zero, an expression that reads two ways, a name
@@ -385,9 +387,9 @@ def _mcp(args: argparse.Namespace) -> int:
 
 
 def _compute(args: argparse.Namespace) -> int:
-    from .compute import compute  # noqa: PLC0415
+    from .algebra import work_out  # noqa: PLC0415
 
-    result = compute(" ".join(args.expression), digits=args.digits)
+    result = work_out(" ".join(args.expression), digits=args.digits)
     if isinstance(result, Refusal):
         if args.json:
             print(json.dumps({"schema_version": 1, "status": "refused", "code": result.code,
@@ -526,11 +528,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help="a web page origin allowed to call the HTTP server (repeatable)")
 
     computed = subcommands.add_parser(
-        "compute", help="compute an arithmetic expression exactly, with every step",
+        "compute", help="compute an expression or solve equations exactly, with every step",
         description="Compute an arithmetic expression exactly: fractions stay fractions, every step is "
                     "shown, and an expression that reads two ways is refused with both readings. It knows "
                     "+ - * / // ^ mod ! %, parentheses, sqrt, root, abs, floor, ceil, round, gcd, lcm, comb, "
-                    "perm, min, max, exp, ln, log10, log2, log(x, base), pi and e.",
+                    "perm, min, max, exp, ln, log10, log2, log(x, base), pi and e. With an = sign it solves "
+                    "linear equations in one-letter unknowns (several separated by ;), and checks the "
+                    "answer by putting it back; an expression with letters is multiplied out.",
     )
     computed.add_argument("expression", nargs="+", help='the expression, such as "2^10 + 3/4"')
     computed.add_argument("--digits", type=int, default=20,

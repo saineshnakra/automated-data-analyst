@@ -47,6 +47,7 @@ expression and let ADA compute it exactly:
 ```bash
 ada compute "0.15 * (1200 - 300)"      # 135, with each step
 ada compute "1/3 + 1/6" --json         # value 0.5, fraction 1/2, exact: true
+ada compute "x + y = 10; x - y = 2"    # x = 6, y = 4, with each step and a check
 ```
 
 Fractions stay exact, each step is shown, and the conventions used are
@@ -54,6 +55,11 @@ listed (-2^2 is -4). An expression that reads two ways (`6/2(1+2)`, `17 % 5`,
 `log(8)`) is refused with both readings: write the parentheses or the
 function you mean. Report the value with its steps, and say "approximately"
 when `exact` is false.
+
+To solve equations, write them with one-letter unknowns and give them to the
+same command: it solves linear equations and systems exactly, rules out values
+that divide by zero, and ends with a check that puts the answer back. "No
+solution" and "every value works" are answers, not errors.
 
 ## Computing and checking numbers
 

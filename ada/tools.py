@@ -35,7 +35,8 @@ SYSTEM_PROMPT = (
     "statement.\n"
     "- When you do not know which file or column to use, call ada_scan.\n"
     "- For arithmetic on numbers you have (from the user, the question or a tool's result), call ada_compute "
-    "with one expression, such as 0.15*(1200 - 300) or 7/12*100.\n"
+    "with one expression, such as 0.15*(1200 - 300) or 7/12*100, or with equations to solve, such as "
+    "2x + 3 = 11.\n"
     "Answer with the numbers the tools return and their calculation, and work out no new ones in your "
     "head (no sums, differences or percentages): ask ada_compute. When a tool refuses or cannot tell, say "
     "so, give its reason and ask the user the question it gives."
@@ -93,19 +94,22 @@ _TOOLS = (
     },
     {
         "name": "ada_compute",
-        "title": "Compute an arithmetic expression exactly",
+        "title": "Compute an expression or solve equations exactly",
         "description": (
             "Compute an arithmetic expression exactly and show each step: + - * / ^, parentheses, mod, "
             "percent (20% of 50), factorial (5!), sqrt, root, abs, floor, ceil, round, gcd, lcm, comb, perm, "
             "min, max, exp, ln, log10, log2, log(x, base), pi and e. Fractions stay exact (1/3 + 1/6 = 1/2). "
-            "Use it for every calculation on numbers you already have; write the numbers, not words or "
-            "letters. An expression that reads two ways is refused with both readings."
+            "Use it for every calculation on numbers you already have. It also solves equations with "
+            "one-letter unknowns, one or several separated by ; (x + y = 10; x - y = 2), when each unknown "
+            "is to the first power, and checks the answer by putting it back. An expression that reads two "
+            "ways is refused with both readings."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "expression": {"type": "string", "description": "One arithmetic expression, such as "
-                                                                "(1200 - 300) * 0.15 or comb(10, 3) / 2^10."},
+                                                                "(1200 - 300) * 0.15 or comb(10, 3) / 2^10, "
+                                                                "or equations such as 3x - 5 = 2x + 7."},
                 "digits": {"type": "integer", "description": "Significant digits for a result that is not "
                                                             "exact, such as sqrt(2) (default 20)."},
             },
@@ -263,7 +267,8 @@ def run(name: str, arguments: dict | str, root: str | Path | None = None, brief:
             # {"file": "penguins.csv"}: another name small models give the path.
             given["path"] = given[alias]
         if name == "ada_compute":
-            from .compute import DIGITS, compute  # noqa: PLC0415
+            from .algebra import work_out  # noqa: PLC0415
+            from .compute import DIGITS  # noqa: PLC0415
 
             if not given.get("expression") and (alias := next(
                     (key for key in EXPRESSION_ALIASES if isinstance(given.get(key), str)), None)):
@@ -271,7 +276,7 @@ def run(name: str, arguments: dict | str, root: str | Path | None = None, brief:
                 given["expression"] = given[alias]
             digits = str(given.get("digits", DIGITS))
             digits = int(digits) if digits.isdigit() else DIGITS
-            computed = compute(_text(given, "expression"), digits=digits)
+            computed = work_out(_text(given, "expression"), digits=digits)
             result = computed if isinstance(computed, Refusal) else computed.to_dict()
         elif name == "ada_ask":
             question = _text(given, "question")
@@ -378,7 +383,8 @@ def brief(result: dict) -> dict:
         out["file"] = source["path"]
     if evidence.get("rows_used") is not None:
         out["rows_used"] = evidence["rows_used"]
-    values = (result.get("result") or {}).get("values")
+    inner = result.get("result")
+    values = inner.get("values") if isinstance(inner, dict) else None
     if values:
         out["values"] = values[:LISTED_FILES]
         groups = [item for item in values if isinstance(item, dict) and "group" in item]
@@ -397,7 +403,11 @@ def brief(result: dict) -> dict:
                          **({"problem": item["problem"]} if item.get("problem") else {})}
                         for item in result["files"]]
         out["links"] = result.get("links") or []
-    if status == "computed":
+    if status == "solved":
+        out.update({key: result[key] for key in ("kind", "values", "free", "conditions") if result.get(key)})
+    if status == "simplified":
+        out.update({key: result[key] for key in ("result", "conditions") if result.get(key)})
+    if status in ("computed", "solved", "simplified"):
         out.update({key: result[key] for key in ("value", "exact") if key in result})
         steps = result.get("steps") or []
         if steps:

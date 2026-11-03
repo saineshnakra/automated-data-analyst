@@ -61,6 +61,7 @@ moved (`ada init`, `ada build`, `ada model`, `ada app`, `ada.model`,
 | `ada/api.py` | `analyze`, `Analysis`, `Refusal` and its codes, `sample`, `read_file` |
 | `ada/cli.py` | The `ada` command: `analyze`, `schema`, `ask`, `claim`, `scan`, `check`, `skill`, `tools`, `chat`, `mcp`, `samples`; the commands that moved to ADA Lab are handed to it |
 | `ada/compute.py` | `compute`: an arithmetic expression read by a small grammar (no Python is run), computed with exact fractions and integers, each step recorded, conventions stated, and refusals for what reads two ways |
+| `ada/algebra.py` | `simplify`, `solve` and `check_solution`: expressions with one-letter variables as quotients of polynomials with fraction coefficients, linear equations and systems solved by elimination with each step, solutions put back into the equations; `work_out` sends a text to compute, simplify or solve |
 | `ada/tools.py` | `definitions`, `run` and `brief`: the tools a language model calls (`ada_ask`, `ada_check_claim`, `ada_scan`, `ada_compute`), all read-only, for OpenAI-compatible servers, the Anthropic API and MCP, and the slips of small models it takes in stride |
 | `ada/mcp.py` | `Server`, `serve_stdio` and `http_server`: the Model Context Protocol over standard input and output or Streamable HTTP, on the standard library |
 | `ada/chat.py` | `Chat` and `chat`: a conversation with a model on an OpenAI-compatible server (Ollama by default) that calls ADA's tools; `ada chat` |
