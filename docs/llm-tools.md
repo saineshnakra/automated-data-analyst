@@ -78,7 +78,7 @@ Config; Cursor: `~/.cursor/mcp.json`):
   "mcpServers": {
     "ada": {
       "command": "uvx",
-      "args": ["--from", "automated-data-analyst", "ada", "mcp", "--root", "~/data"]
+      "args": ["automated-data-analyst", "mcp", "--root", "~/data"]
     }
   }
 }
@@ -114,7 +114,7 @@ on in a chat, with a model that supports tool calling.
 ```json
 {
   "servers": {
-    "ada": {"type": "stdio", "command": "uvx", "args": ["--from", "automated-data-analyst", "ada", "mcp"]}
+    "ada": {"type": "stdio", "command": "uvx", "args": ["automated-data-analyst", "mcp"]}
   }
 }
 ```
@@ -125,8 +125,8 @@ in `.vscode/mcp.json` reads the workspace's files.
 
 ```bash
 ada skill                                               # the skill: the assistant runs the ada command
-claude mcp add ada -- uvx --from automated-data-analyst ada mcp          # or the MCP server, for Claude Code
-codex mcp add ada -- uvx --from automated-data-analyst ada mcp           # and for Codex
+claude mcp add ada -- uvx automated-data-analyst mcp          # or the MCP server, for Claude Code
+codex mcp add ada -- uvx automated-data-analyst mcp           # and for Codex
 ```
 
 The [skill](../ada/skills/ada/SKILL.md) works with both, local models

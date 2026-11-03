@@ -1,7 +1,7 @@
 {
   "name": "automated-data-analyst",
   "displayName": "Automated Data Analyst",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "The math arm for Claude Code and Codex: every number from the ADA Python package (pandas, SciPy, statsmodels) with its calculation. Compute and check numbers in CSV and Excel data, and map a folder of files.",
   "author": {
     "name": "Sainesh Nakra",

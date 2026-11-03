@@ -1,8 +1,10 @@
 name: Release
 
-# Publishing a GitHub release (tag v0.5.0 for version 0.5.0) builds the package,
-# runs the tests and uploads it to PyPI. PyPI trusts this workflow directly
-# (trusted publishing), so no token is stored in the repository.
+# Publishing a GitHub release (tag v0.8.0 for version 0.8.0) builds the package,
+# runs the tests and uploads it to PyPI, then lists the version in the official
+# MCP Registry from server.json. PyPI and the registry trust this workflow
+# directly (trusted publishing and GitHub's OIDC token), so no token is stored
+# in the repository.
 
 on:
   release:
@@ -28,6 +30,13 @@ jobs:
             echo "The release tag $TAG does not match version $version in pyproject.toml."
             exit 1
           fi
+          listed=$(python -c "import json; s = json.load(open('server.json')); print(s['version'], *[p['version'] for p in s['packages']])")
+          for item in $listed; do
+            if [ "$item" != "$version" ]; then
+              echo "server.json lists version $item, not $version."
+              exit 1
+            fi
+          done
       - name: Install dependencies
         run: python -m pip install -r requirements-dev.txt build
       - name: Test
@@ -53,3 +62,39 @@ jobs:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  mcp-registry:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      MCP_PUBLISHER_VERSION: v1.8.1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sigstore/cosign-installer@v3
+      - name: Install mcp-publisher, checked against its signature
+        run: |
+          archive=mcp-publisher_linux_amd64.tar.gz
+          base="https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}"
+          curl --fail --location -o "$archive" "$base/$archive"
+          curl --fail --location -o "$archive.sigstore.json" "$base/$archive.sigstore.json"
+          cosign verify-blob --bundle "$archive.sigstore.json" \
+            --certificate-identity "https://github.com/modelcontextprotocol/registry/.github/workflows/release.yml@refs/tags/${MCP_PUBLISHER_VERSION}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com "$archive"
+          tar xzf "$archive" mcp-publisher
+          rm "$archive" "$archive.sigstore.json"
+      - name: Wait for PyPI to serve the version
+        run: |
+          version=$(python3 -c "import json; print(json.load(open('server.json'))['version'])")
+          for attempt in $(seq 1 30); do
+            curl --fail --silent "https://pypi.org/pypi/automated-data-analyst/$version/json" > /dev/null && exit 0
+            sleep 20
+          done
+          echo "PyPI does not serve automated-data-analyst $version yet."
+          exit 1
+      - name: Publish to the MCP Registry
+        run: |
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish

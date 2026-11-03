@@ -75,12 +75,12 @@ claim`, `ada ask`, `ada scan` and `ada mcp` from it.
 ## Releasing
 
 `.github/workflows/release.yml` publishes to PyPI when a GitHub release is
-published. To release version 0.7.0:
+published. To release version 0.8.0:
 
-1. Set `version = "0.7.0"` in `pyproject.toml` and `__version__` in
-   `ada/__init__.py`, add the release to `CHANGELOG.md` and the version to
-   `CITATION.cff`, and merge that to `main`.
-2. Create a release on GitHub with the tag `v0.7.0`, and paste the
+1. Set `version = "0.8.0"` in `pyproject.toml`, `__version__` in
+   `ada/__init__.py` and `version` in `server.json` (twice), add the release to
+   `CHANGELOG.md` and the version to `CITATION.cff`, and merge that to `main`.
+2. Create a release on GitHub with the tag `v0.8.0`, and paste the
    release's section of `CHANGELOG.md` as its notes.
 
 The workflow checks that the tag matches the version, runs the tests, builds
@@ -89,6 +89,12 @@ trusted publishing, so no token is stored anywhere: the PyPI project lists this
 repository's `release.yml` and its `pypi` environment as its publisher. A
 version number can be uploaded once, so a fix after a release needs a new
 version.
+
+After the upload, the workflow lists the new version in the official MCP
+Registry from `server.json`, which apps such as VS Code read their server
+lists from. The registry checks that the PyPI package is this server by the
+`mcp-name` line at the top of `README.md`, and that the workflow runs in this
+repository by GitHub's OIDC token, so no token is stored for it either.
 
 ## Conventions
 

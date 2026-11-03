@@ -1,17 +1,24 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 (2026-11-01)
 
 Any local model that can call tools can now use ADA in one step: `ada chat`
 talks to Ollama (or LM Studio, llama.cpp, vLLM) with ADA's tools, and `ada
 mcp` plugs ADA into apps that take MCP servers. ADA takes small models' usual
 slips in stride: qwen3:0.6b, a 523 MB model, answers all five test questions
-about penguins.csv with ADA's numbers. Claims that a group leads the others
-are now checked against every group.
+about penguins.csv with ADA's numbers. `ada compute` and the `ada_compute`
+tool do arithmetic exactly, with each step, and `ada.check_arithmetic`
+checks the equations in a model's worked answer: on GSM8K and GSM-Hard,
+checking turned 32 of three small models' wrong answers right and one right
+answer wrong. Claims that a group leads the others are now checked against
+every group. The research workflow, the modelling mode and the browser app
+move to their own package, ADA Lab (`pip install ada-lab`), so ADA installs
+without Matplotlib or python-docx.
 
 ```bash
 ollama pull qwen3:1.7b && ada chat penguins.csv      # chat with a local model that uses ADA
 ada mcp                                              # ADA as an MCP server, for LM Studio, Jan, Open WebUI and more
+ada compute "0.15 * (1200 - 300)"                    # 135, with each step
 ```
 
 ### Exact arithmetic
@@ -72,7 +79,9 @@ ada compute "1/3 + 1/6"                # 0.5 = 1/2
   host is refused. It needs only the standard library, and it is checked
   against the official MCP client on both transports.
 - `python -m ada` runs the command, and `automated-data-analyst` is a second
-  name for it, so `uvx automated-data-analyst mcp` works too.
+  name for it, so `uvx automated-data-analyst mcp` starts the MCP server with
+  nothing installed first. ADA is listed in the official MCP Registry as
+  `io.github.saineshnakra/automated-data-analyst`.
 - `ada tools --style mcp` prints the definitions in the form an MCP server
   lists them, with titles and read-only hints.
 

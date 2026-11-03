@@ -38,7 +38,7 @@ from .folder import FolderScan, scan
 from .joins import ask_folder
 from .sources import Source
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 __all__ = [
     "DEFAULT_ROW_LIMIT",

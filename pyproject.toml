@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "automated-data-analyst"
-version = "0.7.0"
+version = "0.8.0"
 description = "The math arm for LLMs: compute and check numbers from CSV and Excel data with pandas, SciPy and statsmodels, each with its calculation, or refused with a reason. Tool definitions, an MCP server and a chat command for Claude, Codex and open-source models (Ollama, vLLM, llama.cpp, LM Studio)."
 requires-python = ">=3.11"
 readme = "README.md"
