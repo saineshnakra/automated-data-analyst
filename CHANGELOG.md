@@ -75,6 +75,15 @@ ada compute "3(x + 2) - x"                 # 2x + 6
   supposition ("Suppose 2 + 2 = 5") and a contradiction drawn on purpose
   ("0 + 0 = 2 ⇒ no solution", "which is impossible"). Found in MATH-500
   replies.
+- `ada.check_arithmetic` reads arithmetic written in LaTeX, as answers to
+  competition problems write it: `\frac`, `\sqrt`, `\sqrt[3]`, `^{...}`,
+  `\binom` and `\boxed`, read by the new `ada.latex`. Every step of a chain is
+  checked, and the stated side can be an expression (`\sqrt{27} =
+  3\sqrt{3}`), compared exactly when both sides are rational and to 30 digits
+  otherwise. What reads two ways, such as the mixed number `3\frac{1}{2}`, is
+  skipped. On run 1's MATH-500 replies, the replies with a slip found go
+  from 8 to 17 of 221 for qwen3:1.7b and from 13 to 21 for qwen2.5:1.5b;
+  14 and 17 of them have a wrong final answer.
 
 ### LangChain and LangGraph
 
