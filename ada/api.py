@@ -91,6 +91,8 @@ REFUSAL_CODES = (
     "not_a_real_number",
     "too_large",
     "needs_more_digits",
+    "unsupported_expression",
+    "missing_value",
     "unknown",
 )
 
