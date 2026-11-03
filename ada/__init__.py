@@ -2,6 +2,7 @@
 
     import ada
     ada.compute("0.1 + 0.2")            # exactly 0.3, with its steps
+    ada.solve("x + y = 10; x - y = 2")  # x = 6, y = 4, with each step and a check
     answer = ada.analyze("measurements.csv")
     check = ada.check_claim("flights.csv", "The average dep_delay was 12.64 minutes.")
 
@@ -16,6 +17,7 @@ when it is installed.
 """
 
 from . import tools
+from .algebra import Simplified, Solution, Substitution, check_solution, simplify, solve
 from .api import (
     DEFAULT_ROW_LIMIT,
     MAX_FILE_BYTES,
@@ -54,7 +56,10 @@ __all__ = [
     "FolderScan",
     "NothingToAnalyze",
     "Refusal",
+    "Simplified",
+    "Solution",
     "Source",
+    "Substitution",
     "UnknownDecision",
     "UnreadableData",
     "__version__",
@@ -62,11 +67,14 @@ __all__ = [
     "ask_folder",
     "check_arithmetic",
     "check_claim",
+    "check_solution",
     "compute",
     "read_file",
     "sample",
     "samples",
     "scan",
+    "simplify",
+    "solve",
     "tools",
 ]
 

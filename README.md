@@ -120,6 +120,7 @@ says the data give a different number. `--json` gives the whole record, and
 ada compute "0.15 * (1200 - 300)"      # 135, with each step
 ada compute "1/3 + 1/6"                # 0.5 = 1/2: fractions stay exact
 ada compute "6/2(1+2)"                 # refused: it reads as 9 or as 1
+ada compute "x + y = 10; x - y = 2"    # x = 6, y = 4, each step, and a check
 ```
 
 `ada compute`, `ada.compute()` and the `ada_compute` tool work out an
@@ -129,6 +130,12 @@ An expression that reads two ways is refused with both values, and so is
 anything that isn't a real number. A model writes the expression and reads
 the answer instead of carrying digits itself. See
 [Exact arithmetic](docs/reference/compute.md).
+
+Given an equation, the same command and tool solve it: linear equations and
+systems in one-letter unknowns, with fractions kept exact, values that would
+divide by zero ruled out, and the answer put back into each equation as the
+last step. `ada.solve("d = r*t", unknowns="t")` rearranges a formula. See
+[Algebra](docs/reference/algebra.md).
 
 `ada.check_arithmetic(text)` checks each equation in a worked answer, so a
 model can reason in its own words and be told each slip with the right

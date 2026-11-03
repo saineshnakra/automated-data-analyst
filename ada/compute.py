@@ -145,10 +145,12 @@ class _Parser:
     ``implicit`` says how to read two operands with no operator between them,
     as in 2(3+4): as an ordinary multiplication ("loose", so 6/2(1+2) is
     (6/2)*(1+2)) or binding tighter than * and / ("tight", 6/(2*(1+2))).
+    With ``variables``, a single letter other than e is a variable, as in
+    algebra (:mod:`ada.algebra`); without it, a letter is refused.
     """
 
-    def __init__(self, tokens: list[_Token], implicit: str):
-        self.tokens, self.position, self.implicit = tokens, 0, implicit
+    def __init__(self, tokens: list[_Token], implicit: str, variables: bool = False):
+        self.tokens, self.position, self.implicit, self.variables = tokens, 0, implicit, variables
         self.assumptions: list[str] = []
         self.used_implicit = False
         self.depth = 0
@@ -302,6 +304,8 @@ class _Parser:
                 return self.call(name, key)
             if key in CONSTANTS:
                 return _Node("constant", key)
+            if self.variables and key not in FUNCTION_NAMES:
+                return self.variable(name)
             if key in FUNCTION_NAMES:
                 if self.starts_operand(self.peek()):
                     # sqrt 16: a function written without its parentheses takes the operand after it.
@@ -315,6 +319,22 @@ class _Parser:
                     f"the functions {', '.join(sorted(FUNCTIONS))} and the constants pi and e. "
                     "Work out what each name stands for first, then compute.")
         _refuse("invalid_expression", f"ADA cannot read {token.text!r} where a number was expected.")
+
+    def variable(self, name: str) -> _Node:
+        if len(name) > 1:
+            _refuse("invalid_expression",
+                    f"ADA reads each letter as its own variable, such as x or y, and {name!r} has "
+                    f"{len(name)} letters. Write a product with *, such as {'*'.join(name[:2])}, or name "
+                    "the quantity with one letter.")
+        before = self.tokens[self.position - 2] if self.position >= 2 else None
+        after = self.peek()
+        if name in "xX" and before is not None and before.kind == "number" and after is not None and \
+                after.kind == "number":
+            _refuse("ambiguous_expression",
+                    f"{before.text} {name} {after.text} can mean {before.text} times {after.text}, or "
+                    f"{before.text} times the variable {name} times {after.text}. Write "
+                    f"{before.text}*{after.text}, or {before.text}*{name}*{after.text}.")
+        return _Node("variable", name)
 
     def number(self, token: _Token) -> _Node:
         text = token.text
@@ -360,7 +380,7 @@ def show(node: _Node) -> str:
     """The expression as ADA read it, with its operators written out."""
     if node.kind == "number":
         return node.text
-    if node.kind == "constant":
+    if node.kind in ("constant", "variable"):
         return node.value
     if node.kind == "group":
         return f"({show(node.children[0])})"

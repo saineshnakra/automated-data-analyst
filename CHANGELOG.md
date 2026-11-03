@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+### Algebra
+
+`ada compute` and the `ada_compute` tool now solve equations as well as
+compute expressions, and `ada.solve`, `ada.simplify` and
+`ada.check_solution` do the same in Python. This is step 2 of ADA as a math
+tool for language models.
+
+```bash
+ada compute "x + y = 10; x - y = 2"        # x = 6, y = 4
+ada compute "solve d = r*t for t"          # t = d/r, when r ≠ 0
+ada compute "3(x + 2) - x"                 # 2x + 6
+```
+
+- Linear equations and systems in one-letter unknowns are solved by
+  elimination, with fractions kept exact and each step written as the
+  equation it gives. "No solution" and "infinitely many" are answers, with
+  the reason or the free letters.
+- A letter in a denominator is multiplied away and the value that would make
+  it zero is ruled out: `(x^2 - 1)/(x - 1) = 2` has no solution.
+- Every solution is put back into each equation as the last step, and
+  `ada.check_solution` does the same for a solution a model gives.
+- Expressions with letters are multiplied out with like terms collected, and
+  the result reads back as the same expression.
+- Two refusal codes join `ada.REFUSAL_CODES`: `unsupported_expression` (an
+  equation that is not linear in its unknowns, or a function of a letter) and
+  `missing_value`.
+- 120 systems built around a known solution, and 80 random expressions
+  checked against step 1's arithmetic, are among the tests.
+
 ### LangChain and LangGraph
 
 `ada.tools.langchain()` gives ADA's four tools as LangChain tools, with the
