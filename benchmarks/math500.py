@@ -214,6 +214,24 @@ def completed(records: list[dict], parsed: dict) -> bool:
     return missing
 
 
+def replied(row: dict, record: dict) -> dict:
+    """The model's reply alone, as ``solve`` gives it, rebuilt from its record for the check to start from."""
+    messages = [{"role": "system", "content": SETTINGS["none"][1]},
+                {"role": "user", "content": row["problem"]},
+                {"role": "assistant", "content": record["reply"]}]
+    return {"reply": record["reply"], "calls": [], "messages": messages}
+
+
+def stale(check: dict, alone: dict | None) -> bool:
+    """Whether ADA, as it checks now, finds other wrong equations in the reply a check record started from
+    than it found when the record was made: then the record is made again."""
+    if alone is None or "checks" not in check:
+        return False
+    now = {(item.expression, item.stated) for item in wrong_equations(check_arithmetic(alone["reply"]))}
+    then = {(item["expression"], item["stated"]) for item in check["checks"] if not item["correct"]}
+    return now != then
+
+
 def run(args: argparse.Namespace) -> int:
     rows = [json.loads(line) for line in Path(args.data).read_text(encoding="utf-8").splitlines() if line]
     rows = chosen(rows, args.subjects, args.problems, args.shard)
@@ -225,8 +243,10 @@ def run(args: argparse.Namespace) -> int:
                if line.strip()] if out.exists() else []
     if completed(records, parsed):
         out.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+    # A record made again comes later in the file and takes the place of the one before.
+    latest = {(record["id"], record["condition"], record["sample"]): record for record in records}
     previous = defaultdict(list)
-    for record in records:
+    for record in latest.values():
         previous[record["id"], record["condition"]].append(record)
     with out.open("a", encoding="utf-8") as handle:
         for row in rows:
@@ -237,8 +257,16 @@ def run(args: argparse.Namespace) -> int:
                     break
                 alone = None
                 for condition in conditions:
-                    if any(record["sample"] == sample for record in earlier[condition]):
+                    done = [record for record in earlier[condition] if record["sample"] == sample]
+                    if condition == "check" and alone is None:
+                        # The check starts from the reply the model gave alone, without asking for it again.
+                        source = next((record for record in earlier.get("none", [])
+                                       if record["sample"] == sample and not record.get("error")), None)
+                        alone = replied(row, source) if source else None
+                    if done and not (condition == "check" and stale(done[0], alone)):
                         continue
+                    if done:
+                        earlier[condition].remove(done[0])
                     record, solved = asked(args, row, condition, sample, alone)
                     if condition == "none" and "error" not in solved:
                         alone = solved
@@ -258,13 +286,13 @@ def summary(paths: list[str]) -> int:
     from scipy.stats import binomtest  # noqa: PLC0415
 
     by = defaultdict(dict)
-    sampled = defaultdict(lambda: defaultdict(list))
+    sampled = defaultdict(lambda: defaultdict(dict))
     for path in paths:
         for line in Path(path).read_text(encoding="utf-8").splitlines():
             if line.strip():
                 record = json.loads(line)
                 model = record["model"] + (" (thinking)" if record.get("think") else "")
-                sampled[(model, record["id"])][record["condition"]].append(record)
+                sampled[(model, record["id"])][record["condition"]][record.get("sample", 0)] = record
                 if record.get("sample", 0) == 0:
                     by[(model, record["id"])][record["condition"]] = record
     for model in sorted({model for model, _ in by}):
@@ -300,7 +328,9 @@ def summary(paths: list[str]) -> int:
                 print(f"    answers with a wrong equation: {flagged}")
         failed = sum(1 for conditions in problems for record in conditions.values() if record.get("error"))
         print(f"  replies that never ended or failed: {failed}")
-        voted([conditions for (name, _), conditions in sorted(sampled.items()) if name == model], binomtest)
+        voted([{condition: [records[sample] for sample in sorted(records)]
+                for condition, records in conditions.items()}
+               for (name, _), conditions in sorted(sampled.items()) if name == model], binomtest)
     return 0
 
 
