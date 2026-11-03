@@ -6,6 +6,7 @@
     tools.definitions("anthropic")     # the same for the Anthropic Messages API
     tools.run("ada_check_claim", {"path": "flights.csv", "claim": "The average delay was 13 minutes."})
     tools.run("ada_compute", {"expression": "0.15 * (1200 - 300)"})
+    tools.langchain(root="data")       # the same tools for LangChain agents and LangGraph
 
 The model asks and ADA does the math: every number comes from pandas, SciPy
 or statsmodels with its calculation, or comes back refused with the reason.
@@ -140,6 +141,31 @@ def definitions(style: str = "openai") -> list[dict]:
                  "annotations": {"title": tool["title"], "readOnlyHint": tool["name"] in READ_ONLY,
                                  "openWorldHint": False}} for tool in _TOOLS]
     raise ValueError(f"style is 'openai', 'anthropic' or 'mcp', not {style!r}")
+
+
+def langchain(root: str | Path | None = None) -> list:
+    """ADA's tools as LangChain tools, for LangChain agents and for LangGraph's ``ToolNode`` and
+    ``create_react_agent``.
+
+    Each tool takes the same arguments as its definition and returns the brief result as JSON text, as
+    ``run(name, arguments, root=root, brief=True)`` does. With ``root``, the model may only name files inside
+    that folder. Needs langchain-core: ``pip install "automated-data-analyst[langchain]"``.
+    """
+    try:
+        from langchain_core.tools import StructuredTool  # noqa: PLC0415
+    except ImportError as error:
+        raise ImportError('ADA\'s LangChain tools need langchain-core: '
+                          'pip install "automated-data-analyst[langchain]"') from error
+
+    def runner(name: str):
+        def call(**arguments: Any) -> str:
+            return json.dumps(run(name, arguments, root=root, brief=True))
+        return call
+
+    return [StructuredTool.from_function(func=runner(tool["name"]), name=tool["name"],
+                                         description=tool["description"],
+                                         args_schema=json.loads(json.dumps(tool["parameters"])))
+            for tool in _TOOLS]
 
 
 #: Data files a message lists at most, so a model that left out or misspelt a path can pick the right one.

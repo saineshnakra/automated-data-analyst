@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### LangChain and LangGraph
+
+`ada.tools.langchain()` gives ADA's four tools as LangChain tools, with the
+same names, descriptions and arguments, for LangChain agents and for
+LangGraph's `create_react_agent` and `ToolNode`. Each returns the brief
+result as JSON text, and `root=` keeps the model to the files in one folder.
+It needs the new `[langchain]` extra: `pip install
+"automated-data-analyst[langchain]"`.
+
 ## 0.8.0 (2026-11-01)
 
 Any local model that can call tools can now use ADA in one step: `ada chat`

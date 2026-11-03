@@ -85,8 +85,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# openpyxl writes the workbooks the tests read.
-dev = ["ruff>=0.8,<1", "openpyxl>=3.1,<4"]
+# ADA's tools as LangChain tools, for LangChain agents and LangGraph: ada.tools.langchain().
+langchain = ["langchain-core>=0.3,<2"]
+# openpyxl writes the workbooks the tests read; langchain-core lets the LangChain tools be tested.
+dev = ["ruff>=0.8,<1", "openpyxl>=3.1,<4", "langchain-core>=0.3,<2"]
 
 [project.scripts]
 ada = "ada.cli:main"

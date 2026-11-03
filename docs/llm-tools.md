@@ -28,6 +28,7 @@ pip install automated-data-analyst
 | Claude Code, Codex | `ada skill`, or ADA as an MCP server ([below](#claude-code-and-codex)) |
 | ollmcp, oterm or another terminal client for Ollama | add ADA as an MCP server in its config |
 | your own code | `ada.tools`, or `ada.chat.chat()` ([below](#in-your-own-code)) |
+| LangChain or LangGraph | `ada.tools.langchain()` ([below](#langchain-and-langgraph)) |
 
 The model has to support tool calling. On Ollama those are the models tagged
 "tools", such as qwen3, llama3.1, llama3.2, mistral and granite; in LM Studio,
@@ -226,6 +227,37 @@ while True:
 ```
 
 Every tool result of a turn goes back in one user message, as above.
+
+### LangChain and LangGraph
+
+`tools.langchain()` gives the four tools as LangChain tools, with the same
+names, descriptions and arguments as `tools.definitions()`. Each returns the
+brief result as JSON text, as `tools.run(..., brief=True)` does. It needs
+langchain-core:
+
+```bash
+pip install "automated-data-analyst[langchain]"
+```
+
+With LangGraph's prebuilt agent, and any chat model that calls tools:
+
+```python
+from langchain_ollama import ChatOllama
+from langgraph.prebuilt import create_react_agent
+
+from ada import tools
+
+agent = create_react_agent(ChatOllama(model="qwen3:1.7b"), tools.langchain(root="data"),
+                           prompt=tools.SYSTEM_PROMPT)
+reply = agent.invoke({"messages": [("user", "What was the average departure delay by airport in flights.csv?")]})
+print(reply["messages"][-1].content)
+```
+
+The same list goes into a `ToolNode` in a graph of your own, or into
+`model.bind_tools(...)` in a LangChain loop, where `tool.invoke(call)` runs
+each call the model makes and returns the `ToolMessage` to send back.
+`root="data"` keeps the model to the files inside that folder, as with
+`tools.run`.
 
 ## How a call goes
 
