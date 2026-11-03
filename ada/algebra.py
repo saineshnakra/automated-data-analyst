@@ -973,7 +973,9 @@ def _solve_polynomial(equation: _Equation, unknown: str, zero: Polynomial, digit
                                if not side.is_polynomial()))
     how = (f"Multiply both sides by {' and '.join(_operand(Quotient(item)) for item in below)} and move "
            "everything to one side") if below else "Move everything to one side"
-    steps.append(f"{how}: {rooting.polynomial_text(coefficients, unknown)} = 0")
+    collected = f"{rooting.polynomial_text(coefficients, unknown)} = 0"
+    if collected != equation.written:
+        steps.append(f"{how}: {collected}")
     # A value that makes a denominator zero is not a solution, so its factor is divided out first.
     for denominator in dict.fromkeys(equation.denominators):
         divisor = [Fraction(0)] * (denominator.degree() + 1)
