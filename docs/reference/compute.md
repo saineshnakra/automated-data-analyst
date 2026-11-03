@@ -161,6 +161,40 @@ An equation is read within one line. `x = 5` is skipped, and so is anything
 `compute` refuses. `×`, `x` between numbers, `·`, `\times`, `\cdot`, `\div`,
 `\%`, currency signs and thousands separators are read as written.
 
+### LaTeX
+
+Answers to competition problems write their arithmetic in LaTeX. A line with
+a fraction, a root, a power in braces, a binomial coefficient or a boxed
+answer (`\frac`, `\dfrac`, `\sqrt`, `\sqrt[3]`, `^{...}`, `\binom`, `\boxed`) is
+read by `ada.latex`. Each side of each `=` becomes an expression `compute`
+takes, so `\frac{1}{2}\sqrt{8}` is read as `((1)/(2))sqrt(8)`. Then every step
+of a chain is checked, and the stated side can be an expression:
+
+```python
+ada.check_arithmetic(r"\sqrt{27} = \sqrt{9 \cdot 3} = 3\sqrt{2}")
+# [Checked(expression='\\sqrt{27}', stated='\\sqrt{9 \\cdot 3}', computed='5.1961524227066318806', correct=True),
+#  Checked(expression='\\sqrt{9 \\cdot 3}', stated='3\\sqrt{2}', computed='5.1961524227066318806', correct=False)]
+```
+
+| Written | Checked |
+|---|---|
+| `\frac{12}{18} = \frac{2}{3}` | Exactly: both sides are rational |
+| `(\sqrt{7} + \sqrt{5})^2 = 12 + 2\sqrt{35}` | To 30 digits: a side is not rational |
+| `\frac{1}{3} = 0.33` | As a plain-text value: rounded or cut off to its places |
+| `= 4 + 2 + 1.587 + 1.414` | To 3 places: a stated side with rounded decimals agrees to as many places as they have |
+| `3 \times 4 = 12 + \frac{1}{2} = 12.5` | `12 + \frac{1}{2} = 12.5`: the first step is a running total |
+| `x = \frac{40}{0.02} = 2000`, `the area is \frac{1}{2} \cdot 6 = 3 square units` | The steps made of numbers |
+| `1 = \sqrt{11 - 2(1)} + 4` | Nothing: a value put into an equation to test it |
+| `3\frac{1}{2}`, `2\sqrt{2}^2` | Nothing: each reads two ways (3½ or 3 × ½; (2√2)² or 2 × (√2)²) |
+| `+ \frac{3}{10} = 1.4667` on a line of a displayed block | Nothing for the first step: it goes on from the line before |
+| `\pm`, `^\circ`, `\overline`, a letter | Nothing: ADA does not read the side |
+
+Conditions, contradictions and words that scale a value are skipped as in
+plain text. On the MATH-500 replies of two small models, the LaTeX reading
+checks about 3,100 steps; of the steps it flags, all but a handful are slips
+on reading them, and it doubles the replies with a slip found, most of which
+have a wrong final answer.
+
 This lets a model reason in its own words and still get its arithmetic
 checked: hand it back each equation that comes back `correct=False`, with the
 right value, and ask it to fix the steps that used it.

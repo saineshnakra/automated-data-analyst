@@ -10,6 +10,7 @@ from ada import tools
 from ada.api import REFUSAL_CODES, Refusal
 from ada.cli import main
 from ada.compute import MAX_STEPS, check_arithmetic, compute, repeating
+from ada.latex import to_plain
 
 
 def value(expression: str, **options) -> str:
@@ -383,6 +384,85 @@ class CheckArithmeticTests(unittest.TestCase):
                 "Net earnings per year: 2256855 x $1.5 = $337.40625")
         self.assertEqual([(item.computed, item.correct) for item in check_arithmetic(text)],
                          [("222", False), ("798.6", False), ("3385282.5", False)])
+
+
+class LatexTests(unittest.TestCase):
+    """Arithmetic written in LaTeX, read by ada.latex. The lines are from MATH-500 and GSM-Hard replies."""
+
+    def checked(self, text):
+        return [(item.expression, item.stated, item.correct) for item in check_arithmetic(text)]
+
+    def test_each_side_is_read_into_an_expression(self):
+        self.assertEqual(to_plain("\\frac{1}{2}\\sqrt{8}"), "((1)/(2))sqrt(8)")
+        self.assertEqual(to_plain("\\sqrt[3]{8} + 2^{10} + \\binom{6}{2}"),
+                         "root((8), (3)) + 2^(10) + comb((6), (2))")
+        self.assertEqual(to_plain("\\left(-\\frac{7}{4}\\right) \\cdot 1{,}000"), "(-((7)/(4))) * 1000")
+        self.assertEqual(to_plain("\\boxed{7}"), "(7)")
+        for unread in ("x + 1", "3\\frac{1}{2}", "2\\sqrt{2}^2", "\\pm 3", "90^\\circ", "\\frac{1}{2", ""):
+            self.assertIsNone(to_plain(unread), unread)
+
+    def test_every_step_of_a_chain_is_checked(self):
+        found = self.checked("\\sqrt{27} = \\sqrt{9 \\cdot 3} = \\sqrt{9} \\cdot \\sqrt{3} = 3\\sqrt{3}")
+        self.assertEqual(len(found), 3)
+        self.assertTrue(all(correct for _, _, correct in found))
+        self.assertEqual(self.checked("= 3 + \\frac{5}{3} = \\frac{9}{3} + \\frac{5}{3} = \\frac{14}{3}"),
+                         [("3 + \\frac{5}{3}", "\\frac{9}{3} + \\frac{5}{3}", True),
+                          ("\\frac{9}{3} + \\frac{5}{3}", "\\frac{14}{3}", True)])
+        self.assertEqual(self.checked("x = \\frac{40}{0.02} = 2000"), [("\\frac{40}{0.02}", "2000", True)])
+
+    def test_slips_from_model_answers_are_found(self):
+        self.assertEqual(self.checked("11 + 18 + 18 + 18 + 10 + 2 = \\boxed{87}"),
+                         [("11 + 18 + 18 + 18 + 10 + 2", "\\boxed{87}", False)])
+        self.assertEqual(self.checked("= \\frac{1}{\\frac{4}{169}} = 169"),
+                         [("\\frac{1}{\\frac{4}{169}}", "169", False)])
+        self.assertFalse(check_arithmetic("\\sqrt{27} = 3\\sqrt{2}")[0].correct)
+        self.assertFalse(check_arithmetic("$\\binom{6}{2} = 12$")[0].correct)
+        self.assertEqual(check_arithmetic("\\frac{4}{12} \\cdot 10 = \\frac{5}{3}")[0].computed, "10/3")
+        found = check_arithmetic("So $\\frac{3}{4} \\times 20 = 15$ apples and "
+                                 "$\\frac{1}{4} \\times 20 = 6$.")
+        self.assertEqual([item.correct for item in found], [True, False])
+
+    def test_values_that_are_not_rational_agree_to_30_digits(self):
+        self.assertTrue(check_arithmetic("(\\sqrt{7} + \\sqrt{5})^2 = 12 + 2\\sqrt{35}")[0].correct)
+        self.assertTrue(check_arithmetic("\\frac{2\\pi}{4} = \\frac{\\pi}{2}")[0].correct)
+        self.assertFalse(check_arithmetic("\\sqrt{2} = 1.5")[0].correct)
+        self.assertTrue(check_arithmetic("\\sqrt{2} = 1.41")[0].correct)
+
+    def test_rounded_decimals_agree_to_their_places(self):
+        line = "4 + \\sqrt{4} + \\sqrt[3]{4} + \\sqrt[4]{4} = 4 + 2 + 1.587 + 1.414 = 10"
+        self.assertEqual([correct for _, _, correct in self.checked(line)], [True, False])
+        self.assertTrue(check_arithmetic("0.5 + \\frac{1}{1.5} + 2 = 0.5 + 0.666 + 2")[0].correct)
+        self.assertTrue(check_arithmetic("\\frac{1}{3} = 0.33")[0].correct)
+
+    def test_what_reads_two_ways_or_is_not_claimed_is_skipped(self):
+        # A value put into an equation to test it, a mixed number, (2√2)² written without parentheses.
+        self.assertEqual(check_arithmetic("1 = \\sqrt{11 - 2(1)} + 4"), [])
+        self.assertEqual(check_arithmetic("3\\frac{1}{2} = 3.5"), [])
+        self.assertEqual(check_arithmetic("2\\sqrt{2}^2 - 8 = 0"), [])
+        # Conditions, contradictions and running totals.
+        self.assertEqual(check_arithmetic("If \\frac{1}{2} + \\frac{1}{2} = 2, then"), [])
+        self.assertEqual(check_arithmetic("\\frac{1}{2} + \\frac{1}{2} = 2, which is impossible"), [])
+        self.assertEqual(self.checked("3 \\times 4 = 12 + \\frac{1}{2} = 12.5"),
+                         [("12 + \\frac{1}{2}", "12.5", True)])
+        # A line of a displayed block that goes on from the line before.
+        self.assertEqual(self.checked("+ \\frac{3}{10} = 1.1667 + 0.3 = 1.4667"),
+                         [("1.1667 + 0.3", "1.4667", True)])
+        # Letters, signs ADA does not read, and words that scale the value.
+        self.assertEqual(check_arithmetic("\\frac{x}{2} = 3, \\quad 90^\\circ = \\frac{\\pi}{2}"), [])
+        self.assertEqual(check_arithmetic("2^{10} = 1024 \\text{ million}"), [])
+        self.assertEqual(check_arithmetic("x = \\frac{-5 \\pm \\sqrt{25 - 24}}{2}"), [])
+
+    def test_words_around_a_chain(self):
+        found = self.checked("The area is \\frac{1}{2} \\cdot 6 \\cdot 4 = 12 square units.")
+        self.assertEqual(found, [("\\frac{1}{2} \\cdot 6 \\cdot 4", "12", True)])
+        self.assertEqual(check_arithmetic("\\frac{14}{2} = 2x"), [])
+        self.assertEqual(check_arithmetic("\\frac{1}{2} \\cdot S + 2 = 28"), [])
+
+    def test_thin_and_unusual_input(self):
+        self.assertEqual(check_arithmetic("\\frac{1}{2}"), [])
+        self.assertEqual(check_arithmetic("$$\\frac{}{}$$ = "), [])
+        self.assertEqual(check_arithmetic("\\frac{" * 60 + "1" + "}{2}" * 60 + " = 1"), [])
+        self.assertEqual(check_arithmetic("\\boxed{}"), [])
 
 
 class ToolTests(unittest.TestCase):

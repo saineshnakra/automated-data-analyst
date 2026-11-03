@@ -1144,16 +1144,25 @@ def check_arithmetic(text: str) -> list[Checked]:
       total (``3 * 4 = 12 + 1 = 13``) is written the same way.
     - A number with a misplaced comma (``373, 846.92``) and an expression ADA refuses or cannot read are
       skipped.
+    - A line with a fraction, a root, a power in braces, a binomial coefficient or a boxed answer written in
+      LaTeX (``\\frac{14}{3}``, ``\\sqrt{27} = 3\\sqrt{3}``) is read by :mod:`ada.latex`: every step of a
+      chain is checked, and the stated side can be an expression, compared exactly when both sides are
+      rational and to 30 digits otherwise.
 
     Use it to check a worked answer a language model wrote: an equation that comes back with ``correct``
     false is an arithmetic slip, with the right value beside it.
     """
-    plain = text
-    for written, operator in _WRITTEN_OPERATORS:
-        plain = plain.replace(written, operator)
-    plain = _BOLD.sub("", plain)
+    from .latex import LATEX, check_line  # noqa: PLC0415 - ada.latex builds on this module
+
     checked = []
-    for line in plain.splitlines():
+    for line in text.splitlines():
+        if LATEX.search(line):
+            # Fractions, roots, braced powers, binomials and boxed answers: read as LaTeX, every step.
+            checked += check_line(line)
+            continue
+        for written, operator in _WRITTEN_OPERATORS:
+            line = line.replace(written, operator)
+        line = _BOLD.sub("", line)
         tokens = [[match.lastgroup, match.group()] for match in _TOKEN.finditer(_BULLET.sub("", line))]
         _read_times_signs(tokens)
         start = 0
