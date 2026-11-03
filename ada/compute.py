@@ -1107,8 +1107,11 @@ _BULLET = re.compile(r"^[ \t]*(?:[-*+•]|\d+[.)])[ \t]+")
 #: Words after a number that scale it: "10 million".
 _SCALE_WORDS = {"hundred", "thousand", "million", "billion", "trillion", "hundreds", "thousands", "millions",
                 "billions"}
-#: Words before an equation that make it a condition rather than a claim.
-_CONDITION_WORDS = {"if", "unless", "whether"}
+#: Words before an equation that make it a condition or a supposition rather than a claim.
+_CONDITION_WORDS = {"if", "unless", "whether", "suppose", "assume", "assuming"}
+#: Words after an equation, on its line, that say the writer knows it is false: "0 + 0 = 2 ⇒ no solution".
+_CONTRADICTION = re.compile(r"\b(?:contradiction|contradicts|impossible|absurd|no solutions?|not possible|"
+                            r"not true|is false|never holds)\b")
 
 
 @dataclass(frozen=True)
@@ -1207,6 +1210,9 @@ def _checked_run(tokens: list[list[str]], start: int, end: int) -> Checked | Non
         return None
     # "only possible if 240 + 3,516,571 = 0": a condition, not a claim.
     if start > 0 and tokens[start - 1][0] == "word" and tokens[start - 1][1].lower() in _CONDITION_WORDS:
+        return None
+    # "0 + 0 = 2 ⇒ no solution": a contradiction the writer draws on purpose.
+    if _CONTRADICTION.search(" ".join(token[1].lower() for token in following if token[0] == "word")):
         return None
     terms = [[]]
     for token in run:
