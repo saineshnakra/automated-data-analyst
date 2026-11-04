@@ -279,6 +279,55 @@ no answer and 42 a wrong one.
 - **A reply takes 584 seconds on average**, 77.5 runner-hours for the 478,
   and one runner takes twice as long as another per character of thinking.
 
+### Votes on the problems left open
+
+Run [41768840703](https://github.com/saineshnakra/automated-data-analyst/actions/runs/41768840703)
+on commit 886016d starts from run 41725437147's results, in 60 parts. It asks
+up to five times (seeds 0 to 4) on the problems whose first reply gave no
+answer or thought for more than 20,000 characters, and on the 22 run
+41725437147 did not reach. Every other first answer stands. 14 jobs ran out
+of time, so the votes on 23 problems stopped early, and 2 problems have no
+reply at all. Each count is out of all 500, and a problem with no reply
+counts as missed.
+
+| | Right |
+|---|---|
+| First sample | 413 (82.6%) |
+| Vote of every answer | 438 (87.6%) |
+| Vote of the answers ADA found no wrong equation in | 438 (87.6%) |
+| Vote of the checked answers | 440 (88.0%) |
+| Some sample right | 447 (89.4%) |
+
+| Level | Problems | First sample | Vote | No answer in any sample |
+|---|---|---|---|---|
+| 1 | 43 | 41 | 41 | 0 |
+| 2 | 90 | 86 | 86 | 0 |
+| 3 | 105 | 98 | 102 | 1 |
+| 4 | 128 | 103 | 114 | 2 |
+| 5 | 134 | 85 | 95 | 14 |
+
+- **The vote helps.** Right only with it 27, only with the first sample 2,
+  exact McNemar p = 2e-6. 93 problems were asked again, 44 of them five
+  times, and 405 first answers stood. The new replies took 141.5
+  runner-hours.
+- **ADA does not change the vote.** Leaving out the replies ADA finds a
+  wrong equation in changes no vote. ADA found one in 24 replies, and told
+  of it, the model turned 2 wrong answers right and 2 right answers wrong.
+  The checked vote is 2 higher. On one problem, ADA found that
+  `(-1) - (-500) + 1` is 500, not 501, and the second answer is right. On
+  the other, the reply alone did not end and was asked again.
+- **Of the 24 flags, 4 are misreadings**: the 2 fixed in #169, a step in
+  modular arithmetic (`3^3 = 6 \mod 7`) and a value in base 5 (`= 204_5`).
+  The rest are real slips.
+- **What the vote misses.** Of the 62 problems it misses, 17 have no answer
+  in any sample, 14 of them level 5, and 45 have a wrong one. Some sample is
+  right on 9 of them.
+
+Run [41817241401](https://github.com/saineshnakra/automated-data-analyst/actions/runs/41817241401)
+asks the first reply again with up to 30,720 tokens, with the same seed, on
+the 41 problems where it gave no answer, and in 125 parts so that no job has
+more than 2 such replies.
+
 ### Run it
 
 On GitHub: Actions, Benchmark MATH, Run workflow. Each model, condition
