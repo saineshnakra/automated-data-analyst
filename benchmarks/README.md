@@ -323,10 +323,40 @@ counts as missed.
   in any sample, 14 of them level 5, and 45 have a wrong one. Some sample is
   right on 9 of them.
 
-Run [41817241401](https://github.com/saineshnakra/automated-data-analyst/actions/runs/41817241401)
-asks the first reply again with up to 30,720 tokens, with the same seed, on
-the 41 problems where it gave no answer, and in 125 parts so that no job has
-more than 2 such replies.
+### More room for the first replies with no answer
+
+Runs [41817241401](https://github.com/saineshnakra/automated-data-analyst/actions/runs/41817241401),
+[41868380238](https://github.com/saineshnakra/automated-data-analyst/actions/runs/41868380238)
+(cancelled) and [41870076390](https://github.com/saineshnakra/automated-data-analyst/actions/runs/41870076390)
+ask the first reply again with up to 30,720 tokens and the same seed, on the
+41 problems where it gave no answer. Each run starts from the ones before. In
+the first, 44 jobs hit GitHub's limit on requests and asked nothing (fixed in
+#174), and 7 replies ran past the time a reply was allowed then, 7,681
+seconds (fixed in #175, which allows 4.3 hours). The last run asks the rest.
+
+- **All 41 now answer, and 18 are right.** A reply takes 55 minutes at the
+  median and up to 3.9 hours, 51.6 runner-hours in all.
+- **On all 500 problems**, with the other samples as they were:
+
+| | Before | Now |
+|---|---|---|
+| First sample | 413 (82.6%) | 431 (86.2%) |
+| Vote of every answer | 438 (87.6%) | 443 (88.6%) |
+| Vote of the answers ADA found no wrong equation in | 438 (87.6%) | 443 (88.6%) |
+| Vote of the checked answers | 440 (88.0%) | 444 (88.8%) |
+| Some sample right | 447 (89.4%) | 454 (90.8%) |
+| No answer in any sample | 17 | 0 |
+
+- **The vote gains less than the first sample.** Against the vote before,
+  8 problems are right only now and 3 only before (exact McNemar p = 0.23).
+  On 2 of the 3, the new first answer is wrong and ties with a right one, and
+  a tie goes to the answer given first.
+- **ADA in the thinking.** Each new reply keeps its thinking.
+  `check_arithmetic` finds a wrong equation in the thinking of 6 of the 18
+  right replies and 9 of the 23 wrong ones. Most are real slips the model
+  makes on the way (`585 * 117 = 68,455`, `41 - 4 = 32`) and often puts right
+  later, so a slip in the thinking does not tell a right reply from a wrong
+  one.
 
 ### Run it
 
