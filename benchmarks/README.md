@@ -275,9 +275,18 @@ The summary compares each vote with the first sample alone, the one
 `--samples 1` gives. It also counts the problems where some sample is
 right, the most any vote can reach. On GitHub, the `samples` input sets the
 number. The `resume` input takes an earlier run's id, and each shard
-starts from that run's results for the same shard. A run with five samples
-can then build on a run with one, as long as it uses the same subjects,
-parts and conditions.
+starts from that run's results for its problems. A run with five samples
+can then build on a run with one, as long as it uses the same subjects and
+conditions. The problems can be split into a different number of parts:
+each shard takes its own problems from every shard of the earlier run.
+
+With thinking on, each sample can take minutes, and the hardest problems
+take the longest. `--resample-above 20000` (the `resample_above` input)
+asks again only when the first reply gave no answer or its thinking ran
+over 20,000 characters, and lets every other first answer stand. In the
+first 200 problems of the thinking run, those replies are 25 of 200, and
+they hold 12 of the 15 misses. The threshold was picked by looking at those
+200, so the other 300 problems tell how well it holds.
 
 When a run picks up earlier results, a `check` record whose reply ADA now
 reads differently is made again, with ADA as it checks now. This happens

@@ -32,7 +32,10 @@ on:
         description: "Ask up to this many times with different seeds and vote (above 1 needs thinking on)"
         default: "1"
       resume:
-        description: "An earlier run's id: each shard starts from that run's results for the same shard"
+        description: "An earlier run's id: each shard starts from that run's results for its problems"
+        default: ""
+      resample_above:
+        description: "With samples, ask again only after no answer or more than this many characters of thinking (empty: always)"
         default: ""
 
 permissions:
@@ -74,9 +77,14 @@ jobs:
         if: github.event.inputs.resume != ''
         uses: actions/download-artifact@v4
         with:
-          name: math-${{ steps.name.outputs.slug }}-${{ matrix.condition }}-${{ matrix.shard }}
+          pattern: math-${{ steps.name.outputs.slug }}-*
+          path: earlier
           run-id: ${{ github.event.inputs.resume }}
           github-token: ${{ github.token }}
+      - name: Gather them
+        if: github.event.inputs.resume != ''
+        # Every shard of the earlier run, so the problems can be split another way; the run keeps its own.
+        run: cat earlier/*/results.jsonl > results.jsonl
       - name: Run the benchmark
         # A step that runs out of time still leaves its results for the upload, and for a later run to resume.
         timeout-minutes: 325
@@ -86,12 +94,13 @@ jobs:
           PARTS: ${{ github.event.inputs.parts || '4' }}
           THINK: ${{ github.event.inputs.think || 'false' }}
           SAMPLES: ${{ github.event.inputs.samples || '1' }}
+          RESAMPLE: ${{ github.event.inputs.resample_above }}
         run: |
           IFS=',' read -ra subjects <<< "$SUBJECTS"
           python benchmarks/math500.py math500.jsonl --model "${{ matrix.model }}" \
             --condition "${{ matrix.condition }}" --shard "${{ matrix.shard }}/$PARTS" --subjects "${subjects[@]}" \
             ${PROBLEMS:+--problems "$PROBLEMS"} $([ "$THINK" = true ] && echo --think) --samples "$SAMPLES" \
-            --out results.jsonl
+            ${RESAMPLE:+--resample-above "$RESAMPLE"} --out results.jsonl
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -114,4 +123,6 @@ jobs:
           pattern: math-*
           path: results
       - name: Summary
-        run: python benchmarks/math500.py --summary results/*/results.jsonl
+        env:
+          RESAMPLE: ${{ github.event.inputs.resample_above }}
+        run: python benchmarks/math500.py --summary results/*/results.jsonl ${RESAMPLE:+--resample-above "$RESAMPLE"}
