@@ -149,6 +149,7 @@ flag means a slip, not a misreading:
 | `5,000 * (1 + 0.025) = 5,000 * 1.025 = 5,125` | The last step, `5,000 * 1.025 = 5,125`. A running total such as `3 * 4 = 12 + 1 = 13` is written the same way, so earlier steps are not compared |
 | `S + B + 2 + 2 = 28`, `16 friends * 3/4 = 12` | Nothing: the left side goes on to the left |
 | `15 - 5 = 2x`, `7/13 = 120/x` | Nothing: the right side goes on |
+| `4 \pi (3)^2 = 4 \pi \cdot 9`, `\log_{10}(10^4) = 4` | Nothing: a Greek letter or a function name multiplies the side or takes it |
 | `$450 + $300 + $750 = $1,500/month` | `450 + 300 + 750 = 1,500` |
 | `- 40 + 20 = 60` | `40 + 20 = 60`: a list marker is not a minus sign |
 | `**3 * 4 = 12**`, `(that is 3 * 4 = 12)` | `3 * 4 = 12` |
