@@ -302,12 +302,17 @@ python benchmarks/math500.py --summary none.jsonl check.jsonl
 asks the model once and checks that reply, rather than asking twice for the
 same reply. `--think` turns on a thinking model's thinking (Qwen3's), with
 the sampling its makers recommend (temperature 0.6, top-p 0.95, top-k 20,
-seed 0, so a run repeats) and up to 14,336 tokens a reply. A run that stops
-picks up where it left off.
+seed 0, so a run repeats) and up to 14,336 tokens a reply.
+`--think-tokens 30720` gives each reply more room. A reply in the results
+that gave no answer in fewer tokens is asked again with the larger room,
+with the same seed, and so is the check that started from it; every other
+reply stands. With thinking on, each record keeps the thinking. A run that
+stops picks up where it left off.
 
 On GitHub, the `models`, `shards`, `parts` and `think` inputs pick the
 models, which shards to run and into how many parts the problems are split,
-and whether thinking is on: all 500 problems with thinking on take
+and whether thinking is on (`think` set to a number turns it on with that
+many tokens a reply): all 500 problems with thinking on take
 `subjects` set to every subject and around 20 parts, so each job stays
 under the six-hour limit.
 

@@ -26,7 +26,7 @@ on:
         description: "How many shards the problems are split into"
         default: "4"
       think:
-        description: "Turn on a thinking model's thinking (true or false)"
+        description: "Turn on a thinking model's thinking: true, false, or the most tokens a reply may use with it on (true is 14336)"
         default: "false"
       samples:
         description: "Ask up to this many times with different seeds and vote (above 1 needs thinking on)"
@@ -97,9 +97,15 @@ jobs:
           RESAMPLE: ${{ github.event.inputs.resample_above }}
         run: |
           IFS=',' read -ra subjects <<< "$SUBJECTS"
+          # A number turns thinking on with that many tokens a reply.
+          case "$THINK" in
+            true) thinking=(--think) ;;
+            false) thinking=() ;;
+            *) thinking=(--think --think-tokens "$THINK") ;;
+          esac
           python benchmarks/math500.py math500.jsonl --model "${{ matrix.model }}" \
             --condition "${{ matrix.condition }}" --shard "${{ matrix.shard }}/$PARTS" --subjects "${subjects[@]}" \
-            ${PROBLEMS:+--problems "$PROBLEMS"} $([ "$THINK" = true ] && echo --think) --samples "$SAMPLES" \
+            ${PROBLEMS:+--problems "$PROBLEMS"} "${thinking[@]}" --samples "$SAMPLES" \
             ${RESAMPLE:+--resample-above "$RESAMPLE"} --out results.jsonl
       - uses: actions/upload-artifact@v4
         if: always()
