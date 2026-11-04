@@ -27,7 +27,9 @@ of the subjects named (by default Algebra and Intermediate Algebra, the subjects
 every reply's answer, and only the answers of replies ADA finds no wrong equation in. Asking stops as soon
 as more asks cannot change either vote, so the votes are those of all five replies. ``--resample-above
 20000`` asks again only when the first reply gave no answer or its thinking ran over 20,000 characters;
-otherwise the first answer stands.
+otherwise the first answer stands. ``--think-tokens 30720`` gives each reply more room than the 14,336 tokens
+it has by default; a reply in the results that gave no answer in fewer tokens is asked again with the larger
+room, and so is the check that started from it. With thinking on, each record keeps the thinking.
 
 The model ends with its answer in \\boxed{}, as MATH's solutions do. Math-Verify, the grader made for MATH,
 compares it with the answer in the data as mathematics, so 14/3 and \\frac{14}{3} agree. Math-Verify grades
@@ -65,9 +67,11 @@ SETTINGS = {"none": (False, PROMPT), "tool": (True, TOOL_PROMPT), "check": (Fals
 SUBJECTS = ("Algebra", "Intermediate Algebra")
 #: The longest reply, in tokens: MATH's worked solutions run longer than GSM8K's.
 MAX_TOKENS = 3072
-#: With thinking on: the longest reply, thinking included, and the settings Qwen3 recommends for it.
+#: With thinking on: the longest reply by default, thinking included, and the settings Qwen3 recommends.
 THINK_TOKENS = 14336
-THINK_OPTIONS = {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "num_ctx": 16384}
+THINK_OPTIONS = {"temperature": 0.6, "top_p": 0.95, "top_k": 20}
+#: Room in the context for the system prompt and the problem, beside the longest reply.
+PROMPT_TOKENS = 2048
 
 
 def grade(gold: str, reply: str) -> tuple[str | None, bool]:
@@ -141,11 +145,12 @@ def decided(records: list[dict], remaining: int, ada: bool = False) -> bool:
 
 
 def solved_under(condition: str, base: str, model: str, question: str, think: bool = False,
-                 alone: dict | None = None, seed: int = 0) -> dict:
-    """The reply under one condition. ``check`` starts from ``alone``, the model's reply on its own, when it
-    is given, rather than asking again for the same reply."""
+                 alone: dict | None = None, seed: int = 0, budget: int = THINK_TOKENS) -> dict:
+    """The reply under one condition, in up to ``budget`` tokens with thinking on. ``check`` starts from
+    ``alone``, the model's reply on its own, when it is given, rather than asking again for the same reply."""
     offered, system = SETTINGS[condition]
-    tokens, options = (THINK_TOKENS, {**THINK_OPTIONS, "seed": seed}) if think else (MAX_TOKENS, None)
+    tokens, options = ((budget, {**THINK_OPTIONS, "num_ctx": budget + PROMPT_TOKENS, "seed": seed}) if think
+                       else (MAX_TOKENS, None))
     if alone is None or condition != "check":
         alone = solve(base, model, question, offered, (system, system), tokens, think, options)
     if condition != "check":
@@ -174,7 +179,8 @@ def asked(args: argparse.Namespace, row: dict, condition: str, sample: int, alon
     """One reply under one condition with one seed, graded and checked, and the reply as ``solve`` gave it."""
     started = time.monotonic()
     try:
-        solved = solved_under(condition, args.base_url, args.model, row["problem"], args.think, alone, sample)
+        solved = solved_under(condition, args.base_url, args.model, row["problem"], args.think, alone, sample,
+                              args.think_tokens)
     except (OSError, http.client.HTTPException) as error:
         # A reply that never ends or a dropped connection counts as no answer.
         solved = {"reply": "", "calls": [], "error": str(error)}
@@ -182,12 +188,24 @@ def asked(args: argparse.Namespace, row: dict, condition: str, sample: int, alon
     record = {"id": row["unique_id"], "subject": row["subject"], "level": row["level"],
               "condition": condition, "model": args.model, "think": args.think, "sample": sample,
               "samples": args.samples, "gold": row["answer"], "given": given, "correct": correct,
-              "seconds": round(time.monotonic() - started, 1),
+              "seconds": round(time.monotonic() - started, 1), "max_tokens": budget_of(args),
               "thinking_chars": len(solved.get("thinking", "")), "tool_calls": len(solved["calls"]),
               "wrong_equations": len(wrong_equations(check_arithmetic(solved["reply"]))),
               "reply": solved["reply"], "calls": solved["calls"],
+              **({"thinking": solved["thinking"]} if solved.get("thinking") else {}),
               **{key: solved[key] for key in ("checks", "first_reply", "error") if key in solved}}
     return record, solved
+
+
+def budget_of(args: argparse.Namespace) -> int:
+    """The most tokens a reply may use in this run."""
+    return args.think_tokens if args.think else MAX_TOKENS
+
+
+def outgrown(record: dict, budget: int) -> bool:
+    """Whether a reply gave no answer in fewer tokens than ``budget``: then it is asked again with more."""
+    used = record.get("max_tokens", THINK_TOKENS if record.get("think") else MAX_TOKENS)
+    return record.get("agrees_with") is None and used < budget
 
 
 def uncertain(earlier: dict[str, list[dict]], limit: int | None) -> bool:
@@ -273,7 +291,7 @@ def run(args: argparse.Namespace) -> int:
                     break
                 if args.samples > 1 and settled(earlier, conditions, args.samples - sample):
                     break
-                alone = None
+                alone, renewed = None, False
                 for condition in conditions:
                     done = [record for record in earlier[condition] if record["sample"] == sample]
                     if condition == "check" and alone is None:
@@ -281,13 +299,19 @@ def run(args: argparse.Namespace) -> int:
                         source = next((record for record in earlier.get("none", [])
                                        if record["sample"] == sample and not record.get("error")), None)
                         alone = replied(row, source) if source else None
-                    if done and not (condition == "check" and stale(done[0], alone)):
+                    # A reply with no answer in fewer tokens than this run allows is asked again, and so is
+                    # the check that started from it.
+                    again = done and (outgrown(done[0], budget_of(args)) or condition == "check" and (
+                        renewed or stale(done[0], alone)))
+                    if done and not again:
                         continue
                     if done:
                         earlier[condition].remove(done[0])
                     record, solved = asked(args, row, condition, sample, alone)
-                    if condition == "none" and "error" not in solved:
-                        alone = solved
+                    if condition == "none":
+                        renewed = True
+                        if "error" not in solved:
+                            alone = solved
                     record["agrees_with"] = agreeing(record, earlier[condition], parsed)
                     earlier[condition].append(record)
                     handle.write(json.dumps(record) + "\n")
@@ -346,6 +370,10 @@ def summary(paths: list[str], resample_above: int | None = None) -> int:
                 print(f"    answers with a wrong equation: {flagged}")
         failed = sum(1 for conditions in problems for record in conditions.values() if record.get("error"))
         print(f"  replies that never ended or failed: {failed}")
+        budgets = Counter(conditions["none"].get("max_tokens") or 0 for conditions in alone)
+        if len(budgets) > 1:
+            print("  first replies alone, by the most tokens they could use: " + ", ".join(
+                f"{budget or 'not recorded'}: {count}" for budget, count in sorted(budgets.items())))
         voted([{condition: [records[sample] for sample in sorted(records)]
                 for condition, records in conditions.items()}
                for (name, _), conditions in sorted(sampled.items()) if name == model], binomtest,
@@ -417,6 +445,10 @@ def main() -> int:
     parser.add_argument("--think", action="store_true", help="turn on a thinking model's thinking")
     parser.add_argument("--samples", type=int, default=1,
                         help="ask up to this many times, with seeds 0, 1, ..., and vote (needs --think)")
+    parser.add_argument("--think-tokens", type=int, default=THINK_TOKENS, metavar="TOKENS",
+                        help=f"with --think, the most tokens a reply may use, thinking included (default "
+                             f"{THINK_TOKENS}); a reply in the results that gave no answer in fewer is asked "
+                             "again")
     parser.add_argument("--resample-above", type=int, metavar="CHARACTERS",
                         help="with --samples, ask again only when the first reply gave no answer or thought "
                              "for more than this many characters")
@@ -433,6 +465,8 @@ def main() -> int:
     unknown = [name for name in args.condition.split(",") if name not in CONDITIONS]
     if unknown:
         parser.error(f"unknown condition {unknown[0]}; the conditions are {', '.join(CONDITIONS)}")
+    if args.think_tokens < 1024:
+        parser.error("--think-tokens is at least 1024: a thinking reply needs room to think and answer")
     if args.samples < 1 or (args.samples > 1 and not args.think):
         parser.error("--samples is 1 or more, and above 1 needs --think: with thinking off, temperature is 0 "
                      "and every sample gives the same reply")
