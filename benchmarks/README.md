@@ -223,6 +223,62 @@ comparison no longer includes a second asking. The next runs turn thinking
 on, for all 500 problems, and vote over several samples, with and without
 the replies ADA finds a wrong equation in.
 
+### Thinking on, all 500 problems
+
+Run [41725437147](https://github.com/saineshnakra/automated-data-analyst/actions/runs/41725437147)
+on commit 907d9a3: qwen3:1.7b with thinking on, all 500 problems in 20
+parts, `none,check`. Thinking uses the sampling the model's makers recommend
+(temperature 0.6, top-p 0.95, top-k 20, seed 0) and up to 14,336 tokens a
+reply in 16,384 tokens of context, through Ollama's `qwen3:1.7b`, whose
+weights are 4-bit (Q4_K_M). Each job may run for 5 hours 25 minutes, and
+three stopped before their last problems, so 478 of the 500 have an answer
+from the model alone. Of the 22 left out, 9 are level 5.
+
+The model alone gets 399 of 478 right (83.5%). Of the 79 it misses, 37 have
+no answer and 42 a wrong one.
+
+| Level | Right | No answer |
+|---|---|---|
+| 1 | 40 of 42 (95.2%) | 0 |
+| 2 | 82 of 86 (95.3%) | 0 |
+| 3 | 95 of 101 (94.1%) | 4 |
+| 4 | 101 of 124 (81.5%) | 9 |
+| 5 | 81 of 125 (64.8%) | 24 |
+
+| Subject | Right | No answer |
+|---|---|---|
+| Algebra | 114 of 118 (96.6%) | 0 |
+| Counting & Probability | 25 of 37 (67.6%) | 3 |
+| Geometry | 28 of 38 (73.7%) | 4 |
+| Intermediate Algebra | 70 of 94 (74.5%) | 17 |
+| Number Theory | 55 of 61 (90.2%) | 2 |
+| Prealgebra | 70 of 80 (87.5%) | 3 |
+| Precalculus | 37 of 50 (74.0%) | 8 |
+
+- **Thinking helps.** On the 212 Algebra and Intermediate Algebra
+  problems in both runs, the model alone gets 155 right with thinking off
+  (run 1) and 184 with it on: right only with thinking 32, only without 3,
+  exact McNemar p = 4e-7.
+- **It is below the 93.4% the model's makers report**, with replies of up
+  to 32,768 tokens and the full weights. Here 34 replies stopped while still
+  thinking, with no reply, and 3 did not end within the hour a reply may
+  take. Even if those 37 were right, the run would get 436 of 478 (91.2%).
+- **The first 200 problems to finish overstated it**: 185 of 200 (92.5%),
+  against 214 of the other 278 (77.0%). A shard finishes early when its
+  problems are quick, and quick problems are easier: a mean level of 3.3
+  against 3.5.
+- **ADA finds almost nothing to check.** With thinking on, the reply is a
+  summary written after the working, and ADA reads the reply, not the
+  thinking. It flags a step in 5 of 477 replies: 2 right steps it misread
+  (`4 \pi (3)^2` and `\log_{10}(10^4)`, fixed in #169), a division written
+  backwards (`160 \div 570 = 3` for 570 ÷ 160 rounded down), and 2 slips. One
+  slip is in a value tried and dropped, in a right answer. In the other, told
+  the right value, the model gives the same wrong answer. `check` gets 401
+  right, 2 more than alone, but both are replies that did not end alone and
+  were asked again, not ADA's doing.
+- **A reply takes 584 seconds on average**, 77.5 runner-hours for the 478,
+  and one runner takes twice as long as another per character of thinking.
+
 ### Run it
 
 On GitHub: Actions, Benchmark MATH, Run workflow. Each model, condition
@@ -283,10 +339,11 @@ each shard takes its own problems from every shard of the earlier run.
 With thinking on, each sample can take minutes, and the hardest problems
 take the longest. `--resample-above 20000` (the `resample_above` input)
 asks again only when the first reply gave no answer or its thinking ran
-over 20,000 characters, and lets every other first answer stand. In the
-first 200 problems of the thinking run, those replies are 25 of 200, and
-they hold 12 of the 15 misses. The threshold was picked by looking at those
-200, so the other 300 problems tell how well it holds.
+over 20,000 characters, and lets every other first answer stand. The
+threshold was picked on the first 200 problems of run 41725437147 to
+finish, where those replies are 25 of 200 and hold 12 of the 15 misses. On
+the other 278, which are harder, they are 74 of 278 and hold 54 of the 64
+misses, and the 204 first answers left to stand are 95.1% right.
 
 When a run picks up earlier results, a `check` record whose reply ADA now
 reads differently is made again, with ADA as it checks now. This happens
