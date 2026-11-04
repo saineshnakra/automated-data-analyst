@@ -73,8 +73,9 @@ def chat(base: str, model: str, messages: list[dict], offered: list[dict], max_t
     request = urllib.request.Request(f"{base}/api/chat", data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"})
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    # A thinking reply may take an hour, or a quarter of a second a token when it may run longer.
-    with opener.open(request, timeout=max(3600, max_tokens // 4) if think else 900) as response:
+    # A thinking reply may take an hour, or half a second a token when it may run longer: on a slow runner, a
+    # reply of 30,720 tokens takes over two hours.
+    with opener.open(request, timeout=max(3600, max_tokens // 2) if think else 900) as response:
         return json.loads(response.read())["message"]
 
 

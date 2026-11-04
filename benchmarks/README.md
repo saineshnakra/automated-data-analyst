@@ -354,8 +354,10 @@ the sampling its makers recommend (temperature 0.6, top-p 0.95, top-k 20,
 seed 0, so a run repeats) and up to 14,336 tokens a reply.
 `--think-tokens 30720` gives each reply more room. A reply in the results
 that gave no answer in fewer tokens is asked again with the larger room,
-with the same seed, and so is the check that started from it; every other
-reply stands. With thinking on, each record keeps the thinking. A run that
+with the same seed, and so is the check that started from it. So is a
+reply that did not end in time: a thinking reply may take an hour, or half
+a second a token when it may run longer. Every other reply stands. With
+thinking on, each record keeps the thinking. A run that
 stops picks up where it left off.
 
 On GitHub, the `models`, `shards`, `parts` and `think` inputs pick the

@@ -29,7 +29,8 @@ as more asks cannot change either vote, so the votes are those of all five repli
 20000`` asks again only when the first reply gave no answer or its thinking ran over 20,000 characters;
 otherwise the first answer stands. ``--think-tokens 30720`` gives each reply more room than the 14,336 tokens
 it has by default; a reply in the results that gave no answer in fewer tokens is asked again with the larger
-room, and so is the check that started from it. With thinking on, each record keeps the thinking.
+room, and so is the check that started from it. A reply that did not end in time, which takes over two hours
+on a slow runner, is asked again too. With thinking on, each record keeps the thinking.
 
 The model ends with its answer in \\boxed{}, as MATH's solutions do. Math-Verify, the grader made for MATH,
 compares it with the answer in the data as mathematics, so 14/3 and \\frac{14}{3} agree. Math-Verify grades
@@ -182,7 +183,8 @@ def asked(args: argparse.Namespace, row: dict, condition: str, sample: int, alon
         solved = solved_under(condition, args.base_url, args.model, row["problem"], args.think, alone, sample,
                               args.think_tokens)
     except (OSError, http.client.HTTPException) as error:
-        # A reply that never ends or a dropped connection counts as no answer.
+        # A reply that never ends or a dropped connection counts as no answer, and is asked again when a run
+        # picks up the results.
         solved = {"reply": "", "calls": [], "error": str(error)}
     given, correct = grade(row["answer"], solved["reply"])
     record = {"id": row["unique_id"], "subject": row["subject"], "level": row["level"],
@@ -300,9 +302,9 @@ def run(args: argparse.Namespace) -> int:
                                        if record["sample"] == sample and not record.get("error")), None)
                         alone = replied(row, source) if source else None
                     # A reply with no answer in fewer tokens than this run allows is asked again, and so is
-                    # the check that started from it.
-                    again = done and (outgrown(done[0], budget_of(args)) or condition == "check" and (
-                        renewed or stale(done[0], alone)))
+                    # the check that started from it; so is a reply that did not end in time.
+                    again = done and (outgrown(done[0], budget_of(args)) or bool(done[0].get("error")) or
+                                      condition == "check" and (renewed or stale(done[0], alone)))
                     if done and not again:
                         continue
                     if done:
