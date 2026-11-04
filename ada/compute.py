@@ -1100,6 +1100,10 @@ _ARITHMETIC = {"number", "space", "op", "open", "close", "percent", "equals"}
 _WRITTEN_OPERATORS = (("\\times", "*"), ("\\cdot", "*"), ("\\div", "/"), ("\\%", "%"), ("\\left(", "("),
                       ("\\right)", ")"), ("\\(", ""), ("\\)", ""), ("$", ""), ("€", ""), ("£", ""),
                       ("·", "*"), ("²", "^2"), ("³", "^3"))
+#: LaTeX names that multiply or take the number beside them: "4 \pi (3)^2", "\log (10^4)".
+_LATEX_FACTORS = set("""pi alpha beta gamma delta epsilon varepsilon zeta eta theta vartheta iota kappa lambda
+    mu nu xi rho sigma tau phi varphi chi psi omega Gamma Delta Theta Lambda Xi Pi Sigma Phi Psi Omega
+    log ln lg exp sin cos tan cot sec csc arcsin arccos arctan sinh cosh tanh det gcd max min""".split())
 #: Markdown bold (**15**), kept as a power only between numbers (2**3).
 _BOLD = re.compile(r"(?<![\d)])\*\*|\*\*(?![\d(])")
 #: A list marker at the start of a line: "- ", "* ", "1. ", "2) ".
@@ -1220,6 +1224,9 @@ def _checked_run(tokens: list[list[str]], start: int, end: int) -> Checked | Non
     # "= 10 million": the value is scaled by a word.
     if rest and rest[0][1].lower() in _SCALE_WORDS:
         return None
+    # "= 4 \pi": the value is multiplied by a Greek letter or taken by a function.
+    if len(following) > 1 and following[0][1] == "\\" and following[1][1] in _LATEX_FACTORS:
+        return None
     # "only possible if 240 + 3,516,571 = 0": a condition, not a claim.
     if start > 0 and tokens[start - 1][0] == "word" and tokens[start - 1][1].lower() in _CONDITION_WORDS:
         return None
@@ -1247,7 +1254,11 @@ def _checked_run(tokens: list[list[str]], start: int, end: int) -> Checked | Non
         before = tokens[start - 1] if start > 0 else None
         if before is not None and before[0] == "word" and run[0][0] != "space":
             return None
-        if before is not None and before[1] in ".,_\\" and run[0][0] != "space":
+        if before is not None and before[1] in ".,_\\}" and run[0][0] != "space":
+            return None
+        # "4 \pi (3)^2 = 36 \pi" and "\log (10^4) = 4": the left side is multiplied by a Greek letter or
+        # taken by a function.
+        if start > 1 and before[1] in _LATEX_FACTORS and tokens[start - 2][1] == "\\":
             return None
         if left and left[0][0] == "op":
             unary = (left[0][1] in "-−" and len(left) > 1 and left[1][0] in ("number", "open")

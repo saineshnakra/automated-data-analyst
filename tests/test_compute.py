@@ -326,6 +326,18 @@ class CheckArithmeticTests(unittest.TestCase):
         self.assertEqual(check_arithmetic("$50,000/year * 20 years = $1,000,000"), [])
         self.assertEqual(check_arithmetic("7/13 = 120/x"), [])
 
+    def test_latex_names_beside_a_step_are_skipped(self):
+        # A Greek letter or a function name next to a step multiplies it or takes it.
+        self.assertEqual(check_arithmetic("S = 4 \\pi (3)^2 = 4 \\pi \\cdot 9 = 36 \\pi"), [])
+        self.assertEqual(check_arithmetic("Since $\\log_{10}(10000) = \\log_{10}(10^4) = 4$, x = 4."), [])
+        self.assertEqual(check_arithmetic("(3)^2 = 4 \\pi"), [])
+        # Other LaTeX commands do not hide a slip.
+        found = check_arithmetic("- $ x = -3 $: $ 81 - 135 + 81 + 3 - 14 = 28 \\ne 0 $")
+        self.assertEqual([(item.computed, item.correct) for item in found], [("16", False)])
+        self.assertFalse(check_arithmetic("\\quad 3 + 4 = 8")[0].correct)
+        for text in ("\\pi", "= \\pi", "\\", "$\\log$", "\\pi ="):
+            self.assertEqual(check_arithmetic(text), [])
+
     def test_lists_and_lines(self):
         # A list marker is not a minus sign, and an equation does not run across lines.
         found = check_arithmetic("Half of 80 is 40\n   - 40 + 20 = 60\n"

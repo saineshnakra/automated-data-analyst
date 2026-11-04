@@ -91,6 +91,10 @@ ada compute "3(x + 2) - x"                 # 2x + 6
   power, a function at a value, a derivative and a word are not checked this
   way. With it, the replies with a slip found in run 1 are 18 of 221 for
   qwen3:1.7b and 29 for qwen2.5:1.5b; 15 and 24 have a wrong final answer.
+- `ada.check_arithmetic` skips a step beside a Greek letter or a function
+  name written in LaTeX, which multiplies the side or takes it: `4 \pi (3)^2
+  = 4 \pi \cdot 9` and `\log_{10}(10^4) = 4` are no longer read as `(3)^2 =
+  4` and `(10^4) = 4`. Found in MATH-500 replies with thinking on.
 
 ### LangChain and LangGraph
 
