@@ -25,7 +25,9 @@ of the subjects named (by default Algebra and Intermediate Algebra, the subjects
 
 ``--samples 5`` asks up to five times, with seeds 0 to 4, and takes the answer most replies give, two ways:
 every reply's answer, and only the answers of replies ADA finds no wrong equation in. Asking stops as soon
-as more asks cannot change either vote, so the votes are those of all five replies.
+as more asks cannot change either vote, so the votes are those of all five replies. ``--resample-above
+20000`` asks again only when the first reply gave no answer or its thinking ran over 20,000 characters;
+otherwise the first answer stands.
 
 The model ends with its answer in \\boxed{}, as MATH's solutions do. Math-Verify, the grader made for MATH,
 compares it with the answer in the data as mathematics, so 14/3 and \\frac{14}{3} agree. Math-Verify grades
@@ -188,6 +190,17 @@ def asked(args: argparse.Namespace, row: dict, condition: str, sample: int, alon
     return record, solved
 
 
+def uncertain(earlier: dict[str, list[dict]], limit: int | None) -> bool:
+    """Whether the first reply leaves the problem open: it gave no answer, or its thinking ran over ``limit``
+    characters. With no limit, every problem is open."""
+    if limit is None:
+        return True
+    records = earlier.get("none") or next(iter(earlier.values()), [])
+    first = next((record for record in records if record.get("sample", 0) == 0), None)
+    return first is None or first.get("agrees_with", first.get("given")) is None or \
+        first.get("thinking_chars", 0) > limit
+
+
 def settled(earlier: dict[str, list[dict]], conditions: list[str], remaining: int) -> bool:
     """Whether ``remaining`` more samples cannot change any vote: each condition's, and for the model alone
     also the vote of the replies ADA found no wrong equation in."""
@@ -238,10 +251,13 @@ def run(args: argparse.Namespace) -> int:
     conditions = args.condition.split(",")
     out = Path(args.out)
     parsed = {}
-    # A run that stopped, or an earlier run's results, picks up where it left off.
-    records = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()
-               if line.strip()] if out.exists() else []
-    if completed(records, parsed):
+    # A run that stopped, or an earlier run's results, picks up where it left off. Results for other problems,
+    # from an earlier run split another way, are left out.
+    ids = {row["unique_id"] for row in rows}
+    found = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()
+             if line.strip()] if out.exists() else []
+    records = [record for record in found if record["id"] in ids]
+    if completed(records, parsed) or len(records) < len(found):
         out.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
     # A record made again comes later in the file and takes the place of the one before.
     latest = {(record["id"], record["condition"], record["sample"]): record for record in records}
@@ -253,6 +269,8 @@ def run(args: argparse.Namespace) -> int:
             earlier = {condition: sorted(previous[row["unique_id"], condition],
                                          key=lambda item: item["sample"]) for condition in conditions}
             for sample in range(args.samples):
+                if sample == 1 and not uncertain(earlier, args.resample_above):
+                    break
                 if args.samples > 1 and settled(earlier, conditions, args.samples - sample):
                     break
                 alone = None
@@ -280,7 +298,7 @@ def run(args: argparse.Namespace) -> int:
     return 0
 
 
-def summary(paths: list[str]) -> int:
+def summary(paths: list[str], resample_above: int | None = None) -> int:
     """Accuracy per model and condition, each condition against the model alone on the problems both finished,
     by subject and level, with an exact McNemar test on the problems where the two disagree."""
     from scipy.stats import binomtest  # noqa: PLC0415
@@ -330,22 +348,26 @@ def summary(paths: list[str]) -> int:
         print(f"  replies that never ended or failed: {failed}")
         voted([{condition: [records[sample] for sample in sorted(records)]
                 for condition, records in conditions.items()}
-               for (name, _), conditions in sorted(sampled.items()) if name == model], binomtest)
+               for (name, _), conditions in sorted(sampled.items()) if name == model], binomtest,
+              resample_above)
     return 0
 
 
-def voted(problems: list[dict], binomtest) -> None:
+def voted(problems: list[dict], binomtest, resample_above: int | None = None) -> None:
     """For runs with several samples, on the problems whose votes are settled: the vote of every answer and
-    the vote of the answers ADA found no wrong equation in, against the first sample alone."""
+    the vote of the answers ADA found no wrong equation in, against the first sample alone. With
+    ``resample_above``, a problem whose first reply gave an answer after a short thought is settled by it."""
+    size = max([record.get("samples", 1) for conditions in problems for records in conditions.values()
+                for record in records] or [1])
+    if size < 2:
+        return
     finished = []
     for conditions in problems:
-        for records in conditions.values():
-            records.sort(key=lambda record: record.get("sample", 0))
-        size = max(record.get("samples", 1) for records in conditions.values() for record in records)
-        if size < 2 or "none" not in conditions:
+        if "none" not in conditions:
             continue
         asked = len(conditions["none"])
-        if asked >= size or settled(conditions, list(conditions), size - asked):
+        if asked >= size or settled(conditions, list(conditions), size - asked) or \
+                asked == 1 and not uncertain(conditions, resample_above):
             finished.append(conditions)
     if not finished:
         return
@@ -362,9 +384,12 @@ def voted(problems: list[dict], binomtest) -> None:
         print(f"    {label}: {sum(values)}/{len(values)} = {share:.1f}%; right only with it {gained}, "
               f"only with {against_label} {lost}; exact McNemar p = {p:.3g}")
 
-    size = max(record.get("samples", 1) for conditions in finished for record in conditions["none"])
     asked = sum(len(conditions["none"]) for conditions in finished) / len(finished)
     print(f"  votes of up to {size} samples, on {len(finished)} problems ({asked:.2f} samples each):")
+    if resample_above is not None:
+        opened = sum(1 for conditions in finished if uncertain(conditions, resample_above))
+        print(f"    asked again on the {opened} whose first reply gave no answer or thought for more than "
+              f"{resample_above:,} characters")
     print(f"    first sample: {sum(first)}/{len(first)} = {100 * sum(first) / len(first):.1f}%")
     every = [right(vote(conditions["none"])) for conditions in finished]
     line("vote of every answer", every, first, "the first sample")
@@ -392,6 +417,9 @@ def main() -> int:
     parser.add_argument("--think", action="store_true", help="turn on a thinking model's thinking")
     parser.add_argument("--samples", type=int, default=1,
                         help="ask up to this many times, with seeds 0, 1, ..., and vote (needs --think)")
+    parser.add_argument("--resample-above", type=int, metavar="CHARACTERS",
+                        help="with --samples, ask again only when the first reply gave no answer or thought "
+                             "for more than this many characters")
     parser.add_argument("--subjects", nargs="+", default=list(SUBJECTS))
     parser.add_argument("--problems", type=int, help="the first N problems of those subjects (default: all)")
     parser.add_argument("--shard", default="0/1", help="part/parts: every parts-th problem from part")
@@ -399,7 +427,7 @@ def main() -> int:
     parser.add_argument("--summary", nargs="+", metavar="RESULTS", help="summarise these results files")
     args = parser.parse_args()
     if args.summary:
-        return summary(args.summary)
+        return summary(args.summary, args.resample_above)
     if not (args.data and args.out):
         parser.error("give the data file and --out, or --summary with results files")
     unknown = [name for name in args.condition.split(",") if name not in CONDITIONS]
