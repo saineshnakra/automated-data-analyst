@@ -32,7 +32,7 @@ on:
         description: "Ask up to this many times with different seeds and vote (above 1 needs thinking on)"
         default: "1"
       resume:
-        description: "An earlier run's id: each shard starts from that run's results for its problems"
+        description: "Earlier runs' ids, oldest first, separated by commas: each shard starts from their results for its problems"
         default: ""
       resample_above:
         description: "With samples, ask again only after no answer or more than this many characters of thinking (empty: always)"
@@ -43,7 +43,28 @@ permissions:
   actions: read
 
 jobs:
+  earlier:
+    # One job gathers the earlier runs' results, so the shards don't each ask GitHub for every artifact.
+    if: github.event.inputs.resume != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download every shard of each earlier run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESUME: ${{ github.event.inputs.resume }}
+        run: |
+          IFS=',' read -ra runs <<< "${RESUME// /}"
+          for run in "${runs[@]}"; do
+            gh run download "$run" --repo "$GITHUB_REPOSITORY" --pattern 'math-*' --dir "earlier/$run"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: earlier-results
+          path: earlier
+
   run:
+    needs: earlier
+    if: ${{ !cancelled() && needs.earlier.result != 'failure' }}
     runs-on: ubuntu-latest
     timeout-minutes: 340
     strategy:
@@ -73,18 +94,24 @@ jobs:
       - name: Name the results
         id: name
         run: echo "slug=$(echo '${{ matrix.model }}' | tr ':.' '--')" >> "$GITHUB_OUTPUT"
-      - name: Start from an earlier run's results
+      - name: Start from earlier runs' results
         if: github.event.inputs.resume != ''
         uses: actions/download-artifact@v4
         with:
-          pattern: math-${{ steps.name.outputs.slug }}-*
+          name: earlier-results
           path: earlier
-          run-id: ${{ github.event.inputs.resume }}
-          github-token: ${{ github.token }}
       - name: Gather them
         if: github.event.inputs.resume != ''
-        # Every shard of the earlier run, so the problems can be split another way; the run keeps its own.
-        run: cat earlier/*/results.jsonl > results.jsonl
+        # Every shard of each earlier run, oldest first, so the problems can be split another way and a later
+        # run's record takes the place of an earlier one's; the run keeps its own problems.
+        env:
+          RESUME: ${{ github.event.inputs.resume }}
+        run: |
+          shopt -s nullglob
+          IFS=',' read -ra runs <<< "${RESUME// /}"
+          for run in "${runs[@]}"; do
+            for file in earlier/"$run"/math-${{ steps.name.outputs.slug }}-*/results.jsonl; do cat "$file"; done
+          done > results.jsonl
       - name: Run the benchmark
         # A step that runs out of time still leaves its results for the upload, and for a later run to resume.
         timeout-minutes: 325

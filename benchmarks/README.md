@@ -384,8 +384,11 @@ five replies, at less cost. With `none,check`, the checked answers vote too.
 The summary compares each vote with the first sample alone, the one
 `--samples 1` gives. It also counts the problems where some sample is
 right, the most any vote can reach. On GitHub, the `samples` input sets the
-number. The `resume` input takes an earlier run's id, and each shard
-starts from that run's results for its problems. A run with five samples
+number. The `resume` input takes an earlier run's id, or several separated
+by commas, oldest first, and each shard starts from those runs' results for
+its problems; a record from a later run takes the place of one from an
+earlier run. One job downloads the earlier results and passes them to the
+shards, so a run with many shards stays under GitHub's limit on requests. A run with five samples
 can then build on a run with one, as long as it uses the same subjects and
 conditions. The problems can be split into a different number of parts:
 each shard takes its own problems from every shard of the earlier run.
