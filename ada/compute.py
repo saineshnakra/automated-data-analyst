@@ -1104,6 +1104,11 @@ _WRITTEN_OPERATORS = (("\\times", "*"), ("\\cdot", "*"), ("\\div", "/"), ("\\%",
 _LATEX_FACTORS = set("""pi alpha beta gamma delta epsilon varepsilon zeta eta theta vartheta iota kappa lambda
     mu nu xi rho sigma tau phi varphi chi psi omega Gamma Delta Theta Lambda Xi Pi Sigma Phi Psi Omega
     log ln lg exp sin cos tan cot sec csc arcsin arccos arctan sinh cosh tanh det gcd max min""".split())
+#: A congruence: "3^3 = 6 \mod 7", "x \equiv 4 \pmod{7}", "17 mod 5 = 2".
+_MODULAR = re.compile(r"\\[pb]?mod(?![A-Za-z])|\\equiv(?![A-Za-z])|≡|(?<![A-Za-z])mod(?:ulo)?(?![A-Za-z])",
+                      re.IGNORECASE)
+#: The modulus of a congruence: "\pmod{7}", "\mod 7", "(mod 7)", "modulo 7".
+_MODULUS = re.compile(r"(?:\\[pb]?mod|(?<![A-Za-z])mod(?:ulo)?)(?![A-Za-z])\s*\{?\s*(\d+)", re.IGNORECASE)
 #: Markdown bold (**15**), kept as a power only between numbers (2**3).
 _BOLD = re.compile(r"(?<![\d)])\*\*|\*\*(?![\d(])")
 #: A list marker at the start of a line: "- ", "* ", "1. ", "2) ".
@@ -1146,8 +1151,10 @@ def check_arithmetic(text: str) -> list[Checked]:
       skipped, as is one whose stated value goes on into a longer expression (``15 - 5 = 2x``).
     - In a chain (``5,000 * (1 + 0.025) = 5,000 * 1.025 = 5,125``) the last step is checked, since a running
       total (``3 * 4 = 12 + 1 = 13``) is written the same way.
-    - A number with a misplaced comma (``373, 846.92``) and an expression ADA refuses or cannot read are
-      skipped.
+    - A number with a misplaced comma (``373, 846.92``), a value in another base (``204_5``) and an expression
+      ADA refuses or cannot read are skipped.
+    - On a line about congruences (``3^3 = 6 \\mod 7``), = can mean "leaves the same remainder", so a step is
+      a slip only when its sides are whole numbers that leave different remainders for the line's modulus.
     - A line with a fraction, a root, a power in braces, a binomial coefficient or a boxed answer written in
       LaTeX (``\\frac{14}{3}``, ``\\sqrt{27} = 3\\sqrt{3}``) is read by :mod:`ada.latex`: every step of a
       chain is checked, and the stated side can be an expression, compared exactly when both sides are
@@ -1156,35 +1163,73 @@ def check_arithmetic(text: str) -> list[Checked]:
     Use it to check a worked answer a language model wrote: an equation that comes back with ``correct``
     false is an arithmetic slip, with the right value beside it.
     """
-    from .latex import LATEX, check_line  # noqa: PLC0415 - ada.latex builds on this module
-
     checked = []
     for line in text.splitlines():
-        if LATEX.search(line):
-            # Fractions, roots, braced powers, binomials and boxed answers: read as LaTeX, every step.
-            checked += check_line(line)
-            continue
-        if line.count("=") > 1 and re.search(r"[A-Za-z]", line):
-            # Steps with letters in a chain, "(x + 1)^2 = x^2 + 2x + 1 = ...", checked as identities.
-            checked += check_line(line, numbers=False)
-        for written, operator in _WRITTEN_OPERATORS:
-            line = line.replace(written, operator)
-        line = _BOLD.sub("", line)
-        tokens = [[match.lastgroup, match.group()] for match in _TOKEN.finditer(_BULLET.sub("", line))]
-        _read_times_signs(tokens)
-        start = 0
-        while start < len(tokens):
-            if tokens[start][0] not in _ARITHMETIC:
-                start += 1
-                continue
-            end = start
-            while end < len(tokens) and tokens[end][0] in _ARITHMETIC:
-                end += 1
-            item = _checked_run(tokens, start, end)
-            if item is not None:
-                checked.append(item)
-            start = end
+        found = _checked_line(line)
+        if _MODULAR.search(line):
+            found = _congruent(line, found)
+        checked += found
     return checked
+
+
+def _checked_line(line: str) -> list[Checked]:
+    """The equations checked on one line of a worked answer."""
+    from .latex import LATEX, check_line  # noqa: PLC0415 - ada.latex builds on this module
+
+    if LATEX.search(line):
+        # Fractions, roots, braced powers, binomials and boxed answers: read as LaTeX, every step.
+        return check_line(line)
+    checked = []
+    if line.count("=") > 1 and re.search(r"[A-Za-z]", line):
+        # Steps with letters in a chain, "(x + 1)^2 = x^2 + 2x + 1 = ...", checked as identities.
+        checked += check_line(line, numbers=False)
+    for written, operator in _WRITTEN_OPERATORS:
+        line = line.replace(written, operator)
+    line = _BOLD.sub("", line)
+    tokens = [[match.lastgroup, match.group()] for match in _TOKEN.finditer(_BULLET.sub("", line))]
+    _read_times_signs(tokens)
+    start = 0
+    while start < len(tokens):
+        if tokens[start][0] not in _ARITHMETIC:
+            start += 1
+            continue
+        end = start
+        while end < len(tokens) and tokens[end][0] in _ARITHMETIC:
+            end += 1
+        item = _checked_run(tokens, start, end)
+        if item is not None:
+            checked.append(item)
+        start = end
+    return checked
+
+
+def _congruent(line: str, checked: list[Checked]) -> list[Checked]:
+    """The checks on a line about congruences, where = can mean "leaves the same remainder", as in
+    "3^4 = 18 \\equiv 4 \\pmod{7}". A step that is false as an equation stays a slip only when its two sides
+    are whole numbers that leave different remainders for the line's one modulus; otherwise it is dropped."""
+    moduli = {int(found) for found in _MODULUS.findall(line)}
+    modulus = moduli.pop() if len(moduli) == 1 else 0
+    kept = []
+    for item in checked:
+        if item.correct:
+            kept.append(item)
+            continue
+        sides = [_whole_number(item.expression), _whole_number(item.stated)]
+        if modulus > 1 and None not in sides and (sides[0] - sides[1]) % modulus:
+            kept.append(item)
+    return kept
+
+
+def _whole_number(written: str) -> int | None:
+    """The exact value of one side of a step, plain or in LaTeX, when it is a whole number."""
+    from .latex import to_plain  # noqa: PLC0415 - ada.latex builds on this module
+
+    plain = to_plain(written) if "\\" in written or "{" in written else written
+    result = compute(plain.replace(",", "")) if plain else None
+    if result is None or isinstance(result, Refusal) or not result.exact:
+        return None
+    value = _exact_value(result)
+    return value.numerator if value.denominator == 1 else None
 
 
 def _read_times_signs(tokens: list[list[str]]) -> None:
@@ -1223,6 +1268,9 @@ def _checked_run(tokens: list[list[str]], start: int, end: int) -> Checked | Non
         return None
     # "= 10 million": the value is scaled by a word.
     if rest and rest[0][1].lower() in _SCALE_WORDS:
+        return None
+    # "= 204_5": a value in another base, or with an index.
+    if following and following[0][1] == "_":
         return None
     # "= 4 \pi": the value is multiplied by a Greek letter or taken by a function.
     if len(following) > 1 and following[0][1] == "\\" and following[1][1] in _LATEX_FACTORS:

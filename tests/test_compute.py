@@ -338,6 +338,29 @@ class CheckArithmeticTests(unittest.TestCase):
         for text in ("\\pi", "= \\pi", "\\", "$\\log$", "\\pi ="):
             self.assertEqual(check_arithmetic(text), [])
 
+    def test_congruences_and_other_bases(self):
+        # On a line about congruences, = can mean "leaves the same remainder": a step is a slip only when its
+        # sides leave different remainders for the line's modulus.
+        self.assertEqual(check_arithmetic("3^3 = 6 \\mod 7 \\\\\n3^4 = 18 \\equiv 4 \\mod 7"), [])
+        self.assertEqual(check_arithmetic("17 mod 5 = 2, and modulo 7, 3 + 4 = 0"), [])
+        found = check_arithmetic("\\[ 2 + 2 \\cdot 21 = 42 \\equiv 2 \\pmod{5} \\]")
+        self.assertEqual([(item.expression, item.computed, item.correct) for item in found],
+                         [("2 + 2 * 21", "44", False)])
+        found = check_arithmetic("17^{82} = 17^{64} \\cdot 17^{16} \\equiv 68 \\cdot 48 \\pmod{83}")
+        self.assertEqual([item.correct for item in found], [False])
+        self.assertTrue(check_arithmetic("2 + 2 \\cdot 16 = 34 \\equiv 4 \\pmod{5}")[0].correct)
+        # With no modulus, or two, the remainder cannot be worked out, and the step is dropped.
+        self.assertEqual(check_arithmetic("2 + 2 = 5 \\equiv 1"), [])
+        self.assertEqual(check_arithmetic("2 + 2 = 9 (mod 5) and (mod 7)"), [])
+        # A value with a base or an index is not the number written.
+        self.assertEqual(check_arithmetic("2 \\cdot 5^2 + 0 \\cdot 5^1 + 4 \\cdot 5^0 = 204_5"), [])
+        found = check_arithmetic("204_5 = 2*25 + 4 = 55")
+        self.assertEqual([(item.expression, item.correct) for item in found], [("2*25 + 4", False)])
+        # Words that start with mod do not change anything.
+        self.assertFalse(check_arithmetic("The model gives 2 + 2 = 5")[0].correct)
+        for text in ("mod", "\\equiv", "= 204_", "_5 = 5", "\\pmod{0} 3 + 4 = 8"):
+            self.assertEqual(check_arithmetic(text), [])
+
     def test_lists_and_lines(self):
         # A list marker is not a minus sign, and an equation does not run across lines.
         found = check_arithmetic("Half of 80 is 40\n   - 40 + 20 = 60\n"
