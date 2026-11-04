@@ -95,6 +95,12 @@ ada compute "3(x + 2) - x"                 # 2x + 6
   name written in LaTeX, which multiplies the side or takes it: `4 \pi (3)^2
   = 4 \pi \cdot 9` and `\log_{10}(10^4) = 4` are no longer read as `(3)^2 =
   4` and `(10^4) = 4`. Found in MATH-500 replies with thinking on.
+- `ada.check_arithmetic` reads a line about congruences (`\mod`, `\pmod`,
+  `\equiv`, `mod`) as one where = can mean "leaves the same remainder": a
+  step on it is a slip only when its sides are whole numbers that leave
+  different remainders for the line's modulus. `3^3 = 6 \mod 7` passes and
+  `2 + 2 \cdot 21 = 42 \equiv 2 \pmod{5}` does not. A stated value in another
+  base (`= 204_5`) is skipped. Found in MATH-500 replies with thinking on.
 
 ### LangChain and LangGraph
 
