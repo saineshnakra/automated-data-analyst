@@ -9,8 +9,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "paper"))
 
-from analysis import grouped, mcnemar, paired, report  # noqa: E402
+from analysis import grouped, mcnemar, paired, report, retried  # noqa: E402
 from collect import collect, named  # noqa: E402
+from combine_rules import replaced  # noqa: E402
 
 
 def record(dataset, model, index, condition, correct, **extra):
@@ -84,6 +85,29 @@ class AnalysisTests(unittest.TestCase):
         lines = paired(grouped(self.records))
         # Problem 0 is right alone in GSM8K; problem 3 has no GSM-Hard version.
         self.assertIn("| m | 1 | 0 | 1 |", lines)
+
+    def test_a_run_without_the_model_alone(self):
+        records = [record("gsm8k", "m", 0, "solve", False, formal="a = 1"),
+                   record("gsm8k", "m", 0, "retry", True, formal="a = 2", first_formal="a = 1",
+                          first_ada={"status": "no value"}),
+                   record("gsm8k", "m", 1, "solve", True, formal="b = 1"),
+                   record("gsm8k", "m", 1, "retry", False, formal="b = 2"),
+                   record("gsmhard", "m", 0, "solve", True), record("gsmhard", "m", 0, "retry", True)]
+        text = report(records)
+        # Compared with the run's first condition, and no table of the same problems with larger numbers.
+        self.assertIn("Against solve: right only with the condition / right only under solve", text)
+        self.assertIn("| m | 1 / 1, p = 1 |", text)
+        self.assertNotIn("larger numbers", text)
+        # Problem 0 was asked again after the reply solve gave; problem 1's first reply differs from solve's.
+        self.assertEqual(retried(grouped(records)[("gsm8k", "m")], [0, 1]), (1, 1, 1, 1, 0, 1))
+        self.assertIn("| m | 1 | 1 | 1 | 1 | 0 / 1 |", text)
+
+    def test_adas_answers_from_another_run(self):
+        records = [record("gsm8k", "m", 0, "none", True), record("gsm8k", "m", 0, "solve", False)]
+        others = [record("gsm8k", "m", 0, "retry", True), record("gsm8k", "m", 0, "plan", False)]
+        self.assertEqual([(r["condition"], r["correct"]) for r in replaced(records, others, "retry")],
+                         [("none", True), ("solve", True)])
+        self.assertEqual([r["condition"] for r in replaced(records, [], "retry")], ["none"])
 
     def test_thin_input(self):
         self.assertEqual(report([]), "")

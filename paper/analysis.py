@@ -4,10 +4,12 @@
 
 For each data set and model: problems right under each condition, on the problems every condition of the run
 finished; each condition against the model alone (right only with it / right only alone, and the exact
-McNemar test, SciPy's binomtest on the problems where the two differ); and for ``solve``, ADA's statuses and
-"ADA's answer, else the model's": ADA's value when it solved the equations to an answer, the model's own
-answer when it did not. Only each problem's first sample counts, so a run that voted over several samples
-is read by its first reply. The output is Markdown and the same each time.
+McNemar test, SciPy's binomtest on the problems where the two differ), or against the run's first condition
+when the run did not ask the model alone; ADA's statuses under ``solve``, ``plan`` and ``retry``; ``retry``
+against ``solve``, split by whether retry's first reply is solve's reply; and "ADA's answer, else the
+model's": ADA's value when it solved the equations to an answer, the model's own answer when it did not.
+Only each problem's first sample counts, so a run that voted over several samples is read by its first
+reply. The output is Markdown and the same each time.
 """
 
 from __future__ import annotations
@@ -85,9 +87,13 @@ def report(records: list[dict]) -> str:
             if {"none", "solve"} <= set(conditions):
                 cells.append(str(either(problems, done)))
             lines.append(f"| {model} | {len(done)} | " + " | ".join(cells) + " |")
-        others = [c for c in conditions if c != "none"]
-        if "none" in conditions and others:
-            lines += ["", "Against the model alone: right only with the condition / right only alone, and p:",
+        base = "none" if "none" in conditions else conditions[0] if conditions else None
+        others = [c for c in conditions if c != base]
+        if others:
+            heading = (f"Against {base}: right only with the condition / right only under {base}, and p:"
+                       if base != "none" else
+                       "Against the model alone: right only with the condition / right only alone, and p:")
+            lines += ["", heading,
                       "", "| Model | " + " | ".join(others) + " |", "|---|" + "---|" * len(others)]
             totals = {c: [0, 0] for c in others}
             for model in models:
@@ -95,7 +101,7 @@ def report(records: list[dict]) -> str:
                 done = complete(problems, conditions)
                 cells = []
                 for condition in others:
-                    gained, lost, p = mcnemar(problems, done, condition)
+                    gained, lost, p = mcnemar(problems, done, condition, base)
                     totals[condition][0] += gained
                     totals[condition][1] += lost
                     cells.append(f"{gained} / {lost}, p = {p_value(p)}")
@@ -106,14 +112,31 @@ def report(records: list[dict]) -> str:
                 cells = [f"{g} / {lost}, p = {p_value(binomtest(g, g + lost).pvalue if g + lost else 1.0)}"
                          for g, lost in totals.values()]
                 lines.append("| All | " + " | ".join(cells) + " |")
-        if "solve" in conditions:
-            lines += ["", "ADA's statuses under solve:", ""]
+        for condition in [c for c in ("solve", "plan", "retry") if c in conditions]:
+            lines += ["", f"ADA's statuses under {condition}:", ""]
             for model in models:
                 problems = groups[(dataset, model)]
-                statuses = Counter(found["solve"].get("ada", {}).get("status", "failed")
-                                   for found in problems.values() if "solve" in found)
+                statuses = Counter(found[condition].get("ada", {}).get("status", "failed")
+                                   for found in problems.values() if condition in found)
                 lines.append(f"- {model}: " + ", ".join(f"{status} {count}"
                                                         for status, count in statuses.most_common()))
+        if {"solve", "retry"} <= set(conditions):
+            lines += ["", "retry against solve. retry's first message is solve's, so where its first reply "
+                      "is solve's reply, the problems asked again show what asking again does; where it is "
+                      "not, the two replies differ only as two replies to the same message can:", "",
+                      "| Model | Asked again | First reply as under solve, asked again | Right after asking "
+                      "again | First reply not as under solve | Right only under retry / only under solve |",
+                      "|---|---|---|---|---|---|"]
+            totals = [0] * 6
+            for model in models:
+                problems = groups[(dataset, model)]
+                counts = retried(problems, complete(problems, conditions))
+                totals = [total + count for total, count in zip(totals, counts, strict=True)]
+                lines.append(f"| {model} | {counts[0]} | {counts[1]} | {counts[2]} | {counts[3]} "
+                             f"| {counts[4]} / {counts[5]} |")
+            if len(models) > 1:
+                lines.append(f"| All | {totals[0]} | {totals[1]} | {totals[2]} | {totals[3]} "
+                             f"| {totals[4]} / {totals[5]} |")
         if {"none", "check"} <= set(conditions):
             lines += ["", "Wrong answers alone, and how many of them have an arithmetic slip ADA finds:", ""]
             for model in models:
@@ -129,6 +152,25 @@ def report(records: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def retried(problems: dict, done: list) -> tuple[int, ...]:
+    """For ``retry`` against ``solve``: the problems asked again; of them, those whose first reply is solve's
+    reply, and how many of those are right after asking again; the problems whose first reply is not solve's
+    reply, and of them how many are right only under retry and only under solve."""
+    again = same = fixed = other = gained = lost = 0
+    for problem in done:
+        first, retry = problems[problem]["solve"], problems[problem]["retry"]
+        asked = "first_ada" in retry
+        again += asked
+        if retry.get("first_formal", retry.get("formal")) == first.get("formal"):
+            same += asked
+            fixed += asked and retry["correct"]
+        else:
+            other += 1
+            gained += retry["correct"] and not first["correct"]
+            lost += first["correct"] and not retry["correct"]
+    return again, same, fixed, other, gained, lost
+
+
 def slipped(check: dict) -> bool:
     """Whether ADA found a wrong equation in the model's own answer."""
     return any(not item["correct"] for item in check.get("checks", []))
@@ -136,8 +178,10 @@ def slipped(check: dict) -> bool:
 
 def paired(groups: dict) -> list[str]:
     """GSM-Hard's problem i is GSM8K's problem i with larger numbers: of the GSM8K problems a model gets right
-    alone, how many of their GSM-Hard versions it gets right under each condition."""
-    models = [model for dataset, model in groups if dataset == "gsm8k" and ("gsmhard", model) in groups]
+    alone, how many of their GSM-Hard versions it gets right under each condition. A run that did not ask the
+    model alone has no such table."""
+    models = [model for dataset, model in groups if dataset == "gsm8k" and ("gsmhard", model) in groups
+              and any("none" in found for found in groups[(dataset, model)].values())]
     if not models:
         return []
     conditions = [c for c in ORDER if all(c in found for model in models

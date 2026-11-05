@@ -1,0 +1,54 @@
+{
+  "run": "2026-11-05-gsm-plan",
+  "question": "Do more answers come out right when the model first works the problem out in words (plan), or writes its equations again when ADA says which quantities have no value (retry)?",
+  "benchmark": "benchmarks/gsm8k.py",
+  "datasets": {
+    "gsm8k": {
+      "file": "test.jsonl",
+      "sha256": "3730d312f6e3440559ace48831e51066acaca737f6eabec99bccb9e4b3c39d14",
+      "problems": "0 to 299 (--problems 300)",
+      "matched": "exactly"
+    },
+    "gsmhard": {
+      "file": "gsmhardv2.jsonl",
+      "sha256": "2032b0188a49ac0ec38cbe1e695e7d62d6dddc44bbb64f920728aca710e9ddef",
+      "problems": "0 to 299 (--problems 300)",
+      "matched": "within 0.001"
+    }
+  },
+  "models": [
+    "qwen3:4b-instruct",
+    "gemma3:4b",
+    "phi4-mini",
+    "qwen2.5:3b",
+    "llama3.2:3b",
+    "qwen3:1.7b",
+    "qwen2.5:1.5b"
+  ],
+  "conditions": [
+    "solve",
+    "plan",
+    "retry"
+  ],
+  "settings": {
+    "temperature": 0,
+    "seed": 0,
+    "num_ctx": 8192,
+    "max_tokens": 2048,
+    "thinking": false,
+    "samples": 1,
+    "retries": 1
+  },
+  "where": {
+    "service": "Kaggle",
+    "kernel": "saineshnakra/ada-benchmark-plan",
+    "version": 1,
+    "accelerator": "two NVIDIA T4 GPUs, one Ollama server each",
+    "script": "benchmarks/kaggle_ladder.py",
+    "shards": 6,
+    "started": "2026-11-05T15:44Z",
+    "minutes": 73
+  },
+  "commit": "9ad2943ab0fc0f1aed7163e19f7be0da6a835034",
+  "records": 12600
+}

@@ -27,6 +27,7 @@ Each run has a folder in [runs/](runs/), named by the date it started:
 | [2026-11-05-gsm-ladder-pilot](runs/2026-11-05-gsm-ladder-pilot/README.md) | GSM8K and GSM-Hard, 15 models from 135M to 4B, 30 problems: alone, checked and `solve` |
 | [2026-11-05-gsm-ladder](runs/2026-11-05-gsm-ladder/README.md) | GSM8K and GSM-Hard, 13 models from 0.5B to 4B, 300 problems: alone, after worked examples, checked and `solve` |
 | [2026-11-05-gsm-combine](runs/2026-11-05-gsm-combine/README.md) | GSM8K and GSM-Hard problems 300 to 599, 13 models: the combining rule chosen on problems 0 to 299, and the model deciding instead |
+| [2026-11-05-gsm-plan](runs/2026-11-05-gsm-plan/README.md) | GSM8K and GSM-Hard, 7 models from 1.5B to 4B, 300 problems: `solve`, working the problem out in words first (`plan`), and writing the equations again when ADA finds no value (`retry`) |
 
 A run that picks up an earlier run's replies keeps them in its own folder, so it reproduces its own
 numbers; its page says how many records are its own. Counting several folders together counts those
@@ -40,6 +41,7 @@ Work done on runs already made, such as choosing a rule before testing it on new
 | Analysis | What it is |
 |---|---|
 | [2026-11-05-combine-rules](analyses/2026-11-05-combine-rules/README.md) | How to combine the model's answer with ADA's, chosen on the ladder's problems 0 to 299 and set down before it was tested on problems 300 to 599 |
+| [2026-11-05-plan-and-retry](analyses/2026-11-05-plan-and-retry/README.md) | Which way of writing better equations to keep, chosen on problems 0 to 299, and the tests for problems 300 to 599 |
 
 ## What a run folder holds
 
@@ -55,6 +57,9 @@ Work done on runs already made, such as choosing a rule before testing it on new
 python paper/analysis.py paper/runs/2026-11-05-gsm-ladder        # accuracy, McNemar tests, ADA's statuses
 python paper/combine_rules.py paper/runs/2026-11-05-gsm-ladder \
     --gsm8k test.jsonl --gsmhard gsmhardv2.jsonl                 # the ways of combining the two answers
+python paper/combine_rules.py paper/runs/2026-11-05-gsm-ladder \
+    --gsm8k test.jsonl --gsmhard gsmhardv2.jsonl \
+    --ada paper/runs/2026-11-05-gsm-plan:retry                   # the same, with retry's answers as ADA's
 ```
 
 A new run is added with `python paper/collect.py <folder of results files> paper/runs/<run>` and a README
@@ -64,7 +69,10 @@ and config.json written like the others. The benchmarks themselves, and how each
 ## How the runs are made
 
 - The models run through Ollama at temperature 0 with seed 0, one reply per problem and condition unless a
-  run says otherwise, so a run repeats closely but not always word for word.
+  run says otherwise, so a run repeats closely but not always word for word. On Kaggle, where several
+  shards ask one server at once, two replies to the same message differ on about a third of GSM8K problems
+  ([2026-11-05-gsm-plan](runs/2026-11-05-gsm-plan/README.md)); those differences go about as often one way
+  as the other.
 - Answers are graded by the benchmark: GSM8K exactly, GSM-Hard to within 0.001, MATH-500 with Math-Verify.
 - A rule or setting chosen by looking at results is tested on problems it was not chosen on, and the
   choice is written down in [analyses/](analyses/) before the test runs.

@@ -11,7 +11,9 @@ Each rule takes the answer both give when the model's own answer (``none``) and 
   digits. This is benchmarks/gsm8k.py's ``combine`` condition.
 - either right: right when either answer is right, the most any rule could get.
 
-The output is Markdown and the same each time.
+``--ada RUN:CONDITION`` takes ADA's answers from another run's condition in place of the run's ``solve``, for
+the models and problems both runs have: ``--ada paper/runs/2026-11-05-gsm-plan:retry`` scores the rules
+with ``retry``'s answers. The output is Markdown and the same each time.
 """
 
 from __future__ import annotations
@@ -62,6 +64,8 @@ def report(records: list[dict], texts: dict[str, list[str]]) -> str:
         for model in sorted(model for data, model in groups if data == dataset):
             problems = groups[(dataset, model)]
             done = [p for p, found in problems.items() if all(c in found for c in ("none", "check", "solve"))]
+            if not done:
+                continue
             counts = dict.fromkeys(totals, 0)
             disagree = 0
             for problem in done:
@@ -80,13 +84,24 @@ def report(records: list[dict], texts: dict[str, list[str]]) -> str:
     return "\n".join(lines)
 
 
+def replaced(records: list[dict], others: list[dict], condition: str) -> list[dict]:
+    """The records with their ``solve`` records replaced by the other run's ``condition`` records."""
+    return ([record for record in records if record["condition"] != "solve"]
+            + [{**record, "condition": "solve"} for record in others if record["condition"] == condition])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("run", type=Path)
     parser.add_argument("--gsm8k", type=Path, required=True, help="GSM8K test.jsonl")
     parser.add_argument("--gsmhard", type=Path, required=True, help="GSM-Hard gsmhardv2.jsonl")
+    parser.add_argument("--ada", metavar="RUN:CONDITION", help="take ADA's answers from this run's condition")
     args = parser.parse_args()
-    print(report(load(args.run), {"gsm8k": questions(args.gsm8k), "gsmhard": questions(args.gsmhard)}))
+    records = load(args.run)
+    if args.ada:
+        other, _, condition = args.ada.rpartition(":")
+        records = replaced(records, load(Path(other)), condition)
+    print(report(records, {"gsm8k": questions(args.gsm8k), "gsmhard": questions(args.gsmhard)}))
     return 0
 
 
