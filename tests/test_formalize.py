@@ -169,6 +169,7 @@ class ValueTests(unittest.TestCase):
         values = ("7/594080", "10000000000000/3", "-1/30000000000000")
         self.assertEqual([plain_number(value) for value in values],
                          ["0.0000117829", "3333333333333.3333333333", "0"])
+        self.assertEqual(plain_number("10^80/4"), "25" + "0" * 78)
         self.assertIsNone(plain_number("I"))
         self.assertEqual(latex_value("3*sqrt(3)"), "3 \\sqrt{3}")
         self.assertEqual(latex_value("16/57"), "\\frac{16}{57}")

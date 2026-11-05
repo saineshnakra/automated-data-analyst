@@ -346,9 +346,11 @@ def plain_number(value: str) -> str | None:
     number = _sympy(value)
     if number is None or not number.is_real:
         return None
+    digits = Decimal(str(sympy.N(number, 60)))
     with localcontext() as context:
-        context.prec = 80
-        rounded = Decimal(str(sympy.N(number, 60))).quantize(Decimal("1e-10"))
+        # Room for every digit before the point and ten after it, however large the number is.
+        context.prec = max(digits.adjusted(), 0) + 20
+        rounded = digits.quantize(Decimal("1e-10"))
     text = format(rounded, "f").rstrip("0").rstrip(".")
     return "0" if text in ("", "-0") else text
 
