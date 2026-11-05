@@ -14,6 +14,13 @@ problem is solved three ways, with the same model and settings:
   model is told which, with the right value, and answers once more. When
   none is, the answer stands, so this condition only changes answers that
   have a slip in them.
+- **The model writes equations, ADA solves them** (`solve`): the model
+  writes the problem as equations without solving it and names the quantity
+  asked for, and ADA solves the equations exactly. Every step of working
+  them out is ADA's. Names such as `eggs_sold` are given a letter each
+  before ADA reads them. When ADA cannot solve the equations, there is no
+  answer; the summary also shows ADA's answer with the model's own in its
+  place when there is none.
 
 ### Data and settings
 
@@ -119,8 +126,10 @@ reasoning first.
 ### Run it
 
 On GitHub: Actions, Benchmark, Run workflow; or push a branch named
-`benchmark/<anything>`. Each job's summary is in its log, and its replies
-are an artifact.
+`benchmark/<anything>`. The `models`, `datasets` and `conditions` inputs
+pick what runs; by default, the three models above on both datasets with
+`none,tool,check`. Each job's summary is in its log, and its replies are an
+artifact.
 
 On your own computer, with Ollama:
 
@@ -131,7 +140,8 @@ python benchmarks/gsm8k.py test.jsonl --model qwen3:1.7b --problems 200 --out re
 python benchmarks/summary.py results.jsonl
 ```
 
-A run that stops picks up where it left off.
+`--condition none,solve` runs some of the conditions. A run that stops
+picks up where it left off.
 
 ## MATH-500 with small local models
 
@@ -151,6 +161,8 @@ with the same model and settings:
   stands.
 - **The tool's prompt only** (`prompt`) and **the tool only** (`schema`):
   the two halves of `tool`, to tell which one changes the answers.
+- **The model writes equations, ADA solves them** (`solve`), as for GSM8K.
+  ADA's value is graded in LaTeX, so a root stays exact (`3 \sqrt{3}`).
 
 | | |
 |---|---|

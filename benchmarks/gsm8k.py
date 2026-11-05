@@ -16,6 +16,11 @@ Each problem is solved three ways with the same model and settings:
 - ``check``: the model alone, then ADA checks every equation it wrote (``ada.compute.check_arithmetic``).
   When one is wrong, the model is told which, with the right value, and answers again. When none is, the
   answer stands, so this condition never changes a reply ADA finds nothing wrong with.
+- ``solve``: the model writes the problem as equations without solving it, names the quantity asked for,
+  and ADA solves the equations (``formalize.py``). ADA's value is the answer; when ADA cannot solve them,
+  there is none.
+
+``--condition none,solve`` runs some of them; by default, the first three.
 
 The model ends its reply with a line "Answer: <number>", and that number is compared with the answer after
 "####" in the data. Temperature is 0 and thinking is off, so a run repeats. It talks to Ollama's own API
@@ -34,7 +39,9 @@ import urllib.request
 from fractions import Fraction
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path[:0] = [str(Path(__file__).resolve().parent), str(Path(__file__).resolve().parents[1])]
+
+from formalize import FORMAL_PROMPT, plain_number, solved_by_ada  # noqa: E402
 
 from ada import tools  # noqa: E402
 from ada.chat import _written_call  # noqa: E402
@@ -48,7 +55,7 @@ TOOL_PROMPT = (
     PROMPT + " You can call ada_compute to work out any arithmetic step exactly: write the expression with "
     "the numbers from your reasoning, and use the value it returns."
 )
-CONDITIONS = ("none", "tool", "check")
+CONDITIONS = ("none", "tool", "check", "solve")
 #: Tool-calling rounds before the model must answer.
 ROUNDS = 8
 #: The longest reply, in tokens: a small model sometimes repeats itself until it is stopped.
@@ -137,6 +144,17 @@ def checked(base: str, model: str, alone: dict) -> dict:
             "first_reply": alone["reply"]}
 
 
+def formalized(base: str, model: str, question: str) -> dict:
+    """The model's equations for the problem, and ADA's value for the quantity it names. Counts and amounts in
+    grade-school problems are above zero, so of several values ADA takes the one that is."""
+    messages = [{"role": "system", "content": FORMAL_PROMPT}, {"role": "user", "content": question}]
+    message = chat(base, model, messages, [])
+    reply = message.get("content", "")
+    ada = solved_by_ada(reply, positive=True)
+    number = None if ada["value"] is None else plain_number(ada["value"])
+    return {"reply": "" if number is None else f"Answer: {number}", "calls": [], "formal": reply, "ada": ada}
+
+
 def problem(row: dict) -> tuple[str, Fraction, Fraction]:
     """The question, the answer and how far from it still counts as right, from a GSM8K or GSM-Hard row."""
     if "target" in row:
@@ -151,7 +169,13 @@ def main() -> int:
     parser.add_argument("--base-url", default="http://localhost:11434")
     parser.add_argument("--problems", type=int, default=100, help="the first N problems (default: 100)")
     parser.add_argument("--out", required=True, help="write one JSON line per problem and condition here")
+    parser.add_argument("--condition", default="none,tool,check",
+                        help="conditions to run, separated by commas: " + ", ".join(CONDITIONS))
     args = parser.parse_args()
+    conditions = args.condition.split(",")
+    unknown = [name for name in conditions if name not in CONDITIONS]
+    if unknown:
+        parser.error(f"unknown condition {unknown[0]}; the conditions are {', '.join(CONDITIONS)}")
     rows = [json.loads(line) for line in Path(args.data).read_text(encoding="utf-8").splitlines() if line]
     rows = rows[:args.problems]
     done = {}
@@ -165,7 +189,7 @@ def main() -> int:
         for index, row in enumerate(rows):
             question, gold, tolerance = problem(row)
             alone = None
-            for condition in CONDITIONS:
+            for condition in conditions:
                 if (index, condition) in done:
                     continue
                 started = time.monotonic()
@@ -173,6 +197,8 @@ def main() -> int:
                     if condition == "check":
                         alone = alone or solve(args.base_url, args.model, question, False)
                         solved = checked(args.base_url, args.model, alone)
+                    elif condition == "solve":
+                        solved = formalized(args.base_url, args.model, question)
                     else:
                         solved = solve(args.base_url, args.model, question, condition == "tool")
                         if condition == "none":
@@ -186,11 +212,12 @@ def main() -> int:
                           "correct": given is not None and abs(given - gold) <= tolerance,
                           "seconds": round(time.monotonic() - started, 1), "tool_calls": len(solved["calls"]),
                           "reply": solved["reply"], "calls": solved["calls"],
-                          **{key: solved[key] for key in ("checks", "first_reply", "error") if key in solved}}
+                          **{key: solved[key] for key in ("checks", "first_reply", "formal", "ada", "error")
+                             if key in solved}}
                 done[(index, condition)] = record
                 handle.write(json.dumps(record) + "\n")
                 handle.flush()
-    for condition in CONDITIONS:
+    for condition in conditions:
         records = [done[(index, condition)] for index in range(len(rows)) if (index, condition) in done]
         correct = sum(record["correct"] for record in records)
         print(f"{args.model}, {condition}: {correct}/{len(records)} correct")

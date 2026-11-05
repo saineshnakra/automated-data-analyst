@@ -15,6 +15,9 @@ Each problem is solved under one condition, with the same model and settings:
   one is wrong, the model is told which, with the right value, and answers again; otherwise the answer stands.
 - ``prompt`` and ``schema``: the two halves of ``tool``, to tell which one changes the answers: the tool's
   system prompt with no tool offered, and the tool offered with the plain system prompt.
+- ``solve``: the model writes the problem as equations without solving it, names the quantity asked for,
+  and ADA solves the equations exactly (``formalize.py``). ADA's value is the answer; when ADA cannot solve
+  them, there is none.
 
 One run does one condition, or several separated by commas (``none,check`` asks once and checks that reply),
 and ``--shard 0/4`` takes every fourth problem from the first, so conditions and
@@ -50,6 +53,7 @@ from pathlib import Path
 
 sys.path[:0] = [str(Path(__file__).resolve().parent), str(Path(__file__).resolve().parents[1])]
 
+from formalize import FORMAL_PROMPT, latex_value, solved_by_ada  # noqa: E402
 from gsm8k import chat, solve  # noqa: E402
 
 from ada.compute import check_arithmetic  # noqa: E402
@@ -61,10 +65,10 @@ TOOL_PROMPT = (
     "one or several separated by ; (x^2 - 5x + 6 = 0, x*y = 6; x + y = 5, solve a*x^2 + b*x + c = 0 for x). "
     "Use the values it returns."
 )
-CONDITIONS = ("none", "tool", "check", "prompt", "schema")
+CONDITIONS = ("none", "tool", "check", "prompt", "schema", "solve")
 #: For each condition: whether ada_compute is offered, and the system prompt.
 SETTINGS = {"none": (False, PROMPT), "tool": (True, TOOL_PROMPT), "check": (False, PROMPT),
-            "prompt": (False, TOOL_PROMPT), "schema": (True, PROMPT)}
+            "prompt": (False, TOOL_PROMPT), "schema": (True, PROMPT), "solve": (False, FORMAL_PROMPT)}
 SUBJECTS = ("Algebra", "Intermediate Algebra")
 #: The longest reply, in tokens: MATH's worked solutions run longer than GSM8K's.
 MAX_TOKENS = 3072
@@ -152,6 +156,13 @@ def solved_under(condition: str, base: str, model: str, question: str, think: bo
     offered, system = SETTINGS[condition]
     tokens, options = ((budget, {**THINK_OPTIONS, "num_ctx": budget + PROMPT_TOKENS, "seed": seed}) if think
                        else (MAX_TOKENS, None))
+    if condition == "solve":
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": question}]
+        message = chat(base, model, messages, [], tokens, think, options)
+        ada = solved_by_ada(message.get("content", ""))
+        reply = "" if ada["value"] is None else f"\\boxed{{{latex_value(ada['value'])}}}"
+        return {"reply": reply, "calls": [], "formal": message.get("content", ""), "ada": ada,
+                "thinking": message.get("thinking", "")}
     if alone is None or condition != "check":
         alone = solve(base, model, question, offered, (system, system), tokens, think, options)
     if condition != "check":
@@ -195,7 +206,8 @@ def asked(args: argparse.Namespace, row: dict, condition: str, sample: int, alon
               "wrong_equations": len(wrong_equations(check_arithmetic(solved["reply"]))),
               "reply": solved["reply"], "calls": solved["calls"],
               **({"thinking": solved["thinking"]} if solved.get("thinking") else {}),
-              **{key: solved[key] for key in ("checks", "first_reply", "error") if key in solved}}
+              **{key: solved[key] for key in ("checks", "first_reply", "formal", "ada", "error")
+                 if key in solved}}
     return record, solved
 
 
@@ -370,6 +382,14 @@ def summary(paths: list[str], resample_above: int | None = None) -> int:
                 flagged = sum(1 for pair in pairs
                               if any(not item["correct"] for item in pair["check"].get("checks", [])))
                 print(f"    answers with a wrong equation: {flagged}")
+            if condition == "solve":
+                statuses = Counter(pair["solve"].get("ada", {}).get("status", "failed") for pair in pairs)
+                print("    ADA: " + ", ".join(f"{status} {count}"
+                                             for status, count in statuses.most_common()))
+                either = [pair["solve"]["correct"] if pair["solve"].get("ada", {}).get("value") is not None
+                          else pair["none"]["correct"] for pair in pairs]
+                print(f"    solve, else the model alone when ADA has no value: {sum(either)}/{len(pairs)} = "
+                      f"{100 * sum(either) / len(pairs):.1f}%")
         failed = sum(1 for conditions in problems for record in conditions.values() if record.get("error"))
         print(f"  replies that never ended or failed: {failed}")
         budgets = Counter(conditions["none"].get("max_tokens") or 0 for conditions in alone)
