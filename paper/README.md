@@ -26,6 +26,7 @@ Each run has a folder in [runs/](runs/), named by the date it started:
 | [2026-11-05-gsm-kaggle-smoke](runs/2026-11-05-gsm-kaggle-smoke/README.md) | GSM8K on a Kaggle GPU, 20 problems: a test of the Kaggle runner |
 | [2026-11-05-gsm-ladder-pilot](runs/2026-11-05-gsm-ladder-pilot/README.md) | GSM8K and GSM-Hard, 15 models from 135M to 4B, 30 problems: alone, checked and `solve` |
 | [2026-11-05-gsm-ladder](runs/2026-11-05-gsm-ladder/README.md) | GSM8K and GSM-Hard, 13 models from 0.5B to 4B, 300 problems: alone, after worked examples, checked and `solve` |
+| [2026-11-05-gsm-combine](runs/2026-11-05-gsm-combine/README.md) | GSM8K and GSM-Hard problems 300 to 599, 13 models: the combining rule chosen on problems 0 to 299, and the model deciding instead |
 
 A run that picks up an earlier run's replies keeps them in its own folder, so it reproduces its own
 numbers; its page says how many records are its own. Counting several folders together counts those

@@ -89,3 +89,11 @@ What would count as the rule holding up, pooled over the 13 models:
 - per model, `combine` is not worse than the model alone at p < 0.05 on either data set.
 
 `judge` is compared with `combine` on the same problems; there is no threshold set for it.
+
+## How it came out
+
+On problems 300 to 599 ([2026-11-05-gsm-combine](../../runs/2026-11-05-gsm-combine/README.md)), three of
+the four tests held. On GSM-Hard `combine` got 1,924 of 3,900 right, against 1,529 for `solve` and 1,542 for
+`check`, and no model did worse than alone at p < 0.05 on either data set. On GSM8K it beat the model alone
+(2,618 against 2,606) but not `check` (2,634): its large-numbers branch is wrong more often than the model on
+GSM8K's few questions with five-digit numbers. `judge` got 2,502 and 1,574.
