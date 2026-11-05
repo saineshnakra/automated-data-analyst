@@ -33,6 +33,13 @@ problem is solved in up to five ways, with the same model and settings:
   example questions, worked out step by step, come before the question. It
   has as many examples as `solve`, so the two show what ADA adds beyond
   seeing examples.
+- **Work it out in words, then equations** (`plan`): as `solve`, but the
+  model first works out in words which quantities the problem gives, which
+  it asks for and how they are related, and then writes the equations.
+- **Equations again, told why** (`retry`): as `solve`, but when ADA finds no
+  one value for the model's equations, the model is told why (the
+  quantities with no value, or ADA's reason for refusing) and writes them
+  again, once.
 - **The model's answer and ADA's together** (`combine`): no more replies
   are asked for. When the model's own answer and ADA's from `solve` agree,
   that is the answer; when ADA has none, it is the checked answer; when they

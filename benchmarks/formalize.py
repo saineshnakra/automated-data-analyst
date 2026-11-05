@@ -57,6 +57,83 @@ WORKED_ANSWERS = (
 )
 
 
+#: The ``plan`` condition: the model works the problem out in words first, then writes the equations ADA
+#: solves. The examples reason about what to work out, not the numbers, and their equations are those of
+#: FORMAL_EXAMPLES.
+PLAN_PROMPT = (
+    "Work out in words how to solve the problem: which quantities it gives, which it asks for, and how they "
+    "are related. Then write the problem as equations that an exact solver will solve. Put one equation on "
+    "each line, and give each quantity a name of one word, such as x or eggs_sold. Write the numbers as the "
+    "problem gives them and do not work anything out. Write * for times, / for divide, ^ for powers and "
+    "sqrt( ) for square roots. On the last line, write \"Answer:\" and the name or expression the question "
+    "asks for."
+)
+PLAN_ASK = "Work out how to solve it in words, then write the equations and the Answer line."
+PLAN_REASONS = (
+    "Sam pays the price less the discount and less the coupon. The discount is 25% of the price.",
+    "Mia has twice as many as Leo, and the two together have 36: two unknowns and two equations.",
+    "The tap has to fill the litres the tank is missing, which are its size less what it holds. At 8 litres "
+    "a minute, the minutes are the missing litres divided by 8.",
+    "The equation gives x, and the question asks for 2x - 1.",
+)
+
+
+def plan_messages(question: str) -> list[dict]:
+    """The chat for ``plan``: the instruction, the examples reasoned out and written as equations, then the
+    question."""
+    messages = [{"role": "system", "content": PLAN_PROMPT}]
+    for (asked, answered), reason in zip(FORMAL_EXAMPLES, PLAN_REASONS, strict=True):
+        messages += [{"role": "user", "content": f"{asked}\n\n{PLAN_ASK}"},
+                     {"role": "assistant", "content": f"{reason}\n\n{answered}"}]
+    return messages + [{"role": "user", "content": f"{question}\n\n{PLAN_ASK}"}]
+
+
+def missing(found: dict) -> list[str]:
+    """The quantities ADA could find no number for, by the names the model gave them: first those no
+    equation defines (``b`` in ``blue = 2*b``), and when every quantity is defined, those left without a
+    number."""
+    read, aim = found.get("read") or [], found.get("aim") or ""
+    sets = _solutions(read)
+    if isinstance(sets, Refusal):
+        return []
+    numbers = {name for values in sets for name, value in values.items() if _sympy(value) is not None}
+    defined = {equation.split("=", 1)[0].strip() for equation in read}
+    used = []
+    for text in [*read, aim]:
+        for name in _NAME.findall(text):
+            if (name not in numbers and name not in used and name.lower() not in FUNCTION_NAMES
+                    and name not in CONSTANTS):
+                used.append(name)
+    letters = {letter: name for name, letter in found.get("names", {}).items()}
+    undefined = [name for name in used if name not in defined]
+    return [letters.get(name, name) for name in (undefined or used)]
+
+
+def feedback(found: dict) -> str | None:
+    """What to tell the model when ADA found no one value for its equations, so it can write them again;
+    None when ADA did."""
+    status = found["status"]
+    if status in ("solved", "number given"):
+        return None
+    target = found.get("target")
+    if status == "no answer line":
+        reason = "Your reply has no line that starts with \"Answer:\"."
+    elif status == "example repeated":
+        reason = "Your equations are those of an earlier example, not of this problem."
+    elif status == "refused":
+        reason = f"ADA could not solve your equations: {found.get('message', '')}"
+    elif status == "several values":
+        reason = (f"Your equations allow more than one value for {target}: "
+                  f"{', '.join(found.get('values', []))}. Add what the problem says that picks one.")
+    else:
+        names = missing(found)
+        reason = (f"ADA found no value for {target}. "
+                  + (f"These quantities have no value: {', '.join(names)}. " if names else "")
+                  + "Each quantity needs a number from the problem or an equation that defines it.")
+    return (f"{reason} Write all the equations for this problem again, one on each line, then the Answer "
+            "line. Do not work them out.")
+
+
 def worked_turns(boxed: bool = False) -> list[dict]:
     """The example questions and their step-by-step answers, as earlier turns of a chat. With ``boxed``, each
     answer ends with the number in \\boxed{}, as MATH's solutions do, rather than an "Answer:" line."""
