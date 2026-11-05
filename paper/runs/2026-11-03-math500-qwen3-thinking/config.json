@@ -1,0 +1,49 @@
+{
+  "run": "2026-11-03-math500-qwen3-thinking",
+  "question": "How many MATH-500 problems does qwen3:1.7b get right with thinking on, and does ADA's check add anything?",
+  "benchmark": "benchmarks/math500.py",
+  "datasets": {
+    "math500": {
+      "file": "test.jsonl",
+      "source": "https://huggingface.co/datasets/HuggingFaceH4/MATH-500/resolve/main/test.jsonl",
+      "sha256": "35dc41080a3680858b27fa7e0533d2d547825316fc5dafe5d316f4ccc5a06132",
+      "problems": "all 500; 478 have a reply alone",
+      "matched": "Math-Verify 0.9.0"
+    }
+  },
+  "models": [
+    "qwen3:1.7b"
+  ],
+  "conditions": [
+    "none",
+    "check"
+  ],
+  "settings": {
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "top_k": 20,
+    "seed": 0,
+    "num_ctx": 16384,
+    "max_tokens": 14336,
+    "thinking": true,
+    "samples": 1,
+    "reply_time_limit_seconds": 3600
+  },
+  "where": {
+    "service": "GitHub Actions",
+    "workflow": ".github/workflows/benchmark-math.yml",
+    "workflow_run": 41725437147,
+    "url": "https://github.com/saineshnakra/automated-data-analyst/actions/runs/41725437147",
+    "event": "workflow_dispatch",
+    "branch": "main",
+    "runner": "ubuntu-latest, CPU only",
+    "jobs": 20,
+    "shards": 20,
+    "jobs_cancelled": 3,
+    "started": "2026-11-03T21:50:41Z",
+    "finished": "2026-11-04T03:32:52Z",
+    "conclusion": "cancelled"
+  },
+  "commit": "907d9a3cad57de3b9447a93fe9d4e7994195c327",
+  "records": 955
+}

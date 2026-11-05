@@ -14,7 +14,22 @@ Each run has a folder in [runs/](runs/), named by the date it started:
 
 | Run | What it is |
 |---|---|
-| [2026-11-05-gsm-ladder](runs/2026-11-05-gsm-ladder/README.md) | 13 models from 0.5B to 4B on GSM8K and GSM-Hard, 300 problems each: alone, after worked examples, checked, and writing equations for ADA to solve |
+| [2026-11-01-gsm-three-models-first-checker](runs/2026-11-01-gsm-three-models-first-checker/README.md) | GSM8K and GSM-Hard, three models, with the first version of ADA's checker, which flagged right steps as wrong |
+| [2026-11-01-gsm-three-models-tool](runs/2026-11-01-gsm-three-models-tool/README.md) | GSM8K and GSM-Hard, three models (1B to 1.7B), 200 problems: alone, with `ada_compute` offered, and checked |
+| [2026-11-03-math500-tool](runs/2026-11-03-math500-tool/README.md) | MATH-500 Algebra and Intermediate Algebra, two models with and without `ada_compute` |
+| [2026-11-03-math500-five-conditions](runs/2026-11-03-math500-five-conditions/README.md) | MATH-500, the tool's system prompt and its definition tried apart, and the check |
+| [2026-11-03-math500-qwen3-thinking](runs/2026-11-03-math500-qwen3-thinking/README.md) | MATH-500, all 500 problems, qwen3:1.7b with thinking on, alone and checked |
+| [2026-11-04-math500-qwen3-votes](runs/2026-11-04-math500-qwen3-votes/README.md) | MATH-500, qwen3:1.7b with thinking, votes of several samples on the problems the first reply left open |
+| [2026-11-04-math500-qwen3-longer-replies](runs/2026-11-04-math500-qwen3-longer-replies/README.md) | MATH-500, qwen3:1.7b, first replies with no answer asked again with 30,720 tokens |
+| [2026-11-04-math500-qwen3-longer-replies-rest](runs/2026-11-04-math500-qwen3-longer-replies-rest/README.md) | MATH-500, qwen3:1.7b, the rest of those first replies asked again |
+| [2026-11-05-gsm-solve-pilot](runs/2026-11-05-gsm-solve-pilot/README.md) | GSM8K and GSM-Hard, 30 problems: the first try of `solve`, before worked examples |
+| [2026-11-05-gsm-kaggle-smoke](runs/2026-11-05-gsm-kaggle-smoke/README.md) | GSM8K on a Kaggle GPU, 20 problems: a test of the Kaggle runner |
+| [2026-11-05-gsm-ladder-pilot](runs/2026-11-05-gsm-ladder-pilot/README.md) | GSM8K and GSM-Hard, 15 models from 135M to 4B, 30 problems: alone, checked and `solve` |
+| [2026-11-05-gsm-ladder](runs/2026-11-05-gsm-ladder/README.md) | GSM8K and GSM-Hard, 13 models from 0.5B to 4B, 300 problems: alone, after worked examples, checked and `solve` |
+
+A run that picks up an earlier run's replies keeps them in its own folder, so it reproduces its own
+numbers; its page says how many records are its own. Counting several folders together counts those
+records more than once.
 
 ## Analyses
 

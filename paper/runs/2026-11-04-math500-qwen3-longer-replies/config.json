@@ -1,0 +1,59 @@
+{
+  "run": "2026-11-04-math500-qwen3-longer-replies",
+  "question": "Do the first replies that gave no answer in 14,336 tokens give one with 30,720?",
+  "benchmark": "benchmarks/math500.py",
+  "datasets": {
+    "math500": {
+      "file": "test.jsonl",
+      "source": "https://huggingface.co/datasets/HuggingFaceH4/MATH-500/resolve/main/test.jsonl",
+      "sha256": "35dc41080a3680858b27fa7e0533d2d547825316fc5dafe5d316f4ccc5a06132",
+      "problems": "all 500 in 125 shards; the 81 shards that ran hold 324",
+      "matched": "Math-Verify 0.9.0"
+    }
+  },
+  "models": [
+    "qwen3:1.7b"
+  ],
+  "conditions": [
+    "none",
+    "check"
+  ],
+  "settings": {
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "top_k": 20,
+    "seed": 0,
+    "num_ctx": 32768,
+    "max_tokens": 30720,
+    "thinking": true,
+    "samples": 1,
+    "reply_time_limit_seconds": 7680
+  },
+  "where": {
+    "service": "GitHub Actions",
+    "workflow": ".github/workflows/benchmark-math.yml",
+    "workflow_run": 41817241401,
+    "url": "https://github.com/saineshnakra/automated-data-analyst/actions/runs/41817241401",
+    "event": "workflow_dispatch",
+    "branch": "main",
+    "runner": "ubuntu-latest, CPU only",
+    "jobs": 125,
+    "shards": 125,
+    "jobs_failed": 44,
+    "started": "2026-11-04T10:53:55Z",
+    "finished": "2026-11-04T15:13:14Z",
+    "conclusion": "failure"
+  },
+  "commit": "076a190e488550c291656af05d69488017d46059",
+  "started_from": {
+    "runs": [
+      41768840703
+    ],
+    "archived_as": "2026-11-04-math500-qwen3-votes",
+    "records_kept": 942,
+    "records_replaced": 50,
+    "note": "the kept records are as run 41768840703 wrote them; those first made by run 41725437147 carry sample, agrees_with and wrong_equations, which run 41768840703 added",
+    "own_records": 50
+  },
+  "records": 992
+}

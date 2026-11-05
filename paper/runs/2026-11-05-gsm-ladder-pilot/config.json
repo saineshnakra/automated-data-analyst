@@ -1,0 +1,68 @@
+{
+  "run": "2026-11-05-gsm-ladder-pilot",
+  "question": "Which small models, from 135M to 4B parameters, can use the solve condition, and where does ADA help?",
+  "benchmark": "benchmarks/gsm8k.py",
+  "datasets": {
+    "gsm8k": {
+      "file": "test.jsonl",
+      "source": "https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/test.jsonl",
+      "sha256": "3730d312f6e3440559ace48831e51066acaca737f6eabec99bccb9e4b3c39d14",
+      "problems": "first 30",
+      "matched": "exactly"
+    },
+    "gsmhard": {
+      "file": "gsmhardv2.jsonl",
+      "source": "https://raw.githubusercontent.com/reasoning-machines/pal/main/datasets/gsmhardv2.jsonl",
+      "sha256": "2032b0188a49ac0ec38cbe1e695e7d62d6dddc44bbb64f920728aca710e9ddef",
+      "problems": "first 30",
+      "matched": "within 0.001"
+    }
+  },
+  "models": [
+    "smollm2:135m",
+    "gemma3:270m",
+    "smollm2:360m",
+    "qwen2.5:0.5b",
+    "qwen3:0.6b",
+    "gemma3:1b",
+    "llama3.2:1b",
+    "qwen2.5:1.5b",
+    "qwen3:1.7b",
+    "smollm2:1.7b",
+    "llama3.2:3b",
+    "qwen2.5:3b",
+    "phi4-mini",
+    "gemma3:4b",
+    "qwen3:4b"
+  ],
+  "conditions": [
+    "none",
+    "check",
+    "solve"
+  ],
+  "settings": {
+    "temperature": 0,
+    "seed": 0,
+    "num_ctx": 8192,
+    "max_tokens": 2048,
+    "thinking": false,
+    "samples": 1,
+    "tool_rounds": 8
+  },
+  "where": {
+    "service": "Kaggle",
+    "kernel": "saineshnakra/ada-benchmark-ladder",
+    "version": 1,
+    "accelerator": "a GPU session; nvidia-smi lists two NVIDIA T4 GPUs; one Ollama server with OLLAMA_NUM_PARALLEL=4",
+    "script": "the kernel's own script, not in the repository; benchmarks/kaggle_ladder.py came later (#179)",
+    "shards": "4 per data set, the models one after another",
+    "started": "about 2026-11-05T03:07Z (from the kernel log)",
+    "finished_by": "2026-11-05T04:21Z (the last request in Ollama's log is at 04:20:49)"
+  },
+  "commit": "06a98f792a3b1a5c709e69f7f935933728e94ecc",
+  "graded_later": {
+    "pr": 178,
+    "why": "reads the equations after the reply's last line of prose first; on these replies it takes qwen3:4b under solve from 16 to 22 on GSM8K and from 11 to 21 on GSM-Hard; the records here keep the grades of commit 06a98f7"
+  },
+  "records": 2700
+}
