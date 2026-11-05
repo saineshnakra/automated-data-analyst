@@ -34,7 +34,168 @@ problem is solved in up to five ways, with the same model and settings:
   has as many examples as `solve`, so the two show what ADA adds beyond
   seeing examples.
 
-### Data and settings
+### Thirteen models, 300 problems each
+
+Which small models does ADA help, and how? Thirteen models from 0.5 to 4
+billion parameters each solved the first 300 problems of GSM8K and of
+GSM-Hard four ways: alone, after worked examples (`shots`), alone and then
+checked, and by writing equations that ADA solves (`solve`). GSM-Hard's
+problem *i* is GSM8K's problem *i* with larger numbers, so the two data sets
+pair each problem with a version that only changes the arithmetic.
+
+#### Data and settings
+
+| | |
+|---|---|
+| GSM8K | The first 300 problems of `test.jsonl`, sha256 `3730d312…c39d14`. Answers are whole numbers, matched exactly |
+| GSM-Hard | The first 300 problems of `gsmhardv2.jsonl`, sha256 `2032b018…e9ddef`. Answers are matched to within 0.001 |
+| Models | qwen2.5:0.5b, qwen3:0.6b, gemma3:1b, llama3.2:1b, qwen2.5:1.5b, qwen2-math:1.5b, qwen3:1.7b (thinking off), smollm2:1.7b, llama3.2:3b, qwen2.5:3b, phi4-mini, gemma3:4b and qwen3:4b-instruct, through Ollama's chat API |
+| Settings | Temperature 0, seed 0, context 8192 tokens, at most 2048 tokens a reply, one reply per problem and condition |
+| Where | Kaggle, two T4 GPUs with one Ollama server each ([kaggle_ladder.py](kaggle_ladder.py)), about 5 hours |
+| Code | Commit c4b7e37. The solve answers are graded again with the change that writes them in digits only: the run wrote 7/594080 as `1.17829248586e-05`, read it back as 1.178…, and so marked 19 answers wrong on three GSM-Hard problems whose answers are within 0.001 of 0 |
+
+#### Results
+
+GSM8K, problems right of 300:
+
+| Model | Alone | After worked examples | Alone, then checked | Model writes equations, ADA solves | ADA's answer, else the model's |
+|---|---|---|---|---|---|
+| qwen2.5:0.5b | 120 | 104 | 121 | 48 | 84 |
+| qwen3:0.6b | 143 | 129 | 143 | 36 | 93 |
+| gemma3:1b | 133 | 131 | 133 | 71 | 113 |
+| llama3.2:1b | 151 | 129 | 156 | 76 | 108 |
+| qwen2.5:1.5b | 186 | 165 | 187 | 133 | 157 |
+| qwen2-math:1.5b | 248 | 229 | 249 | 122 | 220 |
+| qwen3:1.7b | 240 | 207 | 245 | 125 | 162 |
+| smollm2:1.7b | 131 | 134 | 136 | 82 | 119 |
+| llama3.2:3b | 242 | 229 | 243 | 200 | 211 |
+| qwen2.5:3b | 256 | 240 | 256 | 193 | 226 |
+| phi4-mini | 265 | 240 | 268 | 180 | 236 |
+| gemma3:4b | 256 | 248 | 256 | 149 | 202 |
+| qwen3:4b-instruct | 282 | 278 | 282 | 235 | 257 |
+
+GSM-Hard, problems right of 300:
+
+| Model | Alone | After worked examples | Alone, then checked | Model writes equations, ADA solves | ADA's answer, else the model's |
+|---|---|---|---|---|---|
+| qwen2.5:0.5b | 48 | 41 | 51 | 47 | 62 |
+| qwen3:0.6b | 81 | 76 | 88 | 35 | 76 |
+| gemma3:1b | 64 | 64 | 67 | 31 | 52 |
+| llama3.2:1b | 43 | 38 | 51 | 85 | 93 |
+| qwen2.5:1.5b | 99 | 95 | 111 | 134 | 149 |
+| qwen2-math:1.5b | 156 | 136 | 162 | 107 | 171 |
+| qwen3:1.7b | 148 | 129 | 162 | 138 | 153 |
+| smollm2:1.7b | 54 | 62 | 68 | 70 | 88 |
+| llama3.2:3b | 86 | 85 | 110 | 195 | 200 |
+| qwen2.5:3b | 127 | 122 | 149 | 190 | 201 |
+| phi4-mini | 123 | 106 | 137 | 184 | 205 |
+| gemma3:4b | 152 | 143 | 165 | 149 | 174 |
+| qwen3:4b-instruct | 190 | 191 | 190 | 232 | 243 |
+
+"ADA's answer, else the model's" takes ADA's value when ADA solved the
+model's equations, and the model's own answer when it did not.
+
+Against the model alone, on the same problems: right only with ADA / right
+only alone, and the exact McNemar test:
+
+| Model | GSM8K, solve | p | GSM-Hard, solve | p | GSM8K, checked | p | GSM-Hard, checked | p |
+|---|---|---|---|---|---|---|---|---|
+| qwen2.5:0.5b | 13 / 85 | 4e-14 | 34 / 35 | 1 | 1 / 0 | 1 | 3 / 0 | 0.25 |
+| qwen3:0.6b | 7 / 114 | 5e-26 | 19 / 65 | 5e-7 | 0 / 0 | 1 | 7 / 0 | 0.016 |
+| gemma3:1b | 25 / 87 | 3e-9 | 13 / 46 | 2e-5 | 0 / 0 | 1 | 4 / 1 | 0.38 |
+| llama3.2:1b | 29 / 104 | 4e-11 | 70 / 28 | 3e-5 | 5 / 0 | 0.062 | 8 / 0 | 0.0078 |
+| qwen2.5:1.5b | 25 / 78 | 2e-7 | 77 / 42 | 0.0017 | 1 / 0 | 1 | 12 / 0 | 5e-4 |
+| qwen2-math:1.5b | 7 / 133 | 3e-31 | 44 / 93 | 3e-5 | 1 / 0 | 1 | 6 / 0 | 0.031 |
+| qwen3:1.7b | 8 / 123 | 1e-27 | 52 / 62 | 0.4 | 5 / 0 | 0.062 | 14 / 0 | 1e-4 |
+| smollm2:1.7b | 28 / 77 | 2e-6 | 50 / 34 | 0.1 | 5 / 0 | 0.062 | 16 / 2 | 0.0013 |
+| llama3.2:3b | 22 / 64 | 7e-6 | 130 / 21 | 2e-20 | 1 / 0 | 1 | 24 / 0 | 1e-7 |
+| qwen2.5:3b | 16 / 79 | 3e-11 | 93 / 30 | 1e-8 | 0 / 0 | 1 | 22 / 0 | 5e-7 |
+| phi4-mini | 9 / 94 | 5e-19 | 93 / 32 | 4e-8 | 3 / 0 | 0.25 | 14 / 0 | 1e-4 |
+| gemma3:4b | 6 / 113 | 1e-26 | 57 / 60 | 0.85 | 0 / 0 | 1 | 13 / 0 | 2e-4 |
+| qwen3:4b-instruct | 7 / 54 | 4e-10 | 68 / 26 | 2e-5 | 0 / 0 | 1 | 2 / 2 | 1 |
+| All 13 | 202 / 1205 | 5e-174 | 800 / 574 | 1e-9 | 22 / 0 | 5e-7 | 145 / 5 | 9e-37 |
+
+The same problems with larger numbers. Of the GSM8K problems a model gets
+right alone, how many of their GSM-Hard versions it gets right:
+
+| Model | GSM8K right alone | GSM-Hard: alone | Checked | Solve |
+|---|---|---|---|---|
+| llama3.2:1b | 151 | 21 | 24 | 35 |
+| qwen2.5:1.5b | 186 | 62 | 66 | 78 |
+| qwen3:1.7b | 240 | 119 | 129 | 110 |
+| llama3.2:3b | 242 | 70 | 87 | 161 |
+| qwen2.5:3b | 256 | 107 | 126 | 163 |
+| phi4-mini | 265 | 110 | 124 | 164 |
+| gemma3:4b | 256 | 129 | 140 | 126 |
+| qwen3:4b-instruct | 282 | 178 | 178 | 218 |
+
+#### What the results show
+
+- **With ADA solving, the size of the numbers stops mattering much.** Under
+  `solve`, each model from 1.5B up scores about the same on GSM8K and
+  GSM-Hard: llama3.2:3b 200 and 195, phi4-mini 180 and 184,
+  qwen3:4b-instruct 235 and 232. Alone, the same models lose half or more
+  of their right answers when the numbers grow: 242 to 86, 265 to 123, 282
+  to 190. A model that understands a problem with small numbers usually
+  fails it with large ones (llama3.2:3b keeps 70 of 242), and gets it right
+  far more often when ADA does the arithmetic (161 of 242).
+- **With large numbers, `solve` helps most models from 1B up.** It is
+  better than the model alone at p < 0.01 for llama3.2:1b, qwen2.5:1.5b,
+  llama3.2:3b, qwen2.5:3b, phi4-mini and qwen3:4b-instruct; llama3.2:3b goes
+  from 86 to 195. Taking ADA's answer when it has one and the model's
+  otherwise is the best of the five for 10 of the 13 models on GSM-Hard.
+- **With small numbers, `solve` hurts every model.** On GSM8K, 113 of the
+  1,247 wrong answers alone have an arithmetic slip that ADA finds; on
+  GSM-Hard, 966 of 2,529 do. When the arithmetic is easy, a small model's
+  mistakes are in reading the problem, and writing it as equations adds
+  mistakes of its own: a missed step, a quantity used twice, the wrong
+  quantity named in the Answer line.
+- **Checking never costs much and helps with large numbers.** Over the 26
+  runs it turned 167 wrong answers right and 5 right answers wrong; on
+  GSM-Hard, 145 and 5 (p = 9e-37). It helps every model there but
+  qwen3:4b-instruct, at p < 0.05 for 10 of them.
+- **The worked examples are not what helps.** With the same four examples
+  worked out step by step, the models do worse than alone (305 / 495 on
+  GSM8K, 252 / 335 on GSM-Hard, right only after the examples / right only
+  alone). What `solve` gains on GSM-Hard comes from ADA solving the
+  equations.
+- **Below about 1B, models do not use ADA well.** qwen2.5:0.5b, qwen3:0.6b
+  and gemma3:1b often answer with a number of their own or without an Answer
+  line instead of equations (gemma3:1b: 175 and 61 of 300 on GSM8K). In a
+  30-problem pilot, smollm2:135m, gemma3:270m and smollm2:360m got 0 to 2
+  right in every condition, so they are not in this run.
+- **Some models translate worse than they solve.** qwen2-math:1.5b gets 248
+  of 300 on GSM8K alone and 122 by writing equations. On GSM-Hard, `solve`
+  is no better than alone for qwen3:1.7b and gemma3:4b, and checking is
+  better than either.
+
+So for a small model, ADA helps where the arithmetic is the hard part: the
+model writes the problem as equations, ADA solves them, and the model's own
+answer is the fallback. Where the arithmetic is easy, checking the model's
+own answer is the safe choice.
+
+#### How far to trust these numbers
+
+- **One reply per problem and condition**, at temperature 0, on 300
+  problems. The pooled differences, and those with p < 0.001 for one model,
+  are far beyond chance; a difference of a few problems for one model is
+  not.
+- **30 of the 31,200 replies failed** with an error from Ollama (HTTP 500)
+  and count as wrong: 12 alone, 9 after examples, 3 checked and 6 under
+  solve; 24 of them on GSM-Hard and 12 for phi4-mini.
+- **GSM-Hard has answers that look wrong.** Three of these problems have
+  answers within 0.001 of 0 (0, 0.0000020107 and 0.000143987), which any
+  small enough number matches. They count the same way under every
+  condition.
+- **`solve` depends on reading the model's equations.** ADA reads the
+  equations after the reply's last line of prose first, leaves out what the
+  model works out itself and gives no value to a repeated worked example
+  (see the conditions above). A reply ADA cannot read has no answer under
+  `solve`; the last column gives it the model's own.
+
+### The first run: three models, with `ada_compute`
+
+#### Data and settings
 
 | | |
 |---|---|
@@ -45,7 +206,7 @@ problem is solved in up to five ways, with the same model and settings:
 | Where | GitHub's `ubuntu-latest` runners, CPU only, one job per model and dataset ([benchmark.yml](../.github/workflows/benchmark.yml)) |
 | Code | Workflow run 41361082298, commit bfb0b03 |
 
-### Results
+#### Results
 
 Problems right, of 200:
 
@@ -81,7 +242,7 @@ found wrong:
 | qwen2.5:1.5b | 3 of 284 | 57 of 312 |
 | llama3.2:1b | 23 of 442 | 161 of 327 |
 
-### What the results show
+#### What the results show
 
 - **Checking a model's own arithmetic helps, and almost never hurts.**
   Across the six runs it turned 32 wrong answers right and one right answer
@@ -106,7 +267,7 @@ So for a small model, the better use of ADA is to let it reason in its own
 words and check the arithmetic afterwards. A model that plans before it
 calls a tool may do better with `ada_compute`; these three do not.
 
-### How far to trust these numbers
+#### How far to trust these numbers
 
 - **Every flag was read.** Over both runs, ADA checked 3,929 equations in
   2,200 replies and flagged 357 distinct ones. Each was read by hand, and
@@ -121,7 +282,7 @@ calls a tool may do better with `ada_compute`; these three do not.
   runs, and the tool's effect for llama3.2:1b on GSM8K, but not small
   differences for one model.
 
-### What an earlier run taught
+#### What an earlier run taught
 
 The first version of the checker took `5,000 * (1 + 0.025) = 5,000 * 1.025 =
 5,125` as stating 5, checked `1/2 = 15` out of `30 bees * 1/2 = 15`, and read
@@ -139,8 +300,8 @@ reasoning first.
 
 On GitHub: Actions, Benchmark, Run workflow; or push a branch named
 `benchmark/<anything>`. The `models`, `datasets` and `conditions` inputs
-pick what runs; by default, the three models above on both datasets with
-`none,tool,check`. Each job's summary is in its log, and its replies are an
+pick what runs; by default, the three models of the first run on both
+datasets with `none,tool,check`. Each job's summary is in its log, and its replies are an
 artifact.
 
 On your own computer, with Ollama:
@@ -154,6 +315,10 @@ python benchmarks/summary.py results.jsonl
 
 `--condition none,solve` runs some of the conditions. A run that stops
 picks up where it left off.
+
+On Kaggle's two T4 GPUs, the run of thirteen models above takes about 5
+hours: [kaggle_ladder.py](kaggle_ladder.py) says how to push it, and its
+CONFIG names the models, conditions and commit.
 
 ## MATH-500 with small local models
 
