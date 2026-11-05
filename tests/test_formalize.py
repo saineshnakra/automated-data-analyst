@@ -6,7 +6,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "benchmarks"))
 
-from formalize import latex_value, lettered, plain_number, solved_by_ada, written  # noqa: E402
+from formalize import (  # noqa: E402
+    FORMAL_ASK,
+    formal_messages,
+    latex_value,
+    lettered,
+    plain_number,
+    solved_by_ada,
+    written,
+)
 
 
 class WrittenTests(unittest.TestCase):
@@ -28,6 +36,29 @@ class WrittenTests(unittest.TestCase):
         self.assertEqual(written(""), ([], None))
         self.assertEqual(written("Answer:"), ([], None))
 
+    def test_latex_names_units_and_lets(self):
+        equations, _ = written("- let $ \\text{eggs\\_per\\_day} = 16 $\n"
+                               "$$ \\text{morning feed} = 15 \\text{ cups} $$\n"
+                               "$$ \\text{left} = \\text{eggs\\_per\\_day} \\times 2 "
+                               "\\quad \\text{(all of them)} $$")
+        self.assertEqual(equations, ["eggs_per_day = 16", "morning_feed = 15", "left = eggs_per_day * 2"])
+
+    def test_plain_units_labels_and_thousands(self):
+        equations, _ = written("Step 1: distance = 3 * 60 miles\ncost = 80,000\nlow = gcd(12,180)\n"
+                               "area = 3 pi\nsheep = 3 (3 a day)")
+        self.assertEqual(equations, ["distance = 3 * 60", "cost = 80000", "low = gcd(12,180)", "area = 3 pi",
+                                     "sheep = 3"])
+
+    def test_the_models_own_working_is_not_read(self):
+        # A name defined again, the result at the end of a chain and arithmetic with no name in it.
+        equations, _ = written("total = boxes + 4\ntotal = 36 + 4\ntotal = 40\nwhite = 2 / 2 = 1\n"
+                               "Total: 10 + 15 = 25 liters\n= 48")
+        self.assertEqual(equations, ["total = boxes + 4", "white = 2 / 2"])
+
+    def test_sentences_are_not_read(self):
+        equations, _ = written("Toulouse has 2 * 4 = 8 sheep.\nSo the cost is x = 5\nThen y = x + 1")
+        self.assertEqual(equations, ["y = x + 1"])
+
 
 class LetteredTests(unittest.TestCase):
     def test_names_get_letters_of_their_own(self):
@@ -39,6 +70,10 @@ class LetteredTests(unittest.TestCase):
         equations, _, mapping = lettered(["a = sqrt(16) + pi", "total = a * comb(5, 2)"], "total")
         self.assertEqual(mapping, {"total": "b"})
         self.assertEqual(equations, ["a = sqrt(16) + pi", "b = a * comb(5, 2)"])
+
+    def test_a_name_with_a_capital_is_the_same_name(self):
+        equations, target, _ = lettered(["Total = t + c"], "total")
+        self.assertEqual((equations, target), (["a = t + c"], "a"))
 
     def test_e_is_a_quantity_not_the_constant(self):
         equations, target, mapping = lettered(["e = 16 - 7"], "e")
@@ -76,6 +111,19 @@ class SolvedTests(unittest.TestCase):
         self.assertEqual(solved_by_ada("x = 5\ny = x/0\nAnswer: y")["status"], "refused")
         self.assertEqual(solved_by_ada("x = 5")["status"], "no answer line")
         self.assertEqual(solved_by_ada("")["value"], None)
+
+
+class MessagesTests(unittest.TestCase):
+    def test_worked_examples_come_before_the_question(self):
+        messages = formal_messages("How many?")
+        self.assertEqual(messages[0]["role"], "system")
+        self.assertEqual([message["role"] for message in messages[1:]],
+                         ["user", "assistant"] * ((len(messages) - 2) // 2) + ["user"])
+        self.assertEqual(messages[-1]["content"], f"How many?\n\n{FORMAL_ASK}")
+        # Each worked example is read by ADA to the value its question asks for.
+        values = [solved_by_ada(message["content"], positive=True)["value"]
+                  for message in messages if message["role"] == "assistant"]
+        self.assertEqual(values, ["55", "24", "10", "9"])
 
 
 class ValueTests(unittest.TestCase):

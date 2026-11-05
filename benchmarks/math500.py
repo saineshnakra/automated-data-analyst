@@ -53,7 +53,7 @@ from pathlib import Path
 
 sys.path[:0] = [str(Path(__file__).resolve().parent), str(Path(__file__).resolve().parents[1])]
 
-from formalize import FORMAL_PROMPT, latex_value, solved_by_ada  # noqa: E402
+from formalize import FORMAL_PROMPT, formal_messages, latex_value, solved_by_ada  # noqa: E402
 from gsm8k import chat, solve  # noqa: E402
 
 from ada.compute import check_arithmetic  # noqa: E402
@@ -157,8 +157,7 @@ def solved_under(condition: str, base: str, model: str, question: str, think: bo
     tokens, options = ((budget, {**THINK_OPTIONS, "num_ctx": budget + PROMPT_TOKENS, "seed": seed}) if think
                        else (MAX_TOKENS, None))
     if condition == "solve":
-        messages = [{"role": "system", "content": system}, {"role": "user", "content": question}]
-        message = chat(base, model, messages, [], tokens, think, options)
+        message = chat(base, model, formal_messages(question), [], tokens, think, options)
         ada = solved_by_ada(message.get("content", ""))
         reply = "" if ada["value"] is None else f"\\boxed{{{latex_value(ada['value'])}}}"
         return {"reply": reply, "calls": [], "formal": message.get("content", ""), "ada": ada,

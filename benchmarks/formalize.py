@@ -23,42 +23,121 @@ from ada.latex import LATEX, to_plain
 
 FORMAL_PROMPT = (
     "Do not solve the problem. Write it as equations that an exact solver will solve. Put one equation on "
-    "each line, and give each unknown quantity a name, such as x or eggs_sold. Write * for times, / for "
-    "divide, ^ for powers and sqrt( ) for square roots. On the last line, write \"Answer:\" and the name or "
-    "expression the question asks for.\n\n"
-    "For example, for \"A shop sells 3 boxes of 12 pens and 5 more pens. How many pens does it sell?\":\n"
-    "boxes = 3 * 12\n"
-    "total = boxes + 5\n"
-    "Answer: total"
+    "each line, and give each quantity a name of one word, such as x or eggs_sold. Write the numbers as the "
+    "problem gives them and do not work anything out. Write * for times, / for divide, ^ for powers and "
+    "sqrt( ) for square roots. On the last line, write \"Answer:\" and the name or expression the question "
+    "asks for."
 )
+#: The reminder after each question, and worked examples given as earlier turns of the chat: a small model
+#: follows a format it has seen answered more often than one it is only told about. The examples are written
+#: for this file and are not from any benchmark.
+FORMAL_ASK = "Write the equations and the Answer line. Do not work them out."
+FORMAL_EXAMPLES = (
+    ("A jacket costs $80. It is on sale for 25% off, and Sam also uses a $5 coupon. How much does Sam pay?",
+     "price = 80\ndiscount = price * 25 / 100\npaid = price - discount - 5\nAnswer: paid"),
+    ("Mia has twice as many stickers as Leo. Together they have 36 stickers. How many stickers does Mia "
+     "have?",
+     "mia = 2 * leo\nmia + leo = 36\nAnswer: mia"),
+    ("A tap fills a 120-litre tank at 8 litres a minute. The tank already holds 40 litres. How many minutes "
+     "does it take to fill the tank?",
+     "missing = 120 - 40\nminutes = missing / 8\nAnswer: minutes"),
+    ("If 3x + 7 = 22, what is the value of 2x - 1?", "3*x + 7 = 22\nAnswer: 2*x - 1"),
+)
+
+
+def formal_messages(question: str) -> list[dict]:
+    """The chat that asks a model to write a problem as equations: the instruction, the worked examples as
+    earlier turns, then the question."""
+    messages = [{"role": "system", "content": FORMAL_PROMPT}]
+    for asked, answered in FORMAL_EXAMPLES:
+        messages += [{"role": "user", "content": f"{asked}\n\n{FORMAL_ASK}"},
+                     {"role": "assistant", "content": answered}]
+    return messages + [{"role": "user", "content": f"{question}\n\n{FORMAL_ASK}"}]
+
+
 _ANSWER = re.compile(r"^\W*answer\W*?:\s*(.*)$", re.IGNORECASE)
 _NAME = re.compile(r"(?<![\\A-Za-z0-9_])[A-Za-z_][A-Za-z0-9_]*")
 _BULLET = re.compile(r"^\s*(?:[-*+•]|\d+[.)])\s+")
 _DELIMITERS = re.compile(r"\$\$?|\\[()\[\]]|`+|\*\*")
 _BOXED = re.compile(r"\\boxed\s*\{(.*)\}")
 _NUMBER = re.compile(r"-?\d+(?:\.\d+)?(?:/\d+)?")
-#: A word or two in brackets after a value: "x = 5 (eggs)".
-_ASIDE = re.compile(r"\s*\([A-Za-z\s]+\)\s*$")
+#: Words in brackets after a value: "x = 5 (eggs)", "y = 3 (3 a day)".
+_ASIDE = re.compile(r"\s*\((?=[^()]*[A-Za-z]{2})[A-Za-z0-9\s]+\)\s*$")
 #: Letters a quantity may be given: not e (ADA's constant) or i.
 _LETTERS = [letter for letter in string.ascii_lowercase + string.ascii_uppercase if letter not in "eiE"]
 
 
 def written(text: str) -> tuple[list[str], str | None]:
-    """The equations a reply writes, one a line, and the quantity its "Answer:" line asks for."""
-    equations, target = [], None
+    """The equations a reply writes, one a line, and the quantity its "Answer:" line asks for.
+
+    A line is read as LaTeX or plain text: ``\\text{eggs sold}`` is the name ``eggs_sold``, ``\\times`` is *,
+    a unit after a number is left out, and so are "let" and a label before an equation. What the model works
+    out itself is not read: in ``white = 2 / 2 = 1`` the name is defined by what follows it, a line that
+    defines a name again is left out, and so is arithmetic with no name in it. A sentence with an equation in
+    it is not read."""
+    equations, target, defined = [], None, set()
     for raw in text.splitlines():
-        line = _BULLET.sub("", _DELIMITERS.sub("", raw)).strip()
+        line = _clean(_BULLET.sub("", _DELIMITERS.sub("", raw)).strip())
         found = _ANSWER.match(line)
         if found:
             target = _target(found.group(1))
             continue
-        if line.count("=") == 1 and not re.search(r"[<>!≈≠]", line):
-            equations.append(_ASIDE.sub("", line.rstrip(".,;")).rstrip(".,;"))
+        if "=" not in line or re.search(r"[<>!≈≠]|==", line):
+            continue
+        line = _LABEL.sub("", _ASIDE.sub("", line.rstrip(".,;")).rstrip(".,;"))
+        left, right = (_unit_dropped(side.strip()) for side in line.split("=")[:2])
+        if not left or not right or any(_PROSE.search(side) for side in (left, right)):
+            continue
+        if not _NAME.search(left + " " + right) or _key(left) in defined:
+            continue
+        equation = f"{left} = {right}"
+        if equation not in equations:
+            equations.append(equation)
+        if _NAME.fullmatch(left):
+            defined.add(_key(left))
     return equations, target
 
 
+#: Two words in a row: a sentence, not an equation.
+_PROSE = re.compile(r"(?<![\\A-Za-z0-9_])[A-Za-z_][A-Za-z0-9_]*\s+[A-Za-z_][A-Za-z0-9_]*")
+#: A label before an equation: "Step 2: total = a + b".
+_LABEL = re.compile(r"^[A-Za-z][\w ]*:\s*")
+#: Words after a number at the end of a side: "180 miles".
+_UNIT = re.compile(r"(?<=[\d)])((?:\s+[A-Za-z]{2,})+)$")
+_WRITTEN = (("\\_", "_"), ("\\%", "%"), ("\\times", "*"), ("\\cdot", "*"), ("\\div", "/"), ("×", "*"),
+            ("÷", "/"), ("−", "-"), ("'", ""), ("’", ""))
+
+
+def _clean(line: str) -> str:
+    """A line with LaTeX names and signs written plainly."""
+    line = re.sub(r"\\q?quad\b.*$", "", line)
+    line = re.sub(r"(?<=\d)\s*\\(?:text|mathrm)\s*\{[^{}]*\}", "", line)
+    line = re.sub(r"\\(?:text|mathrm|textit|operatorname)\s*\{([^{}]*)\}",
+                  lambda found: "_".join(found.group(1).replace("\\_", "_").split()), line)
+    for written_as, plain in _WRITTEN:
+        line = line.replace(written_as, plain)
+    # 80,000 is a number, but gcd(12,180) is a function of two.
+    line = re.sub(r"(?<![\d,])(?<![A-Za-z]\()\d{1,3}(?:,\d{3})+(?![\d,])",
+                  lambda found: found.group().replace(",", ""), line)
+    return re.sub(r"^(?:let|so|then|and|thus|where|hence)\s+", "", line, flags=re.IGNORECASE).strip()
+
+
+def _unit_dropped(side: str) -> str:
+    """A side without the unit after its last number, unless the words are functions or constants."""
+    found = _UNIT.search(side)
+    words = found.group(1).split() if found else []
+    if found and not any(word.lower() in FUNCTION_NAMES or word in CONSTANTS for word in words):
+        return side[:found.start()].strip()
+    return side
+
+
+def _key(name: str) -> str:
+    """A name as one quantity: "Total" and "total" are the same, x and X are not."""
+    return name.lower() if len(name) > 1 else name
+
+
 def _target(text: str) -> str | None:
-    text = text.strip().rstrip(".")
+    text = _clean(text).strip().rstrip(".")
     boxed = _BOXED.search(text)
     if boxed:
         text = boxed.group(1)
@@ -74,8 +153,8 @@ def lettered(equations: list[str], target: str | None) -> tuple[list[str], str |
     names = []
     for text in equations + ([target] if target else []):
         for found in _NAME.finditer(text):
-            name = found.group()
-            reserved = name.lower() in FUNCTION_NAMES or name in CONSTANTS and name != "e"
+            name = _key(found.group())
+            reserved = name in FUNCTION_NAMES or name in CONSTANTS and name != "e"
             if not reserved and name not in names and (len(name) > 1 or name in "eiE"):
                 names.append(name)
     taken = {found.group() for text in equations + ([target] if target else [])
@@ -89,7 +168,7 @@ def lettered(equations: list[str], target: str | None) -> tuple[list[str], str |
         mapping[name] = letter
 
     def renamed(text: str) -> str:
-        return _NAME.sub(lambda found: mapping.get(found.group(), found.group()), text)
+        return _NAME.sub(lambda found: mapping.get(_key(found.group()), found.group()), text)
 
     return [renamed(text) for text in equations], renamed(target) if target else None, mapping
 

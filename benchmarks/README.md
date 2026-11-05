@@ -17,10 +17,14 @@ problem is solved three ways, with the same model and settings:
 - **The model writes equations, ADA solves them** (`solve`): the model
   writes the problem as equations without solving it and names the quantity
   asked for, and ADA solves the equations exactly. Every step of working
-  them out is ADA's. Names such as `eggs_sold` are given a letter each
-  before ADA reads them. When ADA cannot solve the equations, there is no
-  answer; the summary also shows ADA's answer with the model's own in its
-  place when there is none.
+  them out is ADA's. Four worked examples, written for this benchmark and
+  not taken from any data set, come before the question as earlier turns of
+  the chat. Names such as `eggs_sold` are given a letter each before ADA
+  reads them. ADA reads equations written in LaTeX or plain text, and leaves
+  out what the model works out itself: a name defined a second time, the
+  result at the end of `a = 2 / 2 = 1` and arithmetic with no name in it.
+  When ADA cannot solve the equations, there is no answer; the summary also
+  shows ADA's answer with the model's own in its place when there is none.
 
 ### Data and settings
 

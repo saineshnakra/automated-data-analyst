@@ -42,7 +42,7 @@ from pathlib import Path
 
 sys.path[:0] = [str(Path(__file__).resolve().parent), str(Path(__file__).resolve().parents[1])]
 
-from formalize import FORMAL_PROMPT, plain_number, solved_by_ada  # noqa: E402
+from formalize import formal_messages, plain_number, solved_by_ada  # noqa: E402
 
 from ada import tools  # noqa: E402
 from ada.chat import _written_call  # noqa: E402
@@ -148,8 +148,7 @@ def checked(base: str, model: str, alone: dict) -> dict:
 def formalized(base: str, model: str, question: str) -> dict:
     """The model's equations for the problem, and ADA's value for the quantity it names. Counts and amounts in
     grade-school problems are above zero, so of several values ADA takes the one that is."""
-    messages = [{"role": "system", "content": FORMAL_PROMPT}, {"role": "user", "content": question}]
-    message = chat(base, model, messages, [])
+    message = chat(base, model, formal_messages(question), [])
     reply = message.get("content", "")
     ada = solved_by_ada(reply, positive=True)
     number = None if ada["value"] is None else plain_number(ada["value"])
