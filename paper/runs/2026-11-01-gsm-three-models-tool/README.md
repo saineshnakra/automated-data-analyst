@@ -112,10 +112,11 @@ Of the GSM8K problems a model gets right alone, how many GSM-Hard versions it ge
   tool's effect for llama3.2:1b on GSM8K, not small differences for one model.
 - An earlier run, [41347923562](https://github.com/saineshnakra/automated-data-analyst/actions/runs/41347923562)
   (commit `5fc055f`, started 20:38 UTC on 2026-11-01), ran the same six jobs with the first version of the
-  checker, which told models that correct steps were wrong. It is not archived here. Five of its six jobs
-  were compared with this run: in four, 190 to 196 of 200 replies alone are the same word for word and no
-  answer changes between right and wrong; for llama3.2:1b on GSM-Hard, 79 are the same and 7 answers change.
-  benchmarks/README.md gives these numbers, and the two runs' records give the same.
+  checker, which told models that correct steps were wrong; it is archived as
+  [2026-11-01-gsm-three-models-first-checker](../2026-11-01-gsm-three-models-first-checker/README.md). Five
+  of its six jobs were compared with this run: in four, 190 to 196 of 200 replies alone are the same word for
+  word and no answer changes between right and wrong; for llama3.2:1b on GSM-Hard, 79 are the same and 7
+  answers change. benchmarks/README.md gives these numbers, and the two runs' records give the same.
 - benchmarks/README.md counts the equations ADA found wrong (for example 5 of 371 for qwen3:1.7b on GSM8K);
   analysis.py counts the wrong answers alone that have such an equation (4 of 45), a different measure.
 - benchmarks/README.md writes p = 0.13 for llama3.2:1b's 4 / 0 under `check` on GSM8K, and analysis.py 0.12:
@@ -124,7 +125,8 @@ Of the GSM8K problems a model gets right alone, how many GSM-Hard versions it ge
 
 ## Before and after
 
-- Before it: run 41347923562, above, not archived.
+- Before it: [2026-11-01-gsm-three-models-first-checker](../2026-11-01-gsm-three-models-first-checker/README.md),
+  run 41347923562, the same jobs with the first version of the checker.
 - After it: [2026-11-03-math500-tool](../2026-11-03-math500-tool/README.md), the same question on MATH-500, and
   [2026-11-05-gsm-solve-pilot](../2026-11-05-gsm-solve-pilot/README.md), the next GSM8K and GSM-Hard run.
 - Recorded in [benchmarks/README.md](../../../benchmarks/README.md) ("The first run: three models, with
