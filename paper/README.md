@@ -8,6 +8,9 @@ competition math problems wrong. Which of its mistakes does an exact solver fix,
 and the solver share the work? ADA is the solver: it checks the arithmetic in a model's answer, or solves
 the equations a model writes, exactly, with SymPy underneath.
 
+What the runs show so far, finding by finding with the runs each comes from, is in
+[findings.md](findings.md).
+
 ## Runs
 
 Each run has a folder in [runs/](runs/), named by the date it started:
