@@ -6,6 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "benchmarks"))
 
+import formalize  # noqa: E402
 from formalize import (  # noqa: E402
     FORMAL_ASK,
     formal_messages,
@@ -73,6 +74,12 @@ class WrittenTests(unittest.TestCase):
         found = solved_by_ada(reply)
         self.assertEqual((found["status"], found["value"]), ("solved", "260"))
 
+    def test_a_worked_example_repeated_has_no_value(self):
+        reply = ("Like the example:\nprice = 80\ndiscount = price * 25 / 100\npaid = price - discount - 5\n"
+                 "Answer: paid")
+        self.assertEqual(solved_by_ada(reply)["status"], "example repeated")
+        self.assertEqual(solved_by_ada(reply.replace("price = 80", "price = 90"))["value"], "62.5")
+
     def test_sentences_are_not_read(self):
         equations, _ = written("Toulouse has 2 * 4 = 8 sheep.\nSo the cost is x = 5\nThen y = x + 1")
         self.assertEqual(equations, ["y = x + 1"])
@@ -138,10 +145,12 @@ class MessagesTests(unittest.TestCase):
         self.assertEqual([message["role"] for message in messages[1:]],
                          ["user", "assistant"] * ((len(messages) - 2) // 2) + ["user"])
         self.assertEqual(messages[-1]["content"], f"How many?\n\n{FORMAL_ASK}")
-        # Each worked example is read by ADA to the value its question asks for.
-        values = [solved_by_ada(message["content"], positive=True)["value"]
-                  for message in messages if message["role"] == "assistant"]
-        self.assertEqual(values, ["55", "24", "10", "9"])
+        # Each worked example is read by ADA to the value its question asks for; a reply that repeats one has
+        # no value.
+        answers = [message["content"] for message in messages if message["role"] == "assistant"]
+        self.assertEqual([formalize._solved(*written(answer), True)["value"] for answer in answers],
+                         ["55", "24", "10", "9"])
+        self.assertEqual({solved_by_ada(answer)["status"] for answer in answers}, {"example repeated"})
 
     def test_the_worked_answers_agree_with_ada(self):
         from ada.compute import check_arithmetic  # noqa: PLC0415

@@ -25,7 +25,8 @@ problem is solved in up to five ways, with the same model and settings:
   result at the end of `a = 2 / 2 = 1` and arithmetic with no name in it.
   A model that thinks aloud tries equations on the way, so ADA reads the
   equations after the reply's last line of prose first, and every equation
-  in the reply when those have no one value.
+  in the reply when those have no one value. Equations that are a worked
+  example's own are the model repeating the example, and have no value.
   When ADA cannot solve the equations, there is no answer; the summary also
   shows ADA's answer with the model's own in its place when there is none.
 - **The model alone after worked examples** (`shots`): the same four

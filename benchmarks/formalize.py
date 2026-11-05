@@ -222,13 +222,21 @@ def solved_by_ada(text: str, positive: bool = False) -> dict:
     with several values takes the one that is above zero, when only one is.
 
     The equations after the reply's last line of prose are read first, and every equation in the reply when
-    those have no one value."""
+    those have no one value. Equations that are a worked example's own are the model repeating the example,
+    and have no value."""
     last, every = written(text, last=True), written(text)
+    if _example(*last) or _example(*every):
+        return {"status": "example repeated", "value": None, "equations": last[0], "target": last[1]}
     if last[0] != every[0]:
         found = _solved(*last, positive)
         if found["status"] == "solved":
             return {**found, "read_from": "the last equations"}
     return _solved(*every, positive)
+
+
+def _example(equations: list[str], target: str | None) -> bool:
+    """Whether the equations and target are those of one of the worked examples."""
+    return bool(target) and any(written(answered) == (equations, target) for _, answered in FORMAL_EXAMPLES)
 
 
 def _solved(equations: list[str], target: str | None, positive: bool) -> dict:
