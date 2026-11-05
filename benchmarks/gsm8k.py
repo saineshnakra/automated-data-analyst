@@ -20,7 +20,8 @@ Each problem is solved three ways with the same model and settings:
   and ADA solves the equations (``formalize.py``). ADA's value is the answer; when ADA cannot solve them,
   there is none.
 
-``--condition none,solve`` runs some of them; by default, the first three.
+``--condition none,solve`` runs some of them; by default, the first three. ``--shard 1/4`` takes every fourth
+problem from the second, so shards can run side by side.
 
 The model ends its reply with a line "Answer: <number>", and that number is compared with the answer after
 "####" in the data. Temperature is 0 and thinking is off, so a run repeats. It talks to Ollama's own API
@@ -169,6 +170,7 @@ def main() -> int:
     parser.add_argument("--base-url", default="http://localhost:11434")
     parser.add_argument("--problems", type=int, default=100, help="the first N problems (default: 100)")
     parser.add_argument("--out", required=True, help="write one JSON line per problem and condition here")
+    parser.add_argument("--shard", default="0/1", help="part/parts: every parts-th problem from part")
     parser.add_argument("--condition", default="none,tool,check",
                         help="conditions to run, separated by commas: " + ", ".join(CONDITIONS))
     args = parser.parse_args()
@@ -178,6 +180,7 @@ def main() -> int:
         parser.error(f"unknown condition {unknown[0]}; the conditions are {', '.join(CONDITIONS)}")
     rows = [json.loads(line) for line in Path(args.data).read_text(encoding="utf-8").splitlines() if line]
     rows = rows[:args.problems]
+    part, parts = (int(value) for value in args.shard.split("/"))
     done = {}
     out = Path(args.out)
     if out.exists():
@@ -187,6 +190,8 @@ def main() -> int:
             done[(record["index"], record["condition"])] = record
     with out.open("a", encoding="utf-8") as handle:
         for index, row in enumerate(rows):
+            if index % parts != part:
+                continue
             question, gold, tolerance = problem(row)
             alone = None
             for condition in conditions:
@@ -218,7 +223,8 @@ def main() -> int:
                 handle.write(json.dumps(record) + "\n")
                 handle.flush()
     for condition in conditions:
-        records = [done[(index, condition)] for index in range(len(rows)) if (index, condition) in done]
+        records = [done[(index, condition)] for index in range(len(rows))
+                   if (index, condition) in done and index % parts == part]
         correct = sum(record["correct"] for record in records)
         print(f"{args.model}, {condition}: {correct}/{len(records)} correct")
     return 0
