@@ -21,8 +21,8 @@ import urllib.request
 from pathlib import Path
 
 #: The run: the commit of this repository to test, the data sets (gsm8k and gsmhard, or math500), the models,
-#: the conditions, the first N problems (or MATH-500's subjects) and how many shards each data set is split
-#: into.
+#: the conditions, the first N problems (or MATH-500's subjects), how many of those to leave out (GSM8K and
+#: GSM-Hard only) and how many shards each data set is split into.
 CONFIG = {
     "commit": "c4b7e370de55e6044c2f10648bdc7bf08f57bc4c",
     "datasets": ["gsm8k", "gsmhard"],
@@ -90,6 +90,8 @@ def ladder(models: list[str], port: int, datasets: dict[str, Path], parallel: in
                            "--shard", f"{part}/{parallel}", "--out", str(out)]
                 if CONFIG.get("problems"):
                     command += ["--problems", str(CONFIG["problems"])]
+                if CONFIG.get("skip"):
+                    command += ["--skip", str(CONFIG["skip"])]
                 if name == "math500":
                     command += ["--subjects", *CONFIG["subjects"]]
                 log = open(f"{out}.log", "w")

@@ -33,6 +33,15 @@ problem is solved in up to five ways, with the same model and settings:
   example questions, worked out step by step, come before the question. It
   has as many examples as `solve`, so the two show what ADA adds beyond
   seeing examples.
+- **The model's answer and ADA's together** (`combine`): no more replies
+  are asked for. When the model's own answer and ADA's from `solve` agree,
+  that is the answer; when ADA has none, it is the checked answer; when they
+  differ, ADA's is taken if ADA found a wrong equation in the model's own
+  answer or the question has a number of five or more digits, and the
+  model's otherwise.
+- **The model decides** (`judge`): as `combine`, but when the two answers
+  differ, the model is shown ADA's equations and value beside its own answer
+  and answers once more.
 
 ### Thirteen models, 300 problems each
 
