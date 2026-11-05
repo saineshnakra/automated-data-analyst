@@ -18,7 +18,7 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-ORDER = ("none", "shots", "tool", "prompt", "schema", "check", "solve")
+ORDER = ("none", "shots", "tool", "prompt", "schema", "check", "solve", "plan", "retry", "combine", "judge")
 
 
 def load(run: Path) -> list[dict]:
