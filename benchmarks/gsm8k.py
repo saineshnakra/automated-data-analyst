@@ -21,9 +21,19 @@ Each problem is solved in up to five ways, with the same model and settings:
   there is none.
 - ``shots``: the model alone, after the four example questions of ``solve`` worked out step by step. It
   has as many examples as ``solve``, so the two show what ADA adds beyond the examples.
+- ``combine``: the model's own answer and ADA's from ``solve``, with no more replies asked for. When they
+  agree, that is the answer. When ADA has none, the answer is ``check``'s. When they differ, ADA's answer is
+  taken if ADA found a wrong equation in the model's own answer or the question has a number of five or
+  more digits, and the model's otherwise.
+- ``judge``: as ``combine``, but when the two answers differ the model is shown ADA's equations and value
+  beside its own answer and decides which is right.
+
+``combine`` and ``judge`` use the replies of ``none``, ``check`` and ``solve`` for the same problem, so they
+come after those three in ``--condition``.
 
 ``--condition none,solve`` runs some of them; by default, the first three. ``--shard 1/4`` takes every fourth
-problem from the second, so shards can run side by side.
+problem from the second, so shards can run side by side, and ``--skip 300`` leaves out the first 300 problems,
+so a run can test on problems an earlier run did not see.
 
 The model ends its reply with a line "Answer: <number>", and that number is compared with the answer after
 "####" in the data. Temperature is 0 and thinking is off, so a run repeats. It talks to Ollama's own API
@@ -58,7 +68,9 @@ TOOL_PROMPT = (
     PROMPT + " You can call ada_compute to work out any arithmetic step exactly: write the expression with "
     "the numbers from your reasoning, and use the value it returns."
 )
-CONDITIONS = ("none", "tool", "check", "solve", "shots")
+CONDITIONS = ("none", "tool", "check", "solve", "shots", "combine", "judge")
+#: A question with a number this many digits long or longer has arithmetic a small model often gets wrong.
+LARGE_DIGITS = 5
 #: Tool-calling rounds before the model must answer.
 ROUNDS = 8
 #: The longest reply, in tokens: a small model sometimes repeats itself until it is stopped.
@@ -158,6 +170,45 @@ def formalized(base: str, model: str, question: str) -> dict:
     return {"reply": "" if number is None else f"Answer: {number}", "calls": [], "formal": reply, "ada": ada}
 
 
+def large_numbers(question: str) -> bool:
+    """Whether the question has a number of LARGE_DIGITS or more digits before its decimal point."""
+    return any(len(number.replace(",", "").split(".")[0]) >= LARGE_DIGITS
+               for number in re.findall(r"\d[\d,]*(?:\.\d+)?", question))
+
+
+def agree(first: str | None, second: str | None, tolerance: Fraction) -> bool:
+    return first is not None and second is not None and abs(Fraction(first) - Fraction(second)) <= tolerance
+
+
+def combined(base: str, model: str, question: str, made: dict, tolerance: Fraction, ask: bool) -> dict:
+    """The answer from the model's own (``none``), ADA's (``solve``) and the checked one (``check``): the one
+    both give, ``check``'s when ADA has none, and when they differ, ADA's if the model's answer has a wrong
+    equation or the question has large numbers. With ``ask``, the model decides instead when they differ."""
+    alone, checked_, solved_ = made["none"], made["check"], made["solve"]
+    if solved_["given"] is None:
+        return {"reply": checked_["reply"], "calls": [], "decided_by": "no answer from ADA"}
+    if agree(alone["given"], solved_["given"], tolerance):
+        return {"reply": alone["reply"], "calls": [], "decided_by": "both agree"}
+    if ask:
+        ada = solved_["ada"]
+        equations = "\n".join(ada.get("equations", []))
+        messages = [{"role": "system", "content": PROMPT}, {"role": "user", "content": question},
+                    {"role": "assistant", "content": alone["reply"]},
+                    {"role": "user", "content": (
+                        f"An exact solver worked out the equations you wrote for this problem:\n{equations}\n"
+                        f"and found {ada.get('target')} = {plain_number(ada['value'])}. Your own answer was "
+                        f"{alone['given']}. They differ, so at least one is wrong. Check each against the "
+                        "problem, then end with a last line that starts with \"Answer:\" followed by the "
+                        "final number alone.")}]
+        message = chat(base, model, messages, [])
+        return {"reply": message.get("content", ""), "calls": [], "decided_by": "the model"}
+    if any(not item["correct"] for item in checked_.get("checks", [])):
+        return {"reply": solved_["reply"], "calls": [], "decided_by": "a wrong equation in its answer"}
+    if large_numbers(question):
+        return {"reply": solved_["reply"], "calls": [], "decided_by": "large numbers"}
+    return {"reply": alone["reply"], "calls": [], "decided_by": "the model's answer"}
+
+
 def problem(row: dict) -> tuple[str, Fraction, Fraction]:
     """The question, the answer and how far from it still counts as right, from a GSM8K or GSM-Hard row."""
     if "target" in row:
@@ -173,6 +224,7 @@ def main() -> int:
     parser.add_argument("--problems", type=int, default=100, help="the first N problems (default: 100)")
     parser.add_argument("--out", required=True, help="write one JSON line per problem and condition here")
     parser.add_argument("--shard", default="0/1", help="part/parts: every parts-th problem from part")
+    parser.add_argument("--skip", type=int, default=0, help="leave out the first N problems")
     parser.add_argument("--condition", default="none,tool,check",
                         help="conditions to run, separated by commas: " + ", ".join(CONDITIONS))
     args = parser.parse_args()
@@ -180,6 +232,10 @@ def main() -> int:
     unknown = [name for name in conditions if name not in CONDITIONS]
     if unknown:
         parser.error(f"unknown condition {unknown[0]}; the conditions are {', '.join(CONDITIONS)}")
+    for name in ("combine", "judge"):
+        if name in conditions and not all(c in conditions[:conditions.index(name)]
+                                          for c in ("none", "check", "solve")):
+            parser.error(f"{name} comes after none, check and solve in --condition")
     rows = [json.loads(line) for line in Path(args.data).read_text(encoding="utf-8").splitlines() if line]
     rows = rows[:args.problems]
     part, parts = (int(value) for value in args.shard.split("/"))
@@ -192,12 +248,13 @@ def main() -> int:
             done[(record["index"], record["condition"])] = record
     with out.open("a", encoding="utf-8") as handle:
         for index, row in enumerate(rows):
-            if index % parts != part:
+            if index % parts != part or index < args.skip:
                 continue
             question, gold, tolerance = problem(row)
-            alone = None
+            alone, made = None, {}
             for condition in conditions:
                 if (index, condition) in done:
+                    made[condition] = done[(index, condition)]
                     continue
                 started = time.monotonic()
                 try:
@@ -208,6 +265,9 @@ def main() -> int:
                         solved = formalized(args.base_url, args.model, question)
                     elif condition == "shots":
                         solved = solve(args.base_url, args.model, question, False, examples=worked_turns())
+                    elif condition in ("combine", "judge"):
+                        solved = combined(args.base_url, args.model, question, made, tolerance,
+                                          condition == "judge")
                     else:
                         solved = solve(args.base_url, args.model, question, condition == "tool")
                         if condition == "none":
@@ -221,13 +281,14 @@ def main() -> int:
                           "correct": given is not None and abs(given - gold) <= tolerance,
                           "seconds": round(time.monotonic() - started, 1), "tool_calls": len(solved["calls"]),
                           "reply": solved["reply"], "calls": solved["calls"],
-                          **{key: solved[key] for key in ("checks", "first_reply", "formal", "ada", "error")
-                             if key in solved}}
+                          **{key: solved[key] for key in ("checks", "first_reply", "formal", "ada", "error",
+                                                          "decided_by") if key in solved}}
                 done[(index, condition)] = record
+                made[condition] = record
                 handle.write(json.dumps(record) + "\n")
                 handle.flush()
     for condition in conditions:
-        records = [done[(index, condition)] for index in range(len(rows))
+        records = [done[(index, condition)] for index in range(args.skip, len(rows))
                    if (index, condition) in done and index % parts == part]
         correct = sum(record["correct"] for record in records)
         print(f"{args.model}, {condition}: {correct}/{len(records)} correct")
