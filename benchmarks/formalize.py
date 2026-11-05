@@ -86,35 +86,51 @@ _ASIDE = re.compile(r"\s*\((?=[^()]*[A-Za-z]{2})[A-Za-z0-9\s]+\)\s*$")
 _LETTERS = [letter for letter in string.ascii_lowercase + string.ascii_uppercase if letter not in "eiE"]
 
 
-def written(text: str) -> tuple[list[str], str | None]:
-    """The equations a reply writes, one a line, and the quantity its "Answer:" line asks for.
+def written(text: str, last: bool = False) -> tuple[list[str], str | None]:
+    """The equations a reply writes, one a line, and the quantity its "Answer:" line asks for. With ``last``,
+    only the equations after the reply's last line of prose: a model that thinks aloud before it writes the
+    equations, and tries some on the way, puts the ones it settles on at the end.
 
     A line is read as LaTeX or plain text: ``\\text{eggs sold}`` is the name ``eggs_sold``, ``\\times`` is *,
     a unit after a number is left out, and so are "let" and a label before an equation. What the model works
     out itself is not read: in ``white = 2 / 2 = 1`` the name is defined by what follows it, a line that
     defines a name again is left out, and so is arithmetic with no name in it. A sentence with an equation in
     it is not read."""
-    equations, target, defined = [], None, set()
+    equations, target, defined, answered = [], None, set(), []
     for raw in text.splitlines():
         line = _clean(_BULLET.sub("", _DELIMITERS.sub("", raw)).strip())
         found = _ANSWER.match(line)
         if found:
-            target = _target(found.group(1))
+            target, answered = _target(found.group(1)), list(equations)
             continue
-        if "=" not in line or re.search(r"[<>!≈≠]|==", line):
+        equation = _equation(line)
+        if equation is None:
+            if line and last:
+                # Prose: what comes before it was thinking aloud.
+                equations, defined = [], set()
             continue
-        line = _LABEL.sub("", _ASIDE.sub("", line.rstrip(".,;")).rstrip(".,;"))
-        left, right = (_unit_dropped(side.strip()) for side in line.split("=")[:2])
-        if not left or not right or any(_PROSE.search(side) for side in (left, right)):
+        left = equation.split(" = ", 1)[0]
+        if _key(left) in defined:
             continue
-        if not _NAME.search(left + " " + right) or _key(left) in defined:
-            continue
-        equation = f"{left} = {right}"
         if equation not in equations:
             equations.append(equation)
         if _NAME.fullmatch(left):
             defined.add(_key(left))
-    return equations, target
+    # With last, the equations just before the last Answer line, whatever prose follows it.
+    return (answered if last else equations), target
+
+
+def _equation(line: str) -> str | None:
+    """A cleaned line as "left = right", or None when it is not an equation ADA reads."""
+    if "=" not in line or re.search(r"[<>!≈≠?]|==", line):
+        return None
+    line = _LABEL.sub("", _ASIDE.sub("", line.rstrip(".,;")).rstrip(".,;"))
+    left, right = (_unit_dropped(side.strip()) for side in line.split("=")[:2])
+    if not left or not right or any(_PROSE.search(side) for side in (left, right)):
+        return None
+    if not _NAME.search(left + " " + right):
+        return None
+    return f"{left} = {right}"
 
 
 #: Two words in a row: a sentence, not an equation.
@@ -203,8 +219,19 @@ def _plain(text: str) -> str:
 def solved_by_ada(text: str, positive: bool = False) -> dict:
     """ADA's value for what a reply's equations ask for: the status, the value when there is exactly one, and
     what ADA read. With ``positive``, for word problems whose quantities are counts and amounts, a target
-    with several values takes the one that is above zero, when only one is."""
-    equations, target = written(text)
+    with several values takes the one that is above zero, when only one is.
+
+    The equations after the reply's last line of prose are read first, and every equation in the reply when
+    those have no one value."""
+    last, every = written(text, last=True), written(text)
+    if last[0] != every[0]:
+        found = _solved(*last, positive)
+        if found["status"] == "solved":
+            return {**found, "read_from": "the last equations"}
+    return _solved(*every, positive)
+
+
+def _solved(equations: list[str], target: str | None, positive: bool) -> dict:
     if not target:
         return {"status": "no answer line", "value": None, "equations": equations, "target": None}
     renamed, aim, mapping = lettered(equations, target)

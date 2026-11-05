@@ -56,6 +56,23 @@ class WrittenTests(unittest.TestCase):
                                "Total: 10 + 15 = 25 liters\n= 48")
         self.assertEqual(equations, ["total = boxes + 4", "white = 2 / 2"])
 
+    def test_the_last_equations_after_thinking_aloud(self):
+        reply = ("Let me think. The jacket example had price = 80, so maybe total = 3 * 12.\n"
+                 "Wait, I should check. a = ?\n"
+                 "So the equations are:\n\ndays = 4 * 7\neggs = 3 * days\ndozens = eggs / 12\n\n"
+                 "Answer: dozens\nThat is the number of dozens.")
+        equations = ["days = 4 * 7", "eggs = 3 * days", "dozens = eggs / 12"]
+        self.assertEqual(written(reply, last=True), (equations, "dozens"))
+        self.assertEqual(solved_by_ada(reply)["value"], "7")
+
+    def test_every_equation_when_the_last_ones_have_no_value(self):
+        # A sentence between the equations does not cut off the ones before it when ADA needs them.
+        reply = ("t = 2 * c\nCharleston has four times as many as Seattle:\nc = 4 * s\ns = 20\n"
+                 "Answer: t + c + s")
+        self.assertEqual(written(reply, last=True)[0], ["c = 4 * s", "s = 20"])
+        found = solved_by_ada(reply)
+        self.assertEqual((found["status"], found["value"]), ("solved", "260"))
+
     def test_sentences_are_not_read(self):
         equations, _ = written("Toulouse has 2 * 4 = 8 sheep.\nSo the cost is x = 5\nThen y = x + 1")
         self.assertEqual(equations, ["y = x + 1"])
