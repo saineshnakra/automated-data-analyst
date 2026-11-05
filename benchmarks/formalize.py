@@ -13,10 +13,10 @@ given another letter too.
 
 from __future__ import annotations
 
+import math
 import re
 import string
 from decimal import Decimal, localcontext
-from tokenize import TokenError
 
 from ada.algebra import solve
 from ada.compute import CONSTANTS, FUNCTION_NAMES, Refusal, compute
@@ -228,7 +228,15 @@ def solved_by_ada(text: str, positive: bool = False) -> dict:
 
     The equations after the reply's last line of prose are read first, and every equation in the reply when
     those have no one value. Equations that are a worked example's own are the model repeating the example,
-    and have no value."""
+    and have no value. Anything else that goes wrong in reading a reply is recorded as an error with its
+    message, so one reply cannot stop a run."""
+    try:
+        return _read(text, positive)
+    except Exception as error:  # noqa: BLE001 - a benchmark run records the failure and goes on
+        return {"status": "error", "value": None, "message": f"{type(error).__name__}: {error}"[:500]}
+
+
+def _read(text: str, positive: bool) -> dict:
     last, every = written(text, last=True), written(text)
     if _example(*last) or _example(*every):
         return {"status": "example repeated", "value": None, "equations": last[0], "target": last[1]}
@@ -319,8 +327,14 @@ def _value_of(aim: str, known: dict[str, str]) -> str | None:
     return None if value is None else str(value)
 
 
+#: The most digits an exact number in the solve condition may have: Python writes out whole numbers of up to
+#: 4,300 digits.
+MAX_DIGITS = 4_000
+
+
 def _sympy(expression: str):
-    """The exact value of an expression with no unknowns left, with SymPy, or None."""
+    """The exact value of an expression with no unknowns left, with SymPy, or None. A power or a value with
+    more than MAX_DIGITS digits has none: 2^235423523 is not worked out."""
     import sympy  # noqa: PLC0415 - only the solve condition needs it
     from sympy.parsing.sympy_parser import (  # noqa: PLC0415
         implicit_multiplication_application,
@@ -328,16 +342,33 @@ def _sympy(expression: str):
         standard_transformations,
     )
 
+    text = expression.replace("^", "**")
+    options = {"local_dict": {"e": sympy.E, "pi": sympy.pi},
+               "transformations": standard_transformations + (implicit_multiplication_application,)}
     try:
-        value = parse_expr(expression.replace("^", "**"), local_dict={"e": sympy.E, "pi": sympy.pi},
-                           transformations=standard_transformations + (implicit_multiplication_application,))
-        value = sympy.nsimplify(value, rational=False)
-    except (sympy.SympifyError, TypeError, ValueError, SyntaxError, ZeroDivisionError, AttributeError,
-            TokenError):
+        if _huge(parse_expr(text, evaluate=False, **options)):
+            return None
+        value = sympy.nsimplify(parse_expr(text, **options), rational=False)
+        if value.free_symbols or not value.is_number or value.has(sympy.zoo, sympy.nan, sympy.oo):
+            return None
+        value = sympy.simplify(value)
+        return None if _huge(value) else value
+    except Exception:  # noqa: BLE001 - SymPy's parser raises many kinds of error on text it cannot read
         return None
-    if value.free_symbols or not value.is_number or value.has(sympy.zoo, sympy.nan, sympy.oo):
-        return None
-    return sympy.simplify(value)
+
+
+def _huge(tree) -> bool:
+    """Whether an expression holds a whole-number power or a fraction with more than MAX_DIGITS digits."""
+    import sympy  # noqa: PLC0415
+
+    for node in sympy.preorder_traversal(tree):
+        if isinstance(node, sympy.Rational) and max(abs(node.p), node.q).bit_length() > MAX_DIGITS * 3.33:
+            return True
+        if isinstance(node, sympy.Pow) and node.exp.is_Integer and node.base.is_Rational:
+            size = max(abs(node.base.p), node.base.q)
+            if size > 1 and abs(int(node.exp)) * math.log10(size) > MAX_DIGITS:
+                return True
+    return False
 
 
 def plain_number(value: str) -> str | None:
