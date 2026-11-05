@@ -147,8 +147,11 @@ the root not negative). See
 model can reason in its own words and be told each slip with the right
 value. It reads plain text and the LaTeX that answers to competition
 problems use (`\frac{14}{3}`, `\sqrt{27} = 3\sqrt{3}`, `\binom{6}{2}`). With
-three small local models on GSM8K and GSM-Hard, that turned 32 wrong
-answers right and one right answer wrong ([benchmarks](benchmarks/README.md)).
+thirteen small local models on GSM8K and GSM-Hard, checking turned 167
+wrong answers right and 5 right answers wrong. When the numbers are large,
+a model that writes the problem as equations for ADA to solve does better
+still: llama3.2:3b gets 195 of 300 GSM-Hard problems right that way, against
+86 alone ([benchmarks](benchmarks/README.md)).
 
 ## Compute an answer, or map a folder
 

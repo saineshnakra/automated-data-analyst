@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 import string
+from decimal import Decimal, localcontext
 from tokenize import TokenError
 
 from ada.algebra import solve
@@ -336,11 +337,22 @@ def _sympy(expression: str):
 
 
 def plain_number(value: str) -> str | None:
-    """ADA's value as a plain decimal number: a fraction or a root is written to 12 significant figures."""
+    """ADA's value as a plain decimal number: a fraction or a root is written to 10 decimal places, in digits
+    only, never as 1.2e-05, since the answer is read digit by digit."""
+    import sympy  # noqa: PLC0415 - only the solve condition needs it
+
     if re.fullmatch(r"-?\d+(?:\.\d+)?", value):
         return value
     number = _sympy(value)
-    return None if number is None or not number.is_real else format(float(number), ".12g")
+    if number is None or not number.is_real:
+        return None
+    digits = Decimal(str(sympy.N(number, 60)))
+    with localcontext() as context:
+        # Room for every digit before the point and ten after it, however large the number is.
+        context.prec = max(digits.adjusted(), 0) + 20
+        rounded = digits.quantize(Decimal("1e-10"))
+    text = format(rounded, "f").rstrip("0").rstrip(".")
+    return "0" if text in ("", "-0") else text
 
 
 def latex_value(value: str) -> str:

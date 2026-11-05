@@ -164,7 +164,12 @@ class MessagesTests(unittest.TestCase):
 class ValueTests(unittest.TestCase):
     def test_plain_numbers_and_latex(self):
         self.assertEqual([plain_number(value) for value in ("18", "-2.25", "16/57", "3*sqrt(3)")],
-                         ["18", "-2.25", "0.280701754386", "5.19615242271"])
+                         ["18", "-2.25", "0.2807017544", "5.1961524227"])
+        # Digits only, however small or large: "Answer: 1.2e-05" would be read as 1.2.
+        values = ("7/594080", "10000000000000/3", "-1/30000000000000")
+        self.assertEqual([plain_number(value) for value in values],
+                         ["0.0000117829", "3333333333333.3333333333", "0"])
+        self.assertEqual(plain_number("10^80/4"), "25" + "0" * 78)
         self.assertIsNone(plain_number("I"))
         self.assertEqual(latex_value("3*sqrt(3)"), "3 \\sqrt{3}")
         self.assertEqual(latex_value("16/57"), "\\frac{16}{57}")
