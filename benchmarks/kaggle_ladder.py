@@ -1,14 +1,15 @@
-"""GSM8K and GSM-Hard on Kaggle's two T4 GPUs: one Ollama server on each GPU, the models split between them,
-and every shard's results left in /kaggle/working/results.
+"""GSM8K, GSM-Hard or MATH-500 on Kaggle's two T4 GPUs: one Ollama server on each GPU, the models split
+between them, and every shard's results left in /kaggle/working/results.
 
-Kaggle runs a script kernel as one file, so the settings are in CONFIG below; this is the run recorded in
-benchmarks/README.md. To run it, put this file in a folder with a kernel-metadata.json that names it as the
-code file, with "enable_gpu": true and "enable_internet": true, then:
+Kaggle runs a script kernel as one file, so the settings are in CONFIG below: the last run made with it.
+paper/runs/ keeps each run's own settings. To run it, put this file in a folder with a kernel-metadata.json
+that names it as the code file, with "enable_gpu": true and "enable_internet": true, then:
 
     kaggle kernels push -p <folder> --accelerator NvidiaTeslaT4
     kaggle kernels output <user>/<kernel> -p <out> --file-pattern 'results/.*'
 
-Each results file is gsm8k.py's output for one model, data set and shard; summary.py reads it.
+Each results file is gsm8k.py's or math500.py's output for one model, data set and shard; summary.py and
+math500.py --summary read them.
 """
 
 import os
@@ -19,8 +20,9 @@ import time
 import urllib.request
 from pathlib import Path
 
-#: The run: the commit of this repository to test, the data, the models, the conditions, the first N
-#: problems and how many shards each data set is split into.
+#: The run: the commit of this repository to test, the data sets (gsm8k and gsmhard, or math500), the models,
+#: the conditions, the first N problems (or MATH-500's subjects) and how many shards each data set is split
+#: into.
 CONFIG = {
     "commit": "c4b7e370de55e6044c2f10648bdc7bf08f57bc4c",
     "datasets": ["gsm8k", "gsmhard"],
@@ -37,6 +39,9 @@ GSM8K = ("https://raw.githubusercontent.com/openai/grade-school-math/master/grad
          "3730d312f6e3440559ace48831e51066acaca737f6eabec99bccb9e4b3c39d14")
 GSMHARD = ("https://raw.githubusercontent.com/reasoning-machines/pal/main/datasets/gsmhardv2.jsonl",
            "2032b0188a49ac0ec38cbe1e695e7d62d6dddc44bbb64f920728aca710e9ddef")
+MATH500 = ("https://huggingface.co/datasets/HuggingFaceH4/MATH-500/resolve/main/test.jsonl",
+           "35dc41080a3680858b27fa7e0533d2d547825316fc5dafe5d316f4ccc5a06132")
+SOURCES = {"gsm8k": GSM8K, "gsmhard": GSMHARD, "math500": MATH500}
 
 
 def sh(command: str, env: dict | None = None) -> None:
@@ -79,10 +84,14 @@ def ladder(models: list[str], port: int, datasets: dict[str, Path], parallel: in
         for name, data in datasets.items():
             for part in range(parallel):
                 out = results / f"{name}-{slug}-{part}.jsonl"
-                command = [sys.executable, str(REPO / "benchmarks/gsm8k.py"), str(data), "--model", model,
+                script = "math500.py" if name == "math500" else "gsm8k.py"
+                command = [sys.executable, str(REPO / "benchmarks" / script), str(data), "--model", model,
                            "--base-url", f"http://127.0.0.1:{port}", "--condition", CONFIG["conditions"],
-                           "--problems", str(CONFIG["problems"]), "--shard", f"{part}/{parallel}",
-                           "--out", str(out)]
+                           "--shard", f"{part}/{parallel}", "--out", str(out)]
+                if CONFIG.get("problems"):
+                    command += ["--problems", str(CONFIG["problems"])]
+                if name == "math500":
+                    command += ["--subjects", *CONFIG["subjects"]]
                 log = open(f"{out}.log", "w")
                 jobs.append(subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT))
         for job in jobs:
@@ -103,8 +112,10 @@ def main() -> int:
     sh(f"git clone -q https://github.com/saineshnakra/automated-data-analyst.git {REPO} && "
        f"git -C {REPO} checkout -q {CONFIG['commit']}")
     sh(f"pip install -q -e {REPO}")
-    datasets = {name: fetched(source, WORK / f"{name}.jsonl")
-                for name, source in (("gsm8k", GSM8K), ("gsmhard", GSMHARD)) if name in CONFIG["datasets"]}
+    if "math500" in CONFIG["datasets"]:
+        # The grader made for MATH, which math500.py uses to compare answers.
+        sh("pip install -q 'math-verify[antlr4_13_2]==0.9.0'")
+    datasets = {name: fetched(SOURCES[name], WORK / f"{name}.jsonl") for name in CONFIG["datasets"]}
     (WORK / "results").mkdir(exist_ok=True)
     models = CONFIG["models"]
     # The models alternate between the GPUs, so each GPU has a mix of sizes.
