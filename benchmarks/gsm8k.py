@@ -21,6 +21,10 @@ Each problem is solved in up to five ways, with the same model and settings:
   there is none.
 - ``shots``: the model alone, after the four example questions of ``solve`` worked out step by step. It
   has as many examples as ``solve``, so the two show what ADA adds beyond the examples.
+- ``plan``: as ``solve``, but the model first works out in words how to solve the problem (which quantities
+  it gives, which it asks for and how they are related) and then writes the equations.
+- ``retry``: as ``solve``, but when ADA finds no one value for the model's equations, the model is told why
+  (the quantities with no value, or ADA's reason for refusing) and writes them again, once.
 - ``combine``: the model's own answer and ADA's from ``solve``, with no more replies asked for. When they
   agree, that is the answer. When ADA has none, the answer is ``check``'s. When they differ, ADA's answer is
   taken if ADA found a wrong equation in the model's own answer or the question has a number of five or
@@ -54,7 +58,14 @@ from pathlib import Path
 
 sys.path[:0] = [str(Path(__file__).resolve().parent), str(Path(__file__).resolve().parents[1])]
 
-from formalize import formal_messages, plain_number, solved_by_ada, worked_turns  # noqa: E402
+from formalize import (  # noqa: E402
+    feedback,
+    formal_messages,
+    plain_number,
+    plan_messages,
+    solved_by_ada,
+    worked_turns,
+)
 
 from ada import tools  # noqa: E402
 from ada.chat import _written_call  # noqa: E402
@@ -68,7 +79,10 @@ TOOL_PROMPT = (
     PROMPT + " You can call ada_compute to work out any arithmetic step exactly: write the expression with "
     "the numbers from your reasoning, and use the value it returns."
 )
-CONDITIONS = ("none", "tool", "check", "solve", "shots", "combine", "judge")
+CONDITIONS = ("none", "tool", "check", "solve", "shots", "combine", "judge", "plan", "retry")
+#: What a condition's reply keeps in its record besides the answer.
+KEPT = ("checks", "first_reply", "formal", "ada", "error", "decided_by", "first_formal", "first_ada",
+        "feedback")
 #: A question with a number this many digits long or longer has arithmetic a small model often gets wrong.
 LARGE_DIGITS = 5
 #: Tool-calling rounds before the model must answer.
@@ -160,14 +174,24 @@ def checked(base: str, model: str, alone: dict) -> dict:
             "first_reply": alone["reply"]}
 
 
-def formalized(base: str, model: str, question: str) -> dict:
+def formalized(base: str, model: str, question: str, plan: bool = False, retry: bool = False) -> dict:
     """The model's equations for the problem, and ADA's value for the quantity it names. Counts and amounts in
-    grade-school problems are above zero, so of several values ADA takes the one that is."""
-    message = chat(base, model, formal_messages(question), [])
-    reply = message.get("content", "")
+    grade-school problems are above zero, so of several values ADA takes the one that is. With ``plan``, the
+    model works out how to solve the problem in words before it writes the equations; with ``retry``, it
+    writes them again once when ADA finds no one value, told why."""
+    messages = plan_messages(question) if plan else formal_messages(question)
+    reply = chat(base, model, messages, []).get("content", "")
     ada = solved_by_ada(reply, positive=True)
+    first = {}
+    advice = feedback(ada) if retry else None
+    if advice:
+        messages = messages + [{"role": "assistant", "content": reply}, {"role": "user", "content": advice}]
+        first = {"first_formal": reply, "first_ada": ada, "feedback": advice}
+        reply = chat(base, model, messages, []).get("content", "")
+        ada = solved_by_ada(reply, positive=True)
     number = None if ada["value"] is None else plain_number(ada["value"])
-    return {"reply": "" if number is None else f"Answer: {number}", "calls": [], "formal": reply, "ada": ada}
+    return {"reply": "" if number is None else f"Answer: {number}", "calls": [], "formal": reply, "ada": ada,
+            **first}
 
 
 def large_numbers(question: str) -> bool:
@@ -261,8 +285,9 @@ def main() -> int:
                     if condition == "check":
                         alone = alone or solve(args.base_url, args.model, question, False)
                         solved = checked(args.base_url, args.model, alone)
-                    elif condition == "solve":
-                        solved = formalized(args.base_url, args.model, question)
+                    elif condition in ("solve", "plan", "retry"):
+                        solved = formalized(args.base_url, args.model, question, condition == "plan",
+                                            condition == "retry")
                     elif condition == "shots":
                         solved = solve(args.base_url, args.model, question, False, examples=worked_turns())
                     elif condition in ("combine", "judge"):
@@ -281,8 +306,7 @@ def main() -> int:
                           "correct": given is not None and abs(given - gold) <= tolerance,
                           "seconds": round(time.monotonic() - started, 1), "tool_calls": len(solved["calls"]),
                           "reply": solved["reply"], "calls": solved["calls"],
-                          **{key: solved[key] for key in ("checks", "first_reply", "formal", "ada", "error",
-                                                          "decided_by") if key in solved}}
+                          **{key: solved[key] for key in KEPT if key in solved}}
                 done[(index, condition)] = record
                 made[condition] = record
                 handle.write(json.dumps(record) + "\n")

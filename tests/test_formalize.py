@@ -9,10 +9,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "benchmarks"))
 import formalize  # noqa: E402
 from formalize import (  # noqa: E402
     FORMAL_ASK,
+    PLAN_ASK,
+    feedback,
     formal_messages,
     latex_value,
     lettered,
+    missing,
     plain_number,
+    plan_messages,
     solved_by_ada,
     worked_turns,
     written,
@@ -163,6 +167,38 @@ class MessagesTests(unittest.TestCase):
         boxed = [turn["content"] for turn in worked_turns(boxed=True) if turn["role"] == "assistant"]
         self.assertTrue(boxed[0].endswith("The answer is \\boxed{55}."))
         self.assertNotIn("Answer:", " ".join(boxed))
+
+
+class PlanTests(unittest.TestCase):
+    def test_the_examples_reason_then_write_the_equations(self):
+        messages = plan_messages("How many?")
+        self.assertEqual(messages[-1]["content"], f"How many?\n\n{PLAN_ASK}")
+        answers = [message["content"] for message in messages if message["role"] == "assistant"]
+        # ADA reads the equations after the reasoning, the same as those of the solve examples.
+        values = [formalize._solved(*written(answer, last=True), True)["value"] for answer in answers]
+        self.assertEqual(values, ["55", "24", "10", "9"])
+
+
+class FeedbackTests(unittest.TestCase):
+    def test_the_quantities_no_equation_defines(self):
+        found = solved_by_ada("blue = 2*b\nwhite = 1/2 * blue\nAnswer: blue + white")
+        self.assertEqual(missing(found), ["b"])
+        found = solved_by_ada("toulouse = 2 * charleston\ncharleston = 4 * seattle\n"
+                              "Answer: toluoise + charleston + seattle")
+        self.assertEqual(missing(found), ["seattle", "toluoise"])
+        self.assertIn("These quantities have no value: seattle, toluoise.", feedback(found))
+
+    def test_why_there_is_no_one_value(self):
+        self.assertIn("-2, 2", feedback(solved_by_ada("x^2 = 4\nAnswer: x")))
+        self.assertIn("no line that starts with", feedback(solved_by_ada("x = 3")))
+        self.assertIn("ADA could not solve", feedback(solved_by_ada("x = 5\ny = x/0\nAnswer: y")))
+        # A value needs nothing more.
+        self.assertIsNone(feedback(solved_by_ada("x = 5\nAnswer: x")))
+        self.assertIsNone(feedback(solved_by_ada("Answer: 18")))
+
+    def test_thin_input(self):
+        self.assertEqual(missing(solved_by_ada("")), [])
+        self.assertIn("Answer", feedback(solved_by_ada("")))
 
 
 class ValueTests(unittest.TestCase):
