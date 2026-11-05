@@ -3,7 +3,7 @@
 ## GSM8K and GSM-Hard with small local models
 
 Does a small model get more grade-school word problems right with ADA? Each
-problem is solved three ways, with the same model and settings:
+problem is solved in up to five ways, with the same model and settings:
 
 - **Alone**: the model works the problem and ends with "Answer: <number>".
 - **With `ada_compute`**: the model may call ADA's arithmetic tool for any
@@ -25,6 +25,10 @@ problem is solved three ways, with the same model and settings:
   result at the end of `a = 2 / 2 = 1` and arithmetic with no name in it.
   When ADA cannot solve the equations, there is no answer; the summary also
   shows ADA's answer with the model's own in its place when there is none.
+- **The model alone after worked examples** (`shots`): the same four
+  example questions, worked out step by step, come before the question. It
+  has as many examples as `solve`, so the two show what ADA adds beyond
+  seeing examples.
 
 ### Data and settings
 

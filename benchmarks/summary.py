@@ -7,7 +7,7 @@ import json
 import sys
 from collections import Counter, defaultdict
 
-CONDITIONS = ("none", "tool", "check", "solve")
+CONDITIONS = ("none", "shots", "tool", "check", "solve")
 
 
 def main(path: str) -> int:

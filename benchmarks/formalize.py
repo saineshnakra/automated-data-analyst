@@ -43,6 +43,25 @@ FORMAL_EXAMPLES = (
      "missing = 120 - 40\nminutes = missing / 8\nAnswer: minutes"),
     ("If 3x + 7 = 22, what is the value of 2x - 1?", "3*x + 7 = 22\nAnswer: 2*x - 1"),
 )
+#: The same examples worked out step by step, for the ``shots`` condition: the model alone with as many
+#: examples as ``solve`` has, so that what ``solve`` gains is not only from seeing examples.
+WORKED_ANSWERS = (
+    "The discount is 25% of $80, which is 80 * 25 / 100 = 20 dollars. Sam pays 80 - 20 - 5 = 55 dollars.\n"
+    "Answer: 55",
+    "Together they have Leo's stickers three times over, so Leo has 36 / 3 = 12 stickers and Mia has "
+    "2 * 12 = 24.\nAnswer: 24",
+    "The tank is missing 120 - 40 = 80 litres. At 8 litres a minute, that takes 80 / 8 = 10 minutes.\n"
+    "Answer: 10",
+    "3x = 22 - 7 = 15, so x = 15 / 3 = 5. Then 2x - 1 = 2 * 5 - 1 = 9.\nAnswer: 9",
+)
+
+
+def worked_turns() -> list[dict]:
+    """The example questions and their step-by-step answers, as earlier turns of a chat."""
+    turns = []
+    for (asked, _), answered in zip(FORMAL_EXAMPLES, WORKED_ANSWERS, strict=True):
+        turns += [{"role": "user", "content": asked}, {"role": "assistant", "content": answered}]
+    return turns
 
 
 def formal_messages(question: str) -> list[dict]:

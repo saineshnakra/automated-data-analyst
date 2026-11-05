@@ -13,6 +13,7 @@ from formalize import (  # noqa: E402
     lettered,
     plain_number,
     solved_by_ada,
+    worked_turns,
     written,
 )
 
@@ -124,6 +125,14 @@ class MessagesTests(unittest.TestCase):
         values = [solved_by_ada(message["content"], positive=True)["value"]
                   for message in messages if message["role"] == "assistant"]
         self.assertEqual(values, ["55", "24", "10", "9"])
+
+    def test_the_worked_answers_agree_with_ada(self):
+        from ada.compute import check_arithmetic  # noqa: PLC0415
+
+        answers = [turn["content"] for turn in worked_turns() if turn["role"] == "assistant"]
+        self.assertEqual([answer.rsplit("Answer: ", 1)[1] for answer in answers], ["55", "24", "10", "9"])
+        # Every step written in them is right.
+        self.assertTrue(all(item.correct for answer in answers for item in check_arithmetic(answer)))
 
 
 class ValueTests(unittest.TestCase):

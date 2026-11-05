@@ -8,7 +8,7 @@ exact arithmetic?
 It reads GSM-Hard too (the same problems with larger numbers, ``gsmhardv2.jsonl`` from the PAL repository),
 whose answers are floating-point results and are matched to within 0.001.
 
-Each problem is solved three ways with the same model and settings:
+Each problem is solved in up to five ways, with the same model and settings:
 
 - ``none``: the model alone.
 - ``tool``: the model may call ``ada_compute`` for any arithmetic step. A call written out as text instead of
@@ -19,6 +19,8 @@ Each problem is solved three ways with the same model and settings:
 - ``solve``: the model writes the problem as equations without solving it, names the quantity asked for,
   and ADA solves the equations (``formalize.py``). ADA's value is the answer; when ADA cannot solve them,
   there is none.
+- ``shots``: the model alone, after the four example questions of ``solve`` worked out step by step. It
+  has as many examples as ``solve``, so the two show what ADA adds beyond the examples.
 
 ``--condition none,solve`` runs some of them; by default, the first three. ``--shard 1/4`` takes every fourth
 problem from the second, so shards can run side by side.
@@ -42,7 +44,7 @@ from pathlib import Path
 
 sys.path[:0] = [str(Path(__file__).resolve().parent), str(Path(__file__).resolve().parents[1])]
 
-from formalize import formal_messages, plain_number, solved_by_ada  # noqa: E402
+from formalize import formal_messages, plain_number, solved_by_ada, worked_turns  # noqa: E402
 
 from ada import tools  # noqa: E402
 from ada.chat import _written_call  # noqa: E402
@@ -56,7 +58,7 @@ TOOL_PROMPT = (
     PROMPT + " You can call ada_compute to work out any arithmetic step exactly: write the expression with "
     "the numbers from your reasoning, and use the value it returns."
 )
-CONDITIONS = ("none", "tool", "check", "solve")
+CONDITIONS = ("none", "tool", "check", "solve", "shots")
 #: Tool-calling rounds before the model must answer.
 ROUNDS = 8
 #: The longest reply, in tokens: a small model sometimes repeats itself until it is stopped.
@@ -101,11 +103,12 @@ def final_number(text: str) -> Fraction | None:
 
 def solve(base: str, model: str, question: str, with_ada: bool,
           prompts: tuple[str, str] = (PROMPT, TOOL_PROMPT), max_tokens: int = MAX_TOKENS,
-          think: bool = False, options: dict | None = None) -> dict:
+          think: bool = False, options: dict | None = None, examples: list[dict] | None = None) -> dict:
     """The model's reply to one problem, with ada_compute offered when ``with_ada``; ``prompts`` are the
-    system prompts without and with the tool, and ``think`` turns on a thinking model's thinking."""
+    system prompts without and with the tool, ``think`` turns on a thinking model's thinking and
+    ``examples`` are earlier turns of the chat."""
     offered = [compute_tool()] if with_ada else []
-    messages = [{"role": "system", "content": prompts[1] if with_ada else prompts[0]},
+    messages = [{"role": "system", "content": prompts[1] if with_ada else prompts[0]}, *(examples or []),
                 {"role": "user", "content": question}]
     calls = []
     for round_ in range(ROUNDS + 1):
@@ -203,6 +206,8 @@ def main() -> int:
                         solved = checked(args.base_url, args.model, alone)
                     elif condition == "solve":
                         solved = formalized(args.base_url, args.model, question)
+                    elif condition == "shots":
+                        solved = solve(args.base_url, args.model, question, False, examples=worked_turns())
                     else:
                         solved = solve(args.base_url, args.model, question, condition == "tool")
                         if condition == "none":
