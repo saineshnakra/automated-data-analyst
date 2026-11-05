@@ -10,6 +10,15 @@ on:
       problems:
         description: "How many problems from the start of each dataset"
         default: "200"
+      models:
+        description: "Ollama models, as a JSON list"
+        default: '["qwen3:1.7b", "qwen2.5:1.5b", "llama3.2:1b"]'
+      datasets:
+        description: "Datasets, as a JSON list (gsm8k, gsmhard)"
+        default: '["gsm8k", "gsmhard"]'
+      conditions:
+        description: "Conditions, separated by commas (none, tool, check, solve)"
+        default: "none,tool,check"
   push:
     branches: ["benchmark/**"]
 
@@ -23,10 +32,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        dataset: [gsm8k, gsmhard]
-        model: ["qwen3:1.7b", "qwen2.5:1.5b", "llama3.2:1b"]
+        dataset: ${{ fromJSON(github.event.inputs.datasets || '["gsm8k", "gsmhard"]') }}
+        model: ${{ fromJSON(github.event.inputs.models || '["qwen3:1.7b", "qwen2.5:1.5b", "llama3.2:1b"]') }}
     env:
       PROBLEMS: ${{ github.event.inputs.problems || '200' }}
+      CONDITIONS: ${{ github.event.inputs.conditions || 'none,tool,check' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -50,13 +60,18 @@ jobs:
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:11434/api/tags > /dev/null && break; sleep 2; done
           ollama pull "${{ matrix.model }}"
           ollama --version
+      - name: Name the results
+        id: name
+        run: echo "slug=$(echo '${{ matrix.model }}' | tr ':/' '--')" >> "$GITHUB_OUTPUT"
       - name: Run the benchmark
-        run: python benchmarks/gsm8k.py data.jsonl --model "${{ matrix.model }}" --problems "$PROBLEMS" --out results.jsonl
+        run: |
+          python benchmarks/gsm8k.py data.jsonl --model "${{ matrix.model }}" --problems "$PROBLEMS" \
+            --condition "$CONDITIONS" --out results.jsonl
       - name: Summary
         if: always()
         run: python benchmarks/summary.py results.jsonl
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ${{ matrix.dataset }}-${{ matrix.model == 'qwen3:1.7b' && 'qwen3-1.7b' || matrix.model == 'qwen2.5:1.5b' && 'qwen2.5-1.5b' || 'llama3.2-1b' }}
+          name: ${{ matrix.dataset }}-${{ steps.name.outputs.slug }}
           path: results.jsonl

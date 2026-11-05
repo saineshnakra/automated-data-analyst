@@ -3,7 +3,7 @@
 ## GSM8K and GSM-Hard with small local models
 
 Does a small model get more grade-school word problems right with ADA? Each
-problem is solved three ways, with the same model and settings:
+problem is solved in up to five ways, with the same model and settings:
 
 - **Alone**: the model works the problem and ends with "Answer: <number>".
 - **With `ada_compute`**: the model may call ADA's arithmetic tool for any
@@ -14,6 +14,21 @@ problem is solved three ways, with the same model and settings:
   model is told which, with the right value, and answers once more. When
   none is, the answer stands, so this condition only changes answers that
   have a slip in them.
+- **The model writes equations, ADA solves them** (`solve`): the model
+  writes the problem as equations without solving it and names the quantity
+  asked for, and ADA solves the equations exactly. Every step of working
+  them out is ADA's. Four worked examples, written for this benchmark and
+  not taken from any data set, come before the question as earlier turns of
+  the chat. Names such as `eggs_sold` are given a letter each before ADA
+  reads them. ADA reads equations written in LaTeX or plain text, and leaves
+  out what the model works out itself: a name defined a second time, the
+  result at the end of `a = 2 / 2 = 1` and arithmetic with no name in it.
+  When ADA cannot solve the equations, there is no answer; the summary also
+  shows ADA's answer with the model's own in its place when there is none.
+- **The model alone after worked examples** (`shots`): the same four
+  example questions, worked out step by step, come before the question. It
+  has as many examples as `solve`, so the two show what ADA adds beyond
+  seeing examples.
 
 ### Data and settings
 
@@ -119,8 +134,10 @@ reasoning first.
 ### Run it
 
 On GitHub: Actions, Benchmark, Run workflow; or push a branch named
-`benchmark/<anything>`. Each job's summary is in its log, and its replies
-are an artifact.
+`benchmark/<anything>`. The `models`, `datasets` and `conditions` inputs
+pick what runs; by default, the three models above on both datasets with
+`none,tool,check`. Each job's summary is in its log, and its replies are an
+artifact.
 
 On your own computer, with Ollama:
 
@@ -131,7 +148,8 @@ python benchmarks/gsm8k.py test.jsonl --model qwen3:1.7b --problems 200 --out re
 python benchmarks/summary.py results.jsonl
 ```
 
-A run that stops picks up where it left off.
+`--condition none,solve` runs some of the conditions. A run that stops
+picks up where it left off.
 
 ## MATH-500 with small local models
 
@@ -151,6 +169,8 @@ with the same model and settings:
   stands.
 - **The tool's prompt only** (`prompt`) and **the tool only** (`schema`):
   the two halves of `tool`, to tell which one changes the answers.
+- **The model writes equations, ADA solves them** (`solve`), as for GSM8K.
+  ADA's value is graded in LaTeX, so a root stays exact (`3 \sqrt{3}`).
 
 | | |
 |---|---|
