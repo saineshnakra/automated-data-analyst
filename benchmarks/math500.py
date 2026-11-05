@@ -18,6 +18,8 @@ Each problem is solved under one condition, with the same model and settings:
 - ``solve``: the model writes the problem as equations without solving it, names the quantity asked for,
   and ADA solves the equations exactly (``formalize.py``). ADA's value is the answer; when ADA cannot solve
   them, there is none.
+- ``shots``: the model alone, after the four example questions of ``solve`` worked out step by step, with
+  the answer in \\boxed{}. It has as many examples as ``solve``, so the two show what ADA adds beyond them.
 
 One run does one condition, or several separated by commas (``none,check`` asks once and checks that reply),
 and ``--shard 0/4`` takes every fourth problem from the first, so conditions and
@@ -53,7 +55,7 @@ from pathlib import Path
 
 sys.path[:0] = [str(Path(__file__).resolve().parent), str(Path(__file__).resolve().parents[1])]
 
-from formalize import FORMAL_PROMPT, formal_messages, latex_value, solved_by_ada  # noqa: E402
+from formalize import FORMAL_PROMPT, formal_messages, latex_value, solved_by_ada, worked_turns  # noqa: E402
 from gsm8k import chat, solve  # noqa: E402
 
 from ada.compute import check_arithmetic  # noqa: E402
@@ -65,10 +67,11 @@ TOOL_PROMPT = (
     "one or several separated by ; (x^2 - 5x + 6 = 0, x*y = 6; x + y = 5, solve a*x^2 + b*x + c = 0 for x). "
     "Use the values it returns."
 )
-CONDITIONS = ("none", "tool", "check", "prompt", "schema", "solve")
+CONDITIONS = ("none", "tool", "check", "prompt", "schema", "solve", "shots")
 #: For each condition: whether ada_compute is offered, and the system prompt.
 SETTINGS = {"none": (False, PROMPT), "tool": (True, TOOL_PROMPT), "check": (False, PROMPT),
-            "prompt": (False, TOOL_PROMPT), "schema": (True, PROMPT), "solve": (False, FORMAL_PROMPT)}
+            "prompt": (False, TOOL_PROMPT), "schema": (True, PROMPT), "solve": (False, FORMAL_PROMPT),
+            "shots": (False, PROMPT)}
 SUBJECTS = ("Algebra", "Intermediate Algebra")
 #: The longest reply, in tokens: MATH's worked solutions run longer than GSM8K's.
 MAX_TOKENS = 3072
@@ -163,7 +166,8 @@ def solved_under(condition: str, base: str, model: str, question: str, think: bo
         return {"reply": reply, "calls": [], "formal": message.get("content", ""), "ada": ada,
                 "thinking": message.get("thinking", "")}
     if alone is None or condition != "check":
-        alone = solve(base, model, question, offered, (system, system), tokens, think, options)
+        examples = worked_turns(boxed=True) if condition == "shots" else None
+        alone = solve(base, model, question, offered, (system, system), tokens, think, options, examples)
     if condition != "check":
         return alone
     checks = check_arithmetic(alone["reply"])

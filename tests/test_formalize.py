@@ -159,6 +159,10 @@ class MessagesTests(unittest.TestCase):
         self.assertEqual([answer.rsplit("Answer: ", 1)[1] for answer in answers], ["55", "24", "10", "9"])
         # Every step written in them is right.
         self.assertTrue(all(item.correct for answer in answers for item in check_arithmetic(answer)))
+        # For MATH, the same answers end with the number in \boxed{}.
+        boxed = [turn["content"] for turn in worked_turns(boxed=True) if turn["role"] == "assistant"]
+        self.assertTrue(boxed[0].endswith("The answer is \\boxed{55}."))
+        self.assertNotIn("Answer:", " ".join(boxed))
 
 
 class ValueTests(unittest.TestCase):

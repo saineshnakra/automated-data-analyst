@@ -57,10 +57,14 @@ WORKED_ANSWERS = (
 )
 
 
-def worked_turns() -> list[dict]:
-    """The example questions and their step-by-step answers, as earlier turns of a chat."""
+def worked_turns(boxed: bool = False) -> list[dict]:
+    """The example questions and their step-by-step answers, as earlier turns of a chat. With ``boxed``, each
+    answer ends with the number in \\boxed{}, as MATH's solutions do, rather than an "Answer:" line."""
     turns = []
     for (asked, _), answered in zip(FORMAL_EXAMPLES, WORKED_ANSWERS, strict=True):
+        if boxed:
+            working, number = answered.rsplit("\nAnswer: ", 1)
+            answered = f"{working} The answer is \\boxed{{{number}}}."
         turns += [{"role": "user", "content": asked}, {"role": "assistant", "content": answered}]
     return turns
 
