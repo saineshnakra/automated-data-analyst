@@ -2,6 +2,7 @@
 
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "benchmarks"))
@@ -199,6 +200,27 @@ class FeedbackTests(unittest.TestCase):
     def test_thin_input(self):
         self.assertEqual(missing(solved_by_ada("")), [])
         self.assertIn("Answer", feedback(solved_by_ada("")))
+
+
+class LimitTests(unittest.TestCase):
+    def test_numbers_too_large_to_write_have_no_value(self):
+        # MATH-500's "What is 1^(2^235423523)?": 2^235423523 has 70 million digits and is not worked out.
+        self.assertIsNone(formalize._sympy("1^(2^235423523)"))
+        self.assertIsNone(formalize._sympy("2^14000"))
+        self.assertIsNone(formalize._sympy("10^4001/3"))
+        self.assertEqual(str(formalize._sympy("2^10")), "1024")
+        self.assertEqual(solved_by_ada("x = 1^(2^235423523)\nAnswer: x")["status"], "refused")
+
+    def test_text_sympy_cannot_read_has_no_value(self):
+        # An interval: SymPy's parser raises IndexError on it.
+        self.assertIsNone(formalize._sympy("[2, 5)"))
+        self.assertEqual(solved_by_ada("p = 2\nAnswer: [2, 5)")["status"], "no value")
+
+    def test_anything_else_is_recorded_as_an_error(self):
+        with unittest.mock.patch.object(formalize, "_solved", side_effect=RuntimeError("broken")):
+            found = solved_by_ada("x = 5\nAnswer: x")
+        self.assertEqual((found["status"], found["value"]), ("error", None))
+        self.assertEqual(found["message"], "RuntimeError: broken")
 
 
 class ValueTests(unittest.TestCase):
