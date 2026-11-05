@@ -6,6 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "benchmarks"))
 
+import formalize  # noqa: E402
 from formalize import (  # noqa: E402
     FORMAL_ASK,
     formal_messages,
@@ -55,6 +56,29 @@ class WrittenTests(unittest.TestCase):
         equations, _ = written("total = boxes + 4\ntotal = 36 + 4\ntotal = 40\nwhite = 2 / 2 = 1\n"
                                "Total: 10 + 15 = 25 liters\n= 48")
         self.assertEqual(equations, ["total = boxes + 4", "white = 2 / 2"])
+
+    def test_the_last_equations_after_thinking_aloud(self):
+        reply = ("Let me think. The jacket example had price = 80, so maybe total = 3 * 12.\n"
+                 "Wait, I should check. a = ?\n"
+                 "So the equations are:\n\ndays = 4 * 7\neggs = 3 * days\ndozens = eggs / 12\n\n"
+                 "Answer: dozens\nThat is the number of dozens.")
+        equations = ["days = 4 * 7", "eggs = 3 * days", "dozens = eggs / 12"]
+        self.assertEqual(written(reply, last=True), (equations, "dozens"))
+        self.assertEqual(solved_by_ada(reply)["value"], "7")
+
+    def test_every_equation_when_the_last_ones_have_no_value(self):
+        # A sentence between the equations does not cut off the ones before it when ADA needs them.
+        reply = ("t = 2 * c\nCharleston has four times as many as Seattle:\nc = 4 * s\ns = 20\n"
+                 "Answer: t + c + s")
+        self.assertEqual(written(reply, last=True)[0], ["c = 4 * s", "s = 20"])
+        found = solved_by_ada(reply)
+        self.assertEqual((found["status"], found["value"]), ("solved", "260"))
+
+    def test_a_worked_example_repeated_has_no_value(self):
+        reply = ("Like the example:\nprice = 80\ndiscount = price * 25 / 100\npaid = price - discount - 5\n"
+                 "Answer: paid")
+        self.assertEqual(solved_by_ada(reply)["status"], "example repeated")
+        self.assertEqual(solved_by_ada(reply.replace("price = 80", "price = 90"))["value"], "62.5")
 
     def test_sentences_are_not_read(self):
         equations, _ = written("Toulouse has 2 * 4 = 8 sheep.\nSo the cost is x = 5\nThen y = x + 1")
@@ -121,10 +145,12 @@ class MessagesTests(unittest.TestCase):
         self.assertEqual([message["role"] for message in messages[1:]],
                          ["user", "assistant"] * ((len(messages) - 2) // 2) + ["user"])
         self.assertEqual(messages[-1]["content"], f"How many?\n\n{FORMAL_ASK}")
-        # Each worked example is read by ADA to the value its question asks for.
-        values = [solved_by_ada(message["content"], positive=True)["value"]
-                  for message in messages if message["role"] == "assistant"]
-        self.assertEqual(values, ["55", "24", "10", "9"])
+        # Each worked example is read by ADA to the value its question asks for; a reply that repeats one has
+        # no value.
+        answers = [message["content"] for message in messages if message["role"] == "assistant"]
+        self.assertEqual([formalize._solved(*written(answer), True)["value"] for answer in answers],
+                         ["55", "24", "10", "9"])
+        self.assertEqual({solved_by_ada(answer)["status"] for answer in answers}, {"example repeated"})
 
     def test_the_worked_answers_agree_with_ada(self):
         from ada.compute import check_arithmetic  # noqa: PLC0415
