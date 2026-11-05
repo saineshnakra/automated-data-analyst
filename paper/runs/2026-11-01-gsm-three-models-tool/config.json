@@ -1,0 +1,63 @@
+{
+  "run": "2026-11-01-gsm-three-models-tool",
+  "question": "Does a small model get more grade-school word problems right when it can call ADA's arithmetic tool, or when ADA checks its arithmetic afterwards?",
+  "benchmark": "benchmarks/gsm8k.py",
+  "datasets": {
+    "gsm8k": {
+      "file": "test.jsonl",
+      "source": "https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/test.jsonl",
+      "sha256": "3730d312f6e3440559ace48831e51066acaca737f6eabec99bccb9e4b3c39d14",
+      "problems": "first 200",
+      "matched": "exactly"
+    },
+    "gsmhard": {
+      "file": "gsmhardv2.jsonl",
+      "source": "https://raw.githubusercontent.com/reasoning-machines/pal/main/datasets/gsmhardv2.jsonl",
+      "sha256": "2032b0188a49ac0ec38cbe1e695e7d62d6dddc44bbb64f920728aca710e9ddef",
+      "problems": "first 200",
+      "matched": "within 0.001"
+    }
+  },
+  "models": [
+    "qwen3:1.7b",
+    "qwen2.5:1.5b",
+    "llama3.2:1b"
+  ],
+  "conditions": [
+    "none",
+    "tool",
+    "check"
+  ],
+  "settings": {
+    "temperature": 0,
+    "seed": 0,
+    "num_ctx": 8192,
+    "max_tokens": 2048,
+    "thinking": false,
+    "samples": 1,
+    "tool_rounds": 8
+  },
+  "where": {
+    "service": "GitHub Actions",
+    "workflow": ".github/workflows/benchmark.yml",
+    "workflow_run": 41361082298,
+    "url": "https://github.com/saineshnakra/automated-data-analyst/actions/runs/41361082298",
+    "event": "push",
+    "branch": "benchmark/exact-arithmetic",
+    "runner": "ubuntu-latest, CPU only",
+    "jobs": 6,
+    "shards": "one job per model and data set",
+    "started": "2026-11-01T23:13:55Z",
+    "finished": "2026-11-02T00:32:36Z",
+    "conclusion": "success"
+  },
+  "commit": "bfb0b03bf1821e313c260d25ead768a053cb27cf",
+  "earlier_run": {
+    "workflow_run": 41347923562,
+    "commit": "5fc055ff4403328ff264c150ec91fc0161408384",
+    "started": "2026-11-01T20:38:49Z",
+    "archived_as": "2026-11-01-gsm-three-models-first-checker",
+    "why": "the same jobs with the first version of the checker, which flagged correct steps"
+  },
+  "records": 3600
+}

@@ -1,0 +1,81 @@
+{
+  "run": "2026-11-05-math500-ladder",
+  "question": "Does what helps small models on grade-school problems (ADA's check, and solve) help on MATH-500's algebra?",
+  "benchmark": "benchmarks/math500.py",
+  "datasets": {
+    "math500": {
+      "file": "test.jsonl",
+      "sha256": "35dc41080a3680858b27fa7e0533d2d547825316fc5dafe5d316f4ccc5a06132",
+      "subjects": [
+        "Algebra",
+        "Intermediate Algebra",
+        "Prealgebra"
+      ],
+      "problems": 303,
+      "graded_by": "Math-Verify 0.9.0"
+    }
+  },
+  "models": [
+    "qwen3:4b-instruct",
+    "gemma3:4b",
+    "phi4-mini",
+    "qwen2.5:3b",
+    "llama3.2:3b",
+    "smollm2:1.7b",
+    "qwen3:1.7b",
+    "qwen2-math:1.5b",
+    "qwen2.5:1.5b",
+    "llama3.2:1b",
+    "gemma3:1b",
+    "qwen3:0.6b",
+    "qwen2.5:0.5b"
+  ],
+  "conditions": [
+    "none",
+    "shots",
+    "check",
+    "solve"
+  ],
+  "settings": {
+    "temperature": 0,
+    "seed": 0,
+    "num_ctx": 8192,
+    "max_tokens": 3072,
+    "thinking": false,
+    "samples": 1
+  },
+  "where": {
+    "service": "Kaggle",
+    "kernel": "saineshnakra/ada-benchmark-math-ladder",
+    "version": 1,
+    "accelerator": "two NVIDIA T4 GPUs, one Ollama server each",
+    "script": "benchmarks/kaggle_ladder.py",
+    "shards": 8,
+    "started": "2026-11-05T11:14Z",
+    "minutes": 345
+  },
+  "commit": "0dd1c157abe5aa7da91f0f3f4d31e2494ceaf429",
+  "run_again": {
+    "kernel": "saineshnakra/ada-benchmark-math-rerun",
+    "version": 1,
+    "started": "2026-11-05T18:10Z",
+    "minutes": 45,
+    "commit": "9c8d16d573fdbb6a857ce0ea072f330c3c6bbf9a",
+    "shards": {
+      "llama3.2:1b": [
+        1,
+        6
+      ],
+      "qwen3:1.7b": [
+        1
+      ],
+      "gemma3:1b": [
+        6
+      ],
+      "qwen3:0.6b": [
+        6
+      ]
+    }
+  },
+  "records": 15756
+}

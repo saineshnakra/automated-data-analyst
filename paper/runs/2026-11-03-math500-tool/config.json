@@ -1,0 +1,48 @@
+{
+  "run": "2026-11-03-math500-tool",
+  "question": "Does offering ada_compute help a small model on competition algebra?",
+  "benchmark": "benchmarks/math500.py",
+  "datasets": {
+    "math500": {
+      "file": "test.jsonl",
+      "source": "https://huggingface.co/datasets/HuggingFaceH4/MATH-500/resolve/main/test.jsonl",
+      "sha256": "35dc41080a3680858b27fa7e0533d2d547825316fc5dafe5d316f4ccc5a06132",
+      "problems": "the 221 Algebra and Intermediate Algebra problems",
+      "matched": "Math-Verify 0.9.0"
+    }
+  },
+  "models": [
+    "qwen2.5:1.5b",
+    "qwen3:1.7b"
+  ],
+  "conditions": [
+    "none",
+    "tool"
+  ],
+  "settings": {
+    "temperature": 0,
+    "seed": 0,
+    "num_ctx": 8192,
+    "max_tokens": 3072,
+    "thinking": false,
+    "samples": 1,
+    "tool_rounds": 8,
+    "reply_time_limit_seconds": 900
+  },
+  "where": {
+    "service": "GitHub Actions",
+    "workflow": ".github/workflows/benchmark-math.yml",
+    "workflow_run": 41691859618,
+    "url": "https://github.com/saineshnakra/automated-data-analyst/actions/runs/41691859618",
+    "event": "workflow_dispatch",
+    "branch": "main",
+    "runner": "ubuntu-latest, CPU only",
+    "jobs": 16,
+    "shards": "4 per model and condition",
+    "started": "2026-11-03T18:14:21Z",
+    "finished": "2026-11-03T19:16:32Z",
+    "conclusion": "success"
+  },
+  "commit": "8f4c150f0c3c1d13eeb81def86f4ee26f7c74c9b",
+  "records": 884
+}

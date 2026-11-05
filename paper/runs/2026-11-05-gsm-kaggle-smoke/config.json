@@ -1,0 +1,43 @@
+{
+  "run": "2026-11-05-gsm-kaggle-smoke",
+  "question": "Does the benchmark run on a Kaggle GPU, in shards side by side?",
+  "benchmark": "benchmarks/gsm8k.py",
+  "datasets": {
+    "gsm8k": {
+      "file": "test.jsonl",
+      "source": "https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/test.jsonl",
+      "sha256": "3730d312f6e3440559ace48831e51066acaca737f6eabec99bccb9e4b3c39d14",
+      "problems": "first 20",
+      "matched": "exactly"
+    }
+  },
+  "models": [
+    "qwen2.5:0.5b"
+  ],
+  "conditions": [
+    "none",
+    "solve"
+  ],
+  "settings": {
+    "temperature": 0,
+    "seed": 0,
+    "num_ctx": 8192,
+    "max_tokens": 2048,
+    "thinking": false,
+    "samples": 1,
+    "tool_rounds": 8
+  },
+  "solve_prompt": "the instruction with one example inside it; no worked examples as earlier chat turns",
+  "where": {
+    "service": "Kaggle",
+    "kernel": "saineshnakra/ada-benchmark-smoke",
+    "version": "unknown",
+    "accelerator": "a GPU session; nvidia-smi lists two NVIDIA T4 GPUs; one Ollama server with OLLAMA_NUM_PARALLEL=4",
+    "script": "the kernel's own script, not in the repository",
+    "shards": 4,
+    "started": "about 2026-11-05T02:39Z (from the kernel log)",
+    "finished_by": "2026-11-05T02:43Z (the last request in Ollama's log is at 02:42:58)"
+  },
+  "commit": "3f9fa004987e39d3dbc801caf754081471a7677a",
+  "records": 40
+}
