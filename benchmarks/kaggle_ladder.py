@@ -22,7 +22,8 @@ from pathlib import Path
 
 #: The run: the commit of this repository to test, the data sets (gsm8k and gsmhard, or math500), the models,
 #: the conditions, the first N problems (or MATH-500's subjects), how many of those to leave out (GSM8K and
-#: GSM-Hard only) and how many shards each data set is split into.
+#: GSM-Hard only) and how many shards each data set is split into. "only_shards" runs only the shards named
+#: for each model, to run again the shards of an earlier run that stopped.
 CONFIG = {
     "commit": "c4b7e370de55e6044c2f10648bdc7bf08f57bc4c",
     "datasets": ["gsm8k", "gsmhard"],
@@ -82,7 +83,7 @@ def ladder(models: list[str], port: int, datasets: dict[str, Path], parallel: in
         slug = model.replace(":", "-").replace("/", "-")
         jobs = []
         for name, data in datasets.items():
-            for part in range(parallel):
+            for part in CONFIG.get("only_shards", {}).get(model, range(parallel)):
                 out = results / f"{name}-{slug}-{part}.jsonl"
                 script = "math500.py" if name == "math500" else "gsm8k.py"
                 command = [sys.executable, str(REPO / "benchmarks" / script), str(data), "--model", model,
