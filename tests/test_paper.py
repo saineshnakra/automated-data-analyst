@@ -109,6 +109,21 @@ class AnalysisTests(unittest.TestCase):
                          [("none", True), ("solve", True)])
         self.assertEqual([r["condition"] for r in replaced(records, [], "retry")], ["none"])
 
+    def test_by_subject_and_level(self):
+        records = [record("math500", "m", "a", "none", True, subject="Algebra", level=1),
+                   record("math500", "m", "a", "solve", False, subject="Algebra", level=1),
+                   record("math500", "m", "b", "none", False, subject="Prealgebra", level=1),
+                   record("math500", "m", "b", "solve", True, subject="Prealgebra", level=1),
+                   # A problem without every condition is left out.
+                   record("math500", "m", "c", "none", True, subject="Algebra", level=2)]
+        text = report(records)
+        self.assertIn("| Algebra | 1 | 1 | 0 |", text)
+        self.assertIn("| Prealgebra | 1 | 0 | 1 |", text)
+        self.assertIn("| Level 1 | 2 | 1 | 1 |", text)
+        self.assertNotIn("Level 2", text)
+        # GSM8K's problems have neither, so there is no such table.
+        self.assertNotIn("by subject", report(self.records))
+
     def test_thin_input(self):
         self.assertEqual(report([]), "")
         self.assertEqual(paired(grouped([])), [])

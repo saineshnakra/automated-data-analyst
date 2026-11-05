@@ -27,6 +27,7 @@ Each run has a folder in [runs/](runs/), named by the date it started:
 | [2026-11-05-gsm-ladder-pilot](runs/2026-11-05-gsm-ladder-pilot/README.md) | GSM8K and GSM-Hard, 15 models from 135M to 4B, 30 problems: alone, checked and `solve` |
 | [2026-11-05-gsm-ladder](runs/2026-11-05-gsm-ladder/README.md) | GSM8K and GSM-Hard, 13 models from 0.5B to 4B, 300 problems: alone, after worked examples, checked and `solve` |
 | [2026-11-05-gsm-combine](runs/2026-11-05-gsm-combine/README.md) | GSM8K and GSM-Hard problems 300 to 599, 13 models: the combining rule chosen on problems 0 to 299, and the model deciding instead |
+| [2026-11-05-math500-ladder](runs/2026-11-05-math500-ladder/README.md) | MATH-500 Algebra, Intermediate Algebra and Prealgebra, the 13 models of the GSM ladder: alone, after worked examples, checked and `solve` |
 | [2026-11-05-gsm-plan](runs/2026-11-05-gsm-plan/README.md) | GSM8K and GSM-Hard, 7 models from 1.5B to 4B, 300 problems: `solve`, working the problem out in words first (`plan`), and writing the equations again when ADA finds no value (`retry`) |
 
 A run that picks up an earlier run's replies keeps them in its own folder, so it reproduces its own

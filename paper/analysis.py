@@ -3,13 +3,13 @@
     python paper/analysis.py paper/runs/RUN
 
 For each data set and model: problems right under each condition, on the problems every condition of the run
-finished; each condition against the model alone (right only with it / right only alone, and the exact
-McNemar test, SciPy's binomtest on the problems where the two differ), or against the run's first condition
-when the run did not ask the model alone; ADA's statuses under ``solve``, ``plan`` and ``retry``; ``retry``
-against ``solve``, split by whether retry's first reply is solve's reply; and "ADA's answer, else the
-model's": ADA's value when it solved the equations to an answer, the model's own answer when it did not.
-Only each problem's first sample counts, so a run that voted over several samples is read by its first
-reply. The output is Markdown and the same each time.
+finished; each condition against the model alone (right only with it / right only alone, and the exact McNemar
+test, SciPy's binomtest on the problems where the two differ), or against the run's first condition when the
+run did not ask the model alone; ADA's statuses under ``solve``, ``plan`` and ``retry``; ``retry`` against
+``solve``, split by whether retry's first reply is solve's reply; and "ADA's answer, else the model's": ADA's
+value when it solved the equations to an answer, the model's own answer when it did not; and, for MATH-500,
+the problems right by subject and level. Only each problem's first sample counts, so a run that voted over
+several samples is read by its first reply. The output is Markdown and the same each time.
 """
 
 from __future__ import annotations
@@ -148,6 +148,7 @@ def report(records: list[dict]) -> str:
         failed = sum(1 for model in models for found in groups[(dataset, model)].values()
                      for record in found.values() if record.get("error"))
         lines += ["", f"Replies that failed or never ended: {failed}", ""]
+        lines += parts(groups, dataset, models, conditions)
     lines += paired(groups)
     return "\n".join(lines)
 
@@ -169,6 +170,32 @@ def retried(problems: dict, done: list) -> tuple[int, ...]:
             gained += retry["correct"] and not first["correct"]
             lost += first["correct"] and not retry["correct"]
     return again, same, fixed, other, gained, lost
+
+
+def parts(groups: dict, dataset: str, models: list[str], conditions: list[str]) -> list[str]:
+    """For a data set whose problems have a subject and a level (MATH-500), the problems right under each
+    condition by subject and by level, over all the models, on the problems every condition finished."""
+    counts = defaultdict(Counter)
+    for model in models:
+        problems = groups[(dataset, model)]
+        for problem in complete(problems, conditions):
+            first = problems[problem][conditions[0]]
+            if "subject" not in first or "level" not in first:
+                return []
+            for part in (first["subject"], f"Level {first['level']}"):
+                counts[part]["problems"] += 1
+                for condition in conditions:
+                    counts[part][condition] += problems[problem][condition]["correct"]
+    if not counts:
+        return []
+    names = sorted(name for name in counts if not name.startswith("Level ")) + sorted(
+        name for name in counts if name.startswith("Level "))
+    lines = ["Problems right by subject and level, over all the models:", "",
+             "| Part | Problems | " + " | ".join(conditions) + " |", "|---|---|" + "---|" * len(conditions)]
+    for name in names:
+        lines.append(f"| {name} | {counts[name]['problems']} | "
+                     + " | ".join(str(counts[name][condition]) for condition in conditions) + " |")
+    return lines + [""]
 
 
 def slipped(check: dict) -> bool:
