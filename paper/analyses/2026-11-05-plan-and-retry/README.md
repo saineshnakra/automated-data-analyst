@@ -57,3 +57,19 @@ test names a model:
 
 The tables will be made with `python paper/analysis.py` on the new run and `python paper/combine_rules.py
 paper/runs/2026-11-05-gsm-combine --gsm8k test.jsonl --gsmhard gsmhardv2.jsonl --ada NEW_RUN:CONDITION`.
+
+## How it came out
+
+On problems 300 to 599 ([2026-11-05-gsm-plan-check](../../runs/2026-11-05-gsm-plan-check/README.md)), all
+five tests held:
+
+| Test | Result | Held? |
+|---|---|---|
+| `retry` gets more right than `solve` | GSM8K 1,215 against 1,185 (91 / 61, p = 0.018); GSM-Hard 1,216 against 1,175 (94 / 53, p = 9e-4) | Yes |
+| Asking again fixes equations ADA can't solve | 30 of 170 right afterwards on GSM8K (18%), 27 of 148 on GSM-Hard (18%) | Yes |
+| `plan` helps the qwen3 models | GSM8K: qwen3:1.7b 166 against 130, qwen3:4b-instruct 250 against 231 | Yes |
+| `plan` hurts llama3.2:3b and qwen2.5:3b | GSM8K: 163 against 178, and 151 against 181 | Yes |
+| Neither helps the combining rule | with `retry`'s answers, `combine` gets 1,686 against 1,688 on GSM8K and 1,345 against 1,347 on GSM-Hard | Yes |
+
+One shard of the run stopped on a reply SymPy's parser could not read, and was run again with the fix of
+[#182](https://github.com/saineshnakra/automated-data-analyst/pull/182); its run page says how.

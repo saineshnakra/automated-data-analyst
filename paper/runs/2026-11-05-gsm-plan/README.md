@@ -237,3 +237,5 @@ gsmhardv2.jsonl --ada paper/runs/2026-11-05-gsm-plan:CONDITION`, pooled over the
 - Before it: [2026-11-05-gsm-ladder](../2026-11-05-gsm-ladder/README.md), whose `solve` statuses showed how
   often these models write equations with no one value, and
   [2026-11-05-gsm-combine](../2026-11-05-gsm-combine/README.md), which tested the combining rule.
+- After it: [2026-11-05-gsm-plan-check](../2026-11-05-gsm-plan-check/README.md), the same conditions on
+  problems 300 to 599, where all five tests set from this run held.
