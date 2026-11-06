@@ -2808,3 +2808,269 @@ def build_markdown_report(
         ]
     )
     return "\n".join(lines)
+
+@dataclass(frozen=True)
+class CleaningSuggestion:
+    column: str
+    operation: str
+    description: str
+
+
+def _parse_numeric_suggestion_values(series: pd.Series) -> pd.Series | None:
+    """Parse consistently formatted numeric text using the shared number parser."""
+    values = series.astype("string").str.strip()
+    parsed: list[float | None] = []
+    currencies: list[str] = []
+    suffixes: list[str] = []
+
+    currency_pattern = re.compile(r"[$\u20ac\u00a3\u00a5\u20b9]")
+    suffix_pattern = re.compile(r"\s*([A-Za-z%]+(?:\s+[A-Za-z%]+)*)$")
+    multipliers = {"k": 1_000, "m": 1_000_000}
+
+    for value in values:
+        if pd.isna(value):
+            parsed.append(None)
+            continue
+
+        text = str(value).strip()
+
+        currency_matches = currency_pattern.findall(text)
+        currencies.append("".join(currency_matches))
+        text = currency_pattern.sub("", text).strip()
+
+        suffix_match = suffix_pattern.search(text)
+        suffix = suffix_match.group(1).strip().lower() if suffix_match else ""
+
+        numeric_text = (
+            text[:suffix_match.start()].strip()
+            if suffix_match
+            else text
+        )
+
+        # Reject ambiguous single-letter codes such as 12A or 13A.
+        if len(suffix) == 1 and suffix not in multipliers and suffix != "%":
+            return None
+
+        amount = _read_formatted_number(numeric_text)
+        if amount is None:
+            return None
+
+        amount *= multipliers.get(suffix, 1)
+
+        suffixes.append(suffix)
+        parsed.append(amount)
+
+    if len(set(currencies)) > 1:
+        return None
+
+    # Allow mixed k/M suffixes, but reject inconsistent measurement units.
+    non_scaling_suffixes = {
+        suffix for suffix in suffixes if suffix not in {"", "k", "m"}
+    }
+    if len(non_scaling_suffixes) > 1:
+        return None
+    if non_scaling_suffixes and any(
+        suffix not in non_scaling_suffixes for suffix in suffixes
+    ):
+        return None
+
+    return pd.Series(parsed, index=series.index, dtype="float64")
+
+
+def _split_suggestion_values(series: pd.Series) -> pd.DataFrame | None:
+    """Split consistently delimited text into equally sized columns."""
+    values = series.astype("string").str.strip()
+    non_null = values.dropna()
+
+    if non_null.empty:
+        return None
+
+    # Avoid splitting URLs and domain names.
+    if non_null.str.contains(
+        r"(?:https?://|www\.|(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?:/|$))",
+        case=False,
+        regex=True,
+    ).any():
+        return None
+
+    # Avoid splitting date-like values.
+    date_patterns = [
+        r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}$",
+        r"^\d{1,2}[-/]\d{1,2}[-/]\d{2,4}$",
+        r"^\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}$",
+        r"^[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4}$",
+    ]
+
+    date_pattern = "|".join(f"(?:{pattern})" for pattern in date_patterns)
+    if non_null.str.match(date_pattern, case=False).any():
+        return None
+
+    for delimiter in ["/", "|", ";", ","]:
+        part_counts = non_null.map(
+            lambda value, sep=delimiter: len(str(value).split(sep))
+        )
+
+        # Every non-null value must contain the delimiter equally.
+        if part_counts.nunique() != 1 or part_counts.iloc[0] < 2:
+            continue
+
+        split_values = values.str.split(delimiter, expand=True)
+
+        return split_values.map(
+            lambda value: value.strip() if isinstance(value, str) else value
+        )
+
+    return None
+
+
+def _split_cleaning_result(
+    dataframe: pd.DataFrame,
+    column: str,
+) -> pd.DataFrame | None:
+    """Return split values as separate uniquely named columns."""
+    split_values = _split_suggestion_values(dataframe[column])
+
+    if split_values is None:
+        return None
+
+    new_columns = pd.Index(
+        [f"{column}_{i}" for i in range(1, split_values.shape[1] + 1)]
+    )
+    existing_columns = pd.Index(
+        [name for name in dataframe.columns if name != column]
+    )
+
+    unique_columns = _make_unique_columns(
+        existing_columns.append(new_columns)
+    )
+
+    split_values = split_values.copy()
+    split_values.columns = unique_columns[-len(new_columns):]
+
+    return split_values
+
+
+def suggest_cleaning(dataframe: pd.DataFrame) -> list[CleaningSuggestion]:
+    """Suggest conservative, deterministic cleaning transformations."""
+    suggestions: list[CleaningSuggestion] = []
+
+    for column in dataframe.select_dtypes(include=["object", "string"]).columns:
+        series = dataframe[column]
+        non_null = series.dropna()
+
+        if non_null.empty:
+            continue
+
+        normalized_name = str(column).lower()
+        if re.search(r"\b(?:id|code|zip|postal|phone)\b", normalized_name):
+            continue
+
+        numeric = _parse_numeric_suggestion_values(non_null)
+
+        if numeric is not None:
+            original = non_null.astype("string").str.strip()
+            cleaned_values = numeric.astype("string")
+
+            if not original.reset_index(drop=True).equals(
+                cleaned_values.reset_index(drop=True)
+            ):
+                suggestions.append(
+                    CleaningSuggestion(
+                        column=str(column),
+                        operation="parse_numeric",
+                        description=(
+                            "Parse consistently formatted numeric text. Currency "
+                            "symbols, separators, accounting parentheses, and "
+                            "consistent units are removed during conversion."
+                        ),
+                    )
+                )
+
+        # Avoid interpreting thousands separators as split delimiters.
+        if numeric is None:
+            split_values = _split_suggestion_values(non_null)
+
+            if split_values is not None:
+                suggestions.append(
+                    CleaningSuggestion(
+                        column=str(column),
+                        operation="split",
+                        description=(
+                            "Split consistently delimited text into separate values."
+                        ),
+                    )
+                )
+
+    return suggestions
+
+
+def preview_cleaning_suggestion(
+    dataframe: pd.DataFrame,
+    suggestion: CleaningSuggestion,
+) -> pd.DataFrame:
+    """Return real before/after values for a cleaning suggestion."""
+    before = dataframe[suggestion.column]
+
+    if suggestion.operation == "parse_numeric":
+        after = _parse_numeric_suggestion_values(before)
+        if after is None:
+            raise ValueError(
+                "The column no longer matches the suggested numeric transformation."
+            )
+
+    elif suggestion.operation == "split":
+        split_values = _split_suggestion_values(before)
+        if split_values is None:
+            raise ValueError(
+                "The column no longer matches the suggested split transformation."
+            )
+
+        after = split_values.apply(
+            lambda row: " | ".join(
+                "" if pd.isna(value) else str(value) for value in row
+            ),
+            axis=1,
+        )
+
+    else:
+        raise ValueError(
+            f"Unsupported cleaning operation: {suggestion.operation}"
+        )
+
+    return pd.DataFrame({"before": before, "after": after})
+
+
+def apply_cleaning_suggestion(
+    dataframe: pd.DataFrame,
+    suggestion: CleaningSuggestion,
+) -> pd.DataFrame:
+    """Apply an accepted cleaning suggestion deterministically."""
+    cleaned = dataframe.copy()
+
+    if suggestion.operation == "parse_numeric":
+        parsed = _parse_numeric_suggestion_values(cleaned[suggestion.column])
+        if parsed is None:
+            raise ValueError(
+                "The column no longer matches the suggested numeric transformation."
+            )
+
+        cleaned[suggestion.column] = parsed
+
+    elif suggestion.operation == "split":
+        split_values = _split_cleaning_result(cleaned, suggestion.column)
+        if split_values is None:
+            raise ValueError(
+                "The column no longer matches the suggested split transformation."
+            )
+
+        cleaned = cleaned.drop(columns=[suggestion.column])
+
+        for column in split_values.columns:
+            cleaned[column] = split_values[column]
+
+    else:
+        raise ValueError(
+            f"Unsupported cleaning operation: {suggestion.operation}"
+        )
+
+    return cleaned
