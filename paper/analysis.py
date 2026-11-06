@@ -5,11 +5,12 @@
 For each data set and model: problems right under each condition, on the problems every condition of the run
 finished; each condition against the model alone (right only with it / right only alone, and the exact McNemar
 test, SciPy's binomtest on the problems where the two differ), or against the run's first condition when the
-run did not ask the model alone; ADA's statuses under ``solve``, ``plan`` and ``retry``; ``retry`` against
-``solve``, split by whether retry's first reply is solve's reply; and "ADA's answer, else the model's": ADA's
-value when it solved the equations to an answer, the model's own answer when it did not; and, for MATH-500,
-the problems right by subject and level. Only each problem's first sample counts, so a run that voted over
-several samples is read by its first reply. The output is Markdown and the same each time.
+run did not ask the model alone; ADA's statuses under ``solve``, ``plan`` and ``retry``, and how the programs
+under ``program`` ended; ``retry`` against ``solve``, split by whether retry's first reply is solve's reply;
+and "ADA's answer, else the model's": ADA's value when it solved the equations to an answer, the model's own
+answer when it did not; and, for MATH-500, the problems right by subject and level. Only each problem's first
+sample counts, so a run that voted over several samples is read by its first reply. The output is Markdown and
+the same each time.
 """
 
 from __future__ import annotations
@@ -20,7 +21,8 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-ORDER = ("none", "shots", "tool", "prompt", "schema", "check", "solve", "plan", "retry", "combine", "judge")
+ORDER = ("none", "shots", "tool", "prompt", "schema", "check", "solve", "plan", "retry", "program", "combine",
+         "judge")
 
 
 def load(run: Path) -> list[dict]:
@@ -118,6 +120,13 @@ def report(records: list[dict]) -> str:
                 problems = groups[(dataset, model)]
                 statuses = Counter(found[condition].get("ada", {}).get("status", "failed")
                                    for found in problems.values() if condition in found)
+                lines.append(f"- {model}: " + ", ".join(f"{status} {count}"
+                                                        for status, count in statuses.most_common()))
+        if "program" in conditions:
+            lines += ["", "How the programs under program ended:", ""]
+            for model in models:
+                statuses = Counter(found["program"].get("program", {}).get("status", "failed")
+                                   for found in groups[(dataset, model)].values() if "program" in found)
                 lines.append(f"- {model}: " + ", ".join(f"{status} {count}"
                                                         for status, count in statuses.most_common()))
         if {"solve", "retry"} <= set(conditions):

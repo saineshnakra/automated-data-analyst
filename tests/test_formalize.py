@@ -193,9 +193,10 @@ class FeedbackTests(unittest.TestCase):
         self.assertIn("-2, 2", feedback(solved_by_ada("x^2 = 4\nAnswer: x")))
         self.assertIn("no line that starts with", feedback(solved_by_ada("x = 3")))
         self.assertIn("ADA could not solve", feedback(solved_by_ada("x = 5\ny = x/0\nAnswer: y")))
-        # A value needs nothing more.
+        # A value of the equations needs nothing more; a number the model worked out is asked about.
         self.assertIsNone(feedback(solved_by_ada("x = 5\nAnswer: x")))
-        self.assertIsNone(feedback(solved_by_ada("Answer: 18")))
+        self.assertIn("a number you worked out, 18", feedback(solved_by_ada("Answer: 18")))
+        self.assertIn("a number you worked out, 13", feedback(solved_by_ada("a = 16 - 3\nAnswer: 13")))
 
     def test_thin_input(self):
         self.assertEqual(missing(solved_by_ada("")), [])
