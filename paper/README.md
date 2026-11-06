@@ -11,6 +11,9 @@ the equations a model writes, exactly, with SymPy underneath.
 What the runs show so far, finding by finding with the runs each comes from, is in
 [findings.md](findings.md).
 
+Papers on giving a model a solver, on small models and on fully open models are in
+[related-work.md](related-work.md).
+
 ## Runs
 
 Each run has a folder in [runs/](runs/), named by the date it started:
