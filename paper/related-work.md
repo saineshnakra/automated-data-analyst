@@ -4,6 +4,10 @@ Papers on giving a language model exact arithmetic or a solver, on what that doe
 fully open models to test with. Each entry says what the paper shows and where it bears on these runs.
 Numbers are as the papers report them; none has been reproduced here.
 
+This page includes work published outside ICML, ICLR and NeurIPS, such as TinyGSM (a NeurIPS workshop paper)
+and arXiv preprints. The conference papers closest to this work, with their venues checked, are in
+[references/](references/README.md).
+
 ## A model that writes, a solver that computes
 
 | Paper | What it shows | Where it bears here |
