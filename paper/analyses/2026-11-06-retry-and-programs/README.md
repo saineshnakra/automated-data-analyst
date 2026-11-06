@@ -14,9 +14,10 @@ This page records what the test should show, **before** the run.
 GSM8K and GSM-Hard problems 600 to 1318 (`--problems 1319 --skip 600`), 719 of each, which no run has asked
 before. The 13 models of [2026-11-05-gsm-ladder](../../runs/2026-11-05-gsm-ladder/README.md), from
 qwen2.5:0.5b to qwen3:4b-instruct, under `none`, `check`, `solve`, `retry`, `program` and `combine`, at the
-commit `03ecd4f` of `main`, which has #186, with the settings of the earlier runs (temperature 0, seed 0, context 8192
-tokens, at most 2048 tokens a reply). On Kaggle, in four kernels: each data set, with the models split in two
-groups (qwen3:4b-instruct, gemma3:4b, phi4-mini, qwen2.5:3b, llama3.2:3b and smollm2:1.7b; and the other 7).
+commit `03ecd4f` of `main`, which has #186, with the settings of the earlier runs (temperature 0, seed 0,
+context 8192 tokens, at most 2048 tokens a reply). On Kaggle, in four kernels: each data set, with the models
+split in two groups (qwen3:4b-instruct, gemma3:4b, phi4-mini, qwen2.5:3b, llama3.2:3b and smollm2:1.7b; and
+the other 7).
 
 ## The tests
 
