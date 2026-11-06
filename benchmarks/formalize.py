@@ -110,13 +110,18 @@ def missing(found: dict) -> list[str]:
 
 
 def feedback(found: dict) -> str | None:
-    """What to tell the model when ADA found no one value for its equations, so it can write them again;
-    None when ADA did."""
+    """What to tell the model when ADA found no one value for its equations, or the Answer line gives a number
+    the model worked out instead of a quantity of its equations, so it can write them again; None when ADA
+    solved the equations."""
     status = found["status"]
-    if status in ("solved", "number given"):
+    if status == "solved":
         return None
     target = found.get("target")
-    if status == "no answer line":
+    if status == "number given":
+        reason = (f"Your Answer line gives a number you worked out, {target}. ADA works the numbers out: "
+                  "write the equations with the numbers the problem gives, and after \"Answer:\" write the "
+                  "name of the quantity the question asks for.")
+    elif status == "no answer line":
         reason = "Your reply has no line that starts with \"Answer:\"."
     elif status == "example repeated":
         reason = "Your equations are those of an earlier example, not of this problem."

@@ -124,6 +124,15 @@ class AnalysisTests(unittest.TestCase):
         # GSM8K's problems have neither, so there is no such table.
         self.assertNotIn("by subject", report(self.records))
 
+    def test_how_the_programs_ended(self):
+        records = [record("gsm8k", "m", 0, "none", True), record("gsm8k", "m", 0, "program", True,
+                                                                  program={"status": "ran"}),
+                   record("gsm8k", "m", 1, "none", True), record("gsm8k", "m", 1, "program", False,
+                                                                  program={"status": "refused"})]
+        text = report(records)
+        self.assertIn("| m | 2 | 2 | 1 |", text)
+        self.assertIn("- m: ran 1, refused 1", text)
+
     def test_thin_input(self):
         self.assertEqual(report([]), "")
         self.assertEqual(paired(grouped([])), [])

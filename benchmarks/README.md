@@ -3,7 +3,7 @@
 ## GSM8K and GSM-Hard with small local models
 
 Does a small model get more grade-school word problems right with ADA? Each
-problem is solved in up to five ways, with the same model and settings:
+problem is solved in any of these ways, with the same model and settings:
 
 - **Alone**: the model works the problem and ends with "Answer: <number>".
 - **With `ada_compute`**: the model may call ADA's arithmetic tool for any
@@ -37,9 +37,22 @@ problem is solved in up to five ways, with the same model and settings:
   model first works out in words which quantities the problem gives, which
   it asks for and how they are related, and then writes the equations.
 - **Equations again, told why** (`retry`): as `solve`, but when ADA finds no
-  one value for the model's equations, the model is told why (the
-  quantities with no value, or ADA's reason for refusing) and writes them
-  again, once.
+  one value for the model's equations, or the Answer line gives a number
+  the model worked out instead of a quantity of its equations, the model is
+  told why (the quantities with no value, ADA's reason for refusing, or
+  that ADA works the numbers out) and writes them again, once. When the
+  second reply has no value and the first gave a number, the first stands.
+  Runs made before this asked again only when ADA found no value.
+- **The model writes a program** (`program`): the model writes a Python
+  program whose function `solution()` returns the answer, as in
+  program-aided language models (PAL, the paper that made GSM-Hard), after
+  the same four example questions written as programs. It is the usual way
+  of giving a model exact arithmetic without ADA, so `solve` is compared
+  with it. Before it runs, the program is refused if it does more than
+  arithmetic: it may import only `math`, reach no attribute but `math`'s
+  and use no name that starts with an underscore. It runs in its own Python
+  process with only arithmetic built-ins, 5 seconds of CPU and 512 MB of
+  memory, and a float answer is rounded to 6 decimal places.
 - **The model's answer and ADA's together** (`combine`): no more replies
   are asked for. When the model's own answer and ADA's from `solve` agree,
   that is the answer; when ADA has none, it is the checked answer; when they

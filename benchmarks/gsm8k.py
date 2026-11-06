@@ -8,7 +8,7 @@ exact arithmetic?
 It reads GSM-Hard too (the same problems with larger numbers, ``gsmhardv2.jsonl`` from the PAL repository),
 whose answers are floating-point results and are matched to within 0.001.
 
-Each problem is solved in up to five ways, with the same model and settings:
+Each problem is solved in any of these ways, with the same model and settings:
 
 - ``none``: the model alone.
 - ``tool``: the model may call ``ada_compute`` for any arithmetic step. A call written out as text instead of
@@ -23,8 +23,13 @@ Each problem is solved in up to five ways, with the same model and settings:
   has as many examples as ``solve``, so the two show what ADA adds beyond the examples.
 - ``plan``: as ``solve``, but the model first works out in words how to solve the problem (which quantities
   it gives, which it asks for and how they are related) and then writes the equations.
-- ``retry``: as ``solve``, but when ADA finds no one value for the model's equations, the model is told why
-  (the quantities with no value, or ADA's reason for refusing) and writes them again, once.
+- ``retry``: as ``solve``, but when ADA finds no one value for the model's equations, or the Answer line
+  gives a number the model worked out instead of a quantity of its equations, the model is told why (the
+  quantities with no value, ADA's reason for refusing, or that ADA works the numbers out) and writes them
+  again, once. When the second reply has no value and the first gave a number, the first stands.
+- ``program``: the model writes a Python program whose function ``solution()`` returns the answer, as in
+  program-aided language models, and the program is run after a check that it does only arithmetic
+  (``program.py``). It is the usual way of giving a model exact arithmetic without ADA.
 - ``combine``: the model's own answer and ADA's from ``solve``, with no more replies asked for. When they
   agree, that is the answer. When ADA has none, the answer is ``check``'s. When they differ, ADA's answer is
   taken if ADA found a wrong equation in the model's own answer or the question has a number of five or
@@ -66,6 +71,7 @@ from formalize import (  # noqa: E402
     solved_by_ada,
     worked_turns,
 )
+from program import program_messages, run_program  # noqa: E402
 
 from ada import tools  # noqa: E402
 from ada.chat import _written_call  # noqa: E402
@@ -79,10 +85,10 @@ TOOL_PROMPT = (
     PROMPT + " You can call ada_compute to work out any arithmetic step exactly: write the expression with "
     "the numbers from your reasoning, and use the value it returns."
 )
-CONDITIONS = ("none", "tool", "check", "solve", "shots", "combine", "judge", "plan", "retry")
+CONDITIONS = ("none", "tool", "check", "solve", "shots", "combine", "judge", "plan", "retry", "program")
 #: What a condition's reply keeps in its record besides the answer.
 KEPT = ("checks", "first_reply", "formal", "ada", "error", "decided_by", "first_formal", "first_ada",
-        "feedback")
+        "feedback", "kept_first", "second_formal", "second_ada", "program")
 #: A question with a number this many digits long or longer has arithmetic a small model often gets wrong.
 LARGE_DIGITS = 5
 #: Tool-calling rounds before the model must answer.
@@ -178,7 +184,8 @@ def formalized(base: str, model: str, question: str, plan: bool = False, retry: 
     """The model's equations for the problem, and ADA's value for the quantity it names. Counts and amounts in
     grade-school problems are above zero, so of several values ADA takes the one that is. With ``plan``, the
     model works out how to solve the problem in words before it writes the equations; with ``retry``, it
-    writes them again once when ADA finds no one value, told why."""
+    writes them again once, told why, when ADA finds no one value or the Answer line gives a number instead of
+    a quantity. When the second reply has no value and the first gave a number, the first stands."""
     messages = plan_messages(question) if plan else formal_messages(question)
     reply = chat(base, model, messages, []).get("content", "")
     ada = solved_by_ada(reply, positive=True)
@@ -187,11 +194,23 @@ def formalized(base: str, model: str, question: str, plan: bool = False, retry: 
     if advice:
         messages = messages + [{"role": "assistant", "content": reply}, {"role": "user", "content": advice}]
         first = {"first_formal": reply, "first_ada": ada, "feedback": advice}
-        reply = chat(base, model, messages, []).get("content", "")
-        ada = solved_by_ada(reply, positive=True)
+        again = chat(base, model, messages, []).get("content", "")
+        found = solved_by_ada(again, positive=True)
+        if found["value"] is None and ada["value"] is not None:
+            first.update(kept_first=True, second_formal=again, second_ada=found)
+        else:
+            reply, ada = again, found
     number = None if ada["value"] is None else plain_number(ada["value"])
     return {"reply": "" if number is None else f"Answer: {number}", "calls": [], "formal": reply, "ada": ada,
             **first}
+
+
+def programmed(base: str, model: str, question: str) -> dict:
+    """The model's program for the problem, and the number it returns when it is run."""
+    reply = chat(base, model, program_messages(question), []).get("content", "")
+    found = run_program(reply)
+    return {"reply": "" if found["value"] is None else f"Answer: {found['value']}", "calls": [],
+            "formal": reply, "program": found}
 
 
 def large_numbers(question: str) -> bool:
@@ -288,6 +307,8 @@ def main() -> int:
                     elif condition in ("solve", "plan", "retry"):
                         solved = formalized(args.base_url, args.model, question, condition == "plan",
                                             condition == "retry")
+                    elif condition == "program":
+                        solved = programmed(args.base_url, args.model, question)
                     elif condition == "shots":
                         solved = solve(args.base_url, args.model, question, False, examples=worked_turns())
                     elif condition in ("combine", "judge"):
