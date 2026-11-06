@@ -217,6 +217,7 @@ Each change is also scored on rounds of new public data, six datasets at a
 time from statistics offices, city portals and research projects, with claims
 written as reports write them; the pull request gives the scores.
 
+This is a personal project. All opinions are my own and do not represent my employer.
 ## ADA Lab
 
 The research workflow (paper tables, figures and a methods draft from a
