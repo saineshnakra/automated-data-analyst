@@ -13,6 +13,7 @@ given another letter too.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 import string
@@ -44,6 +45,38 @@ FORMAL_EXAMPLES = (
      "missing = 120 - 40\nminutes = missing / 8\nAnswer: minutes"),
     ("If 3x + 7 = 22, what is the value of 2x - 1?", "3*x + 7 = 22\nAnswer: 2*x - 1"),
 )
+#: The ``json`` condition: the same instruction and examples, with the reply held to this JSON schema by the
+#: model server, so that every reply has equations and an answer in fixed places.
+JSON_ASK = ("Write the equations and the name of the quantity the question asks for as JSON, with "
+            "\"equations\" a list of equations and \"answer\" the name. Do not work them out.")
+JSON_FORMAT = {"type": "object", "required": ["equations", "answer"],
+               "properties": {"equations": {"type": "array", "items": {"type": "string"}},
+                              "answer": {"type": "string"}}}
+
+
+def json_messages(question: str) -> list[dict]:
+    """The chat for ``json``: the instruction, the worked examples written as JSON, then the question."""
+    messages = [{"role": "system", "content": FORMAL_PROMPT}]
+    for asked, answered in FORMAL_EXAMPLES:
+        *equations, answer = answered.split("\n")
+        reply = {"equations": equations, "answer": answer.removeprefix("Answer:").strip()}
+        messages += [{"role": "user", "content": f"{asked}\n\n{JSON_ASK}"},
+                     {"role": "assistant", "content": json.dumps(reply)}]
+    return messages + [{"role": "user", "content": f"{question}\n\n{JSON_ASK}"}]
+
+
+def from_json(reply: str) -> str:
+    """A JSON reply as the lines ADA reads: the equations, then the Answer line. A reply that is not such JSON
+    is read as it is."""
+    try:
+        found = json.loads(reply)
+        equations = [str(line) for line in found["equations"]]
+        answer = str(found["answer"])
+    except (ValueError, TypeError, KeyError):
+        return reply
+    return "\n".join([*equations, f"Answer: {answer}"])
+
+
 #: The same examples worked out step by step, for the ``shots`` condition: the model alone with as many
 #: examples as ``solve`` has, so that what ``solve`` gains is not only from seeing examples.
 WORKED_ANSWERS = (

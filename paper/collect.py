@@ -22,7 +22,8 @@ DATASETS = ("gsm8k", "gsmhard", "math500")
 #: The model names the files were made from; a file name has ":" and "/" written as "-".
 MODELS = ("smollm2:135m", "gemma3:270m", "smollm2:360m", "qwen2.5:0.5b", "qwen3:0.6b", "gemma3:1b",
           "llama3.2:1b", "qwen2.5:1.5b", "qwen2-math:1.5b", "qwen3:1.7b", "smollm2:1.7b", "llama3.2:3b",
-          "qwen2.5:3b", "phi4-mini", "gemma3:4b", "qwen3:4b", "qwen3:4b-instruct")
+          "qwen2.5:3b", "phi4-mini", "gemma3:4b", "qwen3:4b", "qwen3:4b-instruct", "olmo2:1b-instruct",
+          "smollm3:3b", "olmo-3:7b-instruct")
 
 
 def named(path: Path) -> tuple[str, str]:
