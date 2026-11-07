@@ -10,9 +10,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "benchmarks"))
 import formalize  # noqa: E402
 from formalize import (  # noqa: E402
     FORMAL_ASK,
+    JSON_ASK,
     PLAN_ASK,
     feedback,
     formal_messages,
+    from_json,
+    json_messages,
     latex_value,
     lettered,
     missing,
@@ -178,6 +181,31 @@ class PlanTests(unittest.TestCase):
         # ADA reads the equations after the reasoning, the same as those of the solve examples.
         values = [formalize._solved(*written(answer, last=True), True)["value"] for answer in answers]
         self.assertEqual(values, ["55", "24", "10", "9"])
+
+
+class JsonTests(unittest.TestCase):
+    def test_the_examples_written_as_json(self):
+        messages = json_messages("How many?")
+        self.assertEqual(messages[-1]["content"], f"How many?\n\n{JSON_ASK}")
+        answers = [message["content"] for message in messages if message["role"] == "assistant"]
+        self.assertEqual(answers[0], '{"equations": ["price = 80", "discount = price * 25 / 100", '
+                                     '"paid = price - discount - 5"], "answer": "paid"}')
+        # Read back, each example is the same text the solve condition's example is.
+        solve_answers = [m["content"] for m in formal_messages("How many?") if m["role"] == "assistant"]
+        self.assertEqual([from_json(answer) for answer in answers], solve_answers)
+
+    def test_a_reply_read_as_equations(self):
+        self.assertEqual(from_json('{"equations": ["a = 2", "b = a + 1"], "answer": "b"}'),
+                         "a = 2\nb = a + 1\nAnswer: b")
+        reply = '{"equations": ["a = 2", "b = a + 1"], "answer": "b"}'
+        self.assertEqual(solved_by_ada(from_json(reply))["value"], "3")
+        # What is not such JSON is read as it is.
+        for reply in ("a = 2\nAnswer: a", '{"answer": "a"}', '["a = 2"]', "{not json"):
+            self.assertEqual(from_json(reply), reply)
+
+    def test_thin_input(self):
+        self.assertEqual(from_json(""), "")
+        self.assertEqual(from_json('{"equations": [], "answer": ""}'), "Answer: ")
 
 
 class FeedbackTests(unittest.TestCase):

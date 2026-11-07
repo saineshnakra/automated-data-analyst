@@ -5,11 +5,12 @@ import json
 import sys
 import tempfile
 import unittest
+from fractions import Fraction
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "paper"))
 
-from analysis import grouped, mcnemar, paired, report, retried  # noqa: E402
+from analysis import grouped, mcnemar, paired, report, retried, vote_table, voted  # noqa: E402
 from collect import collect, named  # noqa: E402
 from combine_rules import replaced  # noqa: E402
 
@@ -132,6 +133,30 @@ class AnalysisTests(unittest.TestCase):
         text = report(records)
         self.assertIn("| m | 2 | 2 | 1 |", text)
         self.assertIn("- m: ran 1, refused 1", text)
+
+    def test_the_vote(self):
+        def sample(number, given, correct=False):
+            return {"sample": number, "given": given, "correct": correct}
+        # The answer most samples give, the earliest when answers tie, none when no sample has one.
+        samples = [sample(0, "4"), sample(1, "5", True), sample(2, "5", True)]
+        self.assertEqual(voted(samples, Fraction(0))["given"], "5")
+        self.assertEqual(voted([sample(1, "5"), sample(0, "4")], Fraction(0))["given"], "4")
+        self.assertIsNone(voted([sample(0, None), sample(1, None)], Fraction(0)))
+        # Answers within the tolerance count as the same.
+        found = voted([sample(0, "4"), sample(1, "5.0004"), sample(2, "5")], Fraction(1, 1000))
+        self.assertEqual(found["given"], "5.0004")
+
+    def test_the_vote_table(self):
+        records = [record("gsm8k", "m", problem, "solve", correct, sample=number, given=given)
+                   for problem, answers in ((0, [("4", False), ("5", True), ("5", True)]),
+                                            (1, [("6", True), (None, False), ("7", False)]))
+                   for number, (given, correct) in enumerate(answers)]
+        lines = vote_table(records)
+        # First reply right on problem 1 only; the vote is right on problem 0 and, by the tie, on problem 1.
+        self.assertIn("| m | solve | 3 | 2 | 1 | 2 |", lines)
+        # One sample per problem, or MATH-500, has no vote table.
+        self.assertEqual(vote_table([record("gsm8k", "m", 0, "solve", True)]), [])
+        self.assertEqual(vote_table([record("math500", "m", 0, "none", True, sample=n) for n in (0, 1)]), [])
 
     def test_thin_input(self):
         self.assertEqual(report([]), "")

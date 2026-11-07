@@ -19,6 +19,7 @@ import gzip
 import json
 import sys
 from collections import Counter, defaultdict
+from fractions import Fraction
 from pathlib import Path
 
 ORDER = ("none", "shots", "tool", "prompt", "schema", "check", "solve", "plan", "retry", "program", "combine",
@@ -159,6 +160,7 @@ def report(records: list[dict]) -> str:
         lines += ["", f"Replies that failed or never ended: {failed}", ""]
         lines += parts(groups, dataset, models, conditions)
     lines += paired(groups)
+    lines += vote_table(records)
     return "\n".join(lines)
 
 
@@ -205,6 +207,66 @@ def parts(groups: dict, dataset: str, models: list[str], conditions: list[str]) 
         lines.append(f"| {name} | {counts[name]['problems']} | "
                      + " | ".join(str(counts[name][condition]) for condition in conditions) + " |")
     return lines + [""]
+
+
+#: How close two answers must be to count as the same in a vote, by data set. MATH-500's answers are LaTeX
+#: that needs Math-Verify to compare, so its runs are voted by math500.py and have no vote table here.
+CLOSE = {"gsm8k": Fraction(0), "gsmhard": Fraction(1, 1000)}
+
+
+def voted(samples: list[dict], tolerance: Fraction) -> dict | None:
+    """The record whose answer most samples give, the earliest of them when answers tie, or None when no
+    sample has an answer. Answers within ``tolerance`` count as the same."""
+    groups = []  # [answer, count, first record], in the order the samples came
+    for record in sorted(samples, key=lambda item: item.get("sample", 0)):
+        given = record.get("given")
+        if given is None:
+            continue
+        for group in groups:
+            if _same(group[0], given, tolerance):
+                group[1] += 1
+                break
+        else:
+            groups.append([given, 1, record])
+    return max(groups, key=lambda group: group[1])[2] if groups else None
+
+
+def _same(first: str, second: str, tolerance: Fraction) -> bool:
+    try:
+        return abs(Fraction(first) - Fraction(second)) <= tolerance
+    except (ValueError, ZeroDivisionError):
+        return first == second
+
+
+def vote_table(records: list[dict]) -> list[str]:
+    """For each GSM8K or GSM-Hard condition asked more than once: problems right with the first reply and by
+    vote of every sample, per model, on the problems every sample of the condition finished."""
+    asked = defaultdict(lambda: defaultdict(list))
+    for record in records:
+        if record["dataset"] in CLOSE:
+            problem = record.get("index", record.get("id"))
+            asked[(record["dataset"], record["model"], record["condition"])][problem].append(record)
+    counts = {key: max(len(samples) for samples in problems.values()) for key, problems in asked.items()}
+    if not any(count > 1 for count in counts.values()):
+        return []
+    lines = []
+    for dataset in sorted({key[0] for key, count in counts.items() if count > 1}):
+        keys = sorted(key for key, count in counts.items() if key[0] == dataset and count > 1)
+        lines += [f"## {dataset}: votes", "",
+                  "Problems right with the first reply, and by vote of every sample (the answer most samples "
+                  "give):", "", "| Model | Condition | Samples | Problems | First reply | Vote |",
+                  "|---|---|---|---|---|---|"]
+        for _, model, condition in keys:
+            problems = asked[(dataset, model, condition)]
+            count = counts[(dataset, model, condition)]
+            full = [samples for samples in problems.values() if len(samples) == count]
+            first = sum(record["correct"] for samples in full for record in samples
+                        if record.get("sample", 0) == 0)
+            winners = [voted(samples, CLOSE[dataset]) for samples in full]
+            vote = sum(bool(winner and winner["correct"]) for winner in winners)
+            lines.append(f"| {model} | {condition} | {count} | {len(full)} | {first} | {vote} |")
+        lines.append("")
+    return lines
 
 
 def slipped(check: dict) -> bool:
