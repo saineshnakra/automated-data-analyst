@@ -156,7 +156,7 @@ the four tools in the format OpenAI-compatible servers take, and
 | `ada_ask` | computes an answer from a file or folder: a count, mean, share, change, ranking, group comparison, correlation or trend |
 | `ada_check_claim` | checks a statement against the data: true, false or cannot tell, with the reason |
 | `ada_scan` | lists the tables in a folder, their columns and the keys that join them |
-| `ada_compute` | computes an arithmetic expression exactly, with each step: fractions stay exact, and an expression that reads two ways is refused with both readings (see [Exact arithmetic](reference/compute.md)). Given equations, linear ones, a polynomial equation in one unknown or a system of polynomial equations, it solves them and checks the answer (see [Algebra](reference/algebra.md)) |
+| `ada_compute` | computes an arithmetic expression exactly, with each step: fractions stay exact, and an expression that reads two ways is refused with both readings (see [Exact arithmetic](reference/compute.md)). Given equations, linear ones, a polynomial equation in one unknown or a system of polynomial equations, it solves them and checks the answer (see [Algebra](reference/algebra.md)). Given the word problem as `problem`, it also names the problem's numbers the working leaves out (see [Checking how a problem was read](reference/compute.md#checking-how-a-problem-was-read)) |
 
 All four only read; none writes a file.
 

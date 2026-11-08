@@ -66,6 +66,11 @@ solve a formula for one letter, name it: `ada compute "solve h = v*t -
 g*t^2/2 for t"`. Report the `conditions` with the answer (g ≠ 0, the number
 under a root not negative).
 
+For a word problem, add `--problem "the problem, word for word"`: ADA then
+names the problem's numbers your expression or equations leave out. If it
+names one, read the problem again and work out what that number stands for
+before you answer.
+
 ## Computing and checking numbers
 
 Compute with `ada ask`, and check every number you state about the data with

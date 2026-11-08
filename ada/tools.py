@@ -115,6 +115,9 @@ _TOOLS = (
                                                                 "or equations such as 3x - 5 = 2x + 7."},
                 "digits": {"type": "integer", "description": "Significant digits for a result that is not "
                                                             "exact, such as sqrt(2) (default 20)."},
+                "problem": {"type": "string", "description": "The word problem the numbers come from, word "
+                                                            "for word. ADA then names the problem's numbers "
+                                                            "the expression or equations leave out."},
             },
             "required": ["expression"],
         },
@@ -304,8 +307,16 @@ def run(name: str, arguments: dict | str, root: str | Path | None = None, brief:
                 given["expression"] = given[alias]
             digits = str(given.get("digits", DIGITS))
             digits = int(digits) if digits.isdigit() else DIGITS
-            computed = work_out(_text(given, "expression"), digits=digits)
-            result = computed if isinstance(computed, Refusal) else computed.to_dict()
+            expression = _text(given, "expression")
+            computed = work_out(expression, digits=digits)
+            result = _refused(computed) if isinstance(computed, Refusal) else computed.to_dict()
+            if isinstance(given.get("problem"), str) and given["problem"].strip():
+                from .reading import check_reading  # noqa: PLC0415
+
+                reading = check_reading(given["problem"], expression)
+                result.update(reading.to_dict())
+                if reading.warning:
+                    result["warnings"] = [*result.get("warnings", []), reading.warning]
         elif name == "ada_ask":
             question = _text(given, "question")
             result = _ask(_inside(given.get("path"), base, "path", text=question), question)

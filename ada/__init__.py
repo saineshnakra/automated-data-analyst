@@ -38,6 +38,7 @@ from .compute import Checked, Computation, check_arithmetic, compute
 from .decisions import Decision, UnknownDecision
 from .folder import FolderScan, scan
 from .joins import ask_folder
+from .reading import Reading, check_reading
 from .sources import Source
 
 __version__ = "0.8.0"
@@ -55,6 +56,7 @@ __all__ = [
     "Decision",
     "FolderScan",
     "NothingToAnalyze",
+    "Reading",
     "Refusal",
     "Simplified",
     "Solution",
@@ -67,6 +69,7 @@ __all__ = [
     "ask_folder",
     "check_arithmetic",
     "check_claim",
+    "check_reading",
     "check_solution",
     "compute",
     "read_file",
