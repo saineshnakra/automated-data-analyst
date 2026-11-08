@@ -69,6 +69,19 @@ ada compute "3(x + 2) - x"                 # 2x + 6
   whose solutions are known: x + y = s with xy = p, lines and circles, and
   three numbers from the sums of their products.
 
+### Checking how a model read a problem
+
+`ada compute --problem`, the `ada_compute` tool's `problem` argument and
+`ada.check_reading` name the numbers of a word problem that a model's
+expression or equations leave out. In the GSM8K runs, equations ADA solved
+were right 66% of the time when they used every number of the problem and
+23% when they left one out.
+
+```bash
+ada compute "p = 80000 + 50000" --problem "... by 150%. How much profit did he make?"
+# The working leaves out 150 from the problem. ...
+```
+
 ### Checking a model's arithmetic
 
 - `ada.check_arithmetic` skips an equation the writer knows is false: a

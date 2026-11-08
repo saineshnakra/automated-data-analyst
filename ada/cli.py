@@ -388,17 +388,34 @@ def _mcp(args: argparse.Namespace) -> int:
 
 def _compute(args: argparse.Namespace) -> int:
     from .algebra import work_out  # noqa: PLC0415
+    from .reading import check_reading  # noqa: PLC0415
 
-    result = work_out(" ".join(args.expression), digits=args.digits)
+    expression = " ".join(args.expression)
+    result = work_out(expression, digits=args.digits)
+    reading = check_reading(args.problem, expression) if args.problem else None
     if isinstance(result, Refusal):
         if args.json:
             print(json.dumps({"schema_version": 1, "status": "refused", "code": result.code,
-                              "message": result.message}, indent=2))
+                              "message": result.message, **_reading_fields(reading)}, indent=2))
         else:
             print(f"refused ({result.code}): {result.message}", file=sys.stderr)
+            if reading and reading.warning:
+                print(reading.warning, file=sys.stderr)
         return EXIT_COULD_NOT_LOOK
-    print(json.dumps(result.to_dict(), indent=2) if args.json else result)
+    if args.json:
+        print(json.dumps({**result.to_dict(), **_reading_fields(reading)}, indent=2))
+    else:
+        print(result)
+        if reading:
+            print(reading.warning or "The working uses every number of the problem.")
     return EXIT_QUIET
+
+
+def _reading_fields(reading) -> dict:
+    """What ``--problem`` adds to a JSON result: the problem's numbers, those left out, and the warning."""
+    if reading is None:
+        return {}
+    return {**reading.to_dict(), **({"warnings": [reading.warning]} if reading.warning else {})}
 
 
 def _compute_arguments(argv: list[str]) -> list[str]:
@@ -408,9 +425,9 @@ def _compute_arguments(argv: list[str]) -> list[str]:
     for item in rest:
         if item in ("--json", "-h", "--help"):
             options.append(item)
-        elif item == "--digits":
+        elif item in ("--digits", "--problem"):
             options += [item, next(rest, "")]
-        elif item.startswith("--digits="):
+        elif item.startswith(("--digits=", "--problem=")):
             options.append(item)
         elif item != "--":
             expression.append(item)
@@ -541,6 +558,8 @@ def build_parser() -> argparse.ArgumentParser:
     computed.add_argument("--digits", type=int, default=20,
                           help="significant digits for a result that is not exact (default: 20)")
     computed.add_argument("--json", action="store_true", help="machine-readable result")
+    computed.add_argument("--problem", help="the word problem the expression or equations come from: ADA "
+                                            "then lists the problem's numbers they leave out")
 
     subcommands.add_parser("samples", help="list the bundled datasets")
     return parser

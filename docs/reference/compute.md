@@ -221,6 +221,39 @@ This lets a model reason in its own words and still get its arithmetic
 checked: hand it back each equation that comes back `correct=False`, with the
 right value, and ask it to fix the steps that used it.
 
+## Checking how a problem was read
+
+Given the word problem it comes from, ADA also names the problem's numbers
+that an expression or equations leave out. A number left out usually means
+the problem was read wrong, a mistake that correct arithmetic does not catch.
+
+```bash
+ada compute "p = 80000 + 50000" --problem "He buys a house for $80,000 and puts in $50,000 in repairs. This increased the value of the house by 150%. How much profit did he make?"
+# p = 130000 ... The working leaves out 150 from the problem. A number left out often means the
+# problem was read wrong: check what it stands for, and whether the question needs it.
+```
+
+```python
+ada.check_reading(problem, "p = 80000 + 50000").left_out   # ("150",)
+```
+
+The `ada_compute` tool takes the problem as `problem`, and its result then
+has `problem_numbers`, `left_out` and the warning in `warnings`.
+
+- The problem's numbers are those written in digits, with thousands
+  separators (80,000) and decimals. Ordinals (the 3rd day), clock times
+  (8:30), 0 and 1 are not counted, and numbers written in words are not read.
+- A number is used when it, or for a percentage the number divided by 100,
+  appears as a number in the working.
+
+In the GSM8K runs of
+[paper/runs/2026-11-05-gsm-ladder](../../paper/runs/2026-11-05-gsm-ladder/README.md)
+(13 models, problems 0 to 299), equations ADA solved gave the right answer
+66% of the time when they used every number of the problem, and 23% of the
+time when they left one out. A number left out is a reason to read again,
+not proof of a mistake: working may combine two numbers into one, or leave
+out one the question does not need.
+
 ## Safety
 
 Nothing is run as Python code. A small grammar reads numbers, the operators
