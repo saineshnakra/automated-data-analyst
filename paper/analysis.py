@@ -5,14 +5,15 @@
 For each data set and model: problems right under each condition, on the problems every condition of the run
 finished; each condition against the model alone (right only with it / right only alone, and the exact McNemar
 test, SciPy's binomtest on the problems where the two differ), or against the run's first condition when the
-run did not ask the model alone; ADA's statuses under ``solve``, ``json``, ``plan`` and ``retry``, and how the
-programs under ``program`` ended; ``retry`` against ``solve``, split by whether retry's first reply is solve's
-reply; and "ADA's answer, else the model's": ADA's value when it solved the equations to an answer, the
-model's own answer when it did not; and, for MATH-500, the problems right by subject and level. Only each
-problem's first sample counts in those tables, so a run that voted over several samples is read by its first
-reply there. For GSM8K and GSM-Hard, the last tables give each condition asked more than once by its first
-reply and by vote, and each one against each one before it. A condition this script does not know is named,
-not counted. The output is Markdown and the same each time.
+run did not ask the model alone; ADA's statuses under ``solve``, ``json``, ``plan``, ``retry`` and ``pair``,
+and how the programs under ``program`` ended; for ``pair``, what asking again about numbers left out did;
+``retry`` against ``solve``, split by whether retry's first reply is solve's reply; and "ADA's answer, else
+the model's": ADA's value when it solved the equations to an answer, the model's own answer when it did not;
+and, for MATH-500, the problems right by subject and level. Only each problem's first sample counts in those
+tables, so a run that voted over several samples is read by its first reply there. For GSM8K and GSM-Hard, the
+last tables give each condition asked more than once by its first reply and by vote, and each one against each
+one before it. A condition this script does not know is named, not counted. The output is Markdown and the
+same each time.
 """
 
 from __future__ import annotations
@@ -24,8 +25,8 @@ from collections import Counter, defaultdict
 from fractions import Fraction
 from pathlib import Path
 
-ORDER = ("none", "shots", "tool", "prompt", "schema", "check", "solve", "json", "plan", "retry", "program",
-         "combine", "judge")
+ORDER = ("none", "shots", "tool", "prompt", "schema", "check", "solve", "json", "plan", "retry", "pair",
+         "program", "combine", "judge")
 
 
 def load(run: Path) -> list[dict]:
@@ -134,7 +135,7 @@ def report(records: list[dict]) -> str:
             if len(models) > 1:
                 cells = [f"{g} / {lost}, p = {p_value(exact(g, lost))}" for g, lost in totals.values()]
                 lines.append("| All | " + " | ".join(cells) + " |")
-        for condition in [c for c in ("solve", "json", "plan", "retry") if c in conditions]:
+        for condition in [c for c in ("solve", "json", "plan", "retry", "pair") if c in conditions]:
             lines += ["", f"ADA's statuses under {condition}:", ""]
             for model in models:
                 problems = groups[(dataset, model)]
@@ -166,6 +167,20 @@ def report(records: list[dict]) -> str:
             if len(models) > 1:
                 lines.append(f"| All | {totals[0]} | {totals[1]} | {totals[2]} | {totals[3]} "
                              f"| {totals[4]} / {totals[5]} |")
+        if "pair" in conditions and dataset in CLOSE:
+            lines += ["", "pair: asking again when ADA solved equations that leave out a number of the "
+                      "question. The second answer is taken when ADA solves it and it leaves out fewer "
+                      "numbers:", "",
+                      "| Model | Asked again | Second answer taken | Right before | Right after |",
+                      "|---|---|---|---|---|"]
+            totals = [0] * 4
+            for model in models:
+                problems = groups[(dataset, model)]
+                counts = reread(problems, complete(problems, conditions), CLOSE[dataset])
+                totals = [total + count for total, count in zip(totals, counts, strict=True)]
+                lines.append("| " + " | ".join([model, *map(str, counts)]) + " |")
+            if len(models) > 1:
+                lines.append("| All | " + " | ".join(map(str, totals)) + " |")
         if {"none", "check"} <= set(conditions):
             lines += ["", "Wrong answers alone, and how many of them have an arithmetic slip ADA finds:", ""]
             for model in models:
@@ -200,6 +215,23 @@ def retried(problems: dict, done: list) -> tuple[int, ...]:
             gained += retry["correct"] and not first["correct"]
             lost += first["correct"] and not retry["correct"]
     return again, same, fixed, other, gained, lost
+
+
+def reread(problems: dict, done: list, tolerance: Fraction) -> tuple[int, int, int, int]:
+    """For ``pair``: the problems asked again because ADA solved equations that leave out a number of the
+    question; of them, those whose second answer was taken, those right with the first answer and those right
+    in the end."""
+    asked = taken = before = after = 0
+    for problem in done:
+        record = problems[problem]["pair"]
+        first = record.get("first_ada") or {}
+        if first.get("status") != "solved" or not record.get("left_out"):
+            continue
+        asked += 1
+        taken += not record.get("kept_first")
+        before += first.get("value") is not None and _same(first["value"], record["gold"], tolerance)
+        after += bool(record["correct"])
+    return asked, taken, before, after
 
 
 def parts(groups: dict, dataset: str, models: list[str], conditions: list[str]) -> list[str]:

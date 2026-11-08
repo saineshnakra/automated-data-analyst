@@ -27,6 +27,12 @@ Each problem is solved in any of these ways, with the same model and settings:
   gives a number the model worked out instead of a quantity of its equations, the model is told why (the
   quantities with no value, ADA's reason for refusing, or that ADA works the numbers out) and writes them
   again, once. When the second reply has no value and the first gave a number, the first stands.
+- ``pair``: as ``retry``, and ADA also checks how the model read the problem. When ADA solves equations that
+  leave out a number of the question (``ada.check_reading``: numbers in digits, not 0 or 1, a percentage
+  also as the number divided by 100), the model is told which numbers and writes the equations again, once.
+  Its second answer is taken only when ADA solves it and it leaves out fewer of the question's numbers;
+  otherwise the first stands. Where ADA finds no value, the model is told why as under ``retry``, with the
+  numbers left out.
 - ``program``: the model writes a Python program whose function ``solution()`` returns the answer, as in
   program-aided language models, and the program is run after a check that it does only arithmetic
   (``program.py``). It is the usual way of giving a model exact arithmetic without ADA.
@@ -76,6 +82,7 @@ from formalize import (  # noqa: E402
     json_messages,
     plain_number,
     plan_messages,
+    reading_feedback,
     solved_by_ada,
     worked_turns,
 )
@@ -84,6 +91,7 @@ from program import program_messages, run_program  # noqa: E402
 from ada import tools  # noqa: E402
 from ada.chat import _written_call  # noqa: E402
 from ada.compute import check_arithmetic  # noqa: E402
+from ada.reading import check_reading  # noqa: E402
 
 PROMPT = (
     "Solve the math word problem. Think step by step. End your reply with a last line that starts with "
@@ -93,10 +101,10 @@ TOOL_PROMPT = (
     PROMPT + " You can call ada_compute to work out any arithmetic step exactly: write the expression with "
     "the numbers from your reasoning, and use the value it returns."
 )
-CONDITIONS = ("none", "tool", "check", "solve", "shots", "combine", "judge", "plan", "retry", "program",
-              "json")
+CONDITIONS = ("none", "tool", "check", "solve", "shots", "combine", "judge", "plan", "retry", "pair",
+              "program", "json")
 #: The conditions a run may ask more than once (--samples): each asks the model on its own, from the question.
-SAMPLED = ("none", "tool", "solve", "shots", "plan", "retry", "program", "json")
+SAMPLED = ("none", "tool", "solve", "shots", "plan", "retry", "pair", "program", "json")
 #: The temperature of every sample after the first. The first is at temperature 0, as in a run of one sample,
 #: and sample i has seed i.
 SAMPLE_TEMPERATURE = 0.7
@@ -105,7 +113,8 @@ SAMPLE_TEMPERATURE = 0.7
 SYSTEM_SUFFIX = ""
 #: What a condition's reply keeps in its record besides the answer.
 KEPT = ("checks", "first_reply", "formal", "ada", "error", "decided_by", "first_formal", "first_ada",
-        "feedback", "kept_first", "second_formal", "second_ada", "program")
+        "feedback", "kept_first", "second_formal", "second_ada", "program", "left_out",
+        "second_left_out")
 #: A question with a number this many digits long or longer has arithmetic a small model often gets wrong.
 LARGE_DIGITS = 5
 #: Tool-calling rounds before the model must answer.
@@ -202,24 +211,40 @@ def checked(base: str, model: str, alone: dict) -> dict:
             "first_reply": alone["reply"]}
 
 
+def left_out(question: str, reply: str, found: dict) -> tuple[str, ...]:
+    """The question's numbers that the model's equations leave out, by ADA's ``check_reading``: the equations
+    ADA read, or the whole reply when it read none."""
+    return check_reading(question, "\n".join(found.get("equations") or []) or reply).left_out
+
+
 def formalized(base: str, model: str, question: str, plan: bool = False, retry: bool = False,
-               options: dict | None = None) -> dict:
+               options: dict | None = None, pair: bool = False) -> dict:
     """The model's equations for the problem, and ADA's value for the quantity it names. Counts and amounts in
     grade-school problems are above zero, so of several values ADA takes the one that is. With ``plan``, the
     model works out how to solve the problem in words before it writes the equations; with ``retry``, it
     writes them again once, told why, when ADA finds no one value or the Answer line gives a number instead of
-    a quantity. When the second reply has no value and the first gave a number, the first stands."""
+    a quantity. When the second reply has no value and the first gave a number, the first stands. ``pair`` is
+    ``retry`` that also asks again, naming them, when ADA solves equations that leave out numbers of the
+    question; then the second reply is taken only when ADA solves it and it leaves out fewer of them."""
     messages = plan_messages(question) if plan else formal_messages(question)
     reply = chat(base, model, messages, [], options=options).get("content", "")
     ada = solved_by_ada(reply, positive=True)
     first = {}
-    advice = feedback(ada) if retry else None
+    missed = left_out(question, reply, ada) if pair else ()
+    if pair:
+        first["left_out"] = list(missed)
+    advice = reading_feedback(ada, missed) if pair else feedback(ada) if retry else None
     if advice:
         messages = messages + [{"role": "assistant", "content": reply}, {"role": "user", "content": advice}]
-        first = {"first_formal": reply, "first_ada": ada, "feedback": advice}
+        first.update(first_formal=reply, first_ada=ada, feedback=advice)
         again = chat(base, model, messages, [], options=options).get("content", "")
         found = solved_by_ada(again, positive=True)
-        if found["value"] is None and ada["value"] is not None:
+        if pair:
+            first["second_left_out"] = list(left_out(question, again, found))
+        reread = pair and ada["status"] == "solved"
+        if reread and (found["value"] is None or len(first["second_left_out"]) >= len(missed)):
+            first.update(kept_first=True, second_formal=again, second_ada=found)
+        elif found["value"] is None and ada["value"] is not None:
             first.update(kept_first=True, second_formal=again, second_ada=found)
         else:
             reply, ada = again, found
@@ -358,9 +383,10 @@ def main() -> int:
                         if condition == "check":
                             alone = alone or solve(args.base_url, args.model, question, False)
                             solved = checked(args.base_url, args.model, alone)
-                        elif condition in ("solve", "plan", "retry"):
+                        elif condition in ("solve", "plan", "retry", "pair"):
                             solved = formalized(args.base_url, args.model, question, condition == "plan",
-                                                condition == "retry", options=options)
+                                                condition == "retry", options=options,
+                                                pair=condition == "pair")
                         elif condition == "program":
                             solved = programmed(args.base_url, args.model, question, options=options)
                         elif condition == "json":

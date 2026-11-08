@@ -172,6 +172,25 @@ def feedback(found: dict) -> str | None:
             "line. Do not work them out.")
 
 
+def reading_feedback(found: dict, left_out: tuple[str, ...] | list[str]) -> str | None:
+    """What ``pair`` tells the model: when ADA found no one value, ``feedback``'s reason with the problem's
+    numbers the equations leave out; when ADA solved equations that leave out a number of the problem, those
+    numbers; None when ADA solved equations that use every number."""
+    advice = feedback(found)
+    if not left_out:
+        return advice
+    named = left_out[0] if len(left_out) == 1 else ", ".join(left_out[:-1]) + " and " + left_out[-1]
+    each = "it stands" if len(left_out) == 1 else "each stands"
+    note = (f"Your equations leave out {named} from the problem. Each number in a problem like this one is "
+            f"there for a reason: read the problem again and work out what {each} for.")
+    if advice:
+        return f"{note} {advice}"
+    return (f"ADA solved your equations, but they leave out {named} from the problem. Each number in a "
+            f"problem like this one is there for a reason: read the problem again and work out what {each} "
+            "for. Write all the equations for this problem again, one on each line, then the Answer line. Do "
+            "not work them out.")
+
+
 def worked_turns(boxed: bool = False) -> list[dict]:
     """The example questions and their step-by-step answers, as earlier turns of a chat. With ``boxed``, each
     answer ends with the number in \\boxed{}, as MATH's solutions do, rather than an "Answer:" line."""

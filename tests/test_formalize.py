@@ -21,6 +21,7 @@ from formalize import (  # noqa: E402
     missing,
     plain_number,
     plan_messages,
+    reading_feedback,
     solved_by_ada,
     worked_turns,
     written,
@@ -229,6 +230,22 @@ class FeedbackTests(unittest.TestCase):
     def test_thin_input(self):
         self.assertEqual(missing(solved_by_ada("")), [])
         self.assertIn("Answer", feedback(solved_by_ada("")))
+
+    def test_what_pair_says_about_numbers_left_out(self):
+        solved = solved_by_ada("x = 5\nAnswer: x")
+        self.assertIsNone(reading_feedback(solved, []))
+        said = reading_feedback(solved, ["4"])
+        self.assertTrue(said.startswith("ADA solved your equations, but they leave out 4 from the problem."))
+        self.assertIn("what it stands for", said)
+        self.assertIn("Do not work them out.", said)
+        self.assertIn("leave out 4 and 6", reading_feedback(solved, ["4", "6"]))
+        self.assertIn("what each stands for", reading_feedback(solved, ["4", "6"]))
+        # With no value, retry's reason follows the numbers left out.
+        said = reading_feedback(solved_by_ada("Answer: 18"), ["3", "4", "6"])
+        self.assertTrue(said.startswith("Your equations leave out 3, 4 and 6 from the problem."))
+        self.assertIn("a number you worked out, 18", said)
+        given = solved_by_ada("Answer: 18")
+        self.assertEqual(reading_feedback(given, []), feedback(given))
 
 
 class LimitTests(unittest.TestCase):

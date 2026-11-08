@@ -43,6 +43,15 @@ problem is solved in any of these ways, with the same model and settings:
   that ADA works the numbers out) and writes them again, once. When the
   second reply has no value and the first gave a number, the first stands.
   Runs made before this asked again only when ADA found no value.
+- **ADA checks the reading too** (`pair`): as `retry`, and when ADA solves
+  equations that leave out a number of the question (by
+  `ada.check_reading`: numbers written in digits, not 0 or 1, a percentage
+  also as the number divided by 100), the model is told which numbers and
+  writes the equations again, once. The second answer is taken only when
+  ADA solves it and it leaves out fewer of the question's numbers. On
+  problems 0 to 299 of the 13-model ladder, equations ADA solved were right
+  66% of the time on GSM8K when they used every number of the question and
+  23% when they left one out.
 - **The model writes a program** (`program`): the model writes a Python
   program whose function `solution()` returns the answer, as in
   program-aided language models (PAL, the paper that made GSM-Hard), after

@@ -84,6 +84,67 @@ class RetryTests(unittest.TestCase):
         self.assertEqual((found["reply"], calls), ("", 2))
 
 
+class PairTests(unittest.TestCase):
+    QUESTION = "Tom has 3 apples and buys 4 bags of 6 pears. How many pieces of fruit does he have?"
+
+    def asked(self, *replies):
+        """formalized under pair, with the model's replies in turn; the result and how often it was asked."""
+        with unittest.mock.patch.object(gsm8k, "chat", side_effect=[{"content": r} for r in replies]) as chat:
+            return formalized("", "", self.QUESTION, pair=True), chat.call_count
+
+    def test_equations_that_use_every_number_are_not_asked_again(self):
+        found, calls = self.asked("apples = 3\npears = 4 * 6\nfruit = apples + pears\nAnswer: fruit")
+        self.assertEqual((found["reply"], calls, found["left_out"]), ("Answer: 27", 1, []))
+        self.assertNotIn("feedback", found)
+
+    def test_a_number_left_out_is_named_and_asked_again(self):
+        found, calls = self.asked("apples = 3\npears = 6\nfruit = apples + pears\nAnswer: fruit",
+                                  "apples = 3\npears = 4 * 6\nfruit = apples + pears\nAnswer: fruit")
+        self.assertEqual((found["reply"], calls), ("Answer: 27", 2))
+        self.assertEqual((found["left_out"], found["second_left_out"]), (["4"], []))
+        self.assertIn("leave out 4 from the problem", found["feedback"])
+        self.assertEqual(found["first_ada"]["value"], "9")
+        self.assertNotIn("kept_first", found)
+
+    def test_the_first_answer_stands_unless_the_second_leaves_out_fewer(self):
+        # The second reply leaves out as many numbers: the first stands.
+        found, _ = self.asked("apples = 3\npears = 6\nfruit = apples + pears\nAnswer: fruit",
+                              "apples = 3\nbags = 4\nfruit = apples + bags\nAnswer: fruit")
+        self.assertEqual(found["reply"], "Answer: 9")
+        self.assertTrue(found["kept_first"])
+        self.assertEqual(found["second_left_out"], ["6"])
+        # The second reply has no value: the first stands.
+        found, _ = self.asked("apples = 3\npears = 6\nfruit = apples + pears\nAnswer: fruit",
+                              "pears = 4 * 6\nfruit = apples + pears\nAnswer: fruit")
+        self.assertEqual(found["reply"], "Answer: 9")
+        self.assertTrue(found["kept_first"])
+
+    def test_no_value_is_asked_again_as_under_retry_with_the_numbers_left_out(self):
+        found, calls = self.asked("fruit = apples + pears\nAnswer: fruit",
+                                  "apples = 3\npears = 4 * 6\nfruit = apples + pears\nAnswer: fruit")
+        self.assertEqual((found["reply"], calls), ("Answer: 27", 2))
+        self.assertIn("leave out 3, 4 and 6 from the problem", found["feedback"])
+        self.assertIn("ADA found no value for fruit", found["feedback"])
+        # A number given, then no value: the first number stands, as under retry.
+        found, _ = self.asked("Answer: 27", "fruit = apples + pears\nAnswer: fruit")
+        self.assertEqual(found["reply"], "Answer: 27")
+        self.assertTrue(found["kept_first"])
+        self.assertIn("a number you worked out", found["feedback"])
+
+    def test_retry_is_as_before(self):
+        # Under retry, equations ADA solves are not asked about, whatever they leave out.
+        with unittest.mock.patch.object(gsm8k, "chat", return_value={
+                "content": "apples = 3\npears = 6\nfruit = apples + pears\nAnswer: fruit"}) as chat:
+            found = formalized("", "", self.QUESTION, retry=True)
+        self.assertEqual((found["reply"], chat.call_count), ("Answer: 9", 1))
+        self.assertNotIn("left_out", found)
+
+    def test_thin_input(self):
+        found, calls = self.asked("", "")
+        self.assertEqual((found["reply"], calls), ("", 2))
+        self.assertEqual(found["left_out"], ["3", "4", "6"])
+
+
 class ProgramTests(unittest.TestCase):
     def test_the_program_answers(self):
         reply = "```python\ndef solution():\n    apples = 3 + 2\n    return apples\n```"
@@ -174,6 +235,16 @@ class SampleTests(unittest.TestCase):
         seeds = sorted({(o or {}).get("seed", 0) for o in replies})
         self.assertEqual(seeds, [0, 1, 2])
         self.assertTrue(all(o["temperature"] == gsm8k.SAMPLE_TEMPERATURE for o in replies if o))
+
+    def test_pair_is_a_condition_that_may_be_sampled(self):
+        records, _ = self.run_benchmark("--condition", "pair", "--samples", "2", "--sampled", "pair")
+        self.assertEqual(len(records), 4)
+        self.assertTrue(all(record["correct"] for record in records))
+        # "Tom has 4 apples." with apples = 3 + 2 leaves out 4: asked again, the same reply leaves out as
+        # many, and the first answer stands.
+        fours = [record for record in records if record["index"] == 1]
+        self.assertTrue(all(r["left_out"] == ["4"] and r["kept_first"] for r in fours))
+        self.assertTrue(all(r["left_out"] == [] for r in records if r["index"] == 0))
 
     def test_a_run_of_one_sample_is_as_before(self):
         records, replies = self.run_benchmark("--condition", "none,solve")
