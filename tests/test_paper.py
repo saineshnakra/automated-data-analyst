@@ -196,6 +196,24 @@ class AnalysisTests(unittest.TestCase):
         self.assertIn("| a | program | retry | 0 / 1, p = 1 | 0 / 0, p = 1 |", lines)
         self.assertIn("| a | program | none | 0 / 0, p = 1 | 1 / 0, p = 1 |", lines)
 
+    def test_what_asking_again_about_numbers_left_out_did(self):
+        def pair(index, correct, first, left, kept=False):
+            return record("gsmhard", "m", index, "pair", correct, gold="5", ada={"status": "solved"},
+                          first_ada={"status": "solved", "value": first}, left_out=left,
+                          **({"kept_first": True} if kept else {}))
+        records = [record("gsmhard", "m", n, "none", False) for n in range(4)] + [
+            pair(0, True, "4", ["2"]),                # asked, second taken, wrong before, right after
+            pair(1, True, "5.0004", ["2"], True),     # asked, first kept, right before within 0.001
+            pair(2, False, "5", ["2"]),               # asked, second taken, right before, wrong after
+            record("gsmhard", "m", 3, "pair", True, gold="5", left_out=[])]  # not asked
+        text = report(records)
+        self.assertIn("| Model | Problems | none | pair |", text)
+        self.assertIn("| m | 3 | 2 | 2 | 2 |", text)
+        self.assertIn("ADA's statuses under pair:", text)
+        # A data set without a tolerance of its own, or a run without pair, has no such table.
+        self.assertNotIn("pair: asking again", report([record("math500", "m", 0, "pair", True, left_out=[])]))
+        self.assertNotIn("pair: asking again", report([record("gsmhard", "m", 0, "none", True)]))
+
     def test_json_and_unknown_conditions(self):
         records = [record("gsm8k", "m", 0, "none", False), record("gsm8k", "m", 0, "json", True,
                                                                    ada={"status": "solved"}),
