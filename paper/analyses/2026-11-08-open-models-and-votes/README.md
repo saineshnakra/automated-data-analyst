@@ -37,8 +37,8 @@ weights, such as `qwen2-math:1.5b` of the earlier runs, since their training dat
 | Samples | `--samples 5 --sampled none,retry,program`: `none`, `retry` and `program` are each asked five times, the first at temperature 0 and seed 0, the others at temperature 0.7 with seeds 1 to 4. `check`, `solve`, `json` and `combine` are asked once; `combine` takes the first replies of `none`, `check` and `solve` |
 | Settings | As in the earlier runs: 8,192 tokens of context and at most 2,048 tokens a reply. `--system-suffix /no_think` for `smollm3:3b` only |
 | Code | Commit `0a845de` of `main` |
-| Where | Kaggle, two kernels side by side, one per data set, each with two T4 GPUs, one Ollama server per GPU and six shards per model ([kaggle_ladder.py](../../../benchmarks/kaggle_ladder.py)) |
-| Time | About 10 kernel-hours in all, about 5 for each kernel, estimated from the seconds each reply took in the earlier runs |
+| Where | Kaggle, two kernels side by side, one per data set, each with two T4 GPUs, one Ollama server per GPU and six shards per model ([kaggle_ladder.py](../../../benchmarks/kaggle_ladder.py)). `olmo2:1b-instruct` and `smollm2:1.7b` run on one GPU, `smollm3:3b` on the other |
+| Time | About 12 kernel-hours in all, about 6 for each kernel, set by the GPU with two models; estimated from the seconds replies of models of these sizes took in the earlier runs |
 
 Before the run, a smoke test asks GSM8K and GSM-Hard problems 0 to 19, which the earlier runs already asked,
 with every model, condition and sample. It checks that the models load from Hugging Face, that the replies
