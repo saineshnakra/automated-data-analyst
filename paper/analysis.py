@@ -5,12 +5,14 @@
 For each data set and model: problems right under each condition, on the problems every condition of the run
 finished; each condition against the model alone (right only with it / right only alone, and the exact McNemar
 test, SciPy's binomtest on the problems where the two differ), or against the run's first condition when the
-run did not ask the model alone; ADA's statuses under ``solve``, ``plan`` and ``retry``, and how the programs
-under ``program`` ended; ``retry`` against ``solve``, split by whether retry's first reply is solve's reply;
-and "ADA's answer, else the model's": ADA's value when it solved the equations to an answer, the model's own
-answer when it did not; and, for MATH-500, the problems right by subject and level. Only each problem's first
-sample counts, so a run that voted over several samples is read by its first reply. The output is Markdown and
-the same each time.
+run did not ask the model alone; ADA's statuses under ``solve``, ``json``, ``plan`` and ``retry``, and how the
+programs under ``program`` ended; ``retry`` against ``solve``, split by whether retry's first reply is solve's
+reply; and "ADA's answer, else the model's": ADA's value when it solved the equations to an answer, the
+model's own answer when it did not; and, for MATH-500, the problems right by subject and level. Only each
+problem's first sample counts in those tables, so a run that voted over several samples is read by its first
+reply there. For GSM8K and GSM-Hard, the last tables give each condition asked more than once by its first
+reply and by vote, and each one against each one before it. A condition this script does not know is named,
+not counted. The output is Markdown and the same each time.
 """
 
 from __future__ import annotations
@@ -22,8 +24,8 @@ from collections import Counter, defaultdict
 from fractions import Fraction
 from pathlib import Path
 
-ORDER = ("none", "shots", "tool", "prompt", "schema", "check", "solve", "plan", "retry", "program", "combine",
-         "judge")
+ORDER = ("none", "shots", "tool", "prompt", "schema", "check", "solve", "json", "plan", "retry", "program",
+         "combine", "judge")
 
 
 def load(run: Path) -> list[dict]:
@@ -47,14 +49,29 @@ def complete(problems: dict, conditions: list[str]) -> list:
                   key=str)
 
 
+def rank(condition: str) -> tuple[int, str]:
+    """Where a condition comes in ORDER; those ORDER does not name come last, by name."""
+    return (ORDER.index(condition) if condition in ORDER else len(ORDER), condition)
+
+
+def exact(gained: int, lost: int) -> float:
+    """The exact McNemar test: SciPy's binomtest on the problems where two answers differ."""
+    from scipy.stats import binomtest  # noqa: PLC0415
+
+    return binomtest(gained, gained + lost).pvalue if gained + lost else 1.0
+
+
+def differing(gained: int, lost: int) -> str:
+    """Right only with one answer / right only with the other, and the exact McNemar p."""
+    return f"{gained} / {lost}, p = {p_value(exact(gained, lost))}"
+
+
 def mcnemar(problems: dict, done: list, condition: str, against: str = "none") -> tuple[int, int, float]:
     """How many problems only ``condition`` got right, how many only ``against`` did, and the exact
     two-sided McNemar p."""
-    from scipy.stats import binomtest  # noqa: PLC0415
-
     gained = sum(problems[p][condition]["correct"] and not problems[p][against]["correct"] for p in done)
     lost = sum(problems[p][against]["correct"] and not problems[p][condition]["correct"] for p in done)
-    return gained, lost, binomtest(gained, gained + lost).pvalue if gained + lost else 1.0
+    return gained, lost, exact(gained, lost)
 
 
 def either(problems: dict, done: list) -> int:
@@ -79,7 +96,12 @@ def report(records: list[dict]) -> str:
         models = [model for data, model in groups if data == dataset]
         conditions = [c for c in ORDER if any(c in found for model in models
                                               for found in groups[(dataset, model)].values())]
-        lines += [f"## {dataset}", "", "Problems right, on the problems every condition finished:", "",
+        unknown = sorted({c for model in models for found in groups[(dataset, model)].values()
+                          for c in found} - set(ORDER))
+        lines += [f"## {dataset}", ""]
+        if unknown:
+            lines += ["Not in these tables, since this script does not know them: " + ", ".join(unknown), ""]
+        lines += [ "Problems right, on the problems every condition finished:", "",
                   "| Model | Problems | " + " | ".join(conditions)
                   + (" | ADA's answer, else the model's |" if {"none", "solve"} <= set(conditions) else " |"),
                   "|---|---|" + "---|" * (len(conditions) + ({"none", "solve"} <= set(conditions)))]
@@ -110,12 +132,9 @@ def report(records: list[dict]) -> str:
                     cells.append(f"{gained} / {lost}, p = {p_value(p)}")
                 lines.append(f"| {model} | " + " | ".join(cells) + " |")
             if len(models) > 1:
-                from scipy.stats import binomtest  # noqa: PLC0415
-
-                cells = [f"{g} / {lost}, p = {p_value(binomtest(g, g + lost).pvalue if g + lost else 1.0)}"
-                         for g, lost in totals.values()]
+                cells = [f"{g} / {lost}, p = {p_value(exact(g, lost))}" for g, lost in totals.values()]
                 lines.append("| All | " + " | ".join(cells) + " |")
-        for condition in [c for c in ("solve", "plan", "retry") if c in conditions]:
+        for condition in [c for c in ("solve", "json", "plan", "retry") if c in conditions]:
             lines += ["", f"ADA's statuses under {condition}:", ""]
             for model in models:
                 problems = groups[(dataset, model)]
@@ -238,33 +257,79 @@ def _same(first: str, second: str, tolerance: Fraction) -> bool:
         return first == second
 
 
+def _gains(mine: dict, theirs: dict, which: int) -> tuple[int, int]:
+    """On the problems both finished, how many only ``mine`` gets right and how many only ``theirs`` does, by
+    first reply (``which`` 0) or by vote (1)."""
+    both = mine.keys() & theirs.keys()
+    return (sum(mine[p][which] and not theirs[p][which] for p in both),
+            sum(theirs[p][which] and not mine[p][which] for p in both))
+
+
 def vote_table(records: list[dict]) -> list[str]:
     """For each GSM8K or GSM-Hard condition asked more than once: problems right with the first reply and by
-    vote of every sample, per model, on the problems every sample of the condition finished."""
+    vote of every sample, per model and pooled, on the problems every sample of the condition finished, with
+    the exact McNemar test of the vote against the first reply; then each such condition against each one
+    before it in ORDER, by first reply and by vote, on the problems every sample of both finished. The data
+    set's answer never picks the sample: it only grades the vote."""
     asked = defaultdict(lambda: defaultdict(list))
     for record in records:
         if record["dataset"] in CLOSE:
             problem = record.get("index", record.get("id"))
             asked[(record["dataset"], record["model"], record["condition"])][problem].append(record)
     counts = {key: max(len(samples) for samples in problems.values()) for key, problems in asked.items()}
-    if not any(count > 1 for count in counts.values()):
-        return []
     lines = []
     for dataset in sorted({key[0] for key, count in counts.items() if count > 1}):
-        keys = sorted(key for key, count in counts.items() if key[0] == dataset and count > 1)
+        keys = [key for key, count in counts.items() if key[0] == dataset and count > 1]
+        models = sorted({model for _, model, _ in keys})
+        conditions = sorted({condition for _, _, condition in keys}, key=rank)
+        # For each model and condition, each finished problem's first reply and vote: right or not.
+        right = {}
+        for key in keys:
+            right[key[1:]] = {
+                problem: (any(record["correct"] for record in samples if record.get("sample", 0) == 0),
+                          bool((winner := voted(samples, CLOSE[dataset])) and winner["correct"]))
+                for problem, samples in asked[key].items() if len(samples) == counts[key]}
         lines += [f"## {dataset}: votes", "",
-                  "Problems right with the first reply, and by vote of every sample (the answer most samples "
-                  "give):", "", "| Model | Condition | Samples | Problems | First reply | Vote |",
-                  "|---|---|---|---|---|---|"]
-        for _, model, condition in keys:
-            problems = asked[(dataset, model, condition)]
-            count = counts[(dataset, model, condition)]
-            full = [samples for samples in problems.values() if len(samples) == count]
-            first = sum(record["correct"] for samples in full for record in samples
-                        if record.get("sample", 0) == 0)
-            winners = [voted(samples, CLOSE[dataset]) for samples in full]
-            vote = sum(bool(winner and winner["correct"]) for winner in winners)
-            lines.append(f"| {model} | {condition} | {count} | {len(full)} | {first} | {vote} |")
+                  "Problems right with the first reply, and by vote of every sample (the answer most "
+                  "samples give), with the vote against the first reply: right only by vote / right only by "
+                  "the first reply, and p:", "",
+                  "| Model | Condition | Samples | Problems | First reply | Vote | Vote against first "
+                  "reply |", "|---|---|---|---|---|---|---|"]
+        rows = [(model, condition) for model in models for condition in conditions
+                if (model, condition) in right]
+        if len(models) > 1:
+            rows += [("All", condition) for condition in conditions]
+        for model, condition in rows:
+            chosen = [name for name in models if model in ("All", name) and (name, condition) in right]
+            found = [answers for name in chosen for answers in right[(name, condition)].values()]
+            samples = ", ".join(str(n) for n in sorted({counts[(dataset, name, condition)]
+                                                         for name in chosen}))
+            first = sum(answers[0] for answers in found)
+            vote = sum(answers[1] for answers in found)
+            gained = sum(answers[1] and not answers[0] for answers in found)
+            lost = sum(answers[0] and not answers[1] for answers in found)
+            lines.append(f"| {model} | {condition} | {samples} | {len(found)} | {first} | {vote} "
+                         f"| {differing(gained, lost)} |")
+        pairs = [(later, earlier) for place, earlier in enumerate(conditions)
+                 for later in conditions[place + 1:]]
+        if pairs:
+            lines += ["", "Each condition against each one before it: right only with the condition / "
+                      "right only with the other, and p, by first reply and by vote, on the problems every "
+                      "sample of both finished:", "", "| Model | Condition | Against | First reply | Vote |",
+                      "|---|---|---|---|---|"]
+            for condition, other in pairs:
+                totals = [0, 0, 0, 0]
+                for model in models:
+                    if (model, condition) not in right or (model, other) not in right:
+                        continue
+                    found = (_gains(right[(model, condition)], right[(model, other)], 0)
+                             + _gains(right[(model, condition)], right[(model, other)], 1))
+                    totals = [total + count for total, count in zip(totals, found, strict=True)]
+                    lines.append(f"| {model} | {condition} | {other} | {differing(*found[:2])} "
+                                 f"| {differing(*found[2:])} |")
+                if len(models) > 1:
+                    lines.append(f"| All | {condition} | {other} | {differing(*totals[:2])} "
+                                 f"| {differing(*totals[2:])} |")
         lines.append("")
     return lines
 
