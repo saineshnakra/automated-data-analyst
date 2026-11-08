@@ -1,6 +1,9 @@
 """How the GSM8K benchmark combines the model's own answer with ADA's (benchmarks/gsm8k.py)."""
 
+import io
+import json
 import sys
+import tempfile
 import unittest
 import unittest.mock
 from fractions import Fraction
@@ -9,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "benchmarks"))
 
 import gsm8k  # noqa: E402
-from gsm8k import agree, combined, formalized, large_numbers, programmed  # noqa: E402
+from gsm8k import agree, chat, combined, formalized, large_numbers, programmed, structured  # noqa: E402
 
 
 def made(own, ada, slip=False, checked=None):
@@ -90,6 +93,97 @@ class ProgramTests(unittest.TestCase):
         self.assertEqual(found["program"]["status"], "ran")
         with unittest.mock.patch.object(gsm8k, "chat", return_value={"content": "It is 5."}):
             self.assertEqual(programmed("", "", "Tom has 3 apples.")["reply"], "")
+
+
+class JsonTests(unittest.TestCase):
+    def test_the_reply_is_held_to_the_schema_and_read_as_equations(self):
+        reply = json.dumps({"equations": ["apples = 3 + 2"], "answer": "apples"})
+        with unittest.mock.patch.object(gsm8k, "chat", return_value={"content": reply}) as asked:
+            found = structured("", "", "Tom has 3 apples.")
+        self.assertEqual(found["reply"], "Answer: 5")
+        self.assertEqual(asked.call_args.kwargs["form"], gsm8k.JSON_FORMAT)
+        # A reply that is not such JSON is read as it is.
+        plain = {"content": "apples = 4\nAnswer: apples"}
+        with unittest.mock.patch.object(gsm8k, "chat", return_value=plain):
+            self.assertEqual(structured("", "", "Tom has 3 apples.")["reply"], "Answer: 4")
+        with unittest.mock.patch.object(gsm8k, "chat", return_value={"content": ""}):
+            self.assertEqual(structured("", "", "Tom has 3 apples.")["reply"], "")
+
+
+class ChatTests(unittest.TestCase):
+    def sent(self, **kwargs):
+        """The request body chat() sends to the model server."""
+        response = unittest.mock.MagicMock()
+        answered = json.dumps({"message": {"content": "ok"}}).encode()
+        response.__enter__.return_value.read.return_value = answered
+        opener = unittest.mock.MagicMock()
+        opener.open.return_value = response
+        with unittest.mock.patch.object(gsm8k.urllib.request, "build_opener", return_value=opener):
+            chat("http://x", "m", [{"role": "system", "content": "Solve."}, {"role": "user", "content": "Q"}],
+                 [], **kwargs)
+        return json.loads(opener.open.call_args.args[0].data)
+
+    def test_settings_schema_and_system_suffix(self):
+        body = self.sent()
+        self.assertEqual((body["options"]["temperature"], body["options"]["seed"]), (0, 0))
+        self.assertNotIn("format", body)
+        body = self.sent(options={"temperature": 0.7, "seed": 3}, form={"type": "object"})
+        self.assertEqual((body["options"]["temperature"], body["options"]["seed"]), (0.7, 3))
+        self.assertEqual(body["format"], {"type": "object"})
+        with unittest.mock.patch.object(gsm8k, "SYSTEM_SUFFIX", "/no_think"):
+            body = self.sent()
+        self.assertEqual(body["messages"][0]["content"], "Solve. /no_think")
+        self.assertEqual(body["messages"][1]["content"], "Q")
+
+
+class SampleTests(unittest.TestCase):
+    def run_benchmark(self, *flags):
+        """gsm8k.py on two problems with a model that always answers 5, and the records it writes."""
+        replies = []
+
+        def model(base, name, messages, offered, max_tokens=0, think=False, options=None, form=None):
+            replies.append(options)
+            if form:
+                return {"content": json.dumps({"equations": ["apples = 3 + 2"], "answer": "apples"})}
+            if "exact solver" in messages[0]["content"] or "equations" in messages[0]["content"]:
+                return {"content": "apples = 3 + 2\nAnswer: apples"}
+            return {"content": "3 + 2 = 5\nAnswer: 5"}
+
+        with tempfile.TemporaryDirectory() as folder:
+            data = Path(folder) / "test.jsonl"
+            rows = [{"question": f"Tom has {n} apples.", "answer": "#### 5"} for n in (3, 4)]
+            data.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            out = Path(folder) / "out.jsonl"
+            argv = ["gsm8k.py", str(data), "--out", str(out), "--problems", "2", *flags]
+            with unittest.mock.patch.object(gsm8k, "chat", side_effect=model), \
+                    unittest.mock.patch.object(sys, "argv", argv), \
+                    unittest.mock.patch("sys.stdout", io.StringIO()):
+                gsm8k.main()
+            return [json.loads(line) for line in out.read_text().splitlines()], replies
+
+    def test_conditions_are_asked_as_many_times_as_asked(self):
+        records, replies = self.run_benchmark("--condition", "none,check,solve,json,combine",
+                                              "--samples", "3", "--sampled", "none,json")
+        counts = {}
+        for record in records:
+            counts[record["condition"]] = counts.get(record["condition"], 0) + 1
+        # Two problems: none and json three times each, check, solve and combine once.
+        self.assertEqual(counts, {"none": 6, "check": 2, "solve": 2, "json": 6, "combine": 2})
+        self.assertEqual(sorted({r["sample"] for r in records if r["condition"] == "json"}), [0, 1, 2])
+        # The first sample is at temperature 0; the others at SAMPLE_TEMPERATURE with their own seed.
+        seeds = sorted({(o or {}).get("seed", 0) for o in replies})
+        self.assertEqual(seeds, [0, 1, 2])
+        self.assertTrue(all(o["temperature"] == gsm8k.SAMPLE_TEMPERATURE for o in replies if o))
+
+    def test_a_run_of_one_sample_is_as_before(self):
+        records, replies = self.run_benchmark("--condition", "none,solve")
+        self.assertEqual([(r["condition"], r["sample"]) for r in records],
+                         [("none", 0), ("solve", 0), ("none", 0), ("solve", 0)])
+        self.assertTrue(all(o is None for o in replies))
+
+    def test_check_and_combine_are_not_sampled(self):
+        with self.assertRaises(SystemExit), unittest.mock.patch("sys.stderr", io.StringIO()):
+            self.run_benchmark("--condition", "none,check", "--samples", "2", "--sampled", "check")
 
 
 class PartsTests(unittest.TestCase):

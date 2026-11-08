@@ -30,6 +30,8 @@ Each problem is solved in any of these ways, with the same model and settings:
 - ``program``: the model writes a Python program whose function ``solution()`` returns the answer, as in
   program-aided language models, and the program is run after a check that it does only arithmetic
   (``program.py``). It is the usual way of giving a model exact arithmetic without ADA.
+- ``json``: as ``solve``, but the model server holds the reply to a JSON schema with the equations and the
+  name of the quantity asked for, so every reply has both in fixed places.
 - ``combine``: the model's own answer and ADA's from ``solve``, with no more replies asked for. When they
   agree, that is the answer. When ADA has none, the answer is ``check``'s. When they differ, ADA's answer is
   taken if ADA found a wrong equation in the model's own answer or the question has a number of five or
@@ -42,7 +44,10 @@ come after those three in ``--condition``.
 
 ``--condition none,solve`` runs some of them; by default, the first three. ``--shard 1/4`` takes every fourth
 problem from the second, so shards can run side by side, and ``--skip 300`` leaves out the first 300 problems,
-so a run can test on problems an earlier run did not see.
+so a run can test on problems an earlier run did not see. ``--samples 5`` asks each condition that starts from
+the question five times, the first at temperature 0 and the rest at 0.7 with seeds 1 to 4, and ``--sampled``
+names which; the paper's analysis votes over the samples. ``--system-suffix /no_think`` adds text to every
+system prompt, for a model that thinks unless told not to.
 
 The model ends its reply with a line "Answer: <number>", and that number is compared with the answer after
 "####" in the data. Temperature is 0 and thinking is off, so a run repeats. It talks to Ollama's own API
@@ -64,8 +69,11 @@ from pathlib import Path
 sys.path[:0] = [str(Path(__file__).resolve().parent), str(Path(__file__).resolve().parents[1])]
 
 from formalize import (  # noqa: E402
+    JSON_FORMAT,
     feedback,
     formal_messages,
+    from_json,
+    json_messages,
     plain_number,
     plan_messages,
     solved_by_ada,
@@ -85,7 +93,16 @@ TOOL_PROMPT = (
     PROMPT + " You can call ada_compute to work out any arithmetic step exactly: write the expression with "
     "the numbers from your reasoning, and use the value it returns."
 )
-CONDITIONS = ("none", "tool", "check", "solve", "shots", "combine", "judge", "plan", "retry", "program")
+CONDITIONS = ("none", "tool", "check", "solve", "shots", "combine", "judge", "plan", "retry", "program",
+              "json")
+#: The conditions a run may ask more than once (--samples): each asks the model on its own, from the question.
+SAMPLED = ("none", "tool", "solve", "shots", "plan", "retry", "program", "json")
+#: The temperature of every sample after the first. The first is at temperature 0, as in a run of one sample,
+#: and sample i has seed i.
+SAMPLE_TEMPERATURE = 0.7
+#: Text added to every system prompt (--system-suffix), such as /no_think for a model that thinks unless told
+#: not to.
+SYSTEM_SUFFIX = ""
 #: What a condition's reply keeps in its record besides the answer.
 KEPT = ("checks", "first_reply", "formal", "ada", "error", "decided_by", "first_formal", "first_ada",
         "feedback", "kept_first", "second_formal", "second_ada", "program")
@@ -105,13 +122,18 @@ def compute_tool() -> dict:
 
 
 def chat(base: str, model: str, messages: list[dict], offered: list[dict], max_tokens: int = MAX_TOKENS,
-         think: bool = False, options: dict | None = None) -> dict:
-    """One reply from Ollama. ``options`` are added to the settings (temperature 0, seed 0)."""
+         think: bool = False, options: dict | None = None, form: dict | None = None) -> dict:
+    """One reply from Ollama. ``options`` are added to the settings (temperature 0, seed 0), and ``form`` is a
+    JSON schema the reply is held to."""
+    if SYSTEM_SUFFIX and messages and messages[0]["role"] == "system":
+        messages = [{**messages[0], "content": f"{messages[0]['content']} {SYSTEM_SUFFIX}"}, *messages[1:]]
     body = {"model": model, "messages": messages, "stream": False, "think": think,
             "options": {"temperature": 0, "seed": 0, "num_ctx": 8192, "num_predict": max_tokens,
                         **(options or {})}}
     if offered:
         body["tools"] = offered
+    if form:
+        body["format"] = form
     request = urllib.request.Request(f"{base}/api/chat", data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"})
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -180,21 +202,22 @@ def checked(base: str, model: str, alone: dict) -> dict:
             "first_reply": alone["reply"]}
 
 
-def formalized(base: str, model: str, question: str, plan: bool = False, retry: bool = False) -> dict:
+def formalized(base: str, model: str, question: str, plan: bool = False, retry: bool = False,
+               options: dict | None = None) -> dict:
     """The model's equations for the problem, and ADA's value for the quantity it names. Counts and amounts in
     grade-school problems are above zero, so of several values ADA takes the one that is. With ``plan``, the
     model works out how to solve the problem in words before it writes the equations; with ``retry``, it
     writes them again once, told why, when ADA finds no one value or the Answer line gives a number instead of
     a quantity. When the second reply has no value and the first gave a number, the first stands."""
     messages = plan_messages(question) if plan else formal_messages(question)
-    reply = chat(base, model, messages, []).get("content", "")
+    reply = chat(base, model, messages, [], options=options).get("content", "")
     ada = solved_by_ada(reply, positive=True)
     first = {}
     advice = feedback(ada) if retry else None
     if advice:
         messages = messages + [{"role": "assistant", "content": reply}, {"role": "user", "content": advice}]
         first = {"first_formal": reply, "first_ada": ada, "feedback": advice}
-        again = chat(base, model, messages, []).get("content", "")
+        again = chat(base, model, messages, [], options=options).get("content", "")
         found = solved_by_ada(again, positive=True)
         if found["value"] is None and ada["value"] is not None:
             first.update(kept_first=True, second_formal=again, second_ada=found)
@@ -205,12 +228,22 @@ def formalized(base: str, model: str, question: str, plan: bool = False, retry: 
             **first}
 
 
-def programmed(base: str, model: str, question: str) -> dict:
+def programmed(base: str, model: str, question: str, options: dict | None = None) -> dict:
     """The model's program for the problem, and the number it returns when it is run."""
-    reply = chat(base, model, program_messages(question), []).get("content", "")
+    reply = chat(base, model, program_messages(question), [], options=options).get("content", "")
     found = run_program(reply)
     return {"reply": "" if found["value"] is None else f"Answer: {found['value']}", "calls": [],
             "formal": reply, "program": found}
+
+
+def structured(base: str, model: str, question: str, options: dict | None = None) -> dict:
+    """As ``solve``, with the reply held to JSON_FORMAT: the model's equations and the name it asks for, and
+    ADA's value for that name."""
+    message = chat(base, model, json_messages(question), [], options=options, form=JSON_FORMAT)
+    reply = message.get("content", "")
+    ada = solved_by_ada(from_json(reply), positive=True)
+    number = None if ada["value"] is None else plain_number(ada["value"])
+    return {"reply": "" if number is None else f"Answer: {number}", "calls": [], "formal": reply, "ada": ada}
 
 
 def large_numbers(question: str) -> bool:
@@ -270,7 +303,17 @@ def main() -> int:
     parser.add_argument("--skip", type=int, default=0, help="leave out the first N problems")
     parser.add_argument("--condition", default="none,tool,check",
                         help="conditions to run, separated by commas: " + ", ".join(CONDITIONS))
+    parser.add_argument("--samples", type=int, default=1,
+                        help="ask each sampled condition this many times: the first at temperature 0, the "
+                             f"rest at {SAMPLE_TEMPERATURE} with seeds 1, 2, ... (default: 1)")
+    parser.add_argument("--sampled", default=None,
+                        help="the conditions --samples applies to (default: those of " + ", ".join(SAMPLED)
+                             + " in --condition)")
+    parser.add_argument("--system-suffix", default="",
+                        help="text added to every system prompt, such as /no_think")
     args = parser.parse_args()
+    global SYSTEM_SUFFIX
+    SYSTEM_SUFFIX = args.system_suffix
     conditions = args.condition.split(",")
     unknown = [name for name in conditions if name not in CONDITIONS]
     if unknown:
@@ -279,6 +322,13 @@ def main() -> int:
         if name in conditions and not all(c in conditions[:conditions.index(name)]
                                           for c in ("none", "check", "solve")):
             parser.error(f"{name} comes after none, check and solve in --condition")
+    sampled = args.sampled.split(",") if args.sampled else [name for name in conditions if name in SAMPLED]
+    if args.samples < 1:
+        parser.error("--samples is 1 or more")
+    if any(name not in SAMPLED for name in sampled):
+        parser.error(f"--sampled takes only {', '.join(SAMPLED)}: check, combine and judge build on one "
+                     "reply")
+    samples = {name: range(args.samples if name in sampled else 1) for name in conditions}
     rows = [json.loads(line) for line in Path(args.data).read_text(encoding="utf-8").splitlines() if line]
     rows = rows[:args.problems]
     part, parts = (int(value) for value in args.shard.split("/"))
@@ -288,7 +338,7 @@ def main() -> int:
         # A run that stopped picks up where it left off.
         for line in out.read_text(encoding="utf-8").splitlines():
             record = json.loads(line)
-            done[(record["index"], record["condition"])] = record
+            done[(record["index"], record["condition"], record.get("sample", 0))] = record
     with out.open("a", encoding="utf-8") as handle:
         for index, row in enumerate(rows):
             if index % parts != part or index < args.skip:
@@ -296,45 +346,54 @@ def main() -> int:
             question, gold, tolerance = problem(row)
             alone, made = None, {}
             for condition in conditions:
-                if (index, condition) in done:
-                    made[condition] = done[(index, condition)]
-                    continue
-                started = time.monotonic()
-                try:
-                    if condition == "check":
-                        alone = alone or solve(args.base_url, args.model, question, False)
-                        solved = checked(args.base_url, args.model, alone)
-                    elif condition in ("solve", "plan", "retry"):
-                        solved = formalized(args.base_url, args.model, question, condition == "plan",
-                                            condition == "retry")
-                    elif condition == "program":
-                        solved = programmed(args.base_url, args.model, question)
-                    elif condition == "shots":
-                        solved = solve(args.base_url, args.model, question, False, examples=worked_turns())
-                    elif condition in ("combine", "judge"):
-                        solved = combined(args.base_url, args.model, question, made, tolerance,
-                                          condition == "judge")
-                    else:
-                        solved = solve(args.base_url, args.model, question, condition == "tool")
-                        if condition == "none":
-                            alone = solved
-                except (OSError, http.client.HTTPException) as error:
-                    # A reply that never ends or a dropped connection counts as no answer.
-                    solved = {"reply": "", "calls": [], "error": str(error)}
-                given = final_number(solved["reply"])
-                record = {"index": index, "condition": condition, "gold": str(gold),
-                          "given": None if given is None else str(given),
-                          "correct": given is not None and abs(given - gold) <= tolerance,
-                          "seconds": round(time.monotonic() - started, 1), "tool_calls": len(solved["calls"]),
-                          "reply": solved["reply"], "calls": solved["calls"],
-                          **{key: solved[key] for key in KEPT if key in solved}}
-                done[(index, condition)] = record
-                made[condition] = record
-                handle.write(json.dumps(record) + "\n")
-                handle.flush()
+                for sample in samples[condition]:
+                    key = (index, condition, sample)
+                    if key in done:
+                        if sample == 0:
+                            made[condition] = done[key]
+                        continue
+                    options = None if sample == 0 else {"temperature": SAMPLE_TEMPERATURE, "seed": sample}
+                    started = time.monotonic()
+                    try:
+                        if condition == "check":
+                            alone = alone or solve(args.base_url, args.model, question, False)
+                            solved = checked(args.base_url, args.model, alone)
+                        elif condition in ("solve", "plan", "retry"):
+                            solved = formalized(args.base_url, args.model, question, condition == "plan",
+                                                condition == "retry", options=options)
+                        elif condition == "program":
+                            solved = programmed(args.base_url, args.model, question, options=options)
+                        elif condition == "json":
+                            solved = structured(args.base_url, args.model, question, options=options)
+                        elif condition == "shots":
+                            solved = solve(args.base_url, args.model, question, False, options=options,
+                                           examples=worked_turns())
+                        elif condition in ("combine", "judge"):
+                            solved = combined(args.base_url, args.model, question, made, tolerance,
+                                              condition == "judge")
+                        else:
+                            solved = solve(args.base_url, args.model, question, condition == "tool",
+                                           options=options)
+                            if condition == "none" and sample == 0:
+                                alone = solved
+                    except (OSError, http.client.HTTPException) as error:
+                        # A reply that never ends or a dropped connection counts as no answer.
+                        solved = {"reply": "", "calls": [], "error": str(error)}
+                    given = final_number(solved["reply"])
+                    record = {"index": index, "condition": condition, "sample": sample, "gold": str(gold),
+                              "given": None if given is None else str(given),
+                              "correct": given is not None and abs(given - gold) <= tolerance,
+                              "seconds": round(time.monotonic() - started, 1),
+                              "tool_calls": len(solved["calls"]), "reply": solved["reply"],
+                              "calls": solved["calls"], **{key: solved[key] for key in KEPT if key in solved}}
+                    done[key] = record
+                    if sample == 0:
+                        made[condition] = record
+                    handle.write(json.dumps(record) + "\n")
+                    handle.flush()
     for condition in conditions:
-        records = [done[(index, condition)] for index in range(args.skip, len(rows))
-                   if (index, condition) in done and index % parts == part]
+        records = [done[(index, condition, 0)] for index in range(args.skip, len(rows))
+                   if (index, condition, 0) in done and index % parts == part]
         correct = sum(record["correct"] for record in records)
         print(f"{args.model}, {condition}: {correct}/{len(records)} correct")
     return 0

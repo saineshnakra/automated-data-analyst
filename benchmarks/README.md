@@ -53,6 +53,20 @@ problem is solved in any of these ways, with the same model and settings:
   and use no name that starts with an underscore. It runs in its own Python
   process with only arithmetic built-ins, 5 seconds of CPU and 512 MB of
   memory, and a float answer is rounded to 6 decimal places.
+- **Equations in a fixed form** (`json`): as `solve`, but the model server
+  holds the reply to a JSON schema, a list of equations and the name of the
+  quantity asked for, so no reply can leave out the equations or the Answer
+  line.
+
+Any condition that starts from the question can be asked several times
+(`--samples 5`, and `--sampled` to name which): the first reply at
+temperature 0, as in a run of one sample, and the rest at temperature 0.7
+with seeds 1, 2 and so on. `paper/analysis.py` then gives each condition's
+first reply beside the vote of every sample, the answer most samples give,
+the earliest one when answers tie. Voting over samples is self-consistency
+(Wang et al., ICLR 2023); a result from it is reported with the number of
+samples, beside the first reply and beside the model alone voted over as
+many samples, and the data set's answer never picks the sample.
 - **The model's answer and ADA's together** (`combine`): no more replies
   are asked for. When the model's own answer and ADA's from `solve` agree,
   that is the answer; when ADA has none, it is the checked answer; when they

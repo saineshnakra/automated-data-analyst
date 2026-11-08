@@ -23,7 +23,10 @@ from pathlib import Path
 #: The run: the commit of this repository to test, the data sets (gsm8k and gsmhard, or math500), the models,
 #: the conditions, the first N problems (or MATH-500's subjects), how many of those to leave out (GSM8K and
 #: GSM-Hard only) and how many shards each data set is split into. "only_shards" runs only the shards named
-#: for each model, to run again the shards of an earlier run that stopped.
+#: for each model, to run again the shards of an earlier run that stopped. A model written "name=source" is
+#: pulled from source, such as a GGUF file on Hugging Face (hf.co/owner/repo:quantization), and run under
+#: name. "samples" and "sampled" ask conditions more than once (gsm8k.py --samples and --sampled), and
+#: "system_suffix" adds text to a model's system prompts (gsm8k.py --system-suffix).
 CONFIG = {
     "commit": "c4b7e370de55e6044c2f10648bdc7bf08f57bc4c",
     "datasets": ["gsm8k", "gsmhard"],
@@ -73,11 +76,14 @@ def serve(gpu: int, port: int, parallel: int) -> None:
 def ladder(models: list[str], port: int, datasets: dict[str, Path], parallel: int) -> None:
     results = WORK / "results"
     env = {**os.environ, "OLLAMA_HOST": f"127.0.0.1:{port}"}
-    for model in models:
+    for entry in models:
+        model, _, source = entry.partition("=")
         try:
-            sh(f"ollama pull {model} > /dev/null", env)
+            sh(f"ollama pull {source or model} > /dev/null", env)
+            if source:
+                sh(f"ollama cp {source} {model}", env)
         except subprocess.CalledProcessError:
-            print("could not pull", model, flush=True)
+            print("could not pull", source or model, flush=True)
             continue
         started = time.time()
         slug = model.replace(":", "-").replace("/", "-")
@@ -93,6 +99,12 @@ def ladder(models: list[str], port: int, datasets: dict[str, Path], parallel: in
                     command += ["--problems", str(CONFIG["problems"])]
                 if CONFIG.get("skip"):
                     command += ["--skip", str(CONFIG["skip"])]
+                if CONFIG.get("samples") and name != "math500":
+                    command += ["--samples", str(CONFIG["samples"])]
+                    if CONFIG.get("sampled"):
+                        command += ["--sampled", CONFIG["sampled"]]
+                if CONFIG.get("system_suffix", {}).get(model) and name != "math500":
+                    command += ["--system-suffix", CONFIG["system_suffix"][model]]
                 if name == "math500":
                     command += ["--subjects", *CONFIG["subjects"]]
                 log = open(f"{out}.log", "w")
