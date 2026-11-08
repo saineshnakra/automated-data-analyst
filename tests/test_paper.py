@@ -153,10 +153,59 @@ class AnalysisTests(unittest.TestCase):
                    for number, (given, correct) in enumerate(answers)]
         lines = vote_table(records)
         # First reply right on problem 1 only; the vote is right on problem 0 and, by the tie, on problem 1.
-        self.assertIn("| m | solve | 3 | 2 | 1 | 2 |", lines)
+        self.assertIn("| m | solve | 3 | 2 | 1 | 2 | 1 / 0, p = 1 |", lines)
+        # One model has no pooled row, and one condition nothing to compare its vote with.
+        self.assertFalse(any(line.startswith("| All") for line in lines))
+        self.assertFalse(any(line.startswith("Each condition against") for line in lines))
         # One sample per problem, or MATH-500, has no vote table.
         self.assertEqual(vote_table([record("gsm8k", "m", 0, "solve", True)]), [])
         self.assertEqual(vote_table([record("math500", "m", 0, "none", True, sample=n) for n in (0, 1)]), [])
+
+    def test_votes_pooled_and_against_the_model_alone(self):
+        def asked(model, condition, problem, answers):
+            return [record("gsmhard", model, problem, condition, correct, sample=number, given=given)
+                    for number, (given, correct) in enumerate(answers)]
+        yes, no = ("5", True), ("4", False)
+        records = (asked("a", "none", 0, [no, no, no]) + asked("a", "retry", 0, [no, yes, yes])
+                   + asked("a", "none", 1, [yes, yes, yes]) + asked("a", "retry", 1, [yes, yes, yes])
+                   + asked("b", "none", 0, [yes, no, no]) + asked("b", "retry", 0, [yes, yes, no])
+                   # b's retry did not finish every sample of problem 1, so problem 1 is left out for b.
+                   + asked("b", "none", 1, [no, no, no]) + asked("b", "retry", 1, [yes, yes]))
+        lines = vote_table(records)
+        self.assertEqual(lines, vote_table(list(reversed(records))))
+        self.assertIn("| a | retry | 3 | 2 | 1 | 2 | 1 / 0, p = 1 |", lines)
+        self.assertIn("| b | none | 3 | 2 | 1 | 0 | 0 / 1, p = 1 |", lines)
+        self.assertIn("| All | none | 3 | 4 | 2 | 1 | 0 / 1, p = 1 |", lines)
+        self.assertIn("| All | retry | 3 | 3 | 2 | 3 | 1 / 0, p = 1 |", lines)
+        # retry against none: the first replies agree; by vote, a and b each gain problem 0, and b's problem 1
+        # is not compared.
+        self.assertIn("| a | retry | none | 0 / 0, p = 1 | 1 / 0, p = 1 |", lines)
+        self.assertIn("| b | retry | none | 0 / 0, p = 1 | 1 / 0, p = 1 |", lines)
+        self.assertIn("| All | retry | none | 0 / 0, p = 1 | 2 / 0, p = 0.5 |", lines)
+        # A model whose none was asked once has nothing to compare with.
+        lines = vote_table(asked("a", "none", 0, [yes]) + asked("a", "retry", 0, [yes, yes])
+                           + asked("c", "none", 0, [yes, yes]) + asked("c", "retry", 0, [yes, yes]))
+        self.assertFalse(any(line.startswith("| a | retry | none") for line in lines))
+        self.assertIn("| c | retry | none | 0 / 0, p = 1 | 0 / 0, p = 1 |", lines)
+        # Each condition is compared with each one before it in ORDER.
+        lines = vote_table(asked("a", "program", 0, [no, yes, yes]) + asked("a", "none", 0, [no, no])
+                           + asked("a", "retry", 0, [yes, no]))
+        self.assertEqual([line.split(" | ")[1:3] for line in lines if line.count(" | ") == 4][1:],
+                         [["retry", "none"], ["program", "none"], ["program", "retry"]])
+        # program's first reply is wrong and retry's right; both votes are right, retry's by the tie.
+        self.assertIn("| a | program | retry | 0 / 1, p = 1 | 0 / 0, p = 1 |", lines)
+        self.assertIn("| a | program | none | 0 / 0, p = 1 | 1 / 0, p = 1 |", lines)
+
+    def test_json_and_unknown_conditions(self):
+        records = [record("gsm8k", "m", 0, "none", False), record("gsm8k", "m", 0, "json", True,
+                                                                   ada={"status": "solved"}),
+                   record("gsm8k", "m", 0, "later", True)]
+        text = report(records)
+        self.assertIn("| Model | Problems | none | json |", text)
+        self.assertIn("| m | 1 | 0 | 1 |", text)
+        self.assertIn("ADA's statuses under json:", text)
+        self.assertIn("- m: solved 1", text)
+        self.assertIn("Not in these tables, since this script does not know them: later", text)
 
     def test_thin_input(self):
         self.assertEqual(report([]), "")
