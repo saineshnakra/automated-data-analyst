@@ -2,8 +2,9 @@
 
 **Question.** How far do ADA and voting take small models whose weights, training data and training code
 are all open? With five samples each, does a model that writes equations for ADA to solve (`retry`) get
-more right than the same model working alone (`none`)? And how do a reply held to a JSON schema (`json`) and a
-program the model writes (`program`) compare?
+more right than the same model working alone (`none`)? Does it help when ADA also checks how the model read
+the question, and asks again when the equations leave out a number of it (`pair`)? And how do a reply held to
+a JSON schema (`json`) and a program the model writes (`program`) compare?
 
 This page records what the test should show, **before** the run. It replaces
 [2026-11-06-retry-and-programs](../2026-11-06-retry-and-programs/README.md), which was not run.
@@ -33,12 +34,12 @@ weights, such as `qwen2-math:1.5b` of the earlier runs, since their training dat
 | | |
 |---|---|
 | Problems | GSM8K and GSM-Hard problems 600 to 1318 (`--problems 1319 --skip 600`), 719 of each |
-| Conditions | `none`, `check`, `solve`, `json`, `retry`, `program` and `combine` |
-| Samples | `--samples 5 --sampled none,retry,program`: `none`, `retry` and `program` are each asked five times, the first at temperature 0 and seed 0, the others at temperature 0.7 with seeds 1 to 4. `check`, `solve`, `json` and `combine` are asked once; `combine` takes the first replies of `none`, `check` and `solve` |
+| Conditions | `none`, `check`, `solve`, `json`, `retry`, `pair`, `program` and `combine` |
+| Samples | `--samples 5 --sampled none,retry,program`: `none`, `retry` and `program` are each asked five times, the first at temperature 0 and seed 0, the others at temperature 0.7 with seeds 1 to 4. `check`, `solve`, `json`, `pair` and `combine` are asked once; `combine` takes the first replies of `none`, `check` and `solve` |
 | Settings | As in the earlier runs: 8,192 tokens of context and at most 2,048 tokens a reply. `--system-suffix /no_think` for `smollm3:3b` only |
-| Code | Commit `0a845de` of `main` |
+| Code | Commit `2851979` of `main` |
 | Where | Kaggle, two kernels side by side, one per data set, each with two T4 GPUs, one Ollama server per GPU and six shards per model ([kaggle_ladder.py](../../../benchmarks/kaggle_ladder.py)). `olmo2:1b-instruct` and `smollm2:1.7b` run on one GPU, `smollm3:3b` on the other |
-| Time | About 12 kernel-hours in all, about 6 for each kernel, set by the GPU with two models; estimated from the seconds replies of models of these sizes took in the earlier runs |
+| Time | About 13 kernel-hours in all, about 6.5 for each kernel, set by the GPU with two models; estimated from the seconds replies of models of these sizes took in the earlier runs |
 
 Before the run, a smoke test asks GSM8K and GSM-Hard problems 0 to 19, which the earlier runs already asked,
 with every model, condition and sample. It checks that the models load from Hugging Face, that the replies
@@ -46,6 +47,15 @@ under `json` follow the schema and that `smollm3:3b` does not think. Its replies
 
 Two kernels of the plan this page replaces ran on 2026-11-06 from 04:04 to 04:16 UTC and were then deleted.
 `smollm2:1.7b` was among their models. Their replies were never downloaded or read.
+
+## Why `pair`
+
+`pair` was added on 2026-11-08, before the run, from problems 0 to 299 of the 13-model ladder
+([2026-11-05-gsm-ladder](../../runs/2026-11-05-gsm-ladder/README.md)): equations ADA solved under `solve`
+were right 66% of the time on GSM8K when they used every number of the question and 23% when they left one
+out (by `ada.check_reading`); 379 wrong answers there left a number out. On GSM-Hard it is 64% against 22%,
+407 wrong answers. No run has asked a model again about the numbers it left out, so test 7 has no earlier
+result to lean on.
 
 ## The tests
 
@@ -59,6 +69,7 @@ Pooled over the three models, on the problems every sample of the compared condi
 | 4 | Asking again helps `solve` ([finding 7](../../findings.md)) | On each data set, `retry` gets more right than `solve`, first reply against first reply |
 | 5 | The schema helps `solve` | On each data set, `json` gets more right than `solve` |
 | 6 | The combining rule holds on new problems and models ([finding 4](../../findings.md)) | On GSM-Hard, `combine` gets more right than `none`, `check` and `solve` each; on GSM8K, `combine` is not worse than `none` at p < 0.05 |
+| 7 | Checking the reading helps `retry` | On each data set, `pair` gets more right than `retry`, first reply against first reply |
 
 `program` against `retry`, by first reply and by vote, is reported both ways for each data set, with no
 direction set beforehand: it compares ADA with the usual way of giving a model exact arithmetic. Each test is
@@ -66,10 +77,12 @@ also reported per model.
 
 ## How it will be scored
 
-`python paper/analysis.py` on the run's folder, at commit `0a845de` or later. Tests 4 to 6 read the tables of
-first replies: each condition's total over the three models, and `combine` against the model alone. Tests 1 to
-3 read the vote tables' "All" rows: the column "Vote against first reply" for test 3, and the row of `retry`
-against `none`, column "Vote", in the table of each condition against each one before it, for tests 1 and 2.
-The rows of `program` against `retry` in that table give the comparison reported both ways. p is the exact
-McNemar test on the problems where the two answers differ. The vote is the answer most samples give, the
-earliest of them when answers tie; the data set's answer grades the vote and never picks the sample.
+`python paper/analysis.py` on the run's folder, at commit `2851979` or later. Tests 4 to 7 read the tables of
+first replies: each condition's total over the three models, and `combine` against the model alone. The table
+of `pair` asking again shows, for test 7, how often a number was left out, how often the second answer was
+taken, and how many were right before and after. Tests 1 to 3 read the vote tables' "All" rows: the column
+"Vote against first reply" for test 3, and the row of `retry` against `none`, column "Vote", in the table of
+each condition against each one before it, for tests 1 and 2. The rows of `program` against `retry` in that
+table give the comparison reported both ways. p is the exact McNemar test on the problems where the two
+answers differ. The vote is the answer most samples give, the earliest of them when answers tie; the data
+set's answer grades the vote and never picks the sample.
