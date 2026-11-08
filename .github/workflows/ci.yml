@@ -1,9 +1,9 @@
 name: CI
 
+# Started by hand from the Actions tab, not on every push: GitHub Actions does not run on this account.
+# python tools/check.py runs the same checks on any computer, and is run before each merge.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read

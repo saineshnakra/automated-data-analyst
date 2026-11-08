@@ -18,13 +18,23 @@ ADA Lab's app for the hosted demo.
 
 ## Checks
 
-Run these before opening a pull request; CI runs the same commands.
+Run these while you work:
 
 ```bash
 ruff check .
 python -m unittest discover -s tests -v
 python -m compileall -q app.py ada tools tests
 ```
+
+Before a merge, run all the checks, on each Python version you have:
+
+```bash
+python tools/check.py python3.11 python3.12 python3.13
+```
+
+For each version it makes a fresh environment, installs `requirements-dev.txt` and runs the three commands
+above. Then it builds the wheel, installs it without the app extras, and runs `ada compute`, `ada claim`,
+`ada ask`, `ada scan` and `ada mcp` from it. It exits 1 at the first check that fails.
 
 Ruff config lives in `pyproject.toml`: line length 110, rule sets `E`, `F`, `I`,
 `UP`, `B`, with `E501` relaxed for `app.py`.
@@ -67,10 +77,10 @@ needs no network and no API credits.
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every push to `main` and every pull request.
-On Python 3.11, 3.12 and 3.13 it runs `ruff check .`, the unit suite and
-`compileall`. A second job builds the wheel, installs it, and runs `ada
-claim`, `ada ask`, `ada scan` and `ada mcp` from it.
+`.github/workflows/ci.yml` runs the same checks as `tools/check.py` on GitHub
+Actions. It is started by hand from the Actions tab, not on every push,
+since GitHub Actions does not run on this account; `tools/check.py` is run
+before each merge instead. A change to the checks goes in both files.
 
 ## Releasing
 

@@ -12,8 +12,7 @@
 
 ## Checks
 
-- [ ] `ruff check .`
-- [ ] `python -m unittest discover -s tests`
+- [ ] `python tools/check.py` (lint, tests and compileall in a fresh environment, then the installed wheel)
 - [ ] New or changed analytical behaviour has tests
 - [ ] Changes to what ADA prints include an example
 - [ ] No credentials, private data or build output committed
