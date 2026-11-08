@@ -41,10 +41,13 @@ Tests of `ada chat` use a fake model server on this computer, so the suite
 needs no network access or API key. Ruff settings are in `pyproject.toml`
 (line length 110; rule sets `E`, `F`, `I`, `UP`, `B`).
 
-CI (`.github/workflows/ci.yml`) runs on every pull request and every push to
-`main`: lint, the test suite and `compileall` on Python 3.11, 3.12 and 3.13,
-then builds the wheel, installs it and checks that the `ada` command checks a
-claim, answers a question, scans a folder and serves the tools over MCP.
+Before opening a pull request, run all the checks with
+`python tools/check.py` (name more Pythons, such as `python3.11 python3.12
+python3.13`, to run them on each): lint, the test suite and `compileall` in a
+fresh environment, then a build of the wheel, installed, that checks a claim,
+answers a question, scans a folder and serves the tools over MCP. CI
+(`.github/workflows/ci.yml`) runs the same checks, but only when started by
+hand, since GitHub Actions does not run on this account.
 
 ## Before you change code
 

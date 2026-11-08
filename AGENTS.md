@@ -17,8 +17,10 @@ python -m unittest discover -s tests
 ```
 
 One test file: `python -m unittest discover -s tests -p "test_claims.py"`.
-CI runs the same checks on Python 3.11, 3.12 and 3.13, plus a job that builds
-the wheel and runs `ada claim`, `ada ask`, `ada scan` and `ada mcp` from it.
+Before a merge, run `python tools/check.py python3.11 python3.12 python3.13`:
+the same checks on each version, plus a build of the wheel that runs
+`ada claim`, `ada ask`, `ada scan` and `ada mcp` from it. GitHub Actions does
+not run on this account, so CI does not run on pushes or pull requests.
 
 ## Conventions
 

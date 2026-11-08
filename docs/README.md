@@ -59,7 +59,7 @@ follows and its edge cases.
 
 | Page | Contents |
 |---|---|
-| [Development](development.md) | Setup, tests, linting, CI, conventions |
+| [Development](development.md) | Setup, tests, linting, the checks before a merge, conventions |
 | [Privacy](privacy.md) | What stays local and what can leave the machine |
 | [FAQ](faq.md) | Short answers to common questions |
 | [Credits](credits.md) | The libraries ADA builds on, their licences, and how to cite them |
