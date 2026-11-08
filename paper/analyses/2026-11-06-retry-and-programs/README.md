@@ -1,5 +1,11 @@
 # Asking again on numbers, and programs, tested on new problems (2026-11-06)
 
+**Not run.** This plan was replaced by
+[2026-11-08-open-models-and-votes](../2026-11-08-open-models-and-votes/README.md) before its run: the run
+now asks the smallest fully open models, votes over five samples and adds a `json` condition. Two of the
+four kernels below ran on 2026-11-06 from 04:04 to 04:16 UTC and were deleted; their replies were never
+downloaded or read.
+
 **Question.** Two changes to the GSM8K benchmark came out of the runs so far
 ([#186](https://github.com/saineshnakra/automated-data-analyst/pull/186)): `retry` now also asks again when
 the model's Answer line gives a number it worked out instead of a quantity of its equations, and a `program`

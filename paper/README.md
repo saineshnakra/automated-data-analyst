@@ -51,7 +51,8 @@ Work done on runs already made, such as choosing a rule before testing it on new
 |---|---|
 | [2026-11-05-combine-rules](analyses/2026-11-05-combine-rules/README.md) | How to combine the model's answer with ADA's, chosen on the ladder's problems 0 to 299 and set down before it was tested on problems 300 to 599 |
 | [2026-11-05-plan-and-retry](analyses/2026-11-05-plan-and-retry/README.md) | Which way of writing better equations to keep, chosen on problems 0 to 299, the tests set down for problems 300 to 599, and how they came out |
-| [2026-11-06-retry-and-programs](analyses/2026-11-06-retry-and-programs/README.md) | `retry` asking again on numbers, `program` against `solve`, and the combining rule, with the tests set for GSM8K and GSM-Hard problems 600 to 1318 |
+| [2026-11-06-retry-and-programs](analyses/2026-11-06-retry-and-programs/README.md) | `retry` asking again on numbers, `program` against `solve`, and the combining rule, with the tests set for GSM8K and GSM-Hard problems 600 to 1318. Not run: replaced by the next one |
+| [2026-11-08-open-models-and-votes](analyses/2026-11-08-open-models-and-votes/README.md) | The smallest fully open models with ADA and votes of five samples, with the tests set for GSM8K and GSM-Hard problems 600 to 1318 |
 
 ## What a run folder holds
 
